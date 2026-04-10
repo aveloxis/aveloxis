@@ -2,11 +2,13 @@
 
 [![Tests](https://github.com/aveloxis/aveloxis/actions/workflows/test.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/test.yml)
 [![Lint](https://github.com/aveloxis/aveloxis/actions/workflows/lint.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/lint.yml)
-[![CodeQL](https://github.com/aveloxis/aveloxis/actions/workflows/codeql.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/codeql.yml) CodQL Will fail until repo is public.
+[![CodeQL](https://github.com/aveloxis/aveloxis/actions/workflows/codeql.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/codeql.yml) 
 [![Container Build](https://github.com/aveloxis/aveloxis/actions/workflows/container-build.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/container-build.yml)
 [![Docker Publish](https://github.com/aveloxis/aveloxis/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/docker-publish.yml)
 
 Data-Collection ![Static Badge](https://img.shields.io/badge/TESTED-green) Augur-Conversion ![Static Badge](https://img.shields.io/badge/UNTESTED-red) Containers ![Static Badge](https://img.shields.io/badge/UNTESTED-red)
+
+Documentation: https://aveloxis.readthedocs.io/en/latest/ 
 
 <img width="1200" height="300" alt="aveloxis-banner-1200x300" src="https://github.com/user-attachments/assets/c3276b26-357d-404c-b6d9-d47a4778ca63" />
 

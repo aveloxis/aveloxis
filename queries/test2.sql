@@ -1,1 +1,0 @@
-select * from commits where repo_id=36656; 

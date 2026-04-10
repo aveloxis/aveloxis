@@ -8,7 +8,7 @@
 
 Data-Collection ![Static Badge](https://img.shields.io/badge/TESTED-green) Augur-Conversion ![Static Badge](https://img.shields.io/badge/UNTESTED-red) Containers ![Static Badge](https://img.shields.io/badge/UNTESTED-red)
 
-Documentation: https://aveloxis.readthedocs.io/en/latest/ 
+[Documentation can be found on readthedocs.io at aveloxis.readthedocs.io/en/latest](https://aveloxis.readthedocs.io/en/latest/) 
 
 <img width="1200" height="300" alt="aveloxis-banner-1200x300" src="https://github.com/user-attachments/assets/c3276b26-357d-404c-b6d9-d47a4778ca63" />
 

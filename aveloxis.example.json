@@ -1,0 +1,37 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "user": "augur",
+    "password": "",
+    "dbname": "augur",
+    "sslmode": "prefer"
+  },
+  "github": {
+    "api_keys": [],
+    "base_url": "https://api.github.com"
+  },
+  "gitlab": {
+    "api_keys": [],
+    "base_url": "https://gitlab.com/api/v4",
+    "gitlab_hosts": []
+  },
+  "collection": {
+    "batch_size": 1000,
+    "days_until_recollect": 1,
+    "workers": 12,
+    "repo_clone_dir": "",
+    "force_full": false
+  },
+  "web": {
+    "addr": ":8080",
+    "base_url": "http://localhost:8080",
+    "session_secret": "change-me-to-a-random-string",
+    "github_client_id": "your-github-oauth-app-client-id",
+    "github_client_secret": "your-github-oauth-app-client-secret",
+    "gitlab_client_id": "your-gitlab-oauth-app-client-id",
+    "gitlab_client_secret": "your-gitlab-oauth-app-client-secret",
+    "gitlab_base_url": "https://gitlab.com"
+  },
+  "log_level": "info"
+}

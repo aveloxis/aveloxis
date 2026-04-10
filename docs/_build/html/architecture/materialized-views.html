@@ -1,0 +1,482 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Materialized Views &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Column Name Mapping (Augur to Aveloxis)" href="column-mapping.html" />
+    <link rel="prev" title="Analysis" href="analysis.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="analysis.html">Analysis</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Materialized Views</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#view-list">View list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#knot-compatibility">8Knot compatibility</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#schema-prefix">Schema prefix</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#rebuild-schedule">Rebuild schedule</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#automatic-weekly">Automatic (weekly)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#manual">Manual</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#concurrently-vs-non-concurrent-refresh">CONCURRENTLY vs non-concurrent refresh</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#refresh-materialized-view-concurrently"><code class="docutils literal notranslate"><span class="pre">REFRESH</span> <span class="pre">MATERIALIZED</span> <span class="pre">VIEW</span> <span class="pre">CONCURRENTLY</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#refresh-materialized-view-non-concurrent"><code class="docutils literal notranslate"><span class="pre">REFRESH</span> <span class="pre">MATERIALIZED</span> <span class="pre">VIEW</span></code> (non-concurrent)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#aveloxis-behavior">Aveloxis behavior</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#unique-indexes">Unique indexes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#view-details">View details</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#api-get-all-repo-prs"><code class="docutils literal notranslate"><span class="pre">api_get_all_repo_prs</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#api-get-all-repos-commits"><code class="docutils literal notranslate"><span class="pre">api_get_all_repos_commits</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#api-get-all-repos-issues"><code class="docutils literal notranslate"><span class="pre">api_get_all_repos_issues</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#explorer-contributor-actions"><code class="docutils literal notranslate"><span class="pre">explorer_contributor_actions</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#explorer-pr-response-times"><code class="docutils literal notranslate"><span class="pre">explorer_pr_response_times</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#explorer-repo-languages"><code class="docutils literal notranslate"><span class="pre">explorer_repo_languages</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#explorer-libyear-summary"><code class="docutils literal notranslate"><span class="pre">explorer_libyear_summary</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#monitoring-refresh-progress">Monitoring refresh progress</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#checking-view-freshness">Checking view freshness</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#troubleshooting">Troubleshooting</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#could-not-refresh-materialized-view-concurrently">“could not refresh materialized view concurrently”</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#slow-refresh">Slow refresh</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#views-out-of-date">Views out of date</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Materialized Views</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/architecture/materialized-views.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="materialized-views">
+<h1>Materialized Views<a class="headerlink" href="#materialized-views" title="Link to this heading"></a></h1>
+<p>Aveloxis creates 19 materialized views for compatibility with <a class="reference external" href="https://github.com/oss-aspen/8Knot">8Knot</a> and other Augur analytics tools. These views pre-compute common queries for fast read access.</p>
+<hr class="docutils" />
+<section id="view-list">
+<h2>View list<a class="headerlink" href="#view-list" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>View</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">api_get_all_repo_prs</span></code></p></td>
+<td><p>Total PR count per repo</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">api_get_all_repos_commits</span></code></p></td>
+<td><p>Total distinct commit count per repo</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">api_get_all_repos_issues</span></code></p></td>
+<td><p>Total issue count per repo (excluding PRs)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_entry_list</span></code></p></td>
+<td><p>Repo list with group names for the 8Knot explorer</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_commits_and_committers_daily_count</span></code></p></td>
+<td><p>Daily commit and committer counts</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_contributor_actions</span></code></p></td>
+<td><p>All contributor actions (commits, issues, PRs, reviews, comments) with ranking</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_new_contributors</span></code></p></td>
+<td><p>First-time contributor tracking (first action date per contributor per repo)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">augur_new_contributors</span></code></p></td>
+<td><p>8Knot compatibility alias for <code class="docutils literal notranslate"><span class="pre">explorer_new_contributors</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_pr_assignments</span></code></p></td>
+<td><p>PR assignment and unassignment events</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_pr_response</span></code></p></td>
+<td><p>PR message response tracking</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_pr_response_times</span></code></p></td>
+<td><p>Comprehensive PR metrics (time to close, response times, line/file/commit counts)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_issue_assignments</span></code></p></td>
+<td><p>Issue assignment events</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_user_repos</span></code></p></td>
+<td><p>User-to-repo mapping (which contributors are active in which repos)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_repo_languages</span></code></p></td>
+<td><p>Language breakdown from <code class="docutils literal notranslate"><span class="pre">repo_labor</span></code> (scc analysis)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_libyear_all</span></code></p></td>
+<td><p>Full libyear data for all dependencies</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_libyear_summary</span></code></p></td>
+<td><p>Summary libyear statistics per repo</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_libyear_detail</span></code></p></td>
+<td><p>Detailed libyear per dependency per repo</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_contributor_recent_actions</span></code></p></td>
+<td><p>Same as <code class="docutils literal notranslate"><span class="pre">explorer_contributor_actions</span></code> but limited to the last 13 months</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">issue_reporter_created_at</span></code></p></td>
+<td><p>Legacy issue reporter view (reporter ID and creation timestamp)</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="knot-compatibility">
+<h2>8Knot compatibility<a class="headerlink" href="#knot-compatibility" title="Link to this heading"></a></h2>
+<p>These views are designed to be drop-in replacements for Augur’s materialized views that <a class="reference external" href="https://github.com/oss-aspen/8Knot">8Knot</a> reads from. If you point 8Knot at the <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> schema, the same queries and dashboards work without modification.</p>
+<section id="schema-prefix">
+<h3>Schema prefix<a class="headerlink" href="#schema-prefix" title="Link to this heading"></a></h3>
+<p>8Knot queries reference views without a schema prefix. To make this work, set the default search path for your analytics user:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">ALTER</span><span class="w"> </span><span class="k">ROLE</span><span class="w"> </span><span class="n">analytics_user</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">search_path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">,</span><span class="w"> </span><span class="k">public</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>Or set it per-session:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">search_path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">,</span><span class="w"> </span><span class="k">public</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="rebuild-schedule">
+<h2>Rebuild schedule<a class="headerlink" href="#rebuild-schedule" title="Link to this heading"></a></h2>
+<section id="automatic-weekly">
+<h3>Automatic (weekly)<a class="headerlink" href="#automatic-weekly" title="Link to this heading"></a></h3>
+<p>Every Saturday, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> automatically rebuilds all 19 materialized views:</p>
+<ol class="arabic simple">
+<li><p>Collection workers are <strong>paused</strong> (no new repos are claimed from the queue)</p></li>
+<li><p>In-progress repos are allowed to finish their current phase</p></li>
+<li><p>All 19 views are refreshed</p></li>
+<li><p>Collection workers are <strong>resumed</strong></p></li>
+</ol>
+<p>The pause ensures that data is consistent during the rebuild – no partial collection state is captured in the views.</p>
+</section>
+<section id="manual">
+<h3>Manual<a class="headerlink" href="#manual" title="Link to this heading"></a></h3>
+<p>You can trigger a rebuild at any time:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>refresh-views
+</pre></div>
+</div>
+<p>This refreshes all 19 views immediately. If <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> is running, collection continues during the manual refresh (the automatic Saturday rebuild is the only one that pauses collection).</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="concurrently-vs-non-concurrent-refresh">
+<h2>CONCURRENTLY vs non-concurrent refresh<a class="headerlink" href="#concurrently-vs-non-concurrent-refresh" title="Link to this heading"></a></h2>
+<p>PostgreSQL supports two modes for refreshing materialized views:</p>
+<section id="refresh-materialized-view-concurrently">
+<h3><code class="docutils literal notranslate"><span class="pre">REFRESH</span> <span class="pre">MATERIALIZED</span> <span class="pre">VIEW</span> <span class="pre">CONCURRENTLY</span></code><a class="headerlink" href="#refresh-materialized-view-concurrently" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Does <strong>not</strong> block reads during the refresh</p></li>
+<li><p>Requires a <strong>unique index</strong> on the view</p></li>
+<li><p>Slower than non-concurrent refresh (builds a new copy, then swaps)</p></li>
+</ul>
+</section>
+<section id="refresh-materialized-view-non-concurrent">
+<h3><code class="docutils literal notranslate"><span class="pre">REFRESH</span> <span class="pre">MATERIALIZED</span> <span class="pre">VIEW</span></code> (non-concurrent)<a class="headerlink" href="#refresh-materialized-view-non-concurrent" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Blocks reads</strong> during the refresh (acquires <code class="docutils literal notranslate"><span class="pre">ACCESS</span> <span class="pre">EXCLUSIVE</span></code> lock)</p></li>
+<li><p>No unique index required</p></li>
+<li><p>Faster for large views</p></li>
+</ul>
+</section>
+<section id="aveloxis-behavior">
+<h3>Aveloxis behavior<a class="headerlink" href="#aveloxis-behavior" title="Link to this heading"></a></h3>
+<p>Aveloxis uses <code class="docutils literal notranslate"><span class="pre">CONCURRENTLY</span></code> for views that have unique indexes, and non-concurrent refresh for views that do not. This provides the best balance of read availability and refresh speed.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="unique-indexes">
+<h2>Unique indexes<a class="headerlink" href="#unique-indexes" title="Link to this heading"></a></h2>
+<p>The following views have unique indexes to support concurrent refresh:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>View</p></th>
+<th class="head"><p>Unique Index Columns</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">api_get_all_repo_prs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(repo_id)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">api_get_all_repos_commits</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(repo_id)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">api_get_all_repos_issues</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(repo_id)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_entry_list</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(repo_id)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_commits_and_committers_daily_count</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(repo_id,</span> <span class="pre">date)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_new_contributors</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(cntrb_id,</span> <span class="pre">repo_id)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">augur_new_contributors</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(cntrb_id,</span> <span class="pre">repo_id)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explorer_user_repos</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(cntrb_id,</span> <span class="pre">repo_id)</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>Views without unique indexes are refreshed non-concurrently. During the Saturday rebuild, collection is paused so the brief read lock does not affect analytics queries in practice.</p>
+</section>
+<hr class="docutils" />
+<section id="view-details">
+<h2>View details<a class="headerlink" href="#view-details" title="Link to this heading"></a></h2>
+<section id="api-get-all-repo-prs">
+<h3><code class="docutils literal notranslate"><span class="pre">api_get_all_repo_prs</span></code><a class="headerlink" href="#api-get-all-repo-prs" title="Link to this heading"></a></h3>
+<p>Counts total pull requests per repository.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">pr_count</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">pull_requests</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">repo_id</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
+<section id="api-get-all-repos-commits">
+<h3><code class="docutils literal notranslate"><span class="pre">api_get_all_repos_commits</span></code><a class="headerlink" href="#api-get-all-repos-commits" title="Link to this heading"></a></h3>
+<p>Counts distinct commits per repository (not per-file rows, but distinct hashes).</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="k">DISTINCT</span><span class="w"> </span><span class="n">cmt_commit_hash</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">commit_count</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">commits</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">repo_id</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
+<section id="api-get-all-repos-issues">
+<h3><code class="docutils literal notranslate"><span class="pre">api_get_all_repos_issues</span></code><a class="headerlink" href="#api-get-all-repos-issues" title="Link to this heading"></a></h3>
+<p>Counts issues per repository, excluding entries that are actually PRs (GitHub conflates issues and PRs).</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">issue_count</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">issues</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">pull_request</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NULL</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">repo_id</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
+<section id="explorer-contributor-actions">
+<h3><code class="docutils literal notranslate"><span class="pre">explorer_contributor_actions</span></code><a class="headerlink" href="#explorer-contributor-actions" title="Link to this heading"></a></h3>
+<p>Unions all contributor actions (commits, issue opens, PR opens, reviews, comments) into a single view with an action type column. Includes ranking per contributor per repo.</p>
+</section>
+<section id="explorer-pr-response-times">
+<h3><code class="docutils literal notranslate"><span class="pre">explorer_pr_response_times</span></code><a class="headerlink" href="#explorer-pr-response-times" title="Link to this heading"></a></h3>
+<p>Comprehensive PR metrics including:</p>
+<ul class="simple">
+<li><p>Time from open to first response</p></li>
+<li><p>Time from open to close/merge</p></li>
+<li><p>Total lines added/removed</p></li>
+<li><p>Number of files changed</p></li>
+<li><p>Number of commits</p></li>
+</ul>
+</section>
+<section id="explorer-repo-languages">
+<h3><code class="docutils literal notranslate"><span class="pre">explorer_repo_languages</span></code><a class="headerlink" href="#explorer-repo-languages" title="Link to this heading"></a></h3>
+<p>Aggregates <code class="docutils literal notranslate"><span class="pre">repo_labor</span></code> data (from scc analysis) to provide language breakdowns:</p>
+<ul class="simple">
+<li><p>Lines of code per language per repo</p></li>
+<li><p>Percentage of total code per language</p></li>
+</ul>
+</section>
+<section id="explorer-libyear-summary">
+<h3><code class="docutils literal notranslate"><span class="pre">explorer_libyear_summary</span></code><a class="headerlink" href="#explorer-libyear-summary" title="Link to this heading"></a></h3>
+<p>Summary statistics per repo:</p>
+<ul class="simple">
+<li><p>Total libyear across all dependencies</p></li>
+<li><p>Average libyear</p></li>
+<li><p>Maximum libyear (most outdated dependency)</p></li>
+<li><p>Count of dependencies</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="monitoring-refresh-progress">
+<h2>Monitoring refresh progress<a class="headerlink" href="#monitoring-refresh-progress" title="Link to this heading"></a></h2>
+<p>The Saturday rebuild logs progress at INFO level:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">INFO</span>  <span class="n">starting</span> <span class="n">weekly</span> <span class="n">materialized</span> <span class="n">view</span> <span class="n">refresh</span>
+<span class="n">INFO</span>  <span class="n">pausing</span> <span class="n">collection</span> <span class="n">workers</span>
+<span class="n">INFO</span>  <span class="n">refreshing</span> <span class="n">api_get_all_repo_prs</span> <span class="p">(</span><span class="n">CONCURRENTLY</span><span class="p">)</span>
+<span class="n">INFO</span>  <span class="n">refreshing</span> <span class="n">api_get_all_repos_commits</span> <span class="p">(</span><span class="n">CONCURRENTLY</span><span class="p">)</span>
+<span class="o">...</span>
+<span class="n">INFO</span>  <span class="n">refreshing</span> <span class="n">explorer_contributor_recent_actions</span>
+<span class="n">INFO</span>  <span class="n">materialized</span> <span class="n">view</span> <span class="n">refresh</span> <span class="n">complete</span> <span class="p">(</span><span class="n">took</span> <span class="mi">4</span><span class="n">m23s</span><span class="p">)</span>
+<span class="n">INFO</span>  <span class="n">resuming</span> <span class="n">collection</span> <span class="n">workers</span>
+</pre></div>
+</div>
+<section id="checking-view-freshness">
+<h3>Checking view freshness<a class="headerlink" href="#checking-view-freshness" title="Link to this heading"></a></h3>
+<p>You can check when views were last refreshed by querying PostgreSQL catalog tables:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span>
+<span class="w">  </span><span class="n">schemaname</span><span class="p">,</span>
+<span class="w">  </span><span class="n">matviewname</span><span class="p">,</span>
+<span class="w">  </span><span class="n">pg_size_pretty</span><span class="p">(</span><span class="n">pg_total_relation_size</span><span class="p">(</span><span class="n">schemaname</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">&#39;.&#39;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">matviewname</span><span class="p">))</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">size</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">pg_matviews</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">schemaname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;aveloxis_data&#39;</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">matviewname</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading"></a></h2>
+<section id="could-not-refresh-materialized-view-concurrently">
+<h3>“could not refresh materialized view concurrently”<a class="headerlink" href="#could-not-refresh-materialized-view-concurrently" title="Link to this heading"></a></h3>
+<p>This error means the view does not have a unique index. This should not happen with Aveloxis’s built-in views, but if you create custom views, ensure they have unique indexes before using <code class="docutils literal notranslate"><span class="pre">CONCURRENTLY</span></code>.</p>
+</section>
+<section id="slow-refresh">
+<h3>Slow refresh<a class="headerlink" href="#slow-refresh" title="Link to this heading"></a></h3>
+<p>If the Saturday rebuild takes too long:</p>
+<ul class="simple">
+<li><p>Check PostgreSQL <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> and <code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code> settings. Increase to at least 256 MB and 1 GB respectively.</p></li>
+<li><p>Check if <code class="docutils literal notranslate"><span class="pre">VACUUM</span> <span class="pre">ANALYZE</span></code> needs to run on the underlying tables.</p></li>
+<li><p>Large tables (millions of rows in <code class="docutils literal notranslate"><span class="pre">commits</span></code> or <code class="docutils literal notranslate"><span class="pre">messages</span></code>) naturally take longer.</p></li>
+</ul>
+</section>
+<section id="views-out-of-date">
+<h3>Views out of date<a class="headerlink" href="#views-out-of-date" title="Link to this heading"></a></h3>
+<p>If analytics show stale data:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Manual refresh</span>
+aveloxis<span class="w"> </span>refresh-views
+</pre></div>
+</div>
+<p>Or wait for the next Saturday automatic rebuild.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="analysis.html"><span class="std std-doc">Analysis</span></a> – how repo_labor and libyear data are collected</p></li>
+<li><p><a class="reference internal" href="../guide/scaling.html"><span class="std std-doc">Scaling</span></a> – database tuning for large instances</p></li>
+<li><p><a class="reference internal" href="overview.html"><span class="std std-doc">Overview</span></a> – system architecture overview</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="analysis.html" class="btn btn-neutral float-left" title="Analysis" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="column-mapping.html" class="btn btn-neutral float-right" title="Column Name Mapping (Augur to Aveloxis)" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

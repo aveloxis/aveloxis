@@ -1,0 +1,533 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Architecture Overview &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Staged Pipeline Architecture" href="staged-pipeline.html" />
+    <link rel="prev" title="Troubleshooting" href="../guide/troubleshooting.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Architecture Overview</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#system-diagram">System diagram</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#two-schemas">Two schemas</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#aveloxis-data-84-tables-19-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (84 tables + 19 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#aveloxis-ops-24-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (24 tables)</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#collection-flow">Collection flow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#key-design-decisions-vs-augur">Key design decisions vs Augur</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#postgres-queue-instead-of-celery-redis-rabbitmq">Postgres queue instead of Celery/Redis/RabbitMQ</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#jsonb-staging-instead-of-direct-writes">JSONB staging instead of direct writes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#deterministic-contributor-ids">Deterministic contributor IDs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#bare-clones-instead-of-full-clones">Bare clones instead of full clones</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#built-in-monitoring">Built-in monitoring</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#platform-abstraction-layer">Platform abstraction layer</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#project-structure">Project structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#scheduler-internals">Scheduler internals</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#job-dispatch">Job dispatch</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#phase-execution-within-a-job">Phase execution within a job</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#periodic-background-tasks">Periodic background tasks</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#graceful-shutdown">Graceful shutdown</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#startup-recovery">Startup recovery</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Architecture Overview</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/architecture/overview.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="architecture-overview">
+<h1>Architecture Overview<a class="headerlink" href="#architecture-overview" title="Link to this heading"></a></h1>
+<p>Aveloxis is a Go-based open source community health data collection pipeline that collects from GitHub and GitLab with equal completeness, storing everything in PostgreSQL.</p>
+<hr class="docutils" />
+<section id="system-diagram">
+<h2>System diagram<a class="headerlink" href="#system-diagram" title="Link to this heading"></a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>                                    GitHub API
+                                        |
+                                        v
+  ┌─────────────┐    ┌─────────────────────────────────┐
+  │  CLI        │    │  Aveloxis Scheduler              │
+  │  add-repo   │───&gt;│                                  │
+  │  add-key    │    │  ┌───────────┐  ┌─────────────┐ │
+  │  prioritize │    │  │ Worker 1  │  │ Worker 2    │ │
+  │  collect    │    │  │           │  │             │ │
+  └─────────────┘    │  └─────┬─────┘  └──────┬──────┘ │
+                     │        │               │        │
+                     │        v               v        │
+                     │  ┌─────────────────────────┐    │
+                     │  │ Staged Pipeline          │    │
+                     │  │ 1. Prelim (URL check)    │    │
+                     │  │ 2. Stage (JSONB)         │    │
+                     │  │ 3. Process (relational)  │    │
+                     │  │ 4. Facade (git log)      │    │
+                     │  │ 5. Commit Resolution     │    │
+                     │  │ 6. Analysis              │    │
+                     │  └────────────┬────────────┘    │
+                     │               │                  │
+                     │  ┌────────────v────────────┐    │
+                     │  │ Periodic Tasks           │    │
+                     │  │ - Org refresh (4h)       │    │
+                     │  │ - Contributor breadth(6h)│    │
+                     │  │ - Matview rebuild (Sat)  │    │
+                     │  └─────────────────────────┘    │
+                     └──────────────┬──────────────────┘
+                                    │
+                                    v
+  ┌─────────────────────────────────────────────────────┐
+  │  PostgreSQL                                         │
+  │                                                     │
+  │  ┌───────────────────┐  ┌────────────────────────┐ │
+  │  │ aveloxis_data     │  │ aveloxis_ops           │ │
+  │  │ 84 tables         │  │ 24 tables              │ │
+  │  │ 19 matviews       │  │ - collection_queue     │ │
+  │  │ - repos           │  │ - staging (JSONB)      │ │
+  │  │ - issues          │  │ - collection_status    │ │
+  │  │ - pull_requests   │  │ - worker_oauth         │ │
+  │  │ - commits         │  │ - users/sessions       │ │
+  │  │ - contributors    │  │ - config               │ │
+  │  │ - messages        │  │ - worker_history       │ │
+  │  │ - releases        │  │                        │ │
+  │  │ - dependencies    │  │                        │ │
+  │  │ - repo_labor      │  │                        │ │
+  │  │ - aggregates      │  │                        │ │
+  │  └───────────────────┘  └────────────────────────┘ │
+  └─────────────────────────────────────────────────────┘
+                                    |
+                                    v
+                     ┌───────────────────────────┐
+                     │  8Knot / Analytics Tools   │
+                     │  (reads matviews)          │
+                     └───────────────────────────┘
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="two-schemas">
+<h2>Two schemas<a class="headerlink" href="#two-schemas" title="Link to this heading"></a></h2>
+<p>Aveloxis uses two PostgreSQL schemas to separate collected data from operational state.</p>
+<section id="aveloxis-data-84-tables-19-materialized-views">
+<h3><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (84 tables + 19 materialized views)<a class="headerlink" href="#aveloxis-data-84-tables-19-materialized-views" title="Link to this heading"></a></h3>
+<p>All collected open source community health data:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Category</p></th>
+<th class="head"><p>Tables</p></th>
+<th class="head"><p>Examples</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Core</p></td>
+<td><p>4</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">repos</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_groups</span></code>, <code class="docutils literal notranslate"><span class="pre">platforms</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_groups_list_serve</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Contributors</p></td>
+<td><p>6</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">contributors</span></code>, <code class="docutils literal notranslate"><span class="pre">contributor_identities</span></code>, <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code>, <code class="docutils literal notranslate"><span class="pre">contributor_affiliations</span></code>, <code class="docutils literal notranslate"><span class="pre">contributor_repo</span></code>, <code class="docutils literal notranslate"><span class="pre">unresolved_commit_emails</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Issues</p></td>
+<td><p>5</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">issues</span></code>, <code class="docutils literal notranslate"><span class="pre">issue_labels</span></code>, <code class="docutils literal notranslate"><span class="pre">issue_assignees</span></code>, <code class="docutils literal notranslate"><span class="pre">issue_events</span></code>, <code class="docutils literal notranslate"><span class="pre">issue_message_ref</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Pull Requests</p></td>
+<td><p>12</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pull_requests</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_labels</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_assignees</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_reviewers</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_reviews</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_commits</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_files</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_events</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_meta</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_repo</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_message_ref</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_review_message_ref</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Messages</p></td>
+<td><p>3</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">messages</span></code>, <code class="docutils literal notranslate"><span class="pre">review_comments</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_teams</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Commits</p></td>
+<td><p>3</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">commits</span></code>, <code class="docutils literal notranslate"><span class="pre">commit_parents</span></code>, <code class="docutils literal notranslate"><span class="pre">commit_messages</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Releases</p></td>
+<td><p>1</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">releases</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Repo metadata</p></td>
+<td><p>6</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">repo_info</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_clones</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_badging</span></code>, <code class="docutils literal notranslate"><span class="pre">dei_badging</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_insights</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_insights_records</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Dependencies</p></td>
+<td><p>5</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">repo_dependencies</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_deps_libyear</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_deps_scorecard</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_sbom_scans</span></code>, <code class="docutils literal notranslate"><span class="pre">libraries</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Aggregates</p></td>
+<td><p>6</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">dm_repo_annual</span></code>, <code class="docutils literal notranslate"><span class="pre">dm_repo_monthly</span></code>, <code class="docutils literal notranslate"><span class="pre">dm_repo_weekly</span></code>, <code class="docutils literal notranslate"><span class="pre">dm_repo_group_annual</span></code>, <code class="docutils literal notranslate"><span class="pre">dm_repo_group_monthly</span></code>, <code class="docutils literal notranslate"><span class="pre">dm_repo_group_weekly</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Code complexity</p></td>
+<td><p>4</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">repo_labor</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_meta</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_stats</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_test_coverage</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Analysis/ML</p></td>
+<td><p>8</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">message_analysis</span></code>, <code class="docutils literal notranslate"><span class="pre">message_analysis_summary</span></code>, <code class="docutils literal notranslate"><span class="pre">message_sentiment</span></code>, <code class="docutils literal notranslate"><span class="pre">message_sentiment_summary</span></code>, <code class="docutils literal notranslate"><span class="pre">discourse_insights</span></code>, <code class="docutils literal notranslate"><span class="pre">lstm_anomaly_models</span></code>, <code class="docutils literal notranslate"><span class="pre">lstm_anomaly_results</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_request_analysis</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>CHAOSS</p></td>
+<td><p>4</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">chaoss_metric_status</span></code>, <code class="docutils literal notranslate"><span class="pre">chaoss_user</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_group_insights</span></code>, <code class="docutils literal notranslate"><span class="pre">commit_comment_ref</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>Plus 19 materialized views for 8Knot compatibility.</p>
+</section>
+<section id="aveloxis-ops-24-tables">
+<h3><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (24 tables)<a class="headerlink" href="#aveloxis-ops-24-tables" title="Link to this heading"></a></h3>
+<p>Operational and orchestration tables:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Category</p></th>
+<th class="head"><p>Tables</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Queue</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">collection_queue</span></code></p></td>
+<td><p>Postgres-backed priority queue with <code class="docutils literal notranslate"><span class="pre">SKIP</span> <span class="pre">LOCKED</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Staging</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">staging</span></code></p></td>
+<td><p>JSONB staging store for the staged pipeline</p></td>
+</tr>
+<tr class="row-even"><td><p>Status</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">collection_status</span></code></p></td>
+<td><p>Tracks core/secondary/facade/ML phases per repo</p></td>
+</tr>
+<tr class="row-odd"><td><p>Credentials</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">worker_oauth</span></code></p></td>
+<td><p>API key storage</p></td>
+</tr>
+<tr class="row-even"><td><p>Users</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">users</span></code>, <code class="docutils literal notranslate"><span class="pre">user_sessions</span></code>, <code class="docutils literal notranslate"><span class="pre">user_repos</span></code></p></td>
+<td><p>User accounts and auth</p></td>
+</tr>
+<tr class="row-odd"><td><p>Config</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">config</span></code></p></td>
+<td><p>Runtime configuration</p></td>
+</tr>
+<tr class="row-even"><td><p>Workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">worker_history</span></code>, <code class="docutils literal notranslate"><span class="pre">worker_job</span></code></p></td>
+<td><p>Worker run history</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<hr class="docutils" />
+<section id="collection-flow">
+<h2>Collection flow<a class="headerlink" href="#collection-flow" title="Link to this heading"></a></h2>
+<p>The full collection flow for a single repo:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>URL Check (prelim)
+    |
+    v
+API Collection (phase 1)
+    |-- Contributors (member lists)
+    |-- Issues + labels + assignees
+    |-- Pull requests + all children
+    |-- Events (issue + PR)
+    |-- Messages (comments)
+    |-- Metadata (repo info, releases, clone stats)
+    |
+    v
+Staging -&gt; Processing (phase 2)
+    |-- Contributors resolved (cache -&gt; DB -&gt; create)
+    |-- Entities upserted in FK order
+    |
+    v
+┌──────────────────────────────────────┐
+│ Parallel execution                   │
+├──────────────────┬───────────────────┤
+│ Facade (phase 3) │ Analysis (phase 4)│
+│  git clone/fetch │  Dependency scan  │
+│  git log parse   │  Libyear (5 reg.) │
+│  Commit parents  │  Code complexity  │
+│  Affiliations    │  (scc)            │
+│  Aggregates      │                   │
+└──────────────────┴───────────────────┘
+    |
+    v
+Commit Resolution (phase 5)
+    |-- Noreply parse
+    |-- DB lookup
+    |-- Commits API
+    |-- Search API
+    |-- Alias creation
+    |-- Backfill cmt_ght_author_id
+    |
+    v
+Canonical Email Enrichment (phase 6)
+    |
+    v
+Done -&gt; repo re-queued with new due time
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="key-design-decisions-vs-augur">
+<h2>Key design decisions vs Augur<a class="headerlink" href="#key-design-decisions-vs-augur" title="Link to this heading"></a></h2>
+<section id="postgres-queue-instead-of-celery-redis-rabbitmq">
+<h3>Postgres queue instead of Celery/Redis/RabbitMQ<a class="headerlink" href="#postgres-queue-instead-of-celery-redis-rabbitmq" title="Link to this heading"></a></h3>
+<p>Augur uses Celery with RabbitMQ and Redis for job queueing. Aveloxis uses a single PostgreSQL table with <code class="docutils literal notranslate"><span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code>. This eliminates three infrastructure dependencies and makes queue state fully transparent and queryable with plain SQL.</p>
+</section>
+<section id="jsonb-staging-instead-of-direct-writes">
+<h3>JSONB staging instead of direct writes<a class="headerlink" href="#jsonb-staging-instead-of-direct-writes" title="Link to this heading"></a></h3>
+<p>Augur writes to relational tables during API collection, causing contention on the <code class="docutils literal notranslate"><span class="pre">contributors</span></code> table when many workers collect simultaneously. Aveloxis stages raw API data as JSONB, then processes it single-threaded per repo. This eliminates contributor table contention at scale (400K+ repos).</p>
+</section>
+<section id="deterministic-contributor-ids">
+<h3>Deterministic contributor IDs<a class="headerlink" href="#deterministic-contributor-ids" title="Link to this heading"></a></h3>
+<p>Augur generates random UUIDs for contributor IDs, then runs post-hoc fix scripts. Aveloxis generates deterministic UUIDs from the platform user ID, ensuring the same user always gets the same UUID and enabling byte-compatible cross-system joins.</p>
+</section>
+<section id="bare-clones-instead-of-full-clones">
+<h3>Bare clones instead of full clones<a class="headerlink" href="#bare-clones-instead-of-full-clones" title="Link to this heading"></a></h3>
+<p>Aveloxis uses bare clones (permanent, smaller) for the facade phase and creates temporary full checkouts only for analysis. This reduces disk usage and avoids the overhead of maintaining working trees.</p>
+</section>
+<section id="built-in-monitoring">
+<h3>Built-in monitoring<a class="headerlink" href="#built-in-monitoring" title="Link to this heading"></a></h3>
+<p>Augur relies on Flower (a separate Celery monitoring service). Aveloxis includes a built-in HTTP dashboard and REST API.</p>
+</section>
+<section id="platform-abstraction-layer">
+<h3>Platform abstraction layer<a class="headerlink" href="#platform-abstraction-layer" title="Link to this heading"></a></h3>
+<p>Both GitHub and GitLab implement the same <code class="docutils literal notranslate"><span class="pre">platform.Client</span></code> interface with 7 sub-interfaces, ensuring feature parity. All methods use Go 1.23 iterators (<code class="docutils literal notranslate"><span class="pre">iter.Seq2</span></code>) for memory-efficient streaming pagination.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="project-structure">
+<h2>Project structure<a class="headerlink" href="#project-structure" title="Link to this heading"></a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aveloxis</span><span class="o">/</span>
+  <span class="n">cmd</span><span class="o">/</span><span class="n">aveloxis</span><span class="o">/</span>           <span class="c1"># CLI entry point (cobra commands)</span>
+  <span class="n">internal</span><span class="o">/</span>
+    <span class="n">collector</span><span class="o">/</span>            <span class="c1"># Collection orchestration</span>
+      <span class="n">collector</span><span class="o">.</span><span class="n">go</span>        <span class="c1"># Direct pipeline</span>
+      <span class="n">staged</span><span class="o">.</span><span class="n">go</span>           <span class="c1"># Staged pipeline</span>
+      <span class="n">facade</span><span class="o">.</span><span class="n">go</span>           <span class="c1"># Git clone + log parsing</span>
+      <span class="n">commit_resolver</span><span class="o">.</span><span class="n">go</span>  <span class="c1"># Git email -&gt; GitHub user resolution</span>
+      <span class="n">breadth</span><span class="o">.</span><span class="n">go</span>          <span class="c1"># Contributor breadth worker</span>
+      <span class="n">analysis</span><span class="o">.</span><span class="n">go</span>         <span class="c1"># Dependencies, libyear, scc</span>
+      <span class="n">noreply</span><span class="o">.</span><span class="n">go</span>          <span class="c1"># GitHub noreply email parser</span>
+      <span class="n">prelim</span><span class="o">.</span><span class="n">go</span>           <span class="c1"># Redirect detection and duplicate checking</span>
+    <span class="n">config</span><span class="o">/</span>               <span class="c1"># JSON config loading with defaults</span>
+    <span class="n">db</span><span class="o">/</span>                   <span class="c1"># Database layer</span>
+      <span class="n">postgres</span><span class="o">.</span><span class="n">go</span>         <span class="c1"># All upsert methods</span>
+      <span class="n">staging</span><span class="o">.</span><span class="n">go</span>          <span class="c1"># JSONB staging writer and processor</span>
+      <span class="n">migrate</span><span class="o">.</span><span class="n">go</span>          <span class="c1"># Schema migration</span>
+      <span class="n">schema</span><span class="o">.</span><span class="n">sql</span>          <span class="c1"># Full DDL (108 tables)</span>
+      <span class="n">matviews</span><span class="o">.</span><span class="n">sql</span>        <span class="c1"># 19 materialized views</span>
+      <span class="n">contributors</span><span class="o">.</span><span class="n">go</span>     <span class="c1"># Contributor resolver with cache</span>
+      <span class="n">affiliations</span><span class="o">.</span><span class="n">go</span>     <span class="c1"># Email domain -&gt; org resolver</span>
+      <span class="n">aggregates</span><span class="o">.</span><span class="n">go</span>       <span class="c1"># Facade aggregate refresh</span>
+      <span class="n">github_uuid</span><span class="o">.</span><span class="n">go</span>      <span class="c1"># Deterministic UUID generation</span>
+      <span class="n">queue</span><span class="o">.</span><span class="n">go</span>            <span class="c1"># Priority queue operations</span>
+    <span class="n">model</span><span class="o">/</span>                <span class="c1"># Platform-agnostic data types</span>
+    <span class="n">monitor</span><span class="o">/</span>              <span class="c1"># HTTP dashboard and API</span>
+    <span class="n">platform</span><span class="o">/</span>             <span class="c1"># Platform abstraction</span>
+      <span class="n">github</span><span class="o">/</span>             <span class="c1"># GitHub REST API client</span>
+      <span class="n">gitlab</span><span class="o">/</span>             <span class="c1"># GitLab API v4 client</span>
+    <span class="n">scheduler</span><span class="o">/</span>            <span class="c1"># Queue polling, job dispatch</span>
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="scheduler-internals">
+<h2>Scheduler internals<a class="headerlink" href="#scheduler-internals" title="Link to this heading"></a></h2>
+<p>The scheduler (<code class="docutils literal notranslate"><span class="pre">internal/scheduler/</span></code>) is the long-running loop that drives all collection. It polls the Postgres-backed priority queue and dispatches collection workers.</p>
+<section id="job-dispatch">
+<h3>Job dispatch<a class="headerlink" href="#job-dispatch" title="Link to this heading"></a></h3>
+<p>The scheduler uses a semaphore (buffered channel) sized to <code class="docutils literal notranslate"><span class="pre">Workers</span></code> to limit concurrency. Each poll tick attempts to acquire a semaphore slot and dequeue a job via <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">...</span> <span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code>. If no slot is available or no job is due, the tick is skipped.</p>
+</section>
+<section id="phase-execution-within-a-job">
+<h3>Phase execution within a job<a class="headerlink" href="#phase-execution-within-a-job" title="Link to this heading"></a></h3>
+<p>Each job runs six phases. After the sequential API collection and processing phases (1-2), facade and analysis run <strong>in parallel</strong> since they operate on independent data (bare clone vs. temporary checkout). Commit resolution runs after both complete because it needs facade’s commit data.</p>
+</section>
+<section id="periodic-background-tasks">
+<h3>Periodic background tasks<a class="headerlink" href="#periodic-background-tasks" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Task</p></th>
+<th class="head"><p>Interval</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Stale lock recovery</p></td>
+<td><p>5 min</p></td>
+<td><p>Reclaims jobs from crashed workers via <code class="docutils literal notranslate"><span class="pre">StaleLockTimeout</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Org refresh</p></td>
+<td><p>Configurable (default 4h)</p></td>
+<td><p>Scans GitHub orgs and GitLab groups for new/renamed repos</p></td>
+</tr>
+<tr class="row-even"><td><p>User org refresh</p></td>
+<td><p>Same as org refresh</p></td>
+<td><p>Scans user-requested org additions</p></td>
+</tr>
+<tr class="row-odd"><td><p>Contributor breadth</p></td>
+<td><p>6h</p></td>
+<td><p>Discovers cross-repo activity via GitHub Events API</p></td>
+</tr>
+<tr class="row-even"><td><p>Matview rebuild</p></td>
+<td><p>Weekly (Saturday)</p></td>
+<td><p>Drains all workers, rebuilds 19 materialized views, resumes</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="graceful-shutdown">
+<h3>Graceful shutdown<a class="headerlink" href="#graceful-shutdown" title="Link to this heading"></a></h3>
+<p>On context cancellation, the scheduler:</p>
+<ol class="arabic simple">
+<li><p>Drains the semaphore (waits for all active workers to finish)</p></li>
+<li><p>Releases all queue locks held by this worker instance (repos return to <code class="docutils literal notranslate"><span class="pre">queued</span></code> immediately)</p></li>
+<li><p>Any data already staged but not yet processed is preserved and will be processed on next startup</p></li>
+</ol>
+</section>
+<section id="startup-recovery">
+<h3>Startup recovery<a class="headerlink" href="#startup-recovery" title="Link to this heading"></a></h3>
+<p>On startup, before entering the poll loop:</p>
+<ol class="arabic simple">
+<li><p>Processes any leftover unprocessed staging rows from a previous interrupted run</p></li>
+<li><p>Recovers stale locks from any crashed worker instances</p></li>
+<li><p>Releases any locks held by our own worker ID (from a previous unclean shutdown)</p></li>
+</ol>
+</section>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="staged-pipeline.html"><span class="std std-doc">Staged Pipeline</span></a> – why staging matters and how it works</p></li>
+<li><p><a class="reference internal" href="contributor-resolution.html"><span class="std std-doc">Contributor Resolution</span></a> – identity resolution across platforms</p></li>
+<li><p><a class="reference internal" href="facade-commits.html"><span class="std std-doc">Facade Commits</span></a> – git log parsing and commit data</p></li>
+<li><p><a class="reference internal" href="analysis.html"><span class="std std-doc">Analysis</span></a> – dependency scanning, libyear, code complexity</p></li>
+<li><p><a class="reference internal" href="materialized-views.html"><span class="std std-doc">Materialized Views</span></a> – 8Knot-compatible analytics views</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../guide/troubleshooting.html" class="btn btn-neutral float-left" title="Troubleshooting" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="staged-pipeline.html" class="btn btn-neutral float-right" title="Staged Pipeline Architecture" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

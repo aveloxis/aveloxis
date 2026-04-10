@@ -1,0 +1,452 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Configuration &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Quick Start" href="quickstart.html" />
+    <link rel="prev" title="Installation" href="installation.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Configuration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#creating-the-config-file">Creating the config file</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#full-config-reference">Full config reference</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#database">Database</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#github">GitHub</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#collection">Collection</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#logging">Logging</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#api-key-sources">API key sources</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#api-key-rotation-behavior">API key rotation behavior</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#throughput-math">Throughput math</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#clone-directory">Clone directory</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Configuration</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/getting-started/configuration.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="configuration">
+<h1>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h1>
+<p>Aveloxis is configured via a JSON file named <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> in the current working directory.</p>
+<hr class="docutils" />
+<section id="creating-the-config-file">
+<h2>Creating the config file<a class="headerlink" href="#creating-the-config-file" title="Link to this heading"></a></h2>
+<p>Copy the example configuration and edit it with your database credentials and API tokens:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cp<span class="w"> </span>aveloxis.example.json<span class="w"> </span>aveloxis.json
+</pre></div>
+</div>
+<p>A minimal configuration only needs the <code class="docutils literal notranslate"><span class="pre">database</span></code> section:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;database&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;localhost&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-password&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;dbname&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prefer&quot;</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>A full configuration with all options:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;database&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;localhost&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;augur&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-password&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;dbname&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;augur&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prefer&quot;</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;github&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;api_keys&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;ghp_your_token_here&quot;</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://api.github.com&quot;</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;gitlab&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;api_keys&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;glpat-your_token_here&quot;</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://gitlab.com/api/v4&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;gitlab_hosts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;gitlab.freedesktop.org&quot;</span><span class="p">]</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;batch_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;days_until_recollect&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;repo_clone_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/data/aveloxis-repos&quot;</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;log_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;info&quot;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="full-config-reference">
+<h2>Full config reference<a class="headerlink" href="#full-config-reference" title="Link to this heading"></a></h2>
+<section id="database">
+<h3>Database<a class="headerlink" href="#database" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">database.host</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;localhost&quot;</span></code></p></td>
+<td><p>PostgreSQL server hostname or IP address.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">database.port</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">5432</span></code></p></td>
+<td><p>PostgreSQL server port.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">database.user</span></code></p></td>
+<td><p>string</p></td>
+<td><p>(required)</p></td>
+<td><p>Database username.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">database.password</span></code></p></td>
+<td><p>string</p></td>
+<td><p>(required)</p></td>
+<td><p>Database password.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">database.dbname</span></code></p></td>
+<td><p>string</p></td>
+<td><p>(required)</p></td>
+<td><p>Database name.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">database.sslmode</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;prefer&quot;</span></code></p></td>
+<td><p>PostgreSQL SSL mode. Options: <code class="docutils literal notranslate"><span class="pre">disable</span></code>, <code class="docutils literal notranslate"><span class="pre">allow</span></code>, <code class="docutils literal notranslate"><span class="pre">prefer</span></code>, <code class="docutils literal notranslate"><span class="pre">require</span></code>, <code class="docutils literal notranslate"><span class="pre">verify-ca</span></code>, <code class="docutils literal notranslate"><span class="pre">verify-full</span></code>.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="github">
+<h3>GitHub<a class="headerlink" href="#github" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">github.api_keys</span></code></p></td>
+<td><p>string[]</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
+<td><p>GitHub personal access tokens for API access. Multiple tokens enable round-robin rotation.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">github.base_url</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;https://api.github.com&quot;</span></code></p></td>
+<td><p>GitHub API base URL. Change this for GitHub Enterprise Server installations.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="gitlab">
+<h3>GitLab<a class="headerlink" href="#gitlab" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.api_keys</span></code></p></td>
+<td><p>string[]</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
+<td><p>GitLab personal access tokens.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.base_url</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;https://gitlab.com/api/v4&quot;</span></code></p></td>
+<td><p>GitLab API base URL. Change for self-hosted GitLab instances.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.gitlab_hosts</span></code></p></td>
+<td><p>string[]</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
+<td><p>Additional hostnames to recognize as GitLab instances. Use this for self-hosted GitLab servers whose hostnames do not contain “gitlab”.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="collection">
+<h3>Collection<a class="headerlink" href="#collection" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.batch_size</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1000</span></code></p></td>
+<td><p>Number of rows flushed per staging batch during the staged pipeline.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.days_until_recollect</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p>Minimum number of days before a repo is re-collected. After collection, a repo’s next due time is set to <code class="docutils literal notranslate"><span class="pre">now</span> <span class="pre">+</span> <span class="pre">days_until_recollect</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.workers</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">12</span></code></p></td>
+<td><p>Number of concurrent collection workers when running <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.repo_clone_dir</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">$HOME/aveloxis-repos</span></code></p></td>
+<td><p>Directory for bare git clones used by the facade phase. Can grow to terabytes for large instances (400K+ repos).</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="logging">
+<h3>Logging<a class="headerlink" href="#logging" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">log_level</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;info&quot;</span></code></p></td>
+<td><p>Log verbosity level. Options: <code class="docutils literal notranslate"><span class="pre">debug</span></code>, <code class="docutils literal notranslate"><span class="pre">info</span></code>, <code class="docutils literal notranslate"><span class="pre">warn</span></code>, <code class="docutils literal notranslate"><span class="pre">error</span></code>.</p></td>
+</tr>
+</tbody>
+</table>
+<p>Log level descriptions:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">debug</span></code></strong> – Very verbose. Includes individual API calls, staging writes, and contributor resolution details. Use for troubleshooting.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">info</span></code></strong> – Default. Logs per-repo progress (start/finish, entity counts, phase transitions). Good for production monitoring.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">warn</span></code></strong> – Logs non-fatal issues like individual entity upsert failures, missing contributors, and skipped repos.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">error</span></code></strong> – Logs only fatal errors that prevent collection from continuing.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="api-key-sources">
+<h2>API key sources<a class="headerlink" href="#api-key-sources" title="Link to this heading"></a></h2>
+<p>API keys are loaded from three sources, merged together in priority order:</p>
+<ol class="arabic simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops.worker_oauth</span></code> table</strong> – Always checked first. Store keys here via <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-key</span></code>. This is the recommended approach for production.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">augur_operations.worker_oauth</span></code> table</strong> – Only checked when the <code class="docutils literal notranslate"><span class="pre">--augur-keys</span></code> flag is passed to <code class="docutils literal notranslate"><span class="pre">serve</span></code> or <code class="docutils literal notranslate"><span class="pre">collect</span></code>. Useful during migration before you have copied keys over.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> config file</strong> – Lowest priority. The <code class="docutils literal notranslate"><span class="pre">github.api_keys</span></code> and <code class="docutils literal notranslate"><span class="pre">gitlab.api_keys</span></code> arrays. Convenient for standalone deployments or quick testing.</p></li>
+</ol>
+<p>Keys from all sources are merged and deduplicated. If a key appears in multiple sources, it is used only once.</p>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>For production, store keys in the database with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-key</span></code> and leave the config file arrays empty. This keeps secrets out of configuration files and allows key management without restarting the service.</p>
+</div>
+</section>
+<hr class="docutils" />
+<section id="api-key-rotation-behavior">
+<h2>API key rotation behavior<a class="headerlink" href="#api-key-rotation-behavior" title="Link to this heading"></a></h2>
+<p>All loaded keys are rotated via <strong>round-robin</strong> to fully utilize every key’s rate limit.</p>
+<ul class="simple">
+<li><p>Each GitHub token provides 5000 requests per hour.</p></li>
+<li><p>When a key’s remaining requests drop to the <strong>buffer threshold</strong> (default: 15), it is skipped until its rate-limit window resets.</p></li>
+<li><p>Keys that return HTTP 401 (bad credentials) are <strong>permanently invalidated</strong> for the lifetime of the process.</p></li>
+<li><p>Keys that return HTTP 403 (rate limited) are temporarily skipped until their reset time.</p></li>
+</ul>
+<section id="throughput-math">
+<h3>Throughput math<a class="headerlink" href="#throughput-math" title="Link to this heading"></a></h3>
+<p>With N tokens, total throughput is approximately:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">N</span> <span class="o">*</span> <span class="p">(</span><span class="mi">5000</span> <span class="o">-</span> <span class="mi">15</span><span class="p">)</span> <span class="o">=</span> <span class="n">N</span> <span class="o">*</span> <span class="mi">4985</span> <span class="n">requests</span><span class="o">/</span><span class="n">hour</span>
+</pre></div>
+</div>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tokens</p></th>
+<th class="head"><p>Requests/hour</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>~4,985</p></td>
+<td><p>Minimum viable for small instances</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>~19,940</p></td>
+<td><p>Good for a few hundred repos</p></td>
+</tr>
+<tr class="row-even"><td><p>10</p></td>
+<td><p>~49,850</p></td>
+<td><p>Good for a few thousand repos</p></td>
+</tr>
+<tr class="row-odd"><td><p>74</p></td>
+<td><p>~368,890</p></td>
+<td><p>Large-scale (Augur production)</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<hr class="docutils" />
+<section id="clone-directory">
+<h2>Clone directory<a class="headerlink" href="#clone-directory" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">collection.repo_clone_dir</span></code> setting controls where bare git clones are stored. These clones are permanent and used for incremental <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span></code> on subsequent collection cycles.</p>
+<ul class="simple">
+<li><p><strong>Default:</strong> <code class="docutils literal notranslate"><span class="pre">$HOME/aveloxis-repos</span></code></p></li>
+<li><p><strong>Sizing:</strong> Each bare clone is typically 10-500 MB. For 400K repos, plan for multiple terabytes.</p></li>
+<li><p><strong>Performance:</strong> Use an SSD or fast local storage. NFS can work but may slow the facade phase.</p></li>
+<li><p><strong>Full clones:</strong> Temporary full checkouts (for analysis) are created inside this directory and deleted after use.</p></li>
+</ul>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Do not delete this directory while Aveloxis is running. If deleted while stopped, the facade phase will re-clone all repos from scratch on the next run.</p>
+</div>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="quickstart.html"><span class="std std-doc">Quick Start</span></a> – get collecting in 5 steps</p></li>
+<li><p><a class="reference internal" href="../guide/commands.html"><span class="std std-doc">Commands Reference</span></a> – full CLI reference</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="installation.html" class="btn btn-neutral float-left" title="Installation" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="quickstart.html" class="btn btn-neutral float-right" title="Quick Start" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

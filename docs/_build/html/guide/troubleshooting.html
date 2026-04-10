@@ -1,0 +1,470 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Troubleshooting &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Architecture Overview" href="../architecture/overview.html" />
+    <link rel="prev" title="Scaling" href="scaling.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="scaling.html">Scaling</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Troubleshooting</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#token-invalidation-401-vs-403">Token invalidation (401 vs 403)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#fk-constraint-violations">FK constraint violations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#no-data-collected">“No data collected”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#git-clone-exit-status-128">Git clone exit status 128</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#restart-procedure">Restart procedure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#checking-queue-status">Checking queue status</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#via-the-dashboard">Via the dashboard</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#via-psql">Via psql</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#via-the-rest-api">Via the REST API</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#checking-collection-status">Checking collection status</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#re-running-a-failed-repo">Re-running a failed repo</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#dead-repo-sidelining-and-un-sidelining">Dead repo sidelining and un-sidelining</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#how-sidelining-works">How sidelining works</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#un-sidelining-a-repo">Un-sidelining a repo</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#list-all-sidelined-repos">List all sidelined repos</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#gateway-errors-502-503-504">Gateway errors (502/503/504)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#deadlock-errors">Deadlock errors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Troubleshooting</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/guide/troubleshooting.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="troubleshooting">
+<h1>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading"></a></h1>
+<p>Common errors, their causes, and solutions.</p>
+<hr class="docutils" />
+<section id="token-invalidation-401-vs-403">
+<h2>Token invalidation (401 vs 403)<a class="headerlink" href="#token-invalidation-401-vs-403" title="Link to this heading"></a></h2>
+<section id="http-401-bad-credentials">
+<h3>HTTP 401 Bad Credentials<a class="headerlink" href="#http-401-bad-credentials" title="Link to this heading"></a></h3>
+<p><strong>Symptom:</strong> Log shows <code class="docutils literal notranslate"><span class="pre">401</span> <span class="pre">Bad</span> <span class="pre">Credentials</span></code> for API calls.</p>
+<p><strong>Cause:</strong> The token is invalid, expired, or revoked.</p>
+<p><strong>Solution:</strong></p>
+<ul class="simple">
+<li><p>The key is permanently invalidated for the lifetime of the process. No action is needed during the current run – Aveloxis skips it automatically.</p></li>
+<li><p>Check that the token is still valid on GitHub/GitLab.</p></li>
+<li><p>If the token was rotated, add the new one:</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>add-key<span class="w"> </span>ghp_new_token<span class="w"> </span>--platform<span class="w"> </span>github
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Restart <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> to pick up the new key.</p></li>
+</ul>
+</section>
+<section id="http-403-forbidden-rate-limited">
+<h3>HTTP 403 Forbidden / Rate Limited<a class="headerlink" href="#http-403-forbidden-rate-limited" title="Link to this heading"></a></h3>
+<p><strong>Symptom:</strong> Log shows <code class="docutils literal notranslate"><span class="pre">403</span> <span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exceeded</span></code> or <code class="docutils literal notranslate"><span class="pre">403</span> <span class="pre">forbidden</span></code>.</p>
+<p><strong>Cause:</strong> The token’s rate limit is exhausted, or the token lacks required scopes.</p>
+<p><strong>Solution:</strong></p>
+<ul class="simple">
+<li><p>Rate limit exhaustion is handled automatically. The key is skipped until its reset window.</p></li>
+<li><p>If you see persistent 403 errors, check the token’s scopes. GitHub tokens need <code class="docutils literal notranslate"><span class="pre">repo</span></code> or <code class="docutils literal notranslate"><span class="pre">public_repo</span></code> scope. GitLab tokens need <code class="docutils literal notranslate"><span class="pre">read_api</span></code>.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="fk-constraint-violations">
+<h2>FK constraint violations<a class="headerlink" href="#fk-constraint-violations" title="Link to this heading"></a></h2>
+<p><strong>Symptom:</strong> Log shows <code class="docutils literal notranslate"><span class="pre">violates</span> <span class="pre">foreign</span> <span class="pre">key</span> <span class="pre">constraint</span></code> warnings during processing.</p>
+<p><strong>Cause:</strong> Leftover staging data references entities that no longer exist, or processing order was interrupted.</p>
+<p><strong>Solution:</strong></p>
+<ol class="arabic">
+<li><p>Stop the running instance:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>stop
+</pre></div>
+</div>
+</li>
+<li><p>Check if there is leftover staging data:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">entity_type</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="p">.</span><span class="n">staging</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">entity_type</span><span class="p">;</span>
+</pre></div>
+</div>
+</li>
+<li><p>If staging is not empty, clear it:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">TRUNCATE</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="p">.</span><span class="n">staging</span><span class="p">;</span>
+</pre></div>
+</div>
+</li>
+<li><p>Restart:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:5555
+</pre></div>
+</div>
+</li>
+</ol>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Normally, leftover staging data is processed on startup. Clearing staging only loses data that was already fetched from the API but not yet processed into relational tables. The next collection cycle will re-fetch it.</p>
+</div>
+</section>
+<hr class="docutils" />
+<section id="no-data-collected">
+<h2>“No data collected”<a class="headerlink" href="#no-data-collected" title="Link to this heading"></a></h2>
+<p><strong>Symptom:</strong> A repo completes collection but shows zero issues, PRs, and commits.</p>
+<p><strong>Causes:</strong></p>
+<ul class="simple">
+<li><p>Authentication failure (token not valid for this repo)</p></li>
+<li><p>The repo is empty (no issues, PRs, or commits)</p></li>
+<li><p>The repo is private and the token does not have access</p></li>
+</ul>
+<p><strong>Solution:</strong></p>
+<ol class="arabic">
+<li><p>Check logs at DEBUG level for the specific repo:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># In aveloxis.json, set &quot;log_level&quot;: &quot;debug&quot;</span>
+</pre></div>
+</div>
+</li>
+<li><p>Verify the token has access:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: token ghp_your_token&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>https://api.github.com/repos/owner/repo
+</pre></div>
+</div>
+</li>
+<li><p>If the repo is private, ensure the token has <code class="docutils literal notranslate"><span class="pre">repo</span></code> scope (not just <code class="docutils literal notranslate"><span class="pre">public_repo</span></code>).</p></li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="git-clone-exit-status-128">
+<h2>Git clone exit status 128<a class="headerlink" href="#git-clone-exit-status-128" title="Link to this heading"></a></h2>
+<p><strong>Symptom:</strong> Log shows <code class="docutils literal notranslate"><span class="pre">exit</span> <span class="pre">status</span> <span class="pre">128</span></code> during the facade phase.</p>
+<p><strong>Cause:</strong> <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">clone</span> <span class="pre">--bare</span></code> or <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span></code> failed. Common reasons:</p>
+<ul class="simple">
+<li><p>The clone directory has an incomplete or corrupted bare clone from a previous crash</p></li>
+<li><p>Disk full</p></li>
+<li><p>Network issue during clone</p></li>
+</ul>
+<p><strong>Solution:</strong></p>
+<p>Aveloxis has built-in resilience: if <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span></code> fails on an existing clone, it deletes the clone and re-clones from scratch. If that also fails:</p>
+<ol class="arabic">
+<li><p>Check disk space:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>df<span class="w"> </span>-h<span class="w"> </span>/path/to/repo_clone_dir
+</pre></div>
+</div>
+</li>
+<li><p>Check if the bare clone directory exists but is corrupt:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ls<span class="w"> </span>-la<span class="w"> </span>/path/to/repo_clone_dir/owner/repo.git/
+</pre></div>
+</div>
+</li>
+<li><p>Delete the corrupt clone and let Aveloxis re-clone:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>rm<span class="w"> </span>-rf<span class="w"> </span>/path/to/repo_clone_dir/owner/repo.git
+</pre></div>
+</div>
+</li>
+<li><p>Re-prioritize the repo:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github.com/owner/repo
+</pre></div>
+</div>
+</li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="garbage-timestamps-year-0001-bc">
+<h2>Garbage timestamps (year 0001 BC)<a class="headerlink" href="#garbage-timestamps-year-0001-bc" title="Link to this heading"></a></h2>
+<p><strong>Symptom:</strong> Queries return dates like <code class="docutils literal notranslate"><span class="pre">0001-01-01</span> <span class="pre">00:00:00</span> <span class="pre">BC</span></code> or extremely old dates.</p>
+<p><strong>Cause:</strong> Some API responses contain uninitialized timestamp fields (e.g., zero-value Go <code class="docutils literal notranslate"><span class="pre">time.Time</span></code> is year 1 CE, which PostgreSQL stores as year 1).</p>
+<p><strong>Solution:</strong></p>
+<p>Run migrations to clean up:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">migrate</span></code> command includes a data cleanup pass that detects and nullifies garbage timestamps (year &lt; 1970) across all tables. This is idempotent and safe to run on an existing database.</p>
+</section>
+<hr class="docutils" />
+<section id="null-byte-errors-in-text-fields">
+<h2>Null byte errors in text fields<a class="headerlink" href="#null-byte-errors-in-text-fields" title="Link to this heading"></a></h2>
+<p><strong>Symptom:</strong> PostgreSQL error <code class="docutils literal notranslate"><span class="pre">invalid</span> <span class="pre">byte</span> <span class="pre">sequence</span> <span class="pre">for</span> <span class="pre">encoding</span> <span class="pre">&quot;UTF8&quot;:</span> <span class="pre">0x00</span></code>.</p>
+<p><strong>Cause:</strong> Some API responses (especially bot-generated content or binary data pasted into issues) contain null bytes, which PostgreSQL TEXT columns cannot store.</p>
+<p><strong>Solution:</strong></p>
+<p>This should not occur in normal operation – Aveloxis sanitizes all text fields before insertion, removing:</p>
+<ul class="simple">
+<li><p>Null bytes (<code class="docutils literal notranslate"><span class="pre">\x00</span></code>)</p></li>
+<li><p>Invalid UTF-8 sequences</p></li>
+<li><p>Control characters (C0: 0x01-0x1F except tab/newline/CR; C1: 0x7F-0x9F)</p></li>
+</ul>
+<p>If you see this error, it indicates a code path that bypasses sanitization. Report it as a bug.</p>
+</section>
+<hr class="docutils" />
+<section id="restart-procedure">
+<h2>Restart procedure<a class="headerlink" href="#restart-procedure" title="Link to this heading"></a></h2>
+<p>The standard restart procedure for any issue:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Stop the running instance</span>
+aveloxis<span class="w"> </span>stop
+
+<span class="c1"># 2. (Optional) Clear staging if you suspect corrupt staged data</span>
+psql<span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;TRUNCATE aveloxis_ops.staging;&quot;</span>
+
+<span class="c1"># 3. Restart</span>
+aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:5555
+</pre></div>
+</div>
+<p>On startup, Aveloxis automatically:</p>
+<ul class="simple">
+<li><p>Processes any leftover staged data</p></li>
+<li><p>Releases stale queue locks</p></li>
+<li><p>Resumes collection from the queue</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="checking-queue-status">
+<h2>Checking queue status<a class="headerlink" href="#checking-queue-status" title="Link to this heading"></a></h2>
+<section id="via-the-dashboard">
+<h3>Via the dashboard<a class="headerlink" href="#via-the-dashboard" title="Link to this heading"></a></h3>
+<p>Open <code class="docutils literal notranslate"><span class="pre">http://localhost:5555</span></code> to see the full queue state.</p>
+</section>
+<section id="via-psql">
+<h3>Via psql<a class="headerlink" href="#via-psql" title="Link to this heading"></a></h3>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Summary</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">status</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="p">.</span><span class="n">collection_queue</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">status</span><span class="p">;</span>
+
+<span class="c1">-- Stale locks (locked more than 1 hour ago)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">q</span><span class="p">.</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">repo_name</span><span class="p">,</span><span class="w"> </span><span class="n">q</span><span class="p">.</span><span class="n">locked_at</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="p">.</span><span class="n">collection_queue</span><span class="w"> </span><span class="n">q</span>
+<span class="k">JOIN</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">repos</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">q</span><span class="p">.</span><span class="n">repo_id</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">q</span><span class="p">.</span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;collecting&#39;</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">q</span><span class="p">.</span><span class="n">locked_at</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">NOW</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="s1">&#39;1 hour&#39;</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
+<section id="via-the-rest-api">
+<h3>Via the REST API<a class="headerlink" href="#via-the-rest-api" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>http://localhost:5555/api/stats
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="checking-collection-status">
+<h2>Checking collection status<a class="headerlink" href="#checking-collection-status" title="Link to this heading"></a></h2>
+<p>To see what was collected for a specific repo:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Entity counts</span>
+<span class="k">SELECT</span>
+<span class="w">  </span><span class="n">r</span><span class="p">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">&#39;/&#39;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
+<span class="w">  </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">issues</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">i</span><span class="p">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">issues</span><span class="p">,</span>
+<span class="w">  </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">pull_requests</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">p</span><span class="p">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">prs</span><span class="p">,</span>
+<span class="w">  </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="k">DISTINCT</span><span class="w"> </span><span class="n">cmt_commit_hash</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">commits</span><span class="w"> </span><span class="k">c</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">commits</span><span class="p">,</span>
+<span class="w">  </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">messages</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">m</span><span class="p">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">messages</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">repos</span><span class="w"> </span><span class="n">r</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">repo_git</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">&#39;%chaoss/augur%&#39;</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="re-running-a-failed-repo">
+<h2>Re-running a failed repo<a class="headerlink" href="#re-running-a-failed-repo" title="Link to this heading"></a></h2>
+<p>If a repo’s collection failed and you want to retry immediately:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github.com/owner/repo
+</pre></div>
+</div>
+<p>This sets priority to 0 and due time to now. The scheduler picks it up next.</p>
+<p>For a full historical re-collection (ignoring the incremental window):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>collect<span class="w"> </span>--full<span class="w"> </span>https://github.com/owner/repo
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="dead-repo-sidelining-and-un-sidelining">
+<h2>Dead repo sidelining and un-sidelining<a class="headerlink" href="#dead-repo-sidelining-and-un-sidelining" title="Link to this heading"></a></h2>
+<section id="how-sidelining-works">
+<h3>How sidelining works<a class="headerlink" href="#how-sidelining-works" title="Link to this heading"></a></h3>
+<p>When the prelim phase detects a 404/410 response:</p>
+<ul class="simple">
+<li><p>The repo is marked <code class="docutils literal notranslate"><span class="pre">repo_archived</span> <span class="pre">=</span> <span class="pre">TRUE</span></code></p></li>
+<li><p>It is removed from the collection queue</p></li>
+<li><p>All previously collected data is preserved</p></li>
+</ul>
+</section>
+<section id="un-sidelining-a-repo">
+<h3>Un-sidelining a repo<a class="headerlink" href="#un-sidelining-a-repo" title="Link to this heading"></a></h3>
+<p>If a repo comes back (e.g., was temporarily private), you can un-sideline it:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Un-sideline the repo</span>
+<span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">repos</span>
+<span class="k">SET</span><span class="w"> </span><span class="n">repo_archived</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">FALSE</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_git</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;https://github.com/owner/repo&#39;</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>Then re-add it to the queue:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>add-repo<span class="w"> </span>https://github.com/owner/repo
+</pre></div>
+</div>
+</section>
+<section id="list-all-sidelined-repos">
+<h3>List all sidelined repos<a class="headerlink" href="#list-all-sidelined-repos" title="Link to this heading"></a></h3>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">repo_name</span><span class="p">,</span><span class="w"> </span><span class="n">repo_git</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">repos</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_archived</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">TRUE</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">repo_name</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="gateway-errors-502-503-504">
+<h2>Gateway errors (502/503/504)<a class="headerlink" href="#gateway-errors-502-503-504" title="Link to this heading"></a></h2>
+<p><strong>Symptom:</strong> Log shows repeated 502, 503, or 504 errors.</p>
+<p><strong>Cause:</strong> GitHub or GitLab service degradation.</p>
+<p><strong>Solution:</strong> No action needed. Aveloxis automatically retries with exponential backoff and jitter:</p>
+<ul class="simple">
+<li><p>Base delays: 1s, 2s, 4s, 8s, 16s, 32s, 64s</p></li>
+<li><p>Random jitter added to each delay</p></li>
+<li><p>Up to 10 retries before giving up on that request</p></li>
+<li><p>Context-aware (respects shutdown signals)</p></li>
+</ul>
+<p>If the service outage is prolonged, the repo will fail after 10 retries and be re-queued for the next collection cycle.</p>
+</section>
+<hr class="docutils" />
+<section id="deadlock-errors">
+<h2>Deadlock errors<a class="headerlink" href="#deadlock-errors" title="Link to this heading"></a></h2>
+<p><strong>Symptom:</strong> Log shows <code class="docutils literal notranslate"><span class="pre">ERROR:</span> <span class="pre">deadlock</span> <span class="pre">detected</span> <span class="pre">(SQLSTATE</span> <span class="pre">40P01)</span></code>.</p>
+<p><strong>Cause:</strong> Concurrent writes to the same rows (rare, usually during high-concurrency processing).</p>
+<p><strong>Solution:</strong> No action needed. All database upserts use exponential backoff retry on deadlock errors, up to 10 attempts. The operation is retried transparently.</p>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="monitoring.html"><span class="std std-doc">Monitoring</span></a> – use the dashboard for real-time status</p></li>
+<li><p><a class="reference internal" href="commands.html"><span class="std std-doc">Commands Reference</span></a> – CLI command details</p></li>
+<li><p><a class="reference internal" href="collection-pipeline.html"><span class="std std-doc">Collection Pipeline</span></a> – understand what each phase does</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="scaling.html" class="btn btn-neutral float-left" title="Scaling" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../architecture/overview.html" class="btn btn-neutral float-right" title="Architecture Overview" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

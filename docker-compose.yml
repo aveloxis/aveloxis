@@ -1,0 +1,96 @@
+# Aveloxis full-stack deployment with Docker Compose.
+#
+# Starts 4 services:
+#   - postgres: PostgreSQL database with persistent volume
+#   - serve:    Collection scheduler + monitoring dashboard (:5555)
+#   - web:      Web GUI with OAuth, visualizations (:8080)
+#   - api:      REST API for charts and stats (:8383)
+#
+# Usage:
+#   docker compose up -d          # Start all services
+#   docker compose logs -f serve  # Follow scheduler logs
+#   docker compose down           # Stop all services (data preserved)
+#   docker compose down -v        # Stop AND delete database volume (destructive!)
+#
+# The PostgreSQL data is stored in a named Docker volume (aveloxis-pgdata)
+# that persists across container rebuilds. Only `docker compose down -v`
+# destroys it.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: aveloxis
+      POSTGRES_USER: aveloxis
+      POSTGRES_PASSWORD: ${AVELOXIS_DB_PASSWORD:-aveloxis}
+    volumes:
+      - aveloxis-pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aveloxis -d aveloxis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Run migrations once before starting other services.
+  # This container exits after migrations complete.
+  migrate:
+    image: ghcr.io/augurlabs/aveloxis:latest
+    build: .
+    command: ["migrate"]
+    volumes:
+      - ./aveloxis.docker.json:/app/aveloxis.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  serve:
+    image: ghcr.io/augurlabs/aveloxis:latest
+    build: .
+    command: ["serve", "--workers", "${AVELOXIS_WORKERS:-12}", "--monitor", ":5555"]
+    volumes:
+      - ./aveloxis.docker.json:/app/aveloxis.json:ro
+      - aveloxis-repos:/data
+    ports:
+      - "5555:5555"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  web:
+    image: ghcr.io/augurlabs/aveloxis:latest
+    build: .
+    command: ["web"]
+    volumes:
+      - ./aveloxis.docker.json:/app/aveloxis.json:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  api:
+    image: ghcr.io/augurlabs/aveloxis:latest
+    build: .
+    command: ["api", "--addr", ":8383"]
+    volumes:
+      - ./aveloxis.docker.json:/app/aveloxis.json:ro
+    ports:
+      - "8383:8383"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  # Persistent PostgreSQL data — survives container rebuilds.
+  # Only destroyed by `docker compose down -v`.
+  aveloxis-pgdata:
+
+  # Persistent bare clone directory for facade/git analysis.
+  aveloxis-repos:

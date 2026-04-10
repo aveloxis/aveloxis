@@ -1,0 +1,528 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Analysis &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Materialized Views" href="materialized-views.html" />
+    <link rel="prev" title="Facade Commits" href="facade-commits.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Analysis</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#on-demand-full-clone-design">On-demand full clone design</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#workflow">Workflow</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#key-points">Key points</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#dependency-scanning">Dependency scanning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#supported-ecosystems">Supported ecosystems</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#output">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#multiple-manifests">Multiple manifests</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#libyear-calculation">Libyear calculation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#what-is-libyear">What is libyear?</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#supported-registries">Supported registries</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#version-cleaning">Version cleaning</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id1">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#rate-limiting">Rate limiting</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#code-complexity-via-scc">Code complexity via scc</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#installation">Installation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#execution">Execution</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id2">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#if-scc-is-not-installed">If scc is not installed</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#materialized-view">Materialized view</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#disk-usage-summary">Disk usage summary</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#error-handling">Error handling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Analysis</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/architecture/analysis.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="analysis">
+<h1>Analysis<a class="headerlink" href="#analysis" title="Link to this heading"></a></h1>
+<p>The analysis phase runs after the facade phase and performs dependency scanning, libyear calculation, and code complexity analysis. It uses a temporary full clone created from the bare clone.</p>
+<hr class="docutils" />
+<section id="on-demand-full-clone-design">
+<h2>On-demand full clone design<a class="headerlink" href="#on-demand-full-clone-design" title="Link to this heading"></a></h2>
+<p>The analysis phase needs to read file contents (manifest files for dependencies, all files for code complexity). Since the facade phase uses bare clones (no working tree), a temporary full checkout is created.</p>
+<section id="workflow">
+<h3>Workflow<a class="headerlink" href="#workflow" title="Link to this heading"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Bare</span> <span class="n">clone</span> <span class="p">(</span><span class="n">permanent</span><span class="p">)</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="n">git</span> <span class="n">clone</span> <span class="o">/</span><span class="n">bare</span><span class="o">.</span><span class="n">git</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">checkout</span>    <span class="p">(</span><span class="n">local</span><span class="p">,</span> <span class="n">no</span> <span class="n">network</span><span class="p">)</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="n">Run</span> <span class="n">dependency</span> <span class="n">scanning</span>
+<span class="n">Run</span> <span class="n">libyear</span> <span class="n">calculation</span>
+<span class="n">Run</span> <span class="n">scc</span> <span class="p">(</span><span class="n">code</span> <span class="n">complexity</span><span class="p">)</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="n">rm</span> <span class="o">-</span><span class="n">rf</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">checkout</span>                 <span class="p">(</span><span class="n">deleted</span> <span class="n">after</span> <span class="n">analysis</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="key-points">
+<h3>Key points<a class="headerlink" href="#key-points" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>The full clone is created locally from the bare clone – no network request is needed.</p></li>
+<li><p>The checkout is deleted immediately after analysis completes.</p></li>
+<li><p>If the analysis phase fails (e.g., disk full), the bare clone is unaffected.</p></li>
+<li><p>Disk usage temporarily doubles during analysis (bare clone + full checkout).</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="dependency-scanning">
+<h2>Dependency scanning<a class="headerlink" href="#dependency-scanning" title="Link to this heading"></a></h2>
+<p>The dependency scanner walks the full checkout looking for manifest files across 12 ecosystems.</p>
+<section id="supported-ecosystems">
+<h3>Supported ecosystems<a class="headerlink" href="#supported-ecosystems" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Manifest File</p></th>
+<th class="head"><p>Ecosystem</p></th>
+<th class="head"><p>Parser</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">package.json</span></code></p></td>
+<td><p>npm (JavaScript/TypeScript)</p></td>
+<td><p>JSON parser extracts <code class="docutils literal notranslate"><span class="pre">dependencies</span></code> + <code class="docutils literal notranslate"><span class="pre">devDependencies</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code></p></td>
+<td><p>Python (pip)</p></td>
+<td><p>Line parser, handles <code class="docutils literal notranslate"><span class="pre">==</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;=</span></code>, comments, <code class="docutils literal notranslate"><span class="pre">-r</span></code> includes</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">go.mod</span></code></p></td>
+<td><p>Go</p></td>
+<td><p>Parses <code class="docutils literal notranslate"><span class="pre">require</span></code> block</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code></p></td>
+<td><p>Rust (Cargo)</p></td>
+<td><p>TOML parser extracts <code class="docutils literal notranslate"><span class="pre">[dependencies]</span></code> + <code class="docutils literal notranslate"><span class="pre">[dev-dependencies]</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Gemfile</span></code></p></td>
+<td><p>Ruby (Bundler)</p></td>
+<td><p>Parses <code class="docutils literal notranslate"><span class="pre">gem</span></code> declarations</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pom.xml</span></code></p></td>
+<td><p>Java (Maven)</p></td>
+<td><p>XML parser extracts <code class="docutils literal notranslate"><span class="pre">&lt;dependency&gt;</span></code> elements</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></p></td>
+<td><p>Python (PEP 621)</p></td>
+<td><p>TOML parser extracts <code class="docutils literal notranslate"><span class="pre">[project.dependencies]</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">setup.py</span></code></p></td>
+<td><p>Python (setuptools)</p></td>
+<td><p>Regex parser for <code class="docutils literal notranslate"><span class="pre">install_requires</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">build.gradle</span></code></p></td>
+<td><p>Java (Gradle)</p></td>
+<td><p>Parses <code class="docutils literal notranslate"><span class="pre">implementation</span></code>, <code class="docutils literal notranslate"><span class="pre">compile</span></code>, <code class="docutils literal notranslate"><span class="pre">api</span></code> declarations</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">composer.json</span></code></p></td>
+<td><p>PHP (Composer)</p></td>
+<td><p>JSON parser extracts <code class="docutils literal notranslate"><span class="pre">require</span></code> + <code class="docutils literal notranslate"><span class="pre">require-dev</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Package.swift</span></code></p></td>
+<td><p>Swift (SPM)</p></td>
+<td><p>Parses <code class="docutils literal notranslate"><span class="pre">.package(url:)</span></code> declarations</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">*.csproj</span></code></p></td>
+<td><p>.NET (NuGet)</p></td>
+<td><p>XML parser extracts <code class="docutils literal notranslate"><span class="pre">&lt;PackageReference&gt;</span></code> elements</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="output">
+<h3>Output<a class="headerlink" href="#output" title="Link to this heading"></a></h3>
+<p>Results are stored in <code class="docutils literal notranslate"><span class="pre">aveloxis_data.repo_dependencies</span></code>:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>The repository</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dep_name</span></code></p></td>
+<td><p>Dependency name</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dep_count</span></code></p></td>
+<td><p>Number of times this dependency appears</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dep_language</span></code></p></td>
+<td><p>Language/ecosystem</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="multiple-manifests">
+<h3>Multiple manifests<a class="headerlink" href="#multiple-manifests" title="Link to this heading"></a></h3>
+<p>If a repo contains multiple manifest files (e.g., both <code class="docutils literal notranslate"><span class="pre">package.json</span></code> and <code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code>), all are scanned. Dependencies from different ecosystems are stored as separate rows.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="libyear-calculation">
+<h2>Libyear calculation<a class="headerlink" href="#libyear-calculation" title="Link to this heading"></a></h2>
+<p>For each versioned dependency found during scanning, the libyear calculator queries its package registry to determine how out-of-date the dependency is.</p>
+<section id="what-is-libyear">
+<h3>What is libyear?<a class="headerlink" href="#what-is-libyear" title="Link to this heading"></a></h3>
+<p>Libyear measures the age of a dependency by comparing the release date of the version in use against the release date of the latest available version:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">libyear</span> <span class="o">=</span> <span class="p">(</span><span class="n">latest_release_date</span> <span class="o">-</span> <span class="n">current_release_date</span><span class="p">)</span> <span class="o">/</span> <span class="mi">365</span>
+</pre></div>
+</div>
+<p>A libyear of 0 means the dependency is up to date. A libyear of 2.5 means the version in use was released 2.5 years before the latest version.</p>
+</section>
+<section id="supported-registries">
+<h3>Supported registries<a class="headerlink" href="#supported-registries" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Registry</p></th>
+<th class="head"><p>URL Pattern</p></th>
+<th class="head"><p>Ecosystems</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>npm</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://registry.npmjs.org/{package}</span></code></p></td>
+<td><p>JavaScript, TypeScript</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>PyPI</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://pypi.org/pypi/{package}/json</span></code></p></td>
+<td><p>Python</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Go proxy</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://proxy.golang.org/{module}/&#64;v/list</span></code></p></td>
+<td><p>Go</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>crates.io</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://crates.io/api/v1/crates/{crate}</span></code></p></td>
+<td><p>Rust</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>RubyGems</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://rubygems.org/api/v1/versions/{gem}.json</span></code></p></td>
+<td><p>Ruby</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="version-cleaning">
+<h3>Version cleaning<a class="headerlink" href="#version-cleaning" title="Link to this heading"></a></h3>
+<p>Before querying registries, version strings are cleaned:</p>
+<ul class="simple">
+<li><p>Leading <code class="docutils literal notranslate"><span class="pre">v</span></code> is stripped (<code class="docutils literal notranslate"><span class="pre">v1.2.3</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">1.2.3</span></code>)</p></li>
+<li><p>Constraint operators are stripped (<code class="docutils literal notranslate"><span class="pre">&gt;=1.2.3</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">1.2.3</span></code>, <code class="docutils literal notranslate"><span class="pre">~&gt;1.2</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">1.2</span></code>)</p></li>
+<li><p>Whitespace is trimmed</p></li>
+</ul>
+</section>
+<section id="id1">
+<h3>Output<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
+<p>Results are stored in <code class="docutils literal notranslate"><span class="pre">aveloxis_data.repo_deps_libyear</span></code>:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>The repository</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">name</span></code></p></td>
+<td><p>Dependency name</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">requirement</span></code></p></td>
+<td><p>Version requirement string from the manifest</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">type</span></code></p></td>
+<td><p>Dependency type (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;runtime&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;development&quot;</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">package_manager</span></code></p></td>
+<td><p>Package manager name</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">current_version</span></code></p></td>
+<td><p>Version currently in use</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">latest_version</span></code></p></td>
+<td><p>Latest available version</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">current_release_date</span></code></p></td>
+<td><p>Release date of current version</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">latest_release_date</span></code></p></td>
+<td><p>Release date of latest version</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">libyear</span></code></p></td>
+<td><p>Years between current and latest (float)</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="rate-limiting">
+<h3>Rate limiting<a class="headerlink" href="#rate-limiting" title="Link to this heading"></a></h3>
+<p>Registry queries are not subject to GitHub/GitLab rate limits. However, some registries (notably crates.io) have their own rate limits. The libyear calculator makes requests sequentially to avoid overwhelming registries.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="code-complexity-via-scc">
+<h2>Code complexity via scc<a class="headerlink" href="#code-complexity-via-scc" title="Link to this heading"></a></h2>
+<p>If <a class="reference external" href="https://github.com/boyter/scc">scc</a> (Sloc Cloc and Code) is installed, Aveloxis runs it against the full checkout to get per-file code metrics.</p>
+<section id="installation">
+<h3>Installation<a class="headerlink" href="#installation" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>install-tools
+</pre></div>
+</div>
+<p>This installs <code class="docutils literal notranslate"><span class="pre">scc</span></code> via <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">install</span> <span class="pre">github.com/boyter/scc&#64;latest</span></code>.</p>
+</section>
+<section id="execution">
+<h3>Execution<a class="headerlink" href="#execution" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>scc<span class="w"> </span>-f<span class="w"> </span>json<span class="w"> </span>--by-file<span class="w"> </span>/path/to/checkout
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">--by-file</span></code> flag produces per-file output (not just per-language summaries). The <code class="docutils literal notranslate"><span class="pre">-f</span> <span class="pre">json</span></code> flag produces machine-readable JSON output.</p>
+</section>
+<section id="id2">
+<h3>Output<a class="headerlink" href="#id2" title="Link to this heading"></a></h3>
+<p>Results are stored in <code class="docutils literal notranslate"><span class="pre">aveloxis_data.repo_labor</span></code>:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>The repository</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_clone_date</span></code></p></td>
+<td><p>When the repo was cloned</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rl_analysis_date</span></code></p></td>
+<td><p>When the analysis was run</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">programming_language</span></code></p></td>
+<td><p>Language of the file</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">file_path</span></code></p></td>
+<td><p>Full path within the repo</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">file_name</span></code></p></td>
+<td><p>File name only</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">total_lines</span></code></p></td>
+<td><p>Total lines in the file</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">code_lines</span></code></p></td>
+<td><p>Lines of code (excluding comments and blanks)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">comment_lines</span></code></p></td>
+<td><p>Lines of comments</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">blank_lines</span></code></p></td>
+<td><p>Blank lines</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">code_complexity</span></code></p></td>
+<td><p>Cyclomatic complexity score</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_url</span></code></p></td>
+<td><p>Git URL of the repo</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="if-scc-is-not-installed">
+<h3>If scc is not installed<a class="headerlink" href="#if-scc-is-not-installed" title="Link to this heading"></a></h3>
+<p>The code complexity phase is silently skipped. No error is logged. The <code class="docutils literal notranslate"><span class="pre">repo_labor</span></code> table remains empty for repos analyzed without scc.</p>
+</section>
+<section id="materialized-view">
+<h3>Materialized view<a class="headerlink" href="#materialized-view" title="Link to this heading"></a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">explorer_repo_languages</span></code> materialized view aggregates <code class="docutils literal notranslate"><span class="pre">repo_labor</span></code> data to provide per-repo language breakdowns for analytics tools.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="disk-usage-summary">
+<h2>Disk usage summary<a class="headerlink" href="#disk-usage-summary" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Component</p></th>
+<th class="head"><p>Persistence</p></th>
+<th class="head"><p>Size</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Bare clones</p></td>
+<td><p>Permanent</p></td>
+<td><p>10 MB - 5+ GB per repo</p></td>
+</tr>
+<tr class="row-odd"><td><p>Full checkouts</p></td>
+<td><p>Temporary (deleted after analysis)</p></td>
+<td><p>Roughly equal to bare clone</p></td>
+</tr>
+<tr class="row-even"><td><p>scc output</p></td>
+<td><p>In-memory (written to DB)</p></td>
+<td><p>Negligible</p></td>
+</tr>
+<tr class="row-odd"><td><p>Registry responses</p></td>
+<td><p>In-memory (written to DB)</p></td>
+<td><p>Negligible</p></td>
+</tr>
+</tbody>
+</table>
+<p>For a repo with a 500 MB bare clone, the analysis phase temporarily uses an additional 500 MB for the full checkout, then frees it.</p>
+</section>
+<hr class="docutils" />
+<section id="error-handling">
+<h2>Error handling<a class="headerlink" href="#error-handling" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>Missing manifest files:</strong> Silently skipped. Not all repos have dependencies.</p></li>
+<li><p><strong>Malformed manifest files:</strong> A warning is logged, but analysis continues with other manifests.</p></li>
+<li><p><strong>Registry errors:</strong> If a registry query fails (timeout, 404, rate limit), the dependency’s libyear is not calculated. Other dependencies are still processed.</p></li>
+<li><p><strong>scc failure:</strong> If scc crashes or returns invalid JSON, a warning is logged and <code class="docutils literal notranslate"><span class="pre">repo_labor</span></code> is not populated for that repo.</p></li>
+<li><p><strong>Disk full during checkout:</strong> The checkout is cleaned up in a deferred function that runs even on error.</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="facade-commits.html"><span class="std std-doc">Facade Commits</span></a> – how git log data is parsed before analysis</p></li>
+<li><p><a class="reference internal" href="materialized-views.html"><span class="std std-doc">Materialized Views</span></a> – views that aggregate analysis data</p></li>
+<li><p><a class="reference internal" href="overview.html"><span class="std std-doc">Overview</span></a> – system architecture overview</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="facade-commits.html" class="btn btn-neutral float-left" title="Facade Commits" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="materialized-views.html" class="btn btn-neutral float-right" title="Materialized Views" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

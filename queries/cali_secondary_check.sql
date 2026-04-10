@@ -1,0 +1,1 @@
+SELECT * FROM aveloxis_data.repos b ,aveloxis_ops.collection_status a  WHERE a.repo_id=b.repo_id  ORDER BY  secondary_data_last_collected DESC

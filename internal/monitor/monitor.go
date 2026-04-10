@@ -208,7 +208,36 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
   .gathered { color: #059669; }
   .meta { color: #6b7280; font-size: 0.8rem; }
   .count-cell { text-align: right; }
-</style></head><body>
+  th { cursor: pointer; user-select: none; }
+  th:hover { background: #eef; }
+  th .arrow { font-size: 0.6rem; margin-left: 4px; color: #999; }
+  th .arrow.active { color: #2563eb; }
+</style>
+<script>
+// Client-side table sorting. Click a column header to sort ascending, click again for descending.
+let sortCol = -1, sortAsc = true;
+function sortTable(col) {
+  const table = document.querySelector('table');
+  const tbody = table.querySelector('tbody') || table;
+  const rows = Array.from(tbody.querySelectorAll('tr')).slice(1); // skip header
+  if (sortCol === col) { sortAsc = !sortAsc; } else { sortCol = col; sortAsc = true; }
+  rows.sort((a, b) => {
+    let av = a.cells[col].textContent.trim();
+    let bv = b.cells[col].textContent.trim();
+    // Try numeric comparison first.
+    const an = parseFloat(av.replace(/[^0-9.\-]/g, ''));
+    const bn = parseFloat(bv.replace(/[^0-9.\-]/g, ''));
+    if (!isNaN(an) && !isNaN(bn)) { return sortAsc ? an - bn : bn - an; }
+    return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+  });
+  rows.forEach(r => tbody.appendChild(r));
+  // Update arrow indicators.
+  document.querySelectorAll('th .arrow').forEach(a => { a.className = 'arrow'; a.textContent = '\u25B4'; });
+  const arrow = table.querySelectorAll('th')[col]?.querySelector('.arrow');
+  if (arrow) { arrow.className = 'arrow active'; arrow.textContent = sortAsc ? '\u25B4' : '\u25BE'; }
+}
+</script>
+</head><body>
 <h1>Aveloxis Monitor</h1>
 <div class="sub">Auto-refreshes every 10s. API: <code>aveloxis api --addr :8383</code></div>
 <div class="stats">`)
@@ -219,10 +248,19 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `</div>
 <table>
 <tr>
-  <th>#</th><th>Repo</th><th>Platform</th><th>Status</th><th>Priority</th><th>Due</th><th>Last Run</th>
-  <th class="count-cell">Gathered Issues</th><th class="count-cell">Meta Issues</th>
-  <th class="count-cell">Gathered PRs</th><th class="count-cell">Meta PRs</th>
-  <th class="count-cell">Gathered Commits</th><th class="count-cell">Meta Commits</th>
+  <th onclick="sortTable(0)"># <span class="arrow">&#9652;</span></th>
+  <th onclick="sortTable(1)">Repo <span class="arrow">&#9652;</span></th>
+  <th onclick="sortTable(2)">Platform <span class="arrow">&#9652;</span></th>
+  <th onclick="sortTable(3)">Status <span class="arrow">&#9652;</span></th>
+  <th onclick="sortTable(4)">Priority <span class="arrow">&#9652;</span></th>
+  <th onclick="sortTable(5)">Due <span class="arrow">&#9652;</span></th>
+  <th onclick="sortTable(6)">Last Run <span class="arrow">&#9652;</span></th>
+  <th class="count-cell" onclick="sortTable(7)">Gathered Issues <span class="arrow">&#9652;</span></th>
+  <th class="count-cell" onclick="sortTable(8)">Meta Issues <span class="arrow">&#9652;</span></th>
+  <th class="count-cell" onclick="sortTable(9)">Gathered PRs <span class="arrow">&#9652;</span></th>
+  <th class="count-cell" onclick="sortTable(10)">Meta PRs <span class="arrow">&#9652;</span></th>
+  <th class="count-cell" onclick="sortTable(11)">Gathered Commits <span class="arrow">&#9652;</span></th>
+  <th class="count-cell" onclick="sortTable(12)">Meta Commits <span class="arrow">&#9652;</span></th>
   <th>Action</th>
 </tr>`)
 

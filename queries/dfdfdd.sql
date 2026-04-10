@@ -1,1 +1,0 @@
-select * from pull_request_events where repo_id = 1 order by created_at; 

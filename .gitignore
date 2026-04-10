@@ -1,4 +1,4 @@
-repo_*
+repo_[0-9]*
 *.log
 aveloxis.json
 bin/
@@ -14,7 +14,6 @@ bin/
 *.dylib
 .claude/**
 CLAUDE.md
-*.txt
 # Test binary, built with `go test -c`
 *.test
 

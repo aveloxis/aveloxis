@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/augurlabs/aveloxis/internal/db"
+	"github.com/augurlabs/aveloxis/internal/static"
 )
 
 // Server is the monitoring HTTP server.
@@ -29,6 +30,11 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
 	s.mux.HandleFunc("POST /api/prioritize/{repoID}", s.handlePrioritize)
 	s.mux.HandleFunc("POST /api/repos", s.handleAddRepo)
+	s.mux.HandleFunc("GET /icon.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(static.IconPNG)
+	})
 	return s
 }
 
@@ -238,7 +244,7 @@ function sortTable(col) {
 }
 </script>
 </head><body>
-<h1>Aveloxis Monitor</h1>
+<div style="display:flex;align-items:center;justify-content:space-between"><h1>Aveloxis Monitor</h1><img src="/icon.png" alt="Aveloxis" style="height:48px;border-radius:8px"></div>
 <div class="sub">Auto-refreshes every 10s. API: <code>aveloxis api --addr :8383</code></div>
 <div class="stats">`)
 

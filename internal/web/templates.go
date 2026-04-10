@@ -62,7 +62,7 @@ h3{font-size:16px;margin-bottom:12px;color:#24292e}
 {{define "login"}}
 {{template "head" (dict "Title" "Login")}}
 <div class="login-box">
-<h1>Aveloxis</h1>
+<div style="display:flex;align-items:center;justify-content:center;gap:12px"><img src="/icon.png" alt="" style="height:48px;border-radius:8px"><h1>Aveloxis</h1></div>
 <p>Open source community health data collection</p>
 <div class="card">
 <h3>Sign in to manage your repo groups</h3>
@@ -79,7 +79,7 @@ h3{font-size:16px;margin-bottom:12px;color:#24292e}
 {{define "dashboard"}}
 {{template "head" (dict "Title" "Dashboard")}}
 <div class="nav">
-<a href="/dashboard"><strong>Aveloxis</strong></a>
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
 <div class="nav-user">
 {{if .Session.AvatarURL}}<img src="{{.Session.AvatarURL}}" alt="">{{end}}
 <span>{{.Session.LoginName}}</span>
@@ -199,7 +199,7 @@ h3{font-size:16px;margin-bottom:12px;color:#24292e}
 {{define "group"}}
 {{template "head" (dict "Title" .Group.Name)}}
 <div class="nav">
-<a href="/dashboard"><strong>Aveloxis</strong></a>
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
 <div class="nav-user">
 {{if .Session.AvatarURL}}<img src="{{.Session.AvatarURL}}" alt="">{{end}}
 <span>{{.Session.LoginName}}</span>
@@ -426,7 +426,7 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 {{template "head" (dict "Title" .Repo.Name)}}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <div class="nav">
-<a href="/dashboard"><strong>Aveloxis</strong></a>
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
 <div class="nav-user">
 {{if .Session.AvatarURL}}<img src="{{.Session.AvatarURL}}" alt="">{{end}}
 <span>{{.Session.LoginName}}</span>
@@ -626,7 +626,7 @@ fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-licenses')
 .mode-toggle button.active{background:#0366d6;color:white}
 </style>
 <div class="nav">
-<a href="/dashboard"><strong>Aveloxis</strong></a>
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
 <div class="nav-user">
 {{if .Session.AvatarURL}}<img src="{{.Session.AvatarURL}}" alt="">{{end}}
 <span>{{.Session.LoginName}}</span>

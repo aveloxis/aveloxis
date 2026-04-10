@@ -21,6 +21,7 @@ import (
 	"github.com/augurlabs/aveloxis/internal/db"
 	"github.com/augurlabs/aveloxis/internal/model"
 	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/augurlabs/aveloxis/internal/static"
 	"golang.org/x/oauth2"
 )
 
@@ -122,6 +123,13 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 // Handler returns the HTTP handler for the web GUI.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+
+	// Static assets.
+	mux.HandleFunc("/icon.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(static.IconPNG)
+	})
 
 	// Public routes.
 	mux.HandleFunc("/", s.handleHome)

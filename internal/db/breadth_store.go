@@ -30,16 +30,21 @@ func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int
 	if limit <= 0 {
 		limit = 100
 	}
+	// Use a subquery to avoid the DISTINCT + ORDER BY mismatch.
+	// PostgreSQL requires ORDER BY columns in the SELECT list with DISTINCT.
 	rows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT c.cntrb_id::text, c.gh_login
-		FROM aveloxis_data.contributors c
-		LEFT JOIN (
-			SELECT cntrb_id, MAX(data_collection_date) AS last_collected
-			FROM aveloxis_data.contributor_repo
-			GROUP BY cntrb_id
-		) cr ON cr.cntrb_id = c.cntrb_id
-		WHERE c.gh_login IS NOT NULL AND c.gh_login != ''
-		ORDER BY cr.last_collected ASC NULLS FIRST
+		SELECT cntrb_id, gh_login FROM (
+			SELECT DISTINCT ON (c.cntrb_id) c.cntrb_id::text, c.gh_login, cr.last_collected
+			FROM aveloxis_data.contributors c
+			LEFT JOIN (
+				SELECT cntrb_id, MAX(data_collection_date) AS last_collected
+				FROM aveloxis_data.contributor_repo
+				GROUP BY cntrb_id
+			) cr ON cr.cntrb_id = c.cntrb_id
+			WHERE c.gh_login IS NOT NULL AND c.gh_login != ''
+			ORDER BY c.cntrb_id, cr.last_collected ASC NULLS FIRST
+		) sub
+		ORDER BY last_collected ASC NULLS FIRST
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, err

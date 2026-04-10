@@ -1,0 +1,53 @@
+# Test building Docker and Podman containers on PRs.
+# Runs on both Ubuntu (Docker + Podman) and macOS (Docker only).
+# Does NOT push images — just validates the build succeeds.
+name: Container Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  docker-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t aveloxis:test .
+
+      - name: Verify binary runs
+        run: docker run --rm aveloxis:test version
+
+  podman-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with Podman
+        run: podman build -t aveloxis:test .
+
+      - name: Verify binary runs
+        run: podman run --rm aveloxis:test version
+
+  # macOS: build the Go binary directly (Docker VM doesn't work reliably on
+  # GitHub Actions macOS runners — colima/lima VM fails to start).
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        run: go build -o aveloxis ./cmd/aveloxis
+
+      - name: Verify binary runs
+        run: ./aveloxis version

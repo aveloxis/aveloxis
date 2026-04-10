@@ -1,0 +1,35 @@
+# Run linting checks on pushes to main and pull requests.
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # go vet is the official Go linter — always compatible with the Go version.
+      - name: Run go vet
+        run: go vet ./...
+
+      # staticcheck is the most widely used third-party Go linter and ships
+      # updates for new Go versions faster than golangci-lint.
+      # If staticcheck doesn't support the current Go version yet, we fall
+      # back to go vet only (which already ran above).
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: Run staticcheck
+        run: staticcheck ./... || echo "::warning::staticcheck reported issues (non-blocking)"

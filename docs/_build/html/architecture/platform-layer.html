@@ -1,0 +1,265 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Platform Abstraction Layer &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Database Package (internal/db)" href="db-package.html" />
+    <link rel="prev" title="Column Name Mapping (Augur to Aveloxis)" href="column-mapping.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Platform Abstraction Layer</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#interface-hierarchy">Interface hierarchy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#http-client-httpclient">HTTP client (<code class="docutils literal notranslate"><span class="pre">HTTPClient</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#pagination">Pagination</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#adding-a-new-platform">Adding a new platform</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#design-notes">Design notes</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Platform Abstraction Layer</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/architecture/platform-layer.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="platform-abstraction-layer">
+<h1>Platform Abstraction Layer<a class="headerlink" href="#platform-abstraction-layer" title="Link to this heading"></a></h1>
+<p>The <code class="docutils literal notranslate"><span class="pre">internal/platform</span></code> package is the HTTP client, rate limiting, and API abstraction layer that enables Aveloxis to collect from GitHub and GitLab with equal completeness through a single interface.</p>
+<hr class="docutils" />
+<section id="interface-hierarchy">
+<h2>Interface hierarchy<a class="headerlink" href="#interface-hierarchy" title="Link to this heading"></a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">platform</span><span class="o">.</span><span class="n">Client</span>
+  <span class="o">|--</span> <span class="n">Platform</span><span class="p">()</span>           <span class="o">-&gt;</span> <span class="n">model</span><span class="o">.</span><span class="n">Platform</span>
+  <span class="o">|--</span> <span class="n">ParseRepoURL</span><span class="p">()</span>       <span class="o">-&gt;</span> <span class="n">owner</span><span class="p">,</span> <span class="n">repo</span>
+  <span class="o">|--</span> <span class="n">RepoCollector</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">FetchRepoInfo</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">FetchCloneStats</span>
+  <span class="o">|--</span> <span class="n">IssueCollector</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListIssues</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListIssueLabels</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListIssueAssignees</span>
+  <span class="o">|--</span> <span class="n">PullRequestCollector</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListPullRequests</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListPRLabels</span><span class="p">,</span> <span class="n">ListPRAssignees</span><span class="p">,</span> <span class="n">ListPRReviewers</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListPRReviews</span><span class="p">,</span> <span class="n">ListPRCommits</span><span class="p">,</span> <span class="n">ListPRFiles</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">FetchPRMeta</span>
+  <span class="o">|--</span> <span class="n">EventCollector</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListIssueEvents</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListPREvents</span>
+  <span class="o">|--</span> <span class="n">MessageCollector</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListIssueComments</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListPRComments</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListReviewComments</span>
+  <span class="o">|--</span> <span class="n">ReleaseCollector</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListReleases</span>
+  <span class="o">|--</span> <span class="n">ContributorCollector</span>
+        <span class="o">|--</span> <span class="n">ListContributors</span>
+        <span class="o">|--</span> <span class="n">EnrichContributor</span>
+</pre></div>
+</div>
+<p>All list methods return <code class="docutils literal notranslate"><span class="pre">iter.Seq2[T,</span> <span class="pre">error]</span></code> (Go 1.23 iterators) for memory-efficient streaming pagination. Callers consume results with <code class="docutils literal notranslate"><span class="pre">for</span> <span class="pre">item,</span> <span class="pre">err</span> <span class="pre">:=</span> <span class="pre">range</span> <span class="pre">client.ListIssues(...)</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="http-client-httpclient">
+<h2>HTTP client (<code class="docutils literal notranslate"><span class="pre">HTTPClient</span></code>)<a class="headerlink" href="#http-client-httpclient" title="Link to this heading"></a></h2>
+<p>Shared by both GitHub and GitLab implementations. Features:</p>
+<ul class="simple">
+<li><p><strong>Connection pooling</strong>: HTTP/2 enabled, 20 idle connections per host for high-throughput collection.</p></li>
+<li><p><strong>Automatic retries</strong>: Up to 10 retries with exponential backoff for transient errors (502/503/504).</p></li>
+<li><p><strong>Rate limit awareness</strong>: Reads <code class="docutils literal notranslate"><span class="pre">X-RateLimit-*</span></code> (GitHub) and <code class="docutils literal notranslate"><span class="pre">RateLimit-*</span></code> (GitLab) headers, waits for reset when exhausted.</p></li>
+<li><p><strong>Secondary rate limit handling</strong>: Respects <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> headers from GitHub’s secondary rate limits.</p></li>
+<li><p><strong>Conditional requests (ETags)</strong>: Caches ETags from responses and sends <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> on subsequent requests. GitHub does not count 304 responses against the rate limit, saving quota on unchanged data during incremental collection.</p></li>
+<li><p><strong>Bad credential detection</strong>: 401 responses permanently invalidate the API key.</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="key-pool-keypool">
+<h2>Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)<a class="headerlink" href="#key-pool-keypool" title="Link to this heading"></a></h2>
+<p>Manages multiple API tokens with round-robin rotation for maximum throughput.</p>
+<ul class="simple">
+<li><p><strong>Round-robin rotation</strong>: Every key’s rate limit is fully utilized before the pool waits.</p></li>
+<li><p><strong>Configurable buffer</strong>: Stops using a key when <code class="docutils literal notranslate"><span class="pre">remaining</span></code> drops to <code class="docutils literal notranslate"><span class="pre">buffer</span></code> (default 15), preventing 403s from concurrent workers that checked out a key before the count was updated.</p></li>
+<li><p><strong>Automatic refill</strong>: Keys are refilled to 5000 when the rate-limit window resets.</p></li>
+<li><p><strong>Resource-aware</strong>: Only core API responses update the key’s rate-limit counter. Search and GraphQL responses (which have separate buckets) are ignored to prevent premature key rotation.</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="pagination">
+<h2>Pagination<a class="headerlink" href="#pagination" title="Link to this heading"></a></h2>
+<p>Both GitHub and GitLab use 100-item pages. The pagination engine is shared, with platform-specific next-page resolution:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Platform</p></th>
+<th class="head"><p>Primary method</p></th>
+<th class="head"><p>Fallback</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>GitHub</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Link</span></code> header <code class="docutils literal notranslate"><span class="pre">rel=&quot;next&quot;</span></code></p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>GitLab</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">X-Next-Page</span></code> header</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Link</span></code> header <code class="docutils literal notranslate"><span class="pre">rel=&quot;next&quot;</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>The pagination functions (<code class="docutils literal notranslate"><span class="pre">PaginateGitHub</span></code>, <code class="docutils literal notranslate"><span class="pre">PaginateGitLab</span></code>) are generic and work with any JSON-decodable type.</p>
+</section>
+<hr class="docutils" />
+<section id="url-parsing-repourl">
+<h2>URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)<a class="headerlink" href="#url-parsing-repourl" title="Link to this heading"></a></h2>
+<p>Parses repository URLs and identifies the platform:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">https://github.com/owner/repo</span></code> -&gt; GitHub, owner=”owner”, repo=”repo”</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">https://gitlab.com/group/subgroup/project</span></code> -&gt; GitLab, owner=”group/subgroup”, repo=”project”</p></li>
+<li><p>Self-hosted instances detected by hostname hints or “gitlab” substring in hostname.</p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">APIURL()</span></code> method returns the correct API base URL, including GitHub Enterprise (<code class="docutils literal notranslate"><span class="pre">/api/v3</span></code>) and GitLab (<code class="docutils literal notranslate"><span class="pre">/api/v4</span></code>).</p>
+</section>
+<hr class="docutils" />
+<section id="adding-a-new-platform">
+<h2>Adding a new platform<a class="headerlink" href="#adding-a-new-platform" title="Link to this heading"></a></h2>
+<p>To add support for a new forge (e.g., Gitea):</p>
+<ol class="arabic simple">
+<li><p>Create <code class="docutils literal notranslate"><span class="pre">internal/platform/gitea/</span></code> with <code class="docutils literal notranslate"><span class="pre">types.go</span></code> (raw API types) and <code class="docutils literal notranslate"><span class="pre">client.go</span></code>.</p></li>
+<li><p>Implement <code class="docutils literal notranslate"><span class="pre">platform.Client</span></code> – all 7 sub-interfaces.</p></li>
+<li><p>Add the platform to <code class="docutils literal notranslate"><span class="pre">model.Platform</span></code> constants.</p></li>
+<li><p>Add URL detection in <code class="docutils literal notranslate"><span class="pre">repourl.go</span></code>’s <code class="docutils literal notranslate"><span class="pre">detectPlatform()</span></code>.</p></li>
+<li><p>Wire into <code class="docutils literal notranslate"><span class="pre">cmd/aveloxis/main.go</span></code> client creation.</p></li>
+</ol>
+<p>The <code class="docutils literal notranslate"><span class="pre">HTTPClient</span></code>, <code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>, and pagination engine are reusable across all platforms.</p>
+</section>
+<hr class="docutils" />
+<section id="design-notes">
+<h2>Design notes<a class="headerlink" href="#design-notes" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>GitLab API differences</strong>: GitLab lacks bulk endpoints for notes (comments) and requires iterating parent entities. The GitLab client iterates issues/MRs and fetches their notes individually. This is slower but unavoidable given the API design.</p></li>
+<li><p><strong>GitHub events endpoint</strong>: GitHub’s <code class="docutils literal notranslate"><span class="pre">/repos/{owner}/{repo}/issues/events</span></code> returns events for both issues and PRs. The GitHub client fetches this once via a shared helper and filters by type for <code class="docutils literal notranslate"><span class="pre">ListIssueEvents</span></code> and <code class="docutils literal notranslate"><span class="pre">ListPREvents</span></code>.</p></li>
+<li><p><strong>GitLab review comments</strong>: GitLab uses “discussions” with positioned notes instead of GitHub’s explicit review comments. The <code class="docutils literal notranslate"><span class="pre">ListReviewComments</span></code> method maps positioned discussion notes to the <code class="docutils literal notranslate"><span class="pre">ReviewComment</span></code> model.</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="column-mapping.html" class="btn btn-neutral float-left" title="Column Name Mapping (Augur to Aveloxis)" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="db-package.html" class="btn btn-neutral float-right" title="Database Package (internal/db)" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1,0 +1,416 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contributor Resolution &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Facade Commits" href="facade-commits.html" />
+    <link rel="prev" title="Staged Pipeline Architecture" href="staged-pipeline.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Contributor Resolution</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#two-layers">Two layers</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#layer-1-api-phase-resolution-during-collection">Layer 1: API-phase resolution (during collection)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#layer-2-git-phase-resolution-after-facade">Layer 2: Git-phase resolution (after facade)</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#api-phase-resolution-contributorresolver">API-phase resolution: ContributorResolver</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#tier-1-in-memory-cache">Tier 1: In-memory cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#tier-2-database-lookup">Tier 2: Database lookup</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#tier-3-create-new">Tier 3: Create new</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#githubuuid-deterministic-contributor-ids">GithubUUID: Deterministic contributor IDs</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#properties">Properties</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#example">Example</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#git-phase-resolution-commit-resolver">Git-phase resolution: Commit resolver</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#resolution-strategy-cheapest-first">Resolution strategy (cheapest first)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#noreply-email-parse-free">1. Noreply email parse (free)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#database-lookup-free">2. Database lookup (free)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#github-commits-api-1-api-call">3. GitHub Commits API (1 API call)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#github-search-api-1-api-call">4. GitHub Search API (1 API call)</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#post-resolution-actions">Post-resolution actions</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#login-rename-detection">Login rename detection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#canonical-email-enrichment">Canonical email enrichment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#alias-creation">Alias creation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#contributor-breadth-worker">Contributor breadth worker</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#resolution-flow-diagram">Resolution flow diagram</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Contributor Resolution</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/architecture/contributor-resolution.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="contributor-resolution">
+<h1>Contributor Resolution<a class="headerlink" href="#contributor-resolution" title="Link to this heading"></a></h1>
+<p>Contributor resolution is the process of mapping platform user references (login, email, avatar, etc.) to canonical contributor records in the database. Aveloxis has two layers of resolution that operate at different phases of the collection pipeline.</p>
+<hr class="docutils" />
+<section id="two-layers">
+<h2>Two layers<a class="headerlink" href="#two-layers" title="Link to this heading"></a></h2>
+<section id="layer-1-api-phase-resolution-during-collection">
+<h3>Layer 1: API-phase resolution (during collection)<a class="headerlink" href="#layer-1-api-phase-resolution-during-collection" title="Link to this heading"></a></h3>
+<p>Operates during issue, PR, event, and message collection. Maps platform user references to <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> UUIDs.</p>
+</section>
+<section id="layer-2-git-phase-resolution-after-facade">
+<h3>Layer 2: Git-phase resolution (after facade)<a class="headerlink" href="#layer-2-git-phase-resolution-after-facade" title="Link to this heading"></a></h3>
+<p>Operates after the facade phase. Maps git commit author emails to GitHub user accounts.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="api-phase-resolution-contributorresolver">
+<h2>API-phase resolution: ContributorResolver<a class="headerlink" href="#api-phase-resolution-contributorresolver" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">ContributorResolver</span></code> resolves platform user references to canonical <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> UUIDs using a three-tier strategy.</p>
+<section id="tier-1-in-memory-cache">
+<h3>Tier 1: In-memory cache<a class="headerlink" href="#tier-1-in-memory-cache" title="Link to this heading"></a></h3>
+<p>The cache maps three lookups:</p>
+<ul class="simple">
+<li><p><strong>Platform user ID</strong> -&gt; <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code></p></li>
+<li><p><strong>Email</strong> -&gt; <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code></p></li>
+<li><p><strong>Login</strong> -&gt; <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code></p></li>
+</ul>
+<p>On a cache hit, no database query is needed. The cache is write-through: any new contributor inserted into the database is also added to the cache.</p>
+<p>The cache persists across repos within the same process lifetime, so contributors who appear in multiple repos are resolved without repeated DB lookups.</p>
+</section>
+<section id="tier-2-database-lookup">
+<h3>Tier 2: Database lookup<a class="headerlink" href="#tier-2-database-lookup" title="Link to this heading"></a></h3>
+<p>If the cache misses, the resolver queries the <code class="docutils literal notranslate"><span class="pre">contributor_identities</span></code> table:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">cntrb_id</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">contributor_identities</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">platform_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="err">$</span><span class="mi">1</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">platform_user_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="err">$</span><span class="mi">2</span>
+</pre></div>
+</div>
+<p>The unique constraint on <code class="docutils literal notranslate"><span class="pre">(platform_id,</span> <span class="pre">platform_user_id)</span></code> ensures this lookup returns at most one result.</p>
+</section>
+<section id="tier-3-create-new">
+<h3>Tier 3: Create new<a class="headerlink" href="#tier-3-create-new" title="Link to this heading"></a></h3>
+<p>If no existing contributor is found, a new one is created:</p>
+<ol class="arabic simple">
+<li><p>A deterministic <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> UUID is generated via <strong>GithubUUID</strong></p></li>
+<li><p>A row is inserted into <code class="docutils literal notranslate"><span class="pre">contributors</span></code> with all available profile fields</p></li>
+<li><p>A row is inserted into <code class="docutils literal notranslate"><span class="pre">contributor_identities</span></code> mapping the platform identity to the contributor</p></li>
+<li><p>Both the cache and the database are updated</p></li>
+</ol>
+</section>
+</section>
+<hr class="docutils" />
+<section id="githubuuid-deterministic-contributor-ids">
+<h2>GithubUUID: Deterministic contributor IDs<a class="headerlink" href="#githubuuid-deterministic-contributor-ids" title="Link to this heading"></a></h2>
+<p>Aveloxis generates <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> UUIDs deterministically from the platform user ID. The UUID encodes:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Byte(s)</p></th>
+<th class="head"><p>Content</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>0</p></td>
+<td><p>Platform ID (<code class="docutils literal notranslate"><span class="pre">1</span></code> = GitHub, <code class="docutils literal notranslate"><span class="pre">2</span></code> = GitLab)</p></td>
+</tr>
+<tr class="row-odd"><td><p>1-4</p></td>
+<td><p>Platform user ID (big-endian, zero-padded)</p></td>
+</tr>
+<tr class="row-even"><td><p>5-15</p></td>
+<td><p>Zero-filled</p></td>
+</tr>
+</tbody>
+</table>
+<section id="properties">
+<h3>Properties<a class="headerlink" href="#properties" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Deterministic:</strong> The same GitHub/GitLab user always gets the same UUID, regardless of which Aveloxis instance creates it.</p></li>
+<li><p><strong>Augur-compatible:</strong> The encoding scheme matches Augur’s <code class="docutils literal notranslate"><span class="pre">GithubUUID</span></code> function, so contributor IDs are byte-compatible between the two systems.</p></li>
+<li><p><strong>Cross-platform safe:</strong> GitHub and GitLab users with the same numeric ID get different UUIDs (different platform byte).</p></li>
+<li><p><strong>Large ID support:</strong> GitHub user IDs up to 2^32 are supported in 4 bytes.</p></li>
+</ul>
+</section>
+<section id="example">
+<h3>Example<a class="headerlink" href="#example" title="Link to this heading"></a></h3>
+<p>GitHub user ID <code class="docutils literal notranslate"><span class="pre">12345</span></code> on platform <code class="docutils literal notranslate"><span class="pre">1</span></code> (GitHub):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Byte</span> <span class="mi">0</span><span class="p">:</span> <span class="mh">0x01</span> <span class="p">(</span><span class="n">GitHub</span><span class="p">)</span>
+<span class="n">Bytes</span> <span class="mi">1</span><span class="o">-</span><span class="mi">4</span><span class="p">:</span> <span class="mh">0x00003039</span> <span class="p">(</span><span class="mi">12345</span> <span class="n">big</span><span class="o">-</span><span class="n">endian</span><span class="p">)</span>
+<span class="n">Bytes</span> <span class="mi">5</span><span class="o">-</span><span class="mi">15</span><span class="p">:</span> <span class="mh">0x00000000000000000000</span>
+<span class="n">UUID</span><span class="p">:</span> <span class="mi">01003039</span><span class="o">-</span><span class="mi">0000</span><span class="o">-</span><span class="mi">0000</span><span class="o">-</span><span class="mi">0000</span><span class="o">-</span><span class="mi">000000000000</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="git-phase-resolution-commit-resolver">
+<h2>Git-phase resolution: Commit resolver<a class="headerlink" href="#git-phase-resolution-commit-resolver" title="Link to this heading"></a></h2>
+<p>After the facade phase inserts commit rows, the commit resolver maps git commit author emails to GitHub user accounts. This is the Go implementation of the <a class="reference external" href="https://github.com/augurlabs/augur-contributor-resolver">augur-contributor-resolver</a> scripts.</p>
+<section id="resolution-strategy-cheapest-first">
+<h3>Resolution strategy (cheapest first)<a class="headerlink" href="#resolution-strategy-cheapest-first" title="Link to this heading"></a></h3>
+<p>The resolver processes unresolved commit emails in order of cost:</p>
+<section id="noreply-email-parse-free">
+<h4>1. Noreply email parse (free)<a class="headerlink" href="#noreply-email-parse-free" title="Link to this heading"></a></h4>
+<p>GitHub noreply emails have a predictable format:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mi">12345</span><span class="o">+</span><span class="n">username</span><span class="nd">@users</span><span class="o">.</span><span class="n">noreply</span><span class="o">.</span><span class="n">github</span><span class="o">.</span><span class="n">com</span>
+<span class="n">username</span><span class="nd">@users</span><span class="o">.</span><span class="n">noreply</span><span class="o">.</span><span class="n">github</span><span class="o">.</span><span class="n">com</span>
+</pre></div>
+</div>
+<p>The parser extracts:</p>
+<ul class="simple">
+<li><p><strong>Login</strong> from the username portion</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code></strong> from the numeric prefix (if present)</p></li>
+</ul>
+<p>No API call is needed. The contributor can be resolved entirely from the email string.</p>
+</section>
+<section id="database-lookup-free">
+<h4>2. Database lookup (free)<a class="headerlink" href="#database-lookup-free" title="Link to this heading"></a></h4>
+<p>Checks existing records:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">contributors.cntrb_email</span></code> – direct email match</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">contributors.cntrb_canonical</span></code> – canonical email match</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">contributors_aliases.alias_email</span></code> – alias email match</p></li>
+</ul>
+</section>
+<section id="github-commits-api-1-api-call">
+<h4>3. GitHub Commits API (1 API call)<a class="headerlink" href="#github-commits-api-1-api-call" title="Link to this heading"></a></h4>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">GET</span> <span class="o">/</span><span class="n">repos</span><span class="o">/</span><span class="p">{</span><span class="n">owner</span><span class="p">}</span><span class="o">/</span><span class="p">{</span><span class="n">repo</span><span class="p">}</span><span class="o">/</span><span class="n">commits</span><span class="o">/</span><span class="p">{</span><span class="n">sha</span><span class="p">}</span>
+</pre></div>
+</div>
+<p>The response includes the linked GitHub user object with all profile fields (<code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code>, <code class="docutils literal notranslate"><span class="pre">gh_node_id</span></code>, <code class="docutils literal notranslate"><span class="pre">gh_avatar_url</span></code>, all <code class="docutils literal notranslate"><span class="pre">gh_*</span></code> URLs, etc.).</p>
+<p>This is the most reliable method because it uses the commit SHA itself to find the linked user.</p>
+</section>
+<section id="github-search-api-1-api-call">
+<h4>4. GitHub Search API (1 API call)<a class="headerlink" href="#github-search-api-1-api-call" title="Link to this heading"></a></h4>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>GET /search/users?q={email}+in:email
+</pre></div>
+</div>
+<p>For remaining non-noreply emails that were not found by the Commits API. The Search API has a lower rate limit (30 requests/minute), so it is used as a last resort.</p>
+</section>
+</section>
+<section id="post-resolution-actions">
+<h3>Post-resolution actions<a class="headerlink" href="#post-resolution-actions" title="Link to this heading"></a></h3>
+<p>For each resolved commit author:</p>
+<ol class="arabic simple">
+<li><p><strong>Update commit rows:</strong> <code class="docutils literal notranslate"><span class="pre">cmt_author_platform_username</span></code> is set on all commit rows with that author’s email</p></li>
+<li><p><strong>Create/update contributor:</strong> A contributor row is created (or updated) with the deterministic GithubUUID and all <code class="docutils literal notranslate"><span class="pre">gh_*</span></code> profile fields</p></li>
+<li><p><strong>Detect login renames:</strong> If the same <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code> maps to a different login than what is in the database, the contributor’s <code class="docutils literal notranslate"><span class="pre">gh_login</span></code> is updated</p></li>
+<li><p><strong>Create alias:</strong> An entry in <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code> maps the commit email to the contributor’s canonical email</p></li>
+<li><p><strong>Bulk backfill:</strong> After all commits are resolved, a SQL join sets <code class="docutils literal notranslate"><span class="pre">cmt_ght_author_id</span></code> from <code class="docutils literal notranslate"><span class="pre">cmt_author_platform_username</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">contributors.gh_login</span></code></p></li>
+</ol>
+</section>
+</section>
+<hr class="docutils" />
+<section id="login-rename-detection">
+<h2>Login rename detection<a class="headerlink" href="#login-rename-detection" title="Link to this heading"></a></h2>
+<p>GitHub users can rename their accounts. When this happens:</p>
+<ul class="simple">
+<li><p>The old login still appears in historical API responses and git commits</p></li>
+<li><p>The new login appears in current API responses</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code> remains the same</p></li>
+</ul>
+<p>Aveloxis detects renames by comparing:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">IF</span> <span class="n">existing_contributor</span><span class="o">.</span><span class="n">gh_user_id</span> <span class="o">==</span> <span class="n">resolved_user</span><span class="o">.</span><span class="n">gh_user_id</span>
+   <span class="n">AND</span> <span class="n">existing_contributor</span><span class="o">.</span><span class="n">gh_login</span> <span class="o">!=</span> <span class="n">resolved_user</span><span class="o">.</span><span class="n">gh_login</span>
+<span class="n">THEN</span> <span class="n">update</span> <span class="n">gh_login</span> <span class="n">to</span> <span class="n">the</span> <span class="n">new</span> <span class="n">value</span>
+</pre></div>
+</div>
+<p>This keeps contributor records current without creating duplicate entries.</p>
+</section>
+<hr class="docutils" />
+<section id="canonical-email-enrichment">
+<h2>Canonical email enrichment<a class="headerlink" href="#canonical-email-enrichment" title="Link to this heading"></a></h2>
+<p>After commit resolution, some contributors have <code class="docutils literal notranslate"><span class="pre">gh_login</span></code> but no <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> email. Phase 5 calls the GitHub Users API:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">GET</span> <span class="o">/</span><span class="n">users</span><span class="o">/</span><span class="p">{</span><span class="n">login</span><span class="p">}</span>
+</pre></div>
+</div>
+<p>The profile response includes the user’s public email, which is set as <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="alias-creation">
+<h2>Alias creation<a class="headerlink" href="#alias-creation" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code> table maps alternate email addresses to a contributor’s canonical email. Aliases are created during commit resolution:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">contributors_aliases</span>
+<span class="w">  </span><span class="p">(</span><span class="n">cntrb_id</span><span class="p">,</span><span class="w"> </span><span class="n">canonical_email</span><span class="p">,</span><span class="w"> </span><span class="n">alias_email</span><span class="p">,</span><span class="w"> </span><span class="n">cntrb_active</span><span class="p">)</span>
+<span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="err">$</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="err">$</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="err">$</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span>
+<span class="k">ON</span><span class="w"> </span><span class="n">CONFLICT</span><span class="w"> </span><span class="p">(</span><span class="n">alias_email</span><span class="p">)</span><span class="w"> </span><span class="k">DO</span><span class="w"> </span><span class="k">NOTHING</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>The alias table is consulted during database lookups (tier 2 of the API-phase resolver), enabling future resolution of the same email without API calls.</p>
+</section>
+<hr class="docutils" />
+<section id="contributor-breadth-worker">
+<h2>Contributor breadth worker<a class="headerlink" href="#contributor-breadth-worker" title="Link to this heading"></a></h2>
+<p>Every 6 hours, the scheduler runs the breadth worker to discover cross-repo contributor activity:</p>
+<ol class="arabic simple">
+<li><p>Selects up to 100 contributors, prioritizing those never processed, then oldest</p></li>
+<li><p>For each contributor, calls <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/users/{login}/events</span></code></p></li>
+<li><p>Each event (PushEvent, PullRequestEvent, IssuesEvent, etc.) is stored in <code class="docutils literal notranslate"><span class="pre">contributor_repo</span></code></p></li>
+</ol>
+<p>This maps contributors to their activity across repos outside the tracked set, providing a broader picture of contributor engagement.</p>
+</section>
+<hr class="docutils" />
+<section id="resolution-flow-diagram">
+<h2>Resolution flow diagram<a class="headerlink" href="#resolution-flow-diagram" title="Link to this heading"></a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Commit email from git log
+        |
+        v
+  ┌─────────────────┐
+  │ Noreply parse?   │──yes──&gt; Extract login + user_id
+  └────────┬─────────┘         Create/update contributor
+           │ no
+           v
+  ┌─────────────────┐
+  │ DB lookup?       │──yes──&gt; Return existing cntrb_id
+  │ (email, alias)   │
+  └────────┬─────────┘
+           │ no
+           v
+  ┌─────────────────┐
+  │ Commits API?     │──yes──&gt; Create contributor with GithubUUID
+  │ GET /commits/sha │         Create alias
+  └────────┬─────────┘
+           │ no
+           v
+  ┌─────────────────┐
+  │ Search API?      │──yes──&gt; Create contributor with GithubUUID
+  │ GET /search/users│         Create alias
+  └────────┬─────────┘
+           │ no
+           v
+  Unresolved (stored in
+  unresolved_commit_emails)
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="facade-commits.html"><span class="std std-doc">Facade Commits</span></a> – how git log data is parsed and stored</p></li>
+<li><p><a class="reference internal" href="staged-pipeline.html"><span class="std std-doc">Staged Pipeline</span></a> – how staging enables bulk contributor resolution</p></li>
+<li><p><a class="reference internal" href="overview.html"><span class="std std-doc">Overview</span></a> – system architecture overview</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="staged-pipeline.html" class="btn btn-neutral float-left" title="Staged Pipeline Architecture" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="facade-commits.html" class="btn btn-neutral float-right" title="Facade Commits" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1,0 +1,586 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Collection Pipeline &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Monitoring" href="monitoring.html" />
+    <link rel="prev" title="Visualizations" href="visualizations.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="visualizations.html">Visualizations</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Collection Pipeline</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#prelim-phase">Prelim phase</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#redirect-detection">Redirect detection</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#dead-repo-sidelining">Dead repo sidelining</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#duplicate-checking">Duplicate checking</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#phase-1-staging-staged-pipeline-only">Phase 1: Staging (staged pipeline only)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#staging-order">Staging order</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#envelope-types">Envelope types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#batch-flushing">Batch flushing</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#phase-2-processing-staged-pipeline-only">Phase 2: Processing (staged pipeline only)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#processing-order">Processing order</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#contributor-resolution">Contributor resolution</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#envelope-processing">Envelope processing</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#error-isolation">Error isolation</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#phase-3-facade-git">Phase 3: Facade (git)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#bare-clone">Bare clone</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#git-log-parsing">Git log parsing</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#affiliation-resolution">Affiliation resolution</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#facade-aggregates">Facade aggregates</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#phase-4-commit-author-resolution">Phase 4: Commit author resolution</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#resolution-strategy-cheapest-first">Resolution strategy (cheapest first)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#for-each-resolved-author">For each resolved author</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#phase-5-canonical-email-enrichment">Phase 5: Canonical email enrichment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#phase-6-analysis">Phase 6: Analysis</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#dependency-scanning">Dependency scanning</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#libyear-calculation">Libyear calculation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#code-complexity-scc">Code complexity (scc)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#scancode-toolkit-license-and-copyright-detection">ScanCode Toolkit (license and copyright detection)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#openssf-scorecard-local-execution">OpenSSF Scorecard (local execution)</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#periodic-tasks">Periodic tasks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Collection Pipeline</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/guide/collection-pipeline.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="collection-pipeline">
+<h1>Collection Pipeline<a class="headerlink" href="#collection-pipeline" title="Link to this heading"></a></h1>
+<p>Aveloxis has two collection pipelines: the <strong>staged pipeline</strong> (used by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>) for production workloads, and the <strong>direct pipeline</strong> (used by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code>) for ad-hoc runs. Both pipelines collect the same data through the same phases, but differ in how they write to the database.</p>
+<hr class="docutils" />
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading"></a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>                        Staged Pipeline (serve)              Direct Pipeline (collect)
+                        ──────────────────────               ────────────────────────
+  Prelim ────────────&gt;  Phase 1: Stage to JSONB              (writes directly to tables)
+                        Phase 2: Process to tables
+                              │
+                              v
+                        Phase 3: Facade (bare clone + git log)
+                        Phase 4: Analysis (deps, libyear, scc)
+                        Phase 4c: ScanCode (licenses, every 30d)
+                        Phase 4b: Scorecard (local, reuses clone)
+                              │
+                              v
+                        Phase 5: Commit Author Resolution
+                        Phase 6: Canonical Email Enrichment
+</pre></div>
+</div>
+<p>The staged pipeline is designed for 400K+ repos. It eliminates database contention on the <code class="docutils literal notranslate"><span class="pre">contributors</span></code> table by decoupling API collection from relational persistence.</p>
+<p>The direct pipeline is simpler – it writes directly to relational tables with inline contributor resolution. Best for testing or collecting a small number of repos.</p>
+</section>
+<hr class="docutils" />
+<section id="prelim-phase">
+<h2>Prelim phase<a class="headerlink" href="#prelim-phase" title="Link to this heading"></a></h2>
+<p>Before any data collection, each repo’s URL is checked with an HTTP HEAD request to detect renames, transfers, and dead repos.</p>
+<section id="redirect-detection">
+<h3>Redirect detection<a class="headerlink" href="#redirect-detection" title="Link to this heading"></a></h3>
+<p>If the URL redirects (repo was renamed or transferred):</p>
+<ul class="simple">
+<li><p><strong>New URL already in database:</strong> The old repo is marked as a duplicate and dequeued. This prevents collecting the same repo twice under different URLs.</p></li>
+<li><p><strong>New URL is new:</strong> The old repo’s URL is updated to the canonical URL, and all stored URLs in issues, PRs, reviews, and releases are bulk-updated via SQL <code class="docutils literal notranslate"><span class="pre">REPLACE()</span></code> to reflect the new org/repo path.</p></li>
+</ul>
+</section>
+<section id="dead-repo-sidelining">
+<h3>Dead repo sidelining<a class="headerlink" href="#dead-repo-sidelining" title="Link to this heading"></a></h3>
+<p>If the URL returns 404 or 410 (deleted, made private, or DMCA’d):</p>
+<ul class="simple">
+<li><p>The repo is marked <code class="docutils literal notranslate"><span class="pre">repo_archived</span> <span class="pre">=</span> <span class="pre">TRUE</span></code> and removed from the queue</p></li>
+<li><p>All previously collected data is preserved in the database</p></li>
+<li><p>No further API calls are wasted on this repo</p></li>
+</ul>
+</section>
+<section id="duplicate-checking">
+<h3>Duplicate checking<a class="headerlink" href="#duplicate-checking" title="Link to this heading"></a></h3>
+<p>If a redirect resolves to a URL that already exists in <code class="docutils literal notranslate"><span class="pre">aveloxis_data.repos</span></code>, the duplicate entry is dequeued. Only one copy of each repo is collected.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="phase-1-staging-staged-pipeline-only">
+<h2>Phase 1: Staging (staged pipeline only)<a class="headerlink" href="#phase-1-staging-staged-pipeline-only" title="Link to this heading"></a></h2>
+<p>Raw API responses are written to a JSONB staging table (<code class="docutils literal notranslate"><span class="pre">aveloxis_ops.staging</span></code>). No FK lookups, no contributor resolution. Multiple workers can write concurrently with zero contention on any relational table.</p>
+<section id="staging-order">
+<h3>Staging order<a class="headerlink" href="#staging-order" title="Link to this heading"></a></h3>
+<p>Data is collected and staged in this order:</p>
+<ol class="arabic simple">
+<li><p><strong>Contributors</strong> – seeded from member/contributor lists</p></li>
+<li><p><strong>Issues</strong> – with labels and assignees bundled per issue</p></li>
+<li><p><strong>Pull requests</strong> – with all children bundled per PR</p></li>
+<li><p><strong>Events</strong> – issue events and PR events</p></li>
+<li><p><strong>Messages</strong> – issue comments, PR comments, inline review comments</p></li>
+<li><p><strong>Metadata</strong> – repo info, releases, clone/traffic stats</p></li>
+</ol>
+</section>
+<section id="envelope-types">
+<h3>Envelope types<a class="headerlink" href="#envelope-types" title="Link to this heading"></a></h3>
+<p>Issues and PRs are staged as <strong>envelope types</strong> that bundle the parent entity with all its children in a single JSONB row:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">stagedIssue</span></code></strong> – contains the issue plus its labels and assignees</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">stagedPR</span></code></strong> – contains the pull request plus labels, assignees, reviewers, reviews, commits, files, and head/base metadata</p></li>
+</ul>
+<p>This bundling means that when a PR is processed, all its children can be inserted atomically using the parent’s database ID, without needing a second pass.</p>
+</section>
+<section id="batch-flushing">
+<h3>Batch flushing<a class="headerlink" href="#batch-flushing" title="Link to this heading"></a></h3>
+<p>Data is flushed to the staging table in batches (default: 1000 rows per batch, configurable via <code class="docutils literal notranslate"><span class="pre">collection.batch_size</span></code>). Each batch is a single <code class="docutils literal notranslate"><span class="pre">INSERT</span></code> with multiple values.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="phase-2-processing-staged-pipeline-only">
+<h2>Phase 2: Processing (staged pipeline only)<a class="headerlink" href="#phase-2-processing-staged-pipeline-only" title="Link to this heading"></a></h2>
+<p>Staged data is drained in 500-row batches by entity type, in dependency order.</p>
+<section id="processing-order">
+<h3>Processing order<a class="headerlink" href="#processing-order" title="Link to this heading"></a></h3>
+<p>Entities are processed in this order to satisfy foreign key constraints:</p>
+<ol class="arabic simple">
+<li><p><strong>Contributors</strong> – resolved first so all other entities can reference <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code></p></li>
+<li><p><strong>Issues</strong> – upserted with resolved <code class="docutils literal notranslate"><span class="pre">reporter_id</span></code> and <code class="docutils literal notranslate"><span class="pre">closed_by_id</span></code></p></li>
+<li><p><strong>Pull requests</strong> – upserted with resolved <code class="docutils literal notranslate"><span class="pre">author_id</span></code></p></li>
+<li><p><strong>Events</strong> – issue and PR events with resolved <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code></p></li>
+<li><p><strong>Messages</strong> – issue comments, PR comments, review comments with resolved <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code></p></li>
+<li><p><strong>Metadata</strong> – repo info, releases, clone stats</p></li>
+</ol>
+</section>
+<section id="contributor-resolution">
+<h3>Contributor resolution<a class="headerlink" href="#contributor-resolution" title="Link to this heading"></a></h3>
+<p>Contributors are resolved in bulk with an in-memory write-through cache:</p>
+<ol class="arabic simple">
+<li><p><strong>Cache lookup</strong> – platform user ID to <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> (avoids DB round-trips)</p></li>
+<li><p><strong>Database lookup</strong> – <code class="docutils literal notranslate"><span class="pre">contributor_identities</span></code> table</p></li>
+<li><p><strong>Create new</strong> – insert into <code class="docutils literal notranslate"><span class="pre">contributors</span></code> + <code class="docutils literal notranslate"><span class="pre">contributor_identities</span></code></p></li>
+</ol>
+</section>
+<section id="envelope-processing">
+<h3>Envelope processing<a class="headerlink" href="#envelope-processing" title="Link to this heading"></a></h3>
+<p>When an envelope (bundled issue or PR) is processed:</p>
+<ol class="arabic simple">
+<li><p>The parent entity is upserted first to obtain its database ID</p></li>
+<li><p>All bundled children are upserted using that ID</p></li>
+<li><p>Each child upsert failure logs a warning but does not abort the parent</p></li>
+</ol>
+</section>
+<section id="error-isolation">
+<h3>Error isolation<a class="headerlink" href="#error-isolation" title="Link to this heading"></a></h3>
+<p>A failed upsert for one issue, PR, or message logs a warning but does not abort collection for the entire repo. This per-entity error isolation ensures that a single malformed record does not prevent thousands of good records from being stored.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="phase-3-facade-git">
+<h2>Phase 3: Facade (git)<a class="headerlink" href="#phase-3-facade-git" title="Link to this heading"></a></h2>
+<p>After API data is processed, the facade phase handles git-level data.</p>
+<section id="bare-clone">
+<h3>Bare clone<a class="headerlink" href="#bare-clone" title="Link to this heading"></a></h3>
+<p>The repo is cloned as a bare repo (or fetched if a clone already exists):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>--bare<span class="w"> </span>&lt;url&gt;<span class="w"> </span>&lt;path&gt;<span class="w">     </span><span class="c1"># first time</span>
+git<span class="w"> </span>fetch<span class="w"> </span>--all<span class="w">                   </span><span class="c1"># subsequent runs</span>
+</pre></div>
+</div>
+<p>Bare clones are permanent and stored in the <code class="docutils literal notranslate"><span class="pre">repo_clone_dir</span></code> directory.</p>
+</section>
+<section id="git-log-parsing">
+<h3>Git log parsing<a class="headerlink" href="#git-log-parsing" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">log</span> <span class="pre">--all</span> <span class="pre">--numstat</span></code> is run with a custom format string using field separators and record separators to reliably parse multi-line output. For each commit:</p>
+<ul class="simple">
+<li><p><strong>Per-file rows</strong> are inserted into <code class="docutils literal notranslate"><span class="pre">commits</span></code> (one row per file touched per commit, matching Augur’s data model)</p></li>
+<li><p><strong>Parent-child relationships</strong> are inserted into <code class="docutils literal notranslate"><span class="pre">commit_parents</span></code></p></li>
+<li><p><strong>Commit messages</strong> are inserted into <code class="docutils literal notranslate"><span class="pre">commit_messages</span></code> (deduplicated per repo + hash)</p></li>
+</ul>
+</section>
+<section id="affiliation-resolution">
+<h3>Affiliation resolution<a class="headerlink" href="#affiliation-resolution" title="Link to this heading"></a></h3>
+<p>Email domains from commit authors and committers are matched against the <code class="docutils literal notranslate"><span class="pre">contributor_affiliations</span></code> table:</p>
+<ul class="simple">
+<li><p>Exact domain match first (e.g., <code class="docutils literal notranslate"><span class="pre">user&#64;redhat.com</span></code> matches <code class="docutils literal notranslate"><span class="pre">redhat.com</span></code>)</p></li>
+<li><p>Parent domain fallback (e.g., <code class="docutils literal notranslate"><span class="pre">user&#64;mail.google.com</span></code> matches <code class="docutils literal notranslate"><span class="pre">google.com</span></code>)</p></li>
+<li><p>Populates <code class="docutils literal notranslate"><span class="pre">cmt_author_affiliation</span></code> and <code class="docutils literal notranslate"><span class="pre">cmt_committer_affiliation</span></code> on every commit row</p></li>
+</ul>
+</section>
+<section id="facade-aggregates">
+<h3>Facade aggregates<a class="headerlink" href="#facade-aggregates" title="Link to this heading"></a></h3>
+<p>After all commits are inserted, aggregate tables are refreshed by SQL aggregation over the <code class="docutils literal notranslate"><span class="pre">commits</span></code> table:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">dm_repo_annual</span></code> – annual commit stats per contributor per repo</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dm_repo_monthly</span></code> – monthly stats</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dm_repo_weekly</span></code> – weekly stats</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dm_repo_group_annual</span></code>, <code class="docutils literal notranslate"><span class="pre">dm_repo_group_monthly</span></code>, <code class="docutils literal notranslate"><span class="pre">dm_repo_group_weekly</span></code> – group-level aggregates</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="phase-4-commit-author-resolution">
+<h2>Phase 4: Commit author resolution<a class="headerlink" href="#phase-4-commit-author-resolution" title="Link to this heading"></a></h2>
+<p>After facade completes, git commit author emails are resolved to GitHub user accounts. This is the Go implementation of the <a class="reference external" href="https://github.com/augurlabs/augur-contributor-resolver">augur-contributor-resolver</a> scripts.</p>
+<section id="resolution-strategy-cheapest-first">
+<h3>Resolution strategy (cheapest first)<a class="headerlink" href="#resolution-strategy-cheapest-first" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p><strong>Noreply email parse</strong> (free, no API call) – <code class="docutils literal notranslate"><span class="pre">12345+user&#64;users.noreply.github.com</span></code> extracts the login and <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code> directly from the email format</p></li>
+<li><p><strong>Database lookup</strong> – checks <code class="docutils literal notranslate"><span class="pre">contributors</span></code> (by <code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code>, <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code>) and <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code> (by <code class="docutils literal notranslate"><span class="pre">alias_email</span></code>)</p></li>
+<li><p><strong>GitHub Commits API</strong> – <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/repos/{owner}/{repo}/commits/{sha}</span></code> returns the linked GitHub user with all profile fields</p></li>
+<li><p><strong>GitHub Search API</strong> – <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/search/users?q=email+in:email</span></code> for remaining non-noreply emails</p></li>
+</ol>
+</section>
+<section id="for-each-resolved-author">
+<h3>For each resolved author<a class="headerlink" href="#for-each-resolved-author" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">cmt_author_platform_username</span></code> is set on all commit rows with that hash</p></li>
+<li><p>The contributor row is created or updated with a deterministic <strong>GithubUUID</strong></p></li>
+<li><p>All <code class="docutils literal notranslate"><span class="pre">gh_*</span></code> profile fields are backfilled</p></li>
+<li><p>Login renames are detected (same <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code>, different login) and updated</p></li>
+<li><p>An alias is created in <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code> linking the commit email to the contributor</p></li>
+<li><p>After all commits are resolved, a bulk SQL backfill sets <code class="docutils literal notranslate"><span class="pre">cmt_ght_author_id</span></code> by joining <code class="docutils literal notranslate"><span class="pre">cmt_author_platform_username</span></code> to <code class="docutils literal notranslate"><span class="pre">contributors.gh_login</span></code></p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="phase-5-canonical-email-enrichment">
+<h2>Phase 5: Canonical email enrichment<a class="headerlink" href="#phase-5-canonical-email-enrichment" title="Link to this heading"></a></h2>
+<p>For contributors that have <code class="docutils literal notranslate"><span class="pre">gh_login</span></code> but no <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code>, calls <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/users/{login}</span></code> to retrieve their profile email and sets <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="phase-6-analysis">
+<h2>Phase 6: Analysis<a class="headerlink" href="#phase-6-analysis" title="Link to this heading"></a></h2>
+<p>After facade, a temporary full checkout is created from the bare clone (local copy, no network request). Three analyses run against it, then the checkout is deleted.</p>
+<section id="dependency-scanning">
+<h3>Dependency scanning<a class="headerlink" href="#dependency-scanning" title="Link to this heading"></a></h3>
+<p>Walks the checkout for manifest files across 12 ecosystems:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Manifest</p></th>
+<th class="head"><p>Ecosystem</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">package.json</span></code></p></td>
+<td><p>npm</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code></p></td>
+<td><p>Python (pip)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">go.mod</span></code></p></td>
+<td><p>Go</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code></p></td>
+<td><p>Rust (Cargo)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Gemfile</span></code></p></td>
+<td><p>Ruby (Bundler)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pom.xml</span></code></p></td>
+<td><p>Java (Maven)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></p></td>
+<td><p>Python (PEP 621)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">setup.py</span></code></p></td>
+<td><p>Python (setuptools)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">build.gradle</span></code></p></td>
+<td><p>Java (Gradle)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">composer.json</span></code></p></td>
+<td><p>PHP (Composer)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Package.swift</span></code></p></td>
+<td><p>Swift (SPM)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">*.csproj</span></code></p></td>
+<td><p>.NET (NuGet)</p></td>
+</tr>
+</tbody>
+</table>
+<p>Results are stored in <code class="docutils literal notranslate"><span class="pre">repo_dependencies</span></code>.</p>
+</section>
+<section id="libyear-calculation">
+<h3>Libyear calculation<a class="headerlink" href="#libyear-calculation" title="Link to this heading"></a></h3>
+<p>For each versioned dependency, queries its package registry to compare the current version against the latest:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Registry</p></th>
+<th class="head"><p>URL</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>npm</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://registry.npmjs.org/{pkg}</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>PyPI</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://pypi.org/pypi/{pkg}/json</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Go proxy</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://proxy.golang.org/{mod}/&#64;v/list</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>crates.io</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://crates.io/api/v1/crates/{crate}</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>RubyGems</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://rubygems.org/api/v1/versions/{gem}.json</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>Libyear is calculated as:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">libyear</span> <span class="o">=</span> <span class="p">(</span><span class="n">latest_release_date</span> <span class="o">-</span> <span class="n">current_release_date</span><span class="p">)</span> <span class="o">/</span> <span class="mi">365</span>
+</pre></div>
+</div>
+<p>Results are stored in <code class="docutils literal notranslate"><span class="pre">repo_deps_libyear</span></code>.</p>
+</section>
+<section id="code-complexity-scc">
+<h3>Code complexity (scc)<a class="headerlink" href="#code-complexity-scc" title="Link to this heading"></a></h3>
+<p>If <code class="docutils literal notranslate"><span class="pre">scc</span></code> is installed, runs <code class="docutils literal notranslate"><span class="pre">scc</span> <span class="pre">-f</span> <span class="pre">json</span> <span class="pre">--by-file</span></code> against the checkout. Per-file metrics are stored in <code class="docutils literal notranslate"><span class="pre">repo_labor</span></code>:</p>
+<ul class="simple">
+<li><p>Programming language</p></li>
+<li><p>Total lines, code lines, comment lines, blank lines</p></li>
+<li><p>Cyclomatic complexity</p></li>
+</ul>
+<p>If <code class="docutils literal notranslate"><span class="pre">scc</span></code> is not installed, this phase is silently skipped.</p>
+</section>
+<section id="scancode-toolkit-license-and-copyright-detection">
+<h3>ScanCode Toolkit (license and copyright detection)<a class="headerlink" href="#scancode-toolkit-license-and-copyright-detection" title="Link to this heading"></a></h3>
+<p>After SCC, <a class="reference external" href="https://github.com/aboutcode-org/scancode-toolkit">ScanCode Toolkit</a> runs against the temporary checkout to detect per-file licenses, copyrights, and packages. ScanCode is a Python tool that provides precise, line-level attribution of licenses and copyright holders.</p>
+<p><strong>Invocation:</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<span class="w"> </span>--json<span class="w"> </span>&lt;output-file&gt;<span class="w"> </span>--quiet<span class="w"> </span>--timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span>&lt;path&gt;
+</pre></div>
+</div>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Flag</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">-c</span></code></p></td>
+<td><p>Detect copyrights and holders</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">-l</span></code></p></td>
+<td><p>Detect license expressions (SPDX)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">-p</span></code></p></td>
+<td><p>Detect package manifests</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">-i</span></code></p></td>
+<td><p>Collect file info (type, language, hashes)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--only-findings</span></code></p></td>
+<td><p>Omit files with no detections (reduces output)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--quiet</span></code></p></td>
+<td><p>Suppress progress output</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--timeout</span> <span class="pre">300</span></code></p></td>
+<td><p>5-minute per-file timeout for pathological files</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>30-day interval</strong>: ScanCode only runs once every 30 days per repo. License and copyright data changes infrequently, so re-scanning on every collection pass would waste time. The last-run timestamp is checked via <code class="docutils literal notranslate"><span class="pre">ScancodeLastRun</span></code> before invoking the tool.</p>
+<p><strong>Results</strong> are stored in the <code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> schema (separate from <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code>):</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Table</p></th>
+<th class="head"><p>Contents</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scancode_scans</span></code></p></td>
+<td><p>Scan metadata: scancode version, duration, files scanned, files with findings</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scancode_file_results</span></code></p></td>
+<td><p>Per-file: SPDX license expression, copyrights, holders, license detections, package data (all as JSONB)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">*_history</span></code></p></td>
+<td><p>Previous scan results rotated before each new scan</p></td>
+</tr>
+</tbody>
+</table>
+<p>ScanCode data enriches other features:</p>
+<ul class="simple">
+<li><p><strong>SBOMs</strong>: CycloneDX includes <code class="docutils literal notranslate"><span class="pre">evidence.licenses</span></code> and <code class="docutils literal notranslate"><span class="pre">evidence.copyright</span></code> on the root component. SPDX uses the aggregated SPDX expression for <code class="docutils literal notranslate"><span class="pre">licenseConcluded</span></code> (vs. <code class="docutils literal notranslate"><span class="pre">licenseDeclared</span></code> from the registry) and includes <code class="docutils literal notranslate"><span class="pre">copyrightText</span></code>.</p></li>
+<li><p><strong>Web dashboard</strong>: The repo detail page shows a “Source Code Licenses” section with per-license file counts, OSI compliance, and a copyright holders list.</p></li>
+</ul>
+<p>If ScanCode is not installed, this phase is silently skipped. Install it with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span></code> or <code class="docutils literal notranslate"><span class="pre">pipx</span> <span class="pre">install</span> <span class="pre">scancode-toolkit-mini</span></code>.</p>
+</section>
+<section id="openssf-scorecard-local-execution">
+<h3>OpenSSF Scorecard (local execution)<a class="headerlink" href="#openssf-scorecard-local-execution" title="Link to this heading"></a></h3>
+<p>After dependency scanning, libyear, and SCC complete, the <a class="reference external" href="https://github.com/ossf/scorecard">OpenSSF Scorecard</a> tool runs against the <strong>same temporary checkout</strong> in local mode (<code class="docutils literal notranslate"><span class="pre">--local</span></code>). This is significantly faster than remote mode because:</p>
+<ul class="simple">
+<li><p><strong>No redundant clone</strong>: Scorecard reuses the existing checkout instead of cloning the repo again.</p></li>
+<li><p><strong>Local checks run offline</strong>: Checks like Binary-Artifacts, Pinned-Dependencies, Dangerous-Workflow, and Token-Permissions evaluate files locally without any API calls.</p></li>
+<li><p><strong>Fewer API calls</strong>: Only API-dependent checks (Code-Review, Maintained, Branch-Protection) hit GitHub, making ~20-50 API calls instead of ~150-300 in remote mode.</p></li>
+</ul>
+<p>Before running scorecard, the checkout’s git remote origin is updated from the bare repo path to the actual GitHub/GitLab URL, so scorecard can resolve the remote for API-dependent checks.</p>
+<p>Results are stored in <code class="docutils literal notranslate"><span class="pre">repo_deps_scorecard</span></code> with one row per check, including the check name, score (0-10), reason, and full details as JSONB. Previous results are rotated to <code class="docutils literal notranslate"><span class="pre">repo_deps_scorecard_history</span></code>.</p>
+<p>The temporary checkout is deleted after scorecard completes. If scorecard is not installed, this phase is silently skipped. Install it with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span></code>.</p>
+<p><strong>Token management</strong>: After each scorecard run, the used API token is marked as partially depleted (<code class="docutils literal notranslate"><span class="pre">MarkDepleted</span></code>) so the key pool rotates past it. No concurrency semaphore is needed — local mode is mostly disk I/O, and the small number of remaining API calls is handled by the token rotation.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="periodic-tasks">
+<h2>Periodic tasks<a class="headerlink" href="#periodic-tasks" title="Link to this heading"></a></h2>
+<p>In addition to per-repo collection, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> runs these periodic tasks:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Task</p></th>
+<th class="head"><p>Interval</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Org refresh</strong></p></td>
+<td><p>Every 4 hours</p></td>
+<td><p>Re-fetches organization membership lists to discover new repos</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Contributor breadth</strong></p></td>
+<td><p>Every 6 hours</p></td>
+<td><p>Calls <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/users/{login}/events</span></code> for up to 100 contributors to discover cross-repo activity. Results stored in <code class="docutils literal notranslate"><span class="pre">contributor_repo</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Materialized view rebuild</strong></p></td>
+<td><p>Weekly (Saturday)</p></td>
+<td><p>Pauses all collection workers, refreshes all 19 matviews, resumes collection</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="monitoring.html"><span class="std std-doc">Monitoring</span></a> – track collection progress</p></li>
+<li><p><a class="reference internal" href="../architecture/staged-pipeline.html"><span class="std std-doc">Staged Pipeline Architecture</span></a> – deeper technical details</p></li>
+<li><p><a class="reference internal" href="../architecture/contributor-resolution.html"><span class="std std-doc">Contributor Resolution Architecture</span></a> – how identities are resolved</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="visualizations.html" class="btn btn-neutral float-left" title="Visualizations" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="monitoring.html" class="btn btn-neutral float-right" title="Monitoring" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

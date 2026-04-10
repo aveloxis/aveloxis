@@ -1,0 +1,443 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aveloxis Documentation &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=49efb58e"></script>
+      <script src="_static/doctools.js?v=9a2dae69"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Installation" href="getting-started/installation.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="#" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="architecture/overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="#">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="#" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Aveloxis Documentation</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/index.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="aveloxis-documentation">
+<h1>Aveloxis Documentation<a class="headerlink" href="#aveloxis-documentation" title="Link to this heading"></a></h1>
+<p>Aveloxis is a high-performance open source community health data collection platform written in Go. It collects data from GitHub and GitLab with equal completeness, storing it in a shared PostgreSQL schema for cross-platform analysis. It is designed as a companion to (and eventual replacement for) the <a class="reference external" href="https://github.com/chaoss/augur">Augur</a> collection pipeline.</p>
+<section id="key-features">
+<h2>Key Features<a class="headerlink" href="#key-features" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>Full GitHub + GitLab parity</strong> — same data types collected from both platforms, including MR discussion review comments</p></li>
+<li><p><strong>Staged collection pipeline</strong> — JSONB staging decouples API speed from DB write contention at 400K+ repos</p></li>
+<li><p><strong>Postgres-backed queue</strong> — no Redis, RabbitMQ, or Celery. Multiple instances share the same queue via <code class="docutils literal notranslate"><span class="pre">SKIP</span> <span class="pre">LOCKED</span></code></p></li>
+<li><p><strong>Git commit analysis</strong> — bare clones + <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">log</span> <span class="pre">--numstat</span></code> for per-file commit data, parent tracking, and Facade aggregates</p></li>
+<li><p><strong>Contributor resolution</strong> — resolves git commit emails to GitHub users via noreply parsing, Commits API, and Search API</p></li>
+<li><p><strong>Dependency &amp; complexity analysis</strong> — scans 15 ecosystems, calculates libyear across 12 package registries, runs scc for code complexity</p></li>
+<li><p><strong>Vulnerability scanning</strong> — OSV.dev batch API for CVE/GHSA lookup across all dependencies</p></li>
+<li><p><strong>SBOM generation</strong> — CycloneDX 1.5 + SPDX 2.3 with license capture from 12 registries</p></li>
+<li><p><strong>Interactive visualizations</strong> — weekly time-series charts, cross-project comparison with Z-score normalization, dependency license analysis</p></li>
+<li><p><strong>REST API</strong> — JSON endpoints for stats, time series, licenses, SBOM download, and repo search</p></li>
+<li><p><strong>19 materialized views</strong> — 8Knot-compatible analytics views, rebuilt weekly</p></li>
+<li><p><strong>Dead repo sidelining</strong> — permanently archives 404’d repos while preserving data</p></li>
+<li><p><strong>Deterministic contributor IDs</strong> — Augur-compatible GithubUUID scheme</p></li>
+</ul>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="getting-started/installation.html">Installation</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/installation.html#requirements">Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/installation.html#install-via-go-install-recommended">Install via <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">install</span></code> (recommended)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/installation.html#install-via-go-build-local-binary">Install via <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">build</span></code> (local binary)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/installation.html#path-troubleshooting">PATH troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/installation.html#installing-optional-tools">Installing optional tools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/installation.html#verifying-installation">Verifying installation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/installation.html#updating">Updating</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/installation.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="getting-started/configuration.html">Configuration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/configuration.html#creating-the-config-file">Creating the config file</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/configuration.html#full-config-reference">Full config reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/configuration.html#api-key-sources">API key sources</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/configuration.html#api-key-rotation-behavior">API key rotation behavior</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/configuration.html#clone-directory">Clone directory</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/configuration.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="getting-started/quickstart.html">Quick Start</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/quickstart.html#prerequisites">Prerequisites</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/quickstart.html#step-1-create-a-config-file">Step 1: Create a config file</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/quickstart.html#step-2-create-the-database-schema">Step 2: Create the database schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/quickstart.html#step-3-store-your-api-keys">Step 3: Store your API keys</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/quickstart.html#step-4-add-repos-to-the-collection-queue">Step 4: Add repos to the collection queue</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/quickstart.html#step-5-start-the-scheduler">Step 5: Start the scheduler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/quickstart.html#check-the-monitoring-dashboard">Check the monitoring dashboard</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/quickstart.html#verify-data-in-the-database">Verify data in the database</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/quickstart.html#what-happens-next">What happens next</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/quickstart.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="getting-started/augur-migration.html">Augur Migration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#step-1-point-at-the-existing-augur-database">Step 1: Point at the existing Augur database</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#step-2-create-the-aveloxis-schemas">Step 2: Create the Aveloxis schemas</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#step-3-import-api-keys">Step 3: Import API keys</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#step-4-import-repos">Step 4: Import repos</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#schema-coexistence">Schema coexistence</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#contributor-id-compatibility">Contributor ID compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#running-both-systems-side-by-side">Running both systems side-by-side</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#differences-from-augur">Differences from Augur</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#cleanup-optional">Cleanup (optional)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="getting-started/augur-migration.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="guide/commands.html">Commands Reference</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-serve"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-web"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-collect"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-add-repo"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-repo</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-add-key"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-key</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-prioritize"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">prioritize</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-migrate"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-refresh-views"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-install-tools"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-stop"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#global-behavior">Global behavior</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="guide/web-gui.html">Web GUI</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#prerequisites">Prerequisites</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#configuration">Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#starting-the-web-gui">Starting the Web GUI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#login-flow">Login Flow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#creating-groups">Creating Groups</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#comparing-repositories">Comparing Repositories</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#searching-and-pagination">Searching and Pagination</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#how-org-tracking-works">How Org Tracking Works</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#how-repos-get-queued-for-collection">How Repos Get Queued for Collection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#session-management">Session Management</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#running-alongside-aveloxis-serve">Running Alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#security-considerations">Security Considerations</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#endpoints">Endpoints</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#cors">CORS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#deployment">Deployment</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="guide/visualizations.html">Visualizations</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/visualizations.html#design-principles">Design Principles</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/visualizations.html#requirements">Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/visualizations.html#repository-detail-page">Repository Detail Page</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/visualizations.html#comparison-page">Comparison Page</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/visualizations.html#performance">Performance</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/visualizations.html#technical-implementation">Technical Implementation</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="guide/collection-pipeline.html">Collection Pipeline</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/collection-pipeline.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/collection-pipeline.html#prelim-phase">Prelim phase</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/collection-pipeline.html#phase-1-staging-staged-pipeline-only">Phase 1: Staging (staged pipeline only)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/collection-pipeline.html#phase-2-processing-staged-pipeline-only">Phase 2: Processing (staged pipeline only)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/collection-pipeline.html#phase-3-facade-git">Phase 3: Facade (git)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/collection-pipeline.html#phase-4-commit-author-resolution">Phase 4: Commit author resolution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/collection-pipeline.html#phase-5-canonical-email-enrichment">Phase 5: Canonical email enrichment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/collection-pipeline.html#phase-6-analysis">Phase 6: Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/collection-pipeline.html#periodic-tasks">Periodic tasks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/collection-pipeline.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="guide/monitoring.html">Monitoring</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/monitoring.html#dashboard">Dashboard</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/monitoring.html#rest-api-endpoints">REST API endpoints</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/monitoring.html#log-output">Log output</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/monitoring.html#checking-status-via-psql">Checking status via psql</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/monitoring.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="guide/ci-cd.html">CI/CD Pipelines</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/ci-cd.html#workflows">Workflows</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/ci-cd.html#status-badges">Status Badges</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/ci-cd.html#dockerfile">Dockerfile</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/ci-cd.html#running-in-docker">Running in Docker</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="guide/scaling.html">Scaling</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/scaling.html#worker-count-recommendations">Worker count recommendations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/scaling.html#rate-limit-math">Rate limit math</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/scaling.html#horizontal-scaling">Horizontal scaling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/scaling.html#database-connection-pool">Database connection pool</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/scaling.html#clone-directory-sizing">Clone directory sizing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/scaling.html#queue-behavior">Queue behavior</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/scaling.html#sizing-summary">Sizing summary</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/scaling.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="guide/troubleshooting.html">Troubleshooting</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#token-invalidation-401-vs-403">Token invalidation (401 vs 403)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#no-data-collected">“No data collected”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#restart-procedure">Restart procedure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#checking-queue-status">Checking queue status</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#checking-collection-status">Checking collection status</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#re-running-a-failed-repo">Re-running a failed repo</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#dead-repo-sidelining-and-un-sidelining">Dead repo sidelining and un-sidelining</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#gateway-errors-502-503-504">Gateway errors (502/503/504)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#deadlock-errors">Deadlock errors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="architecture/overview.html">Architecture Overview</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#system-diagram">System diagram</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#two-schemas">Two schemas</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#collection-flow">Collection flow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#key-design-decisions-vs-augur">Key design decisions vs Augur</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#project-structure">Project structure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#scheduler-internals">Scheduler internals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/staged-pipeline.html">Staged Pipeline Architecture</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture/staged-pipeline.html#why-staging">Why staging?</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/staged-pipeline.html#staging-writer">Staging writer</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/staged-pipeline.html#envelope-types">Envelope types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/staged-pipeline.html#processing-order">Processing order</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/staged-pipeline.html#error-isolation">Error isolation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/staged-pipeline.html#restart-and-resume">Restart and resume</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/staged-pipeline.html#performance-characteristics">Performance characteristics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/staged-pipeline.html#comparison-with-the-direct-pipeline">Comparison with the direct pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/staged-pipeline.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/contributor-resolution.html">Contributor Resolution</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture/contributor-resolution.html#two-layers">Two layers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/contributor-resolution.html#api-phase-resolution-contributorresolver">API-phase resolution: ContributorResolver</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/contributor-resolution.html#githubuuid-deterministic-contributor-ids">GithubUUID: Deterministic contributor IDs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/contributor-resolution.html#git-phase-resolution-commit-resolver">Git-phase resolution: Commit resolver</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/contributor-resolution.html#login-rename-detection">Login rename detection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/contributor-resolution.html#canonical-email-enrichment">Canonical email enrichment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/contributor-resolution.html#alias-creation">Alias creation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/contributor-resolution.html#contributor-breadth-worker">Contributor breadth worker</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/contributor-resolution.html#resolution-flow-diagram">Resolution flow diagram</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/contributor-resolution.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/facade-commits.html">Facade Commits</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#bare-clone-vs-full-clone">Bare clone vs full clone</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#git-log-parsing">Git log parsing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#per-file-commit-rows">Per-file commit rows</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#commit-parents">Commit parents</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#commit-messages">Commit messages</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#affiliation-resolution">Affiliation resolution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#facade-aggregates">Facade aggregates</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#resilience">Resilience</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/analysis.html">Analysis</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture/analysis.html#on-demand-full-clone-design">On-demand full clone design</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/analysis.html#dependency-scanning">Dependency scanning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/analysis.html#libyear-calculation">Libyear calculation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/analysis.html#disk-usage-summary">Disk usage summary</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/analysis.html#error-handling">Error handling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/analysis.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/materialized-views.html">Materialized Views</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture/materialized-views.html#view-list">View list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/materialized-views.html#knot-compatibility">8Knot compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/materialized-views.html#rebuild-schedule">Rebuild schedule</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/materialized-views.html#concurrently-vs-non-concurrent-refresh">CONCURRENTLY vs non-concurrent refresh</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/materialized-views.html#unique-indexes">Unique indexes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/materialized-views.html#view-details">View details</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/materialized-views.html#monitoring-refresh-progress">Monitoring refresh progress</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/materialized-views.html#troubleshooting">Troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/materialized-views.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#design-philosophy">Design Philosophy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#pull-requests">Pull Requests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#pull-request-meta">Pull Request Meta</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#pull-request-reviews">Pull Request Reviews</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#pull-request-labels">Pull Request Labels</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#pull-request-assignees-reviewers">Pull Request Assignees / Reviewers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#issues">Issues</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#issue-events">Issue Events</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#issue-labels-assignees">Issue Labels / Assignees</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#messages">Messages</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#repo-info">Repo Info</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#repo-clones">Repo Clones</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#table-names">Table Names</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#schema-names">Schema Names</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#libyear-compatibility-note">Libyear Compatibility Note</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/column-mapping.html#writing-queries">Writing Queries</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/platform-layer.html">Platform Abstraction Layer</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture/platform-layer.html#interface-hierarchy">Interface hierarchy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/platform-layer.html#http-client-httpclient">HTTP client (<code class="docutils literal notranslate"><span class="pre">HTTPClient</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/platform-layer.html#pagination">Pagination</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/platform-layer.html#design-notes">Design notes</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture/db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture/db-package.html#package-layout">Package layout</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/db-package.html#deadlock-retry">Deadlock retry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/db-package.html#batch-operations">Batch operations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/db-package.html#text-sanitization">Text sanitization</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/db-package.html#queue-system">Queue system</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/db-package.html#group-ownership-verification">Group ownership verification</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="schema.html">Aveloxis Schema Documentation</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="schema.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="schema.html#metadata-columns">Metadata Columns</a></li>
+<li class="toctree-l2"><a class="reference internal" href="schema.html#aveloxis-data-schema">aveloxis_data Schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="schema.html#aveloxis-ops-schema">aveloxis_ops Schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="schema.html#indexes">Indexes</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="getting-started/installation.html" class="btn btn-neutral float-right" title="Installation" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

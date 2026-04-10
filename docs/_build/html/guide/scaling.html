@@ -1,0 +1,496 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scaling &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Troubleshooting" href="troubleshooting.html" />
+    <link rel="prev" title="CI/CD Pipelines" href="ci-cd.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Scaling</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#worker-count-recommendations">Worker count recommendations</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#rule-of-thumb">Rule of thumb</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#too-many-workers">Too many workers</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#too-few-workers">Too few workers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#rate-limit-math">Rate limit math</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#estimating-collection-time">Estimating collection time</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#horizontal-scaling">Horizontal scaling</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#setup">Setup</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#what-is-shared">What is shared</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#considerations">Considerations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#database-connection-pool">Database connection pool</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#postgresql-configuration">PostgreSQL configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#clone-directory-sizing">Clone directory sizing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#sizing-estimates">Sizing estimates</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#recommendations">Recommendations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#queue-behavior">Queue behavior</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#many-repos-few-workers">Many repos, few workers</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#few-repos-many-workers">Few repos, many workers</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#priority-override">Priority override</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#sizing-summary">Sizing summary</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Scaling</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/guide/scaling.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="scaling">
+<h1>Scaling<a class="headerlink" href="#scaling" title="Link to this heading"></a></h1>
+<p>This guide covers configuring Aveloxis for different workload sizes, from a few dozen repos to hundreds of thousands.</p>
+<hr class="docutils" />
+<section id="worker-count-recommendations">
+<h2>Worker count recommendations<a class="headerlink" href="#worker-count-recommendations" title="Link to this heading"></a></h2>
+<p>Workers are concurrent collection goroutines that each claim one repo at a time from the queue. The optimal worker count depends on how many API tokens you have.</p>
+<section id="rule-of-thumb">
+<h3>Rule of thumb<a class="headerlink" href="#rule-of-thumb" title="Link to this heading"></a></h3>
+<p><strong>1 worker per 2-3 API tokens.</strong></p>
+<p>Each worker makes sustained API calls for its repo. With round-robin key rotation, each worker cycles through the available keys. Too many workers relative to keys means workers frequently hit rate limits and spend time waiting.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tokens</p></th>
+<th class="head"><p>Recommended Workers</p></th>
+<th class="head"><p>Throughput</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>1</p></td>
+<td><p>~4,985 req/hr</p></td>
+</tr>
+<tr class="row-odd"><td><p>2-3</p></td>
+<td><p>1</p></td>
+<td><p>~9,970-14,955 req/hr</p></td>
+</tr>
+<tr class="row-even"><td><p>4-6</p></td>
+<td><p>2</p></td>
+<td><p>~19,940-29,910 req/hr</p></td>
+</tr>
+<tr class="row-odd"><td><p>8-12</p></td>
+<td><p>4</p></td>
+<td><p>~39,880-59,820 req/hr</p></td>
+</tr>
+<tr class="row-even"><td><p>20-30</p></td>
+<td><p>8</p></td>
+<td><p>~99,700-149,550 req/hr</p></td>
+</tr>
+<tr class="row-odd"><td><p>50-74</p></td>
+<td><p>16-24</p></td>
+<td><p>~249,250-368,890 req/hr</p></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Example: 8 tokens, 4 workers</span>
+aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:5555
+</pre></div>
+</div>
+</section>
+<section id="too-many-workers">
+<h3>Too many workers<a class="headerlink" href="#too-many-workers" title="Link to this heading"></a></h3>
+<p>If you set workers higher than your token count can support:</p>
+<ul class="simple">
+<li><p>Workers will frequently encounter rate-limited keys (remaining &lt; 15)</p></li>
+<li><p>Keys will be skipped until their reset window</p></li>
+<li><p>Effective throughput may be lower than with fewer workers</p></li>
+<li><p>No data loss or errors – just slower than optimal</p></li>
+</ul>
+</section>
+<section id="too-few-workers">
+<h3>Too few workers<a class="headerlink" href="#too-few-workers" title="Link to this heading"></a></h3>
+<p>If you have many tokens but few workers:</p>
+<ul class="simple">
+<li><p>Keys go underutilized (their rate limits are not fully consumed)</p></li>
+<li><p>Collection is slower than it could be</p></li>
+<li><p>Perfectly safe, just leaving throughput on the table</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="rate-limit-math">
+<h2>Rate limit math<a class="headerlink" href="#rate-limit-math" title="Link to this heading"></a></h2>
+<p>GitHub provides 5000 requests per hour per token. Aveloxis uses a buffer of 15 requests per token to avoid hitting the hard limit.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Effective</span> <span class="n">requests</span> <span class="n">per</span> <span class="n">token</span> <span class="n">per</span> <span class="n">hour</span> <span class="o">=</span> <span class="mi">5000</span> <span class="o">-</span> <span class="mi">15</span> <span class="o">=</span> <span class="mi">4985</span>
+<span class="n">Total</span> <span class="n">throughput</span> <span class="o">=</span> <span class="n">N</span> <span class="n">tokens</span> <span class="o">*</span> <span class="mi">4985</span> <span class="n">req</span><span class="o">/</span><span class="n">hr</span>
+</pre></div>
+</div>
+<section id="estimating-collection-time">
+<h3>Estimating collection time<a class="headerlink" href="#estimating-collection-time" title="Link to this heading"></a></h3>
+<p>A typical GitHub repo with moderate activity (~500 issues, ~200 PRs) requires approximately 2000-5000 API requests for full historical collection. Subsequent incremental collections require far fewer requests (only new/updated items).</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Repos</p></th>
+<th class="head"><p>Tokens</p></th>
+<th class="head"><p>Full Collection Time (estimate)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>100</p></td>
+<td><p>4</p></td>
+<td><p>~2-5 hours</p></td>
+</tr>
+<tr class="row-odd"><td><p>1,000</p></td>
+<td><p>10</p></td>
+<td><p>~1-3 days</p></td>
+</tr>
+<tr class="row-even"><td><p>10,000</p></td>
+<td><p>20</p></td>
+<td><p>~1-2 weeks</p></td>
+</tr>
+<tr class="row-odd"><td><p>100,000</p></td>
+<td><p>50</p></td>
+<td><p>~2-4 months</p></td>
+</tr>
+<tr class="row-even"><td><p>400,000</p></td>
+<td><p>74</p></td>
+<td><p>~6-12 months</p></td>
+</tr>
+</tbody>
+</table>
+<p>These are rough estimates. Actual time depends on repo sizes, API response times, and the facade/analysis phases.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="horizontal-scaling">
+<h2>Horizontal scaling<a class="headerlink" href="#horizontal-scaling" title="Link to this heading"></a></h2>
+<p>Multiple <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> instances can share the same queue for horizontal scaling. The Postgres-backed queue uses <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">...</span> <span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code> for atomic job claiming, so no two instances will collect the same repo simultaneously.</p>
+<section id="setup">
+<h3>Setup<a class="headerlink" href="#setup" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>All instances must point to the same PostgreSQL database (same <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> database settings).</p></li>
+<li><p>Each instance should have its own <code class="docutils literal notranslate"><span class="pre">repo_clone_dir</span></code> on local storage (bare clones are not shared).</p></li>
+<li><p>Start each instance normally:</p></li>
+</ol>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Instance 1 (on server A)</span>
+aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:5555
+
+<span class="c1"># Instance 2 (on server B)</span>
+aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:5556
+</pre></div>
+</div>
+</section>
+<section id="what-is-shared">
+<h3>What is shared<a class="headerlink" href="#what-is-shared" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Resource</p></th>
+<th class="head"><p>Shared?</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>PostgreSQL database</p></td>
+<td><p>Yes</p></td>
+<td><p>All data and queue state</p></td>
+</tr>
+<tr class="row-odd"><td><p>API tokens</p></td>
+<td><p>Yes</p></td>
+<td><p>All instances draw from the same token pool in <code class="docutils literal notranslate"><span class="pre">worker_oauth</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Bare clones</p></td>
+<td><p>No</p></td>
+<td><p>Each instance needs its own clone directory</p></td>
+</tr>
+<tr class="row-odd"><td><p>Dashboard</p></td>
+<td><p>No</p></td>
+<td><p>Each instance serves its own dashboard</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="considerations">
+<h3>Considerations<a class="headerlink" href="#considerations" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>API tokens are shared:</strong> All instances rotate through the same pool of tokens. The total throughput across all instances is still bounded by <code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">tokens</span> <span class="pre">*</span> <span class="pre">4985</span> <span class="pre">req/hr</span></code>.</p></li>
+<li><p><strong>Stale lock recovery:</strong> If an instance crashes, its locked jobs are automatically re-queued after 1 hour by any running instance.</p></li>
+<li><p><strong>Materialized view rebuild:</strong> The Saturday rebuild is triggered by each instance independently. The <code class="docutils literal notranslate"><span class="pre">CONCURRENTLY</span></code> option ensures this is safe, though the rebuild may run multiple times.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="database-connection-pool">
+<h2>Database connection pool<a class="headerlink" href="#database-connection-pool" title="Link to this heading"></a></h2>
+<p>Aveloxis automatically scales the database connection pool based on the worker count. The formula is <code class="docutils literal notranslate"><span class="pre">workers</span> <span class="pre">+</span> <span class="pre">15</span></code>, with a minimum of 20. For example, <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">30</span></code> uses a pool of 45 connections. Non-scheduler commands (web, api, migrate) use the default pool of 20.</p>
+<section id="postgresql-configuration">
+<h3>PostgreSQL configuration<a class="headerlink" href="#postgresql-configuration" title="Link to this heading"></a></h3>
+<p>For multiple instances or high worker counts, ensure your PostgreSQL <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> is sufficient:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">max_connections</span> <span class="o">=</span> <span class="p">(</span><span class="n">workers</span> <span class="o">+</span> <span class="mi">15</span><span class="p">)</span> <span class="o">*</span> <span class="p">(</span><span class="n">number</span> <span class="n">of</span> <span class="n">Aveloxis</span> <span class="n">instances</span><span class="p">)</span> <span class="o">+</span> <span class="n">connections</span> <span class="k">for</span> <span class="n">other</span> <span class="n">clients</span>
+</pre></div>
+</div>
+<p>For example, 3 Aveloxis instances plus psql and monitoring tools:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">max_connections</span> <span class="o">=</span> <span class="mi">20</span> <span class="o">*</span> <span class="mi">3</span> <span class="o">+</span> <span class="mi">10</span> <span class="o">=</span> <span class="mi">70</span>
+</pre></div>
+</div>
+<p>Adjust in <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code>:</p>
+<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">max_connections</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">100</span>
+</pre></div>
+</div>
+</section>
+<section id="shared-buffers">
+<h3>Shared buffers<a class="headerlink" href="#shared-buffers" title="Link to this heading"></a></h3>
+<p>For large datasets (millions of rows across tables), increase PostgreSQL shared buffers:</p>
+<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">shared_buffers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">4GB</span><span class="w">          </span><span class="c1"># 25% of available RAM</span>
+<span class="na">effective_cache_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">12GB</span><span class="w">   </span><span class="c1"># 75% of available RAM</span>
+<span class="na">work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">256MB</span><span class="w">              </span><span class="c1"># for complex queries and matview refreshes</span>
+<span class="na">maintenance_work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">1GB</span><span class="w">    </span><span class="c1"># for VACUUM and index creation</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="clone-directory-sizing">
+<h2>Clone directory sizing<a class="headerlink" href="#clone-directory-sizing" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">collection.repo_clone_dir</span></code> stores bare git clones that persist across collection cycles.</p>
+<section id="sizing-estimates">
+<h3>Sizing estimates<a class="headerlink" href="#sizing-estimates" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Repos</p></th>
+<th class="head"><p>Estimated Disk Usage</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>100</p></td>
+<td><p>5-50 GB</p></td>
+</tr>
+<tr class="row-odd"><td><p>1,000</p></td>
+<td><p>50-500 GB</p></td>
+</tr>
+<tr class="row-even"><td><p>10,000</p></td>
+<td><p>500 GB - 5 TB</p></td>
+</tr>
+<tr class="row-odd"><td><p>100,000</p></td>
+<td><p>5-50 TB</p></td>
+</tr>
+<tr class="row-even"><td><p>400,000</p></td>
+<td><p>20-100+ TB</p></td>
+</tr>
+</tbody>
+</table>
+<p>Sizes vary enormously depending on repo history sizes. Large repos like <code class="docutils literal notranslate"><span class="pre">torvalds/linux</span></code> can be 5+ GB as a bare clone, while small repos are under 1 MB.</p>
+</section>
+<section id="recommendations">
+<h3>Recommendations<a class="headerlink" href="#recommendations" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Use <strong>SSD or NVMe</strong> storage for best performance. The facade phase does heavy sequential reads of git history.</p></li>
+<li><p>Use a <strong>dedicated mount point</strong> so clone storage does not fill up your root filesystem.</p></li>
+<li><p><strong>NFS</strong> works but may slow the facade phase due to latency on small random reads during <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">log</span></code>.</p></li>
+<li><p><strong>Full clones</strong> (temporary, used for analysis) are created inside the clone directory and deleted after each repo. They roughly double the disk usage of a bare clone temporarily.</p></li>
+</ul>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;repo_clone_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/data/aveloxis-repos&quot;</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="queue-behavior">
+<h2>Queue behavior<a class="headerlink" href="#queue-behavior" title="Link to this heading"></a></h2>
+<section id="many-repos-few-workers">
+<h3>Many repos, few workers<a class="headerlink" href="#many-repos-few-workers" title="Link to this heading"></a></h3>
+<p>When the queue has thousands of repos and only a few workers, repos are collected in priority order. Lower priority numbers are collected first. Repos at the same priority are collected in due-time order (oldest first).</p>
+</section>
+<section id="few-repos-many-workers">
+<h3>Few repos, many workers<a class="headerlink" href="#few-repos-many-workers" title="Link to this heading"></a></h3>
+<p>When the queue has fewer repos than workers, excess workers sit idle waiting for repos to become due for recollection (based on <code class="docutils literal notranslate"><span class="pre">days_until_recollect</span></code>).</p>
+</section>
+<section id="priority-override">
+<h3>Priority override<a class="headerlink" href="#priority-override" title="Link to this heading"></a></h3>
+<p>At any time, you can push a specific repo to the front:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github.com/critical/repo
+</pre></div>
+</div>
+<p>Or via the dashboard’s Boost button, or the REST API:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:5555/api/prioritize/42
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="sizing-summary">
+<h2>Sizing summary<a class="headerlink" href="#sizing-summary" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Component</p></th>
+<th class="head"><p>Small (100 repos)</p></th>
+<th class="head"><p>Medium (10K repos)</p></th>
+<th class="head"><p>Large (400K repos)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Tokens</p></td>
+<td><p>1-2</p></td>
+<td><p>10-20</p></td>
+<td><p>50-74+</p></td>
+</tr>
+<tr class="row-odd"><td><p>Workers</p></td>
+<td><p>1</p></td>
+<td><p>4-8</p></td>
+<td><p>16-24</p></td>
+</tr>
+<tr class="row-even"><td><p>Clone disk</p></td>
+<td><p>50 GB</p></td>
+<td><p>5 TB</p></td>
+<td><p>50+ TB</p></td>
+</tr>
+<tr class="row-odd"><td><p>DB connections</p></td>
+<td><p>20</p></td>
+<td><p>20</p></td>
+<td><p>60 (3 instances)</p></td>
+</tr>
+<tr class="row-even"><td><p>PostgreSQL RAM</p></td>
+<td><p>2 GB</p></td>
+<td><p>8 GB</p></td>
+<td><p>32+ GB</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="../getting-started/configuration.html"><span class="std std-doc">Configuration</span></a> – set collection parameters</p></li>
+<li><p><a class="reference internal" href="monitoring.html"><span class="std std-doc">Monitoring</span></a> – track collection progress</p></li>
+<li><p><a class="reference internal" href="troubleshooting.html"><span class="std std-doc">Troubleshooting</span></a> – diagnose performance issues</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="ci-cd.html" class="btn btn-neutral float-left" title="CI/CD Pipelines" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="troubleshooting.html" class="btn btn-neutral float-right" title="Troubleshooting" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

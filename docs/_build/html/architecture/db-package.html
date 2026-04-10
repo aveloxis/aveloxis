@@ -1,0 +1,301 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Database Package (internal/db) &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Aveloxis Schema Documentation" href="../schema.html" />
+    <link rel="prev" title="Platform Abstraction Layer" href="platform-layer.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#package-layout">Package layout</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#deadlock-retry">Deadlock retry</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#batch-operations">Batch operations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#text-sanitization">Text sanitization</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#queue-system">Queue system</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#group-ownership-verification">Group ownership verification</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/architecture/db-package.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="database-package-internal-db">
+<h1>Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)<a class="headerlink" href="#database-package-internal-db" title="Link to this heading"></a></h1>
+<p>The <code class="docutils literal notranslate"><span class="pre">db</span></code> package is the PostgreSQL data access layer for Aveloxis. It provides upsert-based persistence with deadlock retry, batch operations for throughput, and helper subsystems for text sanitization, contributor resolution, and queue management.</p>
+<hr class="docutils" />
+<section id="package-layout">
+<h2>Package layout<a class="headerlink" href="#package-layout" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>File</p></th>
+<th class="head"><p>Responsibility</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">store.go</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Store</span></code> interface and <code class="docutils literal notranslate"><span class="pre">CollectionState</span></code> type</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">postgres.go</span></code></p></td>
+<td><p>Core <code class="docutils literal notranslate"><span class="pre">PostgresStore</span></code> implementation: repos, issues, PRs, events, messages, releases, commits, collection status</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">queue.go</span></code></p></td>
+<td><p>Postgres-backed priority queue (<code class="docutils literal notranslate"><span class="pre">SKIP</span> <span class="pre">LOCKED</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">staging.go</span></code></p></td>
+<td><p>JSONB staging writer and batch processor</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">contributors.go</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ContributorResolver</span></code> with in-memory cache</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">commit_resolver_store.go</span></code></p></td>
+<td><p>Commit-to-contributor resolution queries</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">affiliations.go</span></code></p></td>
+<td><p>Email domain to organization affiliation resolver</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aggregates.go</span></code></p></td>
+<td><p>Facade post-processing (annual/monthly/weekly aggregates)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">analysis_store.go</span></code></p></td>
+<td><p>Dependency, libyear, code complexity, SBOM storage</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">breadth_store.go</span></code></p></td>
+<td><p>Contributor breadth (cross-repo activity) storage</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web_store.go</span></code></p></td>
+<td><p>OAuth users, user groups, org tracking</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">matviews.go</span></code></p></td>
+<td><p>Materialized view creation and refresh</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">migrate.go</span></code></p></td>
+<td><p>Schema migrations, timestamp cleanup, tool_version backfill</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sanitize.go</span></code></p></td>
+<td><p>Text sanitization (null bytes, invalid UTF-8, control chars)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">github_uuid.go</span></code></p></td>
+<td><p>Deterministic UUID generation from platform user IDs</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">keys.go</span></code></p></td>
+<td><p>API key loading with Augur fallback</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">import.go</span></code></p></td>
+<td><p>Augur repo import helper</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">version.go</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ToolVersion</span></code> constant</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="deadlock-retry">
+<h2>Deadlock retry<a class="headerlink" href="#deadlock-retry" title="Link to this heading"></a></h2>
+<p>All write operations that can contend use <code class="docutils literal notranslate"><span class="pre">withRetry()</span></code>, which catches PostgreSQL deadlock errors (SQLSTATE <code class="docutils literal notranslate"><span class="pre">40P01</span></code>) and retries with exponential backoff plus jitter, up to 10 attempts. This mirrors Augur’s <code class="docutils literal notranslate"><span class="pre">DatabaseSession</span></code> retry logic.</p>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">s</span><span class="w"> </span><span class="o">*</span><span class="nx">PostgresStore</span><span class="p">)</span><span class="w"> </span><span class="nx">withRetry</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">,</span><span class="w"> </span><span class="nx">fn</span><span class="w"> </span><span class="kd">func</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span>
+</pre></div>
+</div>
+<p>Methods that use <code class="docutils literal notranslate"><span class="pre">withRetry</span></code>: <code class="docutils literal notranslate"><span class="pre">UpsertRepo</span></code>, <code class="docutils literal notranslate"><span class="pre">UpsertIssue</span></code>, <code class="docutils literal notranslate"><span class="pre">UpsertPullRequest</span></code>, <code class="docutils literal notranslate"><span class="pre">UpsertContributorBatch</span></code>, <code class="docutils literal notranslate"><span class="pre">UpsertMessageBatch</span></code>, <code class="docutils literal notranslate"><span class="pre">UpsertReviewCommentBatch</span></code>, <code class="docutils literal notranslate"><span class="pre">EnqueueRepo</span></code>, <code class="docutils literal notranslate"><span class="pre">CompleteJob</span></code>, and all label/assignee/reviewer/event/commit upserts.</p>
+</section>
+<hr class="docutils" />
+<section id="batch-operations">
+<h2>Batch operations<a class="headerlink" href="#batch-operations" title="Link to this heading"></a></h2>
+<p>Several operations support batching via <code class="docutils literal notranslate"><span class="pre">pgx.Batch</span></code> to reduce network round-trips:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Method</p></th>
+<th class="head"><p>Use case</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">UpsertContributorBatch</span></code></p></td>
+<td><p>Deduplicates contributors in-memory, then upserts in a single transaction with savepoints for race safety</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">UpsertMessageBatch</span></code></p></td>
+<td><p>Upserts messages + issue/PR refs in one transaction</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">UpsertReviewCommentBatch</span></code></p></td>
+<td><p>Upserts review comments + messages in one transaction</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">UpsertIssueLabels</span></code></p></td>
+<td><p>Batch label upsert via <code class="docutils literal notranslate"><span class="pre">pgx.Batch</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">UpsertPRLabels</span></code></p></td>
+<td><p>Batch label upsert via <code class="docutils literal notranslate"><span class="pre">pgx.Batch</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">UpsertPRAssignees</span></code></p></td>
+<td><p>Batch via <code class="docutils literal notranslate"><span class="pre">pgx.Batch</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">UpsertPRReviewers</span></code></p></td>
+<td><p>Batch via <code class="docutils literal notranslate"><span class="pre">pgx.Batch</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">InsertRepoDependencyBatch</span></code></p></td>
+<td><p>Batch dependency insert via <code class="docutils literal notranslate"><span class="pre">pgx.Batch</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">InsertRepoLibyearBatch</span></code></p></td>
+<td><p>Batch libyear insert via <code class="docutils literal notranslate"><span class="pre">pgx.Batch</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">InsertRepoLaborBatch</span></code></p></td>
+<td><p>Batch code complexity insert via <code class="docutils literal notranslate"><span class="pre">pgx.Batch</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">InsertContributorRepoBatch</span></code></p></td>
+<td><p>Batch breadth events via <code class="docutils literal notranslate"><span class="pre">pgx.Batch</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">StagingWriter.Stage/Flush</span></code></p></td>
+<td><p>Buffers staging inserts, flushes every 500 rows</p></td>
+</tr>
+</tbody>
+</table>
+<p>The single-row variants (<code class="docutils literal notranslate"><span class="pre">InsertRepoDependency</span></code>, <code class="docutils literal notranslate"><span class="pre">InsertRepoLibyear</span></code>, <code class="docutils literal notranslate"><span class="pre">InsertRepoLabor</span></code>, <code class="docutils literal notranslate"><span class="pre">InsertContributorRepo</span></code>) remain available for callers that process items one at a time.</p>
+</section>
+<hr class="docutils" />
+<section id="text-sanitization">
+<h2>Text sanitization<a class="headerlink" href="#text-sanitization" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">SanitizeText()</span></code> cleans strings for PostgreSQL TEXT columns by removing null bytes, replacing invalid UTF-8 with the Unicode replacement character, and stripping control characters (except <code class="docutils literal notranslate"><span class="pre">\n</span></code>, <code class="docutils literal notranslate"><span class="pre">\r</span></code>, <code class="docutils literal notranslate"><span class="pre">\t</span></code>). It includes a fast-path check that returns the original string when no cleaning is needed.</p>
+<p><code class="docutils literal notranslate"><span class="pre">NullTime()</span></code> converts Go’s zero <code class="docutils literal notranslate"><span class="pre">time.Time</span></code> to <code class="docutils literal notranslate"><span class="pre">nil</span></code> to prevent year-0001 garbage timestamps in PostgreSQL.</p>
+<p>Both are called automatically by the upsert methods on text fields and timestamp fields.</p>
+</section>
+<hr class="docutils" />
+<section id="queue-system">
+<h2>Queue system<a class="headerlink" href="#queue-system" title="Link to this heading"></a></h2>
+<p>The collection queue (<code class="docutils literal notranslate"><span class="pre">aveloxis_ops.collection_queue</span></code>) is a PostgreSQL-backed priority queue using <code class="docutils literal notranslate"><span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code> for atomic job claiming:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">EnqueueRepo</span></code> – adds/updates a repo in the queue</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DequeueNext</span></code> – atomically claims the highest-priority due job</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CompleteJob</span></code> – marks done and re-queues with a future due time</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">PrioritizeRepo</span></code> – pushes a repo to priority 0 (immediate)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">RecoverStaleLocks</span></code> – resets jobs locked longer than a timeout (crash recovery)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ListQueue</span></code> / <code class="docutils literal notranslate"><span class="pre">QueueStats</span></code> – observability</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="group-ownership-verification">
+<h2>Group ownership verification<a class="headerlink" href="#group-ownership-verification" title="Link to this heading"></a></h2>
+<p>Web store operations that modify user groups use <code class="docutils literal notranslate"><span class="pre">verifyGroupOwnership()</span></code> / <code class="docutils literal notranslate"><span class="pre">verifyGroupOwned()</span></code> to check that a group belongs to the requesting user before proceeding. This is a single-query check that returns an error if the group is not found or not owned by the user.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="platform-layer.html" class="btn btn-neutral float-left" title="Platform Abstraction Layer" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../schema.html" class="btn btn-neutral float-right" title="Aveloxis Schema Documentation" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

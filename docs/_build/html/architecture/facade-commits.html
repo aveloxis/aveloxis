@@ -1,0 +1,587 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Facade Commits &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Analysis" href="analysis.html" />
+    <link rel="prev" title="Contributor Resolution" href="contributor-resolution.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Facade Commits</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#bare-clone-vs-full-clone">Bare clone vs full clone</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#bare-clones">Bare clones</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#full-clones-temporary">Full clones (temporary)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#disk-usage">Disk usage</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#git-log-parsing">Git log parsing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#format-string">Format string</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#parsing-logic">Parsing logic</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#per-file-commit-rows">Per-file commit rows</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#columns-populated-from-git-log">Columns populated from git log</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#upsert-behavior">Upsert behavior</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#commit-parents">Commit parents</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#commit-messages">Commit messages</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#affiliation-resolution">Affiliation resolution</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#resolution-logic">Resolution logic</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#populated-columns">Populated columns</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#adding-affiliations">Adding affiliations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#facade-aggregates">Facade aggregates</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#aggregate-tables">Aggregate tables</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#aggregate-columns">Aggregate columns</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#refresh-sql">Refresh SQL</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#resilience">Resilience</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#fetch-failure-recovery">Fetch failure recovery</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#incremental-collection">Incremental collection</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Facade Commits</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/architecture/facade-commits.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="facade-commits">
+<h1>Facade Commits<a class="headerlink" href="#facade-commits" title="Link to this heading"></a></h1>
+<p>The facade phase extracts commit data from git repositories using <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">log</span></code>. This page covers the bare clone design, log parsing, per-file commit rows, and aggregate computation.</p>
+<hr class="docutils" />
+<section id="bare-clone-vs-full-clone">
+<h2>Bare clone vs full clone<a class="headerlink" href="#bare-clone-vs-full-clone" title="Link to this heading"></a></h2>
+<p>Aveloxis uses two types of git clones for different purposes:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Type</p></th>
+<th class="head"><p>Command</p></th>
+<th class="head"><p>Persistence</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Bare clone</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">clone</span> <span class="pre">--bare</span></code></p></td>
+<td><p>Permanent</p></td>
+<td><p>Facade phase (git log parsing)</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Full clone</strong></p></td>
+<td><p>Local checkout from bare clone</p></td>
+<td><p>Temporary</p></td>
+<td><p>Analysis phase (dependency scanning, scc)</p></td>
+</tr>
+</tbody>
+</table>
+<section id="bare-clones">
+<h3>Bare clones<a class="headerlink" href="#bare-clones" title="Link to this heading"></a></h3>
+<p>Bare clones contain only the git object database (no working tree). They are:</p>
+<ul class="simple">
+<li><p><strong>Smaller</strong> than full clones (no checked-out files)</p></li>
+<li><p><strong>Permanent</strong> – stored in <code class="docutils literal notranslate"><span class="pre">repo_clone_dir</span></code> and reused across collection cycles</p></li>
+<li><p><strong>Updated</strong> via <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--all</span></code> on subsequent runs</p></li>
+</ul>
+</section>
+<section id="full-clones-temporary">
+<h3>Full clones (temporary)<a class="headerlink" href="#full-clones-temporary" title="Link to this heading"></a></h3>
+<p>When the analysis phase needs to read file contents (for dependency scanning and code complexity), a full checkout is created locally from the bare clone:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>/path/to/bare.git<span class="w"> </span>/path/to/temp-checkout
+</pre></div>
+</div>
+<p>This is a local operation (no network request). After analysis completes, the temporary checkout is deleted.</p>
+</section>
+<section id="disk-usage">
+<h3>Disk usage<a class="headerlink" href="#disk-usage" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Bare clones:</strong> Permanent. Plan for 10 MB to 5+ GB per repo depending on history size.</p></li>
+<li><p><strong>Full clones:</strong> Temporary. Roughly double the bare clone size while they exist, then deleted.</p></li>
+</ul>
+<p>For large instances (400K repos), bare clones can consume tens of terabytes.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="git-log-parsing">
+<h2>Git log parsing<a class="headerlink" href="#git-log-parsing" title="Link to this heading"></a></h2>
+<p>The facade phase runs <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">log</span></code> with a custom format string to extract commit data.</p>
+<section id="format-string">
+<h3>Format string<a class="headerlink" href="#format-string" title="Link to this heading"></a></h3>
+<p>The format uses custom field and record separators to reliably parse multi-line output:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">git</span> <span class="n">log</span> <span class="o">--</span><span class="nb">all</span> <span class="o">--</span><span class="n">numstat</span> <span class="o">--</span><span class="n">pretty</span><span class="o">=</span><span class="nb">format</span><span class="p">:</span><span class="s1">&#39;&lt;COMMIT&gt;%H&lt;SEP&gt;</span><span class="si">%a</span><span class="s1">n&lt;SEP&gt;</span><span class="si">%a</span><span class="s1">e&lt;SEP&gt;</span><span class="si">%a</span><span class="s1">d&lt;SEP&gt;</span><span class="si">%c</span><span class="s1">n&lt;SEP&gt;</span><span class="si">%c</span><span class="s1">e&lt;SEP&gt;</span><span class="si">%c</span><span class="s1">d&lt;SEP&gt;%P&lt;SEP&gt;</span><span class="si">%s</span><span class="s1">&#39;</span>
+</pre></div>
+</div>
+<p>Where:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Placeholder</p></th>
+<th class="head"><p>Field</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%H</span></code></p></td>
+<td><p>Full commit hash</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">%an</span></code></p></td>
+<td><p>Author name</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%ae</span></code></p></td>
+<td><p>Author email</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">%ad</span></code></p></td>
+<td><p>Author date</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%cn</span></code></p></td>
+<td><p>Committer name</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">%ce</span></code></p></td>
+<td><p>Committer email</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%cd</span></code></p></td>
+<td><p>Committer date</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">%P</span></code></p></td>
+<td><p>Parent hashes (space-separated)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%s</span></code></p></td>
+<td><p>Subject line (commit message first line)</p></td>
+</tr>
+</tbody>
+</table>
+<p>The <code class="docutils literal notranslate"><span class="pre">--numstat</span></code> flag appends per-file statistics after each commit:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mi">12</span>    <span class="mi">5</span>    <span class="n">src</span><span class="o">/</span><span class="n">main</span><span class="o">.</span><span class="n">go</span>
+<span class="mi">3</span>     <span class="mi">1</span>    <span class="n">README</span><span class="o">.</span><span class="n">md</span>
+<span class="o">-</span>     <span class="o">-</span>    <span class="n">binary</span><span class="o">-</span><span class="n">file</span><span class="o">.</span><span class="n">bin</span>
+</pre></div>
+</div>
+<p>Each line shows lines added, lines removed, and the file path. Binary files show <code class="docutils literal notranslate"><span class="pre">-</span></code> for both counts.</p>
+</section>
+<section id="parsing-logic">
+<h3>Parsing logic<a class="headerlink" href="#parsing-logic" title="Link to this heading"></a></h3>
+<p>The parser:</p>
+<ol class="arabic simple">
+<li><p>Splits output on the <code class="docutils literal notranslate"><span class="pre">&lt;COMMIT&gt;</span></code> record separator</p></li>
+<li><p>For each commit, splits the header on <code class="docutils literal notranslate"><span class="pre">&lt;SEP&gt;</span></code> field separators</p></li>
+<li><p>Reads subsequent lines as numstat entries until the next commit</p></li>
+<li><p>Handles binary files (lines added/removed = 0 when <code class="docutils literal notranslate"><span class="pre">-</span></code> is encountered)</p></li>
+<li><p>Extracts date components for aggregate computation</p></li>
+</ol>
+</section>
+</section>
+<hr class="docutils" />
+<section id="per-file-commit-rows">
+<h2>Per-file commit rows<a class="headerlink" href="#per-file-commit-rows" title="Link to this heading"></a></h2>
+<p>Following Augur’s data model, the <code class="docutils literal notranslate"><span class="pre">commits</span></code> table stores <strong>one row per file per commit</strong>. A commit that touches 10 files produces 10 rows, all sharing the same <code class="docutils literal notranslate"><span class="pre">cmt_commit_hash</span></code>.</p>
+<section id="columns-populated-from-git-log">
+<h3>Columns populated from git log<a class="headerlink" href="#columns-populated-from-git-log" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>Context</p></td>
+<td><p>The repo being collected</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_commit_hash</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%H</span></code></p></td>
+<td><p>Full SHA-1 hash</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_author_name</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%an</span></code></p></td>
+<td><p>Author name</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_author_raw_email</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%ae</span></code></p></td>
+<td><p>Author email as-is</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_author_email</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%ae</span></code></p></td>
+<td><p>Initially same as raw; updated by commit resolver</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_author_date</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%ad</span></code></p></td>
+<td><p>Author date string</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_author_timestamp</span></code></p></td>
+<td><p>Parsed from <code class="docutils literal notranslate"><span class="pre">%ad</span></code></p></td>
+<td><p>Parsed timestamp</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_committer_name</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%cn</span></code></p></td>
+<td><p>Committer name</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_committer_raw_email</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%ce</span></code></p></td>
+<td><p>Committer email as-is</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_committer_email</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%ce</span></code></p></td>
+<td><p>Initially same as raw; updated by commit resolver</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_committer_date</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%cd</span></code></p></td>
+<td><p>Committer date string</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_committer_timestamp</span></code></p></td>
+<td><p>Parsed from <code class="docutils literal notranslate"><span class="pre">%cd</span></code></p></td>
+<td><p>Parsed timestamp</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_added</span></code></p></td>
+<td><p>numstat</p></td>
+<td><p>Lines added in this file</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_removed</span></code></p></td>
+<td><p>numstat</p></td>
+<td><p>Lines removed in this file</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_whitespace</span></code></p></td>
+<td><p>Computed</p></td>
+<td><p>Always 0 (reserved)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_filename</span></code></p></td>
+<td><p>numstat</p></td>
+<td><p>File path</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="upsert-behavior">
+<h3>Upsert behavior<a class="headerlink" href="#upsert-behavior" title="Link to this heading"></a></h3>
+<p>Commits are upserted with <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">CONFLICT</span> <span class="pre">(repo_id,</span> <span class="pre">cmt_commit_hash,</span> <span class="pre">cmt_filename)</span> <span class="pre">DO</span> <span class="pre">UPDATE</span></code>. This means:</p>
+<ul class="simple">
+<li><p>New commits are inserted</p></li>
+<li><p>Existing commits are updated (e.g., after commit resolver fills in <code class="docutils literal notranslate"><span class="pre">cmt_author_platform_username</span></code>)</p></li>
+<li><p>Re-running facade on the same repo is safe and idempotent</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="commit-parents">
+<h2>Commit parents<a class="headerlink" href="#commit-parents" title="Link to this heading"></a></h2>
+<p>Parent-child relationships are extracted from the <code class="docutils literal notranslate"><span class="pre">%P</span></code> placeholder (space-separated parent hashes) and inserted into the <code class="docutils literal notranslate"><span class="pre">commit_parents</span></code> table.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">commit_parents</span><span class="w"> </span><span class="p">(</span><span class="n">cmt_id</span><span class="p">,</span><span class="w"> </span><span class="n">parent_id</span><span class="p">)</span>
+<span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="err">$</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="err">$</span><span class="mi">2</span><span class="p">)</span>
+<span class="k">ON</span><span class="w"> </span><span class="n">CONFLICT</span><span class="w"> </span><span class="k">DO</span><span class="w"> </span><span class="k">NOTHING</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>This enables:</p>
+<ul class="simple">
+<li><p>Reconstructing the commit DAG</p></li>
+<li><p>Identifying merge commits (commits with 2+ parents)</p></li>
+<li><p>Analyzing branching and merging patterns</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="commit-messages">
+<h2>Commit messages<a class="headerlink" href="#commit-messages" title="Link to this heading"></a></h2>
+<p>Full commit messages are stored in the <code class="docutils literal notranslate"><span class="pre">commit_messages</span></code> table, deduplicated per repo and commit hash:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">commit_messages</span><span class="w"> </span><span class="p">(</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">cmt_hash</span><span class="p">,</span><span class="w"> </span><span class="n">cmt_msg</span><span class="p">)</span>
+<span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="err">$</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="err">$</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="err">$</span><span class="mi">3</span><span class="p">)</span>
+<span class="k">ON</span><span class="w"> </span><span class="n">CONFLICT</span><span class="w"> </span><span class="p">(</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">cmt_hash</span><span class="p">)</span><span class="w"> </span><span class="k">DO</span><span class="w"> </span><span class="k">NOTHING</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>The subject line (<code class="docutils literal notranslate"><span class="pre">%s</span></code>) is used for the message. This is stored separately from the per-file commit rows to avoid duplicating message text across all file rows for the same commit.</p>
+</section>
+<hr class="docutils" />
+<section id="affiliation-resolution">
+<h2>Affiliation resolution<a class="headerlink" href="#affiliation-resolution" title="Link to this heading"></a></h2>
+<p>During facade processing, commit author and committer emails are matched against the <code class="docutils literal notranslate"><span class="pre">contributor_affiliations</span></code> table to resolve organizational affiliations.</p>
+<section id="resolution-logic">
+<h3>Resolution logic<a class="headerlink" href="#resolution-logic" title="Link to this heading"></a></h3>
+<p>The affiliation resolver:</p>
+<ol class="arabic simple">
+<li><p><strong>Loads all active rules</strong> from <code class="docutils literal notranslate"><span class="pre">contributor_affiliations</span></code> on first use (lazy initialization, cached in memory)</p></li>
+<li><p><strong>Extracts the domain</strong> from the email address (e.g., <code class="docutils literal notranslate"><span class="pre">user&#64;redhat.com</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">redhat.com</span></code>)</p></li>
+<li><p><strong>Exact domain match first</strong> (e.g., <code class="docutils literal notranslate"><span class="pre">redhat.com</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">Red</span> <span class="pre">Hat</span></code>)</p></li>
+<li><p><strong>Parent domain fallback</strong> (e.g., <code class="docutils literal notranslate"><span class="pre">mail.google.com</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">google.com</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">Google</span></code>)</p></li>
+</ol>
+</section>
+<section id="populated-columns">
+<h3>Populated columns<a class="headerlink" href="#populated-columns" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_author_affiliation</span></code></p></td>
+<td><p>Organization name for the author’s email domain</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cmt_committer_affiliation</span></code></p></td>
+<td><p>Organization name for the committer’s email domain</p></td>
+</tr>
+</tbody>
+</table>
+<p>If no match is found, these columns are left <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p>
+</section>
+<section id="adding-affiliations">
+<h3>Adding affiliations<a class="headerlink" href="#adding-affiliations" title="Link to this heading"></a></h3>
+<p>Affiliations are stored in the <code class="docutils literal notranslate"><span class="pre">contributor_affiliations</span></code> table:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">contributor_affiliations</span>
+<span class="w">  </span><span class="p">(</span><span class="n">ca_domain</span><span class="p">,</span><span class="w"> </span><span class="n">ca_affiliation</span><span class="p">,</span><span class="w"> </span><span class="n">ca_active</span><span class="p">)</span>
+<span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="s1">&#39;redhat.com&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;Red Hat&#39;</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>After adding new affiliations, existing commits can be re-processed by re-running the facade phase for affected repos.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="facade-aggregates">
+<h2>Facade aggregates<a class="headerlink" href="#facade-aggregates" title="Link to this heading"></a></h2>
+<p>After all commits for a repo are inserted, aggregate tables are refreshed by SQL aggregation over the <code class="docutils literal notranslate"><span class="pre">commits</span></code> table.</p>
+<section id="aggregate-tables">
+<h3>Aggregate tables<a class="headerlink" href="#aggregate-tables" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Table</p></th>
+<th class="head"><p>Granularity</p></th>
+<th class="head"><p>Key</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dm_repo_annual</span></code></p></td>
+<td><p>Year</p></td>
+<td><p>(repo_id, email, affiliation, year)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dm_repo_monthly</span></code></p></td>
+<td><p>Month</p></td>
+<td><p>(repo_id, email, affiliation, year, month)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dm_repo_weekly</span></code></p></td>
+<td><p>Week</p></td>
+<td><p>(repo_id, email, affiliation, year, week)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dm_repo_group_annual</span></code></p></td>
+<td><p>Year</p></td>
+<td><p>(repo_group_id, email, affiliation, year)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dm_repo_group_monthly</span></code></p></td>
+<td><p>Month</p></td>
+<td><p>(repo_group_id, email, affiliation, year, month)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dm_repo_group_weekly</span></code></p></td>
+<td><p>Week</p></td>
+<td><p>(repo_group_id, email, affiliation, year, week)</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="aggregate-columns">
+<h3>Aggregate columns<a class="headerlink" href="#aggregate-columns" title="Link to this heading"></a></h3>
+<p>Each aggregate row contains:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">email</span></code></p></td>
+<td><p>Contributor email</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">affiliation</span></code></p></td>
+<td><p>Organizational affiliation</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">added</span></code></p></td>
+<td><p>Total lines added</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">removed</span></code></p></td>
+<td><p>Total lines removed</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">whitespace</span></code></p></td>
+<td><p>Total whitespace changes</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">files</span></code></p></td>
+<td><p>Distinct files changed</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">patches</span></code></p></td>
+<td><p>Number of commits/patches</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="refresh-sql">
+<h3>Refresh SQL<a class="headerlink" href="#refresh-sql" title="Link to this heading"></a></h3>
+<p>The aggregates are computed by SQL queries that group <code class="docutils literal notranslate"><span class="pre">commits</span></code> rows by the appropriate time period. For example, the annual aggregate:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">DELETE</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">dm_repo_annual</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="err">$</span><span class="mi">1</span><span class="p">;</span>
+
+<span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">dm_repo_annual</span>
+<span class="w">  </span><span class="p">(</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">email</span><span class="p">,</span><span class="w"> </span><span class="n">affiliation</span><span class="p">,</span><span class="w"> </span><span class="k">year</span><span class="p">,</span><span class="w"> </span><span class="n">added</span><span class="p">,</span><span class="w"> </span><span class="n">removed</span><span class="p">,</span><span class="w"> </span><span class="n">whitespace</span><span class="p">,</span><span class="w"> </span><span class="n">files</span><span class="p">,</span><span class="w"> </span><span class="n">patches</span><span class="p">)</span>
+<span class="k">SELECT</span>
+<span class="w">  </span><span class="n">repo_id</span><span class="p">,</span>
+<span class="w">  </span><span class="n">cmt_author_email</span><span class="p">,</span>
+<span class="w">  </span><span class="n">cmt_author_affiliation</span><span class="p">,</span>
+<span class="w">  </span><span class="k">EXTRACT</span><span class="p">(</span><span class="k">YEAR</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">cmt_author_timestamp</span><span class="p">)::</span><span class="nb">SMALLINT</span><span class="p">,</span>
+<span class="w">  </span><span class="k">SUM</span><span class="p">(</span><span class="n">cmt_added</span><span class="p">),</span>
+<span class="w">  </span><span class="k">SUM</span><span class="p">(</span><span class="n">cmt_removed</span><span class="p">),</span>
+<span class="w">  </span><span class="k">SUM</span><span class="p">(</span><span class="n">cmt_whitespace</span><span class="p">),</span>
+<span class="w">  </span><span class="k">COUNT</span><span class="p">(</span><span class="k">DISTINCT</span><span class="w"> </span><span class="n">cmt_filename</span><span class="p">),</span>
+<span class="w">  </span><span class="k">COUNT</span><span class="p">(</span><span class="k">DISTINCT</span><span class="w"> </span><span class="n">cmt_commit_hash</span><span class="p">)</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="p">.</span><span class="n">commits</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="err">$</span><span class="mi">1</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">cmt_author_timestamp</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">cmt_author_email</span><span class="p">,</span><span class="w"> </span><span class="n">cmt_author_affiliation</span><span class="p">,</span>
+<span class="w">         </span><span class="k">EXTRACT</span><span class="p">(</span><span class="k">YEAR</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">cmt_author_timestamp</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>Aggregates are refreshed per-repo after each facade run, not globally. This keeps the cost proportional to the repo’s commit count.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="resilience">
+<h2>Resilience<a class="headerlink" href="#resilience" title="Link to this heading"></a></h2>
+<section id="fetch-failure-recovery">
+<h3>Fetch failure recovery<a class="headerlink" href="#fetch-failure-recovery" title="Link to this heading"></a></h3>
+<p>If <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--all</span></code> fails on an existing bare clone (e.g., due to corruption):</p>
+<ol class="arabic simple">
+<li><p>The existing bare clone is deleted</p></li>
+<li><p>A fresh <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">clone</span> <span class="pre">--bare</span></code> is attempted</p></li>
+<li><p>If that also fails, the facade phase is skipped for this repo (logged as an error)</p></li>
+</ol>
+</section>
+<section id="incremental-collection">
+<h3>Incremental collection<a class="headerlink" href="#incremental-collection" title="Link to this heading"></a></h3>
+<p>On subsequent collection cycles, <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--all</span></code> retrieves only new commits since the last fetch. The git log is re-parsed in full, but upserts with <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">CONFLICT</span></code> ensure only truly new data is inserted.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="contributor-resolution.html"><span class="std std-doc">Contributor Resolution</span></a> – how commit authors are resolved to GitHub users</p></li>
+<li><p><a class="reference internal" href="analysis.html"><span class="std std-doc">Analysis</span></a> – dependency scanning and code complexity from full clones</p></li>
+<li><p><a class="reference internal" href="overview.html"><span class="std std-doc">Overview</span></a> – system architecture overview</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="contributor-resolution.html" class="btn btn-neutral float-left" title="Contributor Resolution" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="analysis.html" class="btn btn-neutral float-right" title="Analysis" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

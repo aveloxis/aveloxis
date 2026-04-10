@@ -1,0 +1,415 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Staged Pipeline Architecture &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Contributor Resolution" href="contributor-resolution.html" />
+    <link rel="prev" title="Architecture Overview" href="overview.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Staged Pipeline Architecture</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#why-staging">Why staging?</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#the-contention-problem">The contention problem</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#the-staging-solution">The staging solution</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#staging-writer">Staging writer</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#batch-flushing">Batch flushing</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#the-staging-table">The staging table</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#envelope-types">Envelope types</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#stagedissue"><code class="docutils literal notranslate"><span class="pre">stagedIssue</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#stagedpr"><code class="docutils literal notranslate"><span class="pre">stagedPR</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#why-envelopes">Why envelopes?</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#processing-order">Processing order</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#error-isolation">Error isolation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#restart-and-resume">Restart and resume</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#on-shutdown">On shutdown</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#on-startup">On startup</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#idempotent-processing">Idempotent processing</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#performance-characteristics">Performance characteristics</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#staging-phase-phase-1">Staging phase (Phase 1)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#processing-phase-phase-2">Processing phase (Phase 2)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#contributor-cache">Contributor cache</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#comparison-with-the-direct-pipeline">Comparison with the direct pipeline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Staged Pipeline Architecture</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/architecture/staged-pipeline.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="staged-pipeline-architecture">
+<h1>Staged Pipeline Architecture<a class="headerlink" href="#staged-pipeline-architecture" title="Link to this heading"></a></h1>
+<p>The staged pipeline is the heart of Aveloxis’s production collection system. It decouples API collection from relational persistence to eliminate database contention at scale.</p>
+<hr class="docutils" />
+<section id="why-staging">
+<h2>Why staging?<a class="headerlink" href="#why-staging" title="Link to this heading"></a></h2>
+<section id="the-contention-problem">
+<h3>The contention problem<a class="headerlink" href="#the-contention-problem" title="Link to this heading"></a></h3>
+<p>When collecting data from GitHub/GitLab, every issue, PR, event, and message references a contributor. In a direct-write model (like Augur’s), each worker must:</p>
+<ol class="arabic simple">
+<li><p>Look up the contributor in the database</p></li>
+<li><p>Create the contributor if it does not exist</p></li>
+<li><p>Use the contributor’s ID as a foreign key for the entity</p></li>
+</ol>
+<p>With 400K+ repos and multiple workers collecting simultaneously, the <code class="docutils literal notranslate"><span class="pre">contributors</span></code> table becomes a massive contention point. Multiple workers try to insert the same contributor at the same time, leading to deadlocks, serialization failures, and degraded throughput.</p>
+</section>
+<section id="the-staging-solution">
+<h3>The staging solution<a class="headerlink" href="#the-staging-solution" title="Link to this heading"></a></h3>
+<p>The staged pipeline splits collection into two phases:</p>
+<ol class="arabic simple">
+<li><p><strong>Stage</strong> (concurrent, no contention) – Raw API responses are written as JSONB to a staging table. No FK lookups, no contributor resolution. Workers blast data concurrently with zero contention.</p></li>
+<li><p><strong>Process</strong> (single-threaded per repo) – Staged data is drained in batches, contributors are resolved in bulk with an in-memory cache, and entities are upserted in FK dependency order.</p></li>
+</ol>
+<p>This design means that even with 24 workers collecting 24 repos simultaneously, no two workers ever contend on the same database row.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="staging-writer">
+<h2>Staging writer<a class="headerlink" href="#staging-writer" title="Link to this heading"></a></h2>
+<section id="batch-flushing">
+<h3>Batch flushing<a class="headerlink" href="#batch-flushing" title="Link to this heading"></a></h3>
+<p>The staging writer collects API responses in memory and flushes them to the <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.staging</span></code> table in batches.</p>
+<ul class="simple">
+<li><p><strong>Default batch size:</strong> 1000 rows (configurable via <code class="docutils literal notranslate"><span class="pre">collection.batch_size</span></code>)</p></li>
+<li><p><strong>Actual flush size:</strong> 500 rows per batch during processing</p></li>
+<li><p><strong>Each row:</strong> One JSONB document containing a single entity or envelope</p></li>
+</ul>
+</section>
+<section id="the-staging-table">
+<h3>The staging table<a class="headerlink" href="#the-staging-table" title="Link to this heading"></a></h3>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="p">.</span><span class="n">staging</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="n">staging_id</span><span class="w">  </span><span class="n">BIGSERIAL</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span>
+<span class="w">    </span><span class="n">repo_id</span><span class="w">     </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">    </span><span class="n">entity_type</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">    </span><span class="k">data</span><span class="w">        </span><span class="n">JSONB</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">    </span><span class="n">created_at</span><span class="w">  </span><span class="n">TIMESTAMPTZ</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="n">NOW</span><span class="p">()</span>
+<span class="p">);</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">entity_type</span></code> column determines how the <code class="docutils literal notranslate"><span class="pre">data</span></code> JSONB is interpreted during processing.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="envelope-types">
+<h2>Envelope types<a class="headerlink" href="#envelope-types" title="Link to this heading"></a></h2>
+<p>Issues and PRs are staged as <strong>envelope types</strong> that bundle the parent entity with all its children in a single JSONB row. This is a key design decision that avoids multiple passes over staged data.</p>
+<section id="stagedissue">
+<h3><code class="docutils literal notranslate"><span class="pre">stagedIssue</span></code><a class="headerlink" href="#stagedissue" title="Link to this heading"></a></h3>
+<p>A staged issue envelope contains:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;issue&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;labels&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;assignees&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>When processed:</p>
+<ol class="arabic simple">
+<li><p>The issue is upserted, returning its <code class="docutils literal notranslate"><span class="pre">issue_id</span></code></p></li>
+<li><p>Labels are upserted with that <code class="docutils literal notranslate"><span class="pre">issue_id</span></code></p></li>
+<li><p>Assignees are upserted with that <code class="docutils literal notranslate"><span class="pre">issue_id</span></code></p></li>
+</ol>
+</section>
+<section id="stagedpr">
+<h3><code class="docutils literal notranslate"><span class="pre">stagedPR</span></code><a class="headerlink" href="#stagedpr" title="Link to this heading"></a></h3>
+<p>A staged PR envelope contains:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;pull_request&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;labels&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;assignees&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;reviewers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;reviews&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;commits&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;files&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;head_meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;base_meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>When processed:</p>
+<ol class="arabic simple">
+<li><p>The PR is upserted, returning its <code class="docutils literal notranslate"><span class="pre">pull_request_id</span></code></p></li>
+<li><p>Labels, assignees, reviewers, reviews, commits, and files are upserted with that ID</p></li>
+<li><p>Head and base metadata are upserted with that ID</p></li>
+</ol>
+</section>
+<section id="why-envelopes">
+<h3>Why envelopes?<a class="headerlink" href="#why-envelopes" title="Link to this heading"></a></h3>
+<p>Without envelopes, processing would require:</p>
+<ol class="arabic simple">
+<li><p>Process all PRs, getting their database IDs</p></li>
+<li><p>For each PR label, look up the PR’s database ID</p></li>
+<li><p>Repeat for every child entity type</p></li>
+</ol>
+<p>Envelopes avoid this lookup step entirely – the parent and all children are processed together, and the parent’s database ID flows directly to the children.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="processing-order">
+<h2>Processing order<a class="headerlink" href="#processing-order" title="Link to this heading"></a></h2>
+<p>Staged data is processed in strict dependency order to satisfy foreign key constraints:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>1. Contributors
+   └── Must exist before any entity that references cntrb_id
+
+2. Issues (with labels and assignees via envelope)
+   └── References repo_id and cntrb_id (reporter, closer)
+
+3. Pull Requests (with all children via envelope)
+   └── References repo_id and cntrb_id (author)
+
+4. Events (issue events + PR events)
+   └── References issue_id or pull_request_id, plus cntrb_id
+
+5. Messages (issue comments, PR comments, review comments)
+   └── References issue_id or pull_request_id, plus cntrb_id
+
+6. Metadata (repo info, releases, clone stats)
+   └── References repo_id only
+</pre></div>
+</div>
+<p>Each entity type is drained completely before the next type begins. Within each type, data is processed in 500-row batches.</p>
+</section>
+<hr class="docutils" />
+<section id="error-isolation">
+<h2>Error isolation<a class="headerlink" href="#error-isolation" title="Link to this heading"></a></h2>
+<p>The staged pipeline uses per-row error isolation:</p>
+<ul class="simple">
+<li><p>If a single issue fails to upsert (e.g., due to a data constraint violation), a warning is logged but processing continues with the next issue.</p></li>
+<li><p>If a single child entity within an envelope fails (e.g., one PR label out of 20), the other children are still processed.</p></li>
+<li><p>Only catastrophic errors (database connection lost, disk full) abort the entire processing run.</p></li>
+</ul>
+<p>This design means that one malformed record from the API does not prevent thousands of good records from being stored.</p>
+</section>
+<hr class="docutils" />
+<section id="restart-and-resume">
+<h2>Restart and resume<a class="headerlink" href="#restart-and-resume" title="Link to this heading"></a></h2>
+<p>The staged pipeline is designed for safe restart at any point:</p>
+<section id="on-shutdown">
+<h3>On shutdown<a class="headerlink" href="#on-shutdown" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Active API calls finish (graceful shutdown)</p></li>
+<li><p>Queue locks are released (repos go back to <code class="docutils literal notranslate"><span class="pre">queued</span></code> status)</p></li>
+<li><p>Any data already in the staging table is preserved</p></li>
+</ul>
+</section>
+<section id="on-startup">
+<h3>On startup<a class="headerlink" href="#on-startup" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Leftover staging data from the previous run is processed first</p></li>
+<li><p>This means data already fetched from the API is not lost</p></li>
+<li><p>After staging is drained, normal queue polling resumes</p></li>
+</ul>
+</section>
+<section id="idempotent-processing">
+<h3>Idempotent processing<a class="headerlink" href="#idempotent-processing" title="Link to this heading"></a></h3>
+<p>All upserts use <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">CONFLICT</span></code> clauses, so processing the same staged data twice is harmless. Duplicate entities are silently merged.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="performance-characteristics">
+<h2>Performance characteristics<a class="headerlink" href="#performance-characteristics" title="Link to this heading"></a></h2>
+<section id="staging-phase-phase-1">
+<h3>Staging phase (Phase 1)<a class="headerlink" href="#staging-phase-phase-1" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Bottleneck:</strong> API rate limits</p></li>
+<li><p><strong>Database load:</strong> Minimal (bulk JSONB inserts, no FK lookups)</p></li>
+<li><p><strong>Concurrency:</strong> Full – all workers can stage simultaneously</p></li>
+<li><p><strong>Memory:</strong> Low – data is flushed in batches</p></li>
+</ul>
+</section>
+<section id="processing-phase-phase-2">
+<h3>Processing phase (Phase 2)<a class="headerlink" href="#processing-phase-phase-2" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Bottleneck:</strong> Contributor resolution cache misses</p></li>
+<li><p><strong>Database load:</strong> Moderate (upserts with FK lookups)</p></li>
+<li><p><strong>Concurrency:</strong> Single-threaded per repo (no cross-repo contention)</p></li>
+<li><p><strong>Memory:</strong> Moderate – contributor cache grows with distinct contributors</p></li>
+</ul>
+</section>
+<section id="contributor-cache">
+<h3>Contributor cache<a class="headerlink" href="#contributor-cache" title="Link to this heading"></a></h3>
+<p>The in-memory contributor cache maps:</p>
+<ul class="simple">
+<li><p>Platform user ID -&gt; <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> UUID</p></li>
+<li><p>Email -&gt; <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> UUID</p></li>
+<li><p>Login -&gt; <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> UUID</p></li>
+</ul>
+<p>On a cache hit, no database round-trip is needed. The cache is write-through: new contributors are inserted into both the cache and the database. The cache persists across repos within the same process lifetime.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="comparison-with-the-direct-pipeline">
+<h2>Comparison with the direct pipeline<a class="headerlink" href="#comparison-with-the-direct-pipeline" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Aspect</p></th>
+<th class="head"><p>Staged Pipeline (<code class="docutils literal notranslate"><span class="pre">serve</span></code>)</p></th>
+<th class="head"><p>Direct Pipeline (<code class="docutils literal notranslate"><span class="pre">collect</span></code>)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Write pattern</p></td>
+<td><p>JSONB staging -&gt; batch processing</p></td>
+<td><p>Direct upserts during collection</p></td>
+</tr>
+<tr class="row-odd"><td><p>Contributor resolution</p></td>
+<td><p>Bulk, with in-memory cache</p></td>
+<td><p>Inline, per-entity</p></td>
+</tr>
+<tr class="row-even"><td><p>Concurrency</p></td>
+<td><p>Multiple workers, no contention</p></td>
+<td><p>Single-threaded</p></td>
+</tr>
+<tr class="row-odd"><td><p>Restart safety</p></td>
+<td><p>Staging data preserved</p></td>
+<td><p>Must re-collect from API</p></td>
+</tr>
+<tr class="row-even"><td><p>Best for</p></td>
+<td><p>Production (400K+ repos)</p></td>
+<td><p>Ad-hoc testing (1-10 repos)</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="contributor-resolution.html"><span class="std std-doc">Contributor Resolution</span></a> – how identities are resolved</p></li>
+<li><p><a class="reference internal" href="../guide/collection-pipeline.html"><span class="std std-doc">Collection Pipeline</span></a> – user-facing pipeline documentation</p></li>
+<li><p><a class="reference internal" href="overview.html"><span class="std std-doc">Overview</span></a> – system architecture overview</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="overview.html" class="btn btn-neutral float-left" title="Architecture Overview" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="contributor-resolution.html" class="btn btn-neutral float-right" title="Contributor Resolution" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

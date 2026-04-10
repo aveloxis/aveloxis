@@ -1,0 +1,383 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Augur Migration &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Commands Reference" href="../guide/commands.html" />
+    <link rel="prev" title="Quick Start" href="quickstart.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Augur Migration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#step-1-point-at-the-existing-augur-database">Step 1: Point at the existing Augur database</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#step-2-create-the-aveloxis-schemas">Step 2: Create the Aveloxis schemas</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#step-3-import-api-keys">Step 3: Import API keys</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#step-4-import-repos">Step 4: Import repos</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#schema-coexistence">Schema coexistence</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#contributor-id-compatibility">Contributor ID compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#running-both-systems-side-by-side">Running both systems side-by-side</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#gradual-migration">Gradual migration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#parallel-collection-for-validation">Parallel collection for validation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#resource-considerations">Resource considerations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#differences-from-augur">Differences from Augur</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#cleanup-optional">Cleanup (optional)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide/commands.html">Commands Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/web-gui.html">Web GUI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Augur Migration</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/getting-started/augur-migration.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="augur-migration">
+<h1>Augur Migration<a class="headerlink" href="#augur-migration" title="Link to this heading"></a></h1>
+<p>This guide covers migrating from an existing <a class="reference external" href="https://github.com/chaoss/augur">Augur</a> installation to Aveloxis. Aveloxis is designed to coexist with Augur in the same database, so you can run both systems side-by-side.</p>
+<hr class="docutils" />
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading"></a></h2>
+<p>Migrating from Augur involves four steps:</p>
+<ol class="arabic simple">
+<li><p>Point Aveloxis at your existing Augur database</p></li>
+<li><p>Run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> to create the Aveloxis schemas</p></li>
+<li><p>Import your API keys</p></li>
+<li><p>Import your repos</p></li>
+</ol>
+<p>No data in Augur’s schemas is modified or deleted. Aveloxis creates its own schemas (<code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> and <code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code>) and operates independently.</p>
+</section>
+<hr class="docutils" />
+<section id="step-1-point-at-the-existing-augur-database">
+<h2>Step 1: Point at the existing Augur database<a class="headerlink" href="#step-1-point-at-the-existing-augur-database" title="Link to this heading"></a></h2>
+<p>Create <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> with your Augur database connection:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;database&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;localhost&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;augur&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-augur-db-password&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;dbname&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;augur&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prefer&quot;</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Use the same <code class="docutils literal notranslate"><span class="pre">host</span></code>, <code class="docutils literal notranslate"><span class="pre">port</span></code>, <code class="docutils literal notranslate"><span class="pre">user</span></code>, <code class="docutils literal notranslate"><span class="pre">password</span></code>, and <code class="docutils literal notranslate"><span class="pre">dbname</span></code> that Augur uses. Aveloxis creates its own schemas and does not touch <code class="docutils literal notranslate"><span class="pre">augur_data</span></code> or <code class="docutils literal notranslate"><span class="pre">augur_operations</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="step-2-create-the-aveloxis-schemas">
+<h2>Step 2: Create the Aveloxis schemas<a class="headerlink" href="#step-2-create-the-aveloxis-schemas" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate
+</pre></div>
+</div>
+<p>This creates:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> – 84 tables + 19 materialized views for collected data</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> – 24 tables for operational state (queue, staging, credentials, etc.)</p></li>
+</ul>
+<p>The migration uses <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">...</span> <span class="pre">IF</span> <span class="pre">NOT</span> <span class="pre">EXISTS</span></code> throughout, so it is safe to run repeatedly. It never modifies or reads from <code class="docutils literal notranslate"><span class="pre">augur_data</span></code> or <code class="docutils literal notranslate"><span class="pre">augur_operations</span></code> schemas.</p>
+</section>
+<hr class="docutils" />
+<section id="step-3-import-api-keys">
+<h2>Step 3: Import API keys<a class="headerlink" href="#step-3-import-api-keys" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>add-key<span class="w"> </span>--from-augur
+</pre></div>
+</div>
+<p>This copies all API tokens from <code class="docutils literal notranslate"><span class="pre">augur_operations.worker_oauth</span></code> into <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.worker_oauth</span></code>. Duplicate keys (by token value) are skipped via <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">CONFLICT</span> <span class="pre">DO</span> <span class="pre">NOTHING</span></code>.</p>
+<p>After import, keys are stored in the Aveloxis table and loaded automatically on every run. You do not need the <code class="docutils literal notranslate"><span class="pre">--augur-keys</span></code> flag going forward.</p>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>If you want to temporarily use Augur’s keys without copying them, pass the <code class="docutils literal notranslate"><span class="pre">--augur-keys</span></code> flag to <code class="docutils literal notranslate"><span class="pre">serve</span></code> or <code class="docutils literal notranslate"><span class="pre">collect</span></code> instead. This reads directly from <code class="docutils literal notranslate"><span class="pre">augur_operations.worker_oauth</span></code> at startup.</p>
+</div>
+</section>
+<hr class="docutils" />
+<section id="step-4-import-repos">
+<h2>Step 4: Import repos<a class="headerlink" href="#step-4-import-repos" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>add-repo<span class="w"> </span>--from-augur
+</pre></div>
+</div>
+<p>This reads every repository URL from <code class="docutils literal notranslate"><span class="pre">augur_data.repo</span></code> and adds it to the Aveloxis collection queue. Each URL is verified via an HTTP HEAD request against the forge before being added:</p>
+<ul class="simple">
+<li><p><strong>200 OK</strong> – repo is added to the queue</p></li>
+<li><p><strong>301/302 redirect</strong> – the canonical URL is used instead</p></li>
+<li><p><strong>404/410</strong> – repo is skipped (dead, private, or DMCA’d)</p></li>
+</ul>
+<p>This verification ensures you do not import stale or dead repos that would waste API calls.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>For large Augur installations (tens of thousands of repos), the import can take several minutes due to URL verification. Progress is logged at INFO level.</p>
+</div>
+</section>
+<hr class="docutils" />
+<section id="schema-coexistence">
+<h2>Schema coexistence<a class="headerlink" href="#schema-coexistence" title="Link to this heading"></a></h2>
+<p>Aveloxis and Augur use completely separate schemas in the same PostgreSQL database:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Schema</p></th>
+<th class="head"><p>Owner</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">augur_data</span></code></p></td>
+<td><p>Augur</p></td>
+<td><p>Augur’s collected data</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">augur_operations</span></code></p></td>
+<td><p>Augur</p></td>
+<td><p>Augur’s operational tables</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></p></td>
+<td><p>Aveloxis</p></td>
+<td><p>Aveloxis collected data (84 tables + 19 matviews)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></p></td>
+<td><p>Aveloxis</p></td>
+<td><p>Aveloxis operational tables (24 tables)</p></td>
+</tr>
+</tbody>
+</table>
+<p>Key points:</p>
+<ul class="simple">
+<li><p>Aveloxis never reads from or writes to <code class="docutils literal notranslate"><span class="pre">augur_data</span></code> or <code class="docutils literal notranslate"><span class="pre">augur_operations</span></code> (except during explicit <code class="docutils literal notranslate"><span class="pre">--from-augur</span></code> imports).</p></li>
+<li><p>Augur never reads from or writes to <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> or <code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code>.</p></li>
+<li><p>Both systems can collect from the same repos simultaneously without interference.</p></li>
+<li><p>Schema names are hardcoded, so there is no risk of accidental cross-contamination.</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="contributor-id-compatibility">
+<h2>Contributor ID compatibility<a class="headerlink" href="#contributor-id-compatibility" title="Link to this heading"></a></h2>
+<p>Aveloxis generates deterministic <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> UUIDs using the same scheme as Augur. The UUID encodes:</p>
+<ul class="simple">
+<li><p><strong>Byte 0:</strong> platform ID (<code class="docutils literal notranslate"><span class="pre">1</span></code> for GitHub, <code class="docutils literal notranslate"><span class="pre">2</span></code> for GitLab)</p></li>
+<li><p><strong>Bytes 1-4:</strong> <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code> (big-endian)</p></li>
+</ul>
+<p>This means:</p>
+<ul class="simple">
+<li><p>The same GitHub user always gets the same <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> in both Augur and Aveloxis</p></li>
+<li><p>UUIDs are byte-compatible between the two systems</p></li>
+<li><p>Analytics queries that join on <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> work across both schemas</p></li>
+<li><p>If you later consolidate data, contributor identities match</p></li>
+</ul>
+<p>This deterministic ID scheme is called <strong>GithubUUID</strong> internally.</p>
+</section>
+<hr class="docutils" />
+<section id="running-both-systems-side-by-side">
+<h2>Running both systems side-by-side<a class="headerlink" href="#running-both-systems-side-by-side" title="Link to this heading"></a></h2>
+<p>You can run Augur and Aveloxis simultaneously against the same database. Common scenarios:</p>
+<section id="gradual-migration">
+<h3>Gradual migration<a class="headerlink" href="#gradual-migration" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>Keep Augur running for repos already in its queue</p></li>
+<li><p>Add new repos only to Aveloxis</p></li>
+<li><p>Compare data quality between the two systems</p></li>
+<li><p>Once satisfied, stop Augur and let Aveloxis handle everything</p></li>
+</ol>
+</section>
+<section id="parallel-collection-for-validation">
+<h3>Parallel collection for validation<a class="headerlink" href="#parallel-collection-for-validation" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>Have both systems collect the same repos</p></li>
+<li><p>Compare issue counts, PR counts, commit counts across schemas</p></li>
+<li><p>Verify contributor resolution quality</p></li>
+</ol>
+</section>
+<section id="resource-considerations">
+<h3>Resource considerations<a class="headerlink" href="#resource-considerations" title="Link to this heading"></a></h3>
+<p>When running both systems:</p>
+<ul class="simple">
+<li><p><strong>Database connections:</strong> Both systems maintain connection pools. Ensure your PostgreSQL <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> is high enough (Aveloxis uses up to 20 connections).</p></li>
+<li><p><strong>API rate limits:</strong> Both systems consume API rate limits from their respective key pools. Do not share the same API tokens between both systems, or you will see rate limit errors.</p></li>
+<li><p><strong>Disk space:</strong> Both systems maintain their own bare clones. The <code class="docutils literal notranslate"><span class="pre">repo_clone_dir</span></code> settings should point to different directories.</p></li>
+<li><p><strong>CPU/memory:</strong> Aveloxis is written in Go and typically uses less memory than Augur’s Python workers.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="differences-from-augur">
+<h2>Differences from Augur<a class="headerlink" href="#differences-from-augur" title="Link to this heading"></a></h2>
+<p>After migration, you will notice several improvements:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Area</p></th>
+<th class="head"><p>Augur</p></th>
+<th class="head"><p>Aveloxis</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Dead repos</p></td>
+<td><p>Retried every cycle</p></td>
+<td><p>Permanently sidelined (data preserved)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Repo renames</p></td>
+<td><p>Not detected</p></td>
+<td><p>Detected and URLs auto-updated</p></td>
+</tr>
+<tr class="row-even"><td><p>Duplicate repos</p></td>
+<td><p>Not detected</p></td>
+<td><p>Detected via redirect resolution</p></td>
+</tr>
+<tr class="row-odd"><td><p>Monitoring</p></td>
+<td><p>Flower (separate service)</p></td>
+<td><p>Built-in dashboard at <code class="docutils literal notranslate"><span class="pre">/</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Queue management</p></td>
+<td><p>Opaque Celery state</p></td>
+<td><p>SQL-queryable priority queue</p></td>
+</tr>
+<tr class="row-odd"><td><p>Priority override</p></td>
+<td><p>Not supported</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">prioritize</span></code> or dashboard Boost</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<hr class="docutils" />
+<section id="cleanup-optional">
+<h2>Cleanup (optional)<a class="headerlink" href="#cleanup-optional" title="Link to this heading"></a></h2>
+<p>Once you are confident in Aveloxis, you can optionally remove Augur’s schemas:</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>This permanently deletes all Augur data. Only do this after verifying that Aveloxis has collected everything you need.</p>
+</div>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- DESTRUCTIVE: Only run after verifying Aveloxis data</span>
+<span class="k">DROP</span><span class="w"> </span><span class="k">SCHEMA</span><span class="w"> </span><span class="n">augur_data</span><span class="w"> </span><span class="k">CASCADE</span><span class="p">;</span>
+<span class="k">DROP</span><span class="w"> </span><span class="k">SCHEMA</span><span class="w"> </span><span class="n">augur_operations</span><span class="w"> </span><span class="k">CASCADE</span><span class="p">;</span>
+<span class="k">DROP</span><span class="w"> </span><span class="k">SCHEMA</span><span class="w"> </span><span class="n">spdx</span><span class="w"> </span><span class="k">CASCADE</span><span class="p">;</span><span class="w">           </span><span class="c1">-- if present</span>
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="quickstart.html"><span class="std std-doc">Quick Start</span></a> – verify collection is working</p></li>
+<li><p><a class="reference internal" href="../guide/monitoring.html"><span class="std std-doc">Monitoring</span></a> – use the dashboard to track progress</p></li>
+<li><p><a class="reference internal" href="../guide/scaling.html"><span class="std std-doc">Scaling</span></a> – configure workers and keys for large instances</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="quickstart.html" class="btn btn-neutral float-left" title="Quick Start" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../guide/commands.html" class="btn btn-neutral float-right" title="Commands Reference" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

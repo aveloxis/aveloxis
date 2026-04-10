@@ -1,0 +1,394 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web GUI &mdash; Aveloxis 0.10.7 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=49efb58e"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="REST API" href="api.html" />
+    <link rel="prev" title="Commands Reference" href="commands.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            Aveloxis
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/quickstart.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="commands.html">Commands Reference</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Web GUI</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#prerequisites">Prerequisites</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#creating-a-github-oauth-app">Creating a GitHub OAuth App</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#creating-a-gitlab-oauth-app">Creating a GitLab OAuth App</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#configuration">Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#starting-the-web-gui">Starting the Web GUI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#login-flow">Login Flow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#creating-groups">Creating Groups</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#comparing-repositories">Comparing Repositories</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#searching-and-pagination">Searching and Pagination</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#search">Search</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#pagination">Pagination</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#how-org-tracking-works">How Org Tracking Works</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#how-repos-get-queued-for-collection">How Repos Get Queued for Collection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#session-management">Session Management</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#running-alongside-aveloxis-serve">Running Alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="#security-considerations">Security Considerations</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="visualizations.html">Visualizations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collection-pipeline.html">Collection Pipeline</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ci-cd.html">CI/CD Pipelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="scaling.html">Scaling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Architecture</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/staged-pipeline.html">Staged Pipeline Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/contributor-resolution.html">Contributor Resolution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/facade-commits.html">Facade Commits</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/analysis.html">Analysis</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/materialized-views.html">Materialized Views</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/platform-layer.html">Platform Abstraction Layer</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture/db-package.html">Database Package (<code class="docutils literal notranslate"><span class="pre">internal/db</span></code>)</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../schema.html">Aveloxis Schema Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Aveloxis</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Web GUI</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/guide/web-gui.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="web-gui">
+<h1>Web GUI<a class="headerlink" href="#web-gui" title="Link to this heading"></a></h1>
+<p>Aveloxis includes a web-based GUI for managing repository groups with OAuth login. Users authenticate via GitHub or GitLab, create named groups, and add individual repositories or entire organizations/groups for collection.</p>
+<section id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading"></a></h2>
+<p>Before starting the web GUI you need:</p>
+<ol class="arabic simple">
+<li><p>A working Aveloxis installation with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> already run.</p></li>
+<li><p>At least one OAuth app registered with GitHub and/or GitLab.</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">web</span></code> section filled in within your <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> config file.</p></li>
+</ol>
+<section id="creating-a-github-oauth-app">
+<h3>Creating a GitHub OAuth App<a class="headerlink" href="#creating-a-github-oauth-app" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>Go to <a class="reference external" href="https://github.com/settings/developers">https://github.com/settings/developers</a>.</p></li>
+<li><p>Click <strong>New OAuth App</strong>.</p></li>
+<li><p>Fill in the fields:</p>
+<ul class="simple">
+<li><p><strong>Application name</strong>: anything you like (e.g., “Aveloxis”).</p></li>
+<li><p><strong>Homepage URL</strong>: your Aveloxis web GUI URL (e.g., <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code>).</p></li>
+<li><p><strong>Authorization callback URL</strong>: <code class="docutils literal notranslate"><span class="pre">http://localhost:8080/auth/github/callback</span></code> (replace <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code> with your <code class="docutils literal notranslate"><span class="pre">web.base_url</span></code> if different).</p></li>
+</ul>
+</li>
+<li><p>Click <strong>Register application</strong>.</p></li>
+<li><p>Copy the <strong>Client ID</strong> and generate a new <strong>Client Secret</strong>. Put both in your <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> under <code class="docutils literal notranslate"><span class="pre">web.github_client_id</span></code> and <code class="docutils literal notranslate"><span class="pre">web.github_client_secret</span></code>.</p></li>
+</ol>
+</section>
+<section id="creating-a-gitlab-oauth-app">
+<h3>Creating a GitLab OAuth App<a class="headerlink" href="#creating-a-gitlab-oauth-app" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>Go to <a class="reference external" href="https://gitlab.com/-/profile/applications">https://gitlab.com/-/profile/applications</a> (or the equivalent URL on your self-hosted GitLab instance).</p></li>
+<li><p>Fill in the fields:</p>
+<ul class="simple">
+<li><p><strong>Name</strong>: anything you like (e.g., “Aveloxis”).</p></li>
+<li><p><strong>Redirect URI</strong>: <code class="docutils literal notranslate"><span class="pre">http://localhost:8080/auth/gitlab/callback</span></code> (replace <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code> with your <code class="docutils literal notranslate"><span class="pre">web.base_url</span></code> if different).</p></li>
+<li><p><strong>Scopes</strong>: check <code class="docutils literal notranslate"><span class="pre">read_user</span></code>.</p></li>
+</ul>
+</li>
+<li><p>Click <strong>Save application</strong>.</p></li>
+<li><p>Copy the <strong>Application ID</strong> and <strong>Secret</strong>. Put both in your <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> under <code class="docutils literal notranslate"><span class="pre">web.gitlab_client_id</span></code> and <code class="docutils literal notranslate"><span class="pre">web.gitlab_client_secret</span></code>.</p></li>
+<li><p>If using a self-hosted GitLab instance, set <code class="docutils literal notranslate"><span class="pre">web.gitlab_base_url</span></code> to your instance URL (e.g., <code class="docutils literal notranslate"><span class="pre">https://gitlab.example.com</span></code>). The default is <code class="docutils literal notranslate"><span class="pre">https://gitlab.com</span></code>.</p></li>
+</ol>
+</section>
+</section>
+<section id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h2>
+<p>All web GUI settings live under the <code class="docutils literal notranslate"><span class="pre">web</span></code> key in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;web&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;addr&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;:8080&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;http://localhost:8080&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;session_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;change-me-to-a-random-string&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;github_client_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Iv1.abc123...&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;github_client_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;deadbeef...&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;gitlab_client_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-gitlab-app-id&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;gitlab_client_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-gitlab-app-secret&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;gitlab_base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://gitlab.com&quot;</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.addr</span></code></p></td>
+<td><p>Listen address for the web server</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;:8080&quot;</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">web.base_url</span></code></p></td>
+<td><p>External URL used to construct OAuth callback URLs</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;http://localhost:8080&quot;</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.session_secret</span></code></p></td>
+<td><p>Secret key for signing session cookies. Use a long random string.</p></td>
+<td><p>(required)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">web.github_client_id</span></code></p></td>
+<td><p>Client ID from your GitHub OAuth app</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.github_client_secret</span></code></p></td>
+<td><p>Client secret from your GitHub OAuth app</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">web.gitlab_client_id</span></code></p></td>
+<td><p>Application ID from your GitLab OAuth app</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.gitlab_client_secret</span></code></p></td>
+<td><p>Secret from your GitLab OAuth app</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">web.gitlab_base_url</span></code></p></td>
+<td><p>Base URL for the GitLab instance (for self-hosted)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;https://gitlab.com&quot;</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>You only need to configure the providers you want to use. If you only use GitHub, you can leave the GitLab fields empty (and vice versa). The login page will only show buttons for configured providers.</p>
+</section>
+<section id="starting-the-web-gui">
+<h2>Starting the Web GUI<a class="headerlink" href="#starting-the-web-gui" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>web
+</pre></div>
+</div>
+<p>The server starts on the address specified by <code class="docutils literal notranslate"><span class="pre">web.addr</span></code> (default <code class="docutils literal notranslate"><span class="pre">:8080</span></code>). Open <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code> in your browser.</p>
+</section>
+<section id="login-flow">
+<h2>Login Flow<a class="headerlink" href="#login-flow" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>On the home page, click <strong>Login with GitHub</strong> or <strong>Login with GitLab</strong>.</p></li>
+<li><p>You are redirected to the provider’s authorization page. Approve access for the Aveloxis OAuth app.</p></li>
+<li><p>The provider redirects back to Aveloxis with an authorization code.</p></li>
+<li><p>Aveloxis exchanges the code for an access token and fetches your profile (login, email, avatar).</p></li>
+<li><p>A session cookie is set in your browser. You are now logged in and redirected to the dashboard.</p></li>
+</ol>
+</section>
+<section id="creating-groups">
+<h2>Creating Groups<a class="headerlink" href="#creating-groups" title="Link to this heading"></a></h2>
+<p>Groups are named collections of repositories. After logging in:</p>
+<ol class="arabic simple">
+<li><p>Click <strong>New Group</strong> on the dashboard.</p></li>
+<li><p>Enter a group name and optional description.</p></li>
+<li><p>Click <strong>Create</strong>. The empty group appears on your dashboard.</p></li>
+</ol>
+</section>
+<section id="adding-individual-repos-to-a-group">
+<h2>Adding Individual Repos to a Group<a class="headerlink" href="#adding-individual-repos-to-a-group" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Open a group from the dashboard.</p></li>
+<li><p>Click <strong>Add Repository</strong>.</p></li>
+<li><p>Paste the repository URL (e.g., <code class="docutils literal notranslate"><span class="pre">https://github.com/chaoss/augur</span></code> or <code class="docutils literal notranslate"><span class="pre">https://gitlab.com/fdroid/fdroidclient</span></code>).</p></li>
+<li><p>Click <strong>Add</strong>. The repo is added to the group and automatically queued for collection.</p></li>
+</ol>
+<p>Platform is auto-detected from the URL, the same as <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-repo</span></code>.</p>
+</section>
+<section id="adding-an-entire-github-org-or-gitlab-group">
+<h2>Adding an Entire GitHub Org or GitLab Group<a class="headerlink" href="#adding-an-entire-github-org-or-gitlab-group" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Open a group from the dashboard.</p></li>
+<li><p>Click <strong>Add Organization</strong>.</p></li>
+<li><p>Paste the org URL (e.g., <code class="docutils literal notranslate"><span class="pre">https://github.com/chaoss</span></code> or <code class="docutils literal notranslate"><span class="pre">https://gitlab.com/gnome</span></code>).</p></li>
+<li><p>Click <strong>Add</strong>. All current repositories in the org are added to the group and queued.</p></li>
+</ol>
+<p>Behind the scenes, a row is inserted into the <code class="docutils literal notranslate"><span class="pre">user_org_requests</span></code> table to track the org for ongoing discovery.</p>
+</section>
+<section id="navigation-and-breadcrumbs">
+<h2>Navigation and Breadcrumbs<a class="headerlink" href="#navigation-and-breadcrumbs" title="Link to this heading"></a></h2>
+<p>The web GUI uses breadcrumb navigation across the top of every page:</p>
+<ul class="simple">
+<li><p><strong>Dashboard</strong>: Shows <code class="docutils literal notranslate"><span class="pre">Home</span></code> as the breadcrumb. Lists all your groups with repo counts.</p></li>
+<li><p><strong>Group detail page</strong>: Shows <code class="docutils literal notranslate"><span class="pre">Home</span> <span class="pre">/</span> <span class="pre">{Group</span> <span class="pre">Name}</span></code>. Click <code class="docutils literal notranslate"><span class="pre">Home</span></code> to return to the dashboard.</p></li>
+</ul>
+</section>
+<section id="comparing-repositories">
+<h2>Comparing Repositories<a class="headerlink" href="#comparing-repositories" title="Link to this heading"></a></h2>
+<p>Each group detail page (and the main dashboard) includes a <strong>Compare Repositories</strong> search widget. This uses the REST API (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code>) to search across all repositories in the database — not just those in the current group. Select up to 5 repos, click <strong>Compare</strong>, and you are taken to the comparison page with your selection pre-populated.</p>
+<p>The API must be running (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span> <span class="pre">--addr</span> <span class="pre">:8383</span></code>) for the compare search to work.</p>
+</section>
+<section id="searching-and-pagination">
+<h2>Searching and Pagination<a class="headerlink" href="#searching-and-pagination" title="Link to this heading"></a></h2>
+<p>Groups that track organizations can accumulate hundreds or thousands of repositories. The group detail page provides search and pagination to make large lists manageable.</p>
+<section id="search">
+<h3>Search<a class="headerlink" href="#search" title="Link to this heading"></a></h3>
+<p>At the top of the repository list, a search box lets you filter by name. The search is <strong>case-insensitive</strong> and matches against the repository name, owner, and full URL. For example, searching <code class="docutils literal notranslate"><span class="pre">augur</span></code> will match <code class="docutils literal notranslate"><span class="pre">chaoss/augur</span></code>, <code class="docutils literal notranslate"><span class="pre">chaoss/augur-community-reports</span></code>, etc.</p>
+<p>Click <strong>Clear</strong> next to the search box to remove the filter and return to the full list. The result count updates to show how many repositories match your query.</p>
+</section>
+<section id="pagination">
+<h3>Pagination<a class="headerlink" href="#pagination" title="Link to this heading"></a></h3>
+<p>Repositories are displayed <strong>25 per page</strong>. When a group has more than 25 repos, pagination controls appear at the bottom of the table:</p>
+<ul class="simple">
+<li><p><strong>First</strong> / <strong>Last</strong> links to jump to the beginning or end.</p></li>
+<li><p><strong>Previous</strong> / <strong>Next</strong> links to move one page at a time.</p></li>
+<li><p>A <strong>sliding window of 5 page numbers</strong> centered on the current page, so the controls stay compact even with hundreds of pages.</p></li>
+<li><p>The current page number is highlighted.</p></li>
+</ul>
+<p>Search and pagination work together: if you search for <code class="docutils literal notranslate"><span class="pre">chaoss</span></code> and there are 40 matches, you see 25 on page 1 and 15 on page 2. The search query is preserved as you navigate between pages.</p>
+</section>
+</section>
+<section id="how-org-tracking-works">
+<h2>How Org Tracking Works<a class="headerlink" href="#how-org-tracking-works" title="Link to this heading"></a></h2>
+<p>When you add an org, Aveloxis does not just snapshot the current repo list – it continuously monitors the org for new repos:</p>
+<ul class="simple">
+<li><p>A scheduler task runs <strong>every 4 hours</strong> and re-fetches the repository list for every org in <code class="docutils literal notranslate"><span class="pre">user_org_requests</span></code>.</p></li>
+<li><p>Any newly created repos that are not already in the database are added to the group and queued for collection automatically.</p></li>
+<li><p>Repos that are deleted or made private on the forge are handled by the existing dead repo sidelining logic during collection.</p></li>
+</ul>
+<p>This means you can add <code class="docutils literal notranslate"><span class="pre">https://github.com/kubernetes</span></code> once and Aveloxis will automatically pick up new repos as the Kubernetes org creates them.</p>
+</section>
+<section id="how-repos-get-queued-for-collection">
+<h2>How Repos Get Queued for Collection<a class="headerlink" href="#how-repos-get-queued-for-collection" title="Link to this heading"></a></h2>
+<p>Repos added through the web GUI (individually or via org tracking) are inserted into the same <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.collection_queue</span></code> used by the CLI. They are collected by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> in priority order, just like repos added via <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-repo</span></code>.</p>
+<p>You must have <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> running for collection to happen. The web GUI only manages the queue – it does not collect data itself.</p>
+</section>
+<section id="session-management">
+<h2>Session Management<a class="headerlink" href="#session-management" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Sessions are stored <strong>in-memory</strong> on the web server process.</p></li>
+<li><p>Each session expires after <strong>24 hours</strong> of inactivity.</p></li>
+<li><p>Restarting <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> clears all sessions. Users will need to log in again.</p></li>
+<li><p>Sessions are tied to a secure, signed cookie. The signing key is <code class="docutils literal notranslate"><span class="pre">web.session_secret</span></code> from your config.</p></li>
+</ul>
+</section>
+<section id="running-alongside-aveloxis-serve">
+<h2>Running Alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code><a class="headerlink" href="#running-alongside-aveloxis-serve" title="Link to this heading"></a></h2>
+<p>The web GUI and the collection scheduler are separate processes. In a typical deployment you run both:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Terminal 1: collection scheduler with monitoring dashboard</span>
+aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:5555
+
+<span class="c1"># Terminal 2: web GUI for group management</span>
+aveloxis<span class="w"> </span>web
+</pre></div>
+</div>
+<p>They share the same PostgreSQL database. The web GUI writes to the queue; the scheduler reads from it. There is no direct communication between the two processes.</p>
+<p>You can run them on different hosts as long as both can reach the database.</p>
+</section>
+<section id="security-considerations">
+<h2>Security Considerations<a class="headerlink" href="#security-considerations" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>OAuth tokens</strong>: The access tokens obtained during login are used only to fetch the user’s profile and are not stored persistently. They are held in the session for the duration of the login.</p></li>
+<li><p><strong>Session cookies</strong>: Signed with <code class="docutils literal notranslate"><span class="pre">web.session_secret</span></code>. Use a strong, random secret in production. If the secret is compromised, an attacker could forge session cookies.</p></li>
+<li><p><strong>HTTPS</strong>: In production, run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> behind a reverse proxy (nginx, Caddy, etc.) that terminates TLS. OAuth providers require HTTPS callback URLs for production apps (localhost is exempt during development).</p></li>
+<li><p><strong>Client secrets</strong>: The <code class="docutils literal notranslate"><span class="pre">web.github_client_secret</span></code> and <code class="docutils literal notranslate"><span class="pre">web.gitlab_client_secret</span></code> values in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> are sensitive. Protect the config file with appropriate file permissions (<code class="docutils literal notranslate"><span class="pre">chmod</span> <span class="pre">600</span> <span class="pre">aveloxis.json</span></code>).</p></li>
+<li><p><strong>No role-based access control</strong>: Currently all authenticated users have the same permissions. Any logged-in user can create groups and add repos. If you need to restrict access, control who can reach the web GUI at the network level.</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="commands.html" class="btn btn-neutral float-left" title="Commands Reference" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="api.html" class="btn btn-neutral float-right" title="REST API" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Sean Goggins, University of Missouri, Derek Howard.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1024,6 +1024,10 @@ aveloxis/
       scorecard.go        # OpenSSF Scorecard integration (local execution)
       scancode.go         # ScanCode Toolkit integration (license/copyright/package detection)
       vulnerability.go    # OSV.dev vulnerability scanning (CVE/GHSA lookup by purl)
+      enrich.go           # Contributor profile enrichment (GET /users/{login})
+      gap_fill.go         # Smart gap detection and targeted re-collection
+      refresh_open.go     # Open issue/PR refresh (status, labels, assignees)
+      tools.go            # External tool management (scc, scorecard, scancode install)
       noreply.go          # GitHub noreply email parser
       prelim.go           # Redirect detection and duplicate checking
       state.go            # Collection status/phase constants
@@ -1034,11 +1038,11 @@ aveloxis/
       store.go            # Store interface definition
       staging.go          # JSONB staging writer and batch processor
       migrate.go          # Schema migration (embeds schema.sql)
-      schema.sql          # Full DDL (108 tables, 23 indexes)
+      schema.sql          # Full DDL (112+ tables across 3 schemas, 23 indexes)
       matviews.sql        # 19 materialized views for 8Knot/analytics
       matviews.go         # View creation and refresh logic
       sanitize.go         # Text sanitization (null bytes, invalid UTF-8, control chars)
-      contributors.go     # Contributor resolver with in-memory cache
+      contributors.go     # Contributor resolver with in-memory cache and heartbeat
       affiliations.go     # Email domain -> org affiliation resolver
       aggregates.go       # Facade aggregate refresh (dm_repo_* tables)
       github_uuid.go      # Deterministic UUID generation (Augur-compatible)
@@ -1046,15 +1050,18 @@ aveloxis/
       breadth_store.go    # DB methods for contributor breadth
       analysis_store.go   # DB methods for dependency/libyear/scc/scorecard analysis
       scancode_store.go   # DB methods for ScanCode results (aveloxis_scan schema)
+      gap_store.go        # DB methods for gap fill, open item queries, metadata counts
       repo_stats.go       # Gathered vs metadata counts (RepoStats, GetRepoStatsBatch)
-      history.go          # History rotation (RotateRepoInfoToHistory, RotateScorecardToHistory)
+      timeseries.go       # Time series queries, license aggregation, OSI compliance
+      history.go          # History rotation (libyear, scorecard, scancode, repo_info)
       vulnerability_store.go # DB methods for CVE/vulnerability storage and queries
       web_store.go        # DB methods for user/group/org management
       queue.go            # Postgres-backed priority queue operations
       keys.go             # API key management and Augur import
       import.go           # Augur repo import
+      version.go          # Single source of truth for tool version
     model/                # Platform-agnostic data types
-      repo.go             # Repo, RepoGroup, Platform, DataOrigin
+      repo.go             # Repo, RepoGroup, Platform, Contributor, ContributorIdentity
       issue.go            # Issue, IssueLabel, IssueAssignee, IssueEvent
       pullrequest.go      # PullRequest + all sub-entities
       message.go          # Message, IssueMessageRef, PRMessageRef, ReviewComment
@@ -1064,28 +1071,36 @@ aveloxis/
       userref.go          # UserRef (platform user reference for contributor resolution)
     web/
       server.go           # Web GUI server with OAuth handlers
-      templates.go        # Embedded HTML templates
+      templates.go        # Embedded HTML templates (dashboard, groups, repos, compare)
+      url_validation.go   # URL parsing, scheme fixing, validation
     api/
-      server.go           # REST API server (repo stats, SBOM download, health)
+      server.go           # REST API server (stats, timeseries, licenses, scancode, SBOM, search)
     monitor/
-      monitor.go          # HTTP dashboard with gathered vs metadata columns
+      monitor.go          # HTTP dashboard with sortable gathered vs metadata columns
     platform/
-      platform.go         # Client interface (7 sub-interfaces)
-      httpclient.go       # HTTP client with rate limiting, key rotation, retries
-      ratelimit.go        # API key pool with rate limit tracking
+      platform.go         # Client interface (7 sub-interfaces + FetchIssueByNumber, FetchPRByNumber)
+      httpclient.go       # HTTP client with rate limiting, key rotation, ETag caching, retries
+      ratelimit.go        # API key pool with rate limit tracking and MarkDepleted
       repourl.go          # URL parsing (GitHub/GitLab detection)
       github/
-        client.go         # Full GitHub REST API implementation
+        client.go         # Full GitHub REST + GraphQL API implementation
         types.go          # GitHub API response types
       gitlab/
         client.go         # Full GitLab API v4 implementation
         types.go          # GitLab API response types
     scheduler/
-      scheduler.go        # Queue polling, job dispatch, stale lock recovery
+      scheduler.go        # Queue polling, job dispatch, heartbeat, stale lock recovery, gap fill
   queries/                # SQL analytical queries (rewritten from Augur to Aveloxis schema)
+  Dockerfile              # Multi-stage Docker build
+  docker-compose.yml      # Docker Compose with PostgreSQL
+  .readthedocs.yaml       # ReadTheDocs build configuration
+  go.mod                  # Go module definition
+  go.sum                  # Go dependency checksums
   augur_data.sql          # Reference: Augur's augur_data schema (for comparison)
   augur_operations.sql    # Reference: Augur's augur_operations schema (for comparison)
   aveloxis.example.json   # Example configuration file
+  aveloxis.docker.json    # Docker-specific configuration (uses docker service names)
+  install-scorecard.sh    # Manual scorecard binary installation script
 ```
 
 ## Testing

@@ -359,13 +359,26 @@ func (c *Collector) collectPullRequests(ctx context.Context, repoID int64, owner
 
 		// Head/base metadata
 		head, base, err := c.client.FetchPRMeta(ctx, owner, repo, pr.Number)
+		var headMetaID, baseMetaID int64
 		if err == nil {
 			head.PRID = prID
 			head.RepoID = repoID
 			base.PRID = prID
 			base.RepoID = repoID
-			_, _ = c.store.UpsertPRMeta(ctx, head)
-			_, _ = c.store.UpsertPRMeta(ctx, base)
+			headMetaID, _ = c.store.UpsertPRMeta(ctx, head)
+			baseMetaID, _ = c.store.UpsertPRMeta(ctx, base)
+		}
+		// Fork/upstream repo details from head.repo and base.repo
+		headRepo, baseRepo, repoErr := c.client.FetchPRRepos(ctx, owner, repo, pr.Number)
+		if repoErr == nil {
+			if headRepo != nil && headMetaID != 0 {
+				headRepo.MetaID = headMetaID
+				_ = c.store.UpsertPRRepo(ctx, headRepo)
+			}
+			if baseRepo != nil && baseMetaID != 0 {
+				baseRepo.MetaID = baseMetaID
+				_ = c.store.UpsertPRRepo(ctx, baseRepo)
+			}
 		}
 
 		result.PullRequests++

@@ -57,6 +57,11 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// created duplicate rows. Clean up first, then create the unique index.
 	deduplicateCommits(ctx, pg, logger)
 
+	// pull_request_repo: add unique constraint for ON CONFLICT support (v0.12.0).
+	pg.pool.Exec(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_repo_meta_head_base
+		ON aveloxis_data.pull_request_repo (pr_repo_meta_id, pr_repo_head_or_base)`)
+
 	// Users table OAuth columns (added in v0.5.0).
 	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "avatar_url", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "gh_user_id", "BIGINT")

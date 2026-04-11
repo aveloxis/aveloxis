@@ -371,6 +371,48 @@ func (c *Client) FetchPRMeta(ctx context.Context, owner, repo string, prNumber i
 	return head, base, nil
 }
 
+// FetchPRRepos returns fork repo details for a merge request's source and target projects.
+func (c *Client) FetchPRRepos(ctx context.Context, owner, repo string, prNumber int) (headRepo, baseRepo *model.PullRequestRepo, err error) {
+	pp := projectPath(owner, repo)
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d", pp, prNumber)
+	var raw glMergeRequest
+	if err := c.http.GetJSON(ctx, path, &raw); err != nil {
+		return nil, nil, err
+	}
+
+	// Source project (head/fork).
+	if raw.SourceProjectID != 0 {
+		headRepo = c.fetchGLProjectAsRepo(ctx, raw.SourceProjectID, "head")
+	}
+	// Target project (base/upstream).
+	if raw.TargetProjectID != 0 {
+		baseRepo = c.fetchGLProjectAsRepo(ctx, raw.TargetProjectID, "base")
+	}
+	return headRepo, baseRepo, nil
+}
+
+// fetchGLProjectAsRepo fetches a GitLab project and converts it to a PullRequestRepo.
+func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, headOrBase string) *model.PullRequestRepo {
+	path := fmt.Sprintf("/projects/%d", projectID)
+	var proj struct {
+		ID                int64  `json:"id"`
+		Name              string `json:"name"`
+		PathWithNamespace string `json:"path_with_namespace"`
+		Visibility        string `json:"visibility"` // "public", "internal", "private"
+	}
+	if err := c.http.GetJSON(ctx, path, &proj); err != nil {
+		return nil
+	}
+	return &model.PullRequestRepo{
+		HeadOrBase:   headOrBase,
+		SrcRepoID:    proj.ID,
+		RepoName:     proj.Name,
+		RepoFullName: proj.PathWithNamespace,
+		Private:      proj.Visibility == "private",
+		Origin:       model.DataOrigin{DataSource: "GitLab API"},
+	}
+}
+
 // --- EventCollector ---
 
 func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.IssueEvent, error] {

@@ -63,6 +63,8 @@ type stagedPR struct {
 	Files     []model.PullRequestFile     `json:"files,omitempty"`
 	MetaHead  *model.PullRequestMeta      `json:"meta_head,omitempty"`
 	MetaBase  *model.PullRequestMeta      `json:"meta_base,omitempty"`
+	RepoHead  *model.PullRequestRepo      `json:"repo_head,omitempty"`
+	RepoBase  *model.PullRequestRepo      `json:"repo_base,omitempty"`
 }
 
 // StagedCollector writes raw API data to the staging table instead of directly
@@ -201,6 +203,11 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		if err == nil {
 			envelope.MetaHead = head
 			envelope.MetaBase = base
+		}
+		headRepo, baseRepo, err := sc.client.FetchPRRepos(ctx, owner, repo, pr.Number)
+		if err == nil {
+			envelope.RepoHead = headRepo
+			envelope.RepoBase = baseRepo
 		}
 
 		if err := sw.Stage(ctx, EntityPullRequest, envelope); err != nil {
@@ -507,15 +514,29 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 				p.logger.Warn("failed to upsert PR file", "pr_id", prID, "error", err)
 			}
 		}
+		var headMetaID, baseMetaID int64
 		if env.MetaHead != nil {
 			env.MetaHead.PRID = prID
 			env.MetaHead.RepoID = repoID
-			p.store.UpsertPRMeta(ctx, env.MetaHead)
+			headMetaID, _ = p.store.UpsertPRMeta(ctx, env.MetaHead)
 		}
 		if env.MetaBase != nil {
 			env.MetaBase.PRID = prID
 			env.MetaBase.RepoID = repoID
-			p.store.UpsertPRMeta(ctx, env.MetaBase)
+			baseMetaID, _ = p.store.UpsertPRMeta(ctx, env.MetaBase)
+		}
+		// Insert fork repo details linked to their corresponding meta rows.
+		if env.RepoHead != nil && headMetaID != 0 {
+			env.RepoHead.MetaID = headMetaID
+			if err := p.store.UpsertPRRepo(ctx, env.RepoHead); err != nil {
+				p.logger.Warn("failed to upsert PR repo (head)", "pr_id", prID, "error", err)
+			}
+		}
+		if env.RepoBase != nil && baseMetaID != 0 {
+			env.RepoBase.MetaID = baseMetaID
+			if err := p.store.UpsertPRRepo(ctx, env.RepoBase); err != nil {
+				p.logger.Warn("failed to upsert PR repo (base)", "pr_id", prID, "error", err)
+			}
 		}
 		return nil
 

@@ -365,6 +365,39 @@ func (c *Client) FetchPRMeta(ctx context.Context, owner, repo string, prNumber i
 	return head, base, nil
 }
 
+// FetchPRRepos returns fork repo details for a PR's head and base branches.
+func (c *Client) FetchPRRepos(ctx context.Context, owner, repo string, prNumber int) (headRepo, baseRepo *model.PullRequestRepo, err error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, prNumber)
+	var raw ghPullRequest
+	if err := c.http.GetJSON(ctx, path, &raw); err != nil {
+		return nil, nil, err
+	}
+
+	if raw.Head.Repo != nil {
+		headRepo = &model.PullRequestRepo{
+			HeadOrBase:   "head",
+			SrcRepoID:    raw.Head.Repo.ID,
+			SrcNodeID:    raw.Head.Repo.NodeID,
+			RepoName:     raw.Head.Repo.Name,
+			RepoFullName: raw.Head.Repo.FullName,
+			Private:      raw.Head.Repo.Private,
+			Origin:       model.DataOrigin{DataSource: "GitHub API"},
+		}
+	}
+	if raw.Base.Repo != nil {
+		baseRepo = &model.PullRequestRepo{
+			HeadOrBase:   "base",
+			SrcRepoID:    raw.Base.Repo.ID,
+			SrcNodeID:    raw.Base.Repo.NodeID,
+			RepoName:     raw.Base.Repo.Name,
+			RepoFullName: raw.Base.Repo.FullName,
+			Private:      raw.Base.Repo.Private,
+			Origin:       model.DataOrigin{DataSource: "GitHub API"},
+		}
+	}
+	return headRepo, baseRepo, nil
+}
+
 // --- EventCollector ---
 
 // fetchRepoEvents returns all issue/timeline events from the repo-wide events endpoint.

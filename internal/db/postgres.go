@@ -696,6 +696,37 @@ func (s *PostgresStore) UpsertPRMeta(ctx context.Context, meta *model.PullReques
 	return id, err
 }
 
+// UpsertPRRepo inserts or updates a pull_request_repo row, storing fork/upstream
+// repo details for a PR's head or base branch. Links to pull_request_meta via
+// pr_repo_meta_id. The same PR may have both a head repo (fork) and base repo
+// (upstream), so each is stored separately with pr_repo_head_or_base distinguishing them.
+func (s *PostgresStore) UpsertPRRepo(ctx context.Context, repo *model.PullRequestRepo) error {
+	if repo == nil || repo.MetaID == 0 {
+		return nil
+	}
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+			INSERT INTO aveloxis_data.pull_request_repo
+				(pr_repo_meta_id, pr_repo_head_or_base, pr_src_repo_id, pr_src_node_id,
+				 pr_repo_name, pr_repo_full_name, pr_repo_private_bool, pr_cntrb_id,
+				 data_source, data_collection_date)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+			ON CONFLICT (pr_repo_meta_id, pr_repo_head_or_base) DO UPDATE SET
+				pr_src_repo_id = EXCLUDED.pr_src_repo_id,
+				pr_src_node_id = EXCLUDED.pr_src_node_id,
+				pr_repo_name = EXCLUDED.pr_repo_name,
+				pr_repo_full_name = EXCLUDED.pr_repo_full_name,
+				pr_repo_private_bool = EXCLUDED.pr_repo_private_bool,
+				pr_cntrb_id = COALESCE(EXCLUDED.pr_cntrb_id, pull_request_repo.pr_cntrb_id),
+				data_collection_date = NOW()`,
+			repo.MetaID, repo.HeadOrBase, repo.SrcRepoID, repo.SrcNodeID,
+			repo.RepoName, repo.RepoFullName, repo.Private, repo.ContribID,
+			repo.Origin.DataSource,
+		)
+		return err
+	})
+}
+
 // ============================================================
 // Events
 // ============================================================

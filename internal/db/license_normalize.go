@@ -21,6 +21,11 @@ import "strings"
 // NormalizeLicenseToSPDX maps a license string to its canonical SPDX identifier.
 // Returns "Unknown" for empty/sentinel values, the canonical form for known
 // synonyms, or the trimmed input for unrecognized licenses.
+//
+// For long strings (>80 chars), it also detects full license texts — some Python
+// packages embed the entire BSD/MIT/Apache license body in the "license" field.
+// These are identified by content fingerprints (e.g., "Permission is hereby
+// granted" = MIT, "Redistribution and use in source and binary forms" = BSD).
 func NormalizeLicenseToSPDX(license string) string {
 	trimmed := strings.TrimSpace(license)
 
@@ -37,8 +42,96 @@ func NormalizeLicenseToSPDX(license string) string {
 		return canonical
 	}
 
+	// For long strings, try to identify full license texts by content fingerprints.
+	// Python packages (via PyPI/pip) frequently store the entire license body in
+	// the "license" metadata field instead of a short SPDX identifier.
+	if len(trimmed) > 80 {
+		if id := detectFullLicenseText(lower); id != "" {
+			return id
+		}
+		// Unrecognized long text — truncate to keep the UI usable.
+		return truncateLicenseText(trimmed, 80)
+	}
+
 	// No match — return trimmed input unchanged.
 	return trimmed
+}
+
+// detectFullLicenseText identifies full license text bodies by looking for
+// distinctive phrases. Checked in priority order — first match wins.
+// Only called for strings > 80 chars (short strings go through the synonym map).
+func detectFullLicenseText(lower string) string {
+	// Order matters: check most specific patterns first. BSD is checked before
+	// Apache because Python packages often concatenate multiple license texts,
+	// and BSD (the more specific match) should win when both appear.
+
+	// MIT: "permission is hereby granted, free of charge" + "as is" warranty
+	if strings.Contains(lower, "permission is hereby granted, free of charge") &&
+		strings.Contains(lower, "the software is provided \"as is\"") {
+		return "MIT"
+	}
+	// ISC: "permission to use, copy, modify, and/or distribute" (no redistribution clause)
+	if strings.Contains(lower, "permission to use, copy, modify, and/or distribute") &&
+		!strings.Contains(lower, "redistribution") {
+		return "ISC"
+	}
+	// PSF: "python software foundation license" (check before BSD — PSF texts include BSD clauses)
+	if strings.Contains(lower, "python software foundation license") {
+		return "PSF-2.0"
+	}
+	// BSD 3-Clause: "redistribution and use" + "neither the name" (more specific than BSD-2)
+	if strings.Contains(lower, "redistribution and use in source and binary forms") &&
+		strings.Contains(lower, "neither the name") {
+		return "BSD-3-Clause"
+	}
+	// BSD 2-Clause: "redistribution and use" without the third clause
+	if strings.Contains(lower, "redistribution and use in source and binary forms") &&
+		!strings.Contains(lower, "neither the name") {
+		return "BSD-2-Clause"
+	}
+	// Apache 2.0: "apache license" + "version 2.0" or "2.0"
+	if strings.Contains(lower, "apache license") && strings.Contains(lower, "2.0") {
+		return "Apache-2.0"
+	}
+	// GPL 3.0: "gnu general public license" + "version 3"
+	if strings.Contains(lower, "gnu general public license") && strings.Contains(lower, "version 3") {
+		return "GPL-3.0-only"
+	}
+	// GPL 2.0: "gnu general public license" + "version 2"
+	if strings.Contains(lower, "gnu general public license") && strings.Contains(lower, "version 2") {
+		return "GPL-2.0-only"
+	}
+	// MPL 2.0: "mozilla public license" + "2.0"
+	if strings.Contains(lower, "mozilla public license") && strings.Contains(lower, "2.0") {
+		return "MPL-2.0"
+	}
+	// Unlicense: "this is free and unencumbered software"
+	if strings.Contains(lower, "this is free and unencumbered software") {
+		return "Unlicense"
+	}
+	// CC0: "creative commons" + "cc0" or "public domain"
+	if strings.Contains(lower, "creative commons") && (strings.Contains(lower, "cc0") || strings.Contains(lower, "public domain")) {
+		return "CC0-1.0"
+	}
+	return ""
+}
+
+// truncateLicenseText truncates a long license string for display purposes.
+// Tries to find the first recognizable license name in the first line, otherwise
+// cuts at maxLen and appends an indicator.
+func truncateLicenseText(s string, maxLen int) string {
+	// Try to extract a meaningful first line (up to the first period or newline).
+	firstLine := s
+	for _, sep := range []string{"\n", ". ", " Copyright"} {
+		if idx := strings.Index(s, sep); idx > 0 && idx < maxLen {
+			firstLine = s[:idx]
+			break
+		}
+	}
+	if len(firstLine) <= maxLen {
+		return firstLine
+	}
+	return s[:maxLen] + "..."
 }
 
 // licenseSynonyms maps lowercased license strings to canonical SPDX identifiers.

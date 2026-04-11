@@ -119,7 +119,9 @@ func RunScorecard(ctx context.Context, store *db.PostgresStore, repoID int64, re
 	}
 
 	// Rotate previous scorecard results to history before inserting new ones.
-	_ = store.RotateScorecardToHistory(ctx, repoID)
+	if err := store.RotateScorecardToHistory(ctx, repoID); err != nil {
+		logger.Warn("failed to rotate scorecard to history", "repo_id", repoID, "error", err)
+	}
 
 	// Store each check as a row in repo_deps_scorecard.
 	for _, check := range raw.Checks {

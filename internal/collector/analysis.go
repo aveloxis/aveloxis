@@ -145,6 +145,7 @@ var manifestFiles = map[string]string{
 	"yarn.lock":       "JavaScript",
 	"requirements.txt": "Python",
 	"setup.py":        "Python",
+	"setup.cfg":       "Python",
 	"pyproject.toml":  "Python",
 	"Pipfile":         "Python",
 	"poetry.lock":     "Python",
@@ -197,7 +198,13 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 		filename := filepath.Base(path)
 		lang, ok := manifestFiles[filename]
 		if !ok {
-			return nil
+			// Check extension-based matches (e.g., .csproj).
+			ext := filepath.Ext(filename)
+			if ext == ".csproj" {
+				lang = ".NET"
+			} else {
+				return nil
+			}
 		}
 
 		deps, err := parseDependencyFile(path, lang)
@@ -252,6 +259,8 @@ func parseDependencyFile(path, lang string) ([]string, error) {
 		return parsePyprojectDeps(content)
 	case "setup.py":
 		return parseSetupPyDeps(content)
+	case "setup.cfg":
+		return parseSetupCfgDeps(content)
 	case "Pipfile":
 		return parsePipfileDeps(content)
 	case "Gemfile":
@@ -277,6 +286,10 @@ func parseDependencyFile(path, lang string) ([]string, error) {
 	case "Package.swift":
 		return parsePackageSwiftDeps(content), nil
 	default:
+		// Extension-based matching for files like *.csproj.
+		if strings.HasSuffix(filepath.Base(path), ".csproj") {
+			return parseCsprojDeps(content)
+		}
 		return nil, nil
 	}
 }
@@ -466,9 +479,11 @@ func parsePEP621Deps(content string) []string {
 		}
 
 		if inDepsArray {
-			if strings.Contains(trimmed, "]") {
-				// May have a dep on the closing line: "flask==2.0"]
-				deps = append(deps, extractPEP621DepsFromLine(trimmed)...)
+			// Check if this line closes the array. The array closer is an unquoted ]
+			// at line end, not a ] inside a dep name like "sqlalchemy[asyncio]>=2.0".
+			stripped := strings.TrimRight(trimmed, " ,")
+			if stripped == "]" || strings.HasSuffix(stripped, "]") && !strings.Contains(stripped, "\"") && !strings.Contains(stripped, "'") {
+				// Pure array closer (possibly with trailing comma).
 				inDepsArray = false
 				continue
 			}
@@ -856,8 +871,9 @@ func parsePEP621Versions(content string) []libyearDep {
 		}
 
 		if inDepsArray {
-			if strings.Contains(trimmed, "]") {
-				deps = append(deps, extractPEP621VersionDeps(trimmed)...)
+			// Check for unquoted array closer (not ] inside extras like [asyncio]).
+			stripped := strings.TrimRight(trimmed, " ,")
+			if stripped == "]" || strings.HasSuffix(stripped, "]") && !strings.Contains(stripped, "\"") && !strings.Contains(stripped, "'") {
 				inDepsArray = false
 				continue
 			}
@@ -1002,7 +1018,10 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		base := filepath.Base(path)
 		switch base {
 		case "package.json":
-			deps, _ := parsePackageJSONVersions(path)
+			deps, err := parsePackageJSONVersions(path)
+			if err != nil {
+				ac.logger.Warn("failed to parse package.json versions", "path", path, "error", err)
+			}
 			allDeps = append(allDeps, deps...)
 		case "requirements.txt":
 			deps := parseRequirementsTxtVersions(path)
@@ -1022,6 +1041,11 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 				deps := parsePipfileVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
+		case "setup.cfg":
+			if data, err := os.ReadFile(path); err == nil {
+				deps := parseSetupCfgVersions(string(data))
+				allDeps = append(allDeps, deps...)
+			}
 		case "go.mod":
 			deps := parseGoModVersions(path)
 			allDeps = append(allDeps, deps...)
@@ -1036,8 +1060,16 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 				deps := parsePomXMLVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
+		case "build.gradle", "build.gradle.kts":
+			if data, err := os.ReadFile(path); err == nil {
+				deps := parseBuildGradleVersions(string(data))
+				allDeps = append(allDeps, deps...)
+			}
 		case "composer.json":
-			deps, _ := parseComposerJSONVersions(path)
+			deps, err := parseComposerJSONVersions(path)
+			if err != nil {
+				ac.logger.Warn("failed to parse composer.json versions", "path", path, "error", err)
+			}
 			allDeps = append(allDeps, deps...)
 		case "mix.exs":
 			if data, err := os.ReadFile(path); err == nil {
@@ -1073,6 +1105,14 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			if data, err := os.ReadFile(path); err == nil {
 				deps := parseHaskellPackageYamlVersions(string(data))
 				allDeps = append(allDeps, deps...)
+			}
+		default:
+			// Extension-based matching (e.g., *.csproj).
+			if strings.HasSuffix(base, ".csproj") {
+				if data, err := os.ReadFile(path); err == nil {
+					deps := parseCsprojVersions(string(data))
+					allDeps = append(allDeps, deps...)
+				}
 			}
 		}
 		return nil
@@ -1156,7 +1196,10 @@ func parsePackageJSONVersions(path string) ([]libyearDep, error) {
 }
 
 func parseRequirementsTxtVersions(path string) []libyearDep {
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
 	var deps []libyearDep
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -1287,7 +1330,10 @@ func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, er
 
 // parseGoModVersions extracts deps with versions from go.mod.
 func parseGoModVersions(path string) []libyearDep {
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
 	var deps []libyearDep
 	inRequire := false
 	for _, line := range strings.Split(string(data), "\n") {
@@ -1313,7 +1359,10 @@ func parseGoModVersions(path string) []libyearDep {
 
 // parseCargoVersions extracts deps from Cargo.toml.
 func parseCargoVersions(path string) []libyearDep {
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
 	content := string(data)
 	var deps []libyearDep
 	inDeps := false
@@ -1352,7 +1401,10 @@ func parseCargoVersions(path string) []libyearDep {
 
 // parseGemfileVersions extracts deps with versions from Gemfile.
 func parseGemfileVersions(path string) []libyearDep {
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
 	var deps []libyearDep
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -1707,8 +1759,8 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	now := time.Now()
 	for _, lang := range languages {
 		for _, file := range lang.Files {
-			relPath, _ := filepath.Rel(workDir, file.Location)
-			if relPath == "" {
+			relPath, relErr := filepath.Rel(workDir, file.Location)
+			if relErr != nil || relPath == "" {
 				relPath = file.Location
 			}
 			err := ac.store.InsertRepoLabor(ctx, repoID, &db.RepoLaborRow{
@@ -1757,7 +1809,7 @@ func parseBuildGradle(content string) []string {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		// Matches: implementation 'group:artifact:version' or implementation("group:artifact:version")
-		for _, prefix := range []string{"implementation", "api", "compileOnly", "runtimeOnly", "testImplementation"} {
+		for _, prefix := range []string{"implementation", "api", "compileOnly", "runtimeOnly", "testImplementation", "testRuntimeOnly", "testCompileOnly"} {
 			if strings.HasPrefix(line, prefix) {
 				// Extract the string between quotes.
 				for _, q := range []string{"'", "\""} {
@@ -1781,6 +1833,179 @@ func parseBuildGradle(content string) []string {
 	}
 	return deps
 }
+
+// parseBuildGradleVersions extracts deps with versions from build.gradle / build.gradle.kts.
+// Handles both Groovy (single-quoted) and Kotlin DSL (parenthesized double-quoted) syntax.
+// Format: implementation 'group:artifact:version' or implementation("group:artifact:version")
+func parseBuildGradleVersions(content string) []libyearDep {
+	var deps []libyearDep
+	prefixes := []string{"implementation", "api", "compileOnly", "runtimeOnly", "testImplementation", "testRuntimeOnly"}
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "//") {
+			continue
+		}
+		for _, prefix := range prefixes {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			for _, q := range []string{"'", "\""} {
+				start := strings.Index(line, q)
+				if start < 0 {
+					continue
+				}
+				end := strings.Index(line[start+1:], q)
+				if end < 0 {
+					continue
+				}
+				coord := line[start+1 : start+1+end]
+				parts := strings.Split(coord, ":")
+				if len(parts) >= 2 {
+					name := parts[0] + ":" + parts[1]
+					version := ""
+					if len(parts) >= 3 {
+						version = parts[2]
+					}
+					depType := "runtime"
+					if strings.HasPrefix(prefix, "test") {
+						depType = "dev"
+					}
+					deps = append(deps, libyearDep{
+						Name:       name,
+						Version:    version,
+						Requirement: coord,
+						Type:       depType,
+						Manager:    "maven",
+					})
+				}
+				break
+			}
+		}
+	}
+	return deps
+}
+
+// parseSetupCfgDeps extracts dependency names from setup.cfg [options] install_requires.
+func parseSetupCfgDeps(content string) ([]string, error) {
+	var deps []string
+	lines := strings.Split(content, "\n")
+	inRequires := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect install_requires = (with possible inline deps)
+		if strings.HasPrefix(trimmed, "install_requires") && strings.Contains(trimmed, "=") {
+			inRequires = true
+			// Check for inline deps after =
+			afterEq := strings.SplitN(trimmed, "=", 2)
+			if len(afterEq) == 2 {
+				inline := strings.TrimSpace(afterEq[1])
+				if inline != "" {
+					if name := extractPyDepName(inline); name != "" {
+						deps = append(deps, name)
+					}
+				}
+			}
+			continue
+		}
+
+		// In setup.cfg, continuation lines are indented.
+		if inRequires {
+			if trimmed == "" || (!strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t")) {
+				// End of install_requires section (non-indented non-empty line).
+				if trimmed != "" {
+					inRequires = false
+				}
+				continue
+			}
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if name := extractPyDepName(trimmed); name != "" {
+				deps = append(deps, name)
+			}
+		}
+	}
+	return deps, nil
+}
+
+// parseSetupCfgVersions extracts deps with versions from setup.cfg.
+func parseSetupCfgVersions(content string) []libyearDep {
+	var deps []libyearDep
+	lines := strings.Split(content, "\n")
+	inRequires := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "install_requires") && strings.Contains(trimmed, "=") {
+			inRequires = true
+			afterEq := strings.SplitN(trimmed, "=", 2)
+			if len(afterEq) == 2 {
+				inline := strings.TrimSpace(afterEq[1])
+				if inline != "" {
+					if d := parsePyRequirement(inline); d != nil {
+						deps = append(deps, *d)
+					}
+				}
+			}
+			continue
+		}
+		if inRequires {
+			if trimmed == "" || (!strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t")) {
+				if trimmed != "" {
+					inRequires = false
+				}
+				continue
+			}
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if d := parsePyRequirement(trimmed); d != nil {
+				deps = append(deps, *d)
+			}
+		}
+	}
+	return deps
+}
+
+// parseCsprojDeps extracts dependency names from .csproj PackageReference elements.
+// Format: <PackageReference Include="Name" Version="1.0.0" />
+func parseCsprojDeps(content string) ([]string, error) {
+	var deps []string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "PackageReference") || !strings.Contains(line, "Include=") {
+			continue
+		}
+		name := extractXMLAttr(line, "Include")
+		if name != "" {
+			deps = append(deps, name)
+		}
+	}
+	return deps, nil
+}
+
+// parseCsprojVersions extracts deps with versions from .csproj files.
+func parseCsprojVersions(content string) []libyearDep {
+	var deps []libyearDep
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "PackageReference") || !strings.Contains(line, "Include=") {
+			continue
+		}
+		name := extractXMLAttr(line, "Include")
+		version := extractXMLAttr(line, "Version")
+		if name != "" {
+			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "nuget"})
+		}
+	}
+	return deps
+}
+
+// manifestExtensions lists file extensions that are detected in addition to the
+// exact filename matches in manifestFiles. These are checked during filepath.Walk.
+var manifestExtensions = []string{".csproj"}
 
 // parseComposerJSON extracts dependency names from composer.json (PHP).
 func parseComposerJSON(data []byte) ([]string, error) {

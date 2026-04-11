@@ -27,6 +27,7 @@
     "addr": ":8080",
     "base_url": "http://localhost:8080",
     "session_secret": "change-me-to-a-random-string",
+    "dev_mode": false,
     "github_client_id": "your-github-oauth-app-client-id",
     "github_client_secret": "your-github-oauth-app-client-secret",
     "gitlab_client_id": "your-gitlab-oauth-app-client-id",

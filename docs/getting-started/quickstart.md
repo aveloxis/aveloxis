@@ -35,6 +35,10 @@ Edit `aveloxis.json` with your database credentials:
 }
 ```
 
+```{important}
+**Local development over HTTP:** If you plan to use the web GUI locally (without HTTPS), set `"dev_mode": true` in the `"web"` section of `aveloxis.json`. Without this, session cookies are marked `Secure` and browsers will not send them over plain HTTP, causing login to fail silently. Do not enable `dev_mode` in production.
+```
+
 If you do not have a database yet, create one:
 
 ```sql

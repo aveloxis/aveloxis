@@ -131,8 +131,9 @@ func (s *Server) Handler() http.Handler {
 		w.Write(static.IconPNG)
 	})
 
-	// Public routes.
-	mux.HandleFunc("/", s.handleHome)
+	// Public routes. "/" must NOT be a catch-all — use GET to avoid
+	// swallowing static asset routes like /icon.png.
+	mux.HandleFunc("GET /{$}", s.handleHome)
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/auth/github", s.handleGitHubAuth)
 	mux.HandleFunc("/auth/github/callback", s.handleGitHubCallback)
@@ -201,10 +202,7 @@ func generateToken() string {
 // ============================================================
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
+	// Pattern "GET /{$}" ensures this only matches exactly "/".
 	sess := s.getSession(r)
 	if sess != nil {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)

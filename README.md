@@ -910,7 +910,7 @@ Aveloxis uses cleaner column names internally but exposes Augur-compatible names
 
 ## What's Collected
 
-Both platforms collect the same data types with full parity:
+Both platforms collect the same data types. Most fields have full parity; known gaps are documented below the table:
 
 | Entity | GitHub Source | GitLab Source | Storage |
 |---|---|---|---|
@@ -944,8 +944,23 @@ Both platforms collect the same data types with full parity:
 | ScanCode License/Copyright | `scancode -clpi` per file (every 30 days, if installed) | Same | `aveloxis_scan.scancode_scans` + `scancode_file_results` + history |
 | SBOMs | Generated from libyear data | Same | `repo_sbom_scans` (CycloneDX 1.5 + SPDX 2.3) |
 | Vulnerability Scan | OSV.dev batch API (purls) | Same | `repo_deps_vulnerabilities` (CVE ID, severity, CVSS, fixed version) |
+| PR/MR Fork Repos | `head.repo` / `base.repo` in PR response | `/projects/{id}` per source/target | `pull_request_repo` |
+| Contributor Affiliations | Auto-populated from email domains + `cntrb_company` | Same | `contributor_affiliations` |
 | Contributor Breadth | `GET /users/{login}/events` (every 6h) | — | `contributor_repo` |
 | Canonical Email Enrichment | `GET /users/{login}` for profile email | Same | `contributors.cntrb_canonical` |
+
+### GitHub vs GitLab — Known Data Gaps
+
+The following fields are available from GitHub but not from GitLab due to platform API limitations:
+
+| Field | GitHub | GitLab | Notes |
+|---|---|---|---|
+| Community profile files (CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY) | GraphQL file detection | `/repository/tree` file detection (v0.12.2) | Full parity |
+| Watcher count (`repo_info`) | GraphQL `watchers.totalCount` | Not available | GitLab has no public "watchers" API; `star_count` is the closest analog |
+| Clone statistics (`repo_clones`) | `/traffic/clones` (requires push access) | Not available | GitLab exposes clone data only via admin-only endpoints |
+| GraphQL node IDs (`pr_src_node_id`) | Available on all entities | Not applicable | GitLab uses numeric IDs, not GraphQL node IDs — architectural difference |
+| Contributor URL fields (`gh_followers_url`, etc.) | 10+ URL fields per contributor | Not available | GitLab API doesn't expose follower/following/gist/etc. URLs |
+| Contributor type (User/Bot/Organization) | `type` field on user objects | Not available | GitLab doesn't distinguish user types the same way |
 
 ### Unified Message Architecture
 

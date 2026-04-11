@@ -451,7 +451,9 @@ func (r *CommitResolver) ResolveEmailsToCanonical(ctx context.Context) (int, err
 		var user struct {
 			Email string `json:"email"`
 		}
-		json.NewDecoder(resp.Body).Decode(&user)
+		if decErr := json.NewDecoder(resp.Body).Decode(&user); decErr != nil {
+			r.logger.Warn("failed to decode user profile", "login", c.Login, "error", decErr)
+		}
 		resp.Body.Close()
 
 		if user.Email != "" && strings.Contains(user.Email, "@") &&

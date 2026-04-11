@@ -124,7 +124,11 @@ func (bw *BreadthWorker) processContributor(ctx context.Context, c db.BreadthCon
 				continue
 			}
 
-			eventTime, _ := time.Parse(time.RFC3339, event.CreatedAt)
+			eventTime, parseErr := time.Parse(time.RFC3339, event.CreatedAt)
+			if parseErr != nil {
+				bw.logger.Warn("failed to parse event timestamp", "created_at", event.CreatedAt, "error", parseErr)
+				continue
+			}
 
 			// Stop if we've reached events we already have.
 			if !newestEvent.IsZero() && eventTime.Before(newestEvent) {

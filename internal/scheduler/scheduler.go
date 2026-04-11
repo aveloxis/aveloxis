@@ -366,10 +366,12 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	outcome := s.buildOutcome(result, facadeResult, analysisResult, err)
 	duration := time.Since(start)
 
-	_ = s.store.CompleteJob(ctx, job.RepoID, outcome.success, s.cfg.RecollectAfter,
+	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, s.cfg.RecollectAfter,
 		outcome.issues, outcome.prs, outcome.messages, outcome.events,
 		outcome.releases, outcome.contributors, outcome.commits,
-		duration.Milliseconds(), outcome.errMsg)
+		duration.Milliseconds(), outcome.errMsg); err != nil {
+		s.logger.Warn("failed to complete job", "repo_id", job.RepoID, "error", err)
+	}
 
 	s.logger.Info("job complete",
 		"repo_id", job.RepoID,
@@ -383,15 +385,19 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 // failJob marks a job as failed with zero counts. Used for early exits
 // (repo lookup failure, unknown platform, etc.).
 func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
-	_ = s.store.CompleteJob(ctx, repoID, false, s.cfg.RecollectAfter,
-		0, 0, 0, 0, 0, 0, 0, 0, errMsg)
+	if err := s.store.CompleteJob(ctx, repoID, false, s.cfg.RecollectAfter,
+		0, 0, 0, 0, 0, 0, 0, 0, errMsg); err != nil {
+		s.logger.Warn("failed to record job failure", "repo_id", repoID, "error", err)
+	}
 }
 
 // skipJob marks a job as successfully completed with zero counts and a reason.
 // Used when prelim determines the repo should be skipped (e.g., deleted, duplicate).
 func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
-	_ = s.store.CompleteJob(ctx, repoID, true, s.cfg.RecollectAfter,
-		0, 0, 0, 0, 0, 0, 0, 0, reason)
+	if err := s.store.CompleteJob(ctx, repoID, true, s.cfg.RecollectAfter,
+		0, 0, 0, 0, 0, 0, 0, 0, reason); err != nil {
+		s.logger.Warn("failed to record job skip", "repo_id", repoID, "error", err)
+	}
 }
 
 // selectClient returns the platform client for the given platform, or an error
@@ -727,7 +733,10 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 		}
 		for _, item := range items {
 			// Check if we already have this repo.
-			existing, _ := s.store.FindRepoByURL(ctx, item.HTMLURL)
+			existing, findErr := s.store.FindRepoByURL(ctx, item.HTMLURL)
+			if findErr != nil {
+				s.logger.Warn("failed to check for existing repo", "url", item.HTMLURL, "error", findErr)
+			}
 			if existing > 0 {
 				continue
 			}
@@ -791,7 +800,10 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		for _, item := range items {
-			existing, _ := s.store.FindRepoByURL(ctx, item.WebURL)
+			existing, findErr := s.store.FindRepoByURL(ctx, item.WebURL)
+			if findErr != nil {
+				s.logger.Warn("failed to check for existing repo", "url", item.WebURL, "error", findErr)
+			}
 			if existing > 0 {
 				continue
 			}
@@ -918,7 +930,9 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context) {
 						Name    string `json:"name"`
 						Owner   struct{ Login string `json:"login"` } `json:"owner"`
 					}
-					json.NewDecoder(resp.Body).Decode(&items)
+					if decErr := json.NewDecoder(resp.Body).Decode(&items); decErr != nil {
+						s.logger.Warn("failed to decode org repos response", "path", path, "error", decErr)
+					}
 					resp.Body.Close()
 					if len(items) == 0 {
 						break
@@ -938,7 +952,10 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context) {
 		newCount := 0
 		for _, repo := range repos {
 			// Ensure repo exists.
-			repoID, _ := s.store.FindRepoByURL(ctx, repo.URL)
+			repoID, findErr := s.store.FindRepoByURL(ctx, repo.URL)
+			if findErr != nil {
+				s.logger.Warn("failed to find repo by URL", "url", repo.URL, "error", findErr)
+			}
 			if repoID == 0 {
 				var err error
 				repoID, err = s.store.UpsertRepo(ctx, &model.Repo{
@@ -950,7 +967,9 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context) {
 				if err != nil {
 					continue
 				}
-				s.store.EnqueueRepo(ctx, repoID, 100)
+				if enqErr := s.store.EnqueueRepo(ctx, repoID, 100); enqErr != nil {
+					s.logger.Warn("failed to enqueue repo", "repo_id", repoID, "error", enqErr)
+				}
 			}
 			// Add to user group (ON CONFLICT DO NOTHING for existing).
 			if err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err == nil {
@@ -958,7 +977,9 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context) {
 			}
 		}
 
-		s.store.MarkOrgRequestScanned(ctx, org.OrgRequestID)
+		if err := s.store.MarkOrgRequestScanned(ctx, org.OrgRequestID); err != nil {
+			s.logger.Warn("failed to mark org request scanned", "org_request_id", org.OrgRequestID, "error", err)
+		}
 		if newCount > 0 {
 			s.logger.Info("user org scan found new repos",
 				"org", org.OrgName, "group_id", groupID, "new_repos", newCount)

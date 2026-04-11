@@ -40,6 +40,7 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/licenses", s.handleLicenses)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-licenses", s.handleScancodeLicenses)
 	s.mux.HandleFunc("GET /api/v1/repos/search", s.handleRepoSearch)
+	s.registerMetricRoutes()
 	return s
 }
 
@@ -198,8 +199,14 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	licenses, _ := s.store.GetScancodeSourceLicenses(r.Context(), repoID)
-	copyrights, _ := s.store.GetScancodeCopyrights(r.Context(), repoID)
+	licenses, err := s.store.GetScancodeSourceLicenses(r.Context(), repoID)
+	if err != nil {
+		s.logger.Warn("failed to get scancode licenses", "repo_id", repoID, "error", err)
+	}
+	copyrights, err := s.store.GetScancodeCopyrights(r.Context(), repoID)
+	if err != nil {
+		s.logger.Warn("failed to get scancode copyrights", "repo_id", repoID, "error", err)
+	}
 
 	resp := struct {
 		Licenses   []db.ScancodeSourceLicense   `json:"licenses"`

@@ -125,7 +125,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Static assets.
-	mux.HandleFunc("/icon.png", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /icon.png", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		w.Write(static.IconPNG)

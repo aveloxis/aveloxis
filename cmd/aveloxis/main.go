@@ -24,6 +24,7 @@ import (
 	"github.com/augurlabs/aveloxis/internal/db"
 	"github.com/augurlabs/aveloxis/internal/model"
 	"github.com/augurlabs/aveloxis/internal/monitor"
+	"github.com/augurlabs/aveloxis/internal/pidfile"
 	"github.com/augurlabs/aveloxis/internal/platform"
 	"github.com/augurlabs/aveloxis/internal/platform/github"
 	"github.com/augurlabs/aveloxis/internal/platform/gitlab"
@@ -49,6 +50,7 @@ func main() {
 		serveCmd(&cfgPath),
 		apiCmd(&cfgPath),
 		webCmd(&cfgPath),
+		startCmd(&cfgPath),
 		stopCmd(),
 		addRepoCmd(&cfgPath),
 		addKeyCmd(&cfgPath),
@@ -107,6 +109,11 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
+
+	// Write PID file so 'aveloxis stop serve' can find us.
+	pidPath := pidfile.Path("serve")
+	pidfile.Write(pidPath, os.Getpid())
+	defer pidfile.Remove(pidPath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -185,6 +192,10 @@ func runAPI(cfgPath, addr string) error {
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
+
+	pidPath := pidfile.Path("api")
+	pidfile.Write(pidPath, os.Getpid())
+	defer pidfile.Remove(pidPath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -972,6 +983,10 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			cfg := loadConfig(*cfgPath, bootLog)
 			logger := newLogger(cfg)
 
+			webPidPath := pidfile.Path("web")
+			pidfile.Write(webPidPath, os.Getpid())
+			defer pidfile.Remove(webPidPath)
+
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer cancel()
 
@@ -1005,53 +1020,180 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 	}
 }
 
-func stopCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "stop",
-		Short: "Stop a running aveloxis serve instance",
-		Long: `Sends SIGTERM to all running aveloxis serve processes, triggering a
-graceful shutdown. Active workers finish their current API call, queue locks
-are released, and any unprocessed staging data is preserved for the next startup.`,
+// validComponents lists the background-manageable process types.
+var validComponents = []string{"serve", "web", "api"}
+
+func startCmd(cfgPath *string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "start [serve|web|api|all]",
+		Short: "Start aveloxis components in the background",
+		Long: `Launches the specified component(s) as background processes, writing
+output to log files in ~/.aveloxis/:
+
+  aveloxis start serve   → aveloxis.log   (scheduler + monitor)
+  aveloxis start web     → web.log        (web GUI)
+  aveloxis start api     → api.log        (REST API)
+  aveloxis start all     → all three
+
+PID files are written to ~/.aveloxis/aveloxis-{serve,web,api}.pid.
+Use 'aveloxis stop' to shut them down gracefully.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Find aveloxis serve processes and send SIGTERM.
-			out, err := exec.Command("pgrep", "-f", "aveloxis.*serve").Output()
-			if err != nil {
-				fmt.Println("No running aveloxis serve process found.")
-				return nil
-			}
+			target := strings.ToLower(args[0])
 
-			pids := strings.Fields(strings.TrimSpace(string(out)))
-			myPID := fmt.Sprintf("%d", os.Getpid())
-			killed := 0
-
-			for _, pid := range pids {
-				if pid == myPID {
-					continue // don't kill ourselves
-				}
-				p, err := strconv.Atoi(pid)
-				if err != nil {
-					continue
-				}
-				proc, err := os.FindProcess(p)
-				if err != nil {
-					continue
-				}
-				if err := proc.Signal(syscall.SIGTERM); err != nil {
-					fmt.Printf("Failed to stop PID %d: %v\n", p, err)
-					continue
-				}
-				fmt.Printf("Sent SIGTERM to PID %d\n", p)
-				killed++
-			}
-
-			if killed == 0 {
-				fmt.Println("No running aveloxis serve process found.")
+			var components []string
+			if target == "all" {
+				components = validComponents
 			} else {
-				fmt.Printf("Stopped %d aveloxis process(es). Staging data is preserved.\n", killed)
+				valid := false
+				for _, c := range validComponents {
+					if target == c {
+						valid = true
+						break
+					}
+				}
+				if !valid {
+					return fmt.Errorf("unknown component %q (use serve, web, api, or all)", target)
+				}
+				components = []string{target}
+			}
+
+			for _, comp := range components {
+				if err := startComponent(comp, *cfgPath); err != nil {
+					fmt.Printf("Failed to start %s: %v\n", comp, err)
+				}
 			}
 			return nil
 		},
 	}
+	return cmd
+}
+
+func startComponent(component, cfgPath string) error {
+	// Check if already running.
+	pidPath := pidfile.Path(component)
+	if pid, err := pidfile.Read(pidPath); err == nil && pidfile.IsRunning(pid) {
+		fmt.Printf("%s is already running (PID %d)\n", component, pid)
+		return nil
+	}
+
+	logPath := pidfile.LogPath(component)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("opening log file %s: %w", logPath, err)
+	}
+
+	// Build the command. Pass through the config path flag.
+	execPath, err := os.Executable()
+	if err != nil {
+		logFile.Close()
+		return fmt.Errorf("finding executable: %w", err)
+	}
+
+	cmdArgs := []string{component, "--config", cfgPath}
+	proc := exec.Command(execPath, cmdArgs...)
+	proc.Stdout = logFile
+	proc.Stderr = logFile
+	// Detach from the parent process group so it survives terminal close.
+	proc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := proc.Start(); err != nil {
+		logFile.Close()
+		return fmt.Errorf("starting %s: %w", component, err)
+	}
+
+	pid := proc.Process.Pid
+	if err := pidfile.Write(pidPath, pid); err != nil {
+		fmt.Printf("Warning: started %s (PID %d) but failed to write PID file: %v\n", component, pid, err)
+	}
+
+	// Release the child — we don't wait for it.
+	proc.Process.Release()
+	logFile.Close()
+
+	fmt.Printf("Started %s (PID %d), logging to %s\n", component, pid, logPath)
+	return nil
+}
+
+func stopCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "stop [serve|web|api|all]",
+		Short: "Stop running aveloxis background processes",
+		Long: `Sends SIGTERM to the specified component(s), triggering graceful shutdown.
+
+  aveloxis stop serve   — stop the scheduler
+  aveloxis stop web     — stop the web GUI
+  aveloxis stop api     — stop the REST API
+  aveloxis stop all     — stop all three
+  aveloxis stop         — (no args) same as 'all'
+
+Active workers finish their current API call, queue locks are released,
+and any unprocessed staging data is preserved for the next startup.
+PID files are cleaned up automatically.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target := "all"
+			if len(args) > 0 {
+				target = strings.ToLower(args[0])
+			}
+
+			var components []string
+			if target == "all" {
+				components = validComponents
+			} else {
+				valid := false
+				for _, c := range validComponents {
+					if target == c {
+						valid = true
+						break
+					}
+				}
+				if !valid {
+					return fmt.Errorf("unknown component %q (use serve, web, api, or all)", target)
+				}
+				components = []string{target}
+			}
+
+			stopped := 0
+			for _, comp := range components {
+				if ok := stopComponent(comp); ok {
+					stopped++
+				}
+			}
+			if stopped == 0 {
+				fmt.Println("No running aveloxis processes found.")
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+func stopComponent(component string) bool {
+	pidPath := pidfile.Path(component)
+	pid, err := pidfile.Read(pidPath)
+	if err != nil {
+		return false
+	}
+
+	if !pidfile.IsRunning(pid) {
+		fmt.Printf("%s: stale PID file (PID %d not running), cleaning up\n", component, pid)
+		pidfile.Remove(pidPath)
+		return false
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		fmt.Printf("Failed to stop %s (PID %d): %v\n", component, pid, err)
+		return false
+	}
+
+	fmt.Printf("Stopped %s (PID %d)\n", component, pid)
+	pidfile.Remove(pidPath)
+	return true
 }
 
 func versionCmd() *cobra.Command {

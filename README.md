@@ -114,9 +114,13 @@ Put those into your `aveloxis.json` file as described in the [Configuration Sect
 
 If you are running on bare metal, at this point you are ready to go!
 ```bash
-(nohup aveloxis api >> api.log &)
-(nohup aveloxis web >> web.log &)
-(nohup aveloxis serve >> aveloxis.log &)
+# Start all three processes in the background (logs to ~/.aveloxis/*.log)
+aveloxis start all
+
+# Or start individually
+aveloxis start serve   # → ~/.aveloxis/aveloxis.log
+aveloxis start web     # → ~/.aveloxis/web.log
+aveloxis start api     # → ~/.aveloxis/api.log
 ```
 
 Then you can open the interfaces:
@@ -501,13 +505,28 @@ Tools that are already installed are skipped. The command verifies each tool is 
 
 **Automatic updates:** On scheduler startup, Aveloxis checks if it has been more than 30 days since the last tool update. If so, it re-runs `go install ...@latest` for each installed tool to pull the latest version. Only tools already on PATH are updated — missing tools are not auto-installed. The check timestamp is stored at `~/.aveloxis-tool-check`.
 
-### `aveloxis stop` — Stop a running instance
+### `aveloxis start` — Start background processes
 
 ```bash
-aveloxis stop
+aveloxis start serve   # scheduler + monitor → ~/.aveloxis/aveloxis.log
+aveloxis start web     # web GUI             → ~/.aveloxis/web.log
+aveloxis start api     # REST API            → ~/.aveloxis/api.log
+aveloxis start all     # all three at once
 ```
 
-Sends SIGTERM to all running `aveloxis serve` processes. Active workers finish their current API call, queue locks are released, and staging data is preserved for the next startup.
+Launches the specified component(s) as detached background processes. Output is appended to log files in `~/.aveloxis/`. PID files are written to `~/.aveloxis/aveloxis-{serve,web,api}.pid` for reliable process tracking. If a component is already running, the command reports it and skips the launch.
+
+### `aveloxis stop` — Stop background processes
+
+```bash
+aveloxis stop serve    # stop only the scheduler
+aveloxis stop web      # stop only the web GUI
+aveloxis stop api      # stop only the REST API
+aveloxis stop all      # stop all three
+aveloxis stop          # (no args) same as 'all'
+```
+
+Sends SIGTERM to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed.
 
 ### `aveloxis sbom` — Generate Software Bill of Materials
 

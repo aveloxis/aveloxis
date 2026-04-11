@@ -122,34 +122,25 @@ type LicenseCount struct {
 }
 
 // osiLicenses is the set of OSI-approved SPDX license identifiers.
+// Only canonical SPDX forms are listed here — synonym normalization happens
+// in NormalizeLicenseToSPDX() before this map is consulted.
 // Source: https://opensource.org/licenses/
 var osiLicenses = map[string]bool{
-	"MIT": true, "Apache-2.0": true, "GPL-2.0": true, "GPL-2.0-only": true,
-	"GPL-3.0": true, "GPL-3.0-only": true, "LGPL-2.1": true, "LGPL-2.1-only": true,
-	"LGPL-3.0": true, "LGPL-3.0-only": true, "BSD-2-Clause": true, "BSD-3-Clause": true,
+	"MIT": true, "Apache-2.0": true, "GPL-2.0-only": true,
+	"GPL-3.0-only": true, "LGPL-2.1-only": true,
+	"LGPL-3.0-only": true, "BSD-2-Clause": true, "BSD-3-Clause": true,
 	"ISC": true, "MPL-2.0": true, "CDDL-1.0": true, "EPL-1.0": true, "EPL-2.0": true,
-	"AGPL-3.0": true, "AGPL-3.0-only": true, "Artistic-2.0": true, "Zlib": true,
+	"AGPL-3.0-only": true, "Artistic-2.0": true, "Zlib": true,
 	"Unlicense": true, "0BSD": true, "BSL-1.0": true, "PostgreSQL": true,
 	"OFL-1.1": true, "NCSA": true, "MulanPSL-2.0": true, "EUPL-1.2": true,
-	"CC0-1.0": true, "BlueOak-1.0.0": true, "UPL-1.0": true,
-	// Common short forms that appear in package registries.
-	"MIT License": true, "Apache 2.0": true, "Apache License 2.0": true,
-	"BSD": true, "ISC License": true, "Artistic-2.0 OR GPL-2.0-or-later": true,
+	"CC0-1.0": true, "BlueOak-1.0.0": true, "UPL-1.0": true, "PSF-2.0": true,
 }
 
-// normalizeLicense maps empty, whitespace-only, and common "no license"
-// sentinel values to "Unknown". Package registries return various representations
-// of "no license declared": empty string, "NOASSERTION" (SPDX), "NONE", "N/A",
-// "(none)" (RubyGems), or whitespace-only. This normalizer unifies them so the
-// license page shows a single "Unknown" count instead of cryptic registry values.
+// normalizeLicense maps license strings to canonical SPDX identifiers.
+// Unifies common synonyms (e.g., "MIT License" → "MIT", "Apache 2.0" → "Apache-2.0")
+// and maps "no license" sentinels to "Unknown".
 func normalizeLicense(license string) string {
-	trimmed := strings.TrimSpace(license)
-	upper := strings.ToUpper(trimmed)
-	switch upper {
-	case "", "NOASSERTION", "NONE", "N/A", "(NONE)", "UNKNOWN":
-		return "Unknown"
-	}
-	return trimmed
+	return NormalizeLicenseToSPDX(license)
 }
 
 // GetRepoLicenses returns a summary of dependency licenses for a repo,
@@ -203,12 +194,7 @@ func (s *PostgresStore) GetRepoLicenses(ctx context.Context, repoID int64) ([]Li
 }
 
 // isOSILicense checks if a license string matches a known OSI-approved license.
-// Handles both exact SPDX identifiers and common variations.
+// The input should already be normalized via NormalizeLicenseToSPDX.
 func isOSILicense(license string) bool {
-	if osiLicenses[license] {
-		return true
-	}
-	// Try common normalizations.
-	// Many registries return "MIT" or "Apache-2.0" but some use full names.
-	return false
+	return osiLicenses[license]
 }

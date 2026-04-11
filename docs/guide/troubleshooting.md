@@ -230,14 +230,14 @@ If you see this error, it indicates a code path that bypasses sanitization. Repo
 The standard restart procedure for any issue:
 
 ```bash
-# 1. Stop the running instance
-aveloxis stop
+# 1. Stop all running instances
+aveloxis stop all
 
 # 2. (Optional) Clear staging if you suspect corrupt staged data
 psql -U aveloxis -d aveloxis -c "TRUNCATE aveloxis_ops.staging;"
 
-# 3. Restart
-aveloxis serve --workers 4 --monitor :5555
+# 3. Restart all components in the background
+aveloxis start all
 ```
 
 On startup, Aveloxis automatically:

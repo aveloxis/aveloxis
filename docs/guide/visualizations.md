@@ -49,13 +49,27 @@ Charts default to the last 2 years of data. They are rendered client-side from J
 
 Below the charts, a table lists all licenses found in the project's dependencies (from `repo_deps_libyear`), with:
 
-- **License name** — the SPDX identifier or registry-reported license string
+- **License name** — the canonical SPDX identifier. Common synonyms are automatically normalized (e.g., "MIT License", "The MIT License (MIT)" → "MIT"; "Apache 2.0", "Apache License, Version 2.0" → "Apache-2.0"; "BSD", "3-Clause BSD License" → "BSD-3-Clause"). This ensures each license appears as a single row with the combined count.
 - **Count** — how many dependencies use that license
 - **OSI Compliant** — a green checkmark if the license is [OSI-approved](https://opensource.org/licenses/), a dash otherwise
 
 Dependencies with no declared license are grouped under **Unknown** (shown in italic amber). This includes empty licenses, whitespace-only values, and common registry sentinel values like `NOASSERTION` (SPDX), `NONE`, and `N/A`. A high "Unknown" count is a signal to investigate those dependencies manually.
 
 This helps identify licensing risks in the project's dependency tree at a glance.
+
+### Source Code Licenses (ScanCode)
+
+Below the dependency license table, a second section shows licenses and copyright holders detected directly in source code files by [ScanCode](https://github.com/aboutcode-org/scancode-toolkit). This data comes from periodic source file analysis (every 30 days by default).
+
+The **aggregate table** shows per-SPDX-expression file counts (same normalization as the dependency table).
+
+The **file-level table** is sortable by clicking any column header (File, License, Copyright). Each row shows:
+
+- **File** — the source file path (monospace)
+- **License** — the SPDX expression detected in that file
+- **Copyright** — the first copyright holder found (truncated to 120 characters if long, with a "+N more" indicator when multiple holders exist)
+
+The file table is scrollable (max height 400px) and fits within the page width. This replaces the previous display that showed the full raw license text.
 
 ### SBOM Downloads
 

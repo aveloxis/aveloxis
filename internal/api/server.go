@@ -39,6 +39,7 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/timeseries", s.handleTimeSeries)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/licenses", s.handleLicenses)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-licenses", s.handleScancodeLicenses)
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-files", s.handleScancodeFiles)
 	s.mux.HandleFunc("GET /api/v1/repos/search", s.handleRepoSearch)
 	s.registerMetricRoutes()
 	return s
@@ -219,4 +220,24 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleScancodeFiles returns per-file scancode data for the sortable web GUI table.
+// Each entry has: path, normalized SPDX license, truncated copyright holder.
+func (s *Server) handleScancodeFiles(w http.ResponseWriter, r *http.Request) {
+	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	files, err := s.store.GetScancodeFileEntries(r.Context(), repoID)
+	if err != nil {
+		s.logger.Warn("failed to get scancode file entries", "repo_id", repoID, "error", err)
+	}
+	if files == nil {
+		files = []db.ScancodeFileEntry{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(files)
 }

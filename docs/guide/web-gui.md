@@ -34,6 +34,10 @@ Before starting the web GUI you need:
 
 ## Configuration
 
+```{important}
+**Local development:** Set `"dev_mode": true` in the `"web"` section below if you are running over plain HTTP (e.g., `http://localhost:8080`). Without this, session cookies are marked `Secure` and your browser will not send them over HTTP, causing login to fail silently.
+```
+
 All web GUI settings live under the `web` key in `aveloxis.json`:
 
 ```json

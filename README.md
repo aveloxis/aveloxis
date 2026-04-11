@@ -235,6 +235,10 @@ After step 3, your keys live in `aveloxis_ops.worker_oauth` and are loaded autom
 # 1. Create a config file
 cp aveloxis.example.json aveloxis.json
 # Edit aveloxis.json with your database credentials and API tokens
+#
+# IMPORTANT for local development: set "dev_mode": true in the "web" section
+# so session cookies work over plain HTTP (without HTTPS).
+# See the "Development Mode" note below.
 
 # 2. Create the database schemas and tables
 aveloxis migrate
@@ -326,6 +330,19 @@ Create `aveloxis.json` (or copy from `aveloxis.example.json`):
 | `web.gitlab_client_secret` | GitLab OAuth app client secret | `""` |
 | `web.gitlab_base_url` | GitLab instance URL (for self-hosted GitLab) | `"https://gitlab.com"` |
 | `log_level` | Log verbosity: `debug`, `info`, `warn`, `error` | `info` |
+
+### Development Mode
+
+> **If you are developing locally over HTTP** (the typical case), you must set `"dev_mode": true` in the `"web"` section of `aveloxis.json`. Without this, session cookies are marked `Secure` and your browser will refuse to send them over plain `http://localhost`, making login fail silently.
+>
+> ```json
+> "web": {
+>   "dev_mode": true,
+>   ...
+> }
+> ```
+>
+> **Do not enable `dev_mode` in production.** In production, run behind a TLS-terminating reverse proxy (nginx, Caddy) and leave `dev_mode` at its default (`false`) so cookies are only sent over HTTPS. `HttpOnly` is always enabled regardless of this setting.
 
 ### API Key Sources and Rotation
 

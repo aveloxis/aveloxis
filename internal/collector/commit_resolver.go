@@ -69,10 +69,22 @@ type ResolveResult struct {
 	ResolvedAPI     int
 	ResolvedSearch  int
 	Unresolved      int
+	KeyExhausted    int // commits that failed because no API keys were available
 	ContribsCreated int
 	ContribsUpdated int
 	AliasesCreated  int
 	Errors          int
+}
+
+// IsSuccess returns true if the resolution completed meaningfully —
+// i.e., most commits were resolved or legitimately unresolvable, not
+// failed due to key exhaustion or errors.
+func (r *ResolveResult) IsSuccess() bool {
+	if r.TotalCommits == 0 {
+		return true
+	}
+	// If more than 50% of commits failed due to key exhaustion, this is not a success.
+	return r.KeyExhausted < r.TotalCommits/2
 }
 
 // ResolveCommits resolves all unresolved commits for a repo.
@@ -106,6 +118,17 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 
 		login, ghUserID, err := r.resolveOne(ctx, repoID, owner, repo, cmt, result)
 		if err != nil {
+			// Distinguish key exhaustion from other errors — key exhaustion means
+			// we should stop trying (all subsequent calls will fail too).
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "no API keys configured") || strings.Contains(errMsg, "invalidated") {
+				result.KeyExhausted = result.TotalCommits - (result.ResolvedNoreply + result.ResolvedDBHit + result.ResolvedAPI + result.ResolvedSearch + result.Unresolved + result.Errors)
+				r.logger.Error("commit resolution aborted: no API keys available",
+					"repo_id", repoID,
+					"resolved_so_far", result.ResolvedNoreply+result.ResolvedDBHit+result.ResolvedAPI,
+					"remaining", result.KeyExhausted)
+				break
+			}
 			r.logger.Warn("failed to resolve commit", "hash", cmt.Hash[:8], "error", err)
 			result.Errors++
 			continue
@@ -142,13 +165,21 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		r.logger.Info("backfilled cmt_ght_author_id", "rows", n)
 	}
 
-	r.logger.Info("commit resolution complete",
+	logLevel := slog.LevelInfo
+	status := "complete"
+	if !result.IsSuccess() {
+		logLevel = slog.LevelError
+		status = "FAILED (no API keys available — most commits unresolved)"
+	}
+	r.logger.Log(ctx, logLevel, "commit resolution "+status,
 		"total", result.TotalCommits,
 		"noreply", result.ResolvedNoreply,
 		"db_hit", result.ResolvedDBHit,
 		"api", result.ResolvedAPI,
 		"search", result.ResolvedSearch,
 		"unresolved", result.Unresolved,
+		"key_exhausted", result.KeyExhausted,
+		"errors", result.Errors,
 		"contribs_created", result.ContribsCreated,
 		"contribs_updated", result.ContribsUpdated,
 		"aliases", result.AliasesCreated)

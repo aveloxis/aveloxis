@@ -88,7 +88,21 @@ func (f *FacadeCollector) clonePath(repoID int64) string {
 func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) error {
 	// Bare repos don't have a .git subdirectory — check for HEAD file instead.
 	if _, err := os.Stat(filepath.Join(path, "HEAD")); err == nil {
-		// Existing bare clone — fetch updates.
+		// Existing bare clone found — verify it's the right repo.
+		// When repo IDs are reassigned (e.g., new database pointing at the same
+		// clone directory), the old clone may belong to a completely different repo.
+		// Reusing it would parse the wrong git history.
+		configData, _ := os.ReadFile(filepath.Join(path, "config"))
+		existingURL := parseOriginURL(string(configData))
+		if existingURL != "" && normalizeCloneURL(existingURL) != normalizeCloneURL(gitURL) {
+			f.logger.Warn("stale clone detected: origin URL mismatch, re-cloning",
+				"path", path,
+				"existing_url", existingURL,
+				"expected_url", gitURL)
+			os.RemoveAll(path)
+			return f.freshClone(ctx, gitURL, path)
+		}
+
 		f.logger.Info("fetching updates", "path", path)
 		var stderr bytes.Buffer
 		cmd := exec.CommandContext(ctx, "git", "-C", path, "fetch", "--all", "--prune")
@@ -109,6 +123,39 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 	}
 
 	return f.freshClone(ctx, gitURL, path)
+}
+
+// parseOriginURL extracts the remote.origin.url from a git config file's content.
+func parseOriginURL(configContent string) string {
+	inOrigin := false
+	for _, line := range strings.Split(configContent, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == `[remote "origin"]` {
+			inOrigin = true
+			continue
+		}
+		if inOrigin {
+			if strings.HasPrefix(trimmed, "[") {
+				break // next section
+			}
+			if strings.HasPrefix(trimmed, "url = ") {
+				return strings.TrimPrefix(trimmed, "url = ")
+			}
+		}
+	}
+	return ""
+}
+
+// normalizeCloneURL strips protocol, trailing slashes, .git suffix, and lowercases
+// for URL comparison. Two URLs that point to the same repo should match after this.
+func normalizeCloneURL(u string) string {
+	u = strings.TrimPrefix(u, "https://")
+	u = strings.TrimPrefix(u, "http://")
+	u = strings.TrimPrefix(u, "git://")
+	u = strings.TrimPrefix(u, "ssh://")
+	u = strings.TrimSuffix(u, "/")
+	u = strings.TrimSuffix(u, ".git")
+	return strings.ToLower(u)
 }
 
 func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) error {

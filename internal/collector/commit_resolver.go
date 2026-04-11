@@ -70,6 +70,7 @@ type ResolveResult struct {
 	ResolvedSearch  int
 	Unresolved      int
 	KeyExhausted    int // commits that failed because no API keys were available
+	Consecutive422  int // consecutive 422 "No commit found" errors from GitHub API
 	ContribsCreated int
 	ContribsUpdated int
 	AliasesCreated  int
@@ -85,6 +86,14 @@ func (r *ResolveResult) IsSuccess() bool {
 	}
 	// If more than 50% of commits failed due to key exhaustion, this is not a success.
 	return r.KeyExhausted < r.TotalCommits/2
+}
+
+// ShouldAbort422 returns true when the resolver should stop making API calls
+// because too many consecutive 422 "No commit found" errors indicate the
+// commits in the database don't belong to this repo (e.g., stale clone data
+// from a previous repo_id assignment).
+func (r *ResolveResult) ShouldAbort422() bool {
+	return r.Consecutive422 >= 50
 }
 
 // ResolveCommits resolves all unresolved commits for a repo.
@@ -129,10 +138,32 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 					"remaining", result.KeyExhausted)
 				break
 			}
+			// Track consecutive 422 "No commit found" errors. These mean the
+			// commit SHAs in the database don't exist in this repo (usually caused
+			// by a stale bare clone that belonged to a different repo). After 50
+			// consecutive 422s, abort — continuing would just waste API calls.
+			if strings.Contains(errMsg, "unprocessable entity") {
+				result.Consecutive422++
+				if result.ShouldAbort422() {
+					remaining := result.TotalCommits - (result.ResolvedNoreply + result.ResolvedDBHit + result.ResolvedAPI + result.ResolvedSearch + result.Unresolved + result.Errors)
+					r.logger.Error("commit resolution aborted: commits do not belong to this repo",
+						"repo_id", repoID, "owner", owner, "repo", repo,
+						"consecutive_422", result.Consecutive422,
+						"remaining", remaining,
+						"hint", "the bare clone may be stale — delete the clone dir and re-collect")
+					result.Errors += remaining
+					break
+				}
+			} else {
+				result.Consecutive422 = 0 // reset on non-422 error
+			}
 			r.logger.Warn("failed to resolve commit", "hash", cmt.Hash[:8], "error", err)
 			result.Errors++
 			continue
 		}
+		// Successful resolution (or clean skip) — reset 422 counter.
+		result.Consecutive422 = 0
+
 		if login == "" {
 			result.Unresolved++
 			// Store unresolved email for future resolution attempts.

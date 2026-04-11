@@ -1170,18 +1170,40 @@ PID files are cleaned up automatically.`,
 }
 
 func stopComponent(component string) bool {
+	// Strategy 1: PID file (preferred — reliable, written by start/serve/web/api).
 	pidPath := pidfile.Path(component)
-	pid, err := pidfile.Read(pidPath)
+	if pid, err := pidfile.Read(pidPath); err == nil {
+		if !pidfile.IsRunning(pid) {
+			fmt.Printf("%s: stale PID file (PID %d not running), cleaning up\n", component, pid)
+			pidfile.Remove(pidPath)
+		} else if signalProcess(component, pid) {
+			pidfile.Remove(pidPath)
+			return true
+		}
+	}
+
+	// Strategy 2: pgrep fallback — finds processes started before PID file support
+	// was added, or started manually without 'aveloxis start'.
+	out, err := exec.Command("pgrep", "-f", "aveloxis "+component).Output()
 	if err != nil {
 		return false
 	}
 
-	if !pidfile.IsRunning(pid) {
-		fmt.Printf("%s: stale PID file (PID %d not running), cleaning up\n", component, pid)
-		pidfile.Remove(pidPath)
-		return false
+	myPID := os.Getpid()
+	stopped := false
+	for _, field := range strings.Fields(strings.TrimSpace(string(out))) {
+		pid, err := strconv.Atoi(field)
+		if err != nil || pid == myPID {
+			continue
+		}
+		if signalProcess(component, pid) {
+			stopped = true
+		}
 	}
+	return stopped
+}
 
+func signalProcess(component string, pid int) bool {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return false
@@ -1190,9 +1212,7 @@ func stopComponent(component string) bool {
 		fmt.Printf("Failed to stop %s (PID %d): %v\n", component, pid, err)
 		return false
 	}
-
 	fmt.Printf("Stopped %s (PID %d)\n", component, pid)
-	pidfile.Remove(pidPath)
 	return true
 }
 

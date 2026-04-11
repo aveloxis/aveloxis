@@ -82,10 +82,12 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 	)
 
 	// Update status to Collecting.
-	_ = c.store.UpdateCollectionStatus(ctx, &db.CollectionState{
+	if err := c.store.UpdateCollectionStatus(ctx, &db.CollectionState{
 		RepoID:     repoID,
 		CoreStatus: string(StatusCollecting),
-	})
+	}); err != nil {
+		c.logger.Warn("failed to update collection status", "repo_id", repoID, "error", err)
+	}
 
 	// Phase 0: Seed contributor cache from repo's known contributors.
 	if err := c.collectContributors(ctx, repoID, owner, repo, result); err != nil {
@@ -123,10 +125,12 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 	// Runs AFTER API phases so contributor emails can be resolved.
 	gitURL := fmt.Sprintf("https://%s/%s/%s.git",
 		platformHost(c.client.Platform()), owner, repo)
-	_ = c.store.UpdateCollectionStatus(ctx, &db.CollectionState{
+	if err := c.store.UpdateCollectionStatus(ctx, &db.CollectionState{
 		RepoID:       repoID,
 		FacadeStatus: string(StatusCollecting),
-	})
+	}); err != nil {
+		c.logger.Warn("failed to update facade status", "repo_id", repoID, "error", err)
+	}
 	facadeResult, err := c.facade.CollectRepo(ctx, repoID, gitURL)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("facade: %w", err))
@@ -163,13 +167,15 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 	if facadeResult == nil || len(facadeResult.Errors) > 0 {
 		facadeStatus = string(StatusError)
 	}
-	_ = c.store.UpdateCollectionStatus(ctx, &db.CollectionState{
+	if err := c.store.UpdateCollectionStatus(ctx, &db.CollectionState{
 		RepoID:                  repoID,
 		CoreStatus:              status,
 		CoreDataLastCollected:   &now,
 		FacadeStatus:            facadeStatus,
 		FacadeDataLastCollected: &now,
-	})
+	}); err != nil {
+		c.logger.Warn("failed to update final collection status", "repo_id", repoID, "error", err)
+	}
 
 	c.logger.Info("collection complete",
 		"platform", c.client.Platform(),
@@ -283,31 +289,39 @@ func (c *Collector) collectPullRequests(ctx context.Context, repoID int64, owner
 			labels = append(labels, label)
 		}
 		if len(labels) > 0 {
-			_ = c.store.UpsertPRLabels(ctx, prID, repoID, labels)
+			if err := c.store.UpsertPRLabels(ctx, prID, repoID, labels); err != nil {
+				c.logger.Warn("failed to upsert PR labels", "pr", pr.Number, "error", err)
+			}
 		}
 
 		// Assignees
 		var assignees []model.PullRequestAssignee
 		for a, err := range c.client.ListPRAssignees(ctx, owner, repo, pr.Number) {
 			if err != nil {
+				c.logger.Warn("failed to list PR assignees", "pr", pr.Number, "error", err)
 				break
 			}
 			assignees = append(assignees, a)
 		}
 		if len(assignees) > 0 {
-			_ = c.store.UpsertPRAssignees(ctx, prID, repoID, assignees)
+			if err := c.store.UpsertPRAssignees(ctx, prID, repoID, assignees); err != nil {
+				c.logger.Warn("failed to upsert PR assignees", "pr", pr.Number, "error", err)
+			}
 		}
 
 		// Reviewers
 		var reviewers []model.PullRequestReviewer
 		for r, err := range c.client.ListPRReviewers(ctx, owner, repo, pr.Number) {
 			if err != nil {
+				c.logger.Warn("failed to list PR reviewers", "pr", pr.Number, "error", err)
 				break
 			}
 			reviewers = append(reviewers, r)
 		}
 		if len(reviewers) > 0 {
-			_ = c.store.UpsertPRReviewers(ctx, prID, repoID, reviewers)
+			if err := c.store.UpsertPRReviewers(ctx, prID, repoID, reviewers); err != nil {
+				c.logger.Warn("failed to upsert PR reviewers", "pr", pr.Number, "error", err)
+			}
 		}
 
 		// Reviews
@@ -325,7 +339,9 @@ func (c *Collector) collectPullRequests(ctx context.Context, repoID int64, owner
 					review.ContributorID = &cid
 				}
 			}
-			_ = c.store.UpsertPRReview(ctx, &review)
+			if err := c.store.UpsertPRReview(ctx, &review); err != nil {
+				c.logger.Warn("failed to upsert PR review", "pr", pr.Number, "error", err)
+			}
 		}
 
 		// Commits
@@ -343,7 +359,9 @@ func (c *Collector) collectPullRequests(ctx context.Context, repoID int64, owner
 					commit.AuthorID = &cid
 				}
 			}
-			_ = c.store.UpsertPRCommit(ctx, &commit)
+			if err := c.store.UpsertPRCommit(ctx, &commit); err != nil {
+				c.logger.Warn("failed to upsert PR commit", "pr", pr.Number, "error", err)
+			}
 		}
 
 		// Files
@@ -354,7 +372,9 @@ func (c *Collector) collectPullRequests(ctx context.Context, repoID int64, owner
 			}
 			file.PRID = prID
 			file.RepoID = repoID
-			_ = c.store.UpsertPRFile(ctx, &file)
+			if err := c.store.UpsertPRFile(ctx, &file); err != nil {
+				c.logger.Warn("failed to upsert PR file", "pr", pr.Number, "error", err)
+			}
 		}
 
 		// Head/base metadata
@@ -365,19 +385,34 @@ func (c *Collector) collectPullRequests(ctx context.Context, repoID int64, owner
 			head.RepoID = repoID
 			base.PRID = prID
 			base.RepoID = repoID
-			headMetaID, _ = c.store.UpsertPRMeta(ctx, head)
-			baseMetaID, _ = c.store.UpsertPRMeta(ctx, base)
+			var metaErr error
+			headMetaID, metaErr = c.store.UpsertPRMeta(ctx, head)
+			if metaErr != nil {
+				c.logger.Warn("failed to upsert PR meta (head)", "pr", pr.Number, "error", metaErr)
+			}
+			baseMetaID, metaErr = c.store.UpsertPRMeta(ctx, base)
+			if metaErr != nil {
+				c.logger.Warn("failed to upsert PR meta (base)", "pr", pr.Number, "error", metaErr)
+			}
+		} else {
+			c.logger.Warn("failed to fetch PR meta", "pr", pr.Number, "error", err)
 		}
 		// Fork/upstream repo details from head.repo and base.repo
 		headRepo, baseRepo, repoErr := c.client.FetchPRRepos(ctx, owner, repo, pr.Number)
-		if repoErr == nil {
+		if repoErr != nil {
+			c.logger.Warn("failed to fetch PR repos", "pr", pr.Number, "error", repoErr)
+		} else {
 			if headRepo != nil && headMetaID != 0 {
 				headRepo.MetaID = headMetaID
-				_ = c.store.UpsertPRRepo(ctx, headRepo)
+				if err := c.store.UpsertPRRepo(ctx, headRepo); err != nil {
+					c.logger.Warn("failed to upsert PR repo (head)", "pr", pr.Number, "error", err)
+				}
 			}
 			if baseRepo != nil && baseMetaID != 0 {
 				baseRepo.MetaID = baseMetaID
-				_ = c.store.UpsertPRRepo(ctx, baseRepo)
+				if err := c.store.UpsertPRRepo(ctx, baseRepo); err != nil {
+					c.logger.Warn("failed to upsert PR repo (base)", "pr", pr.Number, "error", err)
+				}
 			}
 		}
 

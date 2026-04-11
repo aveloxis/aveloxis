@@ -186,6 +186,17 @@ Augur relies on Flower (a separate Celery monitoring service). Aveloxis includes
 
 Both GitHub and GitLab implement the same `platform.Client` interface with 7 sub-interfaces, ensuring feature parity. All methods use Go 1.23 iterators (`iter.Seq2`) for memory-efficient streaming pagination.
 
+#### Known GitLab API limitations
+
+The following data is available from GitHub but not from GitLab due to platform API constraints:
+
+- **Community profile files** (CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY) — not yet fetched for GitLab, but closable via `/repository/tree` and `/repository/files` endpoints.
+- **Watcher count** — GitLab has no public watchers API (`star_count` is captured instead).
+- **Clone statistics** — GitLab exposes these only via admin-only endpoints.
+- **GraphQL node IDs** — GitLab uses numeric project/user IDs rather than GitHub-style GraphQL node IDs. Stored in `SrcRepoID` (numeric) instead of `SrcNodeID`.
+- **Contributor URL fields** — GitHub returns 10+ URL fields per user (followers, gists, starred, etc.) that GitLab's API does not provide.
+- **Contributor type** — GitHub distinguishes User/Bot/Organization; GitLab does not expose this distinction.
+
 ---
 
 ## Project structure

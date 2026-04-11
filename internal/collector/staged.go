@@ -103,10 +103,12 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		"platform", sc.client.Platform(),
 		"owner", owner, "repo", repo, "repoID", repoID)
 
-	_ = sc.store.UpdateCollectionStatus(ctx, &db.CollectionState{
+	if err := sc.store.UpdateCollectionStatus(ctx, &db.CollectionState{
 		RepoID:     repoID,
 		CoreStatus: string(StatusCollecting),
-	})
+	}); err != nil {
+		sc.logger.Warn("failed to update collection status", "repo_id", repoID, "error", err)
+	}
 
 	// Phase 0: Contributors.
 	sc.logger.Info("collecting contributors", "owner", owner, "repo", repo)
@@ -358,11 +360,13 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 		status = string(StatusError)
 		p.logger.Warn("processing completed with errors", "repo_id", repoID, "error_count", p.errors)
 	}
-	_ = p.store.UpdateCollectionStatus(ctx, &db.CollectionState{
+	if err := p.store.UpdateCollectionStatus(ctx, &db.CollectionState{
 		RepoID:                repoID,
 		CoreStatus:            status,
 		CoreDataLastCollected: &now,
-	})
+	}); err != nil {
+		p.logger.Warn("failed to update final processing status", "repo_id", repoID, "error", err)
+	}
 
 	p.logger.Info("processing complete", "repo_id", repoID, "errors", p.errors)
 	return nil
@@ -518,12 +522,20 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 		if env.MetaHead != nil {
 			env.MetaHead.PRID = prID
 			env.MetaHead.RepoID = repoID
-			headMetaID, _ = p.store.UpsertPRMeta(ctx, env.MetaHead)
+			var metaErr error
+			headMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaHead)
+			if metaErr != nil {
+				p.logger.Warn("failed to upsert PR meta (head)", "pr_id", prID, "error", metaErr)
+			}
 		}
 		if env.MetaBase != nil {
 			env.MetaBase.PRID = prID
 			env.MetaBase.RepoID = repoID
-			baseMetaID, _ = p.store.UpsertPRMeta(ctx, env.MetaBase)
+			var metaErr error
+			baseMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaBase)
+			if metaErr != nil {
+				p.logger.Warn("failed to upsert PR meta (base)", "pr_id", prID, "error", metaErr)
+			}
 		}
 		// Insert fork repo details linked to their corresponding meta rows.
 		if env.RepoHead != nil && headMetaID != 0 {
@@ -654,7 +666,9 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 		}
 		info.RepoID = repoID
 		// Rotate previous snapshot to history before inserting the latest.
-		_ = p.store.RotateRepoInfoToHistory(ctx, repoID)
+		if err := p.store.RotateRepoInfoToHistory(ctx, repoID); err != nil {
+			p.logger.Warn("failed to rotate repo info to history", "repo_id", repoID, "error", err)
+		}
 		return p.store.InsertRepoInfo(ctx, &info)
 
 	case EntityCloneStats:

@@ -333,6 +333,8 @@ Keys are loaded from three sources, merged together:
 2. **`augur_operations.worker_oauth`** — checked when `--augur-keys` flag is set.
 3. **`aveloxis.json`** — lowest priority, for standalone deployments without a database pre-populated with keys.
 
+**Startup validation:** `aveloxis serve` and `aveloxis collect` require at least one API key (GitHub or GitLab) to start. If no keys are found in any source, the process exits with a clear error message. If keys are found for only one platform, a warning is logged but the process continues (repos for the unconfigured platform will not be collected). If key loading fails (e.g., database connection error), the error is logged at ERROR level.
+
 **Key rotation:** All keys are rotated via round-robin so every key's rate limit is fully utilized. When a key's remaining requests drop to the buffer threshold (default: 15), it's skipped until its rate-limit window resets. With N tokens at 5000 req/hr each, total throughput is N * ~4985 req/hr. For example, 74 tokens give ~368K lookups/hour. Keys that return 401 (bad credentials) are permanently invalidated.
 
 ## Commands
@@ -1135,25 +1137,21 @@ go test ./internal/platform/...
 AVELOXIS_TEST_DB="postgres://user:pass@localhost:5432/aveloxis_test" go test ./internal/db/...
 ```
 
-The test suite has 144 tests across 21 test files (122 pass, 3 skip requiring live PostgreSQL), covering:
+The test suite has **540 tests** across **72 test files** in 12 packages (all pass, no database required). Coverage by area:
 
-- **Platform clients**: GitHub/GitLab user reference conversion, diff line counting, discussion note types, review comment side logic
-- **URL parsing**: GitHub, GitLab (including nested subgroups), self-hosted instances, edge cases
-- **HTTP client**: Link header pagination parsing, query parameter manipulation, retry-after parsing
-- **Key pool**: Round-robin rotation, exhausted key skipping, rate-limit refill after reset, buffer threshold, alive count, total remaining
-- **Collector**: Client routing by URL, facade git log parsing (commit headers, numstat lines, binary files, timestamps, date extraction), platform host mapping
-- **Staged pipeline**: Entity type constants, envelope marshal/unmarshal round-trips (issue+children, PR+children), processing order validation
-- **Prelim phase**: URL normalization, owner/name parsing from URLs, redirect detection
-- **Noreply parser**: With/without user ID prefix, non-noreply rejection, whitespace handling, bot email detection
-- **Breadth worker**: GitHub event JSON deserialization, string-to-int64 ID parsing, empty repo handling
-- **Analysis**: Dependency parsers (requirements.txt, go.mod, package.json, Gemfile, pom.xml, Cargo.toml), version cleaning, libyear calculation, scc JSON output parsing
-- **GithubUUID**: Determinism, Augur compatibility, platform byte encoding, large user IDs, GitLab variant
-- **Text sanitization**: Null byte removal, invalid UTF-8 replacement, control character stripping, clean string fast path, mixed bad content
-- **Affiliation resolver**: Email domain extraction, cached resolution, parent domain fallback
-- **Config**: Default values, connection string generation, JSON loading, merge behavior
-- **DB**: Queue job structs, staging flush size, staging writer initialization, GithubUUID generation
-- **Model**: UserRef zero-value detection
-- **Monitor**: API endpoint validation, request parsing
+| Package | Tests | Coverage |
+|---|---|---|
+| `internal/collector` | 332 | Dependency parsers (15 ecosystems), libyear, SBOM generation (CycloneDX + SPDX), vulnerability scanning (CVSS, OSV), facade git log parsing, commit resolution, prelim URL handling, noreply/bot email detection, breadth worker, SCC complexity, scorecard |
+| `internal/db` | 56 | Queue jobs, staging, GithubUUID, text sanitization, affiliations, batch operations, repo stats, vulnerability store, SBOM store, timeseries, licenses |
+| `internal/api` | 40 | All REST endpoints (health, stats, SBOM, timeseries, licenses, search) + all Augur-compatible metric endpoints (issues, PRs, commits, contributors, stars, forks, watchers, deps, releases, complexity), parameter validation, route registration |
+| `internal/platform` | 39 | Key pool (round-robin, exhaustion, reset wait, empty pool, invalidated keys), HTTP client (pagination, query params, retry-after), URL parsing (GitHub, GitLab, nested subgroups, self-hosted) |
+| `internal/web` | 18 | Web GUI handlers, OAuth flow, URL validation |
+| `internal/scheduler` | 17 | Job lifecycle, phase orchestration, worker management |
+| `internal/platform/gitlab` | 17 | Community file detection, contributor enrichment, user reference conversion, diff line counting, discussion notes |
+| `internal/config` | 9 | Default values, connection string generation, JSON loading, merge behavior |
+| `internal/platform/github` | 7 | User reference conversion, GraphQL query building |
+| `internal/monitor` | 4 | API endpoint validation, request parsing |
+| `internal/model` | 1 | UserRef zero-value detection |
 
 
 # Build docs

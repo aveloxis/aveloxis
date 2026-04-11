@@ -63,6 +63,13 @@ func NewKeyPoolWithBuffer(tokens []string, buffer int, logger *slog.Logger) *Key
 func (kp *KeyPool) GetKey(ctx context.Context) (*APIKey, error) {
 	for {
 		kp.mu.Lock()
+
+		// Fast exit: no keys were ever configured.
+		if len(kp.keys) == 0 {
+			kp.mu.Unlock()
+			return nil, fmt.Errorf("no API keys configured — add keys via 'aveloxis add-key' or the database")
+		}
+
 		now := time.Now()
 
 		// Refill any keys whose rate-limit window has reset.
@@ -100,7 +107,7 @@ func (kp *KeyPool) GetKey(ctx context.Context) (*APIKey, error) {
 		kp.mu.Unlock()
 
 		if allInvalid {
-			return nil, fmt.Errorf("no valid API keys available")
+			return nil, fmt.Errorf("all API keys have been invalidated (bad credentials) — check your tokens")
 		}
 
 		// Wait for the earliest reset.
@@ -192,6 +199,13 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 	defer kp.mu.Unlock()
 	key.Invalid = true
 	kp.logger.Warn("API key invalidated", "token_prefix", key.Token[:min(8, len(key.Token))]+"...")
+}
+
+// IsEmpty returns true if the pool was created with zero keys.
+func (kp *KeyPool) IsEmpty() bool {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	return len(kp.keys) == 0
 }
 
 // AliveCount returns the number of non-invalidated keys.

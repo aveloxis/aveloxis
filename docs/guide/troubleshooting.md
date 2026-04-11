@@ -71,26 +71,86 @@ Normally, leftover staging data is processed on startup. Clearing staging only l
 
 ---
 
+## "No API keys configured" / Startup failure
+
+**Symptom:** `aveloxis serve` or `aveloxis collect` exits immediately with `"no API keys configured for any platform"`.
+
+**Cause:** No API tokens were found in the database or config file. Aveloxis requires at least one GitHub or GitLab token to function.
+
+**Solution:**
+
+1. Add a token via the CLI:
+   ```bash
+   aveloxis add-key ghp_your_github_token --platform github
+   aveloxis add-key glpat-your_gitlab_token --platform gitlab
+   ```
+
+2. Or add tokens directly to `aveloxis.json`:
+   ```json
+   {
+     "github": { "api_keys": ["ghp_token1", "ghp_token2"] },
+     "gitlab": { "api_keys": ["glpat-token1"] }
+   }
+   ```
+
+3. Restart:
+   ```bash
+   aveloxis serve --workers 4
+   ```
+
+```{note}
+If only GitHub tokens are configured, GitLab repos will not be collected (and vice versa). You will see a warning in the log: `"no GitLab API keys configured — GitLab repos will not be collected"`.
+```
+
+---
+
+## "Commit resolution FAILED"
+
+**Symptom:** Log shows `level=ERROR msg="commit resolution FAILED (no API keys available — most commits unresolved)"` with a large `key_exhausted` count.
+
+**Cause:** The commit resolver needs GitHub API keys to resolve git commit emails to GitHub usernames. If the key pool is empty or all keys have been invalidated, the resolver cannot make API calls and aborts early.
+
+**Solution:**
+
+1. Check that you have valid API keys:
+   ```bash
+   # Look for key loading at startup
+   grep "loaded.*keys" aveloxis.log
+   ```
+
+2. If no keys were loaded, see the "No API keys configured" section above.
+
+3. If keys were loaded but all were invalidated, check for `"API key invalidated"` messages in the log. This usually means the tokens have been revoked or expired on GitHub.
+
+4. The resolver uses noreply-email parsing and database lookups before making API calls, so it can still resolve many commits without API access. The `key_exhausted` count shows how many commits could not be resolved due to missing keys.
+
+---
+
 ## "No data collected"
 
 **Symptom:** A repo completes collection but shows zero issues, PRs, and commits.
 
 **Causes:**
+- No API keys loaded (see above) — the staged collection returns 0 items when the key pool is empty
 - Authentication failure (token not valid for this repo)
 - The repo is empty (no issues, PRs, or commits)
 - The repo is private and the token does not have access
 
 **Solution:**
-1. Check logs at DEBUG level for the specific repo:
+1. First check if keys loaded successfully at startup:
+   ```bash
+   grep "loaded.*keys" aveloxis.log
+   ```
+2. Check logs at DEBUG level for the specific repo:
    ```bash
    # In aveloxis.json, set "log_level": "debug"
    ```
-2. Verify the token has access:
+3. Verify the token has access:
    ```bash
    curl -H "Authorization: token ghp_your_token" \
      https://api.github.com/repos/owner/repo
    ```
-3. If the repo is private, ensure the token has `repo` scope (not just `public_repo`).
+4. If the repo is private, ensure the token has `repo` scope (not just `public_repo`).
 
 ---
 

@@ -128,7 +128,10 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		return fmt.Errorf("migrating database: %w", err)
 	}
 
-	ghKeys, glKeys := loadKeys(ctx, cfg, store, useAugurKeys, logger)
+	ghKeys, glKeys, err := loadKeys(ctx, cfg, store, useAugurKeys, logger)
+	if err != nil {
+		return fmt.Errorf("loading API keys: %w", err)
+	}
 	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
 	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
@@ -248,7 +251,10 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 		return fmt.Errorf("migrating database: %w", err)
 	}
 
-	ghKeys, glKeys := loadKeys(ctx, cfg, store, useAugurKeys, logger)
+	ghKeys, glKeys, err := loadKeys(ctx, cfg, store, useAugurKeys, logger)
+	if err != nil {
+		return fmt.Errorf("loading API keys: %w", err)
+	}
 	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
 	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
@@ -368,7 +374,10 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 		return fmt.Errorf("migrating database: %w", err)
 	}
 
-	ghKeys, glKeys := loadKeys(ctx, cfg, store, false, logger)
+	ghKeys, glKeys, err := loadKeys(ctx, cfg, store, false, logger)
+	if err != nil {
+		return fmt.Errorf("loading API keys: %w", err)
+	}
 
 	for _, repoURL := range repoURLs {
 		// Check if this is an org/group URL instead of a repo URL.
@@ -975,8 +984,9 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			// `aveloxis serve` for that. Running migrations from both serve
 			// and web simultaneously causes conflicts.
 
-			// Load GitHub keys for immediate org scanning.
-			ghKeys, _ := loadKeys(ctx, cfg, store, false, logger)
+			// Load GitHub keys for immediate org scanning (non-fatal for web — it
+			// can still serve the GUI without keys, just can't scan orgs).
+			ghKeys, _, _ := loadKeys(ctx, cfg, store, false, logger)
 
 			webServer := web.New(store, cfg.Web, ghKeys, logger)
 			srv := &http.Server{Addr: cfg.Web.Addr, Handler: webServer.Handler()}
@@ -1072,19 +1082,33 @@ func newLogger(cfg *config.Config) *slog.Logger {
 //  1. aveloxis_ops.worker_oauth (always checked)
 //  2. augur_operations.worker_oauth (if --augur-keys is set)
 //  3. JSON config file (lowest priority, for standalone deployments)
-func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, useAugurKeys bool, logger *slog.Logger) (*platform.KeyPool, *platform.KeyPool) {
+func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, useAugurKeys bool, logger *slog.Logger) (*platform.KeyPool, *platform.KeyPool, error) {
 	ghTokens := cfg.GitHub.APIKeys
 	glTokens := cfg.GitLab.APIKeys
 
 	// Load from database (aveloxis_ops first, augur_operations as fallback).
-	if dbGH, err := db.LoadAPIKeys(ctx, store.Pool(), "github", useAugurKeys); err == nil && len(dbGH) > 0 {
+	if dbGH, err := db.LoadAPIKeys(ctx, store.Pool(), "github", useAugurKeys); err != nil {
+		logger.Error("failed to load GitHub API keys from database", "error", err)
+	} else if len(dbGH) > 0 {
 		logger.Info("loaded GitHub keys from database", "count", len(dbGH))
 		ghTokens = append(ghTokens, dbGH...)
 	}
-	if dbGL, err := db.LoadAPIKeys(ctx, store.Pool(), "gitlab", useAugurKeys); err == nil && len(dbGL) > 0 {
+	if dbGL, err := db.LoadAPIKeys(ctx, store.Pool(), "gitlab", useAugurKeys); err != nil {
+		logger.Error("failed to load GitLab API keys from database", "error", err)
+	} else if len(dbGL) > 0 {
 		logger.Info("loaded GitLab keys from database", "count", len(dbGL))
 		glTokens = append(glTokens, dbGL...)
 	}
 
-	return platform.NewKeyPool(ghTokens, logger), platform.NewKeyPool(glTokens, logger)
+	if len(ghTokens) == 0 && len(glTokens) == 0 {
+		return nil, nil, fmt.Errorf("no API keys configured for any platform — add keys via 'aveloxis add-key <token> --platform github' or store them in the database. Collection is impossible without API keys")
+	}
+	if len(ghTokens) == 0 {
+		logger.Warn("no GitHub API keys configured — GitHub repos will not be collected")
+	}
+	if len(glTokens) == 0 {
+		logger.Warn("no GitLab API keys configured — GitLab repos will not be collected")
+	}
+
+	return platform.NewKeyPool(ghTokens, logger), platform.NewKeyPool(glTokens, logger), nil
 }

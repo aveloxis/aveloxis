@@ -112,17 +112,53 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 }
 
 func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) error {
+	if err := validateGitURL(gitURL); err != nil {
+		return fmt.Errorf("unsafe git URL rejected: %w", err)
+	}
 	f.logger.Info("cloning repository", "url", gitURL, "path", path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", gitURL, path)
+	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", "--", gitURL, path)
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%w: %s", err, stderr.String())
 	}
 	return nil
+}
+
+// validateGitURL checks that a URL is safe to pass to git commands.
+// Rejects URLs that could be interpreted as git flags (start with "-"),
+// non-network schemes (file://), and URLs containing control characters.
+func validateGitURL(u string) error {
+	if u == "" {
+		return fmt.Errorf("empty URL")
+	}
+	// Reject flag injection: URLs starting with "-" could be parsed as git flags.
+	if u[0] == '-' {
+		return fmt.Errorf("URL must not start with '-': %q", u)
+	}
+	// Reject control characters (newlines, null bytes) that could break argument parsing.
+	for _, c := range u {
+		if c < 0x20 || c == 0x7f {
+			return fmt.Errorf("URL contains control character 0x%02x", c)
+		}
+	}
+	// Require a recognized scheme or SCP-style SSH syntax (git@host:path).
+	// Allowed schemes: https, http, git, ssh.
+	// SCP syntax: contains "@" and ":" but no "://" (e.g., git@github.com:org/repo.git).
+	allowedSchemes := []string{"https://", "http://", "git://", "ssh://"}
+	for _, scheme := range allowedSchemes {
+		if strings.HasPrefix(u, scheme) {
+			return nil
+		}
+	}
+	// SCP-style: user@host:path
+	if strings.Contains(u, "@") && strings.Contains(u, ":") && !strings.Contains(u, "://") {
+		return nil
+	}
+	return fmt.Errorf("unrecognized URL scheme (allowed: https, http, git, ssh, or SCP-style): %q", u)
 }
 
 // gitLogFormat is the format string for git log output.

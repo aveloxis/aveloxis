@@ -291,6 +291,7 @@ Create `aveloxis.json` (or copy from `aveloxis.example.json`):
     "addr": ":8080",
     "base_url": "http://localhost:8080",
     "session_secret": "change-me-to-a-random-string",
+    "dev_mode": false,
     "github_client_id": "your-github-oauth-app-client-id",
     "github_client_secret": "your-github-oauth-app-client-secret",
     "gitlab_client_id": "your-gitlab-oauth-app-client-id",
@@ -318,6 +319,7 @@ Create `aveloxis.json` (or copy from `aveloxis.example.json`):
 | `web.addr` | Listen address for the web GUI | `":8080"` |
 | `web.base_url` | External URL for OAuth callback redirects | `"http://localhost:8080"` |
 | `web.session_secret` | Secret key for signing session cookies | (required for `aveloxis web`) |
+| `web.dev_mode` | Set `true` for local HTTP development. Disables `Secure` flag on cookies so they work without HTTPS. **Do not enable in production.** `HttpOnly` is always set regardless. | `false` |
 | `web.github_client_id` | GitHub OAuth app client ID | `""` |
 | `web.github_client_secret` | GitHub OAuth app client secret | `""` |
 | `web.gitlab_client_id` | GitLab OAuth app client ID | `""` |
@@ -1137,15 +1139,15 @@ go test ./internal/platform/...
 AVELOXIS_TEST_DB="postgres://user:pass@localhost:5432/aveloxis_test" go test ./internal/db/...
 ```
 
-The test suite has **540 tests** across **72 test files** in 12 packages (all pass, no database required). Coverage by area:
+The test suite has **561 tests** across **75 test files** in 12 packages (all pass, no database required). Coverage by area:
 
 | Package | Tests | Coverage |
 |---|---|---|
-| `internal/collector` | 332 | Dependency parsers (15 ecosystems), libyear, SBOM generation (CycloneDX + SPDX), vulnerability scanning (CVSS, OSV), facade git log parsing, commit resolution, prelim URL handling, noreply/bot email detection, breadth worker, SCC complexity, scorecard |
-| `internal/db` | 56 | Queue jobs, staging, GithubUUID, text sanitization, affiliations, batch operations, repo stats, vulnerability store, SBOM store, timeseries, licenses |
+| `internal/collector` | 344 | Dependency parsers (15 ecosystems), libyear, SBOM generation (CycloneDX + SPDX), vulnerability scanning (CVSS, OSV), facade git log parsing, git URL security validation, commit resolution, prelim URL handling, noreply/bot email detection, breadth worker, SCC complexity, scorecard |
+| `internal/db` | 61 | Queue jobs, staging, GithubUUID (incl. overflow detection), text sanitization, affiliations, batch operations, repo stats, vulnerability store, SBOM store, timeseries, licenses |
 | `internal/api` | 40 | All REST endpoints (health, stats, SBOM, timeseries, licenses, search) + all Augur-compatible metric endpoints (issues, PRs, commits, contributors, stars, forks, watchers, deps, releases, complexity), parameter validation, route registration |
 | `internal/platform` | 39 | Key pool (round-robin, exhaustion, reset wait, empty pool, invalidated keys), HTTP client (pagination, query params, retry-after), URL parsing (GitHub, GitLab, nested subgroups, self-hosted) |
-| `internal/web` | 18 | Web GUI handlers, OAuth flow, URL validation |
+| `internal/web` | 22 | Web GUI handlers, OAuth flow, URL validation, cookie security (Secure/HttpOnly/dev_mode) |
 | `internal/scheduler` | 17 | Job lifecycle, phase orchestration, worker management |
 | `internal/platform/gitlab` | 17 | Community file detection, contributor enrichment, user reference conversion, diff line counting, discussion notes |
 | `internal/config` | 9 | Default values, connection string generation, JSON loading, merge behavior |

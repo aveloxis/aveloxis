@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_groups_list_serve (
 
 -- ============================================================
 -- Contributors (platform-agnostic core + identity table)
+--
+-- Relationship hierarchy:
+--   contributors (parent)
+--     ├── contributor_identities (child) — platform-specific user profiles (GitHub, GitLab)
+--     ├── contributors_aliases (child) — email deduplication mapping
+--     └── contributor_affiliations — email domain → org mapping (NOT an FK child;
+--         independent lookup table used during commit affiliation resolution)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.contributors (
     cntrb_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -612,7 +619,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_repo (
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
-    data_collection_date TIMESTAMPTZ DEFAULT NOW()
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (pr_repo_meta_id, pr_repo_head_or_base)
 );
 
 -- ============================================================

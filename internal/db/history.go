@@ -68,6 +68,19 @@ func (s *PostgresStore) RotateLibyearToHistory(ctx context.Context, repoID int64
 	})
 }
 
+// ClearRepoDependencies deletes all repo_dependencies rows for a repo before
+// re-inserting fresh data. Unlike libyear/scorecard, repo_dependencies has no
+// history table — the table is a snapshot of current dependencies only. Without
+// clearing, re-collection would either silently duplicate rows (no unique
+// constraint) or skip them (ON CONFLICT DO NOTHING with stale data persisting).
+func (s *PostgresStore) ClearRepoDependencies(ctx context.Context, repoID int64) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+			DELETE FROM aveloxis_data.repo_dependencies WHERE repo_id = $1`, repoID)
+		return err
+	})
+}
+
 // RotateScorecardToHistory moves all existing scorecard rows for a repo into
 // repo_deps_scorecard_history, then deletes them from the main table.
 // Called before inserting new scorecard results.

@@ -337,6 +337,16 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// since we don't know where the contributor identities live.
 	s.runCommitResolution(ctx, job.RepoID, repo)
 
+	// Phase 5b: Auto-populate contributor affiliations.
+	// Maps contributor email domains to organizations using company data from
+	// GitHub/GitLab user profiles. Must run after enrichment + commit resolution
+	// so we have the most complete email/company data.
+	if affCount, err := s.store.PopulateAffiliations(ctx); err != nil {
+		s.logger.Warn("affiliation population failed", "error", err)
+	} else if affCount > 0 {
+		s.logger.Info("auto-populated affiliations", "count", affCount)
+	}
+
 	// Phase 6: SBOM generation.
 	s.generateSBOMs(ctx, job.RepoID)
 

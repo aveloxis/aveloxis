@@ -121,6 +121,23 @@ type PullRequestFile struct {
 	Origin    DataOrigin
 }
 
+// PullRequestRepo stores information about the fork/upstream repository
+// referenced in a pull request's head or base. This captures which repo a
+// PR branch comes from (head = fork repo, base = upstream repo).
+// Populated from GitHub's head.repo/base.repo and GitLab's source_project/target_project.
+type PullRequestRepo struct {
+	ID           int64
+	MetaID       int64  // FK to PullRequestMeta.ID
+	HeadOrBase   string // "head" or "base"
+	SrcRepoID    int64  // repo ID on the platform (e.g., GitHub repo ID)
+	SrcNodeID    string // GraphQL node ID
+	RepoName     string // short name (e.g., "my-fork")
+	RepoFullName string // full name (e.g., "contributor/my-fork")
+	Private      bool
+	ContribID    *string // contributor UUID of the repo owner
+	Origin       DataOrigin
+}
+
 // PullRequestEvent records a state change on a PR/MR.
 type PullRequestEvent struct {
 	ID               int64

@@ -173,6 +173,12 @@ var manifestFiles = map[string]string{
 func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64, workDir string, result *AnalysisResult) error {
 	ac.logger.Info("scanning dependencies", "repo_id", repoID)
 
+	// Clear previous dependency data before inserting fresh results.
+	// repo_dependencies is a snapshot table (no history rotation needed).
+	if err := ac.store.ClearRepoDependencies(ctx, repoID); err != nil {
+		ac.logger.Warn("failed to clear old dependencies", "repo_id", repoID, "error", err)
+	}
+
 	depCounts := make(map[string]map[string]int) // language -> dep_name -> count
 
 	err := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
@@ -243,7 +249,11 @@ func parseDependencyFile(path, lang string) ([]string, error) {
 	case "Cargo.toml":
 		return parseTOMLDeps(content, "[dependencies]"), nil
 	case "pyproject.toml":
-		return parseTOMLDeps(content, "[tool.poetry.dependencies]"), nil
+		return parsePyprojectDeps(content)
+	case "setup.py":
+		return parseSetupPyDeps(content)
+	case "Pipfile":
+		return parsePipfileDeps(content)
 	case "Gemfile":
 		return parseGemfile(content), nil
 	case "pom.xml":
@@ -256,6 +266,8 @@ func parseDependencyFile(path, lang string) ([]string, error) {
 		return parseBuildSbt(content), nil
 	case "packages.config":
 		return parseNuGetPackagesConfig(content), nil
+	case "Directory.Packages.props":
+		return parseDirectoryPackagesProps(content)
 	case "package.yaml":
 		return parsePackageYaml(content), nil
 	case "mix.exs":
@@ -397,6 +409,571 @@ func parsePomXML(content string) []string {
 	return deps
 }
 
+// parsePyprojectDeps extracts dependency names from pyproject.toml.
+// Handles both PEP 621 ([project] dependencies = [...]) and Poetry
+// ([tool.poetry.dependencies]) formats.
+func parsePyprojectDeps(content string) ([]string, error) {
+	var deps []string
+
+	// Try PEP 621 format: [project] section with dependencies = ["pkg>=1.0", ...]
+	deps = append(deps, parsePEP621Deps(content)...)
+
+	// Try Poetry format: [tool.poetry.dependencies] with key = value pairs
+	poetryDeps := parseTOMLDeps(content, "[tool.poetry.dependencies]")
+	deps = append(deps, poetryDeps...)
+
+	return deps, nil
+}
+
+// parsePEP621Deps extracts dependency names from PEP 621 format pyproject.toml.
+// Parses the dependencies = [...] array under [project].
+func parsePEP621Deps(content string) []string {
+	var deps []string
+	lines := strings.Split(content, "\n")
+	inProject := false
+	inDepsArray := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Track [project] section.
+		if trimmed == "[project]" {
+			inProject = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && trimmed != "[project]" {
+			inProject = false
+			inDepsArray = false
+			continue
+		}
+
+		if !inProject {
+			continue
+		}
+
+		// Detect dependencies = [ start.
+		if strings.HasPrefix(trimmed, "dependencies") && strings.Contains(trimmed, "=") {
+			if strings.Contains(trimmed, "[") {
+				inDepsArray = true
+				// Handle inline: dependencies = ["flask==2.0"]
+				if strings.Contains(trimmed, "]") {
+					// Single-line array.
+					deps = append(deps, extractPEP621DepsFromLine(trimmed)...)
+					inDepsArray = false
+				}
+			}
+			continue
+		}
+
+		if inDepsArray {
+			if strings.Contains(trimmed, "]") {
+				// May have a dep on the closing line: "flask==2.0"]
+				deps = append(deps, extractPEP621DepsFromLine(trimmed)...)
+				inDepsArray = false
+				continue
+			}
+			if name := extractPEP621DepName(trimmed); name != "" {
+				deps = append(deps, name)
+			}
+		}
+	}
+	return deps
+}
+
+// extractPEP621DepName extracts a package name from a PEP 621 dependency string.
+// Input: `"flask>=2.0",` or `"tomli>=2.2.1 ; python_version < '3.11'",`
+// Output: `flask` or `tomli`
+func extractPEP621DepName(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.Trim(line, "\",")
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return ""
+	}
+	// Strip environment markers: everything after ';'
+	if idx := strings.Index(line, ";"); idx > 0 {
+		line = strings.TrimSpace(line[:idx])
+	}
+	// Strip extras: name[extra]>=1.0
+	if idx := strings.Index(line, "["); idx > 0 {
+		line = line[:idx] + line[strings.Index(line, "]")+1:]
+	}
+	// Extract name before version specifiers.
+	for _, sep := range []string{">=", "<=", "!=", "~=", "==", ">", "<"} {
+		if idx := strings.Index(line, sep); idx > 0 {
+			return strings.TrimSpace(line[:idx])
+		}
+	}
+	return strings.TrimSpace(line)
+}
+
+// extractPEP621DepsFromLine extracts dep names from an inline deps array.
+func extractPEP621DepsFromLine(line string) []string {
+	var deps []string
+	// Find content between [ and ].
+	start := strings.Index(line, "[")
+	end := strings.LastIndex(line, "]")
+	if start < 0 {
+		start = 0
+	} else {
+		start++
+	}
+	if end < 0 {
+		end = len(line)
+	}
+	inner := line[start:end]
+	for _, item := range strings.Split(inner, ",") {
+		if name := extractPEP621DepName(item); name != "" {
+			deps = append(deps, name)
+		}
+	}
+	return deps
+}
+
+// parseSetupPyDeps extracts dependency names from setup.py install_requires.
+func parseSetupPyDeps(content string) ([]string, error) {
+	return extractSetupPyInstallRequires(content), nil
+}
+
+// extractSetupPyInstallRequires parses the install_requires=[...] list from setup.py.
+func extractSetupPyInstallRequires(content string) []string {
+	var deps []string
+	lines := strings.Split(content, "\n")
+	inRequires := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect install_requires=[ or install_requires = [
+		if !inRequires && strings.Contains(trimmed, "install_requires") && strings.Contains(trimmed, "[") {
+			inRequires = true
+			// Check for deps on the same line as install_requires=[
+			if idx := strings.Index(trimmed, "["); idx >= 0 {
+				rest := trimmed[idx:]
+				if strings.Contains(rest, "]") {
+					// Single-line: install_requires=['flask', 'requests']
+					deps = append(deps, extractQuotedPyDeps(rest)...)
+					inRequires = false
+				} else {
+					deps = append(deps, extractQuotedPyDeps(rest)...)
+				}
+			}
+			continue
+		}
+
+		if inRequires {
+			if strings.Contains(trimmed, "]") {
+				deps = append(deps, extractQuotedPyDeps(trimmed)...)
+				inRequires = false
+				continue
+			}
+			deps = append(deps, extractQuotedPyDeps(trimmed)...)
+		}
+	}
+	return deps
+}
+
+// extractQuotedPyDeps extracts package names from Python quoted dependency strings.
+// Input: `'flask>=2.0', "requests==2.28.0",`
+// Output: ["flask", "requests"]
+func extractQuotedPyDeps(line string) []string {
+	var deps []string
+	// Extract all quoted strings.
+	for _, quote := range []byte{'\'', '"'} {
+		rest := line
+		for {
+			start := strings.IndexByte(rest, quote)
+			if start < 0 {
+				break
+			}
+			end := strings.IndexByte(rest[start+1:], quote)
+			if end < 0 {
+				break
+			}
+			depStr := rest[start+1 : start+1+end]
+			rest = rest[start+1+end+1:]
+			if name := extractPyDepName(depStr); name != "" {
+				deps = append(deps, name)
+			}
+		}
+	}
+	return deps
+}
+
+// extractPyDepName extracts the package name from a Python requirement string.
+// "flask>=2.0" -> "flask", "numpy" -> "numpy"
+func extractPyDepName(req string) string {
+	req = strings.TrimSpace(req)
+	if req == "" {
+		return ""
+	}
+	// Strip environment markers.
+	if idx := strings.Index(req, ";"); idx > 0 {
+		req = strings.TrimSpace(req[:idx])
+	}
+	// Strip extras: name[extra]
+	if idx := strings.Index(req, "["); idx > 0 {
+		req = req[:idx]
+	}
+	// Strip version specifiers.
+	for _, sep := range []string{">=", "<=", "!=", "~=", "==", ">", "<"} {
+		if idx := strings.Index(req, sep); idx > 0 {
+			return strings.TrimSpace(req[:idx])
+		}
+	}
+	return strings.TrimSpace(req)
+}
+
+// parseSetupPyVersions extracts deps with versions from setup.py install_requires.
+func parseSetupPyVersions(content string) []libyearDep {
+	var deps []libyearDep
+	lines := strings.Split(content, "\n")
+	inRequires := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if !inRequires && strings.Contains(trimmed, "install_requires") && strings.Contains(trimmed, "[") {
+			inRequires = true
+			if idx := strings.Index(trimmed, "["); idx >= 0 {
+				rest := trimmed[idx:]
+				if strings.Contains(rest, "]") {
+					deps = append(deps, extractQuotedPyVersionDeps(rest)...)
+					inRequires = false
+				} else {
+					deps = append(deps, extractQuotedPyVersionDeps(rest)...)
+				}
+			}
+			continue
+		}
+
+		if inRequires {
+			if strings.Contains(trimmed, "]") {
+				deps = append(deps, extractQuotedPyVersionDeps(trimmed)...)
+				inRequires = false
+				continue
+			}
+			deps = append(deps, extractQuotedPyVersionDeps(trimmed)...)
+		}
+	}
+	return deps
+}
+
+// extractQuotedPyVersionDeps extracts deps with versions from quoted Python strings.
+func extractQuotedPyVersionDeps(line string) []libyearDep {
+	var deps []libyearDep
+	for _, quote := range []byte{'\'', '"'} {
+		rest := line
+		for {
+			start := strings.IndexByte(rest, quote)
+			if start < 0 {
+				break
+			}
+			end := strings.IndexByte(rest[start+1:], quote)
+			if end < 0 {
+				break
+			}
+			depStr := rest[start+1 : start+1+end]
+			rest = rest[start+1+end+1:]
+			if d := parsePyRequirement(depStr); d != nil {
+				deps = append(deps, *d)
+			}
+		}
+	}
+	return deps
+}
+
+// parsePyRequirement parses a single Python requirement string into a libyearDep.
+func parsePyRequirement(req string) *libyearDep {
+	req = strings.TrimSpace(req)
+	if req == "" {
+		return nil
+	}
+	// Strip environment markers.
+	if idx := strings.Index(req, ";"); idx > 0 {
+		req = strings.TrimSpace(req[:idx])
+	}
+	// Strip extras.
+	cleanReq := req
+	if idx := strings.Index(cleanReq, "["); idx > 0 {
+		endBracket := strings.Index(cleanReq, "]")
+		if endBracket > idx {
+			cleanReq = cleanReq[:idx] + cleanReq[endBracket+1:]
+		}
+	}
+
+	name := cleanReq
+	version := ""
+	for _, sep := range []string{"==", ">=", "<=", "~=", "!=", ">", "<"} {
+		if idx := strings.Index(cleanReq, sep); idx > 0 {
+			name = strings.TrimSpace(cleanReq[:idx])
+			version = strings.TrimSpace(cleanReq[idx+len(sep):])
+			// Strip trailing version bounds: ">=1.10.0,<1.13.0" -> "1.10.0"
+			if commaIdx := strings.Index(version, ","); commaIdx > 0 {
+				version = version[:commaIdx]
+			}
+			break
+		}
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	return &libyearDep{Name: name, Version: version, Requirement: req, Type: "runtime", Manager: "pypi"}
+}
+
+// parsePipfileDeps extracts dependency names from Pipfile [packages] section.
+func parsePipfileDeps(content string) ([]string, error) {
+	var deps []string
+	inPackages := false
+
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "[packages]" {
+			inPackages = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			inPackages = false
+			continue
+		}
+		if inPackages && strings.Contains(trimmed, "=") {
+			name := strings.TrimSpace(strings.SplitN(trimmed, "=", 2)[0])
+			if name != "" {
+				deps = append(deps, name)
+			}
+		}
+	}
+	return deps, nil
+}
+
+// parsePipfileVersions extracts deps with versions from Pipfile [packages].
+func parsePipfileVersions(content string) []libyearDep {
+	var deps []libyearDep
+	inPackages := false
+
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "[packages]" {
+			inPackages = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			inPackages = false
+			continue
+		}
+		if !inPackages || !strings.Contains(trimmed, "=") {
+			continue
+		}
+
+		// Pipfile uses "name = value" where value is quoted.
+		// Use the first unquoted = as delimiter.
+		eqIdx := strings.Index(trimmed, "=")
+		if eqIdx < 0 {
+			continue
+		}
+		name := strings.TrimSpace(trimmed[:eqIdx])
+		if name == "" {
+			continue
+		}
+		versionRaw := strings.TrimSpace(trimmed[eqIdx+1:])
+		// Pipfile values: "==2.0.2", "~=2.28", "*", {version = "==2.0.0", ...}
+		version := ""
+		versionRaw = strings.Trim(versionRaw, "\"' ")
+		if versionRaw != "*" {
+			// Handle table-style: {version = "==2.0.0", extras = [...]}
+			if strings.HasPrefix(versionRaw, "{") {
+				for _, kv := range strings.Split(versionRaw, ",") {
+					kv = strings.TrimSpace(kv)
+					if strings.HasPrefix(kv, "{") {
+						kv = strings.TrimPrefix(kv, "{")
+					}
+					kv = strings.TrimSuffix(kv, "}")
+					kv = strings.TrimSpace(kv)
+					if strings.HasPrefix(kv, "version") {
+						kvParts := strings.SplitN(kv, "=", 2)
+						if len(kvParts) == 2 {
+							version = cleanVersion(strings.Trim(strings.TrimSpace(kvParts[1]), "\"' "))
+						}
+						break
+					}
+				}
+			} else {
+				version = cleanVersion(versionRaw)
+			}
+		}
+		deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: "runtime", Manager: "pypi"})
+	}
+	return deps
+}
+
+// parsePyprojectVersionsFromContent extracts deps with versions from pyproject.toml content.
+// Handles both PEP 621 and Poetry formats.
+func parsePyprojectVersionsFromContent(content string) []libyearDep {
+	var deps []libyearDep
+
+	// PEP 621: [project] dependencies = ["flask==2.0.2", ...]
+	deps = append(deps, parsePEP621Versions(content)...)
+
+	// Poetry: [tool.poetry.dependencies] key = "^version"
+	deps = append(deps, parsePoetryVersions(content)...)
+
+	return deps
+}
+
+// parsePEP621Versions extracts deps with versions from PEP 621 format.
+func parsePEP621Versions(content string) []libyearDep {
+	var deps []libyearDep
+	lines := strings.Split(content, "\n")
+	inProject := false
+	inDepsArray := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "[project]" {
+			inProject = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && trimmed != "[project]" {
+			inProject = false
+			inDepsArray = false
+			continue
+		}
+		if !inProject {
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "dependencies") && strings.Contains(trimmed, "=") {
+			if strings.Contains(trimmed, "[") {
+				inDepsArray = true
+				if strings.Contains(trimmed, "]") {
+					deps = append(deps, extractPEP621VersionDeps(trimmed)...)
+					inDepsArray = false
+				}
+			}
+			continue
+		}
+
+		if inDepsArray {
+			if strings.Contains(trimmed, "]") {
+				deps = append(deps, extractPEP621VersionDeps(trimmed)...)
+				inDepsArray = false
+				continue
+			}
+			depStr := strings.Trim(trimmed, "\",")
+			depStr = strings.TrimSpace(depStr)
+			if depStr != "" && !strings.HasPrefix(depStr, "#") {
+				if d := parsePyRequirement(depStr); d != nil {
+					deps = append(deps, *d)
+				}
+			}
+		}
+	}
+	return deps
+}
+
+// extractPEP621VersionDeps extracts deps with versions from inline PEP 621 arrays.
+func extractPEP621VersionDeps(line string) []libyearDep {
+	var deps []libyearDep
+	start := strings.Index(line, "[")
+	end := strings.LastIndex(line, "]")
+	if start < 0 {
+		start = 0
+	} else {
+		start++
+	}
+	if end < 0 {
+		end = len(line)
+	}
+	inner := line[start:end]
+	for _, item := range strings.Split(inner, ",") {
+		item = strings.Trim(strings.TrimSpace(item), "\"'")
+		if item != "" {
+			if d := parsePyRequirement(item); d != nil {
+				deps = append(deps, *d)
+			}
+		}
+	}
+	return deps
+}
+
+// parsePoetryVersions extracts deps with versions from Poetry format pyproject.toml.
+func parsePoetryVersions(content string) []libyearDep {
+	var deps []libyearDep
+	inSection := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "[tool.poetry.dependencies]" {
+			inSection = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			inSection = false
+			continue
+		}
+		if inSection && strings.Contains(trimmed, "=") {
+			parts := strings.SplitN(trimmed, "=", 2)
+			name := strings.TrimSpace(parts[0])
+			version := cleanVersion(strings.Trim(strings.TrimSpace(parts[1]), "\"'^~>="))
+			if name != "" && name != "python" {
+				deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: "runtime", Manager: "pypi"})
+			}
+		}
+	}
+	return deps
+}
+
+// parseDirectoryPackagesProps extracts dependency names from .NET Directory.Packages.props.
+// Format: <PackageVersion Include="Name" Version="1.0.0" />
+func parseDirectoryPackagesProps(content string) ([]string, error) {
+	var deps []string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "PackageVersion") || !strings.Contains(line, "Include=") {
+			continue
+		}
+		name := extractXMLAttr(line, "Include")
+		if name != "" {
+			deps = append(deps, name)
+		}
+	}
+	return deps, nil
+}
+
+// parseDirectoryPackagesPropsVersions extracts deps with versions from Directory.Packages.props.
+func parseDirectoryPackagesPropsVersions(content string) []libyearDep {
+	var deps []libyearDep
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "PackageVersion") || !strings.Contains(line, "Include=") {
+			continue
+		}
+		name := extractXMLAttr(line, "Include")
+		version := extractXMLAttr(line, "Version")
+		if name != "" {
+			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "nuget"})
+		}
+	}
+	return deps
+}
+
+// extractXMLAttr extracts the value of an XML attribute from a line.
+// extractXMLAttr(`<PackageVersion Include="Foo" />`, "Include") returns "Foo".
+func extractXMLAttr(line, attr string) string {
+	key := attr + "=\""
+	idx := strings.Index(line, key)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(key):]
+	end := strings.Index(rest, "\"")
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
+}
+
 // ============================================================
 // Libyear scanning (dependency age)
 // ============================================================
@@ -431,8 +1008,20 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			deps := parseRequirementsTxtVersions(path)
 			allDeps = append(allDeps, deps...)
 		case "pyproject.toml":
-			deps := parsePyprojectVersions(path)
-			allDeps = append(allDeps, deps...)
+			if data, err := os.ReadFile(path); err == nil {
+				deps := parsePyprojectVersionsFromContent(string(data))
+				allDeps = append(allDeps, deps...)
+			}
+		case "setup.py":
+			if data, err := os.ReadFile(path); err == nil {
+				deps := parseSetupPyVersions(string(data))
+				allDeps = append(allDeps, deps...)
+			}
+		case "Pipfile":
+			if data, err := os.ReadFile(path); err == nil {
+				deps := parsePipfileVersions(string(data))
+				allDeps = append(allDeps, deps...)
+			}
 		case "go.mod":
 			deps := parseGoModVersions(path)
 			allDeps = append(allDeps, deps...)
@@ -458,6 +1047,11 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		case "packages.config":
 			if data, err := os.ReadFile(path); err == nil {
 				deps := parseNuGetPackagesConfigVersions(string(data))
+				allDeps = append(allDeps, deps...)
+			}
+		case "Directory.Packages.props":
+			if data, err := os.ReadFile(path); err == nil {
+				deps := parseDirectoryPackagesPropsVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
 		case "build.sbt":
@@ -521,7 +1115,10 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		if err != nil || lb == nil {
 			continue
 		}
-		ac.store.InsertRepoLibyear(ctx, repoID, lb)
+		if err := ac.store.InsertRepoLibyear(ctx, repoID, lb); err != nil {
+			ac.logger.Warn("failed to insert libyear", "dep", dep.Name, "error", err)
+			continue
+		}
 		result.LibyearDeps++
 	}
 
@@ -582,10 +1179,11 @@ func parseRequirementsTxtVersions(path string) []libyearDep {
 	return deps
 }
 
-// cleanVersion strips npm version prefixes (^, ~, >=, etc.)
+// cleanVersion strips version specifier prefixes (^, ~, >=, ==, etc.)
 func cleanVersion(v string) string {
 	v = strings.TrimSpace(v)
-	for _, prefix := range []string{"^", "~", ">=", "<=", ">", "<", "="} {
+	// Longest prefixes first to avoid partial matches (e.g., "==" before "=").
+	for _, prefix := range []string{"^", "~=", "~", ">=", "<=", "==", "!=", ">", "<", "="} {
 		v = strings.TrimPrefix(v, prefix)
 	}
 	return v
@@ -684,33 +1282,8 @@ func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, er
 	}, nil
 }
 
-// parsePyprojectVersions extracts deps from pyproject.toml [tool.poetry.dependencies] or [project.dependencies].
-func parsePyprojectVersions(path string) []libyearDep {
-	data, _ := os.ReadFile(path)
-	content := string(data)
-	var deps []libyearDep
-	inSection := false
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "[tool.poetry.dependencies]" || trimmed == "[project.dependencies]" {
-			inSection = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") {
-			inSection = false
-			continue
-		}
-		if inSection && strings.Contains(trimmed, "=") {
-			parts := strings.SplitN(trimmed, "=", 2)
-			name := strings.TrimSpace(parts[0])
-			version := cleanVersion(strings.Trim(strings.TrimSpace(parts[1]), "\"'^~>="))
-			if name != "" && name != "python" {
-				deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: "runtime", Manager: "pypi"})
-			}
-		}
-	}
-	return deps
-}
+// (parsePyprojectVersions replaced by parsePyprojectVersionsFromContent which
+// correctly handles PEP 621 array format, not just Poetry key=value format.)
 
 // parseGoModVersions extracts deps with versions from go.mod.
 func parseGoModVersions(path string) []libyearDep {

@@ -87,10 +87,23 @@ type ghPullRequest struct {
 }
 
 type ghPRBranch struct {
-	Label string `json:"label"`
-	Ref   string `json:"ref"`
-	SHA   string `json:"sha"`
-	User  ghUser `json:"user"`
+	Label string       `json:"label"`
+	Ref   string       `json:"ref"`
+	SHA   string       `json:"sha"`
+	User  ghUser       `json:"user"`
+	Repo  *ghPRBranchRepo `json:"repo"` // fork repo details; nil if fork was deleted
+}
+
+// ghPRBranchRepo is the repo object nested inside a PR's head/base branch.
+// GitHub returns this for both head and base, describing the fork (head) and
+// upstream (base) repositories involved in the pull request.
+type ghPRBranchRepo struct {
+	ID       int64  `json:"id"`
+	NodeID   string `json:"node_id"`
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+	Private  bool   `json:"private"`
+	Owner    ghUser `json:"owner"`
 }
 
 type ghReview struct {

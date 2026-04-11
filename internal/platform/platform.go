@@ -88,6 +88,10 @@ type PullRequestCollector interface {
 	// FetchPRMeta returns head and base metadata for a PR/MR.
 	FetchPRMeta(ctx context.Context, owner, repo string, prNumber int) (head, base *model.PullRequestMeta, err error)
 
+	// FetchPRRepos returns fork repo details for a PR's head and base branches.
+	// Returns nil for either if the repo data is unavailable (e.g., deleted fork).
+	FetchPRRepos(ctx context.Context, owner, repo string, prNumber int) (headRepo, baseRepo *model.PullRequestRepo, err error)
+
 	// FetchPRByNumber fetches a single PR by number for targeted gap filling.
 	FetchPRByNumber(ctx context.Context, owner, repo string, number int) (*model.PullRequest, error)
 }

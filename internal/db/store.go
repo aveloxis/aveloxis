@@ -34,6 +34,7 @@ type Store interface {
 	UpsertPRCommit(ctx context.Context, commit *model.PullRequestCommit) error
 	UpsertPRFile(ctx context.Context, file *model.PullRequestFile) error
 	UpsertPRMeta(ctx context.Context, meta *model.PullRequestMeta) (metaID int64, err error)
+	UpsertPRRepo(ctx context.Context, repo *model.PullRequestRepo) error
 
 	// Events
 	UpsertIssueEvent(ctx context.Context, event *model.IssueEvent) error

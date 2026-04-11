@@ -157,6 +157,45 @@ func (s *Server) Handler() http.Handler {
 // Session management
 // ============================================================
 
+// sessionCookie builds a session cookie with security attributes set from config.
+// Secure is true in production (default), false when dev_mode is enabled.
+// HttpOnly is always true.
+func (s *Server) sessionCookie(token string) *http.Cookie {
+	return &http.Cookie{
+		Name:     "aveloxis_session",
+		Value:    token,
+		MaxAge:   86400,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   !s.cfg.DevMode,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+// oauthStateCookie builds the short-lived OAuth CSRF state cookie.
+func (s *Server) oauthStateCookie(state string) *http.Cookie {
+	return &http.Cookie{
+		Name:     "oauth_state",
+		Value:    state,
+		MaxAge:   300,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   !s.cfg.DevMode,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+// expireCookie builds a cookie that clears (expires) a named cookie.
+func (s *Server) expireCookie(name string) *http.Cookie {
+	return &http.Cookie{
+		Name:     name,
+		MaxAge:   -1,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   !s.cfg.DevMode,
+	}
+}
+
 func (s *Server) createSession(userID int, loginName, avatarURL, provider string) string {
 	token := generateToken()
 	s.sessions[token] = &Session{
@@ -223,7 +262,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		delete(s.sessions, cookie.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: "aveloxis_session", MaxAge: -1, Path: "/"})
+	http.SetCookie(w, s.expireCookie("aveloxis_session"))
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
@@ -233,7 +272,7 @@ func (s *Server) handleGitHubAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := generateToken()
-	http.SetCookie(w, &http.Cookie{Name: "oauth_state", Value: state, MaxAge: 300, Path: "/", HttpOnly: true})
+	http.SetCookie(w, s.oauthStateCookie(state))
 	http.Redirect(w, r, s.ghOAuth.AuthCodeURL(state), http.StatusFound)
 }
 
@@ -294,13 +333,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Create session.
 	sessToken := s.createSession(userID, ghUser.Login, ghUser.AvatarURL, "github")
-	http.SetCookie(w, &http.Cookie{
-		Name:     "aveloxis_session",
-		Value:    sessToken,
-		MaxAge:   86400,
-		Path:     "/",
-		HttpOnly: true,
-	})
+	http.SetCookie(w, s.sessionCookie(sessToken))
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
@@ -310,7 +343,7 @@ func (s *Server) handleGitLabAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := generateToken()
-	http.SetCookie(w, &http.Cookie{Name: "oauth_state", Value: state, MaxAge: 300, Path: "/", HttpOnly: true})
+	http.SetCookie(w, s.oauthStateCookie(state))
 	http.Redirect(w, r, s.glOAuth.AuthCodeURL(state), http.StatusFound)
 }
 
@@ -369,13 +402,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessToken := s.createSession(userID, glUser.Username, glUser.AvatarURL, "gitlab")
-	http.SetCookie(w, &http.Cookie{
-		Name:     "aveloxis_session",
-		Value:    sessToken,
-		MaxAge:   86400,
-		Path:     "/",
-		HttpOnly: true,
-	})
+	http.SetCookie(w, s.sessionCookie(sessToken))
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 

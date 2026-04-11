@@ -76,6 +76,12 @@ type WebConfig struct {
 	// BaseURL is the external URL for OAuth callbacks (e.g., "https://aveloxis.example.com").
 	BaseURL string `json:"base_url"`
 
+	// DevMode disables the Secure flag on cookies, allowing the web GUI to work
+	// over plain HTTP during local development. In production (the default),
+	// cookies are always marked Secure so browsers only send them over HTTPS.
+	// HttpOnly is always set regardless of this flag.
+	DevMode bool `json:"dev_mode"`
+
 	// GitHub OAuth app credentials (from https://github.com/settings/developers).
 	GitHubClientID     string `json:"github_client_id"`
 	GitHubClientSecret string `json:"github_client_secret"`

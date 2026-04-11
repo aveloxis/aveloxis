@@ -472,9 +472,18 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 <tr><th>License (SPDX)</th><th style="text-align:right">Files</th><th style="text-align:center">OSI</th></tr>
 <tr><td colspan="3" class="empty">Loading...</td></tr>
 </table>
-<div id="copyright-section" style="margin-top:12px;display:none">
-<h4 style="font-size:14px;margin-bottom:4px">Copyright Holders</h4>
-<ul id="copyright-list" style="font-size:13px;color:#374151;padding-left:20px"></ul>
+<div id="scancode-files-section" style="margin-top:16px">
+<h4 style="font-size:14px;margin-bottom:4px">File-Level Detections <span style="font-weight:normal;color:#6b7280;font-size:12px">(click column to sort)</span></h4>
+<div style="max-height:400px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px">
+<table id="scancode-files-table" style="width:100%;font-size:12px;border-collapse:collapse">
+<thead style="position:sticky;top:0;background:#f9fafb"><tr>
+<th style="text-align:left;padding:6px 8px;cursor:pointer;border-bottom:1px solid #e5e7eb" onclick="sortScancodeFiles(0)">File</th>
+<th style="text-align:left;padding:6px 8px;cursor:pointer;border-bottom:1px solid #e5e7eb;max-width:160px" onclick="sortScancodeFiles(1)">License</th>
+<th style="text-align:left;padding:6px 8px;cursor:pointer;border-bottom:1px solid #e5e7eb;max-width:300px" onclick="sortScancodeFiles(2)">Copyright</th>
+</tr></thead>
+<tbody id="scancode-files-body"><tr><td colspan="3" class="empty">Loading...</td></tr></tbody>
+</table>
+</div>
 </div>
 </div>
 
@@ -596,19 +605,61 @@ fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-licenses')
     });
     table.innerHTML = html;
 
-    // Render copyright holders if present.
-    if (copyrights.length > 0) {
-      const section = document.getElementById('copyright-section');
-      section.style.display = 'block';
-      const list = document.getElementById('copyright-list');
-      list.innerHTML = copyrights.map(c =>
-        '<li>' + c.holder + ' <span style="color:#9ca3af">(' + c.file_count + ' file' + (c.file_count !== 1 ? 's' : '') + ')</span></li>'
-      ).join('');
-    }
   })
   .catch(() => {
     document.getElementById('scancode-license-table').innerHTML =
       '<tr><td colspan="3" class="empty">Source code license data unavailable.</td></tr>';
+  });
+
+// Fetch per-file scancode data for the sortable table.
+let scancodeFilesData = [];
+let scancodeSortCol = 0;
+let scancodeSortAsc = true;
+
+function renderScancodeFiles() {
+  const tbody = document.getElementById('scancode-files-body');
+  if (scancodeFilesData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">No file-level ScanCode data.</td></tr>';
+    return;
+  }
+  const sorted = [...scancodeFilesData].sort((a, b) => {
+    const keys = ['path', 'license', 'copyright'];
+    const key = keys[scancodeSortCol];
+    const cmp = (a[key] || '').localeCompare(b[key] || '');
+    return scancodeSortAsc ? cmp : -cmp;
+  });
+  tbody.innerHTML = sorted.map(f => {
+    const lic = f.license === 'Unknown'
+      ? '<span style="color:#b45309;font-style:italic">Unknown</span>'
+      : f.license;
+    const cr = f.copyright
+      ? '<span title="' + f.copyright.replace(/"/g, '&quot;') + '">' + f.copyright + '</span>'
+      : '<span style="color:#d1d5da">&mdash;</span>';
+    return '<tr><td style="padding:4px 8px;word-break:break-all;max-width:280px;font-family:monospace;font-size:11px">' + f.path +
+      '</td><td style="padding:4px 8px;max-width:160px">' + lic +
+      '</td><td style="padding:4px 8px;max-width:300px;font-size:11px">' + cr + '</td></tr>';
+  }).join('');
+}
+
+function sortScancodeFiles(col) {
+  if (scancodeSortCol === col) {
+    scancodeSortAsc = !scancodeSortAsc;
+  } else {
+    scancodeSortCol = col;
+    scancodeSortAsc = true;
+  }
+  renderScancodeFiles();
+}
+
+fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-files')
+  .then(r => r.json())
+  .then(files => {
+    scancodeFilesData = files || [];
+    renderScancodeFiles();
+  })
+  .catch(() => {
+    document.getElementById('scancode-files-body').innerHTML =
+      '<tr><td colspan="3" class="empty">File data unavailable.</td></tr>';
   });
 </script>
 </body></html>

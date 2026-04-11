@@ -8,15 +8,21 @@ import (
 // RefreshRepoAggregates recomputes the dm_repo_annual, dm_repo_monthly, and
 // dm_repo_weekly tables for a single repo by aggregating commit data.
 // This is the equivalent of Augur's facade post-processing.
+//
+// Each table is refreshed inside a transaction (DELETE old + INSERT new) so
+// readers never see a half-updated state.
 func (s *PostgresStore) RefreshRepoAggregates(ctx context.Context, repoID int64) error {
-	queries := []struct {
-		name  string
-		query string
-	}{
+	type aggQuery struct {
+		name   string
+		delete string
+		insert string
+	}
+
+	queries := []aggQuery{
 		{
-			name: "dm_repo_annual",
-			query: `
-				DELETE FROM aveloxis_data.dm_repo_annual WHERE repo_id = $1;
+			name:   "dm_repo_annual",
+			delete: `DELETE FROM aveloxis_data.dm_repo_annual WHERE repo_id = $1`,
+			insert: `
 				INSERT INTO aveloxis_data.dm_repo_annual
 					(repo_id, email, affiliation, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -38,9 +44,9 @@ func (s *PostgresStore) RefreshRepoAggregates(ctx context.Context, repoID int64)
 				         EXTRACT(YEAR FROM cmt_author_timestamp)`,
 		},
 		{
-			name: "dm_repo_monthly",
-			query: `
-				DELETE FROM aveloxis_data.dm_repo_monthly WHERE repo_id = $1;
+			name:   "dm_repo_monthly",
+			delete: `DELETE FROM aveloxis_data.dm_repo_monthly WHERE repo_id = $1`,
+			insert: `
 				INSERT INTO aveloxis_data.dm_repo_monthly
 					(repo_id, email, affiliation, month, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -64,9 +70,9 @@ func (s *PostgresStore) RefreshRepoAggregates(ctx context.Context, repoID int64)
 				         EXTRACT(YEAR FROM cmt_author_timestamp)`,
 		},
 		{
-			name: "dm_repo_weekly",
-			query: `
-				DELETE FROM aveloxis_data.dm_repo_weekly WHERE repo_id = $1;
+			name:   "dm_repo_weekly",
+			delete: `DELETE FROM aveloxis_data.dm_repo_weekly WHERE repo_id = $1`,
+			insert: `
 				INSERT INTO aveloxis_data.dm_repo_weekly
 					(repo_id, email, affiliation, week, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -92,8 +98,20 @@ func (s *PostgresStore) RefreshRepoAggregates(ctx context.Context, repoID int64)
 	}
 
 	for _, q := range queries {
-		if _, err := s.pool.Exec(ctx, q.query, repoID); err != nil {
-			return fmt.Errorf("refreshing %s for repo %d: %w", q.name, repoID, err)
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin tx for %s: %w", q.name, err)
+		}
+		if _, err := tx.Exec(ctx, q.delete, repoID); err != nil {
+			tx.Rollback(ctx)
+			return fmt.Errorf("deleting %s for repo %d: %w", q.name, repoID, err)
+		}
+		if _, err := tx.Exec(ctx, q.insert, repoID); err != nil {
+			tx.Rollback(ctx)
+			return fmt.Errorf("inserting %s for repo %d: %w", q.name, repoID, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("committing %s for repo %d: %w", q.name, repoID, err)
 		}
 	}
 	return nil
@@ -111,14 +129,17 @@ func (s *PostgresStore) RefreshRepoGroupAggregates(ctx context.Context, repoID i
 		return nil // no group, nothing to aggregate
 	}
 
-	queries := []struct {
-		name  string
-		query string
-	}{
+	type aggQuery struct {
+		name   string
+		delete string
+		insert string
+	}
+
+	queries := []aggQuery{
 		{
-			name: "dm_repo_group_annual",
-			query: `
-				DELETE FROM aveloxis_data.dm_repo_group_annual WHERE repo_group_id = $1;
+			name:   "dm_repo_group_annual",
+			delete: `DELETE FROM aveloxis_data.dm_repo_group_annual WHERE repo_group_id = $1`,
+			insert: `
 				INSERT INTO aveloxis_data.dm_repo_group_annual
 					(repo_group_id, email, affiliation, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -141,9 +162,9 @@ func (s *PostgresStore) RefreshRepoGroupAggregates(ctx context.Context, repoID i
 				         EXTRACT(YEAR FROM c.cmt_author_timestamp)`,
 		},
 		{
-			name: "dm_repo_group_monthly",
-			query: `
-				DELETE FROM aveloxis_data.dm_repo_group_monthly WHERE repo_group_id = $1;
+			name:   "dm_repo_group_monthly",
+			delete: `DELETE FROM aveloxis_data.dm_repo_group_monthly WHERE repo_group_id = $1`,
+			insert: `
 				INSERT INTO aveloxis_data.dm_repo_group_monthly
 					(repo_group_id, email, affiliation, month, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -168,9 +189,9 @@ func (s *PostgresStore) RefreshRepoGroupAggregates(ctx context.Context, repoID i
 				         EXTRACT(YEAR FROM c.cmt_author_timestamp)`,
 		},
 		{
-			name: "dm_repo_group_weekly",
-			query: `
-				DELETE FROM aveloxis_data.dm_repo_group_weekly WHERE repo_group_id = $1;
+			name:   "dm_repo_group_weekly",
+			delete: `DELETE FROM aveloxis_data.dm_repo_group_weekly WHERE repo_group_id = $1`,
+			insert: `
 				INSERT INTO aveloxis_data.dm_repo_group_weekly
 					(repo_group_id, email, affiliation, week, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -197,8 +218,20 @@ func (s *PostgresStore) RefreshRepoGroupAggregates(ctx context.Context, repoID i
 	}
 
 	for _, q := range queries {
-		if _, err := s.pool.Exec(ctx, q.query, *rgID); err != nil {
-			return fmt.Errorf("refreshing %s for group %d: %w", q.name, *rgID, err)
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin tx for %s: %w", q.name, err)
+		}
+		if _, err := tx.Exec(ctx, q.delete, *rgID); err != nil {
+			tx.Rollback(ctx)
+			return fmt.Errorf("deleting %s for group %d: %w", q.name, *rgID, err)
+		}
+		if _, err := tx.Exec(ctx, q.insert, *rgID); err != nil {
+			tx.Rollback(ctx)
+			return fmt.Errorf("inserting %s for group %d: %w", q.name, *rgID, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("committing %s for group %d: %w", q.name, *rgID, err)
 		}
 	}
 	return nil
@@ -262,7 +295,9 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 
 	for _, repoID := range repoIDs {
 		// RefreshRepoGroupAggregates looks up the group from the repo.
-		_ = s.RefreshRepoGroupAggregates(ctx, repoID)
+		if err := s.RefreshRepoGroupAggregates(ctx, repoID); err != nil {
+			logger.Info("group aggregate refresh failed", "repo_id", repoID, "error", err)
+		}
 	}
 
 	logger.Info("dm_ aggregate tables refreshed", "repos", len(repoIDs))

@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -233,4 +234,79 @@ func (s *PostgresStore) GetScancodeCopyrights(ctx context.Context, repoID int64)
 		}
 	}
 	return result, rows.Err()
+}
+
+// ScancodeFileEntry is a single file's license/copyright summary for the web GUI.
+// Instead of dumping raw license text, this provides a compact table row:
+// filename | detected SPDX license | first copyright holder.
+type ScancodeFileEntry struct {
+	Path      string `json:"path"`
+	License   string `json:"license"`
+	Copyright string `json:"copyright"`
+}
+
+// GetScancodeFileEntries returns per-file license and copyright data for the
+// web GUI table. Each row is: file path, SPDX license expression, first
+// copyright holder (truncated). Sorted by path for deterministic display.
+func (s *PostgresStore) GetScancodeFileEntries(ctx context.Context, repoID int64) ([]ScancodeFileEntry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT path,
+		       COALESCE(NULLIF(TRIM(detected_license_expression_spdx), ''), 'Unknown') AS lic,
+		       COALESCE(copyrights, '[]'::jsonb) AS copyrights_json
+		FROM aveloxis_scan.scancode_file_results
+		WHERE repo_id = $1
+		ORDER BY path`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []ScancodeFileEntry
+	for rows.Next() {
+		var path, lic string
+		var copyrightsJSON []byte
+		if err := rows.Scan(&path, &lic, &copyrightsJSON); err != nil {
+			return nil, err
+		}
+		copyright := truncateCopyright(extractFirstCopyrightHolder(copyrightsJSON), 120)
+		result = append(result, ScancodeFileEntry{
+			Path:      path,
+			License:   NormalizeLicenseToSPDX(lic),
+			Copyright: copyright,
+		})
+	}
+	return result, rows.Err()
+}
+
+// extractFirstCopyrightHolder extracts the first copyright holder's "value" field
+// from a ScanCode copyrights JSON array like:
+//
+//	[{"value":"Copyright 2024 ACME Corp","start_line":1}, ...]
+//
+// Returns the first value, with a "(+N more)" suffix if multiple exist.
+// Returns empty string for empty/nil/malformed JSON.
+func extractFirstCopyrightHolder(jsonData []byte) string {
+	if len(jsonData) == 0 {
+		return ""
+	}
+	var entries []struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(jsonData, &entries); err != nil || len(entries) == 0 {
+		return ""
+	}
+	first := entries[0].Value
+	if len(entries) > 1 {
+		first += fmt.Sprintf(" (+%d more)", len(entries)-1)
+	}
+	return first
+}
+
+// truncateCopyright cuts a copyright string to maxLen characters, appending "..."
+// if truncated. Returns the original string if it fits.
+func truncateCopyright(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

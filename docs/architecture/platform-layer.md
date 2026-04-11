@@ -108,3 +108,17 @@ The `HTTPClient`, `KeyPool`, and pagination engine are reusable across all platf
 - **GitLab API differences**: GitLab lacks bulk endpoints for notes (comments) and requires iterating parent entities. The GitLab client iterates issues/MRs and fetches their notes individually. This is slower but unavoidable given the API design.
 - **GitHub events endpoint**: GitHub's `/repos/{owner}/{repo}/issues/events` returns events for both issues and PRs. The GitHub client fetches this once via a shared helper and filters by type for `ListIssueEvents` and `ListPREvents`.
 - **GitLab review comments**: GitLab uses "discussions" with positioned notes instead of GitHub's explicit review comments. The `ListReviewComments` method maps positioned discussion notes to the `ReviewComment` model.
+
+## GitHub vs GitLab data gaps
+
+All `platform.Client` interface methods are implemented for both platforms. The following data discrepancies exist due to GitLab API limitations:
+
+| Data | GitHub | GitLab | Impact |
+|---|---|---|---|
+| Community profile files | GraphQL file detection (CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY) | Not yet implemented (closable via `/repository/tree`) | `repo_info` community fields empty for GitLab |
+| Watcher count | `watchers.totalCount` via GraphQL | No public API | `repo_info.watcher_count` is 0 for GitLab |
+| Clone stats | `/traffic/clones` | Admin-only API | `repo_clones` table empty for GitLab |
+| GraphQL node IDs | Available on all entities | Not applicable (uses numeric IDs) | `pr_src_node_id` empty for GitLab; `pr_src_repo_id` always populated |
+| Contributor identity URLs | 10+ per-user URL fields (followers, gists, starred, etc.) | Not available | `gh_*_url` columns empty for GitLab contributors |
+| Contributor type | `User`, `Bot`, `Organization` | Not distinguished | `cntrb_type` not populated for GitLab |
+| Contributor breadth | `/users/{login}/events` endpoint | No equivalent | `contributor_repo` only populated for GitHub contributors |

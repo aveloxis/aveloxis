@@ -211,7 +211,7 @@ func CheckAndUpdateTools(logger *slog.Logger) {
 	if updated > 0 {
 		logger.Info("tool update check complete", "updated", updated)
 	}
-	writeToolCheckTimestamp()
+	writeToolCheckTimestamp(logger)
 }
 
 // RunToolInstall executes the install for a tool, preferring InstallFunc when set.
@@ -251,8 +251,10 @@ func readToolCheckTimestamp() time.Time {
 	return t
 }
 
-func writeToolCheckTimestamp() {
-	os.WriteFile(toolCheckTimestampFile(), []byte(time.Now().Format(time.RFC3339)), 0o644)
+func writeToolCheckTimestamp(logger *slog.Logger) {
+	if err := os.WriteFile(toolCheckTimestampFile(), []byte(time.Now().Format(time.RFC3339)), 0o644); err != nil {
+		logger.Warn("failed to write tool check timestamp", "error", err)
+	}
 }
 
 // installScancode installs ScanCode Toolkit via pipx (preferred) or pip.

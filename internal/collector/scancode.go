@@ -120,7 +120,10 @@ func RunScanCode(ctx context.Context, store *db.PostgresStore, repoID int64, loc
 	if err != nil {
 		return nil, fmt.Errorf("reading scancode output: %w", err)
 	}
-	_ = stderrBuf // unused, kept for potential future error capture
+	// stderrBuf is declared for future error context capture but currently unused.
+	if len(stderrBuf) > 0 {
+		logger.Debug("scancode stderr output", "repo_id", repoID, "stderr", string(stderrBuf))
+	}
 
 	var raw scancodeOutput
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -157,7 +160,7 @@ func RunScanCode(ctx context.Context, store *db.PostgresStore, repoID int64, loc
 	if err != nil {
 		return result, fmt.Errorf("inserting scancode scan: %w", err)
 	}
-	_ = scanID
+	logger.Debug("scancode scan recorded", "repo_id", repoID, "scan_id", scanID)
 
 	// Collect file results for batch insert.
 	var fileResults []ScancodeFileResult
@@ -170,11 +173,26 @@ func RunScanCode(ctx context.Context, store *db.PostgresStore, repoID int64, loc
 			continue // --only-findings should filter, but double-check
 		}
 
-		copyrightsJSON, _ := json.Marshal(f.Copyrights)
-		holdersJSON, _ := json.Marshal(f.Holders)
-		licenseDetJSON, _ := json.Marshal(f.LicenseDetections)
-		packageJSON, _ := json.Marshal(f.PackageData)
-		errorsJSON, _ := json.Marshal(f.ScanErrors)
+		copyrightsJSON, err := json.Marshal(f.Copyrights)
+		if err != nil {
+			logger.Warn("failed to marshal copyrights", "path", f.Path, "error", err)
+		}
+		holdersJSON, err := json.Marshal(f.Holders)
+		if err != nil {
+			logger.Warn("failed to marshal holders", "path", f.Path, "error", err)
+		}
+		licenseDetJSON, err := json.Marshal(f.LicenseDetections)
+		if err != nil {
+			logger.Warn("failed to marshal license detections", "path", f.Path, "error", err)
+		}
+		packageJSON, err := json.Marshal(f.PackageData)
+		if err != nil {
+			logger.Warn("failed to marshal package data", "path", f.Path, "error", err)
+		}
+		errorsJSON, err := json.Marshal(f.ScanErrors)
+		if err != nil {
+			logger.Warn("failed to marshal scan errors", "path", f.Path, "error", err)
+		}
 
 		fileResults = append(fileResults, ScancodeFileResult{
 			Path:                          f.Path,

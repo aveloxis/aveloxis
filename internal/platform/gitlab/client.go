@@ -683,6 +683,9 @@ func (c *Client) ListContributors(ctx context.Context, owner, repo string) iter.
 				yield(model.Contributor{}, err)
 				return
 			}
+			// GitLab access_level >= 50 (Owner) approximates GitHub's site_admin.
+			// 50 = Owner, 40 = Maintainer, 30 = Developer, 20 = Reporter, 10 = Guest.
+			isAdmin := raw.AccessLevel >= 50
 			if !yield(model.Contributor{
 				Login: raw.Username,
 				Identities: []model.ContributorIdentity{{
@@ -692,6 +695,7 @@ func (c *Client) ListContributors(ctx context.Context, owner, repo string) iter.
 					Name:      raw.Name,
 					AvatarURL: raw.AvatarURL,
 					URL:       raw.WebURL,
+					IsAdmin:   isAdmin,
 				}},
 			}, nil) {
 				return
@@ -728,12 +732,17 @@ func (c *Client) EnrichContributor(ctx context.Context, login string) (*model.Co
 		return nil, fmt.Errorf("user %q not found", login)
 	}
 	raw := users[0]
+	var createdAt time.Time
+	if raw.CreatedAt != "" {
+		createdAt, _ = time.Parse(time.RFC3339, raw.CreatedAt)
+	}
 	return &model.Contributor{
-		Login:    raw.Username,
-		Email:    raw.PublicEmail,
-		FullName: raw.Name,
-		Company:  raw.Company,
-		Location: raw.Location,
+		Login:     raw.Username,
+		Email:     raw.PublicEmail,
+		FullName:  raw.Name,
+		Company:   raw.Company,
+		Location:  raw.Location,
+		CreatedAt: createdAt,
 		Identities: []model.ContributorIdentity{{
 			Platform:  model.PlatformGitLab,
 			UserID:    raw.ID,
@@ -780,7 +789,9 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		} `json:"statistics"`
 	}
 	issueStatsPath := fmt.Sprintf("/projects/%s/issues_statistics", pp)
-	_ = c.http.GetJSON(ctx, issueStatsPath, &issueStats)
+	if err := c.http.GetJSON(ctx, issueStatsPath, &issueStats); err != nil {
+		c.logger.Warn("failed to fetch issue statistics, counts will be zero", "owner", owner, "repo", repo, "error", err)
+	}
 
 	// GitLab merge_requests count by state.
 	// The /merge_requests endpoint returns X-Total header with per_page=1 for cheap counts.
@@ -794,31 +805,84 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		status = "Archived"
 	}
 
+	// Community profile files — detect CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY
+	// from the repository root via the /repository/tree endpoint.
+	community := c.fetchCommunityFiles(ctx, pp)
+
 	return &model.RepoInfo{
-		LastUpdated:   raw.LastActivityAt,
-		IssuesEnabled: raw.IssuesEnabled,
-		PRsEnabled:    raw.MergeRequestsEnabled,
-		WikiEnabled:   raw.WikiEnabled,
-		PagesEnabled:  raw.PagesAccessLevel != "disabled",
-		ForkCount:     raw.ForksCount,
-		StarCount:     raw.StarCount,
-		OpenIssues:    raw.OpenIssuesCount,
-		DefaultBranch: raw.DefaultBranch,
-		License:       license,
-		LicenseFile:   license,
-		CommitCount:   commitCount,
-		IssuesCount:   issueStats.Statistics.Counts.All,
-		IssuesClosed:  issueStats.Statistics.Counts.Closed,
-		PRCount:       mrTotal,
-		PRsOpen:       mrOpen,
-		PRsClosed:     mrClosed,
-		PRsMerged:     mrMerged,
-		Status:        status,
+		LastUpdated:        raw.LastActivityAt,
+		IssuesEnabled:      raw.IssuesEnabled,
+		PRsEnabled:         raw.MergeRequestsEnabled,
+		WikiEnabled:        raw.WikiEnabled,
+		PagesEnabled:       raw.PagesAccessLevel != "disabled",
+		ForkCount:          raw.ForksCount,
+		StarCount:          raw.StarCount,
+		OpenIssues:         raw.OpenIssuesCount,
+		DefaultBranch:      raw.DefaultBranch,
+		License:            license,
+		LicenseFile:        license,
+		CommitCount:        commitCount,
+		IssuesCount:        issueStats.Statistics.Counts.All,
+		IssuesClosed:       issueStats.Statistics.Counts.Closed,
+		PRCount:            mrTotal,
+		PRsOpen:            mrOpen,
+		PRsClosed:          mrClosed,
+		PRsMerged:          mrMerged,
+		ChangelogFile:      community.Changelog,
+		ContributingFile:   community.Contributing,
+		CodeOfConductFile:  community.CodeOfConduct,
+		SecurityIssueFile:  community.Security,
+		Status:             status,
 		Origin: model.DataOrigin{
 			ToolSource: "aveloxis",
 			DataSource: "GitLab API",
 		},
 	}, nil
+}
+
+// communityFiles holds the presence status of standard community profile files.
+type communityFiles struct {
+	Changelog     string // "present" or ""
+	Contributing  string
+	CodeOfConduct string
+	Security      string
+}
+
+// fetchCommunityFiles checks the GitLab repository root for common community
+// profile files (CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY).
+// Uses the /projects/:id/repository/tree endpoint with a single API call.
+// Returns empty strings on any error (graceful degradation — missing community
+// file data is not worth failing the entire repo info collection).
+func (c *Client) fetchCommunityFiles(ctx context.Context, projectPath string) communityFiles {
+	var result communityFiles
+	path := fmt.Sprintf("/projects/%s/repository/tree?per_page=100&ref=HEAD", projectPath)
+	var tree []struct {
+		Name string `json:"name"`
+		Type string `json:"type"` // "blob" or "tree"
+	}
+	if err := c.http.GetJSON(ctx, path, &tree); err != nil {
+		return result
+	}
+
+	for _, entry := range tree {
+		if entry.Type != "blob" {
+			continue
+		}
+		name := strings.ToLower(entry.Name)
+		base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(name, ".md"), ".rst"), ".txt")
+
+		switch {
+		case base == "changelog" || base == "changes" || base == "history":
+			result.Changelog = "present"
+		case base == "contributing":
+			result.Contributing = "present"
+		case base == "code_of_conduct" || base == "code-of-conduct":
+			result.CodeOfConduct = "present"
+		case base == "security":
+			result.Security = "present"
+		}
+	}
+	return result
 }
 
 // countGitLabResource returns the total count for a filtered resource using

@@ -285,15 +285,40 @@ If `scc` is not installed, the code complexity phase is silently skipped during 
 
 ---
 
-## `aveloxis stop`
+## `aveloxis start`
 
-Stops all running `aveloxis serve` instances.
+Launches aveloxis components as detached background processes with log output redirected to files in `~/.aveloxis/`.
 
 ```bash
-aveloxis stop
+aveloxis start serve   # scheduler + monitor → ~/.aveloxis/aveloxis.log
+aveloxis start web     # web GUI             → ~/.aveloxis/web.log
+aveloxis start api     # REST API            → ~/.aveloxis/api.log
+aveloxis start all     # all three at once
 ```
 
-Sends `SIGTERM` to all running `aveloxis serve` processes. Active workers finish their current API call, queue locks are released, and staging data is preserved for the next startup.
+PID files are written to `~/.aveloxis/aveloxis-{serve,web,api}.pid`. If a component is already running, the command reports it and skips the launch.
+
+Log files are opened in append mode — existing content is preserved across restarts.
+
+---
+
+## `aveloxis stop`
+
+Gracefully stops background aveloxis processes.
+
+```bash
+aveloxis stop serve    # stop only the scheduler
+aveloxis stop web      # stop only the web GUI
+aveloxis stop api      # stop only the REST API
+aveloxis stop all      # stop all three
+aveloxis stop          # (no args) same as 'all'
+```
+
+Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed.
+
+```{note}
+`aveloxis stop` also works for processes started in the foreground (e.g., `aveloxis serve`), because all foreground processes write PID files on startup.
+```
 
 ---
 

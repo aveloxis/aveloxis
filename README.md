@@ -33,7 +33,7 @@ Copyright © 2026 University of Missouri, Sean Goggins, and Derek Howard. This s
   - Debian/Ubuntu: `sudo apt install python3-setuptools`
   - RHEL/CentOS: `sudo dnf install python3-setuptools`
     
-[See Development Mode Notes if you're running locally to evaluate](development-mode)
+[See Development Mode Notes if you're running locally to evaluate](#development-mode)
 
 ## Installation
 

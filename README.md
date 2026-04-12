@@ -107,10 +107,10 @@ You will need a github OAUTH application for login to work on the web view. And 
 
 **Example Values for GitHub OAuth**: 
 - Homepage URL: https://aveloxis.io (this one is not important)
-- Authorization Callback URL: http://localhost:8080/auth/github/callback (This one is important, and if you are running locally this is exactly what you need)
+- Authorization Callback URL: http://localhost:8082/auth/github/callback (This one is important, and if you are running locally this is exactly what you need)
 
 **Example Values for GitLab OAuth:**
-- Callback URL: http://localhost:8080/auth/gitlab/callback 
+- Callback URL: http://localhost:8082/auth/gitlab/callback 
 
 Put those into your `aveloxis.json` file as described in the [Configuration Section](# configuration)
 
@@ -128,7 +128,7 @@ aveloxis start api     # → ~/.aveloxis/api.log
 Then you can open the interfaces:
 ```bash
 open http://localhost:5555   # Monitor dashboard
-open http://localhost:8080   # Web GUI (login, visualizations, comparison)
+open http://localhost:8082   # Web GUI (login, visualizations, comparison)
 open http://localhost:8383/api/v1/health  # REST API
 ```
 
@@ -166,8 +166,8 @@ vim aveloxis.docker.json
 **GitHub API token:** Go to [github.com/settings/tokens](https://github.com/settings/tokens) and create a Personal Access Token with `repo` (or `public_repo`) scope. Add it to `github.api_keys`.
 
 **GitHub OAuth app (for web GUI login):** Go to [github.com/settings/developers](https://github.com/settings/developers) → New OAuth App:
-- **Homepage URL:** `http://localhost:8080`
-- **Authorization callback URL:** `http://localhost:8080/auth/github/callback`
+- **Homepage URL:** `http://localhost:8082`
+- **Authorization callback URL:** `http://localhost:/auth/github/callback`
 
 Copy the Client ID and Client Secret into `github_client_id` and `github_client_secret`.
 
@@ -189,14 +189,14 @@ This starts 5 containers:
 | `postgres` | PostgreSQL 16 database | 5432 |
 | `migrate` | Runs schema migrations, then exits | — |
 | `serve` | Collection scheduler + monitoring dashboard | **5555** |
-| `web` | Web GUI (OAuth login, visualizations) | **8080** |
+| `web` | Web GUI (OAuth login, visualizations) | **** |
 | `api` | REST API (stats, charts, SBOMs) | **8383** |
 
 ### Step 3: Open the interfaces
 
 ```
 http://localhost:5555                # Monitor dashboard (queue status, repo progress)
-http://localhost:8080                # Web GUI (login with GitHub, create groups, add repos)
+http://localhost:8082                # Web GUI (login with GitHub, create groups, add repos)
 http://localhost:8383/api/v1/health  # REST API health check
 ```
 
@@ -207,7 +207,7 @@ http://localhost:8383/api/v1/health  # REST API health check
 docker compose exec serve aveloxis add-repo https://github.com/chaoss/augur
 
 # Via the web GUI
-# Log in at http://localhost:8080, create a group, and add repos through the browser
+# Log in at http://localhost:8082, create a group, and add repos through the browser
 ```
 
 ### Managing containers
@@ -326,7 +326,7 @@ aveloxis add-repo https://github.com/chaoss/augur https://gitlab.com/fdroid/fdro
 # -- OR use the web GUI to add repos and orgs via browser --
 # Configure OAuth credentials in aveloxis.json (see Configuration),
 # then run: aveloxis web
-# Open http://localhost:8080, log in with GitHub/GitLab, create a group,
+# Open http://localhost:8082, log in with GitHub/GitLab, create a group,
 # and add repos or orgs through the UI.
 
 # 5. Start the scheduler + monitoring dashboard
@@ -365,8 +365,8 @@ Create `aveloxis.json` (or copy from `aveloxis.example.json`):
     "repo_clone_dir": "/data/aveloxis-repos"
   },
   "web": {
-    "addr": ":8080",
-    "base_url": "http://localhost:8080",
+    "addr": ":8082",
+    "base_url": "http://localhost:8082",
     "session_secret": "change-me-to-a-random-string",
     "dev_mode": false,
     "github_client_id": "your-github-oauth-app-client-id",
@@ -393,8 +393,8 @@ Create `aveloxis.json` (or copy from `aveloxis.example.json`):
 | `collection.repo_clone_dir` | Directory for bare git clones used by the facade phase. Can grow to terabytes for large instances. | `$HOME/aveloxis-repos` |
 | `collection.matview_rebuild_day` | Day of week to rebuild materialized views: `"monday"` through `"sunday"`, or `"disabled"` | `"saturday"` |
 | `collection.matview_rebuild_on_startup` | Whether to refresh materialized views during startup migration. Slow on large DBs. | `false` |
-| `web.addr` | Listen address for the web GUI | `":8080"` |
-| `web.base_url` | External URL for OAuth callback redirects | `"http://localhost:8080"` |
+| `web.addr` | Listen address for the web GUI | `":8082"` |
+| `web.base_url` | External URL for OAuth callback redirects | `"http://localhost:8082"` |
 | `web.session_secret` | Secret key for signing session cookies | (required for `aveloxis web`) |
 | `web.dev_mode` | Set `true` for local HTTP development. Disables `Secure` flag on cookies so they work without HTTPS. **Do not enable in production.** `HttpOnly` is always set regardless. | `false` |
 | `web.github_client_id` | GitHub OAuth app client ID | `""` |
@@ -459,7 +459,7 @@ Starts the web GUI for group management with OAuth login. Users can log in via G
 aveloxis web
 ```
 
-No flags -- all configuration comes from the `web` section of `aveloxis.json` (see Configuration below). Default listen address is `:8080`.
+No flags -- all configuration comes from the `web` section of `aveloxis.json` (see Configuration below). Default listen address is `:8082`.
 
 Requires OAuth app credentials in `aveloxis.json`. Create a GitHub OAuth app at [https://github.com/settings/developers](https://github.com/settings/developers) or a GitLab OAuth app at [https://gitlab.com/-/profile/applications](https://gitlab.com/-/profile/applications). Set the callback URL to `{web.base_url}/auth/github/callback` or `{web.base_url}/auth/gitlab/callback` respectively.
 

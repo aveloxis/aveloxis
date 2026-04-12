@@ -232,7 +232,7 @@
 aveloxis<span class="w"> </span>serve
 
 <span class="c1"># Start with 4 workers and a custom dashboard port</span>
-aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:8080
+aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:8082
 
 <span class="c1"># Start using Augur&#39;s API keys</span>
 aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--augur-keys
@@ -261,12 +261,12 @@ aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span clas
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.addr</span></code></p></td>
 <td><p>string</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">&quot;:8080&quot;</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;:8082&quot;</span></code></p></td>
 <td><p>Listen address for the web server.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">web.base_url</span></code></p></td>
 <td><p>string</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">&quot;http://localhost:8080&quot;</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;http://localhost:8082&quot;</span></code></p></td>
 <td><p>External URL used to construct OAuth callback URLs.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.session_secret</span></code></p></td>
@@ -327,7 +327,7 @@ aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span clas
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Start the web GUI (uses settings from aveloxis.json)</span>
 aveloxis<span class="w"> </span>web
 
-<span class="c1"># Then open http://localhost:8080 in your browser</span>
+<span class="c1"># Then open http://localhost:8082 in your browser</span>
 </pre></div>
 </div>
 <p>See the <a class="reference internal" href="web-gui.html"><span class="std std-doc">Web GUI guide</span></a> for detailed setup instructions.</p>

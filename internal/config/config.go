@@ -67,7 +67,7 @@ type PlatformConfig struct {
 
 // WebConfig configures the web GUI and OAuth.
 type WebConfig struct {
-	// Addr is the listen address for the web GUI (default ":8080").
+	// Addr is the listen address for the web GUI (default ":8082").
 	Addr string `json:"addr"`
 
 	// SessionSecret is used to sign session cookies (generate a random string).
@@ -194,15 +194,15 @@ func DefaultConfig() *Config {
 			BaseURL: "https://gitlab.com/api/v4",
 		},
 		Web: WebConfig{
-			Addr:          ":8080",
+			Addr:          ":8082",
 			GitLabBaseURL: "https://gitlab.com",
 		},
 		Collection: CollectionConfig{
-			BatchSize:           1000,
-			DaysUntilRecollect:  1,
-			Workers:             12,
-			RepoCloneDir:        defaultCloneDir(),
-			MatviewRebuildDay:   "saturday",
+			BatchSize:               1000,
+			DaysUntilRecollect:      1,
+			Workers:                 12,
+			RepoCloneDir:            defaultCloneDir(),
+			MatviewRebuildDay:       "saturday",
 			MatviewRebuildOnStartup: false,
 		},
 		LogLevel: "info",

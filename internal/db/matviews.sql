@@ -1161,7 +1161,7 @@ DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_pr_files CASCADE;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_pr_files AS
 SELECT
-    prf.pr_file_path AS file_path,
+    COALESCE(prf.pr_file_path, '') AS file_path,
     pr.pull_request_id AS pull_request_id,
     pr.repo_id AS repo_id
 FROM
@@ -1182,9 +1182,9 @@ DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_cntrb_per_file CASCADE;
 CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_cntrb_per_file AS
 SELECT
     pr.repo_id AS repo_id,
-    prf.pr_file_path AS file_path,
-    string_agg(DISTINCT CAST(pr.author_id AS varchar(36)), ',') AS cntrb_ids,
-    string_agg(DISTINCT CAST(prr.cntrb_id AS varchar(36)), ',') AS reviewer_ids
+    COALESCE(prf.pr_file_path, '') AS file_path,
+    COALESCE(string_agg(DISTINCT CAST(pr.author_id AS varchar(36)), ','), '') AS cntrb_ids,
+    COALESCE(string_agg(DISTINCT CAST(prr.cntrb_id AS varchar(36)), ','), '') AS reviewer_ids
 FROM
     aveloxis_data.pull_requests pr
 INNER JOIN
@@ -1208,11 +1208,11 @@ DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_repo_files CASCADE;
 CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_repo_files AS
 SELECT
     rl.repo_id AS id,
-    r.repo_name,
-    r.repo_path,
+    COALESCE(r.repo_name, '') AS repo_name,
+    COALESCE(r.repo_path, '') AS repo_path,
     rl.rl_analysis_date,
-    rl.file_path,
-    rl.file_name
+    COALESCE(rl.file_path, '') AS file_path,
+    COALESCE(rl.file_name, '') AS file_name
 FROM
     aveloxis_data.repo_labor rl
 INNER JOIN

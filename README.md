@@ -132,71 +132,137 @@ open http://localhost:8080   # Web GUI (login, visualizations, comparison)
 open http://localhost:8383/api/v1/health  # REST API
 ```
 
-## Docker
+## Docker / Podman
 
-Pre-built images are published to [GitHub Container Registry](https://ghcr.io/aveloxis/aveloxis) on every push to main.
+Aveloxis runs in containers via Docker Compose or Podman Compose. All instructions below work with either — substitute `podman` for `docker` if you use Podman.
 
-### Docker Compose (recommended)
+### Step 1: Configure `aveloxis.docker.json`
 
-The easiest way to run Aveloxis with Docker. Starts PostgreSQL, runs migrations, then launches all three Aveloxis processes:
+This file is **required**. It's mounted into all containers as the config file. You must add at least one API key — without keys, the scheduler (`serve`) will refuse to start.
 
 ```bash
-# 1. Edit the Docker config with your API keys and OAuth credentials
-cp aveloxis.docker.json aveloxis.docker.json.bak
+# The file already exists in the repo — edit it directly:
 vim aveloxis.docker.json
-
-# 2. Start everything (PostgreSQL + scheduler + web GUI + API)
-docker compose up -d
-
-# 3. Open the interfaces
-open http://localhost:5555   # Monitor dashboard
-open http://localhost:8080   # Web GUI (login, visualizations, comparison)
-open http://localhost:8383/api/v1/health  # REST API
 ```
 
-**What gets created:**
-- **`aveloxis-pgdata`** volume — PostgreSQL data. Persists across container rebuilds. Only destroyed by `docker compose down -v`.
-- **`aveloxis-repos`** volume — bare git clones for facade/analysis. Also persistent.
-- **`migrate`** container — runs once to create/update the schema, then exits.
+**Minimum changes needed:**
+
+```jsonc
+{
+  "github": {
+    "api_keys": ["ghp_YOUR_GITHUB_TOKEN"],   // ← REQUIRED: at least one PAT
+    ...
+  },
+  "web": {
+    "dev_mode": true,                         // ← Required for HTTP (no HTTPS)
+    "github_client_id": "Iv1.abc123...",      // ← For OAuth login (see below)
+    "github_client_secret": "deadbeef...",    // ← For OAuth login (see below)
+    ...
+  }
+}
+```
+
+**GitHub API token:** Go to [github.com/settings/tokens](https://github.com/settings/tokens) and create a Personal Access Token with `repo` (or `public_repo`) scope. Add it to `github.api_keys`.
+
+**GitHub OAuth app (for web GUI login):** Go to [github.com/settings/developers](https://github.com/settings/developers) → New OAuth App:
+- **Homepage URL:** `http://localhost:8080`
+- **Authorization callback URL:** `http://localhost:8080/auth/github/callback`
+
+Copy the Client ID and Client Secret into `github_client_id` and `github_client_secret`.
+
+**`dev_mode: true`** is needed because the containers run over plain HTTP. Without it, session cookies are marked `Secure` and browsers won't send them over HTTP, causing login to fail silently.
+
+### Step 2: Start everything
 
 ```bash
-docker compose logs -f serve   # Follow scheduler logs
-docker compose down            # Stop (data preserved)
-docker compose down -v         # Stop AND delete all data (destructive!)
+# Docker
+docker compose up -d --build
+
+# Podman
+podman compose up -d --build
 ```
 
-To set the database password: `AVELOXIS_DB_PASSWORD=secret docker compose up -d`
+This starts 5 containers:
+| Container | Purpose | Port |
+|---|---|---|
+| `postgres` | PostgreSQL 16 database | 5432 |
+| `migrate` | Runs schema migrations, then exits | — |
+| `serve` | Collection scheduler + monitoring dashboard | **5555** |
+| `web` | Web GUI (OAuth login, visualizations) | **8080** |
+| `api` | REST API (stats, charts, SBOMs) | **8383** |
 
-To change worker count: `AVELOXIS_WORKERS=40 docker compose up -d`
+### Step 3: Open the interfaces
 
-### Manual Docker Run
+```
+http://localhost:5555                # Monitor dashboard (queue status, repo progress)
+http://localhost:8080                # Web GUI (login with GitHub, create groups, add repos)
+http://localhost:8383/api/v1/health  # REST API health check
+```
+
+### Adding repos
 
 ```bash
-docker pull ghcr.io/aveloxis/aveloxis:latest
+# Via CLI (run inside a container)
+docker compose exec serve aveloxis add-repo https://github.com/chaoss/augur
 
-docker run -d --name aveloxis-serve \
-  -v $(pwd)/aveloxis.json:/app/aveloxis.json \
-  -v /data/aveloxis-repos:/data \
-  -p 5555:5555 \
-  ghcr.io/aveloxis/aveloxis:latest serve --workers 40
-
-docker run -d --name aveloxis-web \
-  -v $(pwd)/aveloxis.json:/app/aveloxis.json \
-  -p 8080:8080 \
-  ghcr.io/aveloxis/aveloxis:latest web
-
-docker run -d --name aveloxis-api \
-  -v $(pwd)/aveloxis.json:/app/aveloxis.json \
-  -p 8383:8383 \
-  ghcr.io/aveloxis/aveloxis:latest api
+# Via the web GUI
+# Log in at http://localhost:8080, create a group, and add repos through the browser
 ```
 
-### Build Locally
+### Managing containers
 
 ```bash
-docker build -t aveloxis .        # Docker
-podman build -t aveloxis .        # Podman
+# View logs
+docker compose logs -f serve       # Follow scheduler logs
+docker compose logs -f web         # Follow web GUI logs
+docker compose logs migrate        # Check migration output
+
+# Stop (data is preserved in volumes)
+docker compose down
+
+# Stop AND delete all data (database + clones — destructive!)
+docker compose down -v
+
+# Restart with different worker count
+AVELOXIS_WORKERS=40 docker compose up -d
+
+# Set a custom database password
+AVELOXIS_DB_PASSWORD=secret docker compose up -d
 ```
+
+### Persistent volumes
+
+| Volume | Contents | Survives `down`? | Destroyed by `down -v`? |
+|---|---|---|---|
+| `aveloxis-pgdata` | PostgreSQL database (all collected data) | Yes | **Yes** |
+| `aveloxis-repos` | Bare git clones for facade/analysis | Yes | **Yes** |
+
+### Build from source
+
+```bash
+# Docker
+docker build -t aveloxis .
+
+# Podman
+podman build -t aveloxis .
+
+# Then use the local image
+docker compose up -d --build
+```
+
+### Troubleshooting containers
+
+**`serve` exits immediately:**
+Check `docker compose logs serve`. The most common cause is missing API keys — you'll see `"no API keys configured for any platform"`. Add at least one key to `aveloxis.docker.json` and restart.
+
+**Web GUI login fails (no error, just redirects back):**
+Set `"dev_mode": true` in the `"web"` section of `aveloxis.docker.json`. Without this, session cookies require HTTPS.
+
+**`migrate` fails:**
+Check `docker compose logs migrate`. If it says a relation doesn't exist, you may need to rebuild: `docker compose down -v && docker compose up -d --build`.
+
+**Monitor shows no repos:**
+Add repos via `docker compose exec serve aveloxis add-repo <url>` or through the web GUI.
 
 ## Quick Start for Existing Augur Users
 

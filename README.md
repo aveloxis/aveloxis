@@ -141,7 +141,8 @@ Aveloxis runs in containers via Docker Compose or Podman Compose. All instructio
 This file is **required**. It's mounted into all containers as the config file. You must add at least one API key — without keys, the scheduler (`serve`) will refuse to start.
 
 ```bash
-# The file already exists in the repo — edit it directly:
+# An example of the file already exists in the repo — copy, then edit it directly:
+cp aveloxis.docker.example.json aveloxis.docker.json
 vim aveloxis.docker.json
 ```
 

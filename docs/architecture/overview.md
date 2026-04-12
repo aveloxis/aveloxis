@@ -120,7 +120,7 @@ Augur compatibility layer for [8Knot](https://github.com/oss-aspen/8Knot) and ot
 | `releases` | `created_at` → `release_created_at`, `published_at` → `release_published_at`, `updated_at` → `release_updated_at` |
 | `message` | Alias for `messages` (Augur uses singular) |
 
-**Usage:** Set `AUGUR_SCHEMA=aveloxis_augur_data, aveloxis_data` in 8Knot's `.env`. PostgreSQL checks `aveloxis_augur_data` first (finding the aliased views), then falls through to `aveloxis_data` for all other tables. For existing Augur databases, use `AUGUR_SCHEMA=augur_data` — the compatibility schema is not needed.
+**Usage:** Set `AUGUR_SCHEMA=aveloxis_augur_data,aveloxis_data` (no space after comma) in 8Knot's `.env`. PostgreSQL checks `aveloxis_augur_data` first (finding the aliased views), then falls through to `aveloxis_data` for all other tables. For existing Augur databases, use `AUGUR_SCHEMA=augur_data` — the compatibility schema is not needed.
 
 ---
 

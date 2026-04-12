@@ -482,7 +482,7 @@ Creates 108 tables and 19 materialized views across three PostgreSQL schemas:
 
 Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also creates 19 materialized views for 8Knot/analytics compatibility and runs a data cleanup pass that fixes any garbage timestamps (e.g., year 0001 BC from uninitialized fields) by setting them to NULL.
 
-**8Knot integration:** Set `AUGUR_SCHEMA=aveloxis_augur_data, aveloxis_data` in 8Knot's `.env`. The two-schema search path resolves Augur-named columns from `aveloxis_augur_data` first, then falls through to `aveloxis_data` for tables with identical schemas. For existing Augur databases, use `AUGUR_SCHEMA=augur_data` as before — the compatibility schema is not needed.
+**8Knot integration:** Set `AUGUR_SCHEMA=aveloxis_augur_data,aveloxis_data` (no space after comma) in 8Knot's `.env`. The two-schema search path resolves Augur-named columns from `aveloxis_augur_data` first, then falls through to `aveloxis_data` for tables with identical schemas. For existing Augur databases, use `AUGUR_SCHEMA=augur_data` as before — the compatibility schema is not needed.
 
 ### `aveloxis refresh-views` — Refresh materialized views
 

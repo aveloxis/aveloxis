@@ -26,7 +26,7 @@ COPY --from=builder /aveloxis /usr/local/bin/aveloxis
 WORKDIR /app
 VOLUME ["/app", "/data"]
 
-EXPOSE 5555 8080 8383
+EXPOSE 5555 8082 8383
 
 ENTRYPOINT ["aveloxis"]
 CMD ["serve", "--workers", "4", "--monitor", ":5555"]

@@ -175,7 +175,7 @@
 <li><p><strong>Builder stage</strong> — <code class="docutils literal notranslate"><span class="pre">golang:1.25-alpine</span></code>, downloads dependencies, builds a static binary</p></li>
 <li><p><strong>Runtime stage</strong> — <code class="docutils literal notranslate"><span class="pre">alpine:3.20</span></code>, copies the binary, includes git/curl/ca-certificates for facade and libyear phases</p></li>
 </ol>
-<p>Exposed ports: 5555 (monitor), 8080 (web), 8383 (API).</p>
+<p>Exposed ports: 5555 (monitor), 8082 (web), 8383 (API).</p>
 <p>Default command: <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span> <span class="pre">--workers</span> <span class="pre">4</span> <span class="pre">--monitor</span> <span class="pre">:5555</span></code></p>
 </section>
 <section id="running-in-docker">
@@ -192,7 +192,7 @@ docker<span class="w"> </span>run<span class="w"> </span>-d<span class="w"> </sp
 
 docker<span class="w"> </span>run<span class="w"> </span>-d<span class="w"> </span>--name<span class="w"> </span>aveloxis-web<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-v<span class="w"> </span>./aveloxis.json:/app/aveloxis.json<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-p<span class="w"> </span><span class="m">8082</span>:8082<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>ghcr.io/aveloxis/aveloxis:latest<span class="w"> </span>web
 
 docker<span class="w"> </span>run<span class="w"> </span>-d<span class="w"> </span>--name<span class="w"> </span>aveloxis-api<span class="w"> </span><span class="se">\</span>

@@ -92,6 +92,15 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
 
 CREATE SCHEMA IF NOT EXISTS aveloxis_augur_data;
 
+-- Drop all compatibility views first so column changes don't conflict.
+-- CREATE OR REPLACE VIEW fails if the column list changes shape.
+DROP VIEW IF EXISTS aveloxis_augur_data.repo CASCADE;
+DROP VIEW IF EXISTS aveloxis_augur_data.repo_info CASCADE;
+DROP VIEW IF EXISTS aveloxis_augur_data.issues CASCADE;
+DROP VIEW IF EXISTS aveloxis_augur_data.pull_requests CASCADE;
+DROP VIEW IF EXISTS aveloxis_augur_data.releases CASCADE;
+DROP VIEW IF EXISTS aveloxis_augur_data.message CASCADE;
+
 -- repo (singular table name + repo_language column alias)
 CREATE OR REPLACE VIEW aveloxis_augur_data.repo AS
 SELECT *, primary_language AS repo_language FROM aveloxis_data.repos;

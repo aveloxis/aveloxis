@@ -67,9 +67,9 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
 
 ---
 
-## Two schemas
+## Three schemas
 
-Aveloxis uses two PostgreSQL schemas to separate collected data from operational state.
+Aveloxis uses three PostgreSQL schemas to separate collected data, operational state, and Augur compatibility.
 
 ### `aveloxis_data` (84 tables + 19 materialized views)
 
@@ -106,6 +106,21 @@ Operational and orchestration tables:
 | Users | `users`, `user_sessions`, `user_repos` | User accounts and auth |
 | Config | `config` | Runtime configuration |
 | Workers | `worker_history`, `worker_job` | Worker run history |
+
+### `aveloxis_augur_data` (6 views)
+
+Augur compatibility layer for [8Knot](https://github.com/oss-aspen/8Knot) and other Augur-era analytics tools. Contains views that alias Aveloxis column names to Augur conventions. Only tables with column name differences need views here — tables with identical columns resolve via the `search_path` fallback to `aveloxis_data`.
+
+| View | Augur column aliases |
+|---|---|
+| `repo` | `repos` table (singular name) + `primary_language` → `repo_language` |
+| `repo_info` | `star_count` → `stars_count`, `watcher_count` → `watchers_count` |
+| `issues` | `issue_number` → `gh_issue_number`, `platform_issue_id` → `gh_issue_id`, `closed_by_id` → `cntrb_id` |
+| `pull_requests` | `pr_number` → `pr_src_number`, `author_id` → `pr_augur_contributor_id`, `created_at` → `pr_created_at`, `closed_at` → `pr_closed_at`, `merged_at` → `pr_merged_at` |
+| `releases` | `created_at` → `release_created_at`, `published_at` → `release_published_at`, `updated_at` → `release_updated_at` |
+| `message` | Alias for `messages` (Augur uses singular) |
+
+**Usage:** Set `AUGUR_SCHEMA=aveloxis_augur_data, aveloxis_data` in 8Knot's `.env`. PostgreSQL checks `aveloxis_augur_data` first (finding the aliased views), then falls through to `aveloxis_data` for all other tables. For existing Augur databases, use `AUGUR_SCHEMA=augur_data` — the compatibility schema is not needed.
 
 ---
 

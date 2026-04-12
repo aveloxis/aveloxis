@@ -71,7 +71,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
 
 Aveloxis uses three PostgreSQL schemas to separate collected data, operational state, and Augur compatibility.
 
-### `aveloxis_data` (84 tables + 19 materialized views)
+### `aveloxis_data` (84 tables + 22 materialized views)
 
 All collected open source community health data:
 
@@ -91,7 +91,7 @@ All collected open source community health data:
 | Analysis/ML | 8 | `message_analysis`, `message_analysis_summary`, `message_sentiment`, `message_sentiment_summary`, `discourse_insights`, `lstm_anomaly_models`, `lstm_anomaly_results`, `pull_request_analysis` |
 | CHAOSS | 4 | `chaoss_metric_status`, `chaoss_user`, `repo_group_insights`, `commit_comment_ref` |
 
-Plus 19 materialized views for 8Knot compatibility.
+Plus 22 materialized views for 8Knot compatibility.
 
 ### `aveloxis_ops` (24 tables)
 
@@ -235,7 +235,7 @@ aveloxis/
       staging.go          # JSONB staging writer and processor
       migrate.go          # Schema migration
       schema.sql          # Full DDL (108 tables)
-      matviews.sql        # 19 materialized views
+      matviews.sql        # 22 materialized views
       contributors.go     # Contributor resolver with cache
       affiliations.go     # Email domain -> org resolver
       aggregates.go       # Facade aggregate refresh
@@ -271,7 +271,7 @@ Each job runs six phases. After the sequential API collection and processing pha
 | Org refresh | Configurable (default 4h) | Scans GitHub orgs and GitLab groups for new/renamed repos |
 | User org refresh | Same as org refresh | Scans user-requested org additions |
 | Contributor breadth | 6h | Discovers cross-repo activity via GitHub Events API |
-| Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 19 materialized views, resumes |
+| Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 22 materialized views, resumes |
 
 ### Graceful shutdown
 

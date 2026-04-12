@@ -6,7 +6,7 @@
 [![Container Build](https://github.com/aveloxis/aveloxis/actions/workflows/container-build.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/container-build.yml)
 [![Docker Publish](https://github.com/aveloxis/aveloxis/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/docker-publish.yml)
 
-Data-Collection ![Static Badge](https://img.shields.io/badge/tested-green) Augur-Conversion ![Static Badge](https://img.shields.io/badge/untested-red) Containers ![Static Badge](https://img.shields.io/badge/tested-green) 8Knot ![Static Badge](https://img.shields.io/badge/tested-green)
+![Static Badge](https://img.shields.io/badge/DataCollection-tested-green) ![Static Badge](https://img.shields.io/badge/AugurConversion-untested-red) ![Static Badge](https://img.shields.io/badge/Containers-tested-green)  ![Static Badge](https://img.shields.io/badge/8Knot-tested-green)
 
 #### [Documentation can be found on readthedocs.io at aveloxis.readthedocs.io/en/latest](https://aveloxis.readthedocs.io/en/latest/) 
 

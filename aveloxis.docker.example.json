@@ -1,0 +1,39 @@
+{
+  "database": {
+    "host": "postgres",
+    "port": 5432,
+    "user": "aveloxis",
+    "password": "aveloxis",
+    "dbname": "aveloxis",
+    "sslmode": "disable"
+  },
+  "github": {
+    "_comment": "REQUIRED: Add at least one GitHub PAT. Without keys, 'serve' will refuse to start.",
+    "api_keys": [],
+    "base_url": "https://api.github.com"
+  },
+  "gitlab": {
+    "api_keys": [],
+    "base_url": "https://gitlab.com/api/v4"
+  },
+  "collection": {
+    "batch_size": 1000,
+    "days_until_recollect": 1,
+    "workers": 12,
+    "repo_clone_dir": "/data",
+    "matview_rebuild_day": "saturday",
+    "matview_rebuild_on_startup": false
+  },
+  "web": {
+    "addr": ":8082",
+    "base_url": "http://localhost:8080",
+    "session_secret": "change-me-in-production",
+    "dev_mode": true,
+    "_oauth_comment": "Create a GitHub OAuth App at https://github.com/settings/developers. Set callback URL to http://localhost:8080/auth/github/callback",
+    "github_client_id": "you-client-id-here",
+    "github_client_secret": "you-client-secret-here",  
+    "gitlab_client_id": "",
+    "gitlab_client_secret": ""
+  },
+  "log_level": "info"
+}

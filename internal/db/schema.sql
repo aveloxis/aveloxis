@@ -58,6 +58,83 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
 );
 
 -- ============================================================
+-- Augur compatibility schema: aveloxis_augur_data
+-- ============================================================
+-- 8Knot and other Augur-era tools use Augur table/column names that differ
+-- from Aveloxis conventions. This schema contains ONLY views for tables
+-- where column names differ. Tables with identical columns (commits,
+-- contributors, repo_groups, etc.) are NOT duplicated here — they resolve
+-- via the search_path fallback to aveloxis_data.
+--
+-- Usage: set search_path = aveloxis_augur_data, aveloxis_data
+-- In 8Knot .env: AUGUR_SCHEMA=aveloxis_augur_data, aveloxis_data
+--
+-- This does NOT conflict with existing Augur databases: if someone runs
+-- Aveloxis on an existing Augur DB that already has augur_data, they set
+-- AUGUR_SCHEMA=augur_data and this schema is never consulted.
+--
+-- Column name mapping (Aveloxis → Augur alias):
+--   repos.primary_language        → repo_language
+--   repo_info.star_count          → stars_count
+--   repo_info.watcher_count       → watchers_count
+--   issues.issue_number           → gh_issue_number
+--   issues.platform_issue_id      → gh_issue_id
+--   issues.closed_by_id           → cntrb_id (issue closer)
+--   pull_requests.pr_number       → pr_src_number
+--   pull_requests.platform_pr_id  → pr_src_id
+--   pull_requests.author_id       → pr_augur_contributor_id
+--   pull_requests.created_at      → pr_created_at
+--   pull_requests.closed_at       → pr_closed_at
+--   pull_requests.merged_at       → pr_merged_at
+--   releases.created_at           → release_created_at
+--   releases.published_at         → release_published_at
+--   releases.updated_at           → release_updated_at
+
+CREATE SCHEMA IF NOT EXISTS aveloxis_augur_data;
+
+-- repo (singular table name + repo_language column alias)
+CREATE OR REPLACE VIEW aveloxis_augur_data.repo AS
+SELECT *, primary_language AS repo_language FROM aveloxis_data.repos;
+
+-- repo_info (star_count → stars_count, watcher_count → watchers_count)
+CREATE OR REPLACE VIEW aveloxis_augur_data.repo_info AS
+SELECT *,
+    star_count AS stars_count,
+    watcher_count AS watchers_count
+FROM aveloxis_data.repo_info;
+
+-- issues (Augur gh_ prefixed columns + cntrb_id for closer)
+CREATE OR REPLACE VIEW aveloxis_augur_data.issues AS
+SELECT *,
+    issue_number AS gh_issue_number,
+    platform_issue_id AS gh_issue_id,
+    closed_by_id AS cntrb_id
+FROM aveloxis_data.issues;
+
+-- pull_requests (Augur pr_ prefixed timestamps + pr_src_ columns)
+CREATE OR REPLACE VIEW aveloxis_augur_data.pull_requests AS
+SELECT *,
+    pr_number AS pr_src_number,
+    platform_pr_id AS pr_src_id,
+    author_id AS pr_augur_contributor_id,
+    created_at AS pr_created_at,
+    closed_at AS pr_closed_at,
+    merged_at AS pr_merged_at
+FROM aveloxis_data.pull_requests;
+
+-- releases (Augur release_ prefixed timestamps)
+CREATE OR REPLACE VIEW aveloxis_augur_data.releases AS
+SELECT *,
+    created_at AS release_created_at,
+    published_at AS release_published_at,
+    updated_at AS release_updated_at
+FROM aveloxis_data.releases;
+
+-- message (Augur uses singular "message", Aveloxis uses plural "messages")
+CREATE OR REPLACE VIEW aveloxis_augur_data.message AS
+SELECT * FROM aveloxis_data.messages;
+
+-- ============================================================
 -- Repo groups list serve (mailing lists)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_groups_list_serve (

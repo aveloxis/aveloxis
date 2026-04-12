@@ -66,8 +66,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
 -- contributors, repo_groups, etc.) are NOT duplicated here — they resolve
 -- via the search_path fallback to aveloxis_data.
 --
--- Usage: set search_path = aveloxis_augur_data, aveloxis_data
--- In 8Knot .env: AUGUR_SCHEMA=aveloxis_augur_data, aveloxis_data
+-- Usage: SET search_path TO aveloxis_augur_data, aveloxis_data;
+-- In 8Knot .env (no spaces after comma): AUGUR_SCHEMA=aveloxis_augur_data,aveloxis_data
 --
 -- This does NOT conflict with existing Augur databases: if someone runs
 -- Aveloxis on an existing Augur DB that already has augur_data, they set

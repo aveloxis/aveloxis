@@ -103,31 +103,67 @@ SELECT *,
     watcher_count AS watchers_count
 FROM aveloxis_data.repo_info;
 
--- issues (Augur gh_ prefixed columns + cntrb_id for closer)
+-- issues: column renames + timestamps cast to TIMESTAMP (no tz).
+-- Augur uses TIMESTAMP; Aveloxis uses TIMESTAMPTZ. 8Knot's pandas code assumes
+-- tz-naive timestamps and crashes with "Start and end cannot both be tz-aware
+-- with different timezones" if it gets a mix of tz-aware and NULL values.
 CREATE OR REPLACE VIEW aveloxis_augur_data.issues AS
-SELECT *,
+SELECT
+    issue_id, repo_id, platform_issue_id,
+    issue_number,
     issue_number AS gh_issue_number,
     platform_issue_id AS gh_issue_id,
-    closed_by_id AS cntrb_id
+    node_id, issue_title, issue_body, issue_state, issue_url, html_url,
+    reporter_id,
+    closed_by_id,
+    closed_by_id AS cntrb_id,
+    pull_request, pull_request_id,
+    created_at::timestamp AS created_at,
+    updated_at::timestamp AS updated_at,
+    closed_at::timestamp AS closed_at,
+    due_on::timestamp AS due_on,
+    comment_count,
+    tool_source, tool_version, data_source,
+    data_collection_date::timestamp AS data_collection_date
 FROM aveloxis_data.issues;
 
--- pull_requests (Augur pr_ prefixed timestamps + pr_src_ columns)
+-- pull_requests: column renames + timestamps cast to TIMESTAMP (no tz).
 CREATE OR REPLACE VIEW aveloxis_augur_data.pull_requests AS
-SELECT *,
-    pr_number AS pr_src_number,
+SELECT
+    pull_request_id, repo_id, platform_pr_id,
     platform_pr_id AS pr_src_id,
+    node_id,
+    pr_number,
+    pr_number AS pr_src_number,
+    pr_url, pr_html_url, pr_diff_url, pr_title, pr_body, pr_state, pr_locked,
+    author_id,
     author_id AS pr_augur_contributor_id,
-    created_at AS pr_created_at,
-    closed_at AS pr_closed_at,
-    merged_at AS pr_merged_at
+    author_association, meta_head_id, meta_base_id, merge_commit_sha,
+    created_at::timestamp AS created_at,
+    created_at::timestamp AS pr_created_at,
+    updated_at::timestamp AS updated_at,
+    closed_at::timestamp AS closed_at,
+    closed_at::timestamp AS pr_closed_at,
+    merged_at::timestamp AS merged_at,
+    merged_at::timestamp AS pr_merged_at,
+    tool_source, tool_version, data_source,
+    data_collection_date::timestamp AS data_collection_date
 FROM aveloxis_data.pull_requests;
 
--- releases (Augur release_ prefixed timestamps)
+-- releases: column renames + timestamps cast to TIMESTAMP (no tz).
 CREATE OR REPLACE VIEW aveloxis_augur_data.releases AS
-SELECT *,
-    created_at AS release_created_at,
-    published_at AS release_published_at,
-    updated_at AS release_updated_at
+SELECT
+    release_id, repo_id, release_name, release_description, release_author,
+    release_tag_name, release_url,
+    created_at::timestamp AS created_at,
+    created_at::timestamp AS release_created_at,
+    published_at::timestamp AS published_at,
+    published_at::timestamp AS release_published_at,
+    updated_at::timestamp AS updated_at,
+    updated_at::timestamp AS release_updated_at,
+    is_draft, is_prerelease, tag_only,
+    tool_source, tool_version, data_source,
+    data_collection_date::timestamp AS data_collection_date
 FROM aveloxis_data.releases;
 
 -- message (Augur uses singular "message", Aveloxis uses plural "messages")

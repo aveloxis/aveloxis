@@ -15,7 +15,7 @@ The monitoring dashboard is served by `aveloxis serve` at the address specified 
 aveloxis serve --monitor :5555
 
 # Custom port
-aveloxis serve --monitor :8080
+aveloxis serve --monitor :8082
 
 # Bind to all interfaces (for remote access)
 aveloxis serve --monitor 0.0.0.0:5555

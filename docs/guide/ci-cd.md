@@ -58,7 +58,7 @@ The multi-stage `Dockerfile` in the repo root:
 1. **Builder stage** — `golang:1.25-alpine`, downloads dependencies, builds a static binary
 2. **Runtime stage** — `alpine:3.20`, copies the binary, includes git/curl/ca-certificates for facade and libyear phases
 
-Exposed ports: 5555 (monitor), 8080 (web), 8383 (API).
+Exposed ports: 5555 (monitor), 8082 (web), 8383 (API).
 
 Default command: `aveloxis serve --workers 4 --monitor :5555`
 
@@ -77,7 +77,7 @@ docker run -d --name aveloxis-serve \
 
 docker run -d --name aveloxis-web \
   -v ./aveloxis.json:/app/aveloxis.json \
-  -p 8080:8080 \
+  -p 8082:8082 \
   ghcr.io/aveloxis/aveloxis:latest web
 
 docker run -d --name aveloxis-api \

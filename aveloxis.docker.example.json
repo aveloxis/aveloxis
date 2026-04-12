@@ -8,11 +8,12 @@
     "sslmode": "disable"
   },
   "github": {
-    "api_keys": [],
+    "_comment": "REQUIRED: Add at least one GitHub PAT. Without keys, 'serve' will refuse to start. ",
+    "api_keys": ["your-github-pat-here", "another-github-pat-here"],
     "base_url": "https://api.github.com"
   },
   "gitlab": {
-    "api_keys": [],
+    "api_keys": ["your-gitlab-pat-here", "another-gitlab-pat-here"],
     "base_url": "https://gitlab.com/api/v4"
   },
   "collection": {
@@ -24,12 +25,13 @@
     "matview_rebuild_on_startup": false
   },
   "web": {
-    "addr": ":8080",
-    "base_url": "http://localhost:8080",
+    "addr": ":8082",
+    "base_url": "http://localhost:8082",
     "session_secret": "change-me-in-production",
-    "dev_mode": false,
-    "github_client_id": "",
-    "github_client_secret": "",
+    "dev_mode": true,
+    "_oauth_comment": "Create a GitHub OAuth App at https://github.com/settings/developers. Set callback URL to http://localhost:8082/auth/github/callback",
+    "github_client_id": "you-client-id-here",
+    "github_client_secret": "you-client-secret-here",  
     "gitlab_client_id": "",
     "gitlab_client_secret": ""
   },

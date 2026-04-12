@@ -47,7 +47,7 @@ The scheduler also runs these background tasks:
 aveloxis serve
 
 # Start with 4 workers and a custom dashboard port
-aveloxis serve --workers 4 --monitor :8080
+aveloxis serve --workers 4 --monitor :8082
 
 # Start using Augur's API keys
 aveloxis serve --workers 4 --augur-keys
@@ -69,8 +69,8 @@ The `web` command has no CLI flags. All settings come from the `web` section of 
 
 | Config field | Type | Default | Description |
 |---|---|---|---|
-| `web.addr` | string | `":8080"` | Listen address for the web server. |
-| `web.base_url` | string | `"http://localhost:8080"` | External URL used to construct OAuth callback URLs. |
+| `web.addr` | string | `":8082"` | Listen address for the web server. |
+| `web.base_url` | string | `"http://localhost:8082"` | External URL used to construct OAuth callback URLs. |
 | `web.session_secret` | string | (required) | Secret key for signing session cookies. |
 | `web.github_client_id` | string | `""` | GitHub OAuth app client ID. |
 | `web.github_client_secret` | string | `""` | GitHub OAuth app client secret. |
@@ -100,7 +100,7 @@ The `web` command has no CLI flags. All settings come from the `web` section of 
 # Start the web GUI (uses settings from aveloxis.json)
 aveloxis web
 
-# Then open http://localhost:8080 in your browser
+# Then open http://localhost:8082 in your browser
 ```
 
 See the [Web GUI guide](web-gui.md) for detailed setup instructions.

@@ -1,5 +1,5 @@
-aveloxis.docker.json
 prompts.md
+aveloxis.docker.json 
 ~/
 # Bare git clone directories (created by facade collector).
 # These are stored at ~/aveloxis-repos/ by default, not in the project dir.

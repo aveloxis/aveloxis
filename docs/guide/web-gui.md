@@ -16,8 +16,8 @@ Before starting the web GUI you need:
 2. Click **New OAuth App**.
 3. Fill in the fields:
    - **Application name**: anything you like (e.g., "Aveloxis").
-   - **Homepage URL**: your Aveloxis web GUI URL (e.g., `http://localhost:8080`).
-   - **Authorization callback URL**: `http://localhost:8080/auth/github/callback` (replace `http://localhost:8080` with your `web.base_url` if different).
+   - **Homepage URL**: your Aveloxis web GUI URL (e.g., `http://localhost:8082`).
+   - **Authorization callback URL**: `http://localhost:8082/auth/github/callback` (replace `http://localhost:8082` with your `web.base_url` if different).
 4. Click **Register application**.
 5. Copy the **Client ID** and generate a new **Client Secret**. Put both in your `aveloxis.json` under `web.github_client_id` and `web.github_client_secret`.
 
@@ -26,7 +26,7 @@ Before starting the web GUI you need:
 1. Go to [https://gitlab.com/-/profile/applications](https://gitlab.com/-/profile/applications) (or the equivalent URL on your self-hosted GitLab instance).
 2. Fill in the fields:
    - **Name**: anything you like (e.g., "Aveloxis").
-   - **Redirect URI**: `http://localhost:8080/auth/gitlab/callback` (replace `http://localhost:8080` with your `web.base_url` if different).
+   - **Redirect URI**: `http://localhost:8082/auth/gitlab/callback` (replace `http://localhost:8082` with your `web.base_url` if different).
    - **Scopes**: check `read_user`.
 3. Click **Save application**.
 4. Copy the **Application ID** and **Secret**. Put both in your `aveloxis.json` under `web.gitlab_client_id` and `web.gitlab_client_secret`.
@@ -35,7 +35,7 @@ Before starting the web GUI you need:
 ## Configuration
 
 ```{important}
-**Local development:** Set `"dev_mode": true` in the `"web"` section below if you are running over plain HTTP (e.g., `http://localhost:8080`). Without this, session cookies are marked `Secure` and your browser will not send them over HTTP, causing login to fail silently.
+**Local development:** Set `"dev_mode": true` in the `"web"` section below if you are running over plain HTTP (e.g., `http://localhost:8082`). Without this, session cookies are marked `Secure` and your browser will not send them over HTTP, causing login to fail silently.
 ```
 
 All web GUI settings live under the `web` key in `aveloxis.json`:
@@ -43,8 +43,8 @@ All web GUI settings live under the `web` key in `aveloxis.json`:
 ```json
 {
   "web": {
-    "addr": ":8080",
-    "base_url": "http://localhost:8080",
+    "addr": ":8082",
+    "base_url": "http://localhost:8082",
     "session_secret": "change-me-to-a-random-string",
     "dev_mode": false,
     "github_client_id": "Iv1.abc123...",
@@ -58,8 +58,8 @@ All web GUI settings live under the `web` key in `aveloxis.json`:
 
 | Field | Description | Default |
 |---|---|---|
-| `web.addr` | Listen address for the web server | `":8080"` |
-| `web.base_url` | External URL used to construct OAuth callback URLs | `"http://localhost:8080"` |
+| `web.addr` | Listen address for the web server | `":8082"` |
+| `web.base_url` | External URL used to construct OAuth callback URLs | `"http://localhost:8082"` |
 | `web.session_secret` | Secret key for signing session cookies. Use a long random string. | (required) |
 | `web.dev_mode` | Set `true` for local HTTP development. Disables the `Secure` flag on cookies so they work without HTTPS. **Do not enable in production.** `HttpOnly` is always set regardless. | `false` |
 | `web.github_client_id` | Client ID from your GitHub OAuth app | `""` |
@@ -76,7 +76,7 @@ You only need to configure the providers you want to use. If you only use GitHub
 aveloxis web
 ```
 
-The server starts on the address specified by `web.addr` (default `:8080`). Open `http://localhost:8080` in your browser.
+The server starts on the address specified by `web.addr` (default `:8082`). Open `http://localhost:8082` in your browser.
 
 ## Login Flow
 

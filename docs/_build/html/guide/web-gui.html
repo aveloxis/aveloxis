@@ -146,8 +146,8 @@
 <li><p>Fill in the fields:</p>
 <ul class="simple">
 <li><p><strong>Application name</strong>: anything you like (e.g., “Aveloxis”).</p></li>
-<li><p><strong>Homepage URL</strong>: your Aveloxis web GUI URL (e.g., <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code>).</p></li>
-<li><p><strong>Authorization callback URL</strong>: <code class="docutils literal notranslate"><span class="pre">http://localhost:8080/auth/github/callback</span></code> (replace <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code> with your <code class="docutils literal notranslate"><span class="pre">web.base_url</span></code> if different).</p></li>
+<li><p><strong>Homepage URL</strong>: your Aveloxis web GUI URL (e.g., <code class="docutils literal notranslate"><span class="pre">http://localhost:8082</span></code>).</p></li>
+<li><p><strong>Authorization callback URL</strong>: <code class="docutils literal notranslate"><span class="pre">http://localhost:8082/auth/github/callback</span></code> (replace <code class="docutils literal notranslate"><span class="pre">http://localhost:8082</span></code> with your <code class="docutils literal notranslate"><span class="pre">web.base_url</span></code> if different).</p></li>
 </ul>
 </li>
 <li><p>Click <strong>Register application</strong>.</p></li>
@@ -161,7 +161,7 @@
 <li><p>Fill in the fields:</p>
 <ul class="simple">
 <li><p><strong>Name</strong>: anything you like (e.g., “Aveloxis”).</p></li>
-<li><p><strong>Redirect URI</strong>: <code class="docutils literal notranslate"><span class="pre">http://localhost:8080/auth/gitlab/callback</span></code> (replace <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code> with your <code class="docutils literal notranslate"><span class="pre">web.base_url</span></code> if different).</p></li>
+<li><p><strong>Redirect URI</strong>: <code class="docutils literal notranslate"><span class="pre">http://localhost:8082/auth/gitlab/callback</span></code> (replace <code class="docutils literal notranslate"><span class="pre">http://localhost:8082</span></code> with your <code class="docutils literal notranslate"><span class="pre">web.base_url</span></code> if different).</p></li>
 <li><p><strong>Scopes</strong>: check <code class="docutils literal notranslate"><span class="pre">read_user</span></code>.</p></li>
 </ul>
 </li>
@@ -176,8 +176,8 @@
 <p>All web GUI settings live under the <code class="docutils literal notranslate"><span class="pre">web</span></code> key in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">  </span><span class="nt">&quot;web&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;addr&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;:8080&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;http://localhost:8080&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;addr&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;:8082&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;http://localhost:8082&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;session_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;change-me-to-a-random-string&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;github_client_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Iv1.abc123...&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;github_client_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;deadbeef...&quot;</span><span class="p">,</span>
@@ -198,11 +198,11 @@
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.addr</span></code></p></td>
 <td><p>Listen address for the web server</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">&quot;:8080&quot;</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;:8082&quot;</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">web.base_url</span></code></p></td>
 <td><p>External URL used to construct OAuth callback URLs</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">&quot;http://localhost:8080&quot;</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;http://localhost:8082&quot;</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.session_secret</span></code></p></td>
 <td><p>Secret key for signing session cookies. Use a long random string.</p></td>
@@ -237,7 +237,7 @@
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>web
 </pre></div>
 </div>
-<p>The server starts on the address specified by <code class="docutils literal notranslate"><span class="pre">web.addr</span></code> (default <code class="docutils literal notranslate"><span class="pre">:8080</span></code>). Open <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code> in your browser.</p>
+<p>The server starts on the address specified by <code class="docutils literal notranslate"><span class="pre">web.addr</span></code> (default <code class="docutils literal notranslate"><span class="pre">:8082</span></code>). Open <code class="docutils literal notranslate"><span class="pre">http://localhost:8082</span></code> in your browser.</p>
 </section>
 <section id="login-flow">
 <h2>Login Flow<a class="headerlink" href="#login-flow" title="Link to this heading"></a></h2>

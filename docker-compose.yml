@@ -3,7 +3,7 @@
 # Starts 4 services:
 #   - postgres: PostgreSQL database with persistent volume
 #   - serve:    Collection scheduler + monitoring dashboard (:5555)
-#   - web:      Web GUI with OAuth, visualizations (:8080)
+#   - web:      Web GUI with OAuth, visualizations (:8082) (to avoid conflict with 8Knot on 8080)
 #   - api:      REST API for charts and stats (:8383)
 #
 # Usage:
@@ -68,7 +68,7 @@ services:
     volumes:
       - ./aveloxis.docker.json:/app/aveloxis.json:ro
     ports:
-      - "8080:8080"
+      - "8082:8082"
     depends_on:
       migrate:
         condition: service_completed_successfully

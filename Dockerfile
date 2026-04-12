@@ -1,8 +1,12 @@
 # Multi-stage build for Aveloxis.
 # Stage 1: Build the Go binary.
-FROM golang:1.25-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 RUN apk add --no-cache git
+
+# go.mod requires go 1.25+ but the latest Docker image is 1.24.
+# GOTOOLCHAIN=auto tells Go to download the required toolchain version.
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -22,7 +26,7 @@ COPY --from=builder /aveloxis /usr/local/bin/aveloxis
 WORKDIR /app
 VOLUME ["/app", "/data"]
 
-EXPOSE 5555 8080 8383
+EXPOSE 5555 8082 8383
 
 ENTRYPOINT ["aveloxis"]
 CMD ["serve", "--workers", "4", "--monitor", ":5555"]

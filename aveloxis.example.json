@@ -24,8 +24,8 @@
     "force_full": false
   },
   "web": {
-    "addr": ":8080",
-    "base_url": "http://localhost:8080",
+    "addr": ":8082",
+    "base_url": "http://localhost:8082",
     "session_secret": "change-me-to-a-random-string",
     "dev_mode": false,
     "github_client_id": "your-github-oauth-app-client-id",

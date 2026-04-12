@@ -67,11 +67,11 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
 
 ---
 
-## Two schemas
+## Three schemas
 
-Aveloxis uses two PostgreSQL schemas to separate collected data from operational state.
+Aveloxis uses three PostgreSQL schemas to separate collected data, operational state, and Augur compatibility.
 
-### `aveloxis_data` (84 tables + 19 materialized views)
+### `aveloxis_data` (84 tables + 22 materialized views)
 
 All collected open source community health data:
 
@@ -91,7 +91,7 @@ All collected open source community health data:
 | Analysis/ML | 8 | `message_analysis`, `message_analysis_summary`, `message_sentiment`, `message_sentiment_summary`, `discourse_insights`, `lstm_anomaly_models`, `lstm_anomaly_results`, `pull_request_analysis` |
 | CHAOSS | 4 | `chaoss_metric_status`, `chaoss_user`, `repo_group_insights`, `commit_comment_ref` |
 
-Plus 19 materialized views for 8Knot compatibility.
+Plus 22 materialized views for 8Knot compatibility.
 
 ### `aveloxis_ops` (24 tables)
 
@@ -106,6 +106,21 @@ Operational and orchestration tables:
 | Users | `users`, `user_sessions`, `user_repos` | User accounts and auth |
 | Config | `config` | Runtime configuration |
 | Workers | `worker_history`, `worker_job` | Worker run history |
+
+### `aveloxis_augur_data` (6 views)
+
+Augur compatibility layer for [8Knot](https://github.com/oss-aspen/8Knot) and other Augur-era analytics tools. Contains views that alias Aveloxis column names to Augur conventions. Only tables with column name differences need views here — tables with identical columns resolve via the `search_path` fallback to `aveloxis_data`.
+
+| View | Augur column aliases |
+|---|---|
+| `repo` | `repos` table (singular name) + `primary_language` → `repo_language` |
+| `repo_info` | `star_count` → `stars_count`, `watcher_count` → `watchers_count` |
+| `issues` | `issue_number` → `gh_issue_number`, `platform_issue_id` → `gh_issue_id`, `closed_by_id` → `cntrb_id` |
+| `pull_requests` | `pr_number` → `pr_src_number`, `author_id` → `pr_augur_contributor_id`, `created_at` → `pr_created_at`, `closed_at` → `pr_closed_at`, `merged_at` → `pr_merged_at` |
+| `releases` | `created_at` → `release_created_at`, `published_at` → `release_published_at`, `updated_at` → `release_updated_at` |
+| `message` | Alias for `messages` (Augur uses singular) |
+
+**Usage:** Set `AUGUR_SCHEMA=aveloxis_augur_data,aveloxis_data` (no space after comma) in 8Knot's `.env`. PostgreSQL checks `aveloxis_augur_data` first (finding the aliased views), then falls through to `aveloxis_data` for all other tables. For existing Augur databases, use `AUGUR_SCHEMA=augur_data` — the compatibility schema is not needed.
 
 ---
 
@@ -220,7 +235,7 @@ aveloxis/
       staging.go          # JSONB staging writer and processor
       migrate.go          # Schema migration
       schema.sql          # Full DDL (108 tables)
-      matviews.sql        # 19 materialized views
+      matviews.sql        # 22 materialized views
       contributors.go     # Contributor resolver with cache
       affiliations.go     # Email domain -> org resolver
       aggregates.go       # Facade aggregate refresh
@@ -256,7 +271,7 @@ Each job runs six phases. After the sequential API collection and processing pha
 | Org refresh | Configurable (default 4h) | Scans GitHub orgs and GitLab groups for new/renamed repos |
 | User org refresh | Same as org refresh | Scans user-requested org additions |
 | Contributor breadth | 6h | Discovers cross-repo activity via GitHub Events API |
-| Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 19 materialized views, resumes |
+| Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 22 materialized views, resumes |
 
 ### Graceful shutdown
 

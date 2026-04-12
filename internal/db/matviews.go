@@ -63,6 +63,9 @@ var matviewNames = []string{
 	"aveloxis_data.explorer_libyear_detail",
 	"aveloxis_data.issue_reporter_created_at",
 	"aveloxis_data.explorer_contributor_recent_actions",
+	"aveloxis_data.explorer_pr_files",
+	"aveloxis_data.explorer_cntrb_per_file",
+	"aveloxis_data.explorer_repo_files",
 }
 
 // RefreshMaterializedViews refreshes all materialized views concurrently.

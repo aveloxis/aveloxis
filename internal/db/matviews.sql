@@ -1155,6 +1155,83 @@ SELECT a.id AS cntrb_id,
 
 
 -- =============================================================================
+-- 20. explorer_pr_files — PR file paths for 8Knot file-level analysis
+-- =============================================================================
+DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_pr_files CASCADE;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_pr_files AS
+SELECT
+    COALESCE(prf.pr_file_path, '') AS file_path,
+    pr.pull_request_id AS pull_request_id,
+    pr.repo_id AS repo_id
+FROM
+    aveloxis_data.pull_requests pr
+INNER JOIN
+    aveloxis_data.pull_request_files prf
+ON
+    pr.pull_request_id = prf.pull_request_id;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_explorer_pr_files
+ON aveloxis_data.explorer_pr_files (file_path, pull_request_id, repo_id);
+
+-- =============================================================================
+-- 21. explorer_cntrb_per_file — contributors and reviewers per file path
+-- =============================================================================
+DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_cntrb_per_file CASCADE;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_cntrb_per_file AS
+SELECT
+    pr.repo_id AS repo_id,
+    COALESCE(prf.pr_file_path, '') AS file_path,
+    COALESCE(string_agg(DISTINCT CAST(pr.author_id AS varchar(36)), ','), '') AS cntrb_ids,
+    COALESCE(string_agg(DISTINCT CAST(prr.cntrb_id AS varchar(36)), ','), '') AS reviewer_ids
+FROM
+    aveloxis_data.pull_requests pr
+INNER JOIN
+    aveloxis_data.pull_request_files prf
+ON
+    pr.pull_request_id = prf.pull_request_id
+LEFT OUTER JOIN
+    aveloxis_data.pull_request_reviews prr
+ON
+    pr.pull_request_id = prr.pull_request_id
+GROUP BY prf.pr_file_path, pr.repo_id;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_explorer_cntrb_per_file
+ON aveloxis_data.explorer_cntrb_per_file (repo_id, file_path);
+
+-- =============================================================================
+-- 22. explorer_repo_files — latest SCC file listing per repo
+-- =============================================================================
+DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_repo_files CASCADE;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_repo_files AS
+SELECT
+    rl.repo_id AS id,
+    COALESCE(r.repo_name, '') AS repo_name,
+    COALESCE(r.repo_path, '') AS repo_path,
+    rl.rl_analysis_date,
+    COALESCE(rl.file_path, '') AS file_path,
+    COALESCE(rl.file_name, '') AS file_name
+FROM
+    aveloxis_data.repo_labor rl
+INNER JOIN
+    aveloxis_data.repos r
+ON
+    rl.repo_id = r.repo_id
+WHERE
+    (rl.repo_id, rl.rl_analysis_date) IN (
+        SELECT DISTINCT ON (repo_id)
+            repo_id, rl_analysis_date
+        FROM aveloxis_data.repo_labor
+        ORDER BY repo_id, rl_analysis_date DESC
+    );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_explorer_repo_files
+ON aveloxis_data.explorer_repo_files (id, file_path, file_name);
+
+
+-- =============================================================================
 -- Materialized View Refresh List
 -- =============================================================================
 -- Use this list in the refresh function. Order matters: simpler views first,
@@ -1179,4 +1256,7 @@ SELECT a.id AS cntrb_id,
 --  17. aveloxis_data.explorer_repo_languages
 --  18. aveloxis_data.issue_reporter_created_at
 --  19. aveloxis_data.explorer_contributor_recent_actions
+--  20. aveloxis_data.explorer_pr_files
+--  21. aveloxis_data.explorer_cntrb_per_file
+--  22. aveloxis_data.explorer_repo_files
 -- =============================================================================

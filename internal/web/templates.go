@@ -484,6 +484,10 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 <tbody id="scancode-files-body"><tr><td colspan="3" class="empty">Loading...</td></tr></tbody>
 </table>
 </div>
+<div id="copyright-section" style="margin-top:16px;display:none">
+<h4 style="font-size:14px;margin-bottom:4px">Copyright Holders</h4>
+<ul id="copyright-list" style="font-size:13px;color:#374151;padding-left:20px"></ul>
+</div>
 </div>
 </div>
 
@@ -604,6 +608,16 @@ fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-licenses')
       html += '<tr><td>' + name + '</td><td style="text-align:right">' + l.file_count + '</td><td style="text-align:center">' + osi + '</td></tr>';
     });
     table.innerHTML = html;
+
+    // Render copyright holders if present.
+    if (copyrights.length > 0) {
+      const section = document.getElementById('copyright-section');
+      section.style.display = 'block';
+      const list = document.getElementById('copyright-list');
+      list.innerHTML = copyrights.map(c =>
+        '<li>' + c.holder + ' <span style="color:#9ca3af">(' + c.file_count + ' file' + (c.file_count !== 1 ? 's' : '') + ')</span></li>'
+      ).join('');
+    }
 
   })
   .catch(() => {

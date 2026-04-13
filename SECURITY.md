@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.13.x  | Yes                |
+| 0.14.x  | Yes                |
+| 0.13.x  | No                 |
 | < 0.13  | No                 |
 
 We provide security fixes for the latest minor release only.

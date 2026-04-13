@@ -191,7 +191,7 @@ This starts 5 containers:
 | `postgres` | PostgreSQL 16 database | 5432 |
 | `migrate` | Runs schema migrations, then exits | — |
 | `serve` | Collection scheduler + monitoring dashboard | **5555** |
-| `web` | Web GUI (OAuth login, visualizations) | **** |
+| `web` | Web GUI (OAuth login, visualizations) | **8082** |
 | `api` | REST API (stats, charts, SBOMs) | **8383** |
 
 ### Step 3: Open the interfaces

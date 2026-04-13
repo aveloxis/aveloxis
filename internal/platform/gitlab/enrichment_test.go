@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/augurlabs/aveloxis/internal/model"
@@ -74,6 +76,33 @@ func TestEnrichContributorPopulatesAllFields(t *testing.T) {
 	}
 	if id.Email != "jane@example.com" {
 		t.Errorf("Identity.Email = %q, want %q", id.Email, "jane@example.com")
+	}
+
+	// Canonical should be set from the public email (not a noreply).
+	if c.Canonical != "jane@example.com" {
+		t.Errorf("Canonical = %q, want %q — EnrichContributor must set Canonical from Email", c.Canonical, "jane@example.com")
+	}
+}
+
+// TestEnrichContributorSourceSetsCanonical verifies the source code sets Canonical.
+func TestEnrichContributorSourceSetsCanonical(t *testing.T) {
+	src, err := os.ReadFile("client.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+
+	idx := strings.Index(code, "func (c *Client) EnrichContributor(")
+	if idx < 0 {
+		t.Fatal("cannot find EnrichContributor function")
+	}
+	fnBody := code[idx:]
+	if len(fnBody) > 1500 {
+		fnBody = fnBody[:1500]
+	}
+
+	if !strings.Contains(fnBody, "Canonical") {
+		t.Error("GitLab EnrichContributor must set the Canonical field on the returned Contributor")
 	}
 }
 

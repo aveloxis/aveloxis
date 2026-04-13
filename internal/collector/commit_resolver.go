@@ -507,6 +507,9 @@ func (r *CommitResolver) ResolveEmailsToCanonical(ctx context.Context) (int, err
 		path := fmt.Sprintf("/users/%s", c.Login)
 		resp, err := r.http.Get(ctx, path)
 		if err != nil {
+			// Mark as enriched even on failure to avoid retrying on
+			// deleted/suspended users every pass.
+			r.store.MarkContributorEnriched(ctx, c.Login)
 			continue
 		}
 
@@ -524,6 +527,10 @@ func (r *CommitResolver) ResolveEmailsToCanonical(ctx context.Context) (int, err
 				updated++
 			}
 		}
+
+		// Mark enrichment timestamp to prevent re-querying users with
+		// private emails (where canonical will always stay null).
+		r.store.MarkContributorEnriched(ctx, c.Login)
 
 		// Small delay to be respectful of rate limits on the Users API.
 		time.Sleep(100 * time.Millisecond)

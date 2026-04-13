@@ -6,6 +6,7 @@ augurlabs.code-workspace
 # These are stored at ~/aveloxis-repos/ by default, not in the project dir.
 # Only ignore them at the project root if someone overrides the clone dir.
 /repo_[0-9]*
+2026-*.txt
 *.log
 aveloxis.json
 bin/

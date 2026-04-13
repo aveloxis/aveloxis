@@ -254,15 +254,28 @@ type ContributorMissingCanonical struct {
 	Login string // gh_login
 }
 
+// CanonicalBatchSize limits how many contributors are processed per
+// ResolveEmailsToCanonical pass. Without this, every contributor with
+// gh_login but no canonical email is queried — unbounded API calls per pass,
+// many for users with private emails that will never return data.
+const CanonicalBatchSize = 500
+
 // GetContributorsMissingCanonical returns contributors that have gh_login
-// but no cntrb_canonical email.
+// but no cntrb_canonical email and haven't been recently enriched.
+// The cntrb_last_enriched_at filter skips contributors already processed by
+// EnrichThinContributors (which now sets canonical from email). Users with
+// private emails get their enrichment timestamp set, so they won't be
+// re-queried until the cooldown expires.
 func (s *PostgresStore) GetContributorsMissingCanonical(ctx context.Context) ([]ContributorMissingCanonical, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT cntrb_id::text, gh_login
 		FROM aveloxis_data.contributors
 		WHERE gh_login IS NOT NULL AND gh_login != ''
 		  AND (cntrb_canonical IS NULL OR length(cntrb_canonical) < 2)
-		ORDER BY gh_login`)
+		  AND (cntrb_last_enriched_at IS NULL
+		       OR cntrb_last_enriched_at < NOW() - INTERVAL '30 days')
+		ORDER BY gh_login
+		LIMIT $1`, CanonicalBatchSize)
 	if err != nil {
 		return nil, err
 	}
@@ -287,5 +300,17 @@ func (s *PostgresStore) SetContributorCanonical(ctx context.Context, cntrbID, em
 		WHERE cntrb_id = $1::uuid
 		  AND (cntrb_canonical IS NULL OR length(cntrb_canonical) < 2)`,
 		cntrbID, email)
+	return err
+}
+
+// MarkContributorEnriched sets cntrb_last_enriched_at to NOW() for the given
+// login, recording that enrichment was attempted. Called after both
+// EnrichThinContributors and ResolveEmailsToCanonical to prevent wasteful
+// re-querying of users with genuinely empty profiles or private emails.
+func (s *PostgresStore) MarkContributorEnriched(ctx context.Context, login string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.contributors
+		SET cntrb_last_enriched_at = NOW()
+		WHERE cntrb_login = $1`, login)
 	return err
 }

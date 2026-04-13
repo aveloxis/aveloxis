@@ -52,6 +52,10 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_sbom_scans", "sbom_version", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_sbom_scans", "created_at", "TIMESTAMPTZ DEFAULT NOW()")
 
+	// Contributors: enrichment tracking column (added in v0.14.4).
+	// Prevents infinite re-enrichment of users with genuinely empty profiles.
+	addColumnIfMissing(ctx, pg, "aveloxis_data.contributors", "cntrb_last_enriched_at", "TIMESTAMPTZ")
+
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection
 	// created duplicate rows. Clean up first, then create the unique index.

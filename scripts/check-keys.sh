@@ -5,6 +5,11 @@
 # database connection info from aveloxis.json. Falls back to JSON
 # api_keys arrays if the database is unreachable.
 #
+# For GitHub keys, shows three rate-limit buckets per key:
+#   core     — REST API (5,000/hr per token)
+#   graphql  — GraphQL API (5,000/hr, requires GraphQL-capable token)
+#   search   — Search API (30/min)
+#
 # Usage:
 #   ./scripts/check-keys.sh                       # reads ./aveloxis.json
 #   ./scripts/check-keys.sh aveloxis.docker.json   # reads a specific file
@@ -36,6 +41,14 @@ mask() {
   fi
 }
 
+# Format a unix timestamp to local time.
+fmt_ts() {
+  local ts="$1"
+  date -r "$ts" "+%H:%M:%S" 2>/dev/null \
+    || date -d "@$ts" "+%H:%M:%S" 2>/dev/null \
+    || echo "$ts"
+}
+
 # ── Build DB connection string from config ───────────────────
 
 DB_HOST=$(jq -r '.database.host // "localhost"' "$CONFIG")
@@ -43,13 +56,11 @@ DB_PORT=$(jq -r '.database.port // 5432' "$CONFIG")
 DB_USER=$(jq -r '.database.user // "aveloxis"' "$CONFIG")
 DB_PASS=$(jq -r '.database.password // ""' "$CONFIG")
 DB_NAME=$(jq -r '.database.dbname // "aveloxis"' "$CONFIG")
-DB_SSL=$(jq -r '.database.sslmode // "prefer"' "$CONFIG")
 
 GITHUB_BASE=$(jq -r '.github.base_url // "https://api.github.com"' "$CONFIG")
 GITLAB_BASE=$(jq -r '.gitlab.base_url // "https://gitlab.com/api/v4"' "$CONFIG")
 
 export PGPASSWORD="$DB_PASS"
-PSQL_OPTS="-h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -t -A -F '|'"
 
 # ── Load keys from database ─────────────────────────────────
 
@@ -95,20 +106,23 @@ fi
 
 GH_COUNT=${#GH_DB_KEYS[@]}
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  GitHub Keys ($GH_COUNT)  —  $GITHUB_BASE  [source: $GH_SOURCE]"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [[ "$GH_COUNT" -eq 0 ]]; then
   echo "  (none configured)"
 else
-  printf "  %-4s  %-24s  %6s / %-6s  %-20s  %s\n" "#" "Key" "Left" "Limit" "Resets At" "Status"
-  printf "  %-4s  %-24s  %6s   %-6s  %-20s  %s\n" "----" "------------------------" "------" "------" "--------------------" "------"
+  # Header: key info + three rate-limit buckets.
+  printf "  %-4s  %-18s  │ %13s  %-8s │ %13s  %-8s │ %11s  %-8s │ %s\n" \
+    "#" "Key" "Core" "Reset" "GraphQL" "Reset" "Search" "Reset" "Status"
+  printf "  %-4s  %-18s  │ %13s  %-8s │ %13s  %-8s │ %11s  %-8s │ %s\n" \
+    "----" "------------------" "-------------" "--------" "-------------" "--------" "-----------" "--------" "------"
 
-  GH_TOTAL_REMAINING=0
-  GH_TOTAL_LIMIT=0
-  GH_VALID=0
-  GH_INVALID=0
+  GH_CORE_REM=0; GH_CORE_LIM=0
+  GH_GQL_REM=0;  GH_GQL_LIM=0
+  GH_SRCH_REM=0; GH_SRCH_LIM=0
+  GH_VALID=0; GH_INVALID=0
 
   for IDX in "${!GH_DB_KEYS[@]}"; do
     KEY="${GH_DB_KEYS[$IDX]}"
@@ -123,36 +137,64 @@ else
     BODY=$(echo "$RESP" | sed '$d')
 
     if [[ "$HTTP_CODE" == "200" ]]; then
-      REMAINING=$(echo "$BODY" | jq -r '.resources.core.remaining')
-      LIMIT=$(echo "$BODY" | jq -r '.resources.core.limit')
-      RESET_TS=$(echo "$BODY" | jq -r '.resources.core.reset')
-      RESET_TIME=$(date -r "$RESET_TS" "+%Y-%m-%d %H:%M:%S" 2>/dev/null \
-        || date -d "@$RESET_TS" "+%Y-%m-%d %H:%M:%S" 2>/dev/null \
-        || echo "$RESET_TS")
+      # Core (REST API).
+      C_REM=$(echo "$BODY" | jq -r '.resources.core.remaining')
+      C_LIM=$(echo "$BODY" | jq -r '.resources.core.limit')
+      C_RST=$(echo "$BODY" | jq -r '.resources.core.reset')
+      C_TIME=$(fmt_ts "$C_RST")
 
-      GH_TOTAL_REMAINING=$((GH_TOTAL_REMAINING + REMAINING))
-      GH_TOTAL_LIMIT=$((GH_TOTAL_LIMIT + LIMIT))
+      # GraphQL.
+      G_REM=$(echo "$BODY" | jq -r '.resources.graphql.remaining')
+      G_LIM=$(echo "$BODY" | jq -r '.resources.graphql.limit')
+      G_RST=$(echo "$BODY" | jq -r '.resources.graphql.reset')
+      G_TIME=$(fmt_ts "$G_RST")
+
+      # Search.
+      S_REM=$(echo "$BODY" | jq -r '.resources.search.remaining')
+      S_LIM=$(echo "$BODY" | jq -r '.resources.search.limit')
+      S_RST=$(echo "$BODY" | jq -r '.resources.search.reset')
+      S_TIME=$(fmt_ts "$S_RST")
+
+      GH_CORE_REM=$((GH_CORE_REM + C_REM))
+      GH_CORE_LIM=$((GH_CORE_LIM + C_LIM))
+      GH_GQL_REM=$((GH_GQL_REM + G_REM))
+      GH_GQL_LIM=$((GH_GQL_LIM + G_LIM))
+      GH_SRCH_REM=$((GH_SRCH_REM + S_REM))
+      GH_SRCH_LIM=$((GH_SRCH_LIM + S_LIM))
       GH_VALID=$((GH_VALID + 1))
 
-      if (( REMAINING == 0 )); then
+      # Status based on worst bucket.
+      if (( C_REM == 0 || G_REM == 0 )); then
         STATUS="EXHAUSTED"
-      elif (( REMAINING < 100 )); then
+      elif (( C_REM < 100 || G_REM < 100 )); then
         STATUS="LOW"
       else
         STATUS="ok"
       fi
 
-      printf "  %-4d  %-24s  %6s / %-6s  %-20s  %s\n" "$NUM" "$MASKED" "$REMAINING" "$LIMIT" "$RESET_TIME" "$STATUS"
+      printf "  %-4d  %-18s  │ %5d / %-5d  %-8s │ %5d / %-5d  %-8s │ %3d / %-3d  %-8s │ %s\n" \
+        "$NUM" "$MASKED" \
+        "$C_REM" "$C_LIM" "$C_TIME" \
+        "$G_REM" "$G_LIM" "$G_TIME" \
+        "$S_REM" "$S_LIM" "$S_TIME" \
+        "$STATUS"
     elif [[ "$HTTP_CODE" == "401" ]]; then
       GH_INVALID=$((GH_INVALID + 1))
-      printf "  %-4d  %-24s  %6s   %-6s  %-20s  %s\n" "$NUM" "$MASKED" "--" "--" "--" "INVALID (401)"
+      printf "  %-4d  %-18s  │ %13s  %-8s │ %13s  %-8s │ %11s  %-8s │ %s\n" \
+        "$NUM" "$MASKED" "--" "--" "--" "--" "--" "--" "INVALID"
     else
-      printf "  %-4d  %-24s  %6s   %-6s  %-20s  %s\n" "$NUM" "$MASKED" "--" "--" "--" "ERROR ($HTTP_CODE)"
+      printf "  %-4d  %-18s  │ %13s  %-8s │ %13s  %-8s │ %11s  %-8s │ %s\n" \
+        "$NUM" "$MASKED" "--" "--" "--" "--" "--" "--" "ERR $HTTP_CODE"
     fi
   done
 
   echo ""
-  echo "  Summary: $GH_VALID valid, $GH_INVALID invalid.  Total remaining: $GH_TOTAL_REMAINING / $GH_TOTAL_LIMIT"
+  printf "  %-24s  │ %5d / %-5d           │ %5d / %-5d           │ %3d / %-3d           │\n" \
+    "  Totals" \
+    "$GH_CORE_REM" "$GH_CORE_LIM" \
+    "$GH_GQL_REM" "$GH_GQL_LIM" \
+    "$GH_SRCH_REM" "$GH_SRCH_LIM"
+  echo "  $GH_VALID valid, $GH_INVALID invalid"
 fi
 
 echo ""

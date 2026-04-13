@@ -1220,14 +1220,15 @@ aveloxis/
         types.go          # GitLab API response types
     scheduler/
       scheduler.go        # Queue polling, job dispatch, heartbeat, stale lock recovery, gap fill
-  queries/                # SQL analytical queries (rewritten from Augur to Aveloxis schema)
+    aveloxis-story/
+      augur_data.sql          # Reference: Augur's augur_data schema (for comparison)
+      augur_operations.sql    # Reference: Augur's augur_operations schema (for comparison)
+      [pdf|pptx|png|html] # Various artifacts describing the road to Aveloxis
   Dockerfile              # Multi-stage Docker build
   docker-compose.yml      # Docker Compose with PostgreSQL
   .readthedocs.yaml       # ReadTheDocs build configuration
   go.mod                  # Go module definition
   go.sum                  # Go dependency checksums
-  augur_data.sql          # Reference: Augur's augur_data schema (for comparison)
-  augur_operations.sql    # Reference: Augur's augur_operations schema (for comparison)
   aveloxis.example.json   # Example configuration file
   aveloxis.docker.json    # Docker-specific configuration (uses docker service names)
   install-scorecard.sh    # Manual scorecard binary installation script

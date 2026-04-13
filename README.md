@@ -10,6 +10,8 @@
 
 #### [Documentation can be found on readthedocs.io at aveloxis.readthedocs.io/en/latest](https://aveloxis.readthedocs.io/en/latest/) 
 
+[Read about the way Claude Code was used to create Aveloxis](https://seanpgoggins.substack.com/p/artificial-intelligence-can-erase)
+
 <img width="1200" height="300" alt="aveloxis-banner-1200x300" src="https://github.com/user-attachments/assets/c3276b26-357d-404c-b6d9-d47a4778ca63" />
 
 Copyright © 2026 University of Missouri, Sean Goggins, and Derek Howard. This software is possible through the support of [The Sloan Foundation](sloan.org). Learn more in the [Detailed LCF](#detailed-lcf). $\color{red}{\text{Augur user?}}$ [Compare with Augur](#comparison-with-augur)

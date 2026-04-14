@@ -207,6 +207,30 @@ The `migrate` command includes a data cleanup pass that detects and nullifies ga
 
 ---
 
+## Schema version mismatch warning
+
+**Symptom:** `aveloxis web` or `aveloxis api` logs a warning at startup:
+
+```
+WARN schema version mismatch: database schema is behind the binary
+     db_schema_version=0.14.4 binary_version=0.14.5
+     action="run 'aveloxis migrate' or restart 'aveloxis serve'"
+```
+
+**Cause:** The binary was updated but the database schema hasn't been migrated yet. This happens when you update the `aveloxis` binary and restart `web` or `api` without restarting `serve` (which auto-migrates) or running `migrate`.
+
+**Solution:**
+
+Run migrations explicitly, or restart the serve process:
+
+```bash
+aveloxis migrate          # explicit migration
+# or
+aveloxis stop serve && aveloxis start serve   # serve auto-migrates on startup
+```
+
+---
+
 ## Null byte errors in text fields
 
 **Symptom:** PostgreSQL error `invalid byte sequence for encoding "UTF8": 0x00`.

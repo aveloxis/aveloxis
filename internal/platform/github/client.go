@@ -682,12 +682,21 @@ func (c *Client) EnrichContributor(ctx context.Context, login string) (*model.Co
 	if raw.CreatedAt != "" {
 		createdAt, _ = time.Parse(time.RFC3339, raw.CreatedAt)
 	}
+	// Set canonical email from the public email if it's a real address
+	// (not a GitHub noreply). This eliminates the need for a separate
+	// ResolveEmailsToCanonical pass to call GET /users/{login} again.
+	var canonical string
+	if raw.Email != "" && !strings.Contains(strings.ToLower(raw.Email), "noreply") {
+		canonical = raw.Email
+	}
+
 	return &model.Contributor{
 		Login:     raw.Login,
 		Email:     raw.Email,
 		FullName:  raw.Name,
 		Company:   raw.Company,
 		Location:  raw.Location,
+		Canonical: canonical,
 		CreatedAt: createdAt,
 		Identities: []model.ContributorIdentity{{
 			Platform:          model.PlatformGitHub,

@@ -115,16 +115,27 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 	return cntrbID, nil
 }
 
+// EnrichmentCooldown is the minimum interval between enrichment attempts for
+// the same contributor. Users with genuinely empty GitHub profiles (no company,
+// no location) would otherwise be re-enriched on every collection pass, wasting
+// API tokens. 30 days balances freshness with token efficiency.
+const EnrichmentCooldown = "30 days"
+
 // GetThinContributorLogins returns logins of contributors that lack enrichment
-// data (empty company). These are contributors discovered via issue/PR/message
-// UserRefs but never enriched with full profile data from GET /users/{login}.
-// Limited to avoid excessive API calls — enrichment runs incrementally.
+// data (empty company AND location) and haven't been enriched recently.
+// Contributors discovered via issue/PR/message UserRefs start with only basic
+// data; this query finds those needing full profile data from GET /users/{login}.
+// The cntrb_last_enriched_at filter prevents re-enriching users with genuinely
+// empty GitHub profiles on every pass — they are retried after 30 days in case
+// the user updates their profile.
 func (r *ContributorResolver) GetThinContributorLogins(ctx context.Context, limit int) ([]string, error) {
 	rows, err := r.store.pool.Query(ctx, `
 		SELECT cntrb_login FROM aveloxis_data.contributors
 		WHERE cntrb_login != ''
 			AND (cntrb_company = '' OR cntrb_company IS NULL)
 			AND (cntrb_location = '' OR cntrb_location IS NULL)
+			AND (cntrb_last_enriched_at IS NULL
+			     OR cntrb_last_enriched_at < NOW() - INTERVAL '`+EnrichmentCooldown+`')
 		ORDER BY data_collection_date DESC NULLS LAST
 		LIMIT $1`, limit)
 	if err != nil {
@@ -140,6 +151,13 @@ func (r *ContributorResolver) GetThinContributorLogins(ctx context.Context, limi
 		}
 	}
 	return logins, rows.Err()
+}
+
+// MarkContributorEnriched sets cntrb_last_enriched_at to NOW() for the given
+// login, recording that enrichment was attempted. This prevents wasteful
+// re-enrichment of users with genuinely empty GitHub/GitLab profiles.
+func (r *ContributorResolver) MarkContributorEnriched(ctx context.Context, login string) error {
+	return r.store.MarkContributorEnriched(ctx, login)
 }
 
 // ResolveIfKnown performs a cache-only lookup and returns the cntrb_id if

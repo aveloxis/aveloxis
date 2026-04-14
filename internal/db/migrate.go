@@ -52,6 +52,10 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_sbom_scans", "sbom_version", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_sbom_scans", "created_at", "TIMESTAMPTZ DEFAULT NOW()")
 
+	// Contributors: enrichment tracking column (added in v0.14.4).
+	// Prevents infinite re-enrichment of users with genuinely empty profiles.
+	addColumnIfMissing(ctx, pg, "aveloxis_data.contributors", "cntrb_last_enriched_at", "TIMESTAMPTZ")
+
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection
 	// created duplicate rows. Clean up first, then create the unique index.
@@ -87,8 +91,56 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		}
 	}
 
-	logger.Info("schema migrations complete")
+	// Stamp schema version so non-migrating commands (web, api) can detect
+	// when the schema is behind the binary and warn the operator.
+	stampSchemaVersion(ctx, pg, logger)
+
+	logger.Info("schema migrations complete", "schema_version", ToolVersion)
 	return nil
+}
+
+// stampSchemaVersion writes the current ToolVersion into schema_meta.
+// Called at the end of RunMigrations so the version reflects the latest
+// successful migration, not just a binary update.
+func stampSchemaVersion(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+	_, err := pg.pool.Exec(ctx, `
+		UPDATE aveloxis_ops.schema_meta
+		SET schema_version = $1, migrated_at = NOW()
+		WHERE id = TRUE`, ToolVersion)
+	if err != nil {
+		logger.Warn("failed to stamp schema version", "error", err)
+	}
+}
+
+// GetSchemaVersion reads the schema version from the database. Returns an
+// empty string if the schema_meta table doesn't exist yet (pre-v0.14.5 DB).
+func (s *PostgresStore) GetSchemaVersion(ctx context.Context) string {
+	var version string
+	err := s.pool.QueryRow(ctx,
+		`SELECT schema_version FROM aveloxis_ops.schema_meta WHERE id = TRUE`,
+	).Scan(&version)
+	if err != nil {
+		return ""
+	}
+	return version
+}
+
+// CheckSchemaVersion compares the database schema version against the running
+// binary's ToolVersion and logs a warning if they don't match. Intended for
+// non-migrating commands (web, api) so operators get a clear signal to run
+// `aveloxis migrate` or restart `aveloxis serve`.
+func (s *PostgresStore) CheckSchemaVersion(ctx context.Context, logger *slog.Logger) {
+	dbVersion := s.GetSchemaVersion(ctx)
+	if dbVersion == "" {
+		logger.Warn("schema version unknown — run 'aveloxis migrate' or restart 'aveloxis serve' to initialize schema tracking")
+		return
+	}
+	if dbVersion != ToolVersion {
+		logger.Warn("schema version mismatch: database schema is behind the binary",
+			"db_schema_version", dbVersion,
+			"binary_version", ToolVersion,
+			"action", "run 'aveloxis migrate' or restart 'aveloxis serve'")
+	}
 }
 
 // setToolVersionDefaults updates the DEFAULT for every tool_version column to

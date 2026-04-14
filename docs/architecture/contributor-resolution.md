@@ -169,13 +169,13 @@ This keeps contributor records current without creating duplicate entries.
 
 ## Canonical email enrichment
 
-After commit resolution, some contributors have `gh_login` but no `cntrb_canonical` email. Phase 5 calls the GitHub Users API:
+Canonical emails are set through two paths:
 
-```
-GET /users/{login}
-```
+1. **Primary (v0.14.4+)**: `EnrichThinContributors` calls `GET /users/{login}` and sets `cntrb_canonical` directly from the public email (filtering noreply addresses). This is the main source of canonical emails.
 
-The profile response includes the user's public email, which is set as `cntrb_canonical`.
+2. **Fallback**: `ResolveEmailsToCanonical` runs after commit resolution for contributors that have `gh_login` but were not yet enriched. Limited to 500 per pass (`CanonicalBatchSize`).
+
+Both paths mark contributors via `cntrb_last_enriched_at` to prevent re-querying users with private emails (where the canonical will always be null). Contributors are retried after 30 days.
 
 ---
 

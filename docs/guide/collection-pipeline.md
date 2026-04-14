@@ -185,9 +185,11 @@ After facade completes, git commit author emails are resolved to GitHub user acc
 
 ---
 
-## Phase 5: Canonical email enrichment
+## Phase 5: Contributor enrichment and canonical emails
 
-For contributors that have `gh_login` but no `cntrb_canonical`, calls `GET /users/{login}` to retrieve their profile email and sets `cntrb_canonical`.
+After staged collection, `EnrichThinContributors` calls `GET /users/{login}` for contributors with missing profile data (empty company and location). This populates company, location, email, name, created_at, and sets `cntrb_canonical` from the public email (filtering noreply addresses).
+
+**Token efficiency (v0.14.4+)**: Contributors are tracked via `cntrb_last_enriched_at` to prevent re-enriching users with genuinely empty GitHub profiles on every collection pass. They are retried after 30 days. A separate `ResolveEmailsToCanonical` pass handles the remaining contributors discovered during commit resolution, limited to 500 per pass.
 
 ---
 

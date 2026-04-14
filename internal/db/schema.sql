@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributors (
     gl_full_name   TEXT DEFAULT '',
     gl_id          BIGINT,
     cntrb_created_at TIMESTAMPTZ,
+    cntrb_last_enriched_at TIMESTAMPTZ,
     tool_source    TEXT DEFAULT 'aveloxis',
     tool_version   TEXT DEFAULT '',
     data_source    TEXT DEFAULT '',
@@ -1555,6 +1556,20 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.working_commits (
 -- AVELOXIS_OPS SCHEMA (operational / orchestration tables)
 -- ============================================================
 -- ============================================================
+
+-- ============================================================
+-- Schema version tracking: single-row table stamped by Migrate().
+-- Non-migrating commands (web, api) check this on startup and
+-- warn if the schema is behind the binary version.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS aveloxis_ops.schema_meta (
+    id                 BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id), -- ensures single row
+    schema_version     TEXT NOT NULL DEFAULT '',
+    migrated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Seed the single row if it doesn't exist yet.
+INSERT INTO aveloxis_ops.schema_meta (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
 
 -- ============================================================
 -- Staging store: raw API responses land here before processing.

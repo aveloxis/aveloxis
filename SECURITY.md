@@ -56,6 +56,16 @@ Please include:
 - **Text sanitization:** All text ingested from APIs is sanitized before database insertion: null bytes, invalid UTF-8, and control characters are removed.
 - **SQL injection:** All database queries use parameterized statements via pgx. No string interpolation is used in SQL.
 - **URL validation:** The web GUI validates all user-submitted URLs before adding repos to the queue.
+- **HTML escaping:** The monitor dashboard HTML-escapes all user-controlled values (repo owner/name, error messages, worker hostnames) via `template.HTMLEscapeString` to prevent stored XSS.
+- **Symlink protection:** The dependency and libyear analysis walkers reject symlinks (`os.ModeSymlink`) to prevent a malicious repository from reading host files via symlinked manifest names.
+- **npm argument injection:** The npm registry resolver rejects package names starting with `-` and uses `--` as an argument separator to prevent flag injection from malicious `package.json` keys.
+
+### Network Security
+
+- **Loopback defaults:** The monitor dashboard (`:5555`) and REST API (`:8383`) default to binding on `127.0.0.1` (loopback only). To expose them to the network, explicitly pass `--monitor 0.0.0.0:5555` or `--addr 0.0.0.0:8383`.
+- **CORS:** The REST API restricts `Access-Control-Allow-Origin` to localhost origins. Deploy behind a reverse proxy if cross-origin access from non-localhost origins is needed.
+- **SSRF (Server-Side Request Forgery):** Aveloxis accepts arbitrary repository URLs by design (including generic git hosts). The collector issues `HEAD` requests and `git clone` to user-supplied URLs. To mitigate SSRF risk, deploy the collector in a network segment without access to cloud metadata endpoints (e.g., `169.254.169.254`) or other sensitive internal services. If your deployment requires host restrictions, configure network-level firewall rules on the collector host.
+- **Session safety:** The web GUI's in-memory session map is protected by a `sync.RWMutex` to prevent concurrent-access crashes.
 
 ### Database
 

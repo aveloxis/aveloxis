@@ -155,7 +155,9 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	// Allow cross-origin for the web GUI (different port).
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Allow cross-origin only from localhost origins (web GUI on different port).
+	// Wildcard "*" was removed because it exposes data to any website the operator visits.
+	setCORSIfLocalhost(r, w)
 	json.NewEncoder(w).Encode(ts)
 }
 
@@ -171,7 +173,9 @@ func (s *Server) handleRepoSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Allow cross-origin only from localhost origins (web GUI on different port).
+	// Wildcard "*" was removed because it exposes data to any website the operator visits.
+	setCORSIfLocalhost(r, w)
 	json.NewEncoder(w).Encode(repos)
 }
 
@@ -187,7 +191,9 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Allow cross-origin only from localhost origins (web GUI on different port).
+	// Wildcard "*" was removed because it exposes data to any website the operator visits.
+	setCORSIfLocalhost(r, w)
 	json.NewEncoder(w).Encode(licenses)
 }
 
@@ -218,7 +224,9 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Allow cross-origin only from localhost origins (web GUI on different port).
+	// Wildcard "*" was removed because it exposes data to any website the operator visits.
+	setCORSIfLocalhost(r, w)
 	json.NewEncoder(w).Encode(resp)
 }
 
@@ -238,6 +246,26 @@ func (s *Server) handleScancodeFiles(w http.ResponseWriter, r *http.Request) {
 		files = []db.ScancodeFileEntry{}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Allow cross-origin only from localhost origins (web GUI on different port).
+	// Wildcard "*" was removed because it exposes data to any website the operator visits.
+	setCORSIfLocalhost(r, w)
 	json.NewEncoder(w).Encode(files)
+}
+
+// setCORSIfLocalhost allows cross-origin requests only from localhost/127.0.0.1
+// origins. The web GUI runs on a different port than the API, so same-host
+// cross-origin is needed. Wildcard "*" was removed because it exposes all
+// collected data to any website the operator visits via fetch().
+func setCORSIfLocalhost(r *http.Request, w http.ResponseWriter) {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return
+	}
+	// Allow localhost and 127.0.0.1 on any port.
+	if strings.HasPrefix(origin, "http://localhost") ||
+		strings.HasPrefix(origin, "http://127.0.0.1") ||
+		strings.HasPrefix(origin, "https://localhost") ||
+		strings.HasPrefix(origin, "https://127.0.0.1") {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+	}
 }

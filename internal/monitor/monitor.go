@@ -6,6 +6,7 @@ package monitor
 import (
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -292,16 +293,21 @@ function sortTable(col) {
 
 		worker := ""
 		if j.LockedBy != nil {
-			worker = fmt.Sprintf(` <span class="mono">%s</span>`, *j.LockedBy)
+			worker = fmt.Sprintf(` <span class="mono">%s</span>`, template.HTMLEscapeString(*j.LockedBy))
 		}
 
 		errInfo := ""
 		if j.LastError != nil && *j.LastError != "" {
-			errInfo = fmt.Sprintf(` <span class="error" title="%s">err</span>`, *j.LastError)
+			errInfo = fmt.Sprintf(` <span class="error" title="%s">err</span>`, template.HTMLEscapeString(*j.LastError))
 		}
 
+		// HTML-escape user-controlled values to prevent stored XSS.
+		// repo_owner/repo_name come from user-submitted URLs via the web GUI.
+		escOwner := template.HTMLEscapeString(j.Owner)
+		escRepo := template.HTMLEscapeString(j.Repo)
+
 		fmt.Fprintf(w, `<tr%s><td>%d</td><td>%s/%s</td><td>%s</td><td class="%s">%s%s%s</td><td>%d</td><td>%s</td><td>%s</td>`,
-			rowClass, i+1, j.Owner, j.Repo, j.Plat,
+			rowClass, i+1, escOwner, escRepo, j.Plat,
 			statusClass, j.Status, worker, errInfo,
 			j.Priority, due, lastRun)
 

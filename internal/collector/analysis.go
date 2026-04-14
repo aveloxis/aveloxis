@@ -186,6 +186,12 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 		if err != nil {
 			return nil // skip unreadable files
 		}
+		// Reject symlinks to prevent traversal attacks. A malicious repo can
+		// symlink requirements.txt -> /etc/passwd and have host file contents
+		// stored as dependency names or sent to package registries.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 		if info.IsDir() {
 			base := filepath.Base(path)
 			// Skip vendor/node_modules/.git directories.
@@ -319,8 +325,23 @@ func parseRequirementsTxt(content string) []string {
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
 			continue
 		}
-		// Strip version specifiers.
-		for _, sep := range []string{"==", ">=", "<=", "!=", "~=", ">"} {
+		// Strip inline comments: "flask==2.0 # pinned"
+		if idx := strings.Index(line, " #"); idx > 0 {
+			line = line[:idx]
+		}
+		// Strip environment markers: "flask>=2.0; python_version>='3.8'"
+		if idx := strings.Index(line, ";"); idx > 0 {
+			line = line[:idx]
+		}
+		// Strip extras: "requests[security]>=2.0" -> "requests>=2.0"
+		if idx := strings.Index(line, "["); idx > 0 {
+			rest := line[idx:]
+			if end := strings.Index(rest, "]"); end > 0 {
+				line = line[:idx] + rest[end+1:]
+			}
+		}
+		// Strip version specifiers. Include "<" for bare less-than constraints.
+		for _, sep := range []string{"===", "==", ">=", "<=", "!=", "~=", ">", "<"} {
 			if idx := strings.Index(line, sep); idx > 0 {
 				line = line[:idx]
 				break
@@ -1008,7 +1029,14 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	var allDeps []libyearDep
 
 	filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
+			return nil
+		}
+		// Reject symlinks to prevent traversal attacks (see scanDependencies).
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.IsDir() {
 			base := filepath.Base(path)
 			if base == "vendor" || base == "node_modules" || base == ".git" {
 				return filepath.SkipDir
@@ -1179,8 +1207,10 @@ func parsePackageJSONVersions(path string) ([]libyearDep, error) {
 		return nil, err
 	}
 	var pkg struct {
-		Dependencies    map[string]string `json:"dependencies"`
-		DevDependencies map[string]string `json:"devDependencies"`
+		Dependencies         map[string]string `json:"dependencies"`
+		DevDependencies      map[string]string `json:"devDependencies"`
+		PeerDependencies     map[string]string `json:"peerDependencies"`
+		OptionalDependencies map[string]string `json:"optionalDependencies"`
 	}
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		return nil, err
@@ -1191,6 +1221,12 @@ func parsePackageJSONVersions(path string) ([]libyearDep, error) {
 	}
 	for name, version := range pkg.DevDependencies {
 		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: "dev", Manager: "npm"})
+	}
+	for name, version := range pkg.PeerDependencies {
+		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: "runtime", Manager: "npm"})
+	}
+	for name, version := range pkg.OptionalDependencies {
+		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: "runtime", Manager: "npm"})
 	}
 	return deps, nil
 }
@@ -1223,18 +1259,36 @@ func parseRequirementsTxtVersions(path string) []libyearDep {
 }
 
 // cleanVersion strips version specifier prefixes (^, ~, >=, ==, etc.)
+// and extracts the first version from compound ranges (>=1.0,<2.0).
 func cleanVersion(v string) string {
 	v = strings.TrimSpace(v)
-	// Longest prefixes first to avoid partial matches (e.g., "==" before "=").
+
+	// For compound ranges (>=1.0,<2.0 or ^1 || ^2), take only the first segment.
+	if idx := strings.IndexAny(v, ",|"); idx > 0 {
+		v = v[:idx]
+		v = strings.TrimSpace(v)
+	}
+
+	// Strip operator prefixes. Order matters: longest first.
 	for _, prefix := range []string{"^", "~=", "~", ">=", "<=", "==", "!=", ">", "<", "="} {
 		v = strings.TrimPrefix(v, prefix)
 	}
-	return v
+
+	// Trim any whitespace left after operator removal (e.g., "~> 1.2" -> " 1.2").
+	return strings.TrimSpace(v)
 }
 
 // resolveNPMLibyear checks the npm registry for the latest version.
 func resolveNPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	cmd := exec.CommandContext(ctx, "npm", "view", dep.Name, "version", "time", "license", "--json")
+	// Reject dep names starting with "-" to prevent argument injection.
+	// A malicious package.json key like "--registry=http://evil" would
+	// become an npm flag without this check.
+	if strings.HasPrefix(dep.Name, "-") {
+		return nil, fmt.Errorf("rejecting npm dep name starting with dash: %q", dep.Name)
+	}
+	// "--" separates npm flags from the package spec, preventing any
+	// remaining argument injection vectors.
+	cmd := exec.CommandContext(ctx, "npm", "view", "--", dep.Name, "version", "time", "license", "--json")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -1329,6 +1383,7 @@ func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, er
 // correctly handles PEP 621 array format, not just Poetry key=value format.)
 
 // parseGoModVersions extracts deps with versions from go.mod.
+// Handles both block form "require (" and single-line "require module version".
 func parseGoModVersions(path string) []libyearDep {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1338,6 +1393,19 @@ func parseGoModVersions(path string) []libyearDep {
 	inRequire := false
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
+
+		// Handle single-line require: "require github.com/foo/bar v1.2.3"
+		if strings.HasPrefix(line, "require ") && !strings.Contains(line, "(") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				// Keep the v prefix — purl spec for golang keeps it, and
+				// OSV.dev matches on versions with v. Stripping it broke
+				// all Go vulnerability scanning.
+				deps = append(deps, libyearDep{Name: parts[1], Version: parts[2], Requirement: line, Type: "runtime", Manager: "go"})
+			}
+			continue
+		}
+
 		if line == "require (" {
 			inRequire = true
 			continue
@@ -1349,7 +1417,8 @@ func parseGoModVersions(path string) []libyearDep {
 		if inRequire && line != "" && !strings.HasPrefix(line, "//") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
-				version := strings.TrimPrefix(parts[1], "v")
+				// Keep the v prefix for purl and OSV compatibility.
+				version := parts[1]
 				deps = append(deps, libyearDep{Name: parts[0], Version: version, Requirement: line, Type: "runtime", Manager: "go"})
 			}
 		}
@@ -1368,7 +1437,7 @@ func parseCargoVersions(path string) []libyearDep {
 	inDeps := false
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "[dependencies]" || trimmed == "[dev-dependencies]" {
+		if trimmed == "[dependencies]" || trimmed == "[dev-dependencies]" || trimmed == "[build-dependencies]" {
 			inDeps = true
 			continue
 		}
@@ -2212,18 +2281,21 @@ func parseNuGetPackagesConfigVersions(content string) []libyearDep {
 	var deps []libyearDep
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "<package ") {
+		if !strings.HasPrefix(line, "<package ") && !strings.HasPrefix(line, "<Package ") {
 			continue
 		}
 		name := ""
 		version := ""
-		if idx := strings.Index(line, `id="`); idx >= 0 {
+		// Case-insensitive attribute matching: NuGet packages.config in older
+		// .NET projects frequently uses Id="..." and Version="..." (capital letters).
+		lower := strings.ToLower(line)
+		if idx := strings.Index(lower, `id="`); idx >= 0 {
 			rest := line[idx+4:]
 			if end := strings.Index(rest, `"`); end >= 0 {
 				name = rest[:end]
 			}
 		}
-		if idx := strings.Index(line, `version="`); idx >= 0 {
+		if idx := strings.Index(lower, `version="`); idx >= 0 {
 			rest := line[idx+9:]
 			if end := strings.Index(rest, `"`); end >= 0 {
 				version = rest[:end]

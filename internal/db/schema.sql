@@ -1558,6 +1558,20 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.working_commits (
 -- ============================================================
 
 -- ============================================================
+-- Schema version tracking: single-row table stamped by Migrate().
+-- Non-migrating commands (web, api) check this on startup and
+-- warn if the schema is behind the binary version.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS aveloxis_ops.schema_meta (
+    id                 BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id), -- ensures single row
+    schema_version     TEXT NOT NULL DEFAULT '',
+    migrated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Seed the single row if it doesn't exist yet.
+INSERT INTO aveloxis_ops.schema_meta (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
+
+-- ============================================================
 -- Staging store: raw API responses land here before processing.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_ops.staging (

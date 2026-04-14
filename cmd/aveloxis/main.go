@@ -206,6 +206,9 @@ func runAPI(cfgPath, addr string) error {
 	}
 	defer store.Close()
 
+	// api does not run migrations — check if schema is current.
+	store.CheckSchemaVersion(ctx, logger)
+
 	apiServer := api.New(store, logger)
 	srv := &http.Server{Addr: addr, Handler: apiServer.Handler()}
 
@@ -998,6 +1001,8 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			// NOTE: web does NOT run migrations. Use `aveloxis migrate` or
 			// `aveloxis serve` for that. Running migrations from both serve
 			// and web simultaneously causes conflicts.
+			// Instead, CheckSchemaVersion warns if the DB is behind the binary.
+			store.CheckSchemaVersion(ctx, logger)
 
 			// Load GitHub keys for immediate org scanning (non-fatal for web — it
 			// can still serve the GUI without keys, just can't scan orgs).

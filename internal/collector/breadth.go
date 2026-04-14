@@ -31,7 +31,7 @@ type BreadthWorker struct {
 func NewBreadthWorker(store *db.PostgresStore, keys *platform.KeyPool, logger *slog.Logger) *BreadthWorker {
 	return &BreadthWorker{
 		store:  store,
-		http:   platform.NewHTTPClient("https://api.github.com", keys, logger),
+		http:   platform.NewHTTPClient("https://api.github.com", keys, logger, platform.AuthGitHub),
 		logger: logger,
 	}
 }

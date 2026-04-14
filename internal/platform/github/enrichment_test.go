@@ -20,7 +20,7 @@ func testGHClient(t *testing.T, handler http.Handler) *Client {
 	t.Cleanup(server.Close)
 	logger := slog.Default()
 	keys := platform.NewKeyPool([]string{"test-token"}, logger)
-	httpClient := platform.NewHTTPClient(server.URL, keys, logger)
+	httpClient := platform.NewHTTPClient(server.URL, keys, logger, platform.AuthGitHub)
 	return &Client{http: httpClient, logger: logger}
 }
 

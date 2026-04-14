@@ -704,7 +704,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	if s.ghKeys == nil {
 		return 0
 	}
-	http := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger)
+	http := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
 
 	newCount := 0
 	page := 1
@@ -771,7 +771,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	// Need GitLab keys — check if the glClient is available.
 	// We'll reuse the ghKeys pool for now; in practice GitLab keys are separate.
 	// TODO: pass glKeys to the scheduler for GitLab org refresh.
-	http := platform.NewHTTPClient("https://"+glHost+"/api/v4", s.ghKeys, s.logger)
+	http := platform.NewHTTPClient("https://"+glHost+"/api/v4", s.ghKeys, s.logger, platform.AuthGitLab)
 
 	newCount := 0
 	page := 1
@@ -910,7 +910,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context) {
 			if s.ghKeys == nil {
 				continue
 			}
-			httpC := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger)
+			httpC := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
 			// Try /orgs/ first, fall back to /users/ for personal accounts.
 			basePaths := []string{
 				fmt.Sprintf("/orgs/%s/repos", org.OrgName),

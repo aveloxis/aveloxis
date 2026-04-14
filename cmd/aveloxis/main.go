@@ -411,10 +411,10 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 			var repos []orgRepo
 			switch plat {
 			case model.PlatformGitHub:
-				ghHTTP := platform.NewHTTPClient("https://api.github.com", ghKeys, logger)
+				ghHTTP := platform.NewHTTPClient("https://api.github.com", ghKeys, logger, platform.AuthGitHub)
 				repos, err = listGitHubOrgRepos(ctx, ghHTTP, orgName)
 			case model.PlatformGitLab:
-				glHTTP := platform.NewHTTPClient("https://"+host+"/api/v4", glKeys, logger)
+				glHTTP := platform.NewHTTPClient("https://"+host+"/api/v4", glKeys, logger, platform.AuthGitLab)
 				repos, err = listGitLabGroupRepos(ctx, glHTTP, orgName)
 			}
 			if err != nil {

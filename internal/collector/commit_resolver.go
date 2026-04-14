@@ -48,7 +48,7 @@ type CommitResolver struct {
 func NewCommitResolver(store *db.PostgresStore, keys *platform.KeyPool, logger *slog.Logger) *CommitResolver {
 	return &CommitResolver{
 		store:      store,
-		http:       platform.NewHTTPClient("https://api.github.com", keys, logger),
+		http:       platform.NewHTTPClient("https://api.github.com", keys, logger, platform.AuthGitHub),
 		logger:     logger,
 		emailCache: make(map[string]string),
 		hashCache:  make(map[string]string),

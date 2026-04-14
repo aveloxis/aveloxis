@@ -44,6 +44,7 @@ All list methods return `iter.Seq2[T, error]` (Go 1.23 iterators) for memory-eff
 
 Shared by both GitHub and GitLab implementations. Features:
 
+- **Platform-aware authentication**: `AuthStyle` parameter controls the auth header format. GitHub uses `Authorization: token <key>` (PATs). GitLab uses `PRIVATE-TOKEN: <key>`. Set at construction via `NewHTTPClient(..., AuthGitHub)` or `NewHTTPClient(..., AuthGitLab)`.
 - **Connection pooling**: HTTP/2 enabled, 20 idle connections per host for high-throughput collection.
 - **Automatic retries**: Up to 10 retries with exponential backoff for transient errors (502/503/504).
 - **Rate limit awareness**: Reads `X-RateLimit-*` (GitHub) and `RateLimit-*` (GitLab) headers, waits for reset when exhausted.

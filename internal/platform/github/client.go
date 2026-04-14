@@ -24,7 +24,7 @@ type Client struct {
 // (or a GitHub Enterprise URL).
 func New(baseURL string, keys *platform.KeyPool, logger *slog.Logger) *Client {
 	return &Client{
-		http:   platform.NewHTTPClient(baseURL, keys, logger),
+		http:   platform.NewHTTPClient(baseURL, keys, logger, platform.AuthGitHub),
 		logger: logger,
 	}
 }

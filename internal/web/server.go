@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/augurlabs/aveloxis/internal/collector"
@@ -32,8 +33,9 @@ type Server struct {
 	logger   *slog.Logger
 	ghOAuth  *oauth2.Config
 	glOAuth  *oauth2.Config
-	ghKeys   *platform.KeyPool // for immediate org scanning
-	sessions map[string]*Session // session token -> session
+	ghKeys    *platform.KeyPool // for immediate org scanning
+	sessionMu sync.RWMutex
+	sessions  map[string]*Session // session token -> session
 	tmpl     *template.Template
 }
 
@@ -198,6 +200,7 @@ func (s *Server) expireCookie(name string) *http.Cookie {
 
 func (s *Server) createSession(userID int, loginName, avatarURL, provider string) string {
 	token := generateToken()
+	s.sessionMu.Lock()
 	s.sessions[token] = &Session{
 		UserID:    userID,
 		LoginName: loginName,
@@ -205,6 +208,7 @@ func (s *Server) createSession(userID int, loginName, avatarURL, provider string
 		Provider:  provider,
 		ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
+	s.sessionMu.Unlock()
 	return token
 }
 
@@ -213,7 +217,9 @@ func (s *Server) getSession(r *http.Request) *Session {
 	if err != nil {
 		return nil
 	}
+	s.sessionMu.RLock()
 	sess, ok := s.sessions[cookie.Value]
+	s.sessionMu.RUnlock()
 	if !ok || time.Now().After(sess.ExpiresAt) {
 		return nil
 	}
@@ -260,7 +266,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("aveloxis_session")
 	if err == nil {
+		s.sessionMu.Lock()
 		delete(s.sessions, cookie.Value)
+		s.sessionMu.Unlock()
 	}
 	http.SetCookie(w, s.expireCookie("aveloxis_session"))
 	http.Redirect(w, r, "/login", http.StatusFound)

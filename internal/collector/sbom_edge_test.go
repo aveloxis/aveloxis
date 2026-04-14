@@ -60,16 +60,16 @@ func TestGenerateCycloneDX_WithDeps(t *testing.T) {
 	if bom.Components[0].Scope != "required" {
 		t.Errorf("runtime dep scope = %q, want required", bom.Components[0].Scope)
 	}
-	// Dev dep should have scope=optional.
-	if bom.Components[1].Scope != "optional" {
-		t.Errorf("dev dep scope = %q, want optional", bom.Components[1].Scope)
+	// Dev dep should have scope=excluded (runtime inclusion semantics, not manifest section).
+	if bom.Components[1].Scope != "excluded" {
+		t.Errorf("dev dep scope = %q, want excluded", bom.Components[1].Scope)
 	}
-	// License should be set.
+	// License should be set — BSD-3-Clause is a valid SPDX ID, so it goes in the id field.
 	if len(bom.Components[0].Licenses) != 1 {
 		t.Fatalf("expected 1 license on flask, got %d", len(bom.Components[0].Licenses))
 	}
-	if bom.Components[0].Licenses[0].License.Name != "BSD-3-Clause" {
-		t.Errorf("license = %q, want BSD-3-Clause", bom.Components[0].Licenses[0].License.Name)
+	if bom.Components[0].Licenses[0].License.ID != "BSD-3-Clause" {
+		t.Errorf("license ID = %q, want BSD-3-Clause", bom.Components[0].Licenses[0].License.ID)
 	}
 }
 
@@ -98,8 +98,9 @@ func TestGenerateCycloneDX_WithScancode(t *testing.T) {
 	if len(root.Evidence.Licenses) != 1 {
 		t.Fatalf("expected 1 evidence license, got %d", len(root.Evidence.Licenses))
 	}
-	if root.Evidence.Licenses[0].License.Name != "Apache-2.0" {
-		t.Errorf("evidence license = %q, want Apache-2.0", root.Evidence.Licenses[0].License.Name)
+	// Apache-2.0 is a valid SPDX ID, so it goes in the id field.
+	if root.Evidence.Licenses[0].License.ID != "Apache-2.0" {
+		t.Errorf("evidence license ID = %q, want Apache-2.0", root.Evidence.Licenses[0].License.ID)
 	}
 	if len(root.Evidence.Copyright) != 2 {
 		t.Fatalf("expected 2 copyright entries, got %d", len(root.Evidence.Copyright))
@@ -200,8 +201,13 @@ func TestGenerateSPDX_WithDeps(t *testing.T) {
 	if flask.ExternalRefs[0].ReferenceLocator != "pkg:pypi/flask@2.0" {
 		t.Errorf("purl = %q", flask.ExternalRefs[0].ReferenceLocator)
 	}
-	if flask.LicenseConcluded != "BSD-3-Clause" {
-		t.Errorf("license = %q, want BSD-3-Clause", flask.LicenseConcluded)
+	// LicenseConcluded for deps should be NOASSERTION (no per-dep source analysis).
+	// LicenseDeclared carries the registry-declared license.
+	if flask.LicenseConcluded != "NOASSERTION" {
+		t.Errorf("dep LicenseConcluded = %q, want NOASSERTION (no source analysis per-dep)", flask.LicenseConcluded)
+	}
+	if flask.LicenseDeclared != "BSD-3-Clause" {
+		t.Errorf("dep LicenseDeclared = %q, want BSD-3-Clause", flask.LicenseDeclared)
 	}
 
 	// Requests (no license) should use NOASSERTION.

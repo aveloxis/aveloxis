@@ -139,6 +139,32 @@ func TestRunScanCodeUsesCorrectFlags(t *testing.T) {
 	if !strings.Contains(code, "--quiet") {
 		t.Error("RunScanCode must use --quiet flag")
 	}
+	// Must limit internal Python process parallelism.
+	if !strings.Contains(code, "--processes") {
+		t.Error("RunScanCode must use --processes to limit Python thread/process count")
+	}
+	// Must limit in-memory file count for large repos.
+	if !strings.Contains(code, "--max-in-memory") {
+		t.Error("RunScanCode must use --max-in-memory to cap memory usage")
+	}
+}
+
+// TestScancodeConcurrencySemaphore verifies that a package-level semaphore
+// limits concurrent ScanCode invocations.
+func TestScancodeConcurrencySemaphore(t *testing.T) {
+	src, err := os.ReadFile("scancode.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+
+	if !strings.Contains(code, "scancodeSem") {
+		t.Error("scancode.go must define scancodeSem to limit concurrent invocations")
+	}
+	// The semaphore must be used in RunScanCode to acquire/release slots.
+	if !strings.Contains(code, "scancodeSem <-") || !strings.Contains(code, "<-scancodeSem") {
+		t.Error("RunScanCode must acquire and release scancodeSem")
+	}
 }
 
 // TestAnalysisResultHasScancodeFiles verifies AnalysisResult tracks scancode findings.

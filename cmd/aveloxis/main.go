@@ -98,7 +98,7 @@ the same queue — each claims jobs via SELECT ... FOR UPDATE SKIP LOCKED.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&monitorAddr, "monitor", ":5555", "address for the monitoring dashboard")
+	cmd.Flags().StringVar(&monitorAddr, "monitor", "127.0.0.1:5555", "address for the monitoring dashboard")
 	cmd.Flags().IntVar(&workers, "workers", 1, "number of concurrent collection workers")
 	cmd.Flags().BoolVar(&useAugurKeys, "augur-keys", false, "load API keys from Augur's augur_operations.worker_oauth table")
 
@@ -184,7 +184,7 @@ Run alongside 'aveloxis serve' and 'aveloxis web'.`,
 			return runAPI(*cfgPath, addr)
 		},
 	}
-	cmd.Flags().StringVar(&addr, "addr", ":8383", "listen address for the API server")
+	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8383", "listen address for the API server")
 	return cmd
 }
 

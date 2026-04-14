@@ -20,6 +20,9 @@
 //   - --only-findings reduces output to files with actual detections
 //   - --quiet suppresses progress output
 //   - --timeout 300 gives 5 min per file (some files are pathological)
+//   - --processes 2 limits internal Python parallelism (default is 1-per-core)
+//   - --max-in-memory 5000 caps memory for large repos
+//   - A package-level semaphore limits concurrent ScanCode invocations to 2
 //   - Output goes to a temp JSON file, parsed after completion
 package collector
 
@@ -31,10 +34,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/augurlabs/aveloxis/internal/db"
 )
+
+// scancodeSem limits concurrent ScanCode invocations across all scheduler
+// workers. ScanCode is a Python tool that spawns multiple child processes
+// internally (controlled by --processes). Without this semaphore, 40 scheduler
+// workers could each launch ScanCode simultaneously, creating hundreds of
+// Python processes. Default: 2 concurrent scans.
+var scancodeSem = make(chan struct{}, 2)
 
 // ScancodeRunInterval is how often ScanCode should run per repo.
 // License and copyright data changes infrequently, so 30 days is sufficient.
@@ -94,7 +106,25 @@ func RunScanCode(ctx context.Context, store *db.PostgresStore, repoID int64, loc
 		return nil, nil
 	}
 
+	// Acquire the concurrency semaphore — blocks if too many ScanCode instances
+	// are already running. Respects context cancellation while waiting.
+	select {
+	case scancodeSem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-scancodeSem }()
+
 	logger.Info("running ScanCode", "repo_id", repoID, "path", localPath)
+
+	// Limit ScanCode's internal parallelism. By default ScanCode spawns one
+	// Python worker per CPU core, which is fine for a single invocation but
+	// catastrophic when the scheduler runs 40 concurrent collections.
+	// Cap at 2 processes per invocation (or 1 on single-core machines).
+	procs := 2
+	if runtime.NumCPU() < 2 {
+		procs = 1
+	}
 
 	// Write output to a temp file — scancode writes JSON to a file, not stdout.
 	outputFile := filepath.Join(os.TempDir(), fmt.Sprintf("aveloxis-scancode-%d-%d.json", repoID, time.Now().UnixNano()))
@@ -106,6 +136,8 @@ func RunScanCode(ctx context.Context, store *db.PostgresStore, repoID int64, loc
 		"--json", outputFile,
 		"--quiet",
 		"--timeout", "300",
+		"--processes", strconv.Itoa(procs),
+		"--max-in-memory", "5000",
 		localPath,
 	)
 	var stderrBuf []byte

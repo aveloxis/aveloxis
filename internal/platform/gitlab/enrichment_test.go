@@ -271,6 +271,6 @@ func testClientWithLogger(t *testing.T, handler http.Handler, logger *slog.Logge
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	keys := platform.NewKeyPool([]string{"test-token"}, logger)
-	httpClient := platform.NewHTTPClient(server.URL, keys, logger)
+	httpClient := platform.NewHTTPClient(server.URL, keys, logger, platform.AuthGitLab)
 	return &Client{http: httpClient, logger: logger, host: "gitlab.com"}
 }

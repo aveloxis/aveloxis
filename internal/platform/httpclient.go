@@ -21,13 +21,25 @@ import (
 // Callers should use their cached copy of the data.
 var ErrNotModified = errors.New("not modified (304)")
 
+// AuthStyle controls how API tokens are sent in HTTP requests.
+// GitHub and GitLab use different authentication header formats.
+type AuthStyle int
+
+const (
+	// AuthGitHub sends "Authorization: token <key>" (GitHub PAT format).
+	AuthGitHub AuthStyle = iota
+	// AuthGitLab sends "PRIVATE-TOKEN: <key>" (GitLab PAT format).
+	AuthGitLab
+)
+
 // HTTPClient wraps http.Client with rate-limiting, key rotation, retries, and
 // pagination. Used by both GitHub and GitLab implementations.
 type HTTPClient struct {
-	inner   *http.Client
-	keys    *KeyPool
-	logger  *slog.Logger
-	baseURL string // e.g. "https://api.github.com" or "https://gitlab.com/api/v4"
+	inner     *http.Client
+	keys      *KeyPool
+	logger    *slog.Logger
+	baseURL   string // e.g. "https://api.github.com" or "https://gitlab.com/api/v4"
+	authStyle AuthStyle
 
 	// etagCache stores ETags from previous responses, keyed by URL path.
 	// When a cached ETag exists, Get sends If-None-Match, which saves API quota
@@ -38,10 +50,11 @@ type HTTPClient struct {
 	etagCache map[string]string
 }
 
-// NewHTTPClient creates a platform-aware HTTP client.
+// NewHTTPClient creates a platform-aware HTTP client with the given auth style.
+// AuthGitHub sends "Authorization: token <key>"; AuthGitLab sends "PRIVATE-TOKEN: <key>".
 // Uses a transport tuned for high-throughput API collection: keepalives enabled,
 // generous idle connection pool, and HTTP/2 support (Go's default).
-func NewHTTPClient(baseURL string, keys *KeyPool, logger *slog.Logger) *HTTPClient {
+func NewHTTPClient(baseURL string, keys *KeyPool, logger *slog.Logger, authStyle AuthStyle) *HTTPClient {
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20, // GitHub/GitLab APIs are few hosts with many requests
@@ -56,6 +69,7 @@ func NewHTTPClient(baseURL string, keys *KeyPool, logger *slog.Logger) *HTTPClie
 		keys:      keys,
 		logger:    logger,
 		baseURL:   strings.TrimSuffix(baseURL, "/"),
+		authStyle: authStyle,
 		etagCache: make(map[string]string),
 	}
 }
@@ -82,9 +96,15 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		if err != nil {
 			return nil, err
 		}
-		// GitHub accepts both "token" and "Bearer" for PATs.
-		// Old-style OAuth tokens (hex strings) only work with "token".
-		req.Header.Set("Authorization", "token "+key.Token)
+		// Set platform-appropriate auth header.
+		// GitHub: "Authorization: token <key>" (PATs and old OAuth tokens).
+		// GitLab: "PRIVATE-TOKEN: <key>" (Personal Access Tokens).
+		switch c.authStyle {
+		case AuthGitLab:
+			req.Header.Set("PRIVATE-TOKEN", key.Token)
+		default: // AuthGitHub
+			req.Header.Set("Authorization", "token "+key.Token)
+		}
 		req.Header.Set("Accept", "application/json")
 
 		// Conditional request: send If-None-Match when we have a cached ETag.

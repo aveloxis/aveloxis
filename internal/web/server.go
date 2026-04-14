@@ -615,7 +615,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 		return
 	}
 
-	httpClient := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger)
+	httpClient := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
 	s.logger.Info("scanning repos for user group", "name", name, "group_id", groupID)
 
 	added := 0

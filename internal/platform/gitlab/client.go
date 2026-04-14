@@ -29,7 +29,7 @@ func New(baseURL string, keys *platform.KeyPool, logger *slog.Logger) *Client {
 		host = u.Host
 	}
 	return &Client{
-		http:   platform.NewHTTPClient(baseURL, keys, logger),
+		http:   platform.NewHTTPClient(baseURL, keys, logger, platform.AuthGitLab),
 		logger: logger,
 		host:   host,
 	}

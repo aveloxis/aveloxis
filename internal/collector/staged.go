@@ -123,9 +123,11 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		sc.logger.Warn("failed to update collection status", "repo_id", repoID, "error", err)
 	}
 
-	// Phase 0: Metadata — collected first so we have commit count and other
-	// repo metrics before the heavy collection phases. This enables large-repo
-	// detection (>10K commits) for parallel collection.
+	// Phase 0: Metadata — collected AND PROCESSED first so metadata counts
+	// appear in the monitor immediately, even while the heavy collection
+	// phases (issues, PRs, events) are still running. Without immediate
+	// processing, repo_info sits unprocessed in staging for the entire
+	// duration of collection, and a crash/restart loses the metadata.
 	sc.logger.Info("collecting metadata", "owner", owner, "repo", repo)
 	info, infoErr := sc.client.FetchRepoInfo(ctx, owner, repo)
 	if infoErr != nil {
@@ -150,7 +152,21 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 			sw.Stage(ctx, EntityCloneStats, clone)
 		}
 	}
-	sc.logger.Info("metadata staged", "commit_count", result.CommitCount, "releases", result.Releases)
+
+	// Flush and process metadata immediately so it's in the DB before
+	// the minutes-long issue/PR/event collection begins. This ensures
+	// the monitor shows metadata counts even during active collection,
+	// and a crash/restart doesn't lose the metadata.
+	if err := sw.Flush(ctx); err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("metadata flush: %w", err))
+	}
+	proc := NewProcessor(sc.store, sc.logger)
+	for _, et := range []string{EntityRepoInfo, EntityCloneStats, EntityRelease} {
+		sc.store.ProcessStaged(ctx, repoID, et, 500, func(rows []db.StagedRow) error {
+			return proc.processBatch(ctx, repoID, sc.platID, et, rows)
+		})
+	}
+	sc.logger.Info("metadata processed", "commit_count", result.CommitCount, "releases", result.Releases)
 
 	// Phase 1: Contributors.
 	sc.logger.Info("collecting contributors", "owner", owner, "repo", repo)

@@ -129,8 +129,8 @@ aveloxis start api     # → ~/.aveloxis/api.log
 
 Then you can open the interfaces:
 ```bash
-open http://localhost:5555   # Monitor dashboard
-open http://localhost:8082   # Web GUI (login, visualizations, comparison)
+open http://localhost:8082          # Web GUI (login, visualizations, comparison)
+open http://localhost:8082/monitor  # Collection monitor dashboard (requires login)
 open http://localhost:8383/api/v1/health  # REST API
 ```
 
@@ -190,15 +190,15 @@ This starts 5 containers:
 |---|---|---|
 | `postgres` | PostgreSQL 16 database | 5432 |
 | `migrate` | Runs schema migrations, then exits | — |
-| `serve` | Collection scheduler + monitoring dashboard | **5555** |
-| `web` | Web GUI (OAuth login, visualizations) | **8082** |
+| `serve` | Collection scheduler | — |
+| `web` | Web GUI (OAuth login, visualizations, monitor) | **8082** |
 | `api` | REST API (stats, charts, SBOMs) | **8383** |
 
 ### Step 3: Open the interfaces
 
 ```
-http://localhost:5555                # Monitor dashboard (queue status, repo progress)
 http://localhost:8082                # Web GUI (login with GitHub, create groups, add repos)
+http://localhost:8082/monitor        # Collection monitor (queue status, repo progress)
 http://localhost:8383/api/v1/health  # REST API health check
 ```
 
@@ -298,8 +298,8 @@ aveloxis add-key --from-augur
 #    Each URL is verified against the forge via HTTP HEAD — dead repos are skipped.
 aveloxis add-repo --from-augur
 
-# 5. Start collecting. Open http://localhost:5555 to monitor progress.
-aveloxis serve --monitor :5555
+# 5. Start collecting. Open http://localhost:8082/monitor to watch progress.
+aveloxis start all
 ```
 
 After step 3, your keys live in `aveloxis_ops.worker_oauth` and are loaded automatically — no `--augur-keys` flag needed going forward. After step 4, all your verified Augur repos are in the Aveloxis queue and will be collected on the scheduler's priority order.
@@ -331,10 +331,10 @@ aveloxis add-repo https://github.com/chaoss/augur https://gitlab.com/fdroid/fdro
 # Open http://localhost:8082, log in with GitHub/GitLab, create a group,
 # and add repos or orgs through the UI.
 
-# 5. Start the scheduler + monitoring dashboard
-aveloxis serve --monitor :5555
+# 5. Start the scheduler
+aveloxis start serve
 
-# Open http://localhost:5555 to see the dashboard
+# Open http://localhost:8082/monitor to watch collection progress
 ```
 
 ## Configuration
@@ -433,15 +433,14 @@ Keys are loaded from three sources, merged together:
 
 ## Commands
 
-### `aveloxis serve` — Run the scheduler and monitor
+### `aveloxis serve` — Run the collection scheduler
 
-Starts the long-running scheduler that continuously collects repos from the queue, plus a web dashboard for monitoring. Uses the **staged collection pipeline** (see Architecture).
+Starts the long-running scheduler that continuously collects repos from the queue. Uses the **staged collection pipeline** (see Architecture). The monitor dashboard is integrated into `aveloxis web` at `/monitor`.
 
 ```bash
 aveloxis serve [flags]
 
 Flags:
-  --monitor string   Dashboard address (default ":5555")
   --workers int      Concurrent collection workers (default 1)
   --augur-keys       Load API keys from Augur's worker_oauth table
 ```
@@ -533,10 +532,7 @@ aveloxis prioritize https://github.com/chaoss/augur
 
 Sets priority to 0 and due time to now. The scheduler will collect this repo next.
 
-Also available via HTTP:
-```bash
-curl -X POST http://localhost:5555/api/prioritize/42
-```
+Also available via the monitor dashboard's "Boost" button at `/monitor`, or by clicking "Boost" next to any queued repo.
 
 ### `aveloxis migrate` — Set up the database schema
 
@@ -656,25 +652,20 @@ Flags:
 
 ## Monitoring Dashboard
 
-The web dashboard at `http://localhost:5555` (configurable via `--monitor`) shows:
+The monitor dashboard is integrated into the web GUI at `/monitor` (requires login). It shows:
 
 - Queue statistics (total, queued, collecting)
 - Every repo with: status, priority, due time, last run duration
 - **Gathered vs Metadata columns**: Gathered Issues, Meta Issues, Gathered PRs, Meta PRs, Gathered Commits, Meta Commits — so you can see collection completeness at a glance
 - A **Boost** button to push any queued repo to the top
+- Pagination at 200 repos per page
 - Auto-refreshes every 10 seconds
 
-### Monitor API
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/queue` | GET | Full queue state as JSON |
-| `/api/stats` | GET | `{"queued": N, "collecting": N, "total": N}` |
-| `/api/prioritize/{repoID}` | POST | Push repo to top of queue |
+Navigate to the monitor from any page via the "Monitor" link in the top nav bar.
 
 ### REST API (`aveloxis api`)
 
-Separate process (default `:8383`). Start alongside `serve` and `web`.
+Separate process (default `127.0.0.1:8383`). Start alongside `serve` and `web`.
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -762,12 +753,14 @@ Designed for 400K+ repos. Eliminates database contention on the contributors tab
 
 **Phase 1 — Collect (fast, no contention):** Raw API responses are written to a JSONB staging table (`aveloxis_ops.staging`). No FK lookups, no contributor resolution. Multiple workers can blast data concurrently with zero contention on any relational table. Issues and PRs are staged as **envelope types** that bundle the parent entity with all its children (labels, assignees, reviewers, reviews, commits, files, head/base metadata) in a single JSONB row. Data is collected in this order:
 
-1. Contributors (seed from member/contributor lists)
-2. Issues + labels + assignees (bundled per issue)
-3. Pull requests + all children (bundled per PR)
-4. Events (issue + PR)
-5. Messages (issue comments, PR comments, inline review comments)
-6. Repo info, releases, clone/traffic stats
+1. Repo info, releases, clone/traffic stats (collected first for commit count metadata)
+2. Contributors (seed from member/contributor lists)
+3. Issues + labels + assignees (bundled per issue)
+4. Pull requests + all children (bundled per PR)
+5. Events (issue + PR)
+6. Messages (issue comments, PR comments, inline review comments)
+
+For repos with **>10,000 commits** (detected from repo_info metadata), steps 3-5 run in **parallel** across 3 goroutines (each with its own staging writer), then messages are collected after all three complete.
 
 **Heartbeat locking:** During staged collection, workers send heartbeats every 30 seconds (`HeartbeatJob`) to update `locked_at`. This prevents `RecoverStaleLocks` (1-hour timeout) from stealing active jobs on large repos that take hours to collect. Without heartbeats, the stale lock recovery would repeatedly reclaim the lock and purge accumulated staging data.
 
@@ -1099,7 +1092,7 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 | Aspect | Augur | Aveloxis |
 |---|---|---|
 | Language | Python | Go |
-| Processes | Celery workers + Flask API + Flower + Redis + RabbitMQ | 3 processes: `serve` (scheduler+monitor), `web` (GUI), `api` (REST) |
+| Processes | Celery workers + Flask API + Flower + Redis + RabbitMQ | 3 processes: `serve` (scheduler), `web` (GUI+monitor), `api` (REST) |
 | Queue | Celery + RabbitMQ + Redis | Postgres `SKIP LOCKED` (no extra infrastructure) |
 | Monitoring | Flower (separate service) | Built-in dashboard with gathered vs metadata count columns |
 | Testing | Lags development due to long history. | Test first programming from birth. | 

@@ -66,6 +66,7 @@ type CollectResult struct {
 	Events       int
 	Releases     int
 	Contributors int
+	CommitCount  int // from repo_info metadata, used for large-repo detection
 	Errors       []error
 }
 

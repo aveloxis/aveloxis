@@ -189,6 +189,16 @@ func (s *Scheduler) Run(ctx context.Context) {
 func (s *Scheduler) fillWorkerSlots(ctx context.Context, sem chan struct{}) {
 	claimed := 0
 	for {
+		// Check if extra parallelSlots from large-repo collection have pushed
+		// us over the configured worker limit. If so, don't start new jobs
+		// until the parallel goroutines finish and release their slots.
+		extraSlots := int(collector.ParallelSlots.Load())
+		if extraSlots > 0 && len(sem)+extraSlots >= s.cfg.Workers {
+			if claimed > 0 {
+				s.logger.Info("fill cycle complete (parallel slots active)", "claimed", claimed, "active", len(sem), "parallelSlots", extraSlots)
+			}
+			return
+		}
 		select {
 		case sem <- struct{}{}:
 			// Got a worker slot — try to claim a job.

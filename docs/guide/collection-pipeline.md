@@ -25,6 +25,24 @@ Aveloxis has two collection pipelines: the **staged pipeline** (used by `aveloxi
 
 The staged pipeline is designed for 400K+ repos. It eliminates database contention on the `contributors` table by decoupling API collection from relational persistence.
 
+### Collection order
+
+Repo info and metadata are collected **first** (Phase 0) to provide commit count before the heavy phases. For repos with more than 10,000 commits, issues, PRs, and events are collected in **parallel** across 3 goroutines, each with its own staging writer. Messages are collected after the parallel phase completes. Repos under the threshold use sequential collection.
+
+### Parallel collection
+
+When `CommitCount >= 10,000` (from repo_info metadata):
+
+```
+Phase 0: Repo info, releases, clone stats (sequential)
+Phase 1: Contributors (sequential)
+Phase 2: Issues | PRs | Events (3 parallel goroutines)
+         ─── wait ───
+Phase 3: Messages (sequential, after parallel phase)
+```
+
+The 3 extra goroutines claim parallel slots tracked by an atomic counter. The scheduler's `fillWorkerSlots` pauses new job starts while the total active count (semaphore + parallel slots) exceeds the configured worker limit.
+
 The direct pipeline is simpler -- it writes directly to relational tables with inline contributor resolution. Best for testing or collecting a small number of repos.
 
 ---

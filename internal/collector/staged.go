@@ -23,6 +23,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/augurlabs/aveloxis/internal/db"
@@ -43,6 +45,17 @@ const (
 	EntityRepoInfo      = "repo_info"
 	EntityCloneStats    = "clone_stats"
 )
+
+// LargeRepoCommitThreshold is the commit count above which parallel collection
+// kicks in. Repos with more commits than this typically also have many issues,
+// PRs, and events — collecting them in parallel significantly speeds up the
+// initial collection pass.
+const LargeRepoCommitThreshold = 10000
+
+// ParallelSlots is a global counter tracking how many extra parallel goroutines
+// are active for large-repo collection. The scheduler's fillWorkerSlots checks
+// this to avoid starting new jobs while large repos consume extra capacity.
+var ParallelSlots atomic.Int32
 
 // Envelope types that bundle a parent entity with its children.
 // These are what get JSON-serialized into the staging table.
@@ -110,7 +123,52 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		sc.logger.Warn("failed to update collection status", "repo_id", repoID, "error", err)
 	}
 
-	// Phase 0: Contributors.
+	// Phase 0: Metadata — collected AND PROCESSED first so metadata counts
+	// appear in the monitor immediately, even while the heavy collection
+	// phases (issues, PRs, events) are still running. Without immediate
+	// processing, repo_info sits unprocessed in staging for the entire
+	// duration of collection, and a crash/restart loses the metadata.
+	sc.logger.Info("collecting metadata", "owner", owner, "repo", repo)
+	info, infoErr := sc.client.FetchRepoInfo(ctx, owner, repo)
+	if infoErr != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("repo info: %w", infoErr))
+	} else {
+		sw.Stage(ctx, EntityRepoInfo, info)
+		result.CommitCount = info.CommitCount
+	}
+
+	for rel, relErr := range sc.client.ListReleases(ctx, owner, repo) {
+		if relErr != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("releases: %w", relErr))
+			break
+		}
+		sw.Stage(ctx, EntityRelease, rel)
+		result.Releases++
+	}
+
+	clones, cloneErr := sc.client.FetchCloneStats(ctx, owner, repo)
+	if cloneErr == nil {
+		for _, clone := range clones {
+			sw.Stage(ctx, EntityCloneStats, clone)
+		}
+	}
+
+	// Flush and process metadata immediately so it's in the DB before
+	// the minutes-long issue/PR/event collection begins. This ensures
+	// the monitor shows metadata counts even during active collection,
+	// and a crash/restart doesn't lose the metadata.
+	if err := sw.Flush(ctx); err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("metadata flush: %w", err))
+	}
+	proc := NewProcessor(sc.store, sc.logger)
+	for _, et := range []string{EntityRepoInfo, EntityCloneStats, EntityRelease} {
+		sc.store.ProcessStaged(ctx, repoID, et, 500, func(rows []db.StagedRow) error {
+			return proc.processBatch(ctx, repoID, sc.platID, et, rows)
+		})
+	}
+	sc.logger.Info("metadata processed", "commit_count", result.CommitCount, "releases", result.Releases)
+
+	// Phase 1: Contributors.
 	sc.logger.Info("collecting contributors", "owner", owner, "repo", repo)
 	for contrib, err := range sc.client.ListContributors(ctx, owner, repo) {
 		if err != nil {
@@ -124,14 +182,115 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 	}
 	sc.logger.Info("contributors staged", "count", result.Contributors)
 
-	// Phase 1: Issues — bundle each issue with its labels and assignees.
+	// Decide between parallel and sequential collection based on commit count.
+	// Large repos (>10K commits) typically have many issues, PRs, and events.
+	// Collecting them in parallel across 3 goroutines significantly speeds up
+	// the initial collection pass.
+	if result.CommitCount >= LargeRepoCommitThreshold {
+		sc.logger.Info("large repo detected — using parallel collection",
+			"repo_id", repoID, "commit_count", result.CommitCount)
+		sc.collectParallel(ctx, repoID, owner, repo, since, result)
+	} else {
+		sc.collectSequential(ctx, sw, owner, repo, since, result)
+	}
+
+	// Final flush.
+	if err := sw.Flush(ctx); err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("staging flush: %w", err))
+	}
+
+	sc.logger.Info("staged collection complete",
+		"repoID", repoID, "staged_issues", result.Issues,
+		"staged_prs", result.PullRequests, "staged_messages", result.Messages,
+		"staged_events", result.Events, "staged_releases", result.Releases)
+
+	return result, nil
+}
+
+// collectSequential runs issues, PRs, events, and messages one after another.
+// Used for repos with fewer than LargeRepoCommitThreshold commits.
+func (sc *StagedCollector) collectSequential(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
+	sc.collectIssues(ctx, sw, owner, repo, since, result)
+	sc.collectPRs(ctx, sw, owner, repo, since, result)
+	sc.collectEvents(ctx, sw, owner, repo, since, result)
+	sc.collectMessages(ctx, sw, owner, repo, since, result)
+}
+
+// collectParallel runs issues, PRs, and events concurrently in 3 goroutines,
+// each with its own StagingWriter for thread safety. The parent waits for all
+// three to complete before collecting messages. Claims 3 extra parallel slots
+// from the global counter so fillWorkerSlots can respect the capacity.
+func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, owner, repo string, since time.Time, result *CollectResult) {
+	// Claim 3 extra parallel slots.
+	ParallelSlots.Add(3)
+	defer ParallelSlots.Add(-3)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex // protects result.Errors and counts
+
+	// Each goroutine gets its own StagingWriter and CollectResult for
+	// thread-safe staging. Results are merged under the mutex.
+	wg.Add(3)
+
+	// Goroutine 1: Issues
+	go func() {
+		defer wg.Done()
+		issueSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
+		localResult := &CollectResult{}
+		sc.collectIssues(ctx, issueSW, owner, repo, since, localResult)
+		issueSW.Flush(ctx)
+		mu.Lock()
+		result.Issues += localResult.Issues
+		result.Errors = append(result.Errors, localResult.Errors...)
+		mu.Unlock()
+	}()
+
+	// Goroutine 2: Pull Requests
+	go func() {
+		defer wg.Done()
+		prSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
+		localResult := &CollectResult{}
+		sc.collectPRs(ctx, prSW, owner, repo, since, localResult)
+		prSW.Flush(ctx)
+		mu.Lock()
+		result.PullRequests += localResult.PullRequests
+		result.Errors = append(result.Errors, localResult.Errors...)
+		mu.Unlock()
+	}()
+
+	// Goroutine 3: Events
+	go func() {
+		defer wg.Done()
+		eventSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
+		localResult := &CollectResult{}
+		sc.collectEvents(ctx, eventSW, owner, repo, since, localResult)
+		eventSW.Flush(ctx)
+		mu.Lock()
+		result.Events += localResult.Events
+		result.Errors = append(result.Errors, localResult.Errors...)
+		mu.Unlock()
+	}()
+
+	// Wait for all three parallel goroutines to finish.
+	wg.Wait()
+	sc.logger.Info("parallel collection complete",
+		"issues", result.Issues, "prs", result.PullRequests, "events", result.Events)
+
+	// Messages collect sequentially after parallel phase.
+	// They need a fresh StagingWriter.
+	msgSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
+	sc.collectMessages(ctx, msgSW, owner, repo, since, result)
+	msgSW.Flush(ctx)
+}
+
+// collectIssues stages all issues with their labels and assignees.
+func (sc *StagedCollector) collectIssues(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
 	sc.logger.Info("collecting issues", "owner", owner, "repo", repo)
 	for issue, err := range sc.client.ListIssues(ctx, owner, repo, since) {
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("issues: %w", err))
 			break
 		}
-
 		envelope := stagedIssue{Issue: issue}
 		for label, err := range sc.client.ListIssueLabels(ctx, owner, repo, issue.Number) {
 			if err != nil {
@@ -145,7 +304,6 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 			}
 			envelope.Assignees = append(envelope.Assignees, assignee)
 		}
-
 		if err := sw.Stage(ctx, EntityIssue, envelope); err != nil {
 			result.Errors = append(result.Errors, err)
 		}
@@ -155,15 +313,16 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		}
 	}
 	sc.logger.Info("issues staged", "count", result.Issues)
+}
 
-	// Phase 1: Pull Requests — bundle each PR with all its children.
+// collectPRs stages all pull requests with their children.
+func (sc *StagedCollector) collectPRs(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
 	sc.logger.Info("collecting pull requests", "owner", owner, "repo", repo)
 	for pr, err := range sc.client.ListPullRequests(ctx, owner, repo, since) {
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("pull requests: %w", err))
 			break
 		}
-
 		envelope := stagedPR{PR: pr}
 		for label, err := range sc.client.ListPRLabels(ctx, owner, repo, pr.Number) {
 			if err != nil {
@@ -211,18 +370,19 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 			envelope.RepoHead = headRepo
 			envelope.RepoBase = baseRepo
 		}
-
 		if err := sw.Stage(ctx, EntityPullRequest, envelope); err != nil {
 			result.Errors = append(result.Errors, err)
 		}
 		result.PullRequests++
 		if result.PullRequests%100 == 0 {
-			sc.logger.Info("pull requests progress", "staged", result.PullRequests)
+			sc.logger.Info("pull requests progress", "owner", owner, "repo", repo, "staged", result.PullRequests)
 		}
 	}
 	sc.logger.Info("pull requests staged", "count", result.PullRequests)
+}
 
-	// Phase 2: Events.
+// collectEvents stages issue and PR events.
+func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
 	sc.logger.Info("collecting events", "owner", owner, "repo", repo)
 	for event, err := range sc.client.ListIssueEvents(ctx, owner, repo, since) {
 		if err != nil {
@@ -240,10 +400,11 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		sw.Stage(ctx, EntityPREvent, event)
 		result.Events++
 	}
-
 	sc.logger.Info("events staged", "count", result.Events)
+}
 
-	// Phase 2: Messages.
+// collectMessages stages issue comments, PR comments, and review comments.
+func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
 	sc.logger.Info("collecting messages", "owner", owner, "repo", repo)
 	for msg, err := range sc.client.ListIssueComments(ctx, owner, repo, since) {
 		if err != nil {
@@ -261,45 +422,7 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		sw.Stage(ctx, EntityReviewComment, rc)
 		result.Messages++
 	}
-
 	sc.logger.Info("messages staged", "count", result.Messages)
-
-	// Phase 3: Metadata.
-	sc.logger.Info("collecting metadata", "owner", owner, "repo", repo)
-	info, err := sc.client.FetchRepoInfo(ctx, owner, repo)
-	if err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("repo info: %w", err))
-	} else {
-		sw.Stage(ctx, EntityRepoInfo, info)
-	}
-
-	for rel, err := range sc.client.ListReleases(ctx, owner, repo) {
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("releases: %w", err))
-			break
-		}
-		sw.Stage(ctx, EntityRelease, rel)
-		result.Releases++
-	}
-
-	clones, err := sc.client.FetchCloneStats(ctx, owner, repo)
-	if err == nil {
-		for _, clone := range clones {
-			sw.Stage(ctx, EntityCloneStats, clone)
-		}
-	}
-
-	// Final flush.
-	if err := sw.Flush(ctx); err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("staging flush: %w", err))
-	}
-
-	sc.logger.Info("staged collection complete",
-		"repoID", repoID, "staged_issues", result.Issues,
-		"staged_prs", result.PullRequests, "staged_messages", result.Messages,
-		"staged_events", result.Events, "staged_releases", result.Releases)
-
-	return result, nil
 }
 
 // Processor drains the staging table and writes to the relational schema.
@@ -328,10 +451,14 @@ const processBatchSize = 500
 func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16) error {
 	p.logger.Info("processing staged data", "repo_id", repoID)
 
-	// Order matters: contributors must exist before FK resolution.
-	// Issues/PRs (with bundled children) come next.
-	// Events/messages reference issues/PRs by platform ID, not DB ID, so order is less strict.
+	// Order matters: repo_info is processed FIRST so metadata counts
+	// (used by the monitor and gap fill) survive even if processing is
+	// interrupted. Contributors must exist before FK resolution in
+	// issues/PRs/events/messages.
 	entityTypes := []string{
+		EntityRepoInfo,
+		EntityCloneStats,
+		EntityRelease,
 		EntityContributor,
 		EntityIssue,
 		EntityPullRequest,
@@ -339,9 +466,6 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 		EntityPREvent,
 		EntityMessage,
 		EntityReviewComment,
-		EntityRelease,
-		EntityRepoInfo,
-		EntityCloneStats,
 	}
 
 	for _, entityType := range entityTypes {

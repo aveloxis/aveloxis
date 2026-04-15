@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -234,6 +235,67 @@ func (s *PostgresStore) ListQueue(ctx context.Context) ([]QueueJob, error) {
 		jobs = append(jobs, j)
 	}
 	return jobs, rows.Err()
+}
+
+// ListQueuePage returns a paginated slice of the queue for the monitor dashboard.
+// If search is non-empty, filters to repos whose owner or name contains the term.
+// Results are ordered: collecting first, then queued, then by priority and due_at.
+func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, search string) ([]QueueJob, int, error) {
+	// Build WHERE clause for search.
+	whereClause := ""
+	args := []interface{}{}
+	argIdx := 1
+
+	if search != "" {
+		whereClause = fmt.Sprintf(` WHERE q.repo_id IN (
+			SELECT repo_id FROM aveloxis_data.repos
+			WHERE repo_owner ILIKE '%%' || $%d || '%%'
+			   OR repo_name ILIKE '%%' || $%d || '%%')`, argIdx, argIdx)
+		args = append(args, search)
+		argIdx++
+	}
+
+	// Get total count for pagination.
+	var total int
+	countQuery := `SELECT COUNT(*) FROM aveloxis_ops.collection_queue q` + whereClause
+	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	dataQuery := fmt.Sprintf(`
+		SELECT q.repo_id, q.priority, q.status, q.due_at, q.locked_by, q.locked_at,
+			   q.last_collected, q.last_error,
+			   q.last_issues, q.last_prs, q.last_messages, q.last_events,
+			   q.last_releases, q.last_contributors, COALESCE(q.last_commits, 0),
+			   q.last_duration_ms, q.updated_at
+		FROM aveloxis_ops.collection_queue q
+		%s
+		ORDER BY
+			CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+			q.priority, q.due_at
+		LIMIT $%d OFFSET $%d`, whereClause, argIdx, argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, dataQuery, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var jobs []QueueJob
+	for rows.Next() {
+		var j QueueJob
+		if err := rows.Scan(
+			&j.RepoID, &j.Priority, &j.Status, &j.DueAt, &j.LockedBy, &j.LockedAt,
+			&j.LastCollected, &j.LastError,
+			&j.LastIssues, &j.LastPRs, &j.LastMessages, &j.LastEvents,
+			&j.LastReleases, &j.LastContributors, &j.LastCommits, &j.LastDurationMs, &j.UpdatedAt,
+		); err != nil {
+			return nil, 0, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, total, rows.Err()
 }
 
 // QueueStats returns counts by status.

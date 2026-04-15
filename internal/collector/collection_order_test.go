@@ -59,6 +59,36 @@ func TestRepoInfoCollectedBeforeIssuesAndPRs(t *testing.T) {
 	}
 }
 
+// TestRepoInfoProcessedBeforeContributors verifies the processing order has
+// repo_info BEFORE contributors. This ensures metadata counts survive even
+// if processing is interrupted (crash/restart). Repo_info has no FK deps
+// on any other entity — it's safe to process first.
+func TestRepoInfoProcessedBeforeContributors(t *testing.T) {
+	src, err := os.ReadFile("staged.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+
+	// Find the entityTypes slice in ProcessRepo.
+	idx := strings.Index(code, "entityTypes := []string{")
+	if idx < 0 {
+		t.Fatal("cannot find entityTypes slice in staged.go")
+	}
+	slice := code[idx : idx+500]
+
+	repoInfoIdx := strings.Index(slice, "EntityRepoInfo")
+	contribIdx := strings.Index(slice, "EntityContributor")
+	if repoInfoIdx < 0 || contribIdx < 0 {
+		t.Fatal("cannot find EntityRepoInfo or EntityContributor in entityTypes")
+	}
+	if repoInfoIdx > contribIdx {
+		t.Error("EntityRepoInfo must be processed BEFORE EntityContributor — " +
+			"metadata counts need to survive interrupted processing so the " +
+			"monitor shows correct gathered vs metadata columns")
+	}
+}
+
 // TestCollectResultHasCommitCount verifies CollectResult exposes the commit
 // count from repo_info for large-repo detection.
 func TestCollectResultHasCommitCount(t *testing.T) {

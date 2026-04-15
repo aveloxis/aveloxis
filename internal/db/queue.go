@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -237,26 +238,45 @@ func (s *PostgresStore) ListQueue(ctx context.Context) ([]QueueJob, error) {
 }
 
 // ListQueuePage returns a paginated slice of the queue for the monitor dashboard.
+// If search is non-empty, filters to repos whose owner or name contains the term.
 // Results are ordered: collecting first, then queued, then by priority and due_at.
-func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int) ([]QueueJob, int, error) {
+func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, search string) ([]QueueJob, int, error) {
+	// Build WHERE clause for search.
+	whereClause := ""
+	args := []interface{}{}
+	argIdx := 1
+
+	if search != "" {
+		whereClause = fmt.Sprintf(` WHERE q.repo_id IN (
+			SELECT repo_id FROM aveloxis_data.repos
+			WHERE repo_owner ILIKE '%%' || $%d || '%%'
+			   OR repo_name ILIKE '%%' || $%d || '%%')`, argIdx, argIdx)
+		args = append(args, search)
+		argIdx++
+	}
+
 	// Get total count for pagination.
 	var total int
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM aveloxis_ops.collection_queue`).Scan(&total); err != nil {
+	countQuery := `SELECT COUNT(*) FROM aveloxis_ops.collection_queue q` + whereClause
+	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT repo_id, priority, status, due_at, locked_by, locked_at,
-			   last_collected, last_error,
-			   last_issues, last_prs, last_messages, last_events,
-			   last_releases, last_contributors, COALESCE(last_commits, 0),
-			   last_duration_ms, updated_at
-		FROM aveloxis_ops.collection_queue
+	dataQuery := fmt.Sprintf(`
+		SELECT q.repo_id, q.priority, q.status, q.due_at, q.locked_by, q.locked_at,
+			   q.last_collected, q.last_error,
+			   q.last_issues, q.last_prs, q.last_messages, q.last_events,
+			   q.last_releases, q.last_contributors, COALESCE(q.last_commits, 0),
+			   q.last_duration_ms, q.updated_at
+		FROM aveloxis_ops.collection_queue q
+		%s
 		ORDER BY
-			CASE status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
-			priority, due_at
-		LIMIT $1 OFFSET $2`, limit, offset)
+			CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+			q.priority, q.due_at
+		LIMIT $%d OFFSET $%d`, whereClause, argIdx, argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, dataQuery, args...)
 	if err != nil {
 		return nil, 0, err
 	}

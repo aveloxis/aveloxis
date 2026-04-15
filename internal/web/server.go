@@ -825,17 +825,18 @@ const monitorPageSize = 200
 func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 
-	// Parse pagination.
+	// Parse pagination and search.
 	page := 1
 	if p := r.URL.Query().Get("page"); p != "" {
 		if n, err := strconv.Atoi(p); err == nil && n > 0 {
 			page = n
 		}
 	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	offset := (page - 1) * monitorPageSize
 
 	stats, _ := s.store.QueueStats(r.Context())
-	jobs, total, _ := s.store.ListQueuePage(r.Context(), monitorPageSize, offset)
+	jobs, total, _ := s.store.ListQueuePage(r.Context(), monitorPageSize, offset, query)
 
 	totalPages := (total + monitorPageSize - 1) / monitorPageSize
 	if totalPages < 1 {
@@ -920,6 +921,7 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 		"Page":       page,
 		"TotalPages": totalPages,
 		"Total":      total,
+		"Query":      query,
 	})
 }
 

@@ -236,6 +236,48 @@ func (s *PostgresStore) ListQueue(ctx context.Context) ([]QueueJob, error) {
 	return jobs, rows.Err()
 }
 
+// ListQueuePage returns a paginated slice of the queue for the monitor dashboard.
+// Results are ordered: collecting first, then queued, then by priority and due_at.
+func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int) ([]QueueJob, int, error) {
+	// Get total count for pagination.
+	var total int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM aveloxis_ops.collection_queue`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT repo_id, priority, status, due_at, locked_by, locked_at,
+			   last_collected, last_error,
+			   last_issues, last_prs, last_messages, last_events,
+			   last_releases, last_contributors, COALESCE(last_commits, 0),
+			   last_duration_ms, updated_at
+		FROM aveloxis_ops.collection_queue
+		ORDER BY
+			CASE status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+			priority, due_at
+		LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var jobs []QueueJob
+	for rows.Next() {
+		var j QueueJob
+		if err := rows.Scan(
+			&j.RepoID, &j.Priority, &j.Status, &j.DueAt, &j.LockedBy, &j.LockedAt,
+			&j.LastCollected, &j.LastError,
+			&j.LastIssues, &j.LastPRs, &j.LastMessages, &j.LastEvents,
+			&j.LastReleases, &j.LastContributors, &j.LastCommits, &j.LastDurationMs, &j.UpdatedAt,
+		); err != nil {
+			return nil, 0, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, total, rows.Err()
+}
+
 // QueueStats returns counts by status.
 func (s *PostgresStore) QueueStats(ctx context.Context) (map[string]int, error) {
 	rows, err := s.pool.Query(ctx, `

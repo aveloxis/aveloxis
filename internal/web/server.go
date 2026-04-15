@@ -152,6 +152,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/groups/remove-repo", s.requireAuth(s.handleRemoveRepo))
 	mux.HandleFunc("/compare", s.requireAuth(s.handleCompare))
 
+	// Monitor dashboard — integrated from the standalone monitor server.
+	mux.HandleFunc("/monitor", s.requireAuth(s.handleMonitor))
+	mux.HandleFunc("POST /monitor/prioritize/{repoID}", s.requireAuth(s.handleMonitorPrioritize))
+
 	return mux
 }
 
@@ -810,4 +814,125 @@ func (s *Server) handleRepoDetail(w http.ResponseWriter, r *http.Request, sess *
 		"RepoID":  repoID,
 		"GroupID": groupID,
 	})
+}
+
+// ============================================================
+// Monitor dashboard (integrated from standalone monitor)
+// ============================================================
+
+const monitorPageSize = 200
+
+func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
+	sess := s.getSession(r)
+
+	// Parse pagination.
+	page := 1
+	if p := r.URL.Query().Get("page"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			page = n
+		}
+	}
+	offset := (page - 1) * monitorPageSize
+
+	stats, _ := s.store.QueueStats(r.Context())
+	jobs, total, _ := s.store.ListQueuePage(r.Context(), monitorPageSize, offset)
+
+	totalPages := (total + monitorPageSize - 1) / monitorPageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	// Enrich jobs with repo details and gathered vs metadata counts.
+	repoIDs := make([]int64, 0, len(jobs))
+	for _, j := range jobs {
+		repoIDs = append(repoIDs, j.RepoID)
+	}
+	repoStats, _ := s.store.GetRepoStatsBatch(r.Context(), repoIDs)
+
+	type monitorRow struct {
+		RowNum          int
+		RepoID          int64
+		Owner           string
+		Repo            string
+		Plat            string
+		Status          string
+		Priority        int
+		Due             string
+		LastRun         string
+		Worker          string
+		ErrInfo         string
+		GatheredIssues  int
+		MetaIssues      int
+		GatheredPRs     int
+		MetaPRs         int
+		GatheredCommits int
+		MetaCommits     int
+	}
+
+	rows := make([]monitorRow, 0, len(jobs))
+	for i, j := range jobs {
+		row := monitorRow{
+			RowNum:   offset + i + 1,
+			RepoID:   j.RepoID,
+			Status:   j.Status,
+			Priority: j.Priority,
+		}
+
+		if repo, err := s.store.GetRepoByID(r.Context(), j.RepoID); err == nil {
+			row.Owner = repo.Owner
+			row.Repo = repo.Name
+			row.Plat = repo.Platform.String()
+		}
+		if st, ok := repoStats[j.RepoID]; ok {
+			row.GatheredIssues = st.GatheredIssues
+			row.GatheredPRs = st.GatheredPRs
+			row.GatheredCommits = st.GatheredCommits
+			row.MetaIssues = st.MetadataIssues
+			row.MetaPRs = st.MetadataPRs
+			row.MetaCommits = st.MetadataCommits
+		}
+
+		row.Due = j.DueAt.Format("15:04:05")
+		if j.DueAt.Before(time.Now()) && j.Status == "queued" {
+			row.Due = "now"
+		}
+		row.LastRun = "-"
+		if j.LastCollected != nil {
+			row.LastRun = j.LastCollected.Format("Jan 2 15:04")
+			if j.LastDurationMs > 0 {
+				row.LastRun += fmt.Sprintf(" (%ds)", j.LastDurationMs/1000)
+			}
+		}
+		if j.LockedBy != nil {
+			row.Worker = *j.LockedBy
+		}
+		if j.LastError != nil && *j.LastError != "" {
+			row.ErrInfo = *j.LastError
+		}
+
+		rows = append(rows, row)
+	}
+
+	s.tmpl.ExecuteTemplate(w, "monitor", map[string]interface{}{
+		"Session":    sess,
+		"Stats":      stats,
+		"Jobs":       rows,
+		"Page":       page,
+		"TotalPages": totalPages,
+		"Total":      total,
+	})
+}
+
+func (s *Server) handleMonitorPrioritize(w http.ResponseWriter, r *http.Request) {
+	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.PrioritizeRepo(r.Context(), repoID); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	// Redirect back to the monitor page.
+	http.Redirect(w, r, "/monitor", http.StatusFound)
 }

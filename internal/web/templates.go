@@ -86,7 +86,7 @@ h3{font-size:16px;margin-bottom:12px;color:#24292e}
 <a href="/logout">Logout</a>
 </div>
 </div>
-<div class="breadcrumb"><span class="current">Home</span></div>
+<div class="breadcrumb"><span class="current">Home</span><span class="sep">|</span><a href="/monitor">Monitor</a></div>
 <div class="container">
 <div class="card">
 <h2>Your Groups</h2>
@@ -207,7 +207,7 @@ h3{font-size:16px;margin-bottom:12px;color:#24292e}
 </div>
 </div>
 <div class="breadcrumb">
-<a href="/dashboard">Home</a><span class="sep">/</span><span class="current">{{.Group.Name}}</span>
+<a href="/dashboard">Home</a><span class="sep">|</span><a href="/monitor">Monitor</a><span class="sep">/</span><span class="current">{{.Group.Name}}</span>
 </div>
 <div class="container">
 <div class="card">
@@ -434,7 +434,7 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 </div>
 </div>
 <div class="breadcrumb">
-<a href="/dashboard">Home</a><span class="sep">/</span>
+<a href="/dashboard">Home</a><span class="sep">|</span><a href="/monitor">Monitor</a><span class="sep">/</span>
 <a href="/groups/{{.GroupID}}">{{.Group.Name}}</a><span class="sep">/</span>
 <span class="current">{{.Repo.Owner}}/{{.Repo.Name}}</span>
 </div>
@@ -699,7 +699,7 @@ fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-files')
 </div>
 </div>
 <div class="breadcrumb">
-<a href="/dashboard">Home</a><span class="sep">/</span><span class="current">Compare Repos</span>
+<a href="/dashboard">Home</a><span class="sep">|</span><a href="/monitor">Monitor</a><span class="sep">/</span><span class="current">Compare Repos</span>
 </div>
 <div class="container">
 <div class="card">
@@ -917,6 +917,93 @@ if (urlRepos.length > 0) {
   });
 }
 </script>
+</body></html>
+{{end}}
+
+{{define "monitor"}}
+{{template "head" (dict "Title" "Monitor")}}
+<div class="nav">
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
+<div class="nav-user">
+{{if .Session.AvatarURL}}<img src="{{.Session.AvatarURL}}" alt="">{{end}}
+<span>{{.Session.LoginName}}</span>
+<a href="/logout">Logout</a>
+</div>
+</div>
+<div class="breadcrumb"><a href="/dashboard">Home</a><span class="sep">|</span><span class="current">Monitor</span></div>
+<div class="container" style="max-width:1600px">
+<div style="display:flex;gap:1rem;margin-bottom:1.5rem;flex-wrap:wrap">
+<div class="card" style="flex:1;min-width:120px;text-align:center;padding:1rem"><div style="font-size:2rem;font-weight:bold">{{.Stats.total}}</div><div style="color:#666;font-size:0.85rem">Total</div></div>
+<div class="card" style="flex:1;min-width:120px;text-align:center;padding:1rem"><div style="font-size:2rem;font-weight:bold">{{.Stats.queued}}</div><div style="color:#666;font-size:0.85rem">Queued</div></div>
+<div class="card" style="flex:1;min-width:120px;text-align:center;padding:1rem"><div style="font-size:2rem;font-weight:bold">{{.Stats.collecting}}</div><div style="color:#666;font-size:0.85rem">Collecting</div></div>
+</div>
+
+<div class="card" style="overflow-x:auto">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+<h2 style="margin:0">Collection Queue</h2>
+<div style="color:#666;font-size:0.85rem">Page {{.Page}} of {{.TotalPages}} ({{.Total}} repos) &mdash; auto-refreshes every 10s</div>
+</div>
+<table class="repo-table" style="width:100%">
+<thead>
+<tr>
+  <th>#</th>
+  <th>Repository</th>
+  <th>Platform</th>
+  <th>Status</th>
+  <th>Priority</th>
+  <th>Due</th>
+  <th>Last Run</th>
+  <th style="text-align:right">Issues</th>
+  <th style="text-align:right">Meta</th>
+  <th style="text-align:right">PRs</th>
+  <th style="text-align:right">Meta</th>
+  <th style="text-align:right">Commits</th>
+  <th style="text-align:right">Meta</th>
+  <th>Action</th>
+</tr>
+</thead>
+<tbody>
+{{range .Jobs}}
+<tr{{if eq .Priority 0}} style="background:#fef3c7"{{end}}>
+  <td>{{.RowNum}}</td>
+  <td>{{.Owner}}/{{.Repo}}</td>
+  <td>{{.Plat}}</td>
+  <td>
+    <span class="{{if eq .Status "collecting"}}badge badge-blue{{else if eq .Status "queued"}}badge badge-gray{{else}}badge{{end}}">{{.Status}}</span>
+    {{if .Worker}} <span style="font-family:monospace;font-size:0.8rem">{{.Worker}}</span>{{end}}
+    {{if .ErrInfo}} <span style="color:#dc2626" title="{{.ErrInfo}}">err</span>{{end}}
+  </td>
+  <td>{{.Priority}}</td>
+  <td>{{.Due}}</td>
+  <td>{{.LastRun}}</td>
+  <td style="text-align:right;color:#059669">{{.GatheredIssues}}</td>
+  <td style="text-align:right;color:#6b7280;font-size:0.8rem">{{.MetaIssues}}</td>
+  <td style="text-align:right;color:#059669">{{.GatheredPRs}}</td>
+  <td style="text-align:right;color:#6b7280;font-size:0.8rem">{{.MetaPRs}}</td>
+  <td style="text-align:right;color:#059669">{{.GatheredCommits}}</td>
+  <td style="text-align:right;color:#6b7280;font-size:0.8rem">{{.MetaCommits}}</td>
+  <td>
+    {{if eq .Status "queued"}}
+    <form method="POST" action="/monitor/prioritize/{{.RepoID}}" style="display:inline">
+      <button type="submit" class="btn" style="padding:2px 8px;font-size:0.8rem">Boost</button>
+    </form>
+    {{end}}
+  </td>
+</tr>
+{{end}}
+{{if not .Jobs}}<tr><td colspan="14" style="text-align:center;color:#999;padding:2rem">No repos in queue</td></tr>{{end}}
+</tbody>
+</table>
+
+{{if gt .TotalPages 1}}
+<div style="display:flex;justify-content:center;gap:8px;margin-top:16px">
+{{if gt .Page 1}}<a href="/monitor?page={{subtract .Page 1}}" class="btn">&laquo; Prev</a>{{end}}
+{{if lt .Page .TotalPages}}<a href="/monitor?page={{add .Page 1}}" class="btn">Next &raquo;</a>{{end}}
+</div>
+{{end}}
+</div>
+</div>
+<script>setTimeout(function(){ location.reload(); }, 10000);</script>
 </body></html>
 {{end}}
 

@@ -104,13 +104,17 @@ func RunScorecard(ctx context.Context, store *db.PostgresStore, repoID int64, re
 	// Scorecard needs GITHUB_TOKEN for API-dependent checks.
 	cmd.Env = append(cmd.Environ(), "GITHUB_TOKEN="+githubToken)
 
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("scorecard failed: %w: %s", err, stderr.String())
-	}
+	runErr := cmd.Run()
 
-	// Parse the JSON output.
+	// Parse the JSON output regardless of exit code. Scorecard exits with
+	// status 1 when individual checks fail (e.g., invalid YAML in workflow
+	// files), but still produces valid JSON with scores for successful checks.
+	// Only error if there's no parseable output at all.
 	var raw scorecardOutput
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		if runErr != nil {
+			return nil, fmt.Errorf("scorecard failed: %w: %s", runErr, stderr.String())
+		}
 		return nil, fmt.Errorf("parsing scorecard output: %w", err)
 	}
 

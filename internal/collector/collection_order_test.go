@@ -89,6 +89,41 @@ func TestRepoInfoProcessedBeforeContributors(t *testing.T) {
 	}
 }
 
+// TestMetadataProcessedImmediatelyDuringCollection verifies that repo_info,
+// releases, and clone stats are flushed and processed immediately during
+// collection (not deferred to ProcessRepo). This ensures metadata appears
+// in the monitor even while issues/PRs are still being collected.
+func TestMetadataProcessedImmediatelyDuringCollection(t *testing.T) {
+	src, err := os.ReadFile("staged.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+
+	// Find the CollectRepo function.
+	idx := strings.Index(code, "func (sc *StagedCollector) CollectRepo(")
+	if idx < 0 {
+		t.Fatal("cannot find CollectRepo function")
+	}
+	fnBody := code[idx:]
+	// Look before the contributors phase (within the first ~3000 chars).
+	contribIdx := strings.Index(fnBody, "Phase 1: Contributors")
+	if contribIdx < 0 {
+		contribIdx = 3000
+	}
+	metadataSection := fnBody[:contribIdx]
+
+	// Must call ProcessStaged for EntityRepoInfo during collection,
+	// not just stage it for later processing.
+	if !strings.Contains(metadataSection, "ProcessStaged") {
+		t.Error("CollectRepo must call ProcessStaged for metadata entities " +
+			"(EntityRepoInfo, EntityCloneStats, EntityRelease) immediately " +
+			"after staging them, before the heavy collection phases begin. " +
+			"Without this, metadata sits unprocessed during the entire " +
+			"collection window and a crash loses it.")
+	}
+}
+
 // TestCollectResultHasCommitCount verifies CollectResult exposes the commit
 // count from repo_info for large-repo detection.
 func TestCollectResultHasCommitCount(t *testing.T) {

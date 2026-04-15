@@ -375,7 +375,7 @@ func (sc *StagedCollector) collectPRs(ctx context.Context, sw *db.StagingWriter,
 		}
 		result.PullRequests++
 		if result.PullRequests%100 == 0 {
-			sc.logger.Info("pull requests progress", "staged", result.PullRequests)
+			sc.logger.Info("pull requests progress", "owner", owner, "repo", repo, "staged", result.PullRequests)
 		}
 	}
 	sc.logger.Info("pull requests staged", "count", result.PullRequests)

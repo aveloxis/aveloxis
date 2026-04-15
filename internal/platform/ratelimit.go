@@ -194,11 +194,29 @@ func (kp *KeyPool) MarkDepleted(key *APIKey, estimatedCalls int) {
 }
 
 // InvalidateKey marks a key as permanently invalid (bad credentials).
+// Escalates to ERROR when this was the last valid key — all collection
+// for the platform stops silently otherwise.
 func (kp *KeyPool) InvalidateKey(key *APIKey) {
 	kp.mu.Lock()
 	defer kp.mu.Unlock()
 	key.Invalid = true
-	kp.logger.Warn("API key invalidated", "token_prefix", key.Token[:min(8, len(key.Token))]+"...")
+
+	// Count remaining valid keys.
+	validRemaining := 0
+	for _, k := range kp.keys {
+		if !k.Invalid {
+			validRemaining++
+		}
+	}
+
+	prefix := key.Token[:min(8, len(key.Token))] + "..."
+	if validRemaining == 0 {
+		kp.logger.Error("LAST API key invalidated — all collection for this platform will fail",
+			"token_prefix", prefix)
+	} else {
+		kp.logger.Warn("API key invalidated",
+			"token_prefix", prefix, "valid_keys_remaining", validRemaining)
+	}
 }
 
 // IsEmpty returns true if the pool was created with zero keys.

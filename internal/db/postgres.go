@@ -1108,7 +1108,9 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 				ToolVersion,
 			).Scan(&cntrb_id)
 			if err != nil {
-				s.logger.Warn("contributor upsert failed", "login", login, "error", err)
+				// Duplicate key (23505) is a normal race condition between concurrent
+				// workers — the contributor exists either way. Log at Debug, not Warn.
+				s.logger.Debug("contributor upsert failed", "login", login, "error", err)
 				continue
 			}
 

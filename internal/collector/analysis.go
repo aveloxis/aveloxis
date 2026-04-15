@@ -91,6 +91,9 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	}
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "git", "clone", barePath, workDir)
+	// Skip LFS smudge filters — dependency/license scanners only need text
+	// source files. LFS objects with expired quotas cause fatal checkout failures.
+	cmd.Env = gitCloneEnv()
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return result, fmt.Errorf("local clone failed: %w: %s", err, stderr.String())
@@ -250,6 +253,10 @@ func parseDependencyFile(path, lang string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Detect and transcode UTF-16 encoded files. Some Windows-created
+	// requirements.txt files use UTF-16LE (BOM 0xff 0xfe) which produces
+	// null-interleaved ASCII that PostgreSQL rejects with "invalid byte sequence".
+	data = decodeIfUTF16(data)
 	content := string(data)
 
 	switch filepath.Base(path) {
@@ -1276,6 +1283,60 @@ func cleanVersion(v string) string {
 
 	// Trim any whitespace left after operator removal (e.g., "~> 1.2" -> " 1.2").
 	return strings.TrimSpace(v)
+}
+
+// decodeIfUTF16 detects UTF-16 BOM and converts to UTF-8. Some Windows-created
+// manifest files (especially requirements.txt) are saved as UTF-16LE, producing
+// null-interleaved ASCII that fails PostgreSQL's UTF-8 validation.
+func decodeIfUTF16(data []byte) []byte {
+	if len(data) < 2 {
+		return data
+	}
+	// UTF-16LE BOM: 0xff 0xfe
+	if data[0] == 0xff && data[1] == 0xfe {
+		return utf16LEToUTF8(data[2:]) // skip BOM
+	}
+	// UTF-16BE BOM: 0xfe 0xff
+	if data[0] == 0xfe && data[1] == 0xff {
+		return utf16BEToUTF8(data[2:]) // skip BOM
+	}
+	return data
+}
+
+func utf16LEToUTF8(data []byte) []byte {
+	if len(data)%2 != 0 {
+		data = data[:len(data)-1] // drop trailing byte
+	}
+	var result []byte
+	for i := 0; i+1 < len(data); i += 2 {
+		ch := rune(data[i]) | rune(data[i+1])<<8
+		if ch < 0x80 {
+			result = append(result, byte(ch))
+		} else if ch < 0x800 {
+			result = append(result, byte(0xC0|(ch>>6)), byte(0x80|(ch&0x3F)))
+		} else {
+			result = append(result, byte(0xE0|(ch>>12)), byte(0x80|((ch>>6)&0x3F)), byte(0x80|(ch&0x3F)))
+		}
+	}
+	return result
+}
+
+func utf16BEToUTF8(data []byte) []byte {
+	if len(data)%2 != 0 {
+		data = data[:len(data)-1]
+	}
+	var result []byte
+	for i := 0; i+1 < len(data); i += 2 {
+		ch := rune(data[i])<<8 | rune(data[i+1])
+		if ch < 0x80 {
+			result = append(result, byte(ch))
+		} else if ch < 0x800 {
+			result = append(result, byte(0xC0|(ch>>6)), byte(0x80|(ch&0x3F)))
+		} else {
+			result = append(result, byte(0xE0|(ch>>12)), byte(0x80|((ch>>6)&0x3F)), byte(0x80|(ch&0x3F)))
+		}
+	}
+	return result
 }
 
 // resolveNPMLibyear checks the npm registry for the latest version.

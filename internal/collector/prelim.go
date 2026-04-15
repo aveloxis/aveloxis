@@ -139,20 +139,48 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, repoURL, nil)
-	if err != nil {
-		return "", 0, err
-	}
-	// Use a browser-like user agent to avoid bot blocks.
-	req.Header.Set("User-Agent", "Aveloxis/1.0")
+	// Retry transient DNS/network errors with exponential backoff (1s, 3s, 9s).
+	// During system crashes or network blips, DNS resolution fails briefly and
+	// all prelim checks that fire during that window would permanently skip repos.
+	var lastErr error
+	delays := []time.Duration{0, 1 * time.Second, 3 * time.Second, 9 * time.Second}
+	for attempt, delay := range delays {
+		if attempt > 0 {
+			time.Sleep(delay)
+		}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", 0, err
-	}
-	resp.Body.Close()
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, repoURL, nil)
+		if err != nil {
+			return "", 0, err
+		}
+		req.Header.Set("User-Agent", "Aveloxis/1.0")
 
-	return resp.Request.URL.String(), resp.StatusCode, nil
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			// Only retry on DNS/network errors, not on context cancellation.
+			if ctx.Err() != nil {
+				return "", 0, err
+			}
+			if isTransientNetError(err) && attempt < len(delays)-1 {
+				continue // retry
+			}
+			return "", 0, err
+		}
+		resp.Body.Close()
+		return resp.Request.URL.String(), resp.StatusCode, nil
+	}
+	return "", 0, lastErr
+}
+
+// isTransientNetError returns true for DNS resolution failures and connection
+// refused errors that are likely to resolve on retry.
+func isTransientNetError(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "no such host") ||
+		strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "network is unreachable") ||
+		strings.Contains(s, "i/o timeout")
 }
 
 // normalizeRepoURL strips protocol, trailing slashes, and .git suffix for comparison.

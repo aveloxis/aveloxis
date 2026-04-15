@@ -168,11 +168,23 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) e
 	}
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", "--", gitURL, path)
+	cmd.Env = gitCloneEnv()
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%w: %s", err, stderr.String())
 	}
 	return nil
+}
+
+// gitCloneEnv returns environment variables for git clone commands:
+// - GIT_LFS_SKIP_SMUDGE=1: prevents LFS smudge filter failures when remote
+//   objects are missing (common with free GitHub LFS quota).
+// - GIT_TERMINAL_PROMPT=0: prevents macOS keychain prompts
+//   (errSecInteractionNotAllowed) when running as a background process.
+func gitCloneEnv() []string {
+	env := os.Environ()
+	env = append(env, "GIT_LFS_SKIP_SMUDGE=1", "GIT_TERMINAL_PROMPT=0")
+	return env
 }
 
 // validateGitURL checks that a URL is safe to pass to git commands.

@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/augurlabs/aveloxis/internal/collector"
@@ -451,8 +452,11 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	// Phase 3: Facade — creates/updates bare clone and parses git log.
 	var facadeResult *collector.FacadeResult
 	fc := collector.NewFacadeCollector(s.store, s.logger, s.cfg.RepoCloneDir)
+	// Strip any existing .git suffix before appending to avoid double
+	// .git.git URLs. Many JOSS/Augur-imported repos store the URL with .git.
+	repoName := strings.TrimSuffix(repo.Name, ".git")
 	gitURL := fmt.Sprintf("https://%s/%s/%s.git",
-		platformHostForModel(repo.Platform), repo.Owner, repo.Name)
+		platformHostForModel(repo.Platform), repo.Owner, repoName)
 	result, err := fc.CollectRepo(ctx, repoID, gitURL)
 	if err != nil {
 		s.logger.Warn("facade collection failed", "repo_id", repoID, "error", err)

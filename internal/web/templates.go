@@ -939,8 +939,13 @@ if (urlRepos.length > 0) {
 </div>
 
 <div class="card" style="overflow-x:auto">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
 <h2 style="margin:0">Collection Queue</h2>
+<form method="GET" action="/monitor" style="display:flex;gap:6px;align-items:center">
+<input type="text" name="q" value="{{.Query}}" placeholder="Search repos..." style="padding:5px 10px;border:1px solid #ddd;border-radius:4px;font-size:0.85rem;width:200px">
+<button type="submit" class="btn" style="padding:5px 12px;font-size:0.85rem">Search</button>
+{{if .Query}}<a href="/monitor" class="btn" style="padding:5px 12px;font-size:0.85rem;text-decoration:none">Clear</a>{{end}}
+</form>
 <div style="color:#666;font-size:0.85rem">Page {{.Page}} of {{.TotalPages}} ({{.Total}} repos) &mdash; auto-refreshes every 10s</div>
 </div>
 <table class="repo-table" style="width:100%">
@@ -996,9 +1001,22 @@ if (urlRepos.length > 0) {
 </table>
 
 {{if gt .TotalPages 1}}
-<div style="display:flex;justify-content:center;gap:8px;margin-top:16px">
-{{if gt .Page 1}}<a href="/monitor?page={{subtract .Page 1}}" class="btn">&laquo; Prev</a>{{end}}
-{{if lt .Page .TotalPages}}<a href="/monitor?page={{add .Page 1}}" class="btn">Next &raquo;</a>{{end}}
+<div style="display:flex;justify-content:center;gap:6px;margin-top:16px;align-items:center">
+{{if gt .Page 1}}
+<a href="/monitor?page=1{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem" title="First page">First</a>
+<a href="/monitor?page={{subtract .Page 1}}{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem">&laquo; Prev</a>
+{{else}}
+<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">First</span>
+<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">&laquo; Prev</span>
+{{end}}
+<span style="color:#666;font-size:0.85rem;padding:0 8px">{{.Page}} / {{.TotalPages}}</span>
+{{if lt .Page .TotalPages}}
+<a href="/monitor?page={{add .Page 1}}{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem">Next &raquo;</a>
+<a href="/monitor?page={{.TotalPages}}{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem" title="Last page">Last</a>
+{{else}}
+<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">Next &raquo;</span>
+<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">Last</span>
+{{end}}
 </div>
 {{end}}
 </div>

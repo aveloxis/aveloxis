@@ -435,10 +435,14 @@ const processBatchSize = 500
 func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16) error {
 	p.logger.Info("processing staged data", "repo_id", repoID)
 
-	// Order matters: contributors must exist before FK resolution.
-	// Issues/PRs (with bundled children) come next.
-	// Events/messages reference issues/PRs by platform ID, not DB ID, so order is less strict.
+	// Order matters: repo_info is processed FIRST so metadata counts
+	// (used by the monitor and gap fill) survive even if processing is
+	// interrupted. Contributors must exist before FK resolution in
+	// issues/PRs/events/messages.
 	entityTypes := []string{
+		EntityRepoInfo,
+		EntityCloneStats,
+		EntityRelease,
 		EntityContributor,
 		EntityIssue,
 		EntityPullRequest,
@@ -446,9 +450,6 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 		EntityPREvent,
 		EntityMessage,
 		EntityReviewComment,
-		EntityRelease,
-		EntityRepoInfo,
-		EntityCloneStats,
 	}
 
 	for _, entityType := range entityTypes {

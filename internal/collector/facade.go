@@ -105,7 +105,11 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 
 		f.logger.Info("fetching updates", "path", path)
 		var stderr bytes.Buffer
-		cmd := exec.CommandContext(ctx, "git", "-C", path, "fetch", "--all", "--prune")
+		// Use an explicit refspec because git clone --bare does NOT create a
+		// fetch refspec in the config. Without one, git fetch downloads objects
+		// but never advances refs/heads/*, leaving the clone permanently stale.
+		cmd := exec.CommandContext(ctx, "git", "-C", path,
+			"fetch", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "--prune")
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
 			f.logger.Warn("fetch failed, re-cloning",
@@ -113,6 +117,12 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 			os.RemoveAll(path)
 			return f.freshClone(ctx, gitURL, path)
 		}
+
+		// Sync HEAD to the remote's default branch. git clone --bare sets HEAD
+		// at clone time and never updates it — if the remote renames its default
+		// branch (e.g. master → main), git log would run against a stale ref.
+		f.syncDefaultBranch(ctx, path)
+
 		return nil
 	}
 
@@ -123,6 +133,45 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 	}
 
 	return f.freshClone(ctx, gitURL, path)
+}
+
+// syncDefaultBranch updates the bare clone's HEAD to match the remote's default
+// branch. git clone --bare sets HEAD once at clone time; if the remote later
+// renames its default branch (e.g. master → main), resolveDefaultBranch would
+// return the stale ref and git log would either fail or miss commits.
+func (f *FacadeCollector) syncDefaultBranch(ctx context.Context, clonePath string) {
+	// git ls-remote --symref outputs a line like:
+	//   ref: refs/heads/main\tHEAD
+	cmd := exec.CommandContext(ctx, "git", "-C", clonePath,
+		"ls-remote", "--symref", "origin", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		f.logger.Warn("failed to query remote HEAD", "error", err)
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "ref: ") {
+			// "ref: refs/heads/main\tHEAD"
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				remoteRef := parts[1] // e.g. "refs/heads/main"
+				localCmd := exec.CommandContext(ctx, "git", "-C", clonePath,
+					"symbolic-ref", "HEAD")
+				localOut, _ := localCmd.Output()
+				localRef := strings.TrimSpace(string(localOut))
+				if localRef != remoteRef {
+					f.logger.Info("default branch changed on remote, updating HEAD",
+						"old", localRef, "new", remoteRef)
+					setCmd := exec.CommandContext(ctx, "git", "-C", clonePath,
+						"symbolic-ref", "HEAD", remoteRef)
+					if err := setCmd.Run(); err != nil {
+						f.logger.Warn("failed to update HEAD", "error", err)
+					}
+				}
+			}
+			return
+		}
+	}
 }
 
 // parseOriginURL extracts the remote.origin.url from a git config file's content.

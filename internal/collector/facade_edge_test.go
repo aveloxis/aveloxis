@@ -1,7 +1,13 @@
 package collector
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/augurlabs/aveloxis/internal/model"
@@ -254,5 +260,315 @@ func TestFacadeResult_WithErrors(t *testing.T) {
 	r.Errors = append(r.Errors, fmt.Errorf("test error"))
 	if len(r.Errors) != 1 {
 		t.Errorf("errors = %d, want 1", len(r.Errors))
+	}
+}
+
+// TestBareCloneFetchWithoutRefspec demonstrates the bug: git clone --bare
+// does not create a fetch refspec, so git fetch --all does not advance local
+// branch refs. This is why re-collection missed new commits.
+func TestBareCloneFetchWithoutRefspec(t *testing.T) {
+	tmpDir := t.TempDir()
+	upstreamDir := filepath.Join(tmpDir, "upstream")
+	bareDir := filepath.Join(tmpDir, "bare.git")
+
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	// Create upstream with one commit, bare clone it.
+	os.MkdirAll(upstreamDir, 0o755)
+	git(upstreamDir, "init", "-b", "main")
+	os.WriteFile(filepath.Join(upstreamDir, "file.txt"), []byte("v1"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "initial")
+	initialHash := git(upstreamDir, "rev-parse", "HEAD")
+
+	git(tmpDir, "clone", "--bare", upstreamDir, bareDir)
+
+	// Push a new commit upstream.
+	os.WriteFile(filepath.Join(upstreamDir, "file.txt"), []byte("v2"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "second commit")
+
+	// Bare clone has no fetch refspec — git fetch --all does NOT update refs/heads/*.
+	git(bareDir, "fetch", "--all", "--prune")
+	staleHash := git(bareDir, "rev-parse", "refs/heads/main")
+	if staleHash != initialHash {
+		t.Fatal("expected refs/heads/main to remain stale after fetch --all (no refspec)")
+	}
+}
+
+// TestBareCloneFetchWithExplicitRefspec verifies the fix: providing an explicit
+// refspec on git fetch advances local branch refs even without a config refspec.
+func TestBareCloneFetchWithExplicitRefspec(t *testing.T) {
+	tmpDir := t.TempDir()
+	upstreamDir := filepath.Join(tmpDir, "upstream")
+	bareDir := filepath.Join(tmpDir, "bare.git")
+
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	// Create upstream with one commit, bare clone it.
+	os.MkdirAll(upstreamDir, 0o755)
+	git(upstreamDir, "init", "-b", "main")
+	os.WriteFile(filepath.Join(upstreamDir, "file.txt"), []byte("v1"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "initial")
+
+	git(tmpDir, "clone", "--bare", upstreamDir, bareDir)
+
+	// Push a new commit upstream.
+	os.WriteFile(filepath.Join(upstreamDir, "file.txt"), []byte("v2"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "second commit")
+	newHash := git(upstreamDir, "rev-parse", "HEAD")
+
+	// Fetch with explicit refspec (the fix) — this DOES update refs/heads/*.
+	git(bareDir, "fetch", "origin",
+		"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "--prune")
+
+	fixedHash := git(bareDir, "rev-parse", "refs/heads/main")
+	if fixedHash != newHash {
+		t.Errorf("refs/heads/main = %s, want %s", fixedHash, newHash)
+	}
+}
+
+// TestBareCloneFetchMultipleBranches verifies the explicit refspec updates all branches.
+func TestBareCloneFetchMultipleBranches(t *testing.T) {
+	tmpDir := t.TempDir()
+	upstreamDir := filepath.Join(tmpDir, "upstream")
+	bareDir := filepath.Join(tmpDir, "bare.git")
+
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	// Create upstream with main + develop.
+	os.MkdirAll(upstreamDir, 0o755)
+	git(upstreamDir, "init", "-b", "main")
+	os.WriteFile(filepath.Join(upstreamDir, "file.txt"), []byte("v1"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "initial")
+	git(upstreamDir, "checkout", "-b", "develop")
+	os.WriteFile(filepath.Join(upstreamDir, "dev.txt"), []byte("dev"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "develop commit")
+
+	git(tmpDir, "clone", "--bare", upstreamDir, bareDir)
+
+	// Add new commits on both branches upstream.
+	git(upstreamDir, "checkout", "main")
+	os.WriteFile(filepath.Join(upstreamDir, "file.txt"), []byte("v2"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "main update")
+	mainHash := git(upstreamDir, "rev-parse", "HEAD")
+
+	git(upstreamDir, "checkout", "develop")
+	os.WriteFile(filepath.Join(upstreamDir, "dev.txt"), []byte("dev2"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "develop update")
+	devHash := git(upstreamDir, "rev-parse", "HEAD")
+
+	// Fetch with explicit refspec.
+	git(bareDir, "fetch", "origin",
+		"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "--prune")
+
+	gotMain := git(bareDir, "rev-parse", "refs/heads/main")
+	if gotMain != mainHash {
+		t.Errorf("main = %s, want %s", gotMain, mainHash)
+	}
+	gotDev := git(bareDir, "rev-parse", "refs/heads/develop")
+	if gotDev != devHash {
+		t.Errorf("develop = %s, want %s", gotDev, devHash)
+	}
+}
+
+// TestBareCloneFetchPrunesDeletedBranch verifies --prune removes branches
+// deleted on origin.
+func TestBareCloneFetchPrunesDeletedBranch(t *testing.T) {
+	tmpDir := t.TempDir()
+	upstreamDir := filepath.Join(tmpDir, "upstream")
+	bareDir := filepath.Join(tmpDir, "bare.git")
+
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	// Create upstream with main + temp-branch.
+	os.MkdirAll(upstreamDir, 0o755)
+	git(upstreamDir, "init", "-b", "main")
+	os.WriteFile(filepath.Join(upstreamDir, "file.txt"), []byte("v1"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "initial")
+	git(upstreamDir, "checkout", "-b", "temp-branch")
+	os.WriteFile(filepath.Join(upstreamDir, "tmp.txt"), []byte("tmp"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "temp")
+	git(upstreamDir, "checkout", "main")
+
+	git(tmpDir, "clone", "--bare", upstreamDir, bareDir)
+
+	// Verify temp-branch exists in bare clone.
+	git(bareDir, "rev-parse", "refs/heads/temp-branch")
+
+	// Delete temp-branch upstream.
+	git(upstreamDir, "branch", "-D", "temp-branch")
+
+	// Fetch with explicit refspec + prune.
+	git(bareDir, "fetch", "origin",
+		"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "--prune")
+
+	// temp-branch should be gone.
+	cmd := exec.Command("git", "-C", bareDir, "rev-parse", "refs/heads/temp-branch")
+	if err := cmd.Run(); err == nil {
+		t.Error("expected refs/heads/temp-branch to be pruned, but it still exists")
+	}
+}
+
+// TestSyncDefaultBranch_UpdatesHEAD verifies that when the remote renames its
+// default branch (e.g. master → main), syncDefaultBranch updates the bare
+// clone's HEAD to match. Without this, resolveDefaultBranch returns a stale ref
+// and git log runs against the wrong (or nonexistent) branch.
+func TestSyncDefaultBranch_UpdatesHEAD(t *testing.T) {
+	tmpDir := t.TempDir()
+	upstreamDir := filepath.Join(tmpDir, "upstream")
+	bareDir := filepath.Join(tmpDir, "bare.git")
+
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	// Create upstream with default branch "master".
+	os.MkdirAll(upstreamDir, 0o755)
+	git(upstreamDir, "init", "-b", "master")
+	os.WriteFile(filepath.Join(upstreamDir, "file.txt"), []byte("v1"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "initial on master")
+
+	// Bare clone — HEAD points to refs/heads/master.
+	git(tmpDir, "clone", "--bare", upstreamDir, bareDir)
+	headBefore := git(bareDir, "symbolic-ref", "HEAD")
+	if headBefore != "refs/heads/master" {
+		t.Fatalf("initial HEAD = %s, want refs/heads/master", headBefore)
+	}
+
+	// Rename default branch on upstream to "main".
+	git(upstreamDir, "branch", "-m", "master", "main")
+	git(upstreamDir, "symbolic-ref", "HEAD", "refs/heads/main")
+
+	// Fetch new refs into the bare clone.
+	git(bareDir, "fetch", "origin",
+		"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "--prune")
+
+	// Before syncDefaultBranch, bare clone HEAD still points to master.
+	headStale := git(bareDir, "symbolic-ref", "HEAD")
+	if headStale != "refs/heads/master" {
+		t.Fatalf("expected HEAD still at refs/heads/master after fetch, got %s", headStale)
+	}
+
+	// Run syncDefaultBranch.
+	fc := &FacadeCollector{logger: slog.Default()}
+	fc.syncDefaultBranch(context.Background(), bareDir)
+
+	// HEAD should now point to main.
+	headAfter := git(bareDir, "symbolic-ref", "HEAD")
+	if headAfter != "refs/heads/main" {
+		t.Errorf("after syncDefaultBranch, HEAD = %s, want refs/heads/main", headAfter)
+	}
+}
+
+// TestSyncDefaultBranch_NoChangeWhenAlreadyCorrect verifies syncDefaultBranch
+// is a no-op when HEAD already matches the remote.
+func TestSyncDefaultBranch_NoChangeWhenAlreadyCorrect(t *testing.T) {
+	tmpDir := t.TempDir()
+	upstreamDir := filepath.Join(tmpDir, "upstream")
+	bareDir := filepath.Join(tmpDir, "bare.git")
+
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	os.MkdirAll(upstreamDir, 0o755)
+	git(upstreamDir, "init", "-b", "main")
+	os.WriteFile(filepath.Join(upstreamDir, "file.txt"), []byte("v1"), 0o644)
+	git(upstreamDir, "add", ".")
+	git(upstreamDir, "commit", "-m", "initial")
+
+	git(tmpDir, "clone", "--bare", upstreamDir, bareDir)
+
+	fc := &FacadeCollector{logger: slog.Default()}
+	fc.syncDefaultBranch(context.Background(), bareDir)
+
+	// HEAD should still be refs/heads/main — no change.
+	head := git(bareDir, "symbolic-ref", "HEAD")
+	if head != "refs/heads/main" {
+		t.Errorf("HEAD = %s, want refs/heads/main", head)
 	}
 }

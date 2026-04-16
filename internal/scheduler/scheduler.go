@@ -304,6 +304,13 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 			return
 		}
 		since := s.determineSince(job)
+		if since.IsZero() {
+			s.logger.Info("full collection (since=zero)", "repo_id", job.RepoID,
+				"last_collected", job.LastCollected)
+		} else {
+			s.logger.Info("incremental collection", "repo_id", job.RepoID,
+				"since", since.Format(time.RFC3339), "last_collected", job.LastCollected)
+		}
 		result, err = s.collectAndProcess(ctx, job.RepoID, repo, client, since)
 
 		// Refresh open items: re-fetch all open issues and PRs to capture

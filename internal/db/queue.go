@@ -88,9 +88,9 @@ func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string) (*Queu
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING repo_id, priority, status, due_at, locked_by, locked_at`,
+		RETURNING repo_id, priority, status, due_at, locked_by, locked_at, last_collected`,
 		workerID,
-	).Scan(&job.RepoID, &job.Priority, &job.Status, &job.DueAt, &job.LockedBy, &job.LockedAt)
+	).Scan(&job.RepoID, &job.Priority, &job.Status, &job.DueAt, &job.LockedBy, &job.LockedAt, &job.LastCollected)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil // no work available

@@ -24,10 +24,11 @@ type TimeSeriesResult struct {
 	Issues     []WeeklyDataPoint  `json:"issues"`
 }
 
-// GetRepoTimeSeries returns weekly aggregated counts for a repo's key metrics.
+// GetRepoTimeSeries returns weekly aggregated counts for a repo's key metrics
+// between `since` and `until` (inclusive lower, exclusive upper).
+// A zero `until` is treated as "no upper bound" (queries up to the latest data).
 // Uses date_trunc('week', timestamp) for consistent Monday-aligned weeks.
-// Optimized: queries against indexed timestamp columns, limits to recent data.
-func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, since time.Time) (*TimeSeriesResult, error) {
+func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, since, until time.Time) (*TimeSeriesResult, error) {
 	result := &TimeSeriesResult{RepoID: repoID}
 
 	// Get repo name for labels.
@@ -35,15 +36,24 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 		`SELECT repo_name, repo_owner FROM aveloxis_data.repos WHERE repo_id = $1`,
 		repoID).Scan(&result.RepoName, &result.RepoOwner)
 
+	// A zero `until` is represented as a far-future timestamp so the SQL
+	// queries can remain parameterized identically regardless of whether the
+	// caller specified an upper bound.
+	hasUntil := !until.IsZero()
+	upper := until
+	if !hasUntil {
+		upper = time.Now().AddDate(100, 0, 0)
+	}
+
 	// Weekly commits (from the commits table — one row per file, so count distinct hashes).
 	rows, err := s.pool.Query(ctx, `
 		SELECT date_trunc('week', cmt_author_timestamp) AS week_start,
 			COUNT(DISTINCT cmt_commit_hash) AS cnt
 		FROM aveloxis_data.commits
-		WHERE repo_id = $1 AND cmt_author_timestamp >= $2
+		WHERE repo_id = $1 AND cmt_author_timestamp >= $2 AND cmt_author_timestamp < $3
 		  AND cmt_author_timestamp IS NOT NULL
 		GROUP BY week_start
-		ORDER BY week_start`, repoID, since)
+		ORDER BY week_start`, repoID, since, upper)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -59,10 +69,10 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 		SELECT date_trunc('week', created_at) AS week_start,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.pull_requests
-		WHERE repo_id = $1 AND created_at >= $2
+		WHERE repo_id = $1 AND created_at >= $2 AND created_at < $3
 		  AND created_at IS NOT NULL
 		GROUP BY week_start
-		ORDER BY week_start`, repoID, since)
+		ORDER BY week_start`, repoID, since, upper)
 	if err == nil {
 		defer rows2.Close()
 		for rows2.Next() {
@@ -78,10 +88,10 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 		SELECT date_trunc('week', merged_at) AS week_start,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.pull_requests
-		WHERE repo_id = $1 AND merged_at >= $2
+		WHERE repo_id = $1 AND merged_at >= $2 AND merged_at < $3
 		  AND merged_at IS NOT NULL
 		GROUP BY week_start
-		ORDER BY week_start`, repoID, since)
+		ORDER BY week_start`, repoID, since, upper)
 	if err == nil {
 		defer rows3.Close()
 		for rows3.Next() {
@@ -97,10 +107,10 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 		SELECT date_trunc('week', created_at) AS week_start,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.issues
-		WHERE repo_id = $1 AND created_at >= $2
+		WHERE repo_id = $1 AND created_at >= $2 AND created_at < $3
 		  AND created_at IS NOT NULL
 		GROUP BY week_start
-		ORDER BY week_start`, repoID, since)
+		ORDER BY week_start`, repoID, since, upper)
 	if err == nil {
 		defer rows4.Close()
 		for rows4.Next() {

@@ -141,14 +141,27 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
-	// Default to last 2 years of data.
+	// Default window: last 2 years to now. Both endpoints overridable via
+	// ?since=YYYY-MM-DD and ?until=YYYY-MM-DD. An invalid value falls back
+	// to the default rather than erroring, so charts keep rendering.
 	since := time.Now().AddDate(-2, 0, 0)
 	if sinceParam := r.URL.Query().Get("since"); sinceParam != "" {
 		if t, err := time.Parse("2006-01-02", sinceParam); err == nil {
 			since = t
 		}
 	}
-	ts, err := s.store.GetRepoTimeSeries(r.Context(), repoID, since)
+	var until time.Time
+	if untilParam := r.URL.Query().Get("until"); untilParam != "" {
+		if t, err := time.Parse("2006-01-02", untilParam); err == nil {
+			// Treat the date as inclusive by advancing one day (store uses < upper).
+			until = t.AddDate(0, 0, 1)
+		}
+	}
+	if !until.IsZero() && !since.Before(until) {
+		http.Error(w, "since must be before until", http.StatusBadRequest)
+		return
+	}
+	ts, err := s.store.GetRepoTimeSeries(r.Context(), repoID, since, until)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

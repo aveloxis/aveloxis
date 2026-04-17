@@ -201,6 +201,171 @@ curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user | grep -i 
 
 ---
 
+## Gap-filled historical issues/PRs have no comments
+
+**Symptom:** A repo shows correct issue and PR counts (metadata and gathered match after v0.16.11), but `aveloxis_data.messages` has few or no rows for those items. Especially noticeable for repos whose first-ever collection happened after v0.16.11 landed — gap fill brought in the parent rows, but comments on items older than `days_until_recollect` never materialize.
+
+**Cause (pre-v0.16.12):** Main-path `StagedCollector.collectMessages` calls repo-wide, since-filtered comment endpoints. On the first collection `since = zero` so everything comes through. On subsequent incremental cycles `since = now - days_until_recollect`, which only captures comments modified inside that window. Gap fill (`fillIssueGaps` / `fillPRGaps`) and open-item refresh (`refreshIssues` / `refreshPRs`) fetched the parent issue/PR and its labels/assignees/reviewers/reviews — but never called any per-item comment endpoint. The result: comments on backfilled historical items were permanently missing.
+
+**Fix (v0.16.12+):** Three new methods on `platform.Client`:
+
+- `ListCommentsForIssue(ctx, owner, repo, issueNumber)`
+- `ListCommentsForPR(ctx, owner, repo, prNumber)`
+- `ListReviewCommentsForPR(ctx, owner, repo, prNumber)`
+
+Each of the four collector functions now calls the appropriate method(s) per item right after staging the parent, wraps errors in `isOptionalEndpointSkip`, and stages results as `EntityMessage` / `EntityReviewComment`. GitHub and GitLab both covered.
+
+Diagnostic queries:
+
+```sql
+-- How many comments per issue / PR for a specific repo?
+SELECT
+  'issue' AS kind, i.issue_number AS num,
+  (SELECT COUNT(*) FROM aveloxis_data.issue_message_ref imr WHERE imr.issue_id = i.issue_id) AS comments
+FROM aveloxis_data.issues i
+WHERE i.repo_id = <id>
+ORDER BY num
+LIMIT 50;
+
+-- Which repos have issues/PRs but disproportionately few messages?
+-- (Rough heuristic: fewer than 0.5 comments per issue+PR.)
+SELECT r.repo_id, r.repo_owner || '/' || r.repo_name AS repo,
+       (SELECT COUNT(*) FROM aveloxis_data.issues i WHERE i.repo_id = r.repo_id) AS issues,
+       (SELECT COUNT(*) FROM aveloxis_data.pull_requests p WHERE p.repo_id = r.repo_id) AS prs,
+       (SELECT COUNT(*) FROM aveloxis_data.messages m WHERE m.repo_id = r.repo_id) AS messages
+FROM aveloxis_data.repos r
+WHERE r.repo_archived = FALSE
+  AND EXISTS (SELECT 1 FROM aveloxis_data.issues WHERE repo_id = r.repo_id)
+HAVING ... ;  -- filter as needed
+```
+
+To backfill after upgrading: boost an affected repo with `aveloxis prioritize <url>`. The next cycle's gap fill and open-item refresh will run under the new code path and stage comments.
+
+---
+
+## Metadata shows issues/PRs but gathered count stays at 0
+
+**Symptom:** On the monitor dashboard or web repo detail page, a repo shows non-zero metadata counts for issues and/or PRs (e.g. `Meta 40`) but gathered stays at `0` (or a tiny number like `1 / 46`) across many collection cycles. Commits are collected correctly. Logs show `"gap fill completed filled=N"` with N in the dozens or low hundreds, but `aveloxis_data.issues` and `aveloxis_data.pull_requests` have zero rows for the repo.
+
+Examples from production: `aiidateam/kiwipy` (0/40 issues, 0/106 PRs), `coleygroup/pyscreener` (0/23, 0/27), `bandframework/taweret` (1/46, 4/114).
+
+**Cause (pre-v0.16.11):** `StagingWriter.Stage` buffers inserts in an in-memory `pgx.Batch` and only auto-sends to Postgres when the buffer reaches `stagingFlushSize = 500`. Four callers — `collector.fillIssueGaps`, `collector.fillPRGaps`, `collector.refreshIssues`, `collector.refreshPRs` — built their own `StagingWriter`, staged fewer than 500 items, and invoked `Processor.ProcessRepo` **without calling `sw.Flush(ctx)` first**. The processor read an empty staging table, the buffered rows were dropped when the writer went out of scope, and the `filled` counter kept incrementing because it counted successful `Stage()` calls (which only buffer).
+
+Normal-path staged collection was unaffected because `staged.go:224` flushes. Any repo with fewer than 500 combined gap-fill / refresh items was silently broken.
+
+**Fix (v0.16.11+):** Added `sw.Flush(ctx)` before `ProcessRepo` in all four functions, with flush errors logged/returned. No manual re-collection is needed — the gap detector still fires on the next scheduled cycle, and items now persist correctly.
+
+Diagnostic queries for affected repos:
+
+```sql
+-- Gathered vs metadata for a specific repo.
+SELECT r.repo_owner || '/' || r.repo_name AS repo,
+       (SELECT COUNT(*) FROM aveloxis_data.issues i WHERE i.repo_id = r.repo_id) AS gathered_issues,
+       (SELECT COUNT(*) FROM aveloxis_data.pull_requests p WHERE p.repo_id = r.repo_id) AS gathered_prs,
+       (SELECT issues_count FROM aveloxis_data.repo_info ri WHERE ri.repo_id = r.repo_id ORDER BY data_collection_date DESC LIMIT 1) AS meta_issues,
+       (SELECT pr_count    FROM aveloxis_data.repo_info ri WHERE ri.repo_id = r.repo_id ORDER BY data_collection_date DESC LIMIT 1) AS meta_prs
+FROM aveloxis_data.repos r
+WHERE r.repo_owner || '/' || r.repo_name = 'aiidateam/kiwipy';
+
+-- What IS in staging for a suspect repo? Expect to see contributor / release /
+-- repo_info entries and, after v0.16.11, also issue / pull_request entries.
+SELECT entity_type, processed, COUNT(*)
+FROM aveloxis_ops.staging
+WHERE repo_id = <id>
+GROUP BY entity_type, processed
+ORDER BY entity_type;
+```
+
+If after upgrading to v0.16.11 a specific repo still shows a gap, boost it manually: `aveloxis prioritize https://github.com/owner/repo` forces an immediate re-collection, which will exercise the now-flushing gap-fill path.
+
+---
+
+## Repeated "unexpected status 301" retries on moved/renamed repos
+
+**Symptom (pre-v0.16.10):** Logs show the same URL hammered 10 times:
+
+```
+level=WARN msg="unexpected status" url=https://api.github.com/repos/devsim/devsim/issues/115 status=301 \
+  body_snippet="{\"message\":\"Moved Permanently\",\"url\":\"\",...}" attempt=1
+level=WARN msg="unexpected status" ... attempt=2
+...
+level=WARN msg="unexpected status" ... attempt=10
+```
+
+**Cause:** `platform.HTTPClient`'s response switch had no case for 3xx. They fell into the `default` branch which logged "unexpected status" and retried with exponential backoff — ~1 min wasted per redirected endpoint. Go's default redirect-follower gave up because the `Location` header was empty (the body's `"url":""` confirms GitHub couldn't determine the target) or the chain looped past 10 hops.
+
+**Fix (v0.16.10+):** 301/302/307/308 are now first-class cases in the switch:
+
+- Go's default follower is disabled (`CheckRedirect: http.ErrUseLastResponse`) so redirect handling lives in one code path.
+- If `Location` is present, the request is re-issued against the new URL. Up to `maxRedirectHops = 5` follows per `Get` call. Each hop is logged:
+  ```
+  level=INFO msg="following redirect" from=... to=... status=301 hop=1
+  ```
+- If `Location` is empty, one `WARN` is logged and the error wraps `platform.ErrGone` — `isOptionalEndpointSkip` treats it the same as 404/403 so the single endpoint is skipped and the rest of the collection proceeds.
+- If the chain exceeds 5 hops (pathological loop), same `ErrGone` treatment.
+
+Repo-level renames (the underlying cause when the *whole* repo moves) are still caught by `prelim.RunPrelim`'s HEAD check against `repo.GitURL` — it calls `store.UpdateRepoURLs` to rewrite `repo_git`, `repo_owner`, and `repo_name`. That path is unchanged. The v0.16.10 fix is specifically for per-endpoint 3xx noise that prelim doesn't see.
+
+---
+
+## HTTP 410 Gone on individual issues / PRs
+
+**Symptom:** A specific issue or PR endpoint returns 410:
+
+```
+{"message":"This issue was deleted","documentation_url":"...","status":"410"}
+```
+
+**Cause:** GitHub uses 410 for resources that were deliberately removed (deleted issues, purged PRs). Before v0.16.10 this fell into the "unexpected status" retry path and cost 10 attempts before the collection job was marked failed.
+
+**Fix (v0.16.10+):** 410 is now first-class in the HTTPClient switch. The response is wrapped in `platform.ErrGone` (distinct from `ErrNotFound`) and logged once at `WARN`. The staged collector's `isOptionalEndpointSkip` recognizes `ErrGone`, so a deleted issue skips cleanly without failing the rest of the job.
+
+**Distinction from repo-level 410:** this is only for per-*resource* 410 (issue 115 of an otherwise-healthy repo). If the repo *itself* returns 410 (e.g., the whole GitHub repo was deleted), the `prelim.RunPrelim` phase sees it first via its HEAD check on `repo.GitURL`, and sidelines the repo automatically: `repo_archived = TRUE` plus `DequeueRepo`. That path is unchanged. See "Dead repo sidelining" below for how to inspect and reverse that.
+
+---
+
+## GitLab repo_info.commit_count is 0 but facade found commits
+
+**Symptom:** The monitor dashboard and web repo page show `Metadata commits = 0` for GitLab repos even though `Gathered commits` is a real, non-zero number. Only some GitLab repos are affected, not all.
+
+**Cause:** The metadata commit count is read from `aveloxis_data.repo_info.commit_count`, which for GitLab is populated from `GET /projects/:id?statistics=true`. GitLab returns `commit_count = 0` in two documented cases:
+
+1. **Token lacks Reporter+ access on a private project** — GitLab omits the `statistics` object entirely from the response. Before v0.16.9 this was silent; v0.16.9 logs a WARN:
+   ```
+   GitLab returned no statistics object; commit_count will be 0 until facade backfill
+     owner=... repo=... hint=token may lack Reporter+ access on private project
+   ```
+2. **Stale stats cache** — GitLab computes `statistics.commit_count` via an async background worker. Freshly-imported, mirrored, or recently-pushed projects report 0 until the worker catches up. Especially common for pull-mirror projects. v0.16.9 logs an INFO:
+   ```
+   GitLab reports commit_count=0; will backfill from facade if non-empty owner=... repo=...
+   ```
+
+**Fix (v0.16.9+):** After facade (`git log` walk on the default branch) finishes, the scheduler calls `store.BackfillGitLabCommitCount(repoID)` for GitLab repos only. It patches the latest `repo_info` row's `commit_count` with `COUNT(DISTINCT cmt_commit_hash)` from `aveloxis_data.commits` — but only when the existing value is 0 (never overwrites a real API count) and the gathered count is non-zero. The backfill is idempotent: subsequent runs are no-ops because `commit_count` is no longer 0.
+
+Success is logged:
+```
+gitlab commit_count backfilled from facade repo_id=...
+```
+
+If you still see `Metadata commits = 0` after a successful collection, check:
+
+```sql
+-- Does the repo have any facade commits yet?
+SELECT COUNT(DISTINCT cmt_commit_hash) FROM aveloxis_data.commits WHERE repo_id = <id>;
+
+-- Latest repo_info snapshot — was it updated?
+SELECT data_collection_date, commit_count
+FROM aveloxis_data.repo_info
+WHERE repo_id = <id>
+ORDER BY data_collection_date DESC LIMIT 1;
+```
+
+If the facade count is 0, the bare clone may have failed (see "Git clone exit status 128" below) or the default branch has no reachable commits. If the facade count is non-zero and `commit_count` is still 0, re-run the repo — the backfill runs every time facade completes successfully.
+
+The GitHub path is unaffected: GitHub's REST `commit_count` is computed on-demand and rarely reports stale zeros.
+
+---
+
 ## Release collection "not found" errors
 
 **Symptom:** Logs show `releases: not found: https://api.github.com/repos/owner/name.git/releases?per_page=100` and the repo is flagged as a failed collection.

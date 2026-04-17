@@ -638,6 +638,135 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 	}
 }
 
+// ListCommentsForIssue returns all user notes on a single GitLab issue via
+// GET /projects/:id/issues/:iid/notes. System notes (timeline events like
+// "assigned to bob") are filtered out — those are captured through the
+// separate events pipeline, and including them here would double-count.
+func (c *Client) ListCommentsForIssue(ctx context.Context, owner, repo string, issueIID int) iter.Seq2[platform.MessageWithRef, error] {
+	pp := projectPath(owner, repo)
+	path := fmt.Sprintf("/projects/%s/issues/%d/notes?sort=asc", pp, issueIID)
+	return func(yield func(platform.MessageWithRef, error) bool) {
+		for note, err := range platform.PaginateGitLab[glNote](ctx, c.http, path) {
+			if err != nil {
+				yield(platform.MessageWithRef{}, err)
+				return
+			}
+			if note.System {
+				continue
+			}
+			msg := model.Message{
+				PlatformMsgID: note.ID,
+				PlatformID:    model.PlatformGitLab,
+				Text:          note.Body,
+				Timestamp:     note.CreatedAt,
+				AuthorRef:     glUserToRef(note.Author),
+			}
+			ref := platform.MessageWithRef{
+				Message: msg,
+				IssueRef: &model.IssueMessageRef{
+					PlatformSrcID:       note.ID,
+					PlatformIssueNumber: issueIID,
+				},
+			}
+			if !yield(ref, nil) {
+				return
+			}
+		}
+	}
+}
+
+// ListCommentsForPR returns conversation notes on a single merge request via
+// GET /projects/:id/merge_requests/:iid/notes. System notes are skipped (see
+// ListCommentsForIssue for rationale).
+func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, mrIID int) iter.Seq2[platform.MessageWithRef, error] {
+	pp := projectPath(owner, repo)
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/notes?sort=asc", pp, mrIID)
+	return func(yield func(platform.MessageWithRef, error) bool) {
+		for note, err := range platform.PaginateGitLab[glNote](ctx, c.http, path) {
+			if err != nil {
+				yield(platform.MessageWithRef{}, err)
+				return
+			}
+			if note.System {
+				continue
+			}
+			msg := model.Message{
+				PlatformMsgID: note.ID,
+				PlatformID:    model.PlatformGitLab,
+				Text:          note.Body,
+				Timestamp:     note.CreatedAt,
+				AuthorRef:     glUserToRef(note.Author),
+			}
+			ref := platform.MessageWithRef{
+				Message: msg,
+				PRRef: &model.PullRequestMessageRef{
+					PlatformSrcID:    note.ID,
+					PlatformPRNumber: mrIID,
+				},
+			}
+			if !yield(ref, nil) {
+				return
+			}
+		}
+	}
+}
+
+// ListReviewCommentsForPR returns inline (diff-line-anchored) review comments
+// for a single merge request via GET /projects/:id/merge_requests/:iid/discussions,
+// filtered to notes that carry a `position` (those are diff-anchored; notes
+// without a position are conversation comments that belong in ListCommentsForPR).
+func (c *Client) ListReviewCommentsForPR(ctx context.Context, owner, repo string, mrIID int) iter.Seq2[platform.ReviewCommentWithRef, error] {
+	pp := projectPath(owner, repo)
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", pp, mrIID)
+	return func(yield func(platform.ReviewCommentWithRef, error) bool) {
+		for disc, err := range platform.PaginateGitLab[glDiscussion](ctx, c.http, path) {
+			if err != nil {
+				yield(platform.ReviewCommentWithRef{}, err)
+				return
+			}
+			for _, note := range disc.Notes {
+				if note.System || note.Position == nil {
+					continue
+				}
+				pos := note.Position
+				side := "RIGHT"
+				if pos.OldLine != nil && pos.NewLine == nil {
+					side = "LEFT"
+				}
+				var line, origLine, startLine, origStartLine *int
+				line = pos.NewLine
+				origLine = pos.OldLine
+				if pos.LineRange != nil {
+					startLine = pos.LineRange.Start.NewLine
+					origStartLine = pos.LineRange.Start.OldLine
+				}
+				msg := model.Message{
+					PlatformMsgID: note.ID,
+					PlatformID:    model.PlatformGitLab,
+					Text:          note.Body,
+					Timestamp:     note.CreatedAt,
+					AuthorRef:     glUserToRef(note.Author),
+				}
+				comment := model.ReviewComment{
+					PlatformSrcID:     note.ID,
+					Path:              pos.NewPath,
+					CommitID:          pos.HeadSHA,
+					OriginalCommitID:  pos.BaseSHA,
+					Line:              line,
+					OriginalLine:      origLine,
+					Side:              side,
+					StartLine:         startLine,
+					OriginalStartLine: origStartLine,
+					UpdatedAt:         note.UpdatedAt,
+				}
+				if !yield(platform.ReviewCommentWithRef{Message: msg, Comment: comment}, nil) {
+					return
+				}
+			}
+		}
+	}
+}
+
 // --- ReleaseCollector ---
 
 func (c *Client) ListReleases(ctx context.Context, owner, repo string) iter.Seq2[model.Release, error] {
@@ -783,6 +912,22 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	commitCount := 0
 	if raw.Statistics != nil {
 		commitCount = raw.Statistics.CommitCount
+		if commitCount == 0 {
+			// Common: GitLab populates statistics.commit_count via an async
+			// background job, so freshly-imported / mirrored / recently-pushed
+			// projects return 0 until the stats worker catches up. The facade
+			// phase + BackfillGitLabCommitCount will patch repo_info later.
+			c.logger.Info("GitLab reports commit_count=0; will backfill from facade if non-empty",
+				"owner", owner, "repo", repo)
+		}
+	} else {
+		// GitLab omits the statistics object entirely when the token lacks
+		// Reporter+ access on a private project, or on some self-managed
+		// instances with custom permission rules. Surface this so ops can
+		// distinguish "real zero commits" from "token too narrow".
+		c.logger.Warn("GitLab returned no statistics object; commit_count will be 0 until facade backfill",
+			"owner", owner, "repo", repo,
+			"hint", "token may lack Reporter+ access on private project")
 	}
 
 	// GitLab issues_statistics endpoint — gives total and by-state counts in one call.

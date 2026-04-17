@@ -118,6 +118,10 @@ func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, websi
 }
 
 func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, error) {
+	// Normalize the repo slug at the write boundary so a ".git" suffix never
+	// reaches the DB. API URLs built from repo_name (/repos/{owner}/{name}/...)
+	// 404 when the slug has a ".git" suffix.
+	r.Name = model.NormalizeRepoName(r.Name)
 	var id int64
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		// Ensure a default repo group exists if no group is specified.
@@ -378,6 +382,9 @@ func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL 
 		name = parts[len(parts)-1]
 		owner = strings.Join(parts[1:len(parts)-1], "/")
 	}
+	// Defense in depth: even after TrimSuffix above, normalize the extracted
+	// slug so every write path produces the same canonical form.
+	name = model.NormalizeRepoName(name)
 
 	_, err := s.pool.Exec(ctx,
 		`UPDATE aveloxis_data.repos

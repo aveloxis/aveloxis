@@ -154,6 +154,35 @@ If only GitHub tokens are configured, GitLab repos will not be collected (and vi
 
 ---
 
+## Release collection "not found" errors
+
+**Symptom:** Logs show `releases: not found: https://api.github.com/repos/owner/name.git/releases?per_page=100` and the repo is flagged as a failed collection.
+
+**Cause (pre-v0.16.4):** Two issues compounded:
+
+1. `repo_name` contained a trailing `.git` (from Augur import or an org-listing path that skipped URL parsing). Every API call using the slug (`/releases`, `/issues`, `/pulls`) returned 404.
+2. The staged collector treated any error on `ListReleases` as a fatal collection error. `buildOutcome` flipped `success` to false on any `result.Errors` entry, so a single 404 killed the whole job.
+
+**Fix (v0.16.4):**
+
+- `model.NormalizeRepoName()` is now called in `db.UpsertRepo` and `db.UpdateRepoURL`, and a one-time `cleanupRepoNameGitSuffix` migration strips `.git` from existing rows. Clean slugs hit the database on every write path.
+- `platform.ErrNotFound` wraps 404 responses. The staged collector and legacy collector both `errors.Is(err, platform.ErrNotFound)` around `ListReleases` — a 404 now logs `no releases endpoint (404) — treating as zero releases` and moves on.
+
+**Verifying the fix on an existing database:**
+
+```sql
+-- Any repo_name still ending in ".git"? After running `aveloxis migrate`, zero rows.
+SELECT repo_id, repo_owner, repo_name FROM aveloxis_data.repos WHERE repo_name LIKE '%.git';
+```
+
+If you see a repo still stuck in `Error` status for this reason, re-queue it:
+
+```sql
+UPDATE aveloxis_ops.collection_queue SET locked_at = NULL WHERE repo_id = ?;
+```
+
+---
+
 ## Git clone exit status 128
 
 **Symptom:** Log shows `exit status 128` during the facade phase.

@@ -38,6 +38,12 @@ The staging writer collects API responses in memory and flushes them to the `ave
 - **Actual flush size:** 500 rows per batch during processing
 - **Each row:** One JSONB document containing a single entity or envelope
 
+### Callers MUST call `Flush(ctx)` before handing control to the processor
+
+`StagingWriter.Stage` only auto-sends to Postgres when the in-memory `pgx.Batch` reaches `stagingFlushSize = 500`. For any workflow that stages fewer than 500 items — typically gap fill and open-item refresh — the buffered rows will not reach the database until `Flush(ctx)` is called explicitly. The processor reads `aveloxis_ops.staging` directly, so forgetting the flush makes the processor see an empty table and the buffered rows are discarded when the `StagingWriter` goes out of scope.
+
+This bit `fillIssueGaps` / `fillPRGaps` / `refreshIssues` / `refreshPRs` before v0.16.11 — each built its own `StagingWriter`, staged well under 500 items, then called `Processor.ProcessRepo` directly. Logs reported `gap fill completed filled=N` while zero rows reached the database. Fix: always flush the writer before processing, and return/log any flush error. The main-path `StagedCollector.CollectRepo` was never affected because it flushes as part of its normal phase sequencing.
+
 ### The staging table
 
 ```sql

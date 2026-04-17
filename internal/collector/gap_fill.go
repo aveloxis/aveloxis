@@ -199,8 +199,18 @@ func (gf *GapFiller) fillIssueGaps(ctx context.Context, repoID int64, owner, rep
 		}
 	}
 
-	// Process the newly staged gap-fill data into relational tables.
+	// Flush the in-memory pgx.Batch to Postgres BEFORE invoking the processor.
+	// StagingWriter.Stage only auto-sends to the database when the batch reaches
+	// stagingFlushSize (500). Gap fills are usually smaller than that, so
+	// without an explicit flush the buffered rows would sit in memory, the
+	// processor would read an empty staging table, and every staged row would
+	// be silently discarded when the writer goes out of scope.
 	if filled > 0 {
+		if err := sw.Flush(ctx); err != nil {
+			gf.logger.Warn("failed to flush gap-fill issue staging batch",
+				"repo_id", repoID, "staged", filled, "error", err)
+			return filled, fmt.Errorf("flushing gap-fill issue staging: %w", err)
+		}
 		proc := NewProcessor(gf.store, gf.logger)
 		if err := proc.ProcessRepo(ctx, repoID, int16(gf.client.Platform())); err != nil {
 			return filled, fmt.Errorf("processing gap-fill staging: %w", err)
@@ -272,8 +282,14 @@ func (gf *GapFiller) fillPRGaps(ctx context.Context, repoID int64, owner, repo s
 		}
 	}
 
-	// Process the newly staged gap-fill data into relational tables.
+	// Flush the in-memory pgx.Batch to Postgres BEFORE invoking the processor
+	// (see fillIssueGaps above for the full rationale — same buffering bug).
 	if filled > 0 {
+		if err := sw.Flush(ctx); err != nil {
+			gf.logger.Warn("failed to flush gap-fill PR staging batch",
+				"repo_id", repoID, "staged", filled, "error", err)
+			return filled, fmt.Errorf("flushing gap-fill PR staging: %w", err)
+		}
 		proc := NewProcessor(gf.store, gf.logger)
 		if err := proc.ProcessRepo(ctx, repoID, int16(gf.client.Platform())); err != nil {
 			return filled, fmt.Errorf("processing gap-fill staging: %w", err)

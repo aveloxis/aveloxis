@@ -201,6 +201,43 @@ curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user | grep -i 
 
 ---
 
+## Metadata shows issues/PRs but gathered count stays at 0
+
+**Symptom:** On the monitor dashboard or web repo detail page, a repo shows non-zero metadata counts for issues and/or PRs (e.g. `Meta 40`) but gathered stays at `0` (or a tiny number like `1 / 46`) across many collection cycles. Commits are collected correctly. Logs show `"gap fill completed filled=N"` with N in the dozens or low hundreds, but `aveloxis_data.issues` and `aveloxis_data.pull_requests` have zero rows for the repo.
+
+Examples from production: `aiidateam/kiwipy` (0/40 issues, 0/106 PRs), `coleygroup/pyscreener` (0/23, 0/27), `bandframework/taweret` (1/46, 4/114).
+
+**Cause (pre-v0.16.11):** `StagingWriter.Stage` buffers inserts in an in-memory `pgx.Batch` and only auto-sends to Postgres when the buffer reaches `stagingFlushSize = 500`. Four callers — `collector.fillIssueGaps`, `collector.fillPRGaps`, `collector.refreshIssues`, `collector.refreshPRs` — built their own `StagingWriter`, staged fewer than 500 items, and invoked `Processor.ProcessRepo` **without calling `sw.Flush(ctx)` first**. The processor read an empty staging table, the buffered rows were dropped when the writer went out of scope, and the `filled` counter kept incrementing because it counted successful `Stage()` calls (which only buffer).
+
+Normal-path staged collection was unaffected because `staged.go:224` flushes. Any repo with fewer than 500 combined gap-fill / refresh items was silently broken.
+
+**Fix (v0.16.11+):** Added `sw.Flush(ctx)` before `ProcessRepo` in all four functions, with flush errors logged/returned. No manual re-collection is needed — the gap detector still fires on the next scheduled cycle, and items now persist correctly.
+
+Diagnostic queries for affected repos:
+
+```sql
+-- Gathered vs metadata for a specific repo.
+SELECT r.repo_owner || '/' || r.repo_name AS repo,
+       (SELECT COUNT(*) FROM aveloxis_data.issues i WHERE i.repo_id = r.repo_id) AS gathered_issues,
+       (SELECT COUNT(*) FROM aveloxis_data.pull_requests p WHERE p.repo_id = r.repo_id) AS gathered_prs,
+       (SELECT issues_count FROM aveloxis_data.repo_info ri WHERE ri.repo_id = r.repo_id ORDER BY data_collection_date DESC LIMIT 1) AS meta_issues,
+       (SELECT pr_count    FROM aveloxis_data.repo_info ri WHERE ri.repo_id = r.repo_id ORDER BY data_collection_date DESC LIMIT 1) AS meta_prs
+FROM aveloxis_data.repos r
+WHERE r.repo_owner || '/' || r.repo_name = 'aiidateam/kiwipy';
+
+-- What IS in staging for a suspect repo? Expect to see contributor / release /
+-- repo_info entries and, after v0.16.11, also issue / pull_request entries.
+SELECT entity_type, processed, COUNT(*)
+FROM aveloxis_ops.staging
+WHERE repo_id = <id>
+GROUP BY entity_type, processed
+ORDER BY entity_type;
+```
+
+If after upgrading to v0.16.11 a specific repo still shows a gap, boost it manually: `aveloxis prioritize https://github.com/owner/repo` forces an immediate re-collection, which will exercise the now-flushing gap-fill path.
+
+---
+
 ## Repeated "unexpected status 301" retries on moved/renamed repos
 
 **Symptom (pre-v0.16.10):** Logs show the same URL hammered 10 times:

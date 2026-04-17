@@ -102,6 +102,16 @@ func (r *OpenItemRefresher) refreshIssues(ctx context.Context, repoID int64, own
 	}
 
 	if refreshed > 0 {
+		// Flush the pgx.Batch to Postgres before the processor reads from
+		// staging. Without this, refreshed issues would sit in the in-memory
+		// batch and be lost when the StagingWriter goes out of scope — the
+		// open-item status refresh would become a silent no-op for any repo
+		// with fewer than stagingFlushSize (500) open items.
+		if err := sw.Flush(ctx); err != nil {
+			r.logger.Warn("failed to flush refreshed issue staging batch",
+				"repo_id", repoID, "refreshed", refreshed, "error", err)
+			return refreshed
+		}
 		proc := NewProcessor(r.store, r.logger)
 		if err := proc.ProcessRepo(ctx, repoID, int16(r.client.Platform())); err != nil {
 			r.logger.Warn("failed to process refreshed issues", "error", err)
@@ -168,6 +178,14 @@ func (r *OpenItemRefresher) refreshPRs(ctx context.Context, repoID int64, owner,
 	}
 
 	if refreshed > 0 {
+		// Flush the pgx.Batch to Postgres before the processor reads from
+		// staging (see refreshIssues above for the full rationale — same
+		// buffering bug).
+		if err := sw.Flush(ctx); err != nil {
+			r.logger.Warn("failed to flush refreshed PR staging batch",
+				"repo_id", repoID, "refreshed", refreshed, "error", err)
+			return refreshed
+		}
 		proc := NewProcessor(r.store, r.logger)
 		if err := proc.ProcessRepo(ctx, repoID, int16(r.client.Platform())); err != nil {
 			r.logger.Warn("failed to process refreshed PRs", "error", err)

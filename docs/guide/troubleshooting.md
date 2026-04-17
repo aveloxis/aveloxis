@@ -154,6 +154,53 @@ If only GitHub tokens are configured, GitLab repos will not be collected (and vi
 
 ---
 
+## `unsupported Unicode escape sequence (SQLSTATE 22P05)`
+
+**Symptom:** Logs show `flushing staging batch (500 rows): ERROR: unsupported Unicode escape sequence (SQLSTATE 22P05)` and an entire batch of staged rows fails to flush.
+
+**Cause (pre-v0.16.8):** PostgreSQL JSONB columns reject `\u0000` escapes. GitHub and GitLab API responses occasionally include NUL bytes in text fields (bot-generated review comments, binary content echoed into diffs, malformed webhook payloads). A single poisoned row in a 500-row batch killed the whole flush.
+
+**Fix (v0.16.8+):** `db.StagingWriter.Stage` now scrubs `\u0000` from marshaled JSON before queuing the insert (`db.sanitizeJSONForJSONB`). The scrubber is a no-op on clean payloads (zero overhead) and drops the escape when present — NUL has no semantic value in any field we stage.
+
+No operator action needed; the fix is automatic after upgrading and restarting `aveloxis serve`.
+
+---
+
+## "Pull requests / contributors / events: not found" or "forbidden"
+
+**Symptom:** Collection fails for certain repos with log lines like:
+
+```
+contributors: not found: https://api.github.com/repos/owner/name/contributors?per_page=100
+pull requests: not found: https://api.github.com/repos/owner/name/pulls?state=all...
+pull requests: forbidden: https://gitlab.com/api/v4/projects/group%2Fname/merge_requests?...
+```
+
+**Cause (pre-v0.16.8):** Any 404 or 403 on a per-phase endpoint appended an entry to `result.Errors`, which `buildOutcome` translated into `success=false`. Common triggers:
+
+- Repo has issues or PRs disabled in its settings (`/issues` or `/pulls` return 404).
+- Repo was deleted or transferred after it was queued.
+- GitLab project is private and the token lacks access (`403 Forbidden` on `/merge_requests`).
+- GitHub token doesn't have `repo` scope for a private repo (403 on `/contributors`).
+
+**Fix (v0.16.8+):** `collector.isOptionalEndpointSkip(err)` checks `errors.Is(err, platform.ErrNotFound)` and `errors.Is(err, platform.ErrForbidden)`. Every phase in the staged collector now routes through it. A 404 or 403 logs one info line (`skipping <phase> endpoint owner=... repo=... reason=...`) and breaks out of that phase cleanly — the rest of the collection proceeds. The job is only marked failed on *other* errors (rate-limit exhaustion, auth failure, network problems, DB errors).
+
+If you see these repos repeatedly skipping an endpoint, check:
+
+```sql
+-- Is the repo deleted/moved? Check recent prelim runs.
+SELECT repo_id, repo_git, repo_archived, data_collection_date
+FROM aveloxis_data.repos WHERE repo_git LIKE '%owner/name%';
+```
+
+To verify the token scope on GitHub:
+
+```bash
+curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user | grep -i x-oauth-scopes
+```
+
+---
+
 ## Release collection "not found" errors
 
 **Symptom:** Logs show `releases: not found: https://api.github.com/repos/owner/name.git/releases?per_page=100` and the repo is flagged as a failed collection.

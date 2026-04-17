@@ -26,6 +26,14 @@ var ErrNotModified = errors.New("not modified (304)")
 // cut a release) as non-fatal can check errors.Is(err, ErrNotFound).
 var ErrNotFound = errors.New("not found")
 
+// ErrForbidden wraps 403 responses that are NOT rate-limit exhaustions
+// (no Retry-After, non-zero X-RateLimit-Remaining). These usually mean the
+// token can't see a particular resource — private GitLab project, repo
+// with restricted visibility, endpoint requiring a scope the token lacks.
+// Callers can check errors.Is(err, ErrForbidden) to skip the endpoint
+// without failing the whole collection.
+var ErrForbidden = errors.New("forbidden")
+
 // AuthStyle controls how API tokens are sent in HTTP requests.
 // GitHub and GitLab use different authentication header formats.
 type AuthStyle int
@@ -207,7 +215,7 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 				continue
 			}
 			// 403 for other reasons (private repo, no permission) — not a key problem.
-			return nil, fmt.Errorf("forbidden: %s (not a rate limit — may be a private repo or insufficient scope)", url)
+			return nil, fmt.Errorf("%w: %s (not a rate limit — may be a private repo or insufficient scope)", ErrForbidden, url)
 		case resp.StatusCode == http.StatusTooManyRequests:
 			resp.Body.Close()
 			wait := parseRetryAfter(resp)

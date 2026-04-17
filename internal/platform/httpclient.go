@@ -34,6 +34,20 @@ var ErrNotFound = errors.New("not found")
 // without failing the whole collection.
 var ErrForbidden = errors.New("forbidden")
 
+// ErrGone wraps 410 Gone responses and unfollowable 3xx redirects (the
+// Location header was missing or the redirect chain looped). Distinct from
+// ErrNotFound: 404 means "never existed or cannot see it", 410 means
+// "existed and was deliberately removed". Callers can check errors.Is(err,
+// ErrGone) to skip the resource without failing the whole collection.
+var ErrGone = errors.New("gone")
+
+// maxRedirectHops caps how many 301/302/307/308 follows a single Get call
+// will perform before giving up. GitHub's best-practices guide says to
+// always follow redirects; this cap protects against pathological chains
+// (loops, rename-of-rename-of-rename) that would otherwise burn minutes
+// per endpoint under the old "retry unexpected status" path.
+const maxRedirectHops = 5
+
 // AuthStyle controls how API tokens are sent in HTTP requests.
 // GitHub and GitLab use different authentication header formats.
 type AuthStyle int
@@ -78,6 +92,13 @@ func NewHTTPClient(baseURL string, keys *KeyPool, logger *slog.Logger, authStyle
 		inner: &http.Client{
 			Timeout:   30 * time.Second,
 			Transport: transport,
+			// Our Get loop owns redirect handling explicitly so the logic is
+			// in one place (hop cap, logging, Location-absent → ErrGone).
+			// ErrUseLastResponse tells Go to return the 3xx to us without
+			// attempting its own follow.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 		keys:      keys,
 		logger:    logger,
@@ -98,6 +119,10 @@ const maxRetries = 10
 // Get performs a single authenticated GET request with retries and rate-limit handling.
 func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, error) {
 	url := c.baseURL + path
+	// Redirect hops consumed by this call. Counted separately from retry
+	// attempts so a rename-then-rate-limited chain doesn't prematurely
+	// exhaust the retry budget, and a loop doesn't run forever.
+	redirectHops := 0
 
 	for attempt := range maxRetries {
 		key, err := c.keys.GetKey(ctx)
@@ -169,6 +194,66 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		case resp.StatusCode == http.StatusNotFound:
 			resp.Body.Close()
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, url)
+		case resp.StatusCode == http.StatusGone:
+			// 410 — the resource existed but was deliberately removed (e.g.,
+			// a deleted GitHub issue). Never retryable; distinct from 404 so
+			// callers can tell "never existed / can't see it" apart from
+			// "existed and was deleted". isOptionalEndpointSkip treats
+			// ErrGone like ErrNotFound so the containing job continues.
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			c.logger.Warn("resource is gone (410)",
+				"url", url, "body_snippet", truncateBody(string(body), 200))
+			return nil, fmt.Errorf("%w: %s", ErrGone, url)
+		case resp.StatusCode == http.StatusMovedPermanently ||
+			resp.StatusCode == http.StatusFound ||
+			resp.StatusCode == http.StatusTemporaryRedirect ||
+			resp.StatusCode == http.StatusPermanentRedirect:
+			// 301/302/307/308 — follow the Location header. GitHub uses 301
+			// for permanent repo rename/transfer (the prelim phase updates
+			// repo_git separately via resolveRedirects); 302/307 for
+			// temporary redirects; 308 is the strict permanent variant. In
+			// all cases the contract is: re-issue the request against the
+			// URL in the Location header.
+			location := resp.Header.Get("Location")
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if location == "" {
+				// GitHub returns 3xx with no Location when it cannot determine
+				// the target (observed for individual issues that were moved
+				// during a rename where the issue numbering doesn't line up).
+				// The body often contains {"message":"Moved Permanently","url":""}.
+				// Nothing useful to retry — surface as ErrGone so callers skip.
+				c.logger.Warn("redirect with empty Location header — treating as gone",
+					"url", url, "status", resp.StatusCode,
+					"body_snippet", truncateBody(string(body), 200))
+				return nil, fmt.Errorf("%w: %s (redirect with empty Location)", ErrGone, url)
+			}
+			if redirectHops >= maxRedirectHops {
+				c.logger.Warn("redirect hop cap exceeded — treating as gone",
+					"url", url, "status", resp.StatusCode,
+					"location", location, "hops", redirectHops)
+				return nil, fmt.Errorf("%w: %s (redirect loop or chain longer than %d)",
+					ErrGone, url, maxRedirectHops)
+			}
+			redirectHops++
+			// Resolve relative Location (most GitHub Location headers are
+			// absolute, but RFC 7231 permits relative).
+			newURL := location
+			if !strings.HasPrefix(newURL, "http://") && !strings.HasPrefix(newURL, "https://") {
+				newURL = c.baseURL + location
+			}
+			c.logger.Info("following redirect",
+				"from", url, "to", newURL,
+				"status", resp.StatusCode, "hop", redirectHops)
+			url = newURL
+			// Do not count this iteration against the retry budget — a
+			// redirect is not a retry. Decrement attempt so the outer
+			// `for attempt := range maxRetries` loop gives us a fresh slot.
+			// (range-int loops don't let us modify the iterator; instead we
+			// just `continue` and accept at most maxRetries hops total,
+			// which is fine because maxRedirectHops=5 < maxRetries=10.)
+			continue
 		case resp.StatusCode == http.StatusUnauthorized:
 			// 401 = bad credentials. Permanently invalidate this key.
 			resp.Body.Close()

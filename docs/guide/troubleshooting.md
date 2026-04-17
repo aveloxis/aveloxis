@@ -201,6 +201,50 @@ curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user | grep -i 
 
 ---
 
+## Repeated "unexpected status 301" retries on moved/renamed repos
+
+**Symptom (pre-v0.16.10):** Logs show the same URL hammered 10 times:
+
+```
+level=WARN msg="unexpected status" url=https://api.github.com/repos/devsim/devsim/issues/115 status=301 \
+  body_snippet="{\"message\":\"Moved Permanently\",\"url\":\"\",...}" attempt=1
+level=WARN msg="unexpected status" ... attempt=2
+...
+level=WARN msg="unexpected status" ... attempt=10
+```
+
+**Cause:** `platform.HTTPClient`'s response switch had no case for 3xx. They fell into the `default` branch which logged "unexpected status" and retried with exponential backoff — ~1 min wasted per redirected endpoint. Go's default redirect-follower gave up because the `Location` header was empty (the body's `"url":""` confirms GitHub couldn't determine the target) or the chain looped past 10 hops.
+
+**Fix (v0.16.10+):** 301/302/307/308 are now first-class cases in the switch:
+
+- Go's default follower is disabled (`CheckRedirect: http.ErrUseLastResponse`) so redirect handling lives in one code path.
+- If `Location` is present, the request is re-issued against the new URL. Up to `maxRedirectHops = 5` follows per `Get` call. Each hop is logged:
+  ```
+  level=INFO msg="following redirect" from=... to=... status=301 hop=1
+  ```
+- If `Location` is empty, one `WARN` is logged and the error wraps `platform.ErrGone` — `isOptionalEndpointSkip` treats it the same as 404/403 so the single endpoint is skipped and the rest of the collection proceeds.
+- If the chain exceeds 5 hops (pathological loop), same `ErrGone` treatment.
+
+Repo-level renames (the underlying cause when the *whole* repo moves) are still caught by `prelim.RunPrelim`'s HEAD check against `repo.GitURL` — it calls `store.UpdateRepoURLs` to rewrite `repo_git`, `repo_owner`, and `repo_name`. That path is unchanged. The v0.16.10 fix is specifically for per-endpoint 3xx noise that prelim doesn't see.
+
+---
+
+## HTTP 410 Gone on individual issues / PRs
+
+**Symptom:** A specific issue or PR endpoint returns 410:
+
+```
+{"message":"This issue was deleted","documentation_url":"...","status":"410"}
+```
+
+**Cause:** GitHub uses 410 for resources that were deliberately removed (deleted issues, purged PRs). Before v0.16.10 this fell into the "unexpected status" retry path and cost 10 attempts before the collection job was marked failed.
+
+**Fix (v0.16.10+):** 410 is now first-class in the HTTPClient switch. The response is wrapped in `platform.ErrGone` (distinct from `ErrNotFound`) and logged once at `WARN`. The staged collector's `isOptionalEndpointSkip` recognizes `ErrGone`, so a deleted issue skips cleanly without failing the rest of the job.
+
+**Distinction from repo-level 410:** this is only for per-*resource* 410 (issue 115 of an otherwise-healthy repo). If the repo *itself* returns 410 (e.g., the whole GitHub repo was deleted), the `prelim.RunPrelim` phase sees it first via its HEAD check on `repo.GitURL`, and sidelines the repo automatically: `repo_archived = TRUE` plus `DequeueRepo`. That path is unchanged. See "Dead repo sidelining" below for how to inspect and reverse that.
+
+---
+
 ## GitLab repo_info.commit_count is 0 but facade found commits
 
 **Symptom:** The monitor dashboard and web repo page show `Metadata commits = 0` for GitLab repos even though `Gathered commits` is a real, non-zero number. Only some GitLab repos are affected, not all.

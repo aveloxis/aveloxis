@@ -51,6 +51,8 @@ Shared by both GitHub and GitLab implementations. Features:
 - **Secondary rate limit handling**: Respects `Retry-After` headers from GitHub's secondary rate limits.
 - **Conditional requests (ETags)**: Caches ETags from responses and sends `If-None-Match` on subsequent requests. GitHub does not count 304 responses against the rate limit, saving quota on unchanged data during incremental collection.
 - **Bad credential detection**: 401 responses permanently invalidate the API key.
+- **Explicit redirect handling (v0.16.10+)**: Go's default redirect follower is disabled (`CheckRedirect: http.ErrUseLastResponse`). The switch handles 301, 302, 307, 308 directly by reading the `Location` header and re-issuing against the new URL, capped at `maxRedirectHops = 5` per call. Each hop logs `following redirect from=... to=... status=... hop=N`. Centralizing the logic means there is only one place to reason about auth-header preservation, hop caps, and cross-host edge cases.
+- **`ErrGone` sentinel (v0.16.10+)**: Distinct from `ErrNotFound`. Returned for (a) 410 Gone responses, (b) 3xx responses with an empty/missing `Location` header (observed when GitHub cannot determine the redirect target, body `{"url":""}`), and (c) redirect chains exceeding `maxRedirectHops`. Callers use `errors.Is(err, ErrGone)` to treat these as "skip this resource" without failing the job. The staged collector's `isOptionalEndpointSkip` checks `ErrNotFound | ErrForbidden | ErrGone` together.
 
 ---
 

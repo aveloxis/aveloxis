@@ -18,23 +18,26 @@ func TestStagedCollectorIgnoresReleaseNotFound(t *testing.T) {
 	}
 	code := string(src)
 
-	// The releases loop must reference platform.ErrNotFound — either directly
-	// or via an errors.Is check — to treat 404 as non-fatal.
+	// The releases loop must treat 404 as non-fatal. Either it checks
+	// errors.Is(err, platform.ErrNotFound) directly, or it delegates to the
+	// isOptionalEndpointSkip helper (introduced in v0.16.8 to bundle 404+403
+	// across every phase).
 	idx := strings.Index(code, "ListReleases")
 	if idx < 0 {
 		t.Fatal("cannot find ListReleases call in staged.go")
 	}
-	// Scan a window around the ListReleases call for the not-found check.
+	// Scan a window around the ListReleases call.
 	start := idx
 	end := idx + 800
 	if end > len(code) {
 		end = len(code)
 	}
 	window := code[start:end]
-	if !strings.Contains(window, "ErrNotFound") {
-		t.Error("staged.go: releases loop must check errors.Is(err, platform.ErrNotFound) " +
-			"and continue without appending to result.Errors — otherwise a 404 on " +
-			"/releases (repos with no releases, renamed repos) fails the whole job")
+	if !strings.Contains(window, "ErrNotFound") && !strings.Contains(window, "isOptionalEndpointSkip") {
+		t.Error("staged.go: releases loop must treat 404 as non-fatal via either " +
+			"errors.Is(err, platform.ErrNotFound) or isOptionalEndpointSkip(err) — " +
+			"otherwise a 404 on /releases (repos with no releases, renamed repos) " +
+			"fails the whole job")
 	}
 }
 

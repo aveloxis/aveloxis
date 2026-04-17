@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,30 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
+
+// nullEscapeLower and nullEscapeUpper match JSON's two legal renderings of a
+// NUL byte: \u0000 and \u0000. PostgreSQL JSONB rejects both with
+// SQLSTATE 22P05 ("unsupported Unicode escape sequence"), and a single
+// occurrence in any row of a batched insert fails the whole flush.
+var (
+	nullEscapeLower = []byte(`\u0000`)
+	nullEscapeUpper = []byte(`\u0000`)
+)
+
+// sanitizeJSONForJSONB strips \u0000 escapes from marshaled JSON before it
+// hits PostgreSQL JSONB. GitHub/GitLab API responses occasionally carry NUL
+// bytes in text fields (bot-generated comments, binary content echoed back
+// in diffs), and PostgreSQL refuses to accept them. We drop the escape
+// rather than replace with a placeholder because the character has no
+// legitimate semantic value in the fields we stage.
+func sanitizeJSONForJSONB(data []byte) []byte {
+	if !bytes.Contains(data, nullEscapeLower) && !bytes.Contains(data, nullEscapeUpper) {
+		return data
+	}
+	out := bytes.ReplaceAll(data, nullEscapeLower, nil)
+	out = bytes.ReplaceAll(out, nullEscapeUpper, nil)
+	return out
+}
 
 // StagingWriter appends raw API responses to the staging table.
 // This is the fast path: no FK lookups, no contributor resolution, just JSONB inserts.
@@ -39,6 +64,9 @@ func (w *StagingWriter) Stage(ctx context.Context, entityType string, payload an
 	if err != nil {
 		return fmt.Errorf("marshaling %s: %w", entityType, err)
 	}
+	// Strip \u0000 escapes — PostgreSQL JSONB rejects them and a single
+	// poisoned row would fail the whole 500-row batch flush.
+	data = sanitizeJSONForJSONB(data)
 	w.batch.Queue(`
 		INSERT INTO aveloxis_ops.staging (repo_id, platform_id, entity_type, payload)
 		VALUES ($1, $2, $3, $4)`,

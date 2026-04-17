@@ -55,12 +55,15 @@ const LargeRepoCommitThreshold = 10000
 
 // isOptionalEndpointSkip returns true when err represents a normal "this
 // endpoint is not available for this repo" condition — 404 (endpoint or
-// repo missing) or 403 (token can't see a private resource or lacks scope).
-// Used by every staged-phase loop to distinguish routine "skip this phase"
-// outcomes from actual collection failures that should bubble into
-// result.Errors and fail the job.
+// repo missing), 403 (token can't see a private resource or lacks scope),
+// or 410/unfollowable-3xx (resource deliberately removed, or a redirect
+// without a usable Location header). Used by every staged-phase loop to
+// distinguish routine "skip this phase" outcomes from actual collection
+// failures that should bubble into result.Errors and fail the job.
 func isOptionalEndpointSkip(err error) bool {
-	return errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrForbidden)
+	return errors.Is(err, platform.ErrNotFound) ||
+		errors.Is(err, platform.ErrForbidden) ||
+		errors.Is(err, platform.ErrGone)
 }
 
 // ParallelSlots is a global counter tracking how many extra parallel goroutines

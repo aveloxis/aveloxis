@@ -264,6 +264,27 @@ If `git fetch --all` fails on an existing bare clone (e.g., due to corruption):
 
 On subsequent collection cycles, `git fetch --all` retrieves only new commits since the last fetch. The git log is re-parsed in full, but upserts with `ON CONFLICT` ensure only truly new data is inserted.
 
+### GitLab `repo_info.commit_count` backfill (v0.16.9+)
+
+GitLab's `GET /projects/:id?statistics=true` sometimes reports `commit_count = 0` even for non-empty projects:
+
+- The `statistics` object is omitted when the token lacks Reporter+ access on a private project, or on self-managed instances with custom permission rules.
+- `statistics.commit_count` is populated by a GitLab background worker, so freshly-imported, mirrored, or recently-pushed-to projects can report 0 until the worker runs. This is common for pull-mirror setups.
+
+After a successful facade run for a `PlatformGitLab` repo, the scheduler calls `store.BackfillGitLabCommitCount(repoID)`, which:
+
+1. Reads `SELECT COUNT(DISTINCT cmt_commit_hash) FROM aveloxis_data.commits WHERE repo_id = $1` — the facade's ground truth.
+2. If that gathered count is non-zero, `UPDATE aveloxis_data.repo_info SET commit_count = <gathered> WHERE repo_id = $1 AND commit_count = 0 AND repo_info_id = <latest>` — only the most recent snapshot, only when the API value is explicitly 0.
+
+Safety properties:
+
+- Never overwrites a real non-zero API count (`WHERE commit_count = 0` guard).
+- Never writes a no-op zero (short-circuit when gathered is 0).
+- Idempotent: the second call after a successful backfill touches zero rows because `commit_count` is no longer 0.
+- Scope is GitLab only — GitHub repos skip the call entirely so that path is byte-for-byte unchanged.
+
+Observability: `gitlab.Client.FetchRepoInfo` now logs a WARN when `statistics` is nil ("token may lack Reporter+ access") and an INFO when `commit_count = 0` ("will backfill from facade if non-empty"). The scheduler logs `gitlab commit_count backfilled from facade` with the repo ID when the UPDATE actually writes a row.
+
 ---
 
 ## Next steps

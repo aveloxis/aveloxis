@@ -194,13 +194,41 @@ func (gf *GapFiller) fillIssueGaps(ctx context.Context, repoID int64, owner, rep
 		}
 		filled++
 
+		// Fetch and stage this issue's comments. Main-path collectMessages uses
+		// a repo-wide since-filtered endpoint, so historical issues backfilled
+		// here would otherwise land with zero comments — their age puts them
+		// outside any incremental since window.
+		for cref, cerr := range gf.client.ListCommentsForIssue(ctx, owner, repo, num) {
+			if cerr != nil {
+				if isOptionalEndpointSkip(cerr) {
+					break
+				}
+				gf.logger.Debug("gap-fill issue comments error", "number", num, "error", cerr)
+				break
+			}
+			if err := sw.Stage(ctx, EntityMessage, cref); err != nil {
+				gf.logger.Debug("failed to stage gap-fill issue comment", "number", num, "error", err)
+				break
+			}
+		}
+
 		if filled%100 == 0 {
 			gf.logger.Info("gap fill issues progress", "staged", filled, "of", len(numbers))
 		}
 	}
 
-	// Process the newly staged gap-fill data into relational tables.
+	// Flush the in-memory pgx.Batch to Postgres BEFORE invoking the processor.
+	// StagingWriter.Stage only auto-sends to the database when the batch reaches
+	// stagingFlushSize (500). Gap fills are usually smaller than that, so
+	// without an explicit flush the buffered rows would sit in memory, the
+	// processor would read an empty staging table, and every staged row would
+	// be silently discarded when the writer goes out of scope.
 	if filled > 0 {
+		if err := sw.Flush(ctx); err != nil {
+			gf.logger.Warn("failed to flush gap-fill issue staging batch",
+				"repo_id", repoID, "staged", filled, "error", err)
+			return filled, fmt.Errorf("flushing gap-fill issue staging: %w", err)
+		}
 		proc := NewProcessor(gf.store, gf.logger)
 		if err := proc.ProcessRepo(ctx, repoID, int16(gf.client.Platform())); err != nil {
 			return filled, fmt.Errorf("processing gap-fill staging: %w", err)
@@ -267,13 +295,52 @@ func (gf *GapFiller) fillPRGaps(ctx context.Context, repoID int64, owner, repo s
 		}
 		filled++
 
+		// Fetch and stage this PR's conversation comments (same rationale as
+		// fillIssueGaps: historical PRs backfilled here are outside any
+		// incremental since window, so main-path collectMessages will not
+		// pick them up on subsequent cycles).
+		for cref, cerr := range gf.client.ListCommentsForPR(ctx, owner, repo, num) {
+			if cerr != nil {
+				if isOptionalEndpointSkip(cerr) {
+					break
+				}
+				gf.logger.Debug("gap-fill PR comments error", "number", num, "error", cerr)
+				break
+			}
+			if err := sw.Stage(ctx, EntityMessage, cref); err != nil {
+				gf.logger.Debug("failed to stage gap-fill PR comment", "number", num, "error", err)
+				break
+			}
+		}
+
+		// Fetch and stage this PR's inline review comments.
+		for rc, rerr := range gf.client.ListReviewCommentsForPR(ctx, owner, repo, num) {
+			if rerr != nil {
+				if isOptionalEndpointSkip(rerr) {
+					break
+				}
+				gf.logger.Debug("gap-fill PR review comments error", "number", num, "error", rerr)
+				break
+			}
+			if err := sw.Stage(ctx, EntityReviewComment, rc); err != nil {
+				gf.logger.Debug("failed to stage gap-fill PR review comment", "number", num, "error", err)
+				break
+			}
+		}
+
 		if filled%100 == 0 {
 			gf.logger.Info("gap fill PRs progress", "staged", filled, "of", len(numbers))
 		}
 	}
 
-	// Process the newly staged gap-fill data into relational tables.
+	// Flush the in-memory pgx.Batch to Postgres BEFORE invoking the processor
+	// (see fillIssueGaps above for the full rationale — same buffering bug).
 	if filled > 0 {
+		if err := sw.Flush(ctx); err != nil {
+			gf.logger.Warn("failed to flush gap-fill PR staging batch",
+				"repo_id", repoID, "staged", filled, "error", err)
+			return filled, fmt.Errorf("flushing gap-fill PR staging: %w", err)
+		}
 		proc := NewProcessor(gf.store, gf.logger)
 		if err := proc.ProcessRepo(ctx, repoID, int16(gf.client.Platform())); err != nil {
 			return filled, fmt.Errorf("processing gap-fill staging: %w", err)

@@ -99,6 +99,25 @@ func (r *OpenItemRefresher) refreshIssues(ctx context.Context, repoID int64, own
 			continue
 		}
 		refreshed++
+
+		// Fetch and stage this issue's comments. Acts as a safety net against
+		// prior cycles' repo-wide ListIssueComments failures (rate limit,
+		// transient error, or the pre-v0.16.11 flush bug): a single broken
+		// cycle would otherwise permanently drop comments on still-open
+		// items because the since-window of future cycles won't cover them.
+		for cref, cerr := range r.client.ListCommentsForIssue(ctx, owner, repo, num) {
+			if cerr != nil {
+				if isOptionalEndpointSkip(cerr) {
+					break
+				}
+				r.logger.Debug("refresh open-issue comments error", "number", num, "error", cerr)
+				break
+			}
+			if err := sw.Stage(ctx, EntityMessage, cref); err != nil {
+				r.logger.Debug("failed to stage refreshed issue comment", "number", num, "error", err)
+				break
+			}
+		}
 	}
 
 	if refreshed > 0 {
@@ -175,6 +194,37 @@ func (r *OpenItemRefresher) refreshPRs(ctx context.Context, repoID int64, owner,
 			continue
 		}
 		refreshed++
+
+		// Fetch and stage this PR's conversation comments (safety net — see
+		// refreshIssues above for the full rationale).
+		for cref, cerr := range r.client.ListCommentsForPR(ctx, owner, repo, num) {
+			if cerr != nil {
+				if isOptionalEndpointSkip(cerr) {
+					break
+				}
+				r.logger.Debug("refresh open-PR comments error", "number", num, "error", cerr)
+				break
+			}
+			if err := sw.Stage(ctx, EntityMessage, cref); err != nil {
+				r.logger.Debug("failed to stage refreshed PR comment", "number", num, "error", err)
+				break
+			}
+		}
+
+		// Fetch and stage this PR's inline review comments.
+		for rc, rerr := range r.client.ListReviewCommentsForPR(ctx, owner, repo, num) {
+			if rerr != nil {
+				if isOptionalEndpointSkip(rerr) {
+					break
+				}
+				r.logger.Debug("refresh open-PR review comments error", "number", num, "error", rerr)
+				break
+			}
+			if err := sw.Stage(ctx, EntityReviewComment, rc); err != nil {
+				r.logger.Debug("failed to stage refreshed PR review comment", "number", num, "error", err)
+				break
+			}
+		}
 	}
 
 	if refreshed > 0 {

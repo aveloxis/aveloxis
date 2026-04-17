@@ -603,6 +603,121 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 	}
 }
 
+// ListCommentsForIssue returns all comments on a single issue via
+// GET /repos/{o}/{r}/issues/{n}/comments. Results carry an IssueRef so the
+// downstream processor writes them to aveloxis_data.issue_message_ref.
+func (c *Client) ListCommentsForIssue(ctx context.Context, owner, repo string, issueNumber int) iter.Seq2[platform.MessageWithRef, error] {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments?sort=created&direction=asc", owner, repo, issueNumber)
+	return func(yield func(platform.MessageWithRef, error) bool) {
+		for raw, err := range platform.PaginateGitHub[ghComment](ctx, c.http, path) {
+			if err != nil {
+				yield(platform.MessageWithRef{}, err)
+				return
+			}
+			msg := model.Message{
+				PlatformMsgID: raw.ID,
+				PlatformID:    model.PlatformGitHub,
+				NodeID:        raw.NodeID,
+				Text:          raw.Body,
+				Timestamp:     raw.CreatedAt,
+				AuthorRef:     ghUserToRef(raw.User),
+			}
+			ref := platform.MessageWithRef{
+				Message: msg,
+				IssueRef: &model.IssueMessageRef{
+					PlatformSrcID:       raw.ID,
+					PlatformNodeID:      raw.NodeID,
+					PlatformIssueNumber: issueNumber,
+				},
+			}
+			if !yield(ref, nil) {
+				return
+			}
+		}
+	}
+}
+
+// ListCommentsForPR returns conversation comments for a single PR. On GitHub
+// this is the same endpoint as issue comments (PRs ARE issues), but we tag
+// the result with PRRef instead of IssueRef so the processor writes to
+// aveloxis_data.pull_request_message_ref.
+func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[platform.MessageWithRef, error] {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments?sort=created&direction=asc", owner, repo, prNumber)
+	return func(yield func(platform.MessageWithRef, error) bool) {
+		for raw, err := range platform.PaginateGitHub[ghComment](ctx, c.http, path) {
+			if err != nil {
+				yield(platform.MessageWithRef{}, err)
+				return
+			}
+			msg := model.Message{
+				PlatformMsgID: raw.ID,
+				PlatformID:    model.PlatformGitHub,
+				NodeID:        raw.NodeID,
+				Text:          raw.Body,
+				Timestamp:     raw.CreatedAt,
+				AuthorRef:     ghUserToRef(raw.User),
+			}
+			ref := platform.MessageWithRef{
+				Message: msg,
+				PRRef: &model.PullRequestMessageRef{
+					PlatformSrcID:    raw.ID,
+					PlatformNodeID:   raw.NodeID,
+					PlatformPRNumber: prNumber,
+				},
+			}
+			if !yield(ref, nil) {
+				return
+			}
+		}
+	}
+}
+
+// ListReviewCommentsForPR returns inline (diff-line-anchored) review comments
+// for a single PR via GET /repos/{o}/{r}/pulls/{n}/comments. Distinct from
+// ListCommentsForPR which covers the conversation tab.
+func (c *Client) ListReviewCommentsForPR(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[platform.ReviewCommentWithRef, error] {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments?sort=created&direction=asc", owner, repo, prNumber)
+	return func(yield func(platform.ReviewCommentWithRef, error) bool) {
+		for raw, err := range platform.PaginateGitHub[ghReviewComment](ctx, c.http, path) {
+			if err != nil {
+				yield(platform.ReviewCommentWithRef{}, err)
+				return
+			}
+			msg := model.Message{
+				PlatformMsgID: raw.ID,
+				PlatformID:    model.PlatformGitHub,
+				NodeID:        raw.NodeID,
+				Text:          raw.Body,
+				Timestamp:     raw.CreatedAt,
+				AuthorRef:     ghUserToRef(raw.User),
+			}
+			comment := model.ReviewComment{
+				PlatformSrcID:     raw.ID,
+				PlatformReviewID:  raw.PullRequestReviewID,
+				NodeID:            raw.NodeID,
+				DiffHunk:          raw.DiffHunk,
+				Path:              raw.Path,
+				Position:          raw.Position,
+				OriginalPosition:  raw.OriginalPosition,
+				CommitID:          raw.CommitID,
+				OriginalCommitID:  raw.OriginalCommitID,
+				Line:              raw.Line,
+				OriginalLine:      raw.OriginalLine,
+				Side:              raw.Side,
+				StartLine:         raw.StartLine,
+				OriginalStartLine: raw.OriginalStartLine,
+				StartSide:         raw.StartSide,
+				AuthorAssociation: raw.AuthorAssociation,
+				HTMLURL:           raw.HTMLURL,
+				UpdatedAt:         raw.UpdatedAt,
+			}
+			if !yield(platform.ReviewCommentWithRef{Message: msg, Comment: comment}, nil) {
+				return
+			}
+		}
+	}
+}
+
 // --- ReleaseCollector ---
 
 func (c *Client) ListReleases(ctx context.Context, owner, repo string) iter.Seq2[model.Release, error] {

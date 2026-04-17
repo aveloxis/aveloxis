@@ -783,6 +783,22 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	commitCount := 0
 	if raw.Statistics != nil {
 		commitCount = raw.Statistics.CommitCount
+		if commitCount == 0 {
+			// Common: GitLab populates statistics.commit_count via an async
+			// background job, so freshly-imported / mirrored / recently-pushed
+			// projects return 0 until the stats worker catches up. The facade
+			// phase + BackfillGitLabCommitCount will patch repo_info later.
+			c.logger.Info("GitLab reports commit_count=0; will backfill from facade if non-empty",
+				"owner", owner, "repo", repo)
+		}
+	} else {
+		// GitLab omits the statistics object entirely when the token lacks
+		// Reporter+ access on a private project, or on some self-managed
+		// instances with custom permission rules. Surface this so ops can
+		// distinguish "real zero commits" from "token too narrow".
+		c.logger.Warn("GitLab returned no statistics object; commit_count will be 0 until facade backfill",
+			"owner", owner, "repo", repo,
+			"hint", "token may lack Reporter+ access on private project")
 	}
 
 	// GitLab issues_statistics endpoint — gives total and by-state counts in one call.

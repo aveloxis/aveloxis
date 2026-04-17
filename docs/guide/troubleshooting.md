@@ -201,6 +201,48 @@ curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user | grep -i 
 
 ---
 
+## GitLab repo_info.commit_count is 0 but facade found commits
+
+**Symptom:** The monitor dashboard and web repo page show `Metadata commits = 0` for GitLab repos even though `Gathered commits` is a real, non-zero number. Only some GitLab repos are affected, not all.
+
+**Cause:** The metadata commit count is read from `aveloxis_data.repo_info.commit_count`, which for GitLab is populated from `GET /projects/:id?statistics=true`. GitLab returns `commit_count = 0` in two documented cases:
+
+1. **Token lacks Reporter+ access on a private project** — GitLab omits the `statistics` object entirely from the response. Before v0.16.9 this was silent; v0.16.9 logs a WARN:
+   ```
+   GitLab returned no statistics object; commit_count will be 0 until facade backfill
+     owner=... repo=... hint=token may lack Reporter+ access on private project
+   ```
+2. **Stale stats cache** — GitLab computes `statistics.commit_count` via an async background worker. Freshly-imported, mirrored, or recently-pushed projects report 0 until the worker catches up. Especially common for pull-mirror projects. v0.16.9 logs an INFO:
+   ```
+   GitLab reports commit_count=0; will backfill from facade if non-empty owner=... repo=...
+   ```
+
+**Fix (v0.16.9+):** After facade (`git log` walk on the default branch) finishes, the scheduler calls `store.BackfillGitLabCommitCount(repoID)` for GitLab repos only. It patches the latest `repo_info` row's `commit_count` with `COUNT(DISTINCT cmt_commit_hash)` from `aveloxis_data.commits` — but only when the existing value is 0 (never overwrites a real API count) and the gathered count is non-zero. The backfill is idempotent: subsequent runs are no-ops because `commit_count` is no longer 0.
+
+Success is logged:
+```
+gitlab commit_count backfilled from facade repo_id=...
+```
+
+If you still see `Metadata commits = 0` after a successful collection, check:
+
+```sql
+-- Does the repo have any facade commits yet?
+SELECT COUNT(DISTINCT cmt_commit_hash) FROM aveloxis_data.commits WHERE repo_id = <id>;
+
+-- Latest repo_info snapshot — was it updated?
+SELECT data_collection_date, commit_count
+FROM aveloxis_data.repo_info
+WHERE repo_id = <id>
+ORDER BY data_collection_date DESC LIMIT 1;
+```
+
+If the facade count is 0, the bare clone may have failed (see "Git clone exit status 128" below) or the default branch has no reachable commits. If the facade count is non-zero and `commit_count` is still 0, re-run the repo — the backfill runs every time facade completes successfully.
+
+The GitHub path is unaffected: GitHub's REST `commit_count` is computed on-demand and rarely reports stale zeros.
+
+---
+
 ## Release collection "not found" errors
 
 **Symptom:** Logs show `releases: not found: https://api.github.com/repos/owner/name.git/releases?per_page=100` and the repo is flagged as a failed collection.

@@ -893,7 +893,7 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 			row.MetaCommits = st.MetadataCommits
 		}
 
-		row.Due = j.DueAt.Format("15:04:05")
+		row.Due = j.DueAt.Format("Jan 2 15:04")
 		if j.DueAt.Before(time.Now()) && j.Status == "queued" {
 			row.Due = "now"
 		}

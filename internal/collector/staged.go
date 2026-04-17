@@ -53,6 +53,16 @@ const (
 // initial collection pass.
 const LargeRepoCommitThreshold = 10000
 
+// isOptionalEndpointSkip returns true when err represents a normal "this
+// endpoint is not available for this repo" condition — 404 (endpoint or
+// repo missing) or 403 (token can't see a private resource or lacks scope).
+// Used by every staged-phase loop to distinguish routine "skip this phase"
+// outcomes from actual collection failures that should bubble into
+// result.Errors and fail the job.
+func isOptionalEndpointSkip(err error) bool {
+	return errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrForbidden)
+}
+
 // ParallelSlots is a global counter tracking how many extra parallel goroutines
 // are active for large-repo collection. The scheduler's fillWorkerSlots checks
 // this to avoid starting new jobs while large repos consume extra capacity.
@@ -140,12 +150,11 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 
 	for rel, relErr := range sc.client.ListReleases(ctx, owner, repo) {
 		if relErr != nil {
-			// A 404 on /releases is normal for repos that never cut a release
-			// (and for repos whose slug we can no longer resolve — renames,
-			// deletions). It must NOT fail the whole collection job.
-			if errors.Is(relErr, platform.ErrNotFound) {
-				sc.logger.Info("no releases endpoint (404) — treating as zero releases",
-					"owner", owner, "repo", repo)
+			// 404/403 on /releases is normal for repos that never cut a release
+			// or for private/unreachable resources. It must NOT fail the job.
+			if isOptionalEndpointSkip(relErr) {
+				sc.logger.Info("skipping releases endpoint",
+					"owner", owner, "repo", repo, "reason", relErr)
 				break
 			}
 			result.Errors = append(result.Errors, fmt.Errorf("releases: %w", relErr))
@@ -181,6 +190,11 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 	sc.logger.Info("collecting contributors", "owner", owner, "repo", repo)
 	for contrib, err := range sc.client.ListContributors(ctx, owner, repo) {
 		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				sc.logger.Info("skipping contributors endpoint",
+					"owner", owner, "repo", repo, "reason", err)
+				break
+			}
 			result.Errors = append(result.Errors, fmt.Errorf("contributors: %w", err))
 			break
 		}
@@ -297,6 +311,11 @@ func (sc *StagedCollector) collectIssues(ctx context.Context, sw *db.StagingWrit
 	sc.logger.Info("collecting issues", "owner", owner, "repo", repo)
 	for issue, err := range sc.client.ListIssues(ctx, owner, repo, since) {
 		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				sc.logger.Info("skipping issues endpoint",
+					"owner", owner, "repo", repo, "reason", err)
+				break
+			}
 			result.Errors = append(result.Errors, fmt.Errorf("issues: %w", err))
 			break
 		}
@@ -329,6 +348,11 @@ func (sc *StagedCollector) collectPRs(ctx context.Context, sw *db.StagingWriter,
 	sc.logger.Info("collecting pull requests", "owner", owner, "repo", repo)
 	for pr, err := range sc.client.ListPullRequests(ctx, owner, repo, since) {
 		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				sc.logger.Info("skipping pull requests endpoint",
+					"owner", owner, "repo", repo, "reason", err)
+				break
+			}
 			result.Errors = append(result.Errors, fmt.Errorf("pull requests: %w", err))
 			break
 		}
@@ -395,6 +419,11 @@ func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWrit
 	sc.logger.Info("collecting events", "owner", owner, "repo", repo)
 	for event, err := range sc.client.ListIssueEvents(ctx, owner, repo, since) {
 		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				sc.logger.Info("skipping issue events endpoint",
+					"owner", owner, "repo", repo, "reason", err)
+				break
+			}
 			result.Errors = append(result.Errors, fmt.Errorf("issue events: %w", err))
 			break
 		}
@@ -403,6 +432,11 @@ func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWrit
 	}
 	for event, err := range sc.client.ListPREvents(ctx, owner, repo, since) {
 		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				sc.logger.Info("skipping pr events endpoint",
+					"owner", owner, "repo", repo, "reason", err)
+				break
+			}
 			result.Errors = append(result.Errors, fmt.Errorf("pr events: %w", err))
 			break
 		}
@@ -417,6 +451,11 @@ func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWr
 	sc.logger.Info("collecting messages", "owner", owner, "repo", repo)
 	for msg, err := range sc.client.ListIssueComments(ctx, owner, repo, since) {
 		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				sc.logger.Info("skipping issue comments endpoint",
+					"owner", owner, "repo", repo, "reason", err)
+				break
+			}
 			result.Errors = append(result.Errors, fmt.Errorf("issue comments: %w", err))
 			break
 		}
@@ -425,6 +464,11 @@ func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWr
 	}
 	for rc, err := range sc.client.ListReviewComments(ctx, owner, repo, since) {
 		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				sc.logger.Info("skipping review comments endpoint",
+					"owner", owner, "repo", repo, "reason", err)
+				break
+			}
 			result.Errors = append(result.Errors, fmt.Errorf("review comments: %w", err))
 			break
 		}

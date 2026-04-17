@@ -154,6 +154,53 @@ If only GitHub tokens are configured, GitLab repos will not be collected (and vi
 
 ---
 
+## `unsupported Unicode escape sequence (SQLSTATE 22P05)`
+
+**Symptom:** Logs show `flushing staging batch (500 rows): ERROR: unsupported Unicode escape sequence (SQLSTATE 22P05)` and an entire batch of staged rows fails to flush.
+
+**Cause (pre-v0.16.8):** PostgreSQL JSONB columns reject `\u0000` escapes. GitHub and GitLab API responses occasionally include NUL bytes in text fields (bot-generated review comments, binary content echoed into diffs, malformed webhook payloads). A single poisoned row in a 500-row batch killed the whole flush.
+
+**Fix (v0.16.8+):** `db.StagingWriter.Stage` now scrubs `\u0000` from marshaled JSON before queuing the insert (`db.sanitizeJSONForJSONB`). The scrubber is a no-op on clean payloads (zero overhead) and drops the escape when present — NUL has no semantic value in any field we stage.
+
+No operator action needed; the fix is automatic after upgrading and restarting `aveloxis serve`.
+
+---
+
+## "Pull requests / contributors / events: not found" or "forbidden"
+
+**Symptom:** Collection fails for certain repos with log lines like:
+
+```
+contributors: not found: https://api.github.com/repos/owner/name/contributors?per_page=100
+pull requests: not found: https://api.github.com/repos/owner/name/pulls?state=all...
+pull requests: forbidden: https://gitlab.com/api/v4/projects/group%2Fname/merge_requests?...
+```
+
+**Cause (pre-v0.16.8):** Any 404 or 403 on a per-phase endpoint appended an entry to `result.Errors`, which `buildOutcome` translated into `success=false`. Common triggers:
+
+- Repo has issues or PRs disabled in its settings (`/issues` or `/pulls` return 404).
+- Repo was deleted or transferred after it was queued.
+- GitLab project is private and the token lacks access (`403 Forbidden` on `/merge_requests`).
+- GitHub token doesn't have `repo` scope for a private repo (403 on `/contributors`).
+
+**Fix (v0.16.8+):** `collector.isOptionalEndpointSkip(err)` checks `errors.Is(err, platform.ErrNotFound)` and `errors.Is(err, platform.ErrForbidden)`. Every phase in the staged collector now routes through it. A 404 or 403 logs one info line (`skipping <phase> endpoint owner=... repo=... reason=...`) and breaks out of that phase cleanly — the rest of the collection proceeds. The job is only marked failed on *other* errors (rate-limit exhaustion, auth failure, network problems, DB errors).
+
+If you see these repos repeatedly skipping an endpoint, check:
+
+```sql
+-- Is the repo deleted/moved? Check recent prelim runs.
+SELECT repo_id, repo_git, repo_archived, data_collection_date
+FROM aveloxis_data.repos WHERE repo_git LIKE '%owner/name%';
+```
+
+To verify the token scope on GitHub:
+
+```bash
+curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user | grep -i x-oauth-scopes
+```
+
+---
+
 ## Release collection "not found" errors
 
 **Symptom:** Logs show `releases: not found: https://api.github.com/repos/owner/name.git/releases?per_page=100` and the repo is flagged as a failed collection.
@@ -328,6 +375,39 @@ WHERE q.status = 'collecting'
 ```bash
 curl http://localhost:5555/api/stats
 ```
+
+---
+
+## Changed `days_until_recollect` is being ignored
+
+**Symptom:** You edited `collection.days_until_recollect` in `aveloxis.json` (e.g., `1` → `7`), restarted `aveloxis serve`, and repos are still being re-collected on the old schedule.
+
+**Cause (pre-v0.16.6):** `CompleteJob` sets `collection_queue.due_at = NOW() + days_until_recollect` at the moment a collection finishes. That value is *frozen* in the row — changing the config later has no effect on queued rows until each repo next completes a collection under the new setting. With a fleet of thousands of repos that each completed yesterday under `days_until_recollect=1`, the stale `due_at` values are all already due when you restart, and the scheduler picks them right back up regardless of the new `7`.
+
+**Fix (v0.16.6+):** The scheduler now calls `store.RealignDueDates(ctx, recollectAfter)` once on startup, which recomputes `due_at = last_collected + recollectAfter` for every queued row with a non-null `last_collected`. Look for the log line:
+
+```
+realigned queue due_at from current days_until_recollect rows_updated=3079 recollect_after=168h0m0s
+```
+
+`'collecting'` rows (in-flight) and never-collected rows (`last_collected IS NULL`) are skipped. The operation is idempotent — repeated restarts that don't change the config are no-ops.
+
+**Verifying on a live database:**
+
+```sql
+SELECT repo_id,
+       due_at,
+       last_collected,
+       (due_at - last_collected) AS cooldown
+FROM aveloxis_ops.collection_queue
+WHERE status = 'queued' AND last_collected IS NOT NULL
+ORDER BY last_collected DESC
+LIMIT 10;
+```
+
+The `cooldown` column should equal your configured `days_until_recollect` (as an interval) after a successful restart.
+
+**If you want to force a one-shot re-queue *despite* the cooldown**, use `aveloxis prioritize <url>` or the "Prioritize" button in the web UI — that explicitly sets `due_at = NOW()` for a single repo.
 
 ---
 

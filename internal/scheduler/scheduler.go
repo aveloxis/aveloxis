@@ -116,6 +116,18 @@ func (s *Scheduler) Run(ctx context.Context) {
 	s.recoverStale(ctx)
 	s.releaseOurLocks(ctx)
 
+	// Recompute due_at = last_collected + recollectAfter for already-queued
+	// rows so a changed days_until_recollect takes effect immediately. Without
+	// this, due_at is baked in by CompleteJob under the old setting and stays
+	// that way until each repo's next completion — which defeats the point of
+	// changing the cooldown in the config.
+	if realigned, err := s.store.RealignDueDates(ctx, s.cfg.RecollectAfter); err != nil {
+		s.logger.Error("failed to realign queue due_at from config", "error", err)
+	} else if realigned > 0 {
+		s.logger.Info("realigned queue due_at from current days_until_recollect",
+			"rows_updated", realigned, "recollect_after", s.cfg.RecollectAfter)
+	}
+
 	sem := make(chan struct{}, s.cfg.Workers)
 
 	pollTicker := time.NewTicker(s.cfg.PollInterval)

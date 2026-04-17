@@ -278,7 +278,9 @@ function sortTable(col) {
 			rowClass = ` class="p0"`
 		}
 
-		due := j.DueAt.Format("15:04:05")
+		// Match the Last Run column format so the date is visible — critical
+		// now that due_at can be up to days_until_recollect days in the future.
+		due := j.DueAt.Format("Jan 2 15:04")
 		if j.DueAt.Before(time.Now()) && j.Status == "queued" {
 			due = "now"
 		}

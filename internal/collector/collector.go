@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -552,6 +553,13 @@ func (c *Collector) collectReleases(ctx context.Context, repoID int64, owner, re
 	c.logger.Info("collecting releases", "owner", owner, "repo", repo)
 	for rel, err := range c.client.ListReleases(ctx, owner, repo) {
 		if err != nil {
+			// 404 on /releases is a normal state — not every repo has cut a
+			// release. Don't propagate it as a collection error.
+			if errors.Is(err, platform.ErrNotFound) {
+				c.logger.Info("no releases endpoint (404) — treating as zero releases",
+					"owner", owner, "repo", repo)
+				return nil
+			}
 			return err
 		}
 		rel.RepoID = repoID

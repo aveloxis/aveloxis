@@ -21,6 +21,11 @@ import (
 // Callers should use their cached copy of the data.
 var ErrNotModified = errors.New("not modified (304)")
 
+// ErrNotFound wraps 404 responses from the forge API. Callers that want to
+// treat a missing optional resource (e.g. /releases on a repo that never
+// cut a release) as non-fatal can check errors.Is(err, ErrNotFound).
+var ErrNotFound = errors.New("not found")
+
 // AuthStyle controls how API tokens are sent in HTTP requests.
 // GitHub and GitLab use different authentication header formats.
 type AuthStyle int
@@ -155,7 +160,7 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			return nil, ErrNotModified
 		case resp.StatusCode == http.StatusNotFound:
 			resp.Body.Close()
-			return nil, fmt.Errorf("not found: %s", url)
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, url)
 		case resp.StatusCode == http.StatusUnauthorized:
 			// 401 = bad credentials. Permanently invalidate this key.
 			resp.Body.Close()

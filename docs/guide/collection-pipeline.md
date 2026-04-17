@@ -41,6 +41,8 @@ Phase 2: Issues | PRs | Events (3 parallel goroutines)
 Phase 3: Messages (sequential, after parallel phase)
 ```
 
+A 404 from `/releases` is treated as *zero releases* (non-fatal). Not every repo has cut a release, and legacy rows with a stray `.git` in their slug — though now prevented at write time by `model.NormalizeRepoName()` in `db.UpsertRepo` — used to cause this 404. The staged collector logs `no releases endpoint (404) — treating as zero releases` and continues. See the troubleshooting guide for the underlying fix.
+
 The 3 extra goroutines claim parallel slots tracked by an atomic counter. The scheduler's `fillWorkerSlots` pauses new job starts while the total active count (semaphore + parallel slots) exceeds the configured worker limit.
 
 The direct pipeline is simpler -- it writes directly to relational tables with inline contributor resolution. Best for testing or collecting a small number of repos.

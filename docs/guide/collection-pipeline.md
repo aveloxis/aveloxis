@@ -174,12 +174,16 @@ Email domains from commit authors and committers are matched against the `contri
 
 ### Facade aggregates
 
-After all commits are inserted, aggregate tables are refreshed by SQL aggregation over the `commits` table:
+Aggregate tables are refreshed by SQL aggregation over the `commits` table:
 
 - `dm_repo_annual` -- annual commit stats per contributor per repo
 - `dm_repo_monthly` -- monthly stats
 - `dm_repo_weekly` -- weekly stats
 - `dm_repo_group_annual`, `dm_repo_group_monthly`, `dm_repo_group_weekly` -- group-level aggregates
+
+**Cadence (v0.16.5+):** aggregates are refreshed **in bulk on the configured matview rebuild day** (`collection.matview_rebuild_day`, default Saturday). The scheduler calls `store.RefreshAllRepoAggregates` while collection workers are paused, alongside the materialized view refresh. Previously the facade recomputed these tables *after every single repo collection*, which on a fleet of thousands of repos amounted to tens of thousands of redundant single-repo aggregations per cycle — the matview-day bulk pass supersedes that work.
+
+The per-repo helpers `RefreshRepoAggregates(repoID)` and `RefreshRepoGroupAggregates(repoID)` remain in `internal/db/aggregates.go` for manual/ops usage (e.g., recalculating a single repo after a correction). They are simply no longer invoked automatically from the facade.
 
 ---
 

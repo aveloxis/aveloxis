@@ -68,14 +68,11 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 		return result, fmt.Errorf("git log: %w", err)
 	}
 
-	// Refresh aggregates (dm_repo_annual/monthly/weekly).
-	f.logger.Info("refreshing aggregates", "repo_id", repoID)
-	if err := f.store.RefreshRepoAggregates(ctx, repoID); err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("repo aggregates: %w", err))
-	}
-	if err := f.store.RefreshRepoGroupAggregates(ctx, repoID); err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("repo group aggregates: %w", err))
-	}
+	// dm_repo_* aggregates are NOT refreshed here. Running them per repo on
+	// every collection duplicated work and dominated facade runtime on large
+	// fleets. The scheduler runs RefreshAllRepoAggregates in bulk on the
+	// configured matview rebuild day (see scheduler.rebuildMatviews). The
+	// per-repo helpers in db/aggregates.go remain available for manual/ops use.
 
 	return result, nil
 }

@@ -6,31 +6,35 @@ import (
 	"testing"
 )
 
-// TestGitURLDoesNotDoubleGitSuffix verifies that the gitURL construction
-// in runFacadeAndAnalysis does not append .git when the repo name already
-// ends with .git. Many JOSS/Augur-imported URLs have the .git suffix,
-// producing https://github.com/owner/repo.git.git which returns 404.
+// TestGitURLDoesNotDoubleGitSuffix verifies that gitURL construction in
+// runFacadeAndAnalysis does not produce ".git.git". Previously the scheduler
+// had a local strings.TrimSuffix workaround because repo.Name could contain
+// ".git" (Augur/JOSS imports). Now the canonical fix lives at the write
+// boundary — db.PostgresStore.UpsertRepo calls model.NormalizeRepoName —
+// so repo.Name is guaranteed clean and appending ".git" is safe. This test
+// enforces that the DB normalization is in place so the scheduler workaround
+// stays removed.
 func TestGitURLDoesNotDoubleGitSuffix(t *testing.T) {
-	src, err := os.ReadFile("scheduler.go")
+	// The canonical fix is write-side normalization in db.UpsertRepo. Verify
+	// it exists so repo.Name never reaches the scheduler with a .git suffix.
+	src, err := os.ReadFile("../db/postgres.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	code := string(src)
-
-	// Find where gitURL is constructed (near runFacadeAndAnalysis).
-	idx := strings.Index(code, "func (s *Scheduler) runFacadeAndAnalysis")
-	if idx < 0 {
-		t.Fatal("cannot find runFacadeAndAnalysis")
+	upsertIdx := strings.Index(code, "func (s *PostgresStore) UpsertRepo(")
+	if upsertIdx < 0 {
+		t.Fatal("cannot find UpsertRepo in db/postgres.go")
 	}
-	fnBody := code[idx:]
-	if len(fnBody) > 2000 {
-		fnBody = fnBody[:2000]
+	fnBody := code[upsertIdx:]
+	end := strings.Index(fnBody, "\n}\n")
+	if end > 0 {
+		fnBody = fnBody[:end]
 	}
-
-	// Must not blindly append .git — must check/strip first.
-	if strings.Contains(fnBody, `/%s.git"`) && !strings.Contains(fnBody, "TrimSuffix") {
-		t.Error("gitURL construction must not blindly append .git — " +
-			"repos imported from JOSS/Augur already have .git suffix, " +
-			"producing double .git.git which returns 404")
+	if !strings.Contains(fnBody, "NormalizeRepoName") {
+		t.Error("UpsertRepo must call model.NormalizeRepoName on r.Name so " +
+			"repo slugs with '.git' never reach the DB — otherwise the " +
+			"scheduler would need a local strings.TrimSuffix workaround and " +
+			"every API call (/releases, /issues, /pulls) would 404")
 	}
 }

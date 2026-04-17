@@ -61,6 +61,12 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// created duplicate rows. Clean up first, then create the unique index.
 	deduplicateCommits(ctx, pg, logger)
 
+	// Repos: strip legacy ".git" suffixes from repo_name (added in v0.11.3).
+	// Repos added via Augur import / org listing before the normalize fix
+	// stored names like "naturf.git", which 404s every API call (/releases,
+	// /issues, /pulls). One-time cleanup; idempotent.
+	cleanupRepoNameGitSuffix(ctx, pg, logger)
+
 	// pull_request_repo: add unique constraint for ON CONFLICT support (v0.12.0).
 	pg.pool.Exec(ctx, `
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_repo_meta_head_base
@@ -283,6 +289,25 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 func addColumnIfMissing(ctx context.Context, pg *PostgresStore, table, column, colType string) {
 	_, _ = pg.pool.Exec(ctx, fmt.Sprintf(
 		`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s`, table, column, colType))
+}
+
+// cleanupRepoNameGitSuffix strips a trailing ".git" from aveloxis_data.repos.repo_name.
+// Repos added before the write-side normalization fix (and Augur imports) could
+// store slugs like "naturf.git", which 404s every API endpoint that embeds the
+// slug (/repos/{owner}/{name}/releases, /issues, /pulls). Idempotent: after the
+// first run this matches zero rows.
+func cleanupRepoNameGitSuffix(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+	tag, err := pg.pool.Exec(ctx, `
+		UPDATE aveloxis_data.repos
+		SET repo_name = regexp_replace(repo_name, '\.git$', '')
+		WHERE repo_name LIKE '%.git'`)
+	if err != nil {
+		logger.Warn("repo_name .git cleanup failed", "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		logger.Info("stripped .git suffix from repo_name", "rows_updated", n)
+	}
 }
 
 // cleanupBadTimestamps nullifies any timestamp columns that have garbage values

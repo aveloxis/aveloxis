@@ -689,6 +689,13 @@ fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-files')
 .mode-toggle{display:flex;border:1px solid #d1d5da;border-radius:6px;overflow:hidden}
 .mode-toggle button{padding:6px 14px;border:none;background:white;cursor:pointer;font-size:13px}
 .mode-toggle button.active{background:#0366d6;color:white}
+.date-range{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.date-range label{font-size:12px;color:#586069;font-weight:500}
+.date-range input[type=date]{padding:5px 8px;border:1px solid #d1d5da;border-radius:6px;font-size:13px;font-family:inherit}
+.date-range .preset-btn{padding:5px 10px;border:1px solid #d1d5da;border-radius:6px;background:white;cursor:pointer;font-size:12px}
+.date-range .preset-btn.active{background:#0366d6;color:white;border-color:#0366d6}
+.date-range .apply-btn{padding:5px 12px;border:1px solid #0366d6;border-radius:6px;background:#0366d6;color:white;cursor:pointer;font-size:13px;font-weight:500}
+.date-range .apply-btn:hover{background:#0255b3}
 </style>
 <div class="nav">
 <a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
@@ -722,6 +729,20 @@ fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-files')
 </div>
 </div>
 
+<div class="compare-controls date-range" aria-label="Time range">
+<label for="date-since">From</label>
+<input type="date" id="date-since">
+<label for="date-until">To</label>
+<input type="date" id="date-until">
+<button class="preset-btn" data-preset="1m" onclick="applyPreset('1m')">1M</button>
+<button class="preset-btn" data-preset="6m" onclick="applyPreset('6m')">6M</button>
+<button class="preset-btn" data-preset="1y" onclick="applyPreset('1y')">1Y</button>
+<button class="preset-btn active" data-preset="2y" onclick="applyPreset('2y')">2Y</button>
+<button class="preset-btn" data-preset="5y" onclick="applyPreset('5y')">5Y</button>
+<button class="preset-btn" data-preset="all" onclick="applyPreset('all')">All</button>
+<button class="apply-btn" onclick="applyDateRange()">Apply</button>
+</div>
+
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
 <div><canvas id="cmp-commits" height="220"></canvas></div>
 <div><canvas id="cmp-prs-opened" height="220"></canvas></div>
@@ -738,6 +759,69 @@ let selectedRepos = [];
 let allRepoData = {};
 let currentMode = 'raw';
 let charts = {};
+
+// Date-range state. Default window matches the API default (last 2 years, no upper bound).
+// The inputs display the computed dates; fetch requests use whatever is currently in them.
+function fmtDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+function initDateRange() {
+  const now = new Date();
+  const since = new Date(now);
+  since.setFullYear(since.getFullYear() - 2);
+  document.getElementById('date-since').value = fmtDate(since);
+  document.getElementById('date-until').value = fmtDate(now);
+}
+function applyPreset(preset) {
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.querySelector('.preset-btn[data-preset="' + preset + '"]');
+  if (btn) btn.classList.add('active');
+  const now = new Date();
+  const since = new Date(now);
+  if (preset === '1m') since.setMonth(since.getMonth() - 1);
+  else if (preset === '6m') since.setMonth(since.getMonth() - 6);
+  else if (preset === '1y') since.setFullYear(since.getFullYear() - 1);
+  else if (preset === '2y') since.setFullYear(since.getFullYear() - 2);
+  else if (preset === '5y') since.setFullYear(since.getFullYear() - 5);
+  else if (preset === 'all') since.setFullYear(1970);
+  document.getElementById('date-since').value = fmtDate(since);
+  document.getElementById('date-until').value = fmtDate(now);
+  applyDateRange();
+}
+function clearPresetHighlight() {
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+}
+document.getElementById('date-since').addEventListener('change', clearPresetHighlight);
+document.getElementById('date-until').addEventListener('change', clearPresetHighlight);
+function getDateRangeQuery() {
+  const s = document.getElementById('date-since').value;
+  const u = document.getElementById('date-until').value;
+  const parts = [];
+  if (s) parts.push('since=' + encodeURIComponent(s));
+  if (u) parts.push('until=' + encodeURIComponent(u));
+  return parts.length ? '?' + parts.join('&') : '';
+}
+function applyDateRange() {
+  const s = document.getElementById('date-since').value;
+  const u = document.getElementById('date-until').value;
+  if (s && u && s >= u) {
+    alert('The "From" date must be earlier than the "To" date.');
+    return;
+  }
+  // Refetch all currently selected repos with the new range, then re-render.
+  allRepoData = {};
+  if (selectedRepos.length === 0) { renderAllCharts(); return; }
+  Promise.all(selectedRepos.map(repo =>
+    fetch(API_BASE + '/api/v1/repos/' + repo.id + '/timeseries' + getDateRangeQuery())
+      .then(r => r.json())
+      .then(ts => { allRepoData[repo.id] = ts; })
+      .catch(err => console.error('Failed to refresh repo ' + repo.id + ':', err))
+  )).then(() => renderAllCharts());
+}
+initDateRange();
 
 // Search with visible dropdown — uses the dedicated search-results container.
 const searchInput = document.getElementById('repo-search');
@@ -810,7 +894,7 @@ function renderTags() {
 }
 
 function fetchAndRender(repo) {
-  fetch(API_BASE + '/api/v1/repos/' + repo.id + '/timeseries')
+  fetch(API_BASE + '/api/v1/repos/' + repo.id + '/timeseries' + getDateRangeQuery())
     .then(r => r.json())
     .then(ts => {
       allRepoData[repo.id] = ts;
@@ -904,7 +988,7 @@ function renderComparisonChart(canvasId, title, metricKey) {
 const urlRepos = '{{.RepoIDs}}'.split(',').filter(Boolean);
 if (urlRepos.length > 0) {
   urlRepos.forEach(id => {
-    fetch(API_BASE + '/api/v1/repos/' + id + '/timeseries')
+    fetch(API_BASE + '/api/v1/repos/' + id + '/timeseries' + getDateRangeQuery())
       .then(r => r.json())
       .then(ts => {
         const repo = {id: parseInt(id), owner: ts.repo_owner || 'unknown', name: ts.repo_name || id};

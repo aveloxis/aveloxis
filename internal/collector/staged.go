@@ -21,6 +21,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -139,6 +140,14 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 
 	for rel, relErr := range sc.client.ListReleases(ctx, owner, repo) {
 		if relErr != nil {
+			// A 404 on /releases is normal for repos that never cut a release
+			// (and for repos whose slug we can no longer resolve — renames,
+			// deletions). It must NOT fail the whole collection job.
+			if errors.Is(relErr, platform.ErrNotFound) {
+				sc.logger.Info("no releases endpoint (404) — treating as zero releases",
+					"owner", owner, "repo", repo)
+				break
+			}
 			result.Errors = append(result.Errors, fmt.Errorf("releases: %w", relErr))
 			break
 		}

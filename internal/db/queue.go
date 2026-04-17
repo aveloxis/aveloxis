@@ -153,6 +153,35 @@ func (s *PostgresStore) MakeQueuedReposDue(ctx context.Context) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
+// RealignDueDates recomputes due_at = last_collected + recollectAfter for
+// every 'queued' row whose last_collected is set. Called once on scheduler
+// startup so a changed days_until_recollect takes effect immediately on
+// existing rows — without this, CompleteJob bakes due_at at completion time
+// under the old setting and subsequent config changes are silently ignored
+// until each repo's next completion.
+//
+// Skipped rows:
+//   - status = 'collecting' — a worker is mid-flight, don't disturb it
+//   - last_collected IS NULL — never-collected repos keep their initial
+//     due_at=NOW() so they collect on first pass
+//
+// Idempotent: the <> predicate skips rows already in the correct shape, so
+// updated_at stays stable across repeated startups.
+func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time.Duration) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_ops.collection_queue
+		SET due_at = last_collected + $1::interval,
+			updated_at = NOW()
+		WHERE status = 'queued'
+		  AND last_collected IS NOT NULL
+		  AND due_at <> last_collected + $1::interval`,
+		recollectAfter.String())
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // RecoverStaleLocks resets jobs that have been locked for longer than timeout
 // (e.g. a worker crashed). Called periodically by the scheduler.
 func (s *PostgresStore) RecoverStaleLocks(ctx context.Context, timeout time.Duration) (int64, error) {

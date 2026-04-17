@@ -331,6 +331,39 @@ curl http://localhost:5555/api/stats
 
 ---
 
+## Changed `days_until_recollect` is being ignored
+
+**Symptom:** You edited `collection.days_until_recollect` in `aveloxis.json` (e.g., `1` → `7`), restarted `aveloxis serve`, and repos are still being re-collected on the old schedule.
+
+**Cause (pre-v0.16.6):** `CompleteJob` sets `collection_queue.due_at = NOW() + days_until_recollect` at the moment a collection finishes. That value is *frozen* in the row — changing the config later has no effect on queued rows until each repo next completes a collection under the new setting. With a fleet of thousands of repos that each completed yesterday under `days_until_recollect=1`, the stale `due_at` values are all already due when you restart, and the scheduler picks them right back up regardless of the new `7`.
+
+**Fix (v0.16.6+):** The scheduler now calls `store.RealignDueDates(ctx, recollectAfter)` once on startup, which recomputes `due_at = last_collected + recollectAfter` for every queued row with a non-null `last_collected`. Look for the log line:
+
+```
+realigned queue due_at from current days_until_recollect rows_updated=3079 recollect_after=168h0m0s
+```
+
+`'collecting'` rows (in-flight) and never-collected rows (`last_collected IS NULL`) are skipped. The operation is idempotent — repeated restarts that don't change the config are no-ops.
+
+**Verifying on a live database:**
+
+```sql
+SELECT repo_id,
+       due_at,
+       last_collected,
+       (due_at - last_collected) AS cooldown
+FROM aveloxis_ops.collection_queue
+WHERE status = 'queued' AND last_collected IS NOT NULL
+ORDER BY last_collected DESC
+LIMIT 10;
+```
+
+The `cooldown` column should equal your configured `days_until_recollect` (as an interval) after a successful restart.
+
+**If you want to force a one-shot re-queue *despite* the cooldown**, use `aveloxis prioritize <url>` or the "Prioritize" button in the web UI — that explicitly sets `due_at = NOW()` for a single repo.
+
+---
+
 ## Checking collection status
 
 To see what was collected for a specific repo:

@@ -115,6 +115,24 @@ type MessageCollector interface {
 
 	// ListReviewComments returns inline review comments since the given time.
 	ListReviewComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[ReviewCommentWithRef, error]
+
+	// ListCommentsForIssue returns all comments on a single issue. Used by
+	// gap fill (to backfill comments on historical issues whose age is
+	// outside any since window) and by open-item refresh (as a safety net
+	// against prior cycles' repo-wide collectMessages failures).
+	ListCommentsForIssue(ctx context.Context, owner, repo string, issueNumber int) iter.Seq2[MessageWithRef, error]
+
+	// ListCommentsForPR returns conversation comments for a single PR/MR.
+	// On GitHub this hits the same /issues/{n}/comments endpoint as issue
+	// comments (PRs are issues on GitHub); on GitLab it hits
+	// /merge_requests/:iid/notes.
+	ListCommentsForPR(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[MessageWithRef, error]
+
+	// ListReviewCommentsForPR returns inline (diff-line-anchored) review
+	// comments for a single PR/MR. On GitHub: /pulls/{n}/comments. On
+	// GitLab: /merge_requests/:iid/discussions filtered to notes with a
+	// position (diff anchor).
+	ListReviewCommentsForPR(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[ReviewCommentWithRef, error]
 }
 
 // ReleaseCollector fetches releases and tags.

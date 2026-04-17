@@ -201,6 +201,48 @@ curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user | grep -i 
 
 ---
 
+## Gap-filled historical issues/PRs have no comments
+
+**Symptom:** A repo shows correct issue and PR counts (metadata and gathered match after v0.16.11), but `aveloxis_data.messages` has few or no rows for those items. Especially noticeable for repos whose first-ever collection happened after v0.16.11 landed — gap fill brought in the parent rows, but comments on items older than `days_until_recollect` never materialize.
+
+**Cause (pre-v0.16.12):** Main-path `StagedCollector.collectMessages` calls repo-wide, since-filtered comment endpoints. On the first collection `since = zero` so everything comes through. On subsequent incremental cycles `since = now - days_until_recollect`, which only captures comments modified inside that window. Gap fill (`fillIssueGaps` / `fillPRGaps`) and open-item refresh (`refreshIssues` / `refreshPRs`) fetched the parent issue/PR and its labels/assignees/reviewers/reviews — but never called any per-item comment endpoint. The result: comments on backfilled historical items were permanently missing.
+
+**Fix (v0.16.12+):** Three new methods on `platform.Client`:
+
+- `ListCommentsForIssue(ctx, owner, repo, issueNumber)`
+- `ListCommentsForPR(ctx, owner, repo, prNumber)`
+- `ListReviewCommentsForPR(ctx, owner, repo, prNumber)`
+
+Each of the four collector functions now calls the appropriate method(s) per item right after staging the parent, wraps errors in `isOptionalEndpointSkip`, and stages results as `EntityMessage` / `EntityReviewComment`. GitHub and GitLab both covered.
+
+Diagnostic queries:
+
+```sql
+-- How many comments per issue / PR for a specific repo?
+SELECT
+  'issue' AS kind, i.issue_number AS num,
+  (SELECT COUNT(*) FROM aveloxis_data.issue_message_ref imr WHERE imr.issue_id = i.issue_id) AS comments
+FROM aveloxis_data.issues i
+WHERE i.repo_id = <id>
+ORDER BY num
+LIMIT 50;
+
+-- Which repos have issues/PRs but disproportionately few messages?
+-- (Rough heuristic: fewer than 0.5 comments per issue+PR.)
+SELECT r.repo_id, r.repo_owner || '/' || r.repo_name AS repo,
+       (SELECT COUNT(*) FROM aveloxis_data.issues i WHERE i.repo_id = r.repo_id) AS issues,
+       (SELECT COUNT(*) FROM aveloxis_data.pull_requests p WHERE p.repo_id = r.repo_id) AS prs,
+       (SELECT COUNT(*) FROM aveloxis_data.messages m WHERE m.repo_id = r.repo_id) AS messages
+FROM aveloxis_data.repos r
+WHERE r.repo_archived = FALSE
+  AND EXISTS (SELECT 1 FROM aveloxis_data.issues WHERE repo_id = r.repo_id)
+HAVING ... ;  -- filter as needed
+```
+
+To backfill after upgrading: boost an affected repo with `aveloxis prioritize <url>`. The next cycle's gap fill and open-item refresh will run under the new code path and stage comments.
+
+---
+
 ## Metadata shows issues/PRs but gathered count stays at 0
 
 **Symptom:** On the monitor dashboard or web repo detail page, a repo shows non-zero metadata counts for issues and/or PRs (e.g. `Meta 40`) but gathered stays at `0` (or a tiny number like `1 / 46`) across many collection cycles. Commits are collected correctly. Logs show `"gap fill completed filled=N"` with N in the dozens or low hundreds, but `aveloxis_data.issues` and `aveloxis_data.pull_requests` have zero rows for the repo.

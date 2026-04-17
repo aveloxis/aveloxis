@@ -493,6 +493,22 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	}
 	facadeResult = result
 
+	// GitLab commit_count backfill: GitLab's API commonly reports 0 commits
+	// (nil statistics object when the token lacks Reporter+ access, or stale
+	// stats cache for freshly-mirrored projects). Now that facade has
+	// populated aveloxis_data.commits with the real count, patch the latest
+	// repo_info row so the monitor/web "metadata commits" column reflects
+	// reality instead of the API-reported zero. GitHub path is unaffected.
+	if err == nil && repo.Platform == model.PlatformGitLab {
+		if updated, bfErr := s.store.BackfillGitLabCommitCount(ctx, repoID); bfErr != nil {
+			s.logger.Warn("gitlab commit_count backfill failed",
+				"repo_id", repoID, "error", bfErr)
+		} else if updated {
+			s.logger.Info("gitlab commit_count backfilled from facade",
+				"repo_id", repoID)
+		}
+	}
+
 	// Phase 4: Analysis — needs the bare clone from facade.
 	// RetainClone keeps the temp clone alive for scorecard local execution.
 	var analysisResult *collector.AnalysisResult

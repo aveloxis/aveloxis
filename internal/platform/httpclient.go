@@ -275,10 +275,15 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 				"url", url, "status", 422, "body_snippet", truncateBody(string(body), 200))
 			return nil, fmt.Errorf("unprocessable entity: %s", url)
 		case resp.StatusCode == http.StatusForbidden:
-			resp.Body.Close()
-			// 403 can mean rate limit, secondary rate limit, or resource not accessible.
-			// Only treat as rate limit if rate-limit headers indicate exhaustion.
+			// 403 can mean rate limit, secondary rate limit, or resource not
+			// accessible. Header signals are authoritative — they carry the
+			// reset timing that retry-after plumbing relies on, so they are
+			// always consulted first. Body inspection is the fallback net
+			// for cases where a proxy strips the headers, GitHub's response
+			// shape changes, or an unauthenticated request leaks through
+			// (the "for <IP>" body shape).
 			if resp.Header.Get("Retry-After") != "" {
+				resp.Body.Close()
 				wait := parseRetryAfter(resp)
 				c.logger.Info("secondary rate limit", "url", url, "wait", wait)
 				select {
@@ -288,8 +293,8 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 				}
 				continue
 			}
-			remaining := resp.Header.Get("X-RateLimit-Remaining")
-			if remaining == "0" {
+			if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+				resp.Body.Close()
 				resource := resp.Header.Get("X-RateLimit-Resource")
 				if resource == "" {
 					resource = "core"
@@ -297,6 +302,40 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 				resetStr := resp.Header.Get("X-RateLimit-Reset")
 				c.logger.Info("rate limit exhausted",
 					"url", url, "resource", resource, "reset", resetStr)
+				continue
+			}
+			// Headers said nothing definitive. Read the body and check whether
+			// the message text reveals a rate limit anyway.
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if isAnonymousRateLimitBody(body) {
+				// Unauthenticated request reached us. Every code path that
+				// builds an HTTPClient call goes through GetKey() — getting
+				// this body shape means a key was unset, the wrong client
+				// was used, or a proxy stripped the Authorization header.
+				// Log at ERROR so on-call sees the regression, then back off
+				// like a regular rate limit so we don't hot-loop on the bug.
+				c.logger.Error("403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
+					"url", url,
+					"body_snippet", truncateBody(string(body), 240))
+				wait := jitteredBackoff(attempt)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(wait):
+				}
+				continue
+			}
+			if isRateLimitBody(body) {
+				c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
+					"url", url,
+					"body_snippet", truncateBody(string(body), 240))
+				wait := jitteredBackoff(attempt)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(wait):
+				}
 				continue
 			}
 			// 403 for other reasons (private repo, no permission) — not a key problem.
@@ -480,6 +519,16 @@ func setQueryParam(path, key, value string) string {
 	}
 	filtered = append(filtered, key+"="+value)
 	return base + "?" + strings.Join(filtered, "&")
+}
+
+// jitteredBackoff returns a capped exponential backoff with random jitter,
+// used by 403-with-rate-limit-body fallback paths that lack an authoritative
+// Retry-After or X-RateLimit-Reset to honor. Caps at 64s + jitter so a
+// pathological loop on a permanent 403 doesn't burn a worker for hours.
+func jitteredBackoff(attempt int) time.Duration {
+	base := time.Duration(1<<min(attempt, 6)) * time.Second // 1s..64s
+	jitter := time.Duration(rand.IntN(int(base/2) + 1))
+	return base + jitter
 }
 
 // truncateBody returns the first n bytes of a response body for logging,

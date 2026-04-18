@@ -26,14 +26,25 @@ import (
 
 // OpenItemRefresher re-fetches open issues and PRs to capture state changes.
 type OpenItemRefresher struct {
-	store  *db.PostgresStore
-	client platform.Client
-	logger *slog.Logger
+	store       *db.PostgresStore
+	client      platform.Client
+	logger      *slog.Logger
+	prChildMode string // see CollectionConfig.PRChildMode
 }
 
-// NewOpenItemRefresher creates an open item refresher.
+// NewOpenItemRefresher creates an open item refresher using the REST
+// per-PR child waterfall. For GraphQL-mode, call NewOpenItemRefresherWithMode.
 func NewOpenItemRefresher(store *db.PostgresStore, client platform.Client, logger *slog.Logger) *OpenItemRefresher {
-	return &OpenItemRefresher{store: store, client: client, logger: logger}
+	return NewOpenItemRefresherWithMode(store, client, logger, "rest")
+}
+
+// NewOpenItemRefresherWithMode is the explicit-mode constructor.
+// Unknown modes collapse to "rest".
+func NewOpenItemRefresherWithMode(store *db.PostgresStore, client platform.Client, logger *slog.Logger, mode string) *OpenItemRefresher {
+	if mode != "graphql" {
+		mode = "rest"
+	}
+	return &OpenItemRefresher{store: store, client: client, logger: logger, prChildMode: mode}
 }
 
 // RefreshOpenItems re-fetches all open issues and PRs for a repo, updating
@@ -141,56 +152,22 @@ func (r *OpenItemRefresher) refreshIssues(ctx context.Context, repoID int64, own
 
 // refreshPRs re-fetches specific PRs by number with all children.
 // Uses the same envelope pattern as the staged collector and gap filler.
+// Branches on PRChildMode: "rest" (per-PR waterfall, pre-v0.18.1
+// behavior) or "graphql" (batched FetchPRBatch). Message/review-comment
+// collection remains per-PR REST in both modes — phase 1 only
+// consolidates the PR child fetch.
 func (r *OpenItemRefresher) refreshPRs(ctx context.Context, repoID int64, owner, repo string, numbers []int) int {
 	refreshed := 0
 	sw := db.NewStagingWriter(r.store, repoID, int16(r.client.Platform()), r.logger)
 
-	for _, num := range numbers {
-		pr, err := r.client.FetchPRByNumber(ctx, owner, repo, num)
-		if err != nil {
-			r.logger.Debug("failed to fetch open PR", "number", num, "error", err)
-			continue
-		}
+	// Fetch PR cores + children. In graphql mode, one batch call replaces
+	// the per-PR waterfall; in rest mode, fetch each one sequentially
+	// via the existing methods.
+	envelopes := r.fetchPRsForRefresh(ctx, owner, repo, numbers)
 
-		envelope := stagedPR{PR: *pr}
-		for label, err := range r.client.ListPRLabels(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Labels = append(envelope.Labels, label)
-		}
-		for assignee, err := range r.client.ListPRAssignees(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Assignees = append(envelope.Assignees, assignee)
-		}
-		for reviewer, err := range r.client.ListPRReviewers(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Reviewers = append(envelope.Reviewers, reviewer)
-		}
-		for review, err := range r.client.ListPRReviews(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Reviews = append(envelope.Reviews, review)
-		}
-		for commit, err := range r.client.ListPRCommits(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Commits = append(envelope.Commits, commit)
-		}
-		for file, err := range r.client.ListPRFiles(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Files = append(envelope.Files, file)
-		}
-
-		if err := sw.Stage(ctx, EntityPullRequest, envelope); err != nil {
+	for _, env := range envelopes {
+		num := env.PR.Number
+		if err := sw.Stage(ctx, EntityPullRequest, env); err != nil {
 			continue
 		}
 		refreshed++
@@ -242,4 +219,90 @@ func (r *OpenItemRefresher) refreshPRs(ctx context.Context, repoID int64, owner,
 		}
 	}
 	return refreshed
+}
+
+// fetchPRsForRefresh returns a slice of stagedPR envelopes ready for
+// staging, using either the REST waterfall or the GraphQL batch
+// depending on r.prChildMode. PRs that can't be fetched are skipped
+// cleanly — the caller appends only what comes back.
+func (r *OpenItemRefresher) fetchPRsForRefresh(ctx context.Context, owner, repo string, numbers []int) []stagedPR {
+	if r.prChildMode == "graphql" {
+		return r.fetchPRsForRefreshGraphQL(ctx, owner, repo, numbers)
+	}
+	return r.fetchPRsForRefreshREST(ctx, owner, repo, numbers)
+}
+
+func (r *OpenItemRefresher) fetchPRsForRefreshREST(ctx context.Context, owner, repo string, numbers []int) []stagedPR {
+	out := make([]stagedPR, 0, len(numbers))
+	for _, num := range numbers {
+		pr, err := r.client.FetchPRByNumber(ctx, owner, repo, num)
+		if err != nil {
+			r.logger.Debug("failed to fetch open PR", "number", num, "error", err)
+			continue
+		}
+		envelope := stagedPR{PR: *pr}
+		for label, err := range r.client.ListPRLabels(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Labels = append(envelope.Labels, label)
+		}
+		for assignee, err := range r.client.ListPRAssignees(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Assignees = append(envelope.Assignees, assignee)
+		}
+		for reviewer, err := range r.client.ListPRReviewers(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Reviewers = append(envelope.Reviewers, reviewer)
+		}
+		for review, err := range r.client.ListPRReviews(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Reviews = append(envelope.Reviews, review)
+		}
+		for commit, err := range r.client.ListPRCommits(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Commits = append(envelope.Commits, commit)
+		}
+		for file, err := range r.client.ListPRFiles(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Files = append(envelope.Files, file)
+		}
+		out = append(out, envelope)
+	}
+	return out
+}
+
+func (r *OpenItemRefresher) fetchPRsForRefreshGraphQL(ctx context.Context, owner, repo string, numbers []int) []stagedPR {
+	batch, err := r.client.FetchPRBatch(ctx, owner, repo, numbers)
+	if err != nil {
+		r.logger.Debug("FetchPRBatch in refresh failed", "count", len(numbers), "error", err)
+		return nil
+	}
+	out := make([]stagedPR, 0, len(batch))
+	for _, s := range batch {
+		out = append(out, stagedPR{
+			PR:        s.PR,
+			Labels:    s.Labels,
+			Assignees: s.Assignees,
+			Reviewers: s.Reviewers,
+			Reviews:   s.Reviews,
+			Commits:   s.Commits,
+			Files:     s.Files,
+			MetaHead:  s.MetaHead,
+			MetaBase:  s.MetaBase,
+			RepoHead:  s.RepoHead,
+			RepoBase:  s.RepoBase,
+		})
+	}
+	return out
 }

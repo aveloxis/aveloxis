@@ -97,19 +97,33 @@ type stagedPR struct {
 // StagedCollector writes raw API data to the staging table instead of directly
 // into the relational schema. This is the fast path for high-throughput collection.
 type StagedCollector struct {
-	client platform.Client
-	store  *db.PostgresStore
-	logger *slog.Logger
-	platID int16
+	client       platform.Client
+	store        *db.PostgresStore
+	logger       *slog.Logger
+	platID       int16
+	prChildMode  string // "rest" (default) or "graphql" — see CollectionConfig.PRChildMode
 }
 
-// NewStagedCollector creates a staged collector.
+// NewStagedCollector creates a staged collector using the REST per-PR
+// child waterfall. For GraphQL-mode, call NewStagedCollectorWithMode.
 func NewStagedCollector(client platform.Client, store *db.PostgresStore, logger *slog.Logger) *StagedCollector {
+	return NewStagedCollectorWithMode(client, store, logger, "rest")
+}
+
+// NewStagedCollectorWithMode is the explicit-mode constructor. mode
+// values are "rest" (the pre-v0.18.1 per-PR waterfall) and "graphql"
+// (the batched FetchPRBatch fetcher added in phase 1). Unknown values
+// are treated as "rest" so a misspelled config doesn't fail closed.
+func NewStagedCollectorWithMode(client platform.Client, store *db.PostgresStore, logger *slog.Logger, mode string) *StagedCollector {
+	if mode != "graphql" {
+		mode = "rest"
+	}
 	return &StagedCollector{
-		client: client,
-		store:  store,
-		logger: logger,
-		platID: int16(client.Platform()),
+		client:      client,
+		store:       store,
+		logger:      logger,
+		platID:      int16(client.Platform()),
+		prChildMode: mode,
 	}
 }
 
@@ -147,7 +161,9 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 	if infoErr != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("repo info: %w", infoErr))
 	} else {
-		sw.Stage(ctx, EntityRepoInfo, info)
+		if err := sw.Stage(ctx, EntityRepoInfo, info); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("stage repo info: %w", err))
+		}
 		result.CommitCount = info.CommitCount
 	}
 
@@ -163,14 +179,18 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 			result.Errors = append(result.Errors, fmt.Errorf("releases: %w", relErr))
 			break
 		}
-		sw.Stage(ctx, EntityRelease, rel)
+		if err := sw.Stage(ctx, EntityRelease, rel); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("stage release: %w", err))
+		}
 		result.Releases++
 	}
 
 	clones, cloneErr := sc.client.FetchCloneStats(ctx, owner, repo)
 	if cloneErr == nil {
 		for _, clone := range clones {
-			sw.Stage(ctx, EntityCloneStats, clone)
+			if err := sw.Stage(ctx, EntityCloneStats, clone); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("stage clone stats: %w", err))
+			}
 		}
 	}
 
@@ -183,9 +203,11 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 	}
 	proc := NewProcessor(sc.store, sc.logger)
 	for _, et := range []string{EntityRepoInfo, EntityCloneStats, EntityRelease} {
-		sc.store.ProcessStaged(ctx, repoID, et, 500, func(rows []db.StagedRow) error {
+		if err := sc.store.ProcessStaged(ctx, repoID, et, 500, func(rows []db.StagedRow) error {
 			return proc.processBatch(ctx, repoID, sc.platID, et, rows)
-		})
+		}); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("process staged %s: %w", et, err))
+		}
 	}
 	sc.logger.Info("metadata processed", "commit_count", result.CommitCount, "releases", result.Releases)
 
@@ -264,7 +286,9 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 		issueSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
 		sc.collectIssues(ctx, issueSW, owner, repo, since, localResult)
-		issueSW.Flush(ctx)
+		if err := issueSW.Flush(ctx); err != nil {
+			localResult.Errors = append(localResult.Errors, fmt.Errorf("issue flush: %w", err))
+		}
 		mu.Lock()
 		result.Issues += localResult.Issues
 		result.Errors = append(result.Errors, localResult.Errors...)
@@ -277,7 +301,9 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 		prSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
 		sc.collectPRs(ctx, prSW, owner, repo, since, localResult)
-		prSW.Flush(ctx)
+		if err := prSW.Flush(ctx); err != nil {
+			localResult.Errors = append(localResult.Errors, fmt.Errorf("pr flush: %w", err))
+		}
 		mu.Lock()
 		result.PullRequests += localResult.PullRequests
 		result.Errors = append(result.Errors, localResult.Errors...)
@@ -290,7 +316,9 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 		eventSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
 		sc.collectEvents(ctx, eventSW, owner, repo, since, localResult)
-		eventSW.Flush(ctx)
+		if err := eventSW.Flush(ctx); err != nil {
+			localResult.Errors = append(localResult.Errors, fmt.Errorf("event flush: %w", err))
+		}
 		mu.Lock()
 		result.Events += localResult.Events
 		result.Errors = append(result.Errors, localResult.Errors...)
@@ -306,7 +334,9 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 	// They need a fresh StagingWriter.
 	msgSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 	sc.collectMessages(ctx, msgSW, owner, repo, since, result)
-	msgSW.Flush(ctx)
+	if err := msgSW.Flush(ctx); err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("message flush: %w", err))
+	}
 }
 
 // collectIssues stages all issues with their labels and assignees.
@@ -348,7 +378,14 @@ func (sc *StagedCollector) collectIssues(ctx context.Context, sw *db.StagingWrit
 
 // collectPRs stages all pull requests with their children.
 func (sc *StagedCollector) collectPRs(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
-	sc.logger.Info("collecting pull requests", "owner", owner, "repo", repo)
+	sc.logger.Info("collecting pull requests", "owner", owner, "repo", repo, "mode", sc.prChildMode)
+
+	// Collect PR numbers first so we can either stage them one-by-one
+	// (REST mode, preserving the pre-v0.18.1 behavior) or hand the full
+	// list to FetchPRBatch (GraphQL mode). Sharing this enumeration means
+	// both modes iterate the same PR listing, eliminating a source of
+	// equivalence drift.
+	var prs []model.PullRequest
 	for pr, err := range sc.client.ListPullRequests(ctx, owner, repo, since) {
 		if err != nil {
 			if isOptionalEndpointSkip(err) {
@@ -359,6 +396,23 @@ func (sc *StagedCollector) collectPRs(ctx context.Context, sw *db.StagingWriter,
 			result.Errors = append(result.Errors, fmt.Errorf("pull requests: %w", err))
 			break
 		}
+		prs = append(prs, pr)
+	}
+
+	switch sc.prChildMode {
+	case "graphql":
+		sc.collectPRsGraphQL(ctx, sw, owner, repo, prs, result)
+	default:
+		sc.collectPRsREST(ctx, sw, owner, repo, prs, result)
+	}
+	sc.logger.Info("pull requests staged", "count", result.PullRequests, "mode", sc.prChildMode)
+}
+
+// collectPRsREST stages PRs using the per-PR REST child waterfall — 8
+// HTTP calls per PR. The pre-v0.18.1 behavior, preserved as the default
+// until the GraphQL path is validated in production.
+func (sc *StagedCollector) collectPRsREST(ctx context.Context, sw *db.StagingWriter, owner, repo string, prs []model.PullRequest, result *CollectResult) {
+	for _, pr := range prs {
 		envelope := stagedPR{PR: pr}
 		for label, err := range sc.client.ListPRLabels(ctx, owner, repo, pr.Number) {
 			if err != nil {
@@ -411,10 +465,56 @@ func (sc *StagedCollector) collectPRs(ctx context.Context, sw *db.StagingWriter,
 		}
 		result.PullRequests++
 		if result.PullRequests%100 == 0 {
-			sc.logger.Info("pull requests progress", "owner", owner, "repo", repo, "staged", result.PullRequests)
+			sc.logger.Info("pull requests progress", "owner", owner, "repo", repo, "staged", result.PullRequests, "mode", "rest")
 		}
 	}
-	sc.logger.Info("pull requests staged", "count", result.PullRequests)
+}
+
+// collectPRsGraphQL stages PRs using platform.Client.FetchPRBatch — one
+// GraphQL query per batch of 25 PRs, children populated inline.
+// Equivalent column-for-column with collectPRsREST.
+//
+// If FetchPRBatch returns an error classified as ClassSkip we swallow
+// it (same policy as the REST path); any other error is surfaced in
+// result.Errors to fail the job.
+func (sc *StagedCollector) collectPRsGraphQL(ctx context.Context, sw *db.StagingWriter, owner, repo string, prs []model.PullRequest, result *CollectResult) {
+	numbers := make([]int, 0, len(prs))
+	for _, pr := range prs {
+		numbers = append(numbers, pr.Number)
+	}
+
+	batch, err := sc.client.FetchPRBatch(ctx, owner, repo, numbers)
+	if err != nil {
+		if isOptionalEndpointSkip(err) {
+			sc.logger.Info("skipping pull requests graphql batch",
+				"owner", owner, "repo", repo, "reason", err)
+			return
+		}
+		result.Errors = append(result.Errors, fmt.Errorf("pull requests graphql batch: %w", err))
+		return
+	}
+	for _, s := range batch {
+		envelope := stagedPR{
+			PR:        s.PR,
+			Labels:    s.Labels,
+			Assignees: s.Assignees,
+			Reviewers: s.Reviewers,
+			Reviews:   s.Reviews,
+			Commits:   s.Commits,
+			Files:     s.Files,
+			MetaHead:  s.MetaHead,
+			MetaBase:  s.MetaBase,
+			RepoHead:  s.RepoHead,
+			RepoBase:  s.RepoBase,
+		}
+		if err := sw.Stage(ctx, EntityPullRequest, envelope); err != nil {
+			result.Errors = append(result.Errors, err)
+		}
+		result.PullRequests++
+		if result.PullRequests%100 == 0 {
+			sc.logger.Info("pull requests progress", "owner", owner, "repo", repo, "staged", result.PullRequests, "mode", "graphql")
+		}
+	}
 }
 
 // collectEvents stages issue and PR events.

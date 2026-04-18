@@ -122,6 +122,18 @@ type CollectionConfig struct {
 	// during schema migration (startup). For large databases this can take minutes.
 	// Default: false — views are created on first migrate but not refreshed on every startup.
 	MatviewRebuildOnStartup bool `json:"matview_rebuild_on_startup"`
+
+	// PRChildMode selects between the REST per-PR child waterfall
+	// ("rest", default) and the batched GraphQL fetcher ("graphql").
+	// When "graphql", the staged collector, open-item refresh, and gap
+	// filler all use platform.Client.FetchPRBatch — one query for up
+	// to 25 PRs and all their children. GitLab's FetchPRBatch falls
+	// back to REST composition because GitLab's GraphQL API is weaker
+	// on merge_request fields; parity is preserved at the column level.
+	//
+	// Default "rest" so existing deployments pick up v0.18.1 without a
+	// behavior change until operators explicitly opt in.
+	PRChildMode string `json:"pr_child_mode"`
 }
 
 // Load reads configuration from a JSON file.
@@ -204,6 +216,7 @@ func DefaultConfig() *Config {
 			RepoCloneDir:            defaultCloneDir(),
 			MatviewRebuildDay:       "saturday",
 			MatviewRebuildOnStartup: false,
+			PRChildMode:             "rest",
 		},
 		LogLevel: "info",
 	}

@@ -63,11 +63,14 @@ func TestStagedCollectorTreatsNotFoundAndForbiddenAsNonFatal(t *testing.T) {
 		}
 	}
 
-	// And the helper itself must exist and cover both sentinels.
+	// And the helper itself must exist. Since v0.18.0 the helper delegates
+	// to platform.ClassifyError — the sentinel coverage (ErrNotFound,
+	// ErrForbidden, ErrGone, ErrWrongEntityKind) is pinned by tests in the
+	// platform package (errors_test.go). We assert the delegation here.
 	helperIdx := strings.Index(code, "func isOptionalEndpointSkip(")
 	if helperIdx < 0 {
 		t.Error("staged.go should define isOptionalEndpointSkip(err) to centralize " +
-			"the 404+403 non-fatal check — otherwise every phase duplicates the " +
+			"the routine-skip check — otherwise every phase duplicates the " +
 			"policy and drift is guaranteed")
 	} else {
 		helperBody := code[helperIdx:]
@@ -75,9 +78,10 @@ func TestStagedCollectorTreatsNotFoundAndForbiddenAsNonFatal(t *testing.T) {
 		if end > 0 {
 			helperBody = helperBody[:end]
 		}
-		if !strings.Contains(helperBody, "ErrNotFound") || !strings.Contains(helperBody, "ErrForbidden") {
-			t.Error("isOptionalEndpointSkip must check both platform.ErrNotFound " +
-				"AND platform.ErrForbidden")
+		if !strings.Contains(helperBody, "platform.ClassifyError") ||
+			!strings.Contains(helperBody, "platform.ClassSkip") {
+			t.Error("isOptionalEndpointSkip must delegate to platform.ClassifyError(err) == platform.ClassSkip " +
+				"so new error shapes (ErrWrongEntityKind, GraphQL errors) classify through a single source")
 		}
 	}
 }

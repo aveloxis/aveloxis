@@ -60,6 +60,7 @@ func main() {
 		refreshViewsCmd(&cfgPath),
 		installToolsCmd(),
 		sbomCmd(&cfgPath),
+		shadowDiffCmd(),
 		versionCmd(),
 	)
 

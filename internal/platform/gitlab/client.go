@@ -39,6 +39,12 @@ func (c *Client) Platform() model.Platform {
 	return model.PlatformGitLab
 }
 
+// OnPermanentRedirect forwards to the underlying HTTPClient. See
+// platform.HTTPClient.OnPermanentRedirect for semantics.
+func (c *Client) OnPermanentRedirect(hook func(from, to string)) {
+	c.http.OnPermanentRedirect(hook)
+}
+
 func (c *Client) ParseRepoURL(rawURL string) (owner, repo string, err error) {
 	parsed, err := platform.ParseRepoURLWithHints(rawURL, map[string]bool{c.host: true})
 	if err != nil {

@@ -169,8 +169,23 @@ func (gf *GapFiller) fillIssueGaps(ctx context.Context, repoID int64, owner, rep
 	for _, num := range numbers {
 		issue, err := gf.client.FetchIssueByNumber(ctx, owner, repo, num)
 		if err != nil {
-			gf.logger.Debug("issue not found or error", "number", num, "error", err)
-			continue
+			if isOptionalEndpointSkip(err) {
+				gf.logger.Debug("issue not found or inaccessible (skip)", "number", num, "error", err)
+				continue
+			}
+			// Non-skippable: rate limit, network failure, etc. Bubble up so
+			// the scheduler can retry on the next cycle instead of silently
+			// closing the gap fill with `filled=N` while the rest of the
+			// numbers stay missing forever.
+			gf.logger.Warn("gap fill aborting on non-skippable issue fetch error",
+				"repo_id", repoID, "number", num, "filled_so_far", filled, "error", err)
+			if filled > 0 {
+				if ferr := sw.Flush(ctx); ferr != nil {
+					gf.logger.Warn("failed to flush partial gap-fill issue staging",
+						"repo_id", repoID, "staged", filled, "error", ferr)
+				}
+			}
+			return filled, fmt.Errorf("gap fill issue %d: %w", num, err)
 		}
 
 		// Build the same envelope the staged collector uses.
@@ -246,8 +261,22 @@ func (gf *GapFiller) fillPRGaps(ctx context.Context, repoID int64, owner, repo s
 	for _, num := range numbers {
 		pr, err := gf.client.FetchPRByNumber(ctx, owner, repo, num)
 		if err != nil {
-			gf.logger.Debug("PR not found or error", "number", num, "error", err)
-			continue
+			if isOptionalEndpointSkip(err) {
+				gf.logger.Debug("PR not found or inaccessible (skip)", "number", num, "error", err)
+				continue
+			}
+			// Non-skippable: rate limit, network failure, etc. Bubble up so
+			// the scheduler can retry on the next cycle instead of silently
+			// reporting success with most PRs still missing.
+			gf.logger.Warn("gap fill aborting on non-skippable PR fetch error",
+				"repo_id", repoID, "number", num, "filled_so_far", filled, "error", err)
+			if filled > 0 {
+				if ferr := sw.Flush(ctx); ferr != nil {
+					gf.logger.Warn("failed to flush partial gap-fill PR staging",
+						"repo_id", repoID, "staged", filled, "error", ferr)
+				}
+			}
+			return filled, fmt.Errorf("gap fill PR %d: %w", num, err)
 		}
 
 		// Build the same envelope the staged collector uses.

@@ -75,6 +75,17 @@ type HTTPClient struct {
 	// per unique endpoint path hit during a collection cycle).
 	etagMu    sync.RWMutex
 	etagCache map[string]string
+
+	// onPermanentRedirect is invoked whenever Get observes a 301 or 308
+	// response it's about to follow. The callback receives the from URL
+	// (the one Get was trying to reach) and the to URL (the Location
+	// header target, resolved to an absolute URL). Intended for the
+	// scheduler to detect repo renames and update repos.repo_git.
+	//
+	// Not invoked for 302/307 — those are temporary and must not mutate
+	// durable state. Guarded against nil at each call site.
+	redirectMu          sync.RWMutex
+	onPermanentRedirect func(from, to string)
 }
 
 // NewHTTPClient creates a platform-aware HTTP client with the given auth style.
@@ -87,10 +98,22 @@ func NewHTTPClient(baseURL string, keys *KeyPool, logger *slog.Logger, authStyle
 		MaxIdleConnsPerHost: 20, // GitHub/GitLab APIs are few hosts with many requests
 		IdleConnTimeout:     90 * time.Second,
 		ForceAttemptHTTP2:   true,
+		// ResponseHeaderTimeout caps how long we wait for the server's
+		// response headers after sending the request. A stalled
+		// connection (firewall drop, server hang) would otherwise hold
+		// a worker slot for the full whole-request Timeout. 15s is well
+		// above GitHub's normal response-header latency (~200ms) but
+		// below the whole-request budget so stalls fail fast.
+		ResponseHeaderTimeout: 15 * time.Second,
 	}
 	return &HTTPClient{
 		inner: &http.Client{
-			Timeout:   30 * time.Second,
+			// 60s whole-request timeout. Accommodates the ~1 MB responses
+			// GraphQL queries return for batches of 25 parents with full
+			// nested children, and leaves a 6× margin above observed p99
+			// GraphQL response times (~10s) for firewall-induced jitter.
+			// Previously 30s, which left only 3× margin.
+			Timeout:   60 * time.Second,
 			Transport: transport,
 			// Our Get loop owns redirect handling explicitly so the logic is
 			// in one place (hop cap, logging, Location-absent → ErrGone).
@@ -112,6 +135,25 @@ func NewHTTPClient(baseURL string, keys *KeyPool, logger *slog.Logger, authStyle
 // non-standard requests (e.g., GraphQL via POST).
 func (c *HTTPClient) Keys() *KeyPool {
 	return c.keys
+}
+
+// OnPermanentRedirect installs a callback that fires whenever Get observes
+// a 301 or 308 response it's about to follow. The callback receives the
+// from URL (the request that received the redirect) and the to URL
+// (resolved absolute target). Use case: the scheduler installs a hook per
+// job that updates repos.repo_git / repo_owner / repo_name when the
+// redirect is on the repo root, so the DB stays in sync with GitHub's
+// rename/transfer events.
+//
+// Only permanent redirects fire the hook. 302/307 are temporary — the
+// repo's canonical URL hasn't changed, so mutating the DB would be wrong.
+//
+// Passing a nil hook clears any previously-installed callback.
+// Safe to call at any time; internally synchronized.
+func (c *HTTPClient) OnPermanentRedirect(hook func(from, to string)) {
+	c.redirectMu.Lock()
+	c.onPermanentRedirect = hook
+	c.redirectMu.Unlock()
 }
 
 const maxRetries = 10
@@ -157,7 +199,13 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		if err != nil {
 			c.logger.Warn("HTTP request failed, retrying",
 				"url", url, "attempt", attempt+1, "error", err)
-			time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+			// Context-aware sleep: a cancelled job wakes immediately
+			// instead of sitting here for 20+s across the retry chain.
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+			}
 			continue
 		}
 
@@ -246,6 +294,19 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			c.logger.Info("following redirect",
 				"from", url, "to", newURL,
 				"status", resp.StatusCode, "hop", redirectHops)
+
+			// Notify the permanent-redirect hook on 301/308 only. 302/307
+			// are temporary and must not mutate durable state.
+			if resp.StatusCode == http.StatusMovedPermanently ||
+				resp.StatusCode == http.StatusPermanentRedirect {
+				c.redirectMu.RLock()
+				hook := c.onPermanentRedirect
+				c.redirectMu.RUnlock()
+				if hook != nil {
+					hook(url, newURL)
+				}
+			}
+
 			url = newURL
 			// Do not count this iteration against the retry budget — a
 			// redirect is not a retry. Decrement attempt so the outer
@@ -275,10 +336,15 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 				"url", url, "status", 422, "body_snippet", truncateBody(string(body), 200))
 			return nil, fmt.Errorf("unprocessable entity: %s", url)
 		case resp.StatusCode == http.StatusForbidden:
-			resp.Body.Close()
-			// 403 can mean rate limit, secondary rate limit, or resource not accessible.
-			// Only treat as rate limit if rate-limit headers indicate exhaustion.
+			// 403 can mean rate limit, secondary rate limit, or resource not
+			// accessible. Header signals are authoritative — they carry the
+			// reset timing that retry-after plumbing relies on, so they are
+			// always consulted first. Body inspection is the fallback net
+			// for cases where a proxy strips the headers, GitHub's response
+			// shape changes, or an unauthenticated request leaks through
+			// (the "for <IP>" body shape).
 			if resp.Header.Get("Retry-After") != "" {
+				resp.Body.Close()
 				wait := parseRetryAfter(resp)
 				c.logger.Info("secondary rate limit", "url", url, "wait", wait)
 				select {
@@ -288,8 +354,8 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 				}
 				continue
 			}
-			remaining := resp.Header.Get("X-RateLimit-Remaining")
-			if remaining == "0" {
+			if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+				resp.Body.Close()
 				resource := resp.Header.Get("X-RateLimit-Resource")
 				if resource == "" {
 					resource = "core"
@@ -297,6 +363,40 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 				resetStr := resp.Header.Get("X-RateLimit-Reset")
 				c.logger.Info("rate limit exhausted",
 					"url", url, "resource", resource, "reset", resetStr)
+				continue
+			}
+			// Headers said nothing definitive. Read the body and check whether
+			// the message text reveals a rate limit anyway.
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if isAnonymousRateLimitBody(body) {
+				// Unauthenticated request reached us. Every code path that
+				// builds an HTTPClient call goes through GetKey() — getting
+				// this body shape means a key was unset, the wrong client
+				// was used, or a proxy stripped the Authorization header.
+				// Log at ERROR so on-call sees the regression, then back off
+				// like a regular rate limit so we don't hot-loop on the bug.
+				c.logger.Error("403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
+					"url", url,
+					"body_snippet", truncateBody(string(body), 240))
+				wait := jitteredBackoff(attempt)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(wait):
+				}
+				continue
+			}
+			if isRateLimitBody(body) {
+				c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
+					"url", url,
+					"body_snippet", truncateBody(string(body), 240))
+				wait := jitteredBackoff(attempt)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(wait):
+				}
 				continue
 			}
 			// 403 for other reasons (private repo, no permission) — not a key problem.
@@ -332,7 +432,11 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			resp.Body.Close()
 			c.logger.Warn("unexpected status",
 				"url", url, "status", resp.StatusCode, "body_snippet", truncateBody(string(body), 200), "attempt", attempt+1)
-			time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+			}
 			continue
 		}
 	}
@@ -480,6 +584,16 @@ func setQueryParam(path, key, value string) string {
 	}
 	filtered = append(filtered, key+"="+value)
 	return base + "?" + strings.Join(filtered, "&")
+}
+
+// jitteredBackoff returns a capped exponential backoff with random jitter,
+// used by 403-with-rate-limit-body fallback paths that lack an authoritative
+// Retry-After or X-RateLimit-Reset to honor. Caps at 64s + jitter so a
+// pathological loop on a permanent 403 doesn't burn a worker for hours.
+func jitteredBackoff(attempt int) time.Duration {
+	base := time.Duration(1<<min(attempt, 6)) * time.Second // 1s..64s
+	jitter := time.Duration(rand.IntN(int(base/2) + 1))
+	return base + jitter
 }
 
 // truncateBody returns the first n bytes of a response body for logging,

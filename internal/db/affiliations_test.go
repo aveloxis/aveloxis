@@ -1,6 +1,9 @@
 package db
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestExtractDomain(t *testing.T) {
 	tests := []struct {
@@ -53,7 +56,7 @@ func TestAffiliationResolver_ResolveWithPreloadedCache(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := r.Resolve(nil, tt.email)
+		got := r.Resolve(context.TODO(), tt.email)
 		if got != tt.want {
 			t.Errorf("Resolve(%q) = %q, want %q", tt.email, got, tt.want)
 		}

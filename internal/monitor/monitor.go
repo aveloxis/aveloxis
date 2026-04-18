@@ -7,14 +7,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/augurlabs/aveloxis/internal/db"
+	"github.com/augurlabs/aveloxis/internal/scheduler"
 	"github.com/augurlabs/aveloxis/internal/static"
 )
+
+// renderMatviewBanner writes a visible pause banner at the top of the
+// dashboard while scheduler.MatviewRebuildActive is set. Operators were
+// previously unable to distinguish a genuinely stuck scheduler from a
+// healthy weekly rebuild; the banner makes the pause explicit.
+func renderMatviewBanner(w io.Writer) {
+	if !scheduler.MatviewRebuildActive.Load() {
+		return
+	}
+	fmt.Fprint(w, `<div style="background:#fde68a;color:#78350f;padding:0.75rem 1rem;border-radius:8px;margin-bottom:1rem;border:1px solid #f59e0b;font-weight:600">Weekly materialized view rebuild in progress — collection paused. New jobs will resume automatically when the rebuild completes.</div>`)
+}
 
 // Server is the monitoring HTTP server.
 type Server struct {
@@ -247,8 +260,11 @@ function sortTable(col) {
 </head><body>
 <div style="display:flex;align-items:center;justify-content:space-between"><h1>Aveloxis Monitor</h1><img src="/icon.png" alt="Aveloxis" style="height:48px;border-radius:8px"></div>
 <div class="sub">Auto-refreshes every 10s. API: <code>aveloxis api --addr :8383</code></div>
-<div class="stats">`)
+`)
 
+	renderMatviewBanner(w)
+
+	fmt.Fprint(w, `<div class="stats">`)
 	fmt.Fprintf(w, `<div class="stat"><div class="value">%d</div><div class="label">Total</div></div>`, stats["total"])
 	fmt.Fprintf(w, `<div class="stat"><div class="value">%d</div><div class="label">Queued</div></div>`, stats["queued"])
 	fmt.Fprintf(w, `<div class="stat"><div class="value">%d</div><div class="label">Collecting</div></div>`, stats["collecting"])

@@ -45,14 +45,25 @@ type Gap struct {
 
 // GapFiller detects and fills collection gaps for a repo.
 type GapFiller struct {
-	store  *db.PostgresStore
-	client platform.Client
-	logger *slog.Logger
+	store       *db.PostgresStore
+	client      platform.Client
+	logger      *slog.Logger
+	prChildMode string // see CollectionConfig.PRChildMode
 }
 
-// NewGapFiller creates a gap filler.
+// NewGapFiller creates a gap filler using the REST per-PR child
+// waterfall. For GraphQL-mode, call NewGapFillerWithMode.
 func NewGapFiller(store *db.PostgresStore, client platform.Client, logger *slog.Logger) *GapFiller {
-	return &GapFiller{store: store, client: client, logger: logger}
+	return NewGapFillerWithMode(store, client, logger, "rest")
+}
+
+// NewGapFillerWithMode is the explicit-mode constructor. Unknown modes
+// collapse to "rest" so a misspelled config doesn't fail closed.
+func NewGapFillerWithMode(store *db.PostgresStore, client platform.Client, logger *slog.Logger, mode string) *GapFiller {
+	if mode != "graphql" {
+		mode = "rest"
+	}
+	return &GapFiller{store: store, client: client, logger: logger, prChildMode: mode}
 }
 
 // AssessAndFillGaps checks for collection gaps and fills them if needed.
@@ -254,69 +265,27 @@ func (gf *GapFiller) fillIssueGaps(ctx context.Context, repoID int64, owner, rep
 
 // fillPRGaps fetches specific PRs by number and stages them with all children.
 // Uses the same envelope pattern as the staged collector (stagedPR + Stage).
+// Branches on PRChildMode: "rest" (per-PR waterfall) or "graphql" (batched).
 func (gf *GapFiller) fillPRGaps(ctx context.Context, repoID int64, owner, repo string, numbers []int) (int, error) {
 	filled := 0
 	sw := db.NewStagingWriter(gf.store, repoID, int16(gf.client.Platform()), gf.logger)
 
-	for _, num := range numbers {
-		pr, err := gf.client.FetchPRByNumber(ctx, owner, repo, num)
-		if err != nil {
-			if isOptionalEndpointSkip(err) {
-				gf.logger.Debug("PR not found or inaccessible (skip)", "number", num, "error", err)
-				continue
+	// Fetch every PR envelope either via REST waterfall or GraphQL batch.
+	// Messages and review comments remain per-PR REST in both modes —
+	// phase 1 only consolidates the PR child fetch.
+	envelopes, nonFatalErr := gf.fetchPRsForGap(ctx, repoID, owner, repo, numbers)
+	if nonFatalErr != nil {
+		if filled > 0 {
+			if ferr := sw.Flush(ctx); ferr != nil {
+				gf.logger.Warn("failed to flush partial gap-fill PR staging",
+					"repo_id", repoID, "staged", filled, "error", ferr)
 			}
-			// Non-skippable: rate limit, network failure, etc. Bubble up so
-			// the scheduler can retry on the next cycle instead of silently
-			// reporting success with most PRs still missing.
-			gf.logger.Warn("gap fill aborting on non-skippable PR fetch error",
-				"repo_id", repoID, "number", num, "filled_so_far", filled, "error", err)
-			if filled > 0 {
-				if ferr := sw.Flush(ctx); ferr != nil {
-					gf.logger.Warn("failed to flush partial gap-fill PR staging",
-						"repo_id", repoID, "staged", filled, "error", ferr)
-				}
-			}
-			return filled, fmt.Errorf("gap fill PR %d: %w", num, err)
 		}
+		return filled, nonFatalErr
+	}
 
-		// Build the same envelope the staged collector uses.
-		envelope := stagedPR{PR: *pr}
-		for label, err := range gf.client.ListPRLabels(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Labels = append(envelope.Labels, label)
-		}
-		for assignee, err := range gf.client.ListPRAssignees(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Assignees = append(envelope.Assignees, assignee)
-		}
-		for reviewer, err := range gf.client.ListPRReviewers(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Reviewers = append(envelope.Reviewers, reviewer)
-		}
-		for review, err := range gf.client.ListPRReviews(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Reviews = append(envelope.Reviews, review)
-		}
-		for commit, err := range gf.client.ListPRCommits(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Commits = append(envelope.Commits, commit)
-		}
-		for file, err := range gf.client.ListPRFiles(ctx, owner, repo, num) {
-			if err != nil {
-				break
-			}
-			envelope.Files = append(envelope.Files, file)
-		}
+	for _, envelope := range envelopes {
+		num := envelope.PR.Number
 
 		if err := sw.Stage(ctx, EntityPullRequest, envelope); err != nil {
 			gf.logger.Debug("failed to stage PR", "number", num, "error", err)
@@ -376,6 +345,97 @@ func (gf *GapFiller) fillPRGaps(ctx context.Context, repoID int64, owner, repo s
 		}
 	}
 	return filled, nil
+}
+
+// fetchPRsForGap returns stagedPR envelopes for the given PR numbers,
+// using either the per-PR REST waterfall or the batched GraphQL path
+// based on gf.prChildMode. Returns a non-nil error only for non-skippable
+// failures (rate limit, network) so the caller can bubble them and
+// avoid reporting a silent partial success.
+func (gf *GapFiller) fetchPRsForGap(ctx context.Context, repoID int64, owner, repo string, numbers []int) ([]stagedPR, error) {
+	if gf.prChildMode == "graphql" {
+		batch, err := gf.client.FetchPRBatch(ctx, owner, repo, numbers)
+		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				gf.logger.Debug("PR gap fill graphql batch skipped", "error", err)
+				return nil, nil
+			}
+			gf.logger.Warn("gap fill aborting on non-skippable PR batch error",
+				"repo_id", repoID, "error", err)
+			return nil, fmt.Errorf("gap fill PR batch: %w", err)
+		}
+		out := make([]stagedPR, 0, len(batch))
+		for _, s := range batch {
+			out = append(out, stagedPR{
+				PR:        s.PR,
+				Labels:    s.Labels,
+				Assignees: s.Assignees,
+				Reviewers: s.Reviewers,
+				Reviews:   s.Reviews,
+				Commits:   s.Commits,
+				Files:     s.Files,
+				MetaHead:  s.MetaHead,
+				MetaBase:  s.MetaBase,
+				RepoHead:  s.RepoHead,
+				RepoBase:  s.RepoBase,
+			})
+		}
+		return out, nil
+	}
+
+	// REST path — pre-v0.18.1 behavior.
+	out := make([]stagedPR, 0, len(numbers))
+	for _, num := range numbers {
+		pr, err := gf.client.FetchPRByNumber(ctx, owner, repo, num)
+		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				gf.logger.Debug("PR not found or inaccessible (skip)", "number", num, "error", err)
+				continue
+			}
+			gf.logger.Warn("gap fill aborting on non-skippable PR fetch error",
+				"repo_id", repoID, "number", num, "error", err)
+			return out, fmt.Errorf("gap fill PR %d: %w", num, err)
+		}
+		envelope := stagedPR{PR: *pr}
+		for label, err := range gf.client.ListPRLabels(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Labels = append(envelope.Labels, label)
+		}
+		for assignee, err := range gf.client.ListPRAssignees(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Assignees = append(envelope.Assignees, assignee)
+		}
+		for reviewer, err := range gf.client.ListPRReviewers(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Reviewers = append(envelope.Reviewers, reviewer)
+		}
+		for review, err := range gf.client.ListPRReviews(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Reviews = append(envelope.Reviews, review)
+		}
+		for commit, err := range gf.client.ListPRCommits(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Commits = append(envelope.Commits, commit)
+		}
+		for file, err := range gf.client.ListPRFiles(ctx, owner, repo, num) {
+			if err != nil {
+				break
+			}
+			envelope.Files = append(envelope.Files, file)
+		}
+		out = append(out, envelope)
+	}
+	return out, nil
 }
 
 // ComputeGaps returns contiguous gaps between collected and expected number sets.

@@ -68,6 +68,30 @@ type IssueCollector interface {
 	FetchIssueByNumber(ctx context.Context, owner, repo string, number int) (*model.Issue, error)
 }
 
+// StagedPR bundles a PullRequest with every child entity the collector
+// stages alongside it. Produced by FetchPRBatch, which in one call
+// fetches a parent PR plus its labels, assignees, reviewers, reviews,
+// commits, files, head/base meta, and head/base repositories.
+//
+// Shape mirrors the collector's internal stagedPR envelope so callers
+// can hand results straight to the staging writer without re-shaping.
+// Pointer fields (MetaHead, MetaBase, RepoHead, RepoBase) may be nil
+// when the source is null — typical for merged PRs whose branches
+// were deleted.
+type StagedPR struct {
+	PR        model.PullRequest
+	Labels    []model.PullRequestLabel
+	Assignees []model.PullRequestAssignee
+	Reviewers []model.PullRequestReviewer
+	Reviews   []model.PullRequestReview
+	Commits   []model.PullRequestCommit
+	Files     []model.PullRequestFile
+	MetaHead  *model.PullRequestMeta
+	MetaBase  *model.PullRequestMeta
+	RepoHead  *model.PullRequestRepo
+	RepoBase  *model.PullRequestRepo
+}
+
 // PullRequestCollector fetches pull requests / merge requests and related entities.
 type PullRequestCollector interface {
 	// ListPullRequests returns all PRs/MRs updated since the given time.
@@ -100,6 +124,19 @@ type PullRequestCollector interface {
 
 	// FetchPRByNumber fetches a single PR by number for targeted gap filling.
 	FetchPRByNumber(ctx context.Context, owner, repo string, number int) (*model.PullRequest, error)
+
+	// FetchPRBatch fetches a batch of PRs by number and returns each one
+	// with all its children populated (labels, assignees, reviewers,
+	// reviews, commits, files, head/base meta, head/base repo). The
+	// implementation may split a large number list into multiple
+	// underlying requests; callers pass the full list and receive the
+	// flattened result. Replaces the per-PR REST child waterfall with
+	// a single GraphQL call per batch on GitHub.
+	//
+	// Returns an empty slice (no error) for an empty input. PRs that
+	// have been deleted or are inaccessible are silently skipped; the
+	// returned length may be less than len(numbers).
+	FetchPRBatch(ctx context.Context, owner, repo string, numbers []int) ([]StagedPR, error)
 }
 
 // EventCollector fetches timeline events on issues and PRs/MRs.

@@ -80,7 +80,7 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	hostname, _ := os.Hostname()
 	workerID := hostname + "-" + time.Now().Format("150405")
 
-	return &Scheduler{
+	s := &Scheduler{
 		store:    store,
 		ghClient: ghClient,
 		glClient: glClient,
@@ -89,6 +89,26 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 		cfg:      cfg,
 		workerID: workerID,
 	}
+
+	// Install a permanent-redirect hook on both platform clients so that a
+	// 301/308 observed mid-collection surfaces as a WARN log. We do NOT
+	// auto-update repos.repo_git here — prelim.RunPrelim already owns
+	// repo-rename detection at job start, and mutating repo identity
+	// mid-job risks splitting collected rows between old and new names.
+	// The log gives operators a signal; automated action is deferred.
+	renameHook := func(from, to string) {
+		s.logger.Warn("permanent redirect observed during collection — possible repo rename",
+			"from", from, "to", to,
+			"note", "prelim handles repo renames at job start; this may indicate a rename that occurred mid-collection")
+	}
+	if ghClient != nil {
+		ghClient.OnPermanentRedirect(renameHook)
+	}
+	if glClient != nil {
+		glClient.OnPermanentRedirect(renameHook)
+	}
+
+	return s
 }
 
 // Run starts the scheduler loop. Blocks until ctx is cancelled.

@@ -1,0 +1,51 @@
+landscape:
+  - category:
+    name: Orchestration
+    subcategories:
+      - subcategory:
+        name: Scheduling
+        items:
+          - item:
+            name: Kubernetes
+            homepage_url: https://kubernetes.io/
+            project: graduated
+            repo_url: https://github.com/kubernetes/kubernetes
+            additional_repos:
+              - repo_url: https://github.com/kubernetes/kubectl
+              - repo_url: https://github.com/kubernetes/website
+          - item:
+            # Non-CNCF ecosystem entry: no 'project' field — must be skipped.
+            name: Docker Swarm
+            homepage_url: https://docs.docker.com/engine/swarm/
+            repo_url: https://github.com/moby/swarmkit
+  - category:
+    name: Observability
+    subcategories:
+      - subcategory:
+        name: Monitoring
+        items:
+          - item:
+            name: Thanos
+            homepage_url: https://thanos.io/
+            project: incubating
+            repo_url: https://github.com/thanos-io/thanos
+          - item:
+            name: OpenCost
+            homepage_url: https://opencost.io/
+            project: sandbox
+            repo_url: https://github.com/opencost/opencost
+          - item:
+            # Archived — must be skipped by default.
+            name: Example Archived
+            project: archived
+            repo_url: https://github.com/example/archived
+          - item:
+            # Project field present but value is unknown — must be skipped (no valid status).
+            name: Weird Entry
+            project: member
+            repo_url: https://github.com/example/member
+          - item:
+            # Graduated but repo_url missing — must be skipped; we can't enqueue nothing.
+            name: NoRepo
+            project: graduated
+            homepage_url: https://example.com/norepo/

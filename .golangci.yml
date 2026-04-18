@@ -1,0 +1,81 @@
+version: "2"
+
+# Aveloxis golangci-lint configuration.
+#
+# Philosophy: catch real bugs, don't drown signal in noise.
+#
+# - errcheck is on globally but we exclude Close() and defer-Close patterns,
+#   which are routine Go idioms. The cleanup-defer-error pattern is noisy
+#   for negligible safety benefit; we add explicit checks where the close
+#   really matters (e.g., flushed file writes).
+# - staticcheck is on; it catches genuine bugs.
+# - unused is on; dead code accumulates fast in a project this size.
+# - QF (style) checks are off — they're suggestions, not errors, and adding
+#   churn to existing code that compiles correctly is more risk than reward.
+#
+# Pre-existing issues that will get fixed as their owning files are touched
+# in future phases:
+#   - SA9003 empty branches in api/server_test.go (recover blocks with no body)
+#   - S1017 string-trim refactor in collector/analysis.go
+#   - SA4010 unused append in db/aggregates.go
+#   - QF1002 tagged-switch refactors in httpclient.go and gitlab/client.go
+#   - QF1011 redundant type decl in scheduler/matview_gate_test.go
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+  settings:
+    errcheck:
+      exclude-functions:
+        # Closing a response body is a routine cleanup; failing to check
+        # the close error doesn't change correctness for our use case.
+        - (io.Closer).Close
+        - (net.Listener).Close
+        - (*net.TCPListener).Close
+        - (*net.UDPConn).Close
+        - (net.Conn).Close
+        - (*os.File).Close
+        # Logging: we don't check Write errors on stderr/stdout.
+        - fmt.Fprintf
+        - fmt.Fprint
+        - fmt.Fprintln
+        - (*bytes.Buffer).Write
+        - (io.Writer).Write
+    staticcheck:
+      checks:
+        - all
+        # Style suggestions we don't enforce yet — they create wide diffs
+        # against working code without finding bugs.
+        - "-QF1002"
+        - "-QF1003"
+        - "-QF1008"
+        - "-QF1011"
+        - "-ST1003" # naming conventions in legacy code
+        - "-ST1005" # error string capitalization
+        - "-ST1020" # exported function comment style
+
+  exclusions:
+    rules:
+      # Test files: relax errcheck (test scaffolding routinely ignores
+      # cleanup errors like server-side json.Encode in httptest handlers
+      # and listener.Close in defers) and unused (helpers come and go as
+      # tests evolve). Real bugs in tests still get flagged by govet,
+      # ineffassign, and the staticcheck SA-series.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unused
+      # The empty recover() blocks in api tests are intentional — they
+      # absorb panics without cluttering the test log. Noted in CLAUDE.md
+      # as "acceptable until a refactor of the api test scaffolding".
+      - path: internal/api/server_test\.go
+        text: "SA9003"

@@ -107,7 +107,7 @@ func (kp *KeyPool) GetKey(ctx context.Context) (*APIKey, error) {
 		kp.mu.Unlock()
 
 		if allInvalid {
-			return nil, fmt.Errorf("all API keys have been invalidated (bad credentials) — check your tokens")
+			return nil, fmt.Errorf("%w: all API keys have been invalidated (bad credentials) — check your tokens", ErrAllKeysInvalidated)
 		}
 
 		// Wait for the earliest reset.

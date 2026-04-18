@@ -21,6 +21,12 @@ type Client interface {
 	// For GitLab: "https://gitlab.com/group/subgroup/project" -> ("group/subgroup", "project")
 	ParseRepoURL(url string) (owner, repo string, err error)
 
+	// OnPermanentRedirect installs a callback invoked by the underlying
+	// HTTP client whenever it observes a 301 or 308. Used by the scheduler
+	// to detect repo renames (see internal/platform/httpclient.go).
+	// Pass nil to clear a previously installed hook.
+	OnPermanentRedirect(hook func(from, to string))
+
 	// Repo metadata
 	RepoCollector
 	// Issues and their related data

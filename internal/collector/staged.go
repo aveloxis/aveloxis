@@ -21,7 +21,6 @@ package collector
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -53,17 +52,18 @@ const (
 // initial collection pass.
 const LargeRepoCommitThreshold = 10000
 
-// isOptionalEndpointSkip returns true when err represents a normal "this
-// endpoint is not available for this repo" condition — 404 (endpoint or
-// repo missing), 403 (token can't see a private resource or lacks scope),
-// or 410/unfollowable-3xx (resource deliberately removed, or a redirect
-// without a usable Location header). Used by every staged-phase loop to
-// distinguish routine "skip this phase" outcomes from actual collection
-// failures that should bubble into result.Errors and fail the job.
+// isOptionalEndpointSkip returns true when err represents a routine
+// "can't collect this item, continue the loop" condition — 404, 403-private,
+// 410, or entity-kind mismatches (issue-number-that-is-a-PR).
+//
+// Since v0.18.0 this is a thin delegate to platform.ClassifyError so that
+// new error shapes (e.g. platform.ErrWrongEntityKind, GraphQL-layer errors)
+// flow through a single source of truth. Callers should prefer
+// `platform.ClassifyError(err) == platform.ClassSkip` in new code; this
+// helper remains for the 20+ existing call sites to keep the migration
+// diff small.
 func isOptionalEndpointSkip(err error) bool {
-	return errors.Is(err, platform.ErrNotFound) ||
-		errors.Is(err, platform.ErrForbidden) ||
-		errors.Is(err, platform.ErrGone)
+	return platform.ClassifyError(err) == platform.ClassSkip
 }
 
 // ParallelSlots is a global counter tracking how many extra parallel goroutines

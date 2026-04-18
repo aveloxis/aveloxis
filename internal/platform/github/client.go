@@ -33,6 +33,12 @@ func (c *Client) Platform() model.Platform {
 	return model.PlatformGitHub
 }
 
+// OnPermanentRedirect forwards to the underlying HTTPClient. See
+// platform.HTTPClient.OnPermanentRedirect for semantics.
+func (c *Client) OnPermanentRedirect(hook func(from, to string)) {
+	c.http.OnPermanentRedirect(hook)
+}
+
 // ghUserToRef converts a GitHub user to a model.UserRef for contributor resolution.
 func ghUserToRef(u ghUser) model.UserRef {
 	return model.UserRef{
@@ -1066,8 +1072,12 @@ func (c *Client) FetchIssueByNumber(ctx context.Context, owner, repo string, num
 		return nil, err
 	}
 	// GitHub returns PRs via the issues endpoint — check and reject.
+	// Wraps platform.ErrWrongEntityKind so gap-fill loops classify this
+	// as ClassSkip (routine: the number space is shared) rather than
+	// ClassFatal. Before v0.18.0 this was a raw fmt.Errorf and aborted
+	// gap fills mid-stream on the first PR encountered.
 	if raw.PullRequest != nil && raw.PullRequest.URL != "" {
-		return nil, fmt.Errorf("issue %d is a pull request", number)
+		return nil, fmt.Errorf("issue %d: %w", number, platform.ErrWrongEntityKind)
 	}
 	issue := &model.Issue{
 		PlatformID:   raw.ID,

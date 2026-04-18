@@ -53,6 +53,7 @@ func main() {
 		startCmd(&cfgPath),
 		stopCmd(),
 		addRepoCmd(&cfgPath),
+		importFoundationsCmd(&cfgPath),
 		addKeyCmd(&cfgPath),
 		prioritizeCmd(&cfgPath),
 		migrateCmd(&cfgPath),

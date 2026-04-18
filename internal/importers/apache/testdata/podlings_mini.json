@@ -1,0 +1,16 @@
+{
+  "amoro": {
+    "name": "Apache Amoro (Incubating)",
+    "homepage": "https://amoro.incubator.apache.org/",
+    "pmc": "incubator",
+    "podling": true,
+    "started": "2024-03"
+  },
+  "burr": {
+    "name": "Apache Burr (Incubating)",
+    "homepage": "https://burr.incubator.apache.org/",
+    "pmc": "incubator",
+    "podling": true,
+    "started": "2025-05"
+  }
+}

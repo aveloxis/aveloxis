@@ -1643,6 +1643,26 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_status (
 );
 
 -- ============================================================
+-- Foundation membership (CNCF / Apache project catalogues)
+-- ============================================================
+-- Populated by `aveloxis import-foundations`. Tracks which repos belong to
+-- which foundation at what maturity level so operators can filter queries
+-- and dashboards by foundation status independently of the collection queue.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.foundation_membership (
+    foundation   TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    project_name TEXT NOT NULL,
+    homepage_url TEXT DEFAULT '',
+    repo_url     TEXT NOT NULL,
+    imported_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (foundation, project_name, repo_url)
+);
+CREATE INDEX IF NOT EXISTS idx_foundation_membership_repo
+    ON aveloxis_ops.foundation_membership (repo_url);
+CREATE INDEX IF NOT EXISTS idx_foundation_membership_status
+    ON aveloxis_ops.foundation_membership (foundation, status);
+
+-- ============================================================
 -- API credentials
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_ops.worker_oauth (

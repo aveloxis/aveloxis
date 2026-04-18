@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/augurlabs/aveloxis/internal/collector"
@@ -45,6 +46,12 @@ type Scheduler struct {
 	logger   *slog.Logger
 	cfg      Config
 	workerID string
+
+	// matviewPending is set by the weekly matview ticker and cleared by the
+	// rebuild goroutine. The poll loop starts the rebuild once active worker
+	// count drops below the ShouldStartMatviewRebuild threshold — see
+	// matview_gate.go for the design rationale.
+	matviewPending atomic.Bool
 }
 
 // New creates a scheduler.
@@ -183,13 +190,21 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-matviewCheckTicker.C:
 			now := time.Now()
 			rebuildDay := s.cfg.MatviewRebuildDay
+			// Mark the rebuild as owed; the poll loop starts it once the
+			// worker pool has naturally drained below the threshold. This
+			// replaces the previous inline call that drained the semaphore
+			// and blocked the main goroutine until every in-flight job
+			// finished (see matview_gate.go for the incident history).
 			if rebuildDay >= 0 && int(now.Weekday()) == rebuildDay && now.Sub(lastMatviewRebuild) > 20*time.Hour {
-				s.rebuildMatviews(ctx, sem)
-				lastMatviewRebuild = now
+				if s.matviewPending.CompareAndSwap(false, true) {
+					s.logger.Info("matview rebuild queued — will start once active workers drop below threshold",
+						"threshold_active_workers", s.cfg.Workers/3, "total_workers", s.cfg.Workers)
+				}
 			}
 
 		case <-pollTicker.C:
 			s.fillWorkerSlots(ctx, sem)
+			s.maybeStartMatviewRebuild(ctx, sem, &lastMatviewRebuild)
 		}
 	}
 }
@@ -197,7 +212,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 // fillWorkerSlots fills all available semaphore slots with jobs from the queue.
 // Called on startup (immediate) and on every poll tick. Keeps claiming jobs
 // until the queue is empty or all worker slots are busy.
+//
+// Returns immediately without claiming when MatviewRebuildActive is set —
+// the weekly refresh wants a quiet window, so no new jobs start while it
+// runs. Existing in-flight jobs finish normally; this only gates claims.
 func (s *Scheduler) fillWorkerSlots(ctx context.Context, sem chan struct{}) {
+	if MatviewRebuildActive.Load() {
+		return
+	}
 	claimed := 0
 	for {
 		// Check if extra parallelSlots from large-repo collection have pushed
@@ -899,15 +921,49 @@ func (s *Scheduler) checkForRenames(ctx context.Context) {
 	}
 }
 
-// rebuildMatviews suspends collection, rebuilds all materialized views, then resumes.
-func (s *Scheduler) rebuildMatviews(ctx context.Context, sem chan struct{}) {
-	s.logger.Info("weekly matview rebuild: suspending collection workers")
-
-	// Drain the semaphore to wait for all active workers to finish.
-	for range s.cfg.Workers {
-		sem <- struct{}{}
+// maybeStartMatviewRebuild starts the weekly rebuild in a goroutine when one
+// is owed (matviewPending) and the worker pool has naturally drained below
+// the ShouldStartMatviewRebuild threshold. The rebuild itself runs
+// concurrently with any remaining in-flight collections — REFRESH
+// MATERIALIZED VIEW CONCURRENTLY doesn't block reads, and
+// MatviewRebuildActive prevents fillWorkerSlots from claiming new jobs.
+func (s *Scheduler) maybeStartMatviewRebuild(ctx context.Context, sem chan struct{}, lastRebuild *time.Time) {
+	if !s.matviewPending.Load() {
+		return
 	}
-	s.logger.Info("weekly matview rebuild: all workers idle, starting rebuild")
+	// Already running — another poll tick fired while the rebuild goroutine
+	// is still in flight. The goroutine will clear both flags on completion.
+	if MatviewRebuildActive.Load() {
+		return
+	}
+	if !ShouldStartMatviewRebuild(len(sem), s.cfg.Workers) {
+		return
+	}
+	// Claim the rebuild. CAS guarantees only one goroutine wins.
+	if !MatviewRebuildActive.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer MatviewRebuildActive.Store(false)
+		defer s.matviewPending.Store(false)
+		s.rebuildMatviews(ctx)
+		*lastRebuild = time.Now()
+	}()
+}
+
+// rebuildMatviews refreshes the materialized views and the dm_ aggregate
+// tables. Callers must set MatviewRebuildActive before invoking so that
+// fillWorkerSlots gates new job claims for the duration; rebuildMatviews
+// itself does not touch the worker semaphore.
+//
+// Replaces the pre-v0.17.1 implementation that drained every worker slot via
+// `for range s.cfg.Workers { sem <- struct{}{} }`. That pattern blocked the
+// scheduler's main goroutine for the duration of the longest in-flight
+// collection — a single 10+ hour parallel-mode job (meshery, 11K+ PRs)
+// froze claims for 9 hours on 2026-04-18.
+func (s *Scheduler) rebuildMatviews(ctx context.Context) {
+	s.logger.Info("weekly matview rebuild: starting (MatviewRebuildActive=true, new claims paused)",
+		"active_workers_at_start", "see monitor banner")
 
 	start := time.Now()
 	if err := db.RefreshMaterializedViews(ctx, s.store, s.logger); err != nil {
@@ -917,9 +973,8 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context, sem chan struct{}) {
 	}
 
 	// Refresh dm_ aggregate tables (dm_repo_annual/monthly/weekly and
-	// dm_repo_group variants) while workers are still paused. These tables
-	// aggregate commit data by email, affiliation, and time period.
-	// Running here avoids conflicts with active collection workers.
+	// dm_repo_group variants). These aggregate commit data by email,
+	// affiliation, and time period.
 	aggStart := time.Now()
 	if err := s.store.RefreshAllRepoAggregates(ctx, s.logger); err != nil {
 		s.logger.Error("dm_ aggregate refresh failed", "error", err)
@@ -927,11 +982,7 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context, sem chan struct{}) {
 		s.logger.Info("dm_ aggregate refresh complete", "duration", time.Since(aggStart).Truncate(time.Second))
 	}
 
-	// Release all semaphore slots to resume collection.
-	for range s.cfg.Workers {
-		<-sem
-	}
-	s.logger.Info("weekly matview rebuild: collection resumed")
+	s.logger.Info("weekly matview rebuild: collection will resume on next poll tick")
 }
 
 // refreshUserOrgs scans user_org_requests for new repos in tracked orgs

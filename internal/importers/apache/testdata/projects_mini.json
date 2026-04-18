@@ -1,0 +1,21 @@
+{
+  "accumulo": {
+    "name": "Apache Accumulo",
+    "homepage": "https://accumulo.apache.org",
+    "bug-database": "https://github.com/apache/accumulo/issues",
+    "pmc": "accumulo",
+    "category": "big-data"
+  },
+  "airflow": {
+    "name": "Apache Airflow",
+    "homepage": "https://airflow.apache.org",
+    "bug-database": "https://issues.apache.org/jira/browse/AIRFLOW",
+    "pmc": "airflow",
+    "category": "big-data"
+  },
+  "commons": {
+    "name": "Apache Commons",
+    "homepage": "https://commons.apache.org",
+    "pmc": "commons"
+  }
+}

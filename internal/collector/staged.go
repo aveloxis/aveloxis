@@ -97,51 +97,72 @@ type stagedPR struct {
 // StagedCollector writes raw API data to the staging table instead of directly
 // into the relational schema. This is the fast path for high-throughput collection.
 type StagedCollector struct {
-	client       platform.Client
-	store        *db.PostgresStore
-	logger       *slog.Logger
-	platID       int16
-	prChildMode  string // "rest" (default) or "graphql" — see CollectionConfig.PRChildMode
-	listingMode  string // "rest" (default) or "graphql" — see CollectionConfig.ListingMode
+	client        platform.Client
+	store         *db.PostgresStore
+	logger        *slog.Logger
+	platID        int16
+	prChildMode   string // "rest" (default) or "graphql" — see CollectionConfig.PRChildMode
+	listingMode   string // "rest" (default) or "graphql" — see CollectionConfig.ListingMode
+	threadingMode string // "single" (default) or "sharded" — see CollectionConfig.ThreadingMode
+	shardSize     int    // item-count threshold for sharded fan-out (default 3000)
 }
 
-// NewStagedCollector creates a staged collector using the REST per-PR
-// child waterfall and REST issue/PR listing. For non-default modes,
-// use NewStagedCollectorWithMode or NewStagedCollectorWithModes.
+// NewStagedCollector creates a staged collector in the fully-default
+// mode: REST per-PR child waterfall, REST issue/PR listing,
+// single-goroutine PR batch execution.
 func NewStagedCollector(client platform.Client, store *db.PostgresStore, logger *slog.Logger) *StagedCollector {
-	return NewStagedCollectorWithModes(client, store, logger, "rest", "rest")
+	return NewStagedCollectorWithAllModes(client, store, logger, "rest", "rest", "single", defaultShardSize)
 }
 
-// NewStagedCollectorWithMode is the phase-1 single-mode constructor
-// that sets pr_child_mode only. ListingMode defaults to "rest".
-// Preserved for backward compatibility with callers that don't yet
-// pass a listing mode.
+// NewStagedCollectorWithMode is the phase-1 single-field constructor
+// that sets pr_child_mode only. Preserved for backward compatibility.
 func NewStagedCollectorWithMode(client platform.Client, store *db.PostgresStore, logger *slog.Logger, mode string) *StagedCollector {
-	return NewStagedCollectorWithModes(client, store, logger, mode, "rest")
+	return NewStagedCollectorWithAllModes(client, store, logger, mode, "rest", "single", defaultShardSize)
 }
 
-// NewStagedCollectorWithModes is the explicit dual-mode constructor.
-// prChildMode selects between the REST per-PR waterfall and the
-// batched GraphQL fetcher (phase 1). listingMode selects between two
-// separate REST iterators and the unified GraphQL enumerator (phase
-// 2). Unknown mode values collapse to "rest" so misspelled config
-// fails safely.
+// NewStagedCollectorWithModes is the phase-2 two-field constructor
+// (prChildMode + listingMode). Preserved for backward compatibility.
 func NewStagedCollectorWithModes(client platform.Client, store *db.PostgresStore, logger *slog.Logger, prChildMode, listingMode string) *StagedCollector {
+	return NewStagedCollectorWithAllModes(client, store, logger, prChildMode, listingMode, "single", defaultShardSize)
+}
+
+// NewStagedCollectorWithAllModes is the explicit dual-mode-plus-
+// threading constructor added in phase 3. prChildMode selects the
+// REST vs GraphQL per-PR child path. listingMode selects the unified
+// vs split issue/PR listing path. threadingMode selects single-
+// goroutine vs sharded PR batch execution. shardSize sets the
+// item-count threshold above which sharded mode fans out.
+//
+// Unknown string modes collapse to their safest defaults (rest,
+// rest, single). shardSize <= 0 collapses to defaultShardSize.
+func NewStagedCollectorWithAllModes(client platform.Client, store *db.PostgresStore, logger *slog.Logger, prChildMode, listingMode, threadingMode string, shardSize int) *StagedCollector {
 	if prChildMode != "graphql" {
 		prChildMode = "rest"
 	}
 	if listingMode != "graphql" {
 		listingMode = "rest"
 	}
+	if threadingMode != "sharded" {
+		threadingMode = "single"
+	}
+	if shardSize <= 0 {
+		shardSize = defaultShardSize
+	}
 	return &StagedCollector{
-		client:      client,
-		store:       store,
-		logger:      logger,
-		platID:      int16(client.Platform()),
-		prChildMode: prChildMode,
-		listingMode: listingMode,
+		client:        client,
+		store:         store,
+		logger:        logger,
+		platID:        int16(client.Platform()),
+		prChildMode:   prChildMode,
+		listingMode:   listingMode,
+		threadingMode: threadingMode,
+		shardSize:     shardSize,
 	}
 }
+
+// defaultShardSize matches the "1 additional worker per 3,000 items"
+// rule from the refactor plan in CLAUDE.md.
+const defaultShardSize = 3000
 
 // CollectRepo stages all API data for a repo. Does NOT resolve contributors or
 // write to relational tables. Call Processor.ProcessRepo() after this.
@@ -566,10 +587,32 @@ func (sc *StagedCollector) collectPRsREST(ctx context.Context, sw *db.StagingWri
 // GraphQL query per batch of 25 PRs, children populated inline.
 // Equivalent column-for-column with collectPRsREST.
 //
+// Branches on threadingMode. The default "single" path runs FetchPRBatch
+// in the calling goroutine — pre-phase-3 behavior. When threadingMode
+// is "sharded" AND len(prs) exceeds shardSize, the PR list is
+// partitioned across computeShardCount(len(prs), shardSize) goroutines,
+// each running its own FetchPRBatch chain. ParallelSlots is claimed for
+// the extra goroutines so the scheduler's worker budget is respected.
+//
 // If FetchPRBatch returns an error classified as ClassSkip we swallow
 // it (same policy as the REST path); any other error is surfaced in
 // result.Errors to fail the job.
 func (sc *StagedCollector) collectPRsGraphQL(ctx context.Context, sw *db.StagingWriter, owner, repo string, prs []model.PullRequest, result *CollectResult) {
+	// Guard: sharded mode only fans out when there's enough work to
+	// justify the goroutine overhead AND the operator has opted in.
+	if sc.threadingMode != "sharded" || len(prs) <= sc.shardSize {
+		sc.runPRBatchSingle(ctx, sw, owner, repo, prs, result)
+		return
+	}
+	sc.runPRBatchSharded(ctx, sw, owner, repo, prs, result)
+}
+
+// runPRBatchSingle is the pre-phase-3 path: one goroutine, one
+// FetchPRBatch chain driven by the platform client's internal
+// prBatchSize (25). Kept as a distinct function so the shard workers
+// can reuse it and so the source-contract test's single-mode guard
+// has a clear target.
+func (sc *StagedCollector) runPRBatchSingle(ctx context.Context, sw *db.StagingWriter, owner, repo string, prs []model.PullRequest, result *CollectResult) {
 	numbers := make([]int, 0, len(prs))
 	for _, pr := range prs {
 		numbers = append(numbers, pr.Number)
@@ -585,6 +628,141 @@ func (sc *StagedCollector) collectPRsGraphQL(ctx context.Context, sw *db.Staging
 		result.Errors = append(result.Errors, fmt.Errorf("pull requests graphql batch: %w", err))
 		return
 	}
+	stagePRBatch(ctx, sw, batch, result, sc.logger, owner, repo)
+}
+
+// runPRBatchSharded fans out PR batch fetching across N goroutines,
+// each owning a disjoint slice of the enumerated PR list. Every shard
+// gets its own StagingWriter for thread-safety; results are merged
+// under a mutex at the end.
+//
+// Calls ParallelSlots.Add(shards-1) / -(shards-1) to inform the
+// scheduler that this job is consuming (shards-1) additional worker
+// slots beyond the one already granted — consistent with how
+// collectParallel handles its 3-way fan-out.
+func (sc *StagedCollector) runPRBatchSharded(ctx context.Context, sw *db.StagingWriter, owner, repo string, prs []model.PullRequest, result *CollectResult) {
+	shardCount := computeShardCount(len(prs), sc.shardSize)
+	if shardCount <= 1 {
+		// Safety: the guard in collectPRsGraphQL above should have
+		// short-circuited this case. If we got here anyway, fall
+		// back to single-mode rather than spin up one goroutine.
+		sc.runPRBatchSingle(ctx, sw, owner, repo, prs, result)
+		return
+	}
+
+	sc.logger.Info("sharding pull request collection",
+		"owner", owner, "repo", repo,
+		"prs", len(prs), "shard_size", sc.shardSize, "shards", shardCount)
+
+	// Claim (shardCount-1) extra parallel slots. The 1 slot this job
+	// already has covers the first shard; each additional shard gets
+	// its own.
+	ParallelSlots.Add(int32(shardCount - 1))
+	defer ParallelSlots.Add(-int32(shardCount - 1))
+
+	partitions := partitionShards(prs, shardCount)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	// stagedNumbers accumulates the PR numbers that successfully made
+	// it into the staging writer across all shards. After the join,
+	// we diff this against the full enumerated list (prs); any PR in
+	// the enumeration that didn't land in staging gets a second-chance
+	// FetchPRBatch call — the "reconcile-by-set-diff" pass from the
+	// phase 3 design.
+	var stagedNumbers []int
+
+	wg.Add(shardCount)
+	for shardIdx, shardPRs := range partitions {
+		go func(idx int, prs []model.PullRequest) {
+			defer wg.Done()
+			if len(prs) == 0 {
+				return
+			}
+			numbers := make([]int, 0, len(prs))
+			for _, pr := range prs {
+				numbers = append(numbers, pr.Number)
+			}
+			batch, err := sc.client.FetchPRBatch(ctx, owner, repo, numbers)
+			if err != nil {
+				mu.Lock()
+				if isOptionalEndpointSkip(err) {
+					sc.logger.Info("shard skipping pull requests graphql batch",
+						"owner", owner, "repo", repo, "shard", idx, "reason", err)
+				} else {
+					result.Errors = append(result.Errors, fmt.Errorf("pull requests graphql batch shard %d: %w", idx, err))
+				}
+				mu.Unlock()
+				return
+			}
+			// Merge this shard's results under the mutex so result
+			// counts and log lines are coherent.
+			mu.Lock()
+			defer mu.Unlock()
+			stagePRBatch(ctx, sw, batch, result, sc.logger, owner, repo)
+			for _, s := range batch {
+				stagedNumbers = append(stagedNumbers, s.PR.Number)
+			}
+		}(shardIdx, shardPRs)
+	}
+	wg.Wait()
+
+	// Reconcile: identify any enumerated PR that failed to land in
+	// staging and re-fetch in one corrective pass. Phase 3's completeness
+	// safety net — shard errors, partial FetchPRBatch returns, or even a
+	// transient rate-limit mid-shard all get a second chance here.
+	enumerated := make([]int, 0, len(prs))
+	for _, pr := range prs {
+		enumerated = append(enumerated, pr.Number)
+	}
+	missing := missingPRsFromSet(enumerated, stagedNumbers)
+	// Some of the "missing" PRs may legitimately have been returned null
+	// from GitHub (deleted/inaccessible mid-collection). A single retry
+	// with a fresh FetchPRBatch call is enough — if they're still null,
+	// they're truly gone. We log the final missing count for ops.
+	if len(missing) > 0 {
+		sc.logger.Info("reconcile: refetching PRs missed by shards",
+			"owner", owner, "repo", repo, "missing_count", len(missing))
+		batch, err := sc.client.FetchPRBatch(ctx, owner, repo, missing)
+		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				sc.logger.Info("reconcile: skippable error on refetch",
+					"owner", owner, "repo", repo, "reason", err)
+			} else {
+				result.Errors = append(result.Errors, fmt.Errorf("pull requests reconcile refetch: %w", err))
+			}
+			return
+		}
+		stagePRBatch(ctx, sw, batch, result, sc.logger, owner, repo)
+		// Compute final residual — PRs that didn't even come back on
+		// the retry. These are almost certainly deleted; log and move on.
+		retryStaged := make([]int, 0, len(batch))
+		for _, s := range batch {
+			retryStaged = append(retryStaged, s.PR.Number)
+		}
+		stillMissing := missingPRsFromSet(missing, retryStaged)
+		if len(stillMissing) > 0 {
+			sc.logger.Warn("reconcile: PRs still missing after refetch (likely deleted on GitHub)",
+				"owner", owner, "repo", repo, "count", len(stillMissing),
+				"sample_numbers", sampleInts(stillMissing, 10))
+		}
+	}
+}
+
+// sampleInts returns up to n items from the front of v for log output —
+// keeps log lines bounded when the missing list is large.
+func sampleInts(v []int, n int) []int {
+	if len(v) <= n {
+		return v
+	}
+	return v[:n]
+}
+
+// stagePRBatch is the shared tail of both single-shard and per-shard
+// PR-batch processing: takes the fetched []platform.StagedPR, stages
+// each into the supplied writer, updates result counts, and logs
+// progress. Caller owns any locking around result / sw.
+func stagePRBatch(ctx context.Context, sw *db.StagingWriter, batch []platform.StagedPR, result *CollectResult, logger *slog.Logger, owner, repo string) {
 	for _, s := range batch {
 		envelope := stagedPR{
 			PR:        s.PR,
@@ -604,7 +782,7 @@ func (sc *StagedCollector) collectPRsGraphQL(ctx context.Context, sw *db.Staging
 		}
 		result.PullRequests++
 		if result.PullRequests%100 == 0 {
-			sc.logger.Info("pull requests progress", "owner", owner, "repo", repo, "staged", result.PullRequests, "mode", "graphql")
+			logger.Info("pull requests progress", "owner", owner, "repo", repo, "staged", result.PullRequests, "mode", "graphql")
 		}
 	}
 }
@@ -622,7 +800,9 @@ func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWrit
 			result.Errors = append(result.Errors, fmt.Errorf("issue events: %w", err))
 			break
 		}
-		sw.Stage(ctx, EntityIssueEvent, event)
+		if err := sw.Stage(ctx, EntityIssueEvent, event); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("stage issue event: %w", err))
+		}
 		result.Events++
 	}
 	for event, err := range sc.client.ListPREvents(ctx, owner, repo, since) {
@@ -635,7 +815,9 @@ func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWrit
 			result.Errors = append(result.Errors, fmt.Errorf("pr events: %w", err))
 			break
 		}
-		sw.Stage(ctx, EntityPREvent, event)
+		if err := sw.Stage(ctx, EntityPREvent, event); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("stage pr event: %w", err))
+		}
 		result.Events++
 	}
 	sc.logger.Info("events staged", "count", result.Events)
@@ -654,7 +836,9 @@ func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWr
 			result.Errors = append(result.Errors, fmt.Errorf("issue comments: %w", err))
 			break
 		}
-		sw.Stage(ctx, EntityMessage, msg)
+		if err := sw.Stage(ctx, EntityMessage, msg); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("stage message: %w", err))
+		}
 		result.Messages++
 	}
 	for rc, err := range sc.client.ListReviewComments(ctx, owner, repo, since) {
@@ -667,7 +851,9 @@ func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWr
 			result.Errors = append(result.Errors, fmt.Errorf("review comments: %w", err))
 			break
 		}
-		sw.Stage(ctx, EntityReviewComment, rc)
+		if err := sw.Stage(ctx, EntityReviewComment, rc); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("stage review comment: %w", err))
+		}
 		result.Messages++
 	}
 	sc.logger.Info("messages staged", "count", result.Messages)

@@ -37,6 +37,8 @@ type Config struct {
 	ForceFullCollection  bool          // when true, all collections use since=zero (full re-collection)
 	PRChildMode          string        // "rest" (default) or "graphql" — routes PR child fetch through FetchPRBatch
 	ListingMode          string        // "rest" (default) or "graphql" — routes issue+PR listing through ListIssuesAndPRs
+	ThreadingMode        string        // "single" (default) or "sharded" — fans out PR batch fetching across goroutines
+	ShardSize            int           // item-count threshold for spawning an additional shard (default 3000)
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -505,7 +507,7 @@ func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 // the API, then process staged data into relational tables with bulk
 // contributor resolution.
 func (s *Scheduler) collectAndProcess(ctx context.Context, repoID int64, repo *model.Repo, client platform.Client, since time.Time) (*collector.CollectResult, error) {
-	sc := collector.NewStagedCollectorWithModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode)
+	sc := collector.NewStagedCollectorWithAllModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode, s.cfg.ThreadingMode, s.cfg.ShardSize)
 	result, err := sc.CollectRepo(ctx, repoID, repo.Owner, repo.Name, since)
 
 	if err == nil {

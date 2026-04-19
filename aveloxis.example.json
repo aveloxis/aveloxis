@@ -24,9 +24,12 @@
     "force_full": false,
     "matview_rebuild_day": "friday",
     "matview_rebuild_on_startup": false,
-    "_refactor_modes_note": "Values 'rest' and 'graphql' select between the legacy REST and new GraphQL code paths added by the v0.18 series. Default 'rest' until v0.19.0 flips defaults. Additional mode keys (threading, comments) will land as phases 3-4 ship — see CLAUDE.md 'REST → GraphQL Refactor' section.",
+    "_refactor_modes_note": "Values 'rest' and 'graphql' select between the legacy REST and new GraphQL code paths added by the v0.18 series. Default 'rest' until v0.19.0 flips defaults. The comments mode key will land as phase 4 ships — see CLAUDE.md 'REST → GraphQL Refactor' section.",
     "pr_child_mode": "rest",
-    "listing_mode": "rest"
+    "listing_mode": "rest",
+    "_threading_note": "threading_mode='sharded' fans PR batch fetching out across additional goroutines when enumerated PR count exceeds shard_size. Only takes effect when pr_child_mode='graphql' (the REST path is sequential per-PR and can't benefit). shard_size default 3000 matches the '1 extra worker per 3,000 items' rule.",
+    "threading_mode": "single",
+    "shard_size": 3000
   },
   "web": {
     "addr": ":8082",

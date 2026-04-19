@@ -46,7 +46,9 @@ func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolv
 			// User may be deleted, suspended, or rate-limited. Still mark
 			// as enriched to avoid retrying on the next pass — the user
 			// likely won't become available within the cooldown window.
-			resolver.MarkContributorEnriched(ctx, login)
+			if mErr := resolver.MarkContributorEnriched(ctx, login); mErr != nil {
+				logger.Debug("failed to mark contributor enriched", "login", login, "error", mErr)
+			}
 			logger.Debug("failed to enrich contributor", "login", login, "error", err)
 			continue
 		}
@@ -56,7 +58,9 @@ func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolv
 		}
 		// Mark enrichment timestamp so users with genuinely empty profiles
 		// (no company/location on GitHub) are not re-enriched every pass.
-		resolver.MarkContributorEnriched(ctx, login)
+		if mErr := resolver.MarkContributorEnriched(ctx, login); mErr != nil {
+			logger.Debug("failed to mark contributor enriched", "login", login, "error", mErr)
+		}
 		enriched++
 	}
 

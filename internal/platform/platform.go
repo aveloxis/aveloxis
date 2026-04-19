@@ -126,15 +126,23 @@ type StagedPR struct {
 	RepoHead  *model.PullRequestRepo
 	RepoBase  *model.PullRequestRepo
 
-	// Phase 4: inline comment payloads. Populated by GraphQL FetchPRBatch
-	// (PR.comments and PullRequestReview.comments connections); nil when
-	// the implementation doesn't fetch comments inline (GitLab REST
-	// composition). Each Comments entry carries a PRRef so the staged
-	// collector can write to pull_request_message_ref; each ReviewComments
-	// entry carries the parent's platform review ID so msg_id / pr_review_id
-	// resolution happens the same way it does on the REST path.
-	Comments       []MessageWithRef
-	ReviewComments []ReviewCommentWithRef
+	// Phase 4: inline PR conversation comments delivered by GitHub's
+	// GraphQL `PullRequest.comments` connection. Each entry carries a
+	// PRRef so the staged collector writes to pull_request_message_ref
+	// the same way the REST path does. Nil when the implementation
+	// doesn't deliver comments inline (GitLab's REST-composition
+	// FetchPRBatch leaves this empty).
+	//
+	// Inline REVIEW comments (diff-anchored) are NOT delivered here.
+	// GitHub's GraphQL `PullRequestReviewComment` type omits the `side`
+	// / `startSide` fields the REST schema carries, and deriving them
+	// from `line`/`originalLine` is not bijective on context-line
+	// comments. Phase 4 keeps the repo-wide REST `/pulls/comments`
+	// endpoint running (`MessageCollector.ListReviewComments`) so those
+	// columns stay populated with byte-for-byte REST fidelity. Only
+	// `/issues/comments` (issue + PR conversation — the larger endpoint)
+	// is skipped in full-GraphQL mode.
+	Comments []MessageWithRef
 }
 
 // PullRequestCollector fetches pull requests / merge requests and related entities.

@@ -826,21 +826,16 @@ func stagePRBatch(ctx context.Context, sw *db.StagingWriter, batch []platform.St
 			logger.Info("pull requests progress", "owner", owner, "repo", repo, "staged", result.PullRequests, "mode", "graphql")
 		}
 
-		// Phase 4: stage inline conversation comments and inline review
-		// comments delivered with the PR node. GitLab's FetchPRBatch
-		// returns empty slices here (its REST composition doesn't
-		// populate them), so this is a no-op unless the caller routed
-		// through GitHub's GraphQL path.
+		// Phase 4: stage inline PR conversation comments delivered with
+		// the PR node. Inline diff-anchored review comments are NOT
+		// fetched via GraphQL (see platform.StagedPR.Comments godoc for
+		// why) — they continue to arrive through the repo-wide REST
+		// /pulls/comments endpoint in collectMessages. GitLab's
+		// FetchPRBatch leaves s.Comments empty, so this is a no-op on
+		// GitLab repos.
 		for _, cm := range s.Comments {
 			if err := sw.Stage(ctx, EntityMessage, cm); err != nil {
 				result.Errors = append(result.Errors, fmt.Errorf("stage inline pr comment: %w", err))
-				continue
-			}
-			result.Messages++
-		}
-		for _, rc := range s.ReviewComments {
-			if err := sw.Stage(ctx, EntityReviewComment, rc); err != nil {
-				result.Errors = append(result.Errors, fmt.Errorf("stage inline review comment: %w", err))
 				continue
 			}
 			result.Messages++
@@ -884,36 +879,48 @@ func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWrit
 	sc.logger.Info("events staged", "count", result.Events)
 }
 
-// collectMessages stages issue comments, PR comments, and review comments
-// via the repo-wide REST endpoints (/issues/comments + /pulls/comments).
+// collectMessages stages issue + PR conversation comments (via repo-wide
+// /issues/comments) and diff-anchored review comments (via repo-wide
+// /pulls/comments).
 //
-// Phase 4 skip: when both pr_child_mode AND listing_mode are "graphql"
-// on GitHub, the comments arrive inline with the phase-1 PR batch and
-// the phase-2 issue listing and are already staged by stagePRBatch +
-// stageInlineIssueComments. The two repo-wide REST iterators become
-// duplicate work, so we skip them entirely. On GitLab (or when either
-// mode is rest), the REST path remains the authoritative comment source.
+// Phase 4 partial skip: when pr_child_mode AND listing_mode are both
+// "graphql" on GitHub, the issue + PR conversation comments arrive inline
+// from the phase-1 PR batch and the phase-2 issue listing and are already
+// staged by stagePRBatch + stageInlineIssueComments. In that mode the
+// /issues/comments iterator is redundant and gets skipped.
+//
+// The /pulls/comments (review-inline) iterator is NOT skipped even in
+// full-GraphQL mode. GitHub's GraphQL `PullRequestReviewComment` omits
+// the `side` / `startSide` fields the REST schema carries, and deriving
+// them from `line`/`originalLine` is not bijective on context-line
+// comments. Running ListReviewComments here preserves byte-for-byte
+// fidelity on `review_comments.pr_cmt_side` / `pr_cmt_start_side` and
+// gives shadow-diff a clean comparison against the REST shadow. The
+// trade-off is one extra REST call per collection — /pulls/comments
+// returns far fewer rows than /issues/comments so the net phase-4
+// speedup is preserved.
 func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
-	if sc.fullGraphQLMode() {
-		sc.logger.Info("collectMessages skipped — comments delivered inline by graphql phases",
+	full := sc.fullGraphQLMode()
+	if full {
+		sc.logger.Info("collectMessages: skipping /issues/comments — delivered inline; still running /pulls/comments for side/startSide",
 			"owner", owner, "repo", repo)
-		return
-	}
-	sc.logger.Info("collecting messages", "owner", owner, "repo", repo)
-	for msg, err := range sc.client.ListIssueComments(ctx, owner, repo, since) {
-		if err != nil {
-			if isOptionalEndpointSkip(err) {
-				sc.logger.Info("skipping issue comments endpoint",
-					"owner", owner, "repo", repo, "reason", err)
+	} else {
+		sc.logger.Info("collecting messages", "owner", owner, "repo", repo)
+		for msg, err := range sc.client.ListIssueComments(ctx, owner, repo, since) {
+			if err != nil {
+				if isOptionalEndpointSkip(err) {
+					sc.logger.Info("skipping issue comments endpoint",
+						"owner", owner, "repo", repo, "reason", err)
+					break
+				}
+				result.Errors = append(result.Errors, fmt.Errorf("issue comments: %w", err))
 				break
 			}
-			result.Errors = append(result.Errors, fmt.Errorf("issue comments: %w", err))
-			break
+			if err := sw.Stage(ctx, EntityMessage, msg); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("stage message: %w", err))
+			}
+			result.Messages++
 		}
-		if err := sw.Stage(ctx, EntityMessage, msg); err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("stage message: %w", err))
-		}
-		result.Messages++
 	}
 	for rc, err := range sc.client.ListReviewComments(ctx, owner, repo, since) {
 		if err != nil {

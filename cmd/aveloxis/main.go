@@ -154,6 +154,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		MatviewRebuildDay:   cfg.Collection.MatviewRebuildWeekday(),
 		ForceFullCollection: cfg.Collection.ForceFullCollection,
 		PRChildMode:         cfg.Collection.PRChildMode,
+		ListingMode:         cfg.Collection.ListingMode,
 	})
 	go sched.Run(ctx)
 

@@ -27,6 +27,17 @@ type Client interface {
 	// Pass nil to clear a previously installed hook.
 	OnPermanentRedirect(hook func(from, to string))
 
+	// ListIssuesAndPRs enumerates every issue and PR in the repo updated
+	// since the given time, in one call. Replaces two separate iterator
+	// loops (ListIssues + ListPullRequests) with a single batch return.
+	//
+	// Pass zero time for full collection. GitHub's implementation uses
+	// GraphQL (issues + pullRequests connections, cursor paginated).
+	// GitLab's composes the existing REST iterators. Both produce the
+	// same model types the legacy iterators produce, so callers can
+	// substitute one for the other without column-level drift.
+	ListIssuesAndPRs(ctx context.Context, owner, repo string, since time.Time) (*IssueAndPRBatch, error)
+
 	// Repo metadata
 	RepoCollector
 	// Issues and their related data
@@ -50,6 +61,21 @@ type RepoCollector interface {
 
 	// FetchCloneStats returns clone/traffic data (may require elevated perms).
 	FetchCloneStats(ctx context.Context, owner, repo string) ([]model.RepoClone, error)
+}
+
+// IssueAndPRBatch bundles the result of a unified issue + PR enumeration
+// (phase 2 of the REST→GraphQL refactor). Replaces two separate iterator
+// calls (ListIssues + ListPullRequests) with a single batch return.
+//
+// On GitHub: populated by a pair of GraphQL queries (one per connection)
+// that eliminate REST's /issues-returns-PRs double-count.
+// On GitLab: populated by composing the existing REST iterators — GitLab's
+// GraphQL API is too weak on merge_request fields to use here. Parity is
+// preserved at the row/column level; the only observable difference is
+// the call pattern inside the platform package.
+type IssueAndPRBatch struct {
+	Issues       []model.Issue
+	PullRequests []model.PullRequest
 }
 
 // IssueCollector fetches issues and related entities.

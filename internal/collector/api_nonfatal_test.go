@@ -36,7 +36,11 @@ func TestStagedCollectorTreatsNotFoundAndForbiddenAsNonFatal(t *testing.T) {
 	}
 
 	for _, phase := range phases {
-		idx := strings.Index(code, phase)
+		// Look for the actual method call, not any mention (doc
+		// comments and inline references should not count). The call
+		// form is `client.<phase>(` after `sc.` or `c.` or some prefix.
+		callMarker := "." + phase + "("
+		idx := strings.Index(code, callMarker)
 		if idx < 0 {
 			t.Errorf("cannot find %s call in staged.go", phase)
 			continue

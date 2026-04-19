@@ -36,6 +36,7 @@ type Config struct {
 	MatviewRebuildDay    int           // day of week for matview rebuild (0=Sun..6=Sat, -1=disabled)
 	ForceFullCollection  bool          // when true, all collections use since=zero (full re-collection)
 	PRChildMode          string        // "rest" (default) or "graphql" — routes PR child fetch through FetchPRBatch
+	ListingMode          string        // "rest" (default) or "graphql" — routes issue+PR listing through ListIssuesAndPRs
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -504,7 +505,7 @@ func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 // the API, then process staged data into relational tables with bulk
 // contributor resolution.
 func (s *Scheduler) collectAndProcess(ctx context.Context, repoID int64, repo *model.Repo, client platform.Client, since time.Time) (*collector.CollectResult, error) {
-	sc := collector.NewStagedCollectorWithMode(client, s.store, s.logger, s.cfg.PRChildMode)
+	sc := collector.NewStagedCollectorWithModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode)
 	result, err := sc.CollectRepo(ctx, repoID, repo.Owner, repo.Name, since)
 
 	if err == nil {

@@ -37,8 +37,10 @@ func TestResolverInsertUsesCorrectOnConflictSyntax(t *testing.T) {
 		t.Fatal("cannot find Resolve function")
 	}
 	fnBody := src[idx:]
-	if len(fnBody) > 2000 {
-		fnBody = fnBody[:2000]
+	// Trim at the next top-level func — more robust than a fixed
+	// character window against doc-comment additions.
+	if next := strings.Index(fnBody[1:], "\nfunc "); next > 0 {
+		fnBody = fnBody[:next+1]
 	}
 
 	if !strings.Contains(fnBody, `ON CONFLICT (cntrb_login) WHERE cntrb_login != ''`) {

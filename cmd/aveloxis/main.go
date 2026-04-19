@@ -153,6 +153,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		RepoCloneDir:        cfg.Collection.RepoCloneDir,
 		MatviewRebuildDay:   cfg.Collection.MatviewRebuildWeekday(),
 		ForceFullCollection: cfg.Collection.ForceFullCollection,
+		PRChildMode:         cfg.Collection.PRChildMode,
 	})
 	go sched.Run(ctx)
 

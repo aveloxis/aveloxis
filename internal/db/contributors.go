@@ -58,7 +58,25 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 	}
 
 	// 3. Not found — create contributor + identity in a transaction.
-	newID := uuid.New().String()
+	//
+	// The cntrb_id UUID is deterministic per (platform_id, userID) via
+	// PlatformUUID. This is what CLAUDE.md promises and what verification
+	// tooling (shadow-diff equivalence tests, periodic re-collection
+	// cross-checks) assumes: two independent collections of the same
+	// GitHub user produce the same UUID on both sides, so joined tables
+	// referencing cntrb_id match across databases without content drift.
+	//
+	// For userID == 0 — email-only contributors created when a commit
+	// author has no linked GitHub/GitLab user — there is no platform ID
+	// to derive from. Fall back to a random UUID; this is the one case
+	// where cntrb_id is inherently non-deterministic, and it's small
+	// enough (usually <1% of contributors) that the drift is tolerable.
+	var newID string
+	if userID > 0 {
+		newID = PlatformUUID(int(platformID), userID).String()
+	} else {
+		newID = uuid.New().String()
+	}
 	err = r.store.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := r.store.pool.Begin(ctx)
 		if err != nil {

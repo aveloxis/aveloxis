@@ -35,6 +35,7 @@ type Config struct {
 	OrgRefreshInterval   time.Duration // how often to re-scan orgs for new/renamed repos (default 4h)
 	MatviewRebuildDay    int           // day of week for matview rebuild (0=Sun..6=Sat, -1=disabled)
 	ForceFullCollection  bool          // when true, all collections use since=zero (full re-collection)
+	PRChildMode          string        // "rest" (default) or "graphql" — routes PR child fetch through FetchPRBatch
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -371,7 +372,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		// Runs after normal collection so we don't duplicate work for items
 		// already updated via the since-based incremental fetch.
 		if err == nil {
-			refresher := collector.NewOpenItemRefresher(s.store, client, s.logger)
+			refresher := collector.NewOpenItemRefresherWithMode(s.store, client, s.logger, s.cfg.PRChildMode)
 			refresher.RefreshOpenItems(ctx, job.RepoID, repo.Owner, repo.Name)
 		}
 
@@ -381,7 +382,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		if err == nil {
 			metaIssues, metaPRs, metaErr := s.store.GetRepoMetaCounts(ctx, job.RepoID)
 			if metaErr == nil && (metaIssues > 0 || metaPRs > 0) {
-				gf := collector.NewGapFiller(s.store, client, s.logger)
+				gf := collector.NewGapFillerWithMode(s.store, client, s.logger, s.cfg.PRChildMode)
 				filled, gfErr := gf.AssessAndFillGaps(ctx, job.RepoID, repo.Owner, repo.Name, metaIssues, metaPRs)
 				if gfErr != nil {
 					s.logger.Warn("gap fill error", "repo_id", job.RepoID, "error", gfErr)
@@ -503,7 +504,7 @@ func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 // the API, then process staged data into relational tables with bulk
 // contributor resolution.
 func (s *Scheduler) collectAndProcess(ctx context.Context, repoID int64, repo *model.Repo, client platform.Client, since time.Time) (*collector.CollectResult, error) {
-	sc := collector.NewStagedCollector(client, s.store, s.logger)
+	sc := collector.NewStagedCollectorWithMode(client, s.store, s.logger, s.cfg.PRChildMode)
 	result, err := sc.CollectRepo(ctx, repoID, repo.Owner, repo.Name, since)
 
 	if err == nil {
@@ -609,8 +610,11 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 
 		// Clean up the retained temp clone now that scorecard is done.
 		if localPath != "" {
-			os.RemoveAll(localPath)
-			s.logger.Info("removed retained analysis clone after scorecard", "path", localPath)
+			if err := os.RemoveAll(localPath); err != nil {
+				s.logger.Warn("failed to remove retained analysis clone", "path", localPath, "error", err)
+			} else {
+				s.logger.Info("removed retained analysis clone after scorecard", "path", localPath)
+			}
 		}
 	}
 
@@ -636,7 +640,10 @@ func (s *Scheduler) runCommitResolution(ctx context.Context, repoID int64, repo 
 			"unresolved", resolveResult.Unresolved)
 	}
 	// Also enrich canonical emails for contributors missing them.
-	resolver.ResolveEmailsToCanonical(ctx)
+	// This runs best-effort — a failure here doesn't block the job.
+	if _, err := resolver.ResolveEmailsToCanonical(ctx); err != nil {
+		s.logger.Warn("canonical email enrichment failed", "repo_id", repoID, "error", err)
+	}
 }
 
 // buildOutcome evaluates the collection and facade results to determine

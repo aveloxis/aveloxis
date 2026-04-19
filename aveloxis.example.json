@@ -24,8 +24,9 @@
     "force_full": false,
     "matview_rebuild_day": "friday",
     "matview_rebuild_on_startup": false,
-    "_refactor_modes_note": "Values 'rest' and 'graphql' select between the legacy REST and new GraphQL code paths added by the v0.18 series. Default 'rest' until v0.19.0 flips defaults. Additional mode keys (listing, threading, comments) will land as phases 2-4 ship — see CLAUDE.md 'REST → GraphQL Refactor' section.",
-    "pr_child_mode": "rest"
+    "_refactor_modes_note": "Values 'rest' and 'graphql' select between the legacy REST and new GraphQL code paths added by the v0.18 series. Default 'rest' until v0.19.0 flips defaults. Additional mode keys (threading, comments) will land as phases 3-4 ship — see CLAUDE.md 'REST → GraphQL Refactor' section.",
+    "pr_child_mode": "rest",
+    "listing_mode": "rest"
   },
   "web": {
     "addr": ":8082",

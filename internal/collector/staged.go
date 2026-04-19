@@ -102,28 +102,44 @@ type StagedCollector struct {
 	logger       *slog.Logger
 	platID       int16
 	prChildMode  string // "rest" (default) or "graphql" — see CollectionConfig.PRChildMode
+	listingMode  string // "rest" (default) or "graphql" — see CollectionConfig.ListingMode
 }
 
 // NewStagedCollector creates a staged collector using the REST per-PR
-// child waterfall. For GraphQL-mode, call NewStagedCollectorWithMode.
+// child waterfall and REST issue/PR listing. For non-default modes,
+// use NewStagedCollectorWithMode or NewStagedCollectorWithModes.
 func NewStagedCollector(client platform.Client, store *db.PostgresStore, logger *slog.Logger) *StagedCollector {
-	return NewStagedCollectorWithMode(client, store, logger, "rest")
+	return NewStagedCollectorWithModes(client, store, logger, "rest", "rest")
 }
 
-// NewStagedCollectorWithMode is the explicit-mode constructor. mode
-// values are "rest" (the pre-v0.18.1 per-PR waterfall) and "graphql"
-// (the batched FetchPRBatch fetcher added in phase 1). Unknown values
-// are treated as "rest" so a misspelled config doesn't fail closed.
+// NewStagedCollectorWithMode is the phase-1 single-mode constructor
+// that sets pr_child_mode only. ListingMode defaults to "rest".
+// Preserved for backward compatibility with callers that don't yet
+// pass a listing mode.
 func NewStagedCollectorWithMode(client platform.Client, store *db.PostgresStore, logger *slog.Logger, mode string) *StagedCollector {
-	if mode != "graphql" {
-		mode = "rest"
+	return NewStagedCollectorWithModes(client, store, logger, mode, "rest")
+}
+
+// NewStagedCollectorWithModes is the explicit dual-mode constructor.
+// prChildMode selects between the REST per-PR waterfall and the
+// batched GraphQL fetcher (phase 1). listingMode selects between two
+// separate REST iterators and the unified GraphQL enumerator (phase
+// 2). Unknown mode values collapse to "rest" so misspelled config
+// fails safely.
+func NewStagedCollectorWithModes(client platform.Client, store *db.PostgresStore, logger *slog.Logger, prChildMode, listingMode string) *StagedCollector {
+	if prChildMode != "graphql" {
+		prChildMode = "rest"
+	}
+	if listingMode != "graphql" {
+		listingMode = "rest"
 	}
 	return &StagedCollector{
 		client:      client,
 		store:       store,
 		logger:      logger,
 		platID:      int16(client.Platform()),
-		prChildMode: mode,
+		prChildMode: prChildMode,
+		listingMode: listingMode,
 	}
 }
 
@@ -258,10 +274,53 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 // collectSequential runs issues, PRs, events, and messages one after another.
 // Used for repos with fewer than LargeRepoCommitThreshold commits.
 func (sc *StagedCollector) collectSequential(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
-	sc.collectIssues(ctx, sw, owner, repo, since, result)
-	sc.collectPRs(ctx, sw, owner, repo, since, result)
+	preIssues, prePRs := sc.preEnumerateIfGraphQL(ctx, owner, repo, since, result)
+	sc.collectIssues(ctx, sw, owner, repo, since, result, preIssues)
+	sc.collectPRs(ctx, sw, owner, repo, since, result, prePRs)
 	sc.collectEvents(ctx, sw, owner, repo, since, result)
 	sc.collectMessages(ctx, sw, owner, repo, since, result)
+}
+
+// preEnumerateIfGraphQL does the unified GraphQL issue+PR listing once
+// when listingMode=graphql, returning both slices for downstream
+// collectIssues/collectPRs to consume. In listingMode=rest it returns
+// (nil, nil) — the legacy per-path iterators in collectIssues and
+// collectPRs remain in charge.
+//
+// Non-fatal errors from the unified listing are logged and the function
+// returns (nil, nil) so collection falls through to the legacy iterators.
+// This way a transient GraphQL problem doesn't take down the entire
+// repo's collection — we just lose the speedup for this cycle.
+func (sc *StagedCollector) preEnumerateIfGraphQL(ctx context.Context, owner, repo string, since time.Time, result *CollectResult) ([]model.Issue, []model.PullRequest) {
+	if sc.listingMode != "graphql" {
+		return nil, nil
+	}
+	batch, err := sc.client.ListIssuesAndPRs(ctx, owner, repo, since)
+	if err != nil {
+		if isOptionalEndpointSkip(err) {
+			sc.logger.Info("unified listing skipped — falling back to REST iterators",
+				"owner", owner, "repo", repo, "reason", err)
+			return nil, nil
+		}
+		sc.logger.Warn("unified GraphQL listing failed — falling back to REST iterators",
+			"owner", owner, "repo", repo, "error", err)
+		return nil, nil
+	}
+	sc.logger.Info("unified listing complete",
+		"owner", owner, "repo", repo, "issues", len(batch.Issues), "prs", len(batch.PullRequests))
+	// Initialize to non-nil empty slices when the batch had zero items
+	// so the caller can distinguish "pre-fetched, found none" from
+	// "not pre-fetched, use iterator". Legacy rest-mode callers still
+	// see (nil, nil).
+	issues := batch.Issues
+	if issues == nil {
+		issues = []model.Issue{}
+	}
+	prs := batch.PullRequests
+	if prs == nil {
+		prs = []model.PullRequest{}
+	}
+	return issues, prs
 }
 
 // collectParallel runs issues, PRs, and events concurrently in 3 goroutines,
@@ -272,6 +331,11 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 	// Claim 3 extra parallel slots.
 	ParallelSlots.Add(3)
 	defer ParallelSlots.Add(-3)
+
+	// Pre-enumerate once before forking goroutines when listingMode is
+	// graphql. Calling ListIssuesAndPRs in each child goroutine would
+	// double-fetch the entire data set.
+	preIssues, prePRs := sc.preEnumerateIfGraphQL(ctx, owner, repo, since, result)
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex // protects result.Errors and counts
@@ -285,7 +349,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 		defer wg.Done()
 		issueSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
-		sc.collectIssues(ctx, issueSW, owner, repo, since, localResult)
+		sc.collectIssues(ctx, issueSW, owner, repo, since, localResult, preIssues)
 		if err := issueSW.Flush(ctx); err != nil {
 			localResult.Errors = append(localResult.Errors, fmt.Errorf("issue flush: %w", err))
 		}
@@ -300,7 +364,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 		defer wg.Done()
 		prSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
-		sc.collectPRs(ctx, prSW, owner, repo, since, localResult)
+		sc.collectPRs(ctx, prSW, owner, repo, since, localResult, prePRs)
 		if err := prSW.Flush(ctx); err != nil {
 			localResult.Errors = append(localResult.Errors, fmt.Errorf("pr flush: %w", err))
 		}
@@ -340,18 +404,36 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 }
 
 // collectIssues stages all issues with their labels and assignees.
-func (sc *StagedCollector) collectIssues(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
-	sc.logger.Info("collecting issues", "owner", owner, "repo", repo)
-	for issue, err := range sc.client.ListIssues(ctx, owner, repo, since) {
-		if err != nil {
-			if isOptionalEndpointSkip(err) {
-				sc.logger.Info("skipping issues endpoint",
-					"owner", owner, "repo", repo, "reason", err)
+// When preEnumerated is non-nil, it's the issue slice from an earlier
+// unified ListIssuesAndPRs call (phase 2, listingMode=graphql); the
+// iterator path is bypassed. When nil, the legacy ListIssues iterator
+// drives enumeration (listingMode=rest, the default).
+func (sc *StagedCollector) collectIssues(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult, preEnumerated []model.Issue) {
+	mode := sc.listingMode
+	if preEnumerated == nil && mode == "graphql" {
+		// Pre-enumeration failed or wasn't done. Fall back to REST.
+		mode = "rest"
+	}
+	sc.logger.Info("collecting issues", "owner", owner, "repo", repo, "listing_mode", mode)
+
+	issues := preEnumerated
+	if preEnumerated == nil {
+		// Enumerate via the legacy REST iterator.
+		for issue, err := range sc.client.ListIssues(ctx, owner, repo, since) {
+			if err != nil {
+				if isOptionalEndpointSkip(err) {
+					sc.logger.Info("skipping issues endpoint",
+						"owner", owner, "repo", repo, "reason", err)
+					break
+				}
+				result.Errors = append(result.Errors, fmt.Errorf("issues: %w", err))
 				break
 			}
-			result.Errors = append(result.Errors, fmt.Errorf("issues: %w", err))
-			break
+			issues = append(issues, issue)
 		}
+	}
+
+	for _, issue := range issues {
 		envelope := stagedIssue{Issue: issue}
 		for label, err := range sc.client.ListIssueLabels(ctx, owner, repo, issue.Number) {
 			if err != nil {
@@ -370,33 +452,43 @@ func (sc *StagedCollector) collectIssues(ctx context.Context, sw *db.StagingWrit
 		}
 		result.Issues++
 		if result.Issues%100 == 0 {
-			sc.logger.Info("issues progress", "owner", owner, "repo", repo, "staged", result.Issues)
+			sc.logger.Info("issues progress", "owner", owner, "repo", repo, "staged", result.Issues, "listing_mode", mode)
 		}
 	}
-	sc.logger.Info("issues staged", "count", result.Issues)
+	sc.logger.Info("issues staged", "count", result.Issues, "listing_mode", mode)
 }
 
 // collectPRs stages all pull requests with their children.
-func (sc *StagedCollector) collectPRs(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
-	sc.logger.Info("collecting pull requests", "owner", owner, "repo", repo, "mode", sc.prChildMode)
+// When preEnumerated is non-nil (listingMode=graphql pre-fetched), it's
+// used directly. When nil, the legacy ListPullRequests iterator drives
+// enumeration.
+func (sc *StagedCollector) collectPRs(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult, preEnumerated []model.PullRequest) {
+	listMode := sc.listingMode
+	if preEnumerated == nil && listMode == "graphql" {
+		listMode = "rest" // pre-enumeration failed, fell back
+	}
+	sc.logger.Info("collecting pull requests", "owner", owner, "repo", repo, "mode", sc.prChildMode, "listing_mode", listMode)
 
-	// Collect PR numbers first so we can either stage them one-by-one
-	// (REST mode, preserving the pre-v0.18.1 behavior) or hand the full
-	// list to FetchPRBatch (GraphQL mode). Sharing this enumeration means
-	// both modes iterate the same PR listing, eliminating a source of
-	// equivalence drift.
+	// Collect PR numbers either from the pre-enumerated slice (phase 2
+	// graphql listing) or by iterating ListPullRequests (legacy REST).
+	// Sharing this enumeration between rest and graphql child modes
+	// eliminates a source of equivalence drift.
 	var prs []model.PullRequest
-	for pr, err := range sc.client.ListPullRequests(ctx, owner, repo, since) {
-		if err != nil {
-			if isOptionalEndpointSkip(err) {
-				sc.logger.Info("skipping pull requests endpoint",
-					"owner", owner, "repo", repo, "reason", err)
+	if preEnumerated != nil {
+		prs = preEnumerated
+	} else {
+		for pr, err := range sc.client.ListPullRequests(ctx, owner, repo, since) {
+			if err != nil {
+				if isOptionalEndpointSkip(err) {
+					sc.logger.Info("skipping pull requests endpoint",
+						"owner", owner, "repo", repo, "reason", err)
+					break
+				}
+				result.Errors = append(result.Errors, fmt.Errorf("pull requests: %w", err))
 				break
 			}
-			result.Errors = append(result.Errors, fmt.Errorf("pull requests: %w", err))
-			break
+			prs = append(prs, pr)
 		}
-		prs = append(prs, pr)
 	}
 
 	switch sc.prChildMode {

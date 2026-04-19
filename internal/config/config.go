@@ -134,6 +134,21 @@ type CollectionConfig struct {
 	// Default "rest" so existing deployments pick up v0.18.1 without a
 	// behavior change until operators explicitly opt in.
 	PRChildMode string `json:"pr_child_mode"`
+
+	// ListingMode selects between two separate REST iterators for
+	// issues and PRs ("rest", default) and the unified GraphQL
+	// listing ("graphql") added in phase 2 of the REST→GraphQL
+	// refactor. When "graphql", the staged collector calls
+	// platform.Client.ListIssuesAndPRs once per repo instead of
+	// iterating ListIssues and ListPullRequests separately. On GitHub
+	// this is a pair of paginated GraphQL queries; on GitLab it
+	// composes the existing REST iterators (GitLab's GraphQL MR
+	// surface is too limited to use directly). Column parity is
+	// preserved in both modes.
+	//
+	// Default "rest" so existing deployments pick up v0.18.2 without
+	// a behavior change until operators explicitly opt in.
+	ListingMode string `json:"listing_mode"`
 }
 
 // Load reads configuration from a JSON file.
@@ -217,6 +232,7 @@ func DefaultConfig() *Config {
 			MatviewRebuildDay:       "saturday",
 			MatviewRebuildOnStartup: false,
 			PRChildMode:             "rest",
+			ListingMode:             "rest",
 		},
 		LogLevel: "info",
 	}

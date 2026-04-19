@@ -108,8 +108,8 @@ func TestFetchPRBatch_HappyPath(t *testing.T) {
 					"reviews": {"nodes": [{"databaseId": 7000, "id": "R_1", "state": "APPROVED", "body": "lgtm", "submittedAt": "2026-04-02T11:00:00Z", "authorAssociation": "MEMBER", "url": "https://github.com/o/r/pull/42#pullrequestreview-7000", "author": {"login": "bob", "databaseId": 5002, "__typename": "User"}, "commit": {"oid": "abc123"}}], "pageInfo": {"hasNextPage": false, "endCursor": null}},
 					"commits": {"nodes": [{"commit": {"oid": "abc123", "message": "feat: x", "committedDate": "2026-04-01T12:00:00Z", "author": {"email": "alice@example.com", "name": "Alice", "date": "2026-04-01T12:00:00Z", "user": {"databaseId": 5001, "login": "alice"}}}}], "pageInfo": {"hasNextPage": false, "endCursor": null}},
 					"files": {"nodes": [{"path": "src/x.go", "additions": 42, "deletions": 3}], "pageInfo": {"hasNextPage": false, "endCursor": null}},
-					"headRef": {"name": "feature-x", "target": {"oid": "abc123"}},
-					"baseRef": {"name": "main", "target": {"oid": "000111"}},
+					"headRefName": "feature-x", "headRefOid": "abc123",
+					"baseRefName": "main", "baseRefOid": "000111",
 					"headRepository": {"databaseId": 1234, "id": "R_1", "nameWithOwner": "alice/r", "name": "r", "isPrivate": false, "owner": {"login": "alice", "__typename": "User", "databaseId": 5001}},
 					"baseRepository": {"databaseId": 5678, "id": "R_2", "nameWithOwner": "o/r", "name": "r", "isPrivate": false, "owner": {"login": "o", "__typename": "Organization", "databaseId": 9000}}
 				},
@@ -135,8 +135,8 @@ func TestFetchPRBatch_HappyPath(t *testing.T) {
 					"reviews": {"nodes": [], "pageInfo": {"hasNextPage": false, "endCursor": null}},
 					"commits": {"nodes": [], "pageInfo": {"hasNextPage": false, "endCursor": null}},
 					"files": {"nodes": [], "pageInfo": {"hasNextPage": false, "endCursor": null}},
-					"headRef": null,
-					"baseRef": {"name": "main", "target": {"oid": "000112"}},
+					"headRefName": "", "headRefOid": "",
+					"baseRefName": "main", "baseRefOid": "000112",
 					"headRepository": null,
 					"baseRepository": {"databaseId": 5678, "id": "R_2", "nameWithOwner": "o/r", "name": "r", "isPrivate": false, "owner": {"login": "o", "__typename": "Organization", "databaseId": 9000}}
 				}
@@ -310,13 +310,17 @@ func TestFetchPRBatch_HappyPath(t *testing.T) {
 	if pr43.PR.MergeCommitSHA != "deadbeef" {
 		t.Errorf("PR 43 MergeCommitSHA = %q, want 'deadbeef'", pr43.PR.MergeCommitSHA)
 	}
-	// Null headRef/headRepository on the merged PR: the mapper must handle
-	// these gracefully (merged PRs often have their branch deleted).
+	// Defensive check: fixture has empty headRefName AND empty headRefOid
+	// on the merged PR. Real GitHub always populates these (persistent
+	// String! scalars), so in practice MetaHead is always non-nil — but
+	// if for some reason both come back empty, the mapper must handle
+	// that gracefully and skip the meta row instead of inserting a
+	// zero-value.
 	if pr43.MetaHead != nil {
-		t.Errorf("PR 43 MetaHead = %+v, want nil (headRef was null)", pr43.MetaHead)
+		t.Errorf("PR 43 MetaHead = %+v, want nil (both headRefName and headRefOid were empty)", pr43.MetaHead)
 	}
 	if pr43.RepoHead != nil {
-		t.Errorf("PR 43 RepoHead = %+v, want nil (headRepository was null)", pr43.RepoHead)
+		t.Errorf("PR 43 RepoHead = %+v, want nil (headRepository was null — fork deleted)", pr43.RepoHead)
 	}
 }
 
@@ -538,15 +542,19 @@ func TestFetchPRBatch_QueryContainsAllChildren(t *testing.T) {
 		"reviews",
 		"commits",
 		"files",
-		"headRef",
-		"baseRef",
+		// Persistent scalar fields (not headRef/baseRef pointers) —
+		// see prNodeFragment comment for why these specifically.
+		"headRefName",
+		"headRefOid",
+		"baseRefName",
+		"baseRefOid",
 		"headRepository",
 		"baseRepository",
 		"authorAssociation",
 		"pageInfo",
 		"endCursor",
 		"hasNextPage",
-		"databaseId", // every entity needs the numeric platform ID
+		"databaseId", // every entity that has one needs the numeric platform ID
 	} {
 		if !strings.Contains(code, needed) {
 			t.Errorf("GraphQL query missing required field %q — dropping it would cause a silent column regression vs REST", needed)

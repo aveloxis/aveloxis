@@ -196,8 +196,16 @@ const prNodeFragment = `
         nodes { path additions deletions }
         pageInfo { hasNextPage endCursor }
       }
-      headRef { name target { oid } }
-      baseRef { name target { oid } }
+      # Persistent scalar fields — stay populated even after branch deletion.
+      # The headRef/baseRef object pointers go null once the branch is gone;
+      # the *Name and *Oid scalars are frozen at PR-open time and live forever.
+      # Without this distinction, meta rows (and by extension repo rows, which
+      # require a meta_id) were missing for ~65% of PRs in phase 1's first
+      # equivalence run against augurlabs/augur.
+      headRefName
+      headRefOid
+      baseRefName
+      baseRefOid
       headRepository {
         databaseId id nameWithOwner name isPrivate
         owner { __typename login ... on User { databaseId } ... on Organization { databaseId } }
@@ -245,9 +253,17 @@ type prBatchPRNode struct {
 	Commits        prBatchCommits     `json:"commits"`
 	Files          prBatchFiles       `json:"files"`
 
-	HeadRef *prBatchRef `json:"headRef"`
-	BaseRef *prBatchRef `json:"baseRef"`
+	// Persistent scalar fields — see prNodeFragment comment. Always
+	// populated from GitHub as long as the PR exists, even after the
+	// branch/fork is deleted.
+	HeadRefName string `json:"headRefName"`
+	HeadRefOid  string `json:"headRefOid"`
+	BaseRefName string `json:"baseRefName"`
+	BaseRefOid  string `json:"baseRefOid"`
 
+	// Pointer-valued. Null if the branch/fork was deleted. Used only for
+	// the head/base repository (fork-source) snapshot which has no
+	// persistent-scalar equivalent.
 	HeadRepository *prBatchRepo `json:"headRepository"`
 	BaseRepository *prBatchRepo `json:"baseRepository"`
 }
@@ -340,13 +356,6 @@ type prBatchFiles struct {
 	PageInfo prBatchPageInfo `json:"pageInfo"`
 }
 
-type prBatchRef struct {
-	Name   string `json:"name"`
-	Target *struct {
-		OID string `json:"oid"`
-	} `json:"target"`
-}
-
 type prBatchRepo struct {
 	DatabaseID    int64  `json:"databaseId"`
 	ID            string `json:"id"`
@@ -431,6 +440,11 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 
 	for _, rv := range n.Reviews.Nodes {
 		review := model.PullRequestReview{
+			// PlatformID is an FK to the platform table (1=GitHub, 2=GitLab,
+			// 3=GenericGit). Leaving it 0 would FK-violate the reviews
+			// upsert and silently drop every review from the DB —
+			// exactly what the v0.18.1 phase 1 first run did.
+			PlatformID:        model.PlatformGitHub,
 			PlatformReviewID:  rv.DatabaseID,
 			NodeID:            rv.ID,
 			State:             rv.State,
@@ -486,27 +500,25 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 		})
 	}
 
-	if n.HeadRef != nil {
-		meta := &model.PullRequestMeta{
+	// Always emit head/base meta from the persistent scalar fields. The
+	// REST path's pull_request_meta table has exactly head+base rows per
+	// PR (2× row count); matching that parity requires we never skip meta
+	// emission just because the live branch pointer went null.
+	if n.HeadRefName != "" || n.HeadRefOid != "" {
+		staged.MetaHead = &model.PullRequestMeta{
 			HeadOrBase: "head",
-			Ref:        n.HeadRef.Name,
+			Ref:        n.HeadRefName,
+			SHA:        n.HeadRefOid,
 			Origin:     pr.Origin,
 		}
-		if n.HeadRef.Target != nil {
-			meta.SHA = n.HeadRef.Target.OID
-		}
-		staged.MetaHead = meta
 	}
-	if n.BaseRef != nil {
-		meta := &model.PullRequestMeta{
+	if n.BaseRefName != "" || n.BaseRefOid != "" {
+		staged.MetaBase = &model.PullRequestMeta{
 			HeadOrBase: "base",
-			Ref:        n.BaseRef.Name,
+			Ref:        n.BaseRefName,
+			SHA:        n.BaseRefOid,
 			Origin:     pr.Origin,
 		}
-		if n.BaseRef.Target != nil {
-			meta.SHA = n.BaseRef.Target.OID
-		}
-		staged.MetaBase = meta
 	}
 
 	if n.HeadRepository != nil {
@@ -748,6 +760,7 @@ func (c *Client) paginatePRReviews(ctx context.Context, owner, repo string, numb
 		}
 		for _, rv := range resp.Repository.PullRequest.Reviews.Nodes {
 			r := model.PullRequestReview{
+				PlatformID:        model.PlatformGitHub, // FK to platforms — see mapPRNodeToStagedPR for why required
 				PlatformReviewID:  rv.DatabaseID,
 				NodeID:            rv.ID,
 				State:             rv.State,

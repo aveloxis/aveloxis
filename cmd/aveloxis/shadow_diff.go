@@ -170,6 +170,40 @@ type shadowTable struct {
 	// worked, but the field is explicit so a future table addition
 	// without repo_id (e.g. some normalized lookup) doesn't crash.
 	HasRepoID bool
+	// ResolvedColumns names local-FK columns whose values always differ
+	// between two fresh databases (because they're auto-increment
+	// serials) but that reference a parent row with a platform-stable
+	// identifier. The diff tool resolves each of these client-side
+	// before comparing: it preloads a map[localID]platformID from the
+	// parent table on each database, then substitutes the resolved
+	// platform value for the local value in the content string.
+	//
+	// This catches cross-linkage bugs: if REST's review_comment.msg_id=42
+	// points to a message with platform_msg_id=999 but GraphQL's
+	// review_comment.msg_id=8 points to a message with platform_msg_id=888,
+	// the content comparison fails — without this machinery, the diff
+	// would either silently accept the mismatch (local IDs excluded) or
+	// false-positive every row (local IDs included).
+	ResolvedColumns []resolvedColumn
+}
+
+// resolvedColumn describes how to substitute a local serial FK with its
+// platform-stable target for equivalence comparison. See shadowTable.ResolvedColumns.
+type resolvedColumn struct {
+	// LocalColumn is the column in this table whose value is a local
+	// serial FK (e.g. "msg_id" in review_comments).
+	LocalColumn string
+	// RefTable is the parent table the FK points into. Must include the
+	// schema prefix (e.g. "aveloxis_data.messages").
+	RefTable string
+	// RefLocalKey is the parent's local primary key column that
+	// LocalColumn references (e.g. "msg_id" in messages).
+	RefLocalKey string
+	// RefPlatformKey is the parent's platform-stable column we resolve
+	// to for comparison (e.g. "platform_msg_id" in messages). This
+	// value should be identical for the same real-world row across
+	// any two fresh databases.
+	RefPlatformKey string
 }
 
 func shadowTables() []shadowTable {
@@ -199,10 +233,17 @@ func shadowTables() []shadowTable {
 			HasRepoID:      true,
 		},
 		{
-			Name:           "aveloxis_data.pull_requests",
-			PrimaryKey:     []string{"repo_id", "pr_number"},
+			Name:       "aveloxis_data.pull_requests",
+			PrimaryKey: []string{"repo_id", "pr_number"},
+			// meta_head_id / meta_base_id are local serial FKs. Resolve
+			// them to meta_sha so the diff catches cross-linkage bugs
+			// where a PR points at the wrong head/base meta row.
 			ContentColumns: []string{"pr_title", "pr_state", "author_id", "merge_commit_sha"},
-			HasRepoID:      true,
+			ResolvedColumns: []resolvedColumn{
+				{LocalColumn: "meta_head_id", RefTable: "aveloxis_data.pull_request_meta", RefLocalKey: "pr_meta_id", RefPlatformKey: "meta_sha"},
+				{LocalColumn: "meta_base_id", RefTable: "aveloxis_data.pull_request_meta", RefLocalKey: "pr_meta_id", RefPlatformKey: "meta_sha"},
+			},
+			HasRepoID: true,
 		},
 		{
 			Name:           "aveloxis_data.pull_request_labels",
@@ -246,28 +287,88 @@ func shadowTables() []shadowTable {
 			ContentColumns: []string{"meta_ref", "meta_sha"},
 			HasRepoID:      true,
 		},
+		// Bridge tables: PK uses platform_src_id (stable GitHub/GitLab
+		// comment ID) instead of local msg_id/issue_id/pr_review_id
+		// FKs. The local FKs always differ between two fresh DBs even
+		// when the underlying comment is the same real GitHub comment.
+		// platform_src_id is stable across collections so the set
+		// comparison reflects real-world equivalence.
+		//
+		// ResolvedColumns on each bridge verify the local msg_id FK
+		// resolves to the same platform_msg_id on both sides — i.e.,
+		// that the bridge rows aren't accidentally pointing at
+		// different real messages.
 		{
 			Name:           "aveloxis_data.issue_message_ref",
-			PrimaryKey:     []string{"issue_id", "msg_id"},
+			PrimaryKey:     []string{"repo_id", "platform_src_id"},
 			ContentColumns: []string{},
-			HasRepoID:      true,
+			ResolvedColumns: []resolvedColumn{
+				{LocalColumn: "msg_id", RefTable: "aveloxis_data.messages", RefLocalKey: "msg_id", RefPlatformKey: "platform_msg_id"},
+				{LocalColumn: "issue_id", RefTable: "aveloxis_data.issues", RefLocalKey: "issue_id", RefPlatformKey: "platform_issue_id"},
+			},
+			HasRepoID: true,
 		},
 		{
 			Name:           "aveloxis_data.pull_request_message_ref",
-			PrimaryKey:     []string{"pull_request_id", "msg_id"},
+			PrimaryKey:     []string{"repo_id", "platform_src_id"},
 			ContentColumns: []string{},
-			HasRepoID:      true,
+			ResolvedColumns: []resolvedColumn{
+				{LocalColumn: "msg_id", RefTable: "aveloxis_data.messages", RefLocalKey: "msg_id", RefPlatformKey: "platform_msg_id"},
+				{LocalColumn: "pull_request_id", RefTable: "aveloxis_data.pull_requests", RefLocalKey: "pull_request_id", RefPlatformKey: "platform_pr_id"},
+			},
+			HasRepoID: true,
 		},
 		{
 			Name:           "aveloxis_data.pull_request_review_message_ref",
-			PrimaryKey:     []string{"pr_review_id", "msg_id"},
+			PrimaryKey:     []string{"repo_id", "pr_review_msg_src_id"},
 			ContentColumns: []string{},
-			HasRepoID:      true,
+			ResolvedColumns: []resolvedColumn{
+				{LocalColumn: "msg_id", RefTable: "aveloxis_data.messages", RefLocalKey: "msg_id", RefPlatformKey: "platform_msg_id"},
+				{LocalColumn: "pr_review_id", RefTable: "aveloxis_data.pull_request_reviews", RefLocalKey: "pr_review_id", RefPlatformKey: "platform_review_id"},
+			},
+			HasRepoID: true,
 		},
 		{
-			Name:           "aveloxis_data.review_comments",
-			PrimaryKey:     []string{"repo_id", "platform_src_id"},
-			ContentColumns: []string{"msg_id", "commit_id", "file_path", "line"},
+			Name:       "aveloxis_data.review_comments",
+			PrimaryKey: []string{"repo_id", "platform_src_id"},
+			// msg_id and pr_review_id are local serial FKs. Their raw
+			// integer values always differ between two fresh DBs.
+			// ResolvedColumns below substitutes each with its
+			// platform-stable target before comparison, so a cross-
+			// linkage bug (review_comment → wrong message) would
+			// surface as a content mismatch here.
+			ContentColumns: []string{"commit_id", "file_path", "line"},
+			ResolvedColumns: []resolvedColumn{
+				{LocalColumn: "msg_id", RefTable: "aveloxis_data.messages", RefLocalKey: "msg_id", RefPlatformKey: "platform_msg_id"},
+				{LocalColumn: "pr_review_id", RefTable: "aveloxis_data.pull_request_reviews", RefLocalKey: "pr_review_id", RefPlatformKey: "platform_review_id"},
+			},
+			HasRepoID: true,
+		},
+		// pull_request_repo tracks head/base repository (fork-source)
+		// metadata for each PR. Populated from the same source the PR
+		// meta came from: REST via FetchPRRepos, GraphQL via the
+		// headRepository/baseRepository fields in the batch query.
+		// No repo_id column — the PR→meta→repo chain is joined through
+		// pr_repo_meta_id. For the --repo-id filter to work, diff
+		// callers pointed at single-repo databases collect this table
+		// unfiltered (both shadow DBs have only repo_id=1).
+		{
+			Name:           "aveloxis_data.pull_request_repo",
+			PrimaryKey:     []string{"pr_repo_meta_id", "pr_repo_head_or_base"},
+			ContentColumns: []string{"pr_src_repo_id", "pr_repo_name", "pr_repo_full_name", "pr_repo_private_bool"},
+			HasRepoID:      false,
+		},
+		// messages is the shared text store for every comment across
+		// issues, PRs, and reviews. Phase 1 doesn't touch comment
+		// collection, but the cntrb_id column on each message depends
+		// on contributor resolution, which GraphQL's inline author.databaseId
+		// may speed up without changing the final resolution outcome.
+		// Diffing the table catches any unexpected drift in body,
+		// timestamp, or resolved contributor across the two paths.
+		{
+			Name:           "aveloxis_data.messages",
+			PrimaryKey:     []string{"repo_id", "platform_id", "platform_msg_id"},
+			ContentColumns: []string{"msg_text", "msg_timestamp", "cntrb_id", "msg_sender_email"},
 			HasRepoID:      true,
 		},
 	}
@@ -411,8 +512,10 @@ func diffOneTable(ctx context.Context, logger *slog.Logger, rest, graphql *pgxpo
 	td.FailMissing = capAndCount(td.FailMissing, countMissing(restPKs, graphqlPKs))
 	td.FlagExtra = capAndCount(td.FlagExtra, countMissing(graphqlPKs, restPKs))
 
-	// Content comparison on the intersection.
-	if len(tbl.ContentColumns) > 0 {
+	// Content comparison on the intersection. Runs when there are either
+	// content columns OR resolved-FK columns to verify — both represent
+	// ways a row's meaning can drift between the two databases.
+	if len(tbl.ContentColumns) > 0 || len(tbl.ResolvedColumns) > 0 {
 		mismatches, err := diffContent(ctx, rest, graphql, tbl, where)
 		if err != nil {
 			return nil, err
@@ -462,19 +565,40 @@ func fetchPKs(ctx context.Context, pool *pgxpool.Pool, tbl shadowTable, where st
 }
 
 // diffContent finds rows that exist on both sides but have differing content
-// columns. Implemented by pulling PK+content from both sides and comparing in
-// memory; capped at exampleCap mismatches reported.
+// columns. Implemented by pulling PK+content+resolved-FKs from both sides
+// and comparing in memory; capped at exampleCap mismatches reported.
+//
+// For each column named in tbl.ResolvedColumns, the diff substitutes the
+// local serial value with its platform-stable resolution before building
+// the content string. This catches cross-linkage bugs (e.g. REST and
+// GraphQL's review_comment.msg_id values pointing to messages with
+// DIFFERENT real-world platform_msg_ids).
 func diffContent(ctx context.Context, rest, graphql *pgxpool.Pool, tbl shadowTable, where string) ([]DeltaRow, error) {
+	// Preload resolution maps per side for every resolved column.
+	restResolvers, err := buildResolvers(ctx, rest, tbl.ResolvedColumns)
+	if err != nil {
+		return nil, fmt.Errorf("building REST resolvers: %w", err)
+	}
+	graphqlResolvers, err := buildResolvers(ctx, graphql, tbl.ResolvedColumns)
+	if err != nil {
+		return nil, fmt.Errorf("building GraphQL resolvers: %w", err)
+	}
+
+	// Select: PK columns, then content columns, then local columns for
+	// any resolved FKs (appended so rows come back in a predictable shape).
 	cols := append([]string(nil), tbl.PrimaryKey...)
 	cols = append(cols, tbl.ContentColumns...)
+	for _, r := range tbl.ResolvedColumns {
+		cols = append(cols, r.LocalColumn)
+	}
 	sel := strings.Join(cols, ", ")
 	q := "SELECT " + sel + " FROM " + tbl.Name + where
 
-	restData, err := fetchRows(ctx, rest, q, len(tbl.PrimaryKey))
+	restData, err := fetchRowsWithResolved(ctx, rest, q, len(tbl.PrimaryKey), len(tbl.ContentColumns), restResolvers, tbl.ResolvedColumns)
 	if err != nil {
 		return nil, err
 	}
-	graphqlData, err := fetchRows(ctx, graphql, q, len(tbl.PrimaryKey))
+	graphqlData, err := fetchRowsWithResolved(ctx, graphql, q, len(tbl.PrimaryKey), len(tbl.ContentColumns), graphqlResolvers, tbl.ResolvedColumns)
 	if err != nil {
 		return nil, err
 	}
@@ -501,10 +625,45 @@ func diffContent(ctx context.Context, rest, graphql *pgxpool.Pool, tbl shadowTab
 	return out, nil
 }
 
-// fetchRows returns a map from the first pkCols-wide key to a string
-// concatenation of the remaining (content) columns. Used by diffContent
-// to compare content quickly in memory.
-func fetchRows(ctx context.Context, pool *pgxpool.Pool, query string, pkCols int) (map[string]string, error) {
+// buildResolvers preloads each ResolvedColumn's resolution map from the
+// database. Each map goes localID → platformID as a string for uniform
+// comparison. Empty or unset references resolve to "<missing>" so a row
+// whose FK points into thin air is visibly different from one that points
+// to a real parent with an empty platform ID.
+func buildResolvers(ctx context.Context, pool *pgxpool.Pool, cols []resolvedColumn) (map[string]map[string]string, error) {
+	out := map[string]map[string]string{}
+	for _, c := range cols {
+		if _, done := out[c.LocalColumn]; done {
+			continue // same local column referenced twice, reuse
+		}
+		q := "SELECT " + c.RefLocalKey + ", " + c.RefPlatformKey + " FROM " + c.RefTable
+		rows, err := pool.Query(ctx, q)
+		if err != nil {
+			return nil, fmt.Errorf("loading resolver for %s.%s: %w", c.RefTable, c.RefPlatformKey, err)
+		}
+		m := map[string]string{}
+		for rows.Next() {
+			vals, err := rows.Values()
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if len(vals) != 2 {
+				continue
+			}
+			m[fmt.Sprintf("%v", vals[0])] = fmt.Sprintf("%v", vals[1])
+		}
+		rows.Close()
+		out[c.LocalColumn] = m
+	}
+	return out, nil
+}
+
+// fetchRowsWithResolved is like fetchRows but substitutes each row's
+// local-FK values with their resolved platform-stable values before
+// building the content string. Columns are laid out in the SELECT as:
+// [pk cols | content cols | resolved-FK local cols].
+func fetchRowsWithResolved(ctx context.Context, pool *pgxpool.Pool, query string, pkCols, contentCols int, resolvers map[string]map[string]string, rcols []resolvedColumn) (map[string]string, error) {
 	rows, err := pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
@@ -517,16 +676,30 @@ func fetchRows(ctx context.Context, pool *pgxpool.Pool, query string, pkCols int
 		if err != nil {
 			return nil, err
 		}
-		if len(vals) < pkCols {
+		if len(vals) < pkCols+contentCols {
 			continue
 		}
 		pkParts := make([]string, 0, pkCols)
 		for i := 0; i < pkCols; i++ {
 			pkParts = append(pkParts, fmt.Sprintf("%v", vals[i]))
 		}
-		contentParts := make([]string, 0, len(vals)-pkCols)
-		for i := pkCols; i < len(vals); i++ {
+		contentParts := make([]string, 0, contentCols+len(rcols))
+		for i := pkCols; i < pkCols+contentCols; i++ {
 			contentParts = append(contentParts, fmt.Sprintf("%v", vals[i]))
+		}
+		// Resolved columns appended after content.
+		for j, rc := range rcols {
+			idx := pkCols + contentCols + j
+			if idx >= len(vals) {
+				break
+			}
+			localVal := fmt.Sprintf("%v", vals[idx])
+			resolver := resolvers[rc.LocalColumn]
+			resolved, ok := resolver[localVal]
+			if !ok {
+				resolved = "<missing>"
+			}
+			contentParts = append(contentParts, rc.LocalColumn+"→"+rc.RefPlatformKey+"="+resolved)
 		}
 		out[strings.Join(pkParts, "|")] = strings.Join(contentParts, "|")
 	}

@@ -295,44 +295,48 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 // collectSequential runs issues, PRs, events, and messages one after another.
 // Used for repos with fewer than LargeRepoCommitThreshold commits.
 func (sc *StagedCollector) collectSequential(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
-	preIssues, prePRs := sc.preEnumerateIfGraphQL(ctx, owner, repo, since, result)
+	preIssues, prePRs, preIssueComments := sc.preEnumerateIfGraphQL(ctx, owner, repo, since, result)
 	sc.collectIssues(ctx, sw, owner, repo, since, result, preIssues)
+	sc.stageInlineIssueComments(ctx, sw, preIssueComments, result)
 	sc.collectPRs(ctx, sw, owner, repo, since, result, prePRs)
 	sc.collectEvents(ctx, sw, owner, repo, since, result)
 	sc.collectMessages(ctx, sw, owner, repo, since, result)
 }
 
 // preEnumerateIfGraphQL does the unified GraphQL issue+PR listing once
-// when listingMode=graphql, returning both slices for downstream
-// collectIssues/collectPRs to consume. In listingMode=rest it returns
-// (nil, nil) — the legacy per-path iterators in collectIssues and
-// collectPRs remain in charge.
+// when listingMode=graphql, returning the issue and PR slices plus the
+// inline issue comments delivered with the listing (phase 4). In
+// listingMode=rest it returns (nil, nil, nil) — the legacy per-path
+// iterators in collectIssues and collectPRs remain in charge, and the
+// repo-wide collectMessages call keeps its job.
 //
 // Non-fatal errors from the unified listing are logged and the function
-// returns (nil, nil) so collection falls through to the legacy iterators.
-// This way a transient GraphQL problem doesn't take down the entire
-// repo's collection — we just lose the speedup for this cycle.
-func (sc *StagedCollector) preEnumerateIfGraphQL(ctx context.Context, owner, repo string, since time.Time, result *CollectResult) ([]model.Issue, []model.PullRequest) {
+// returns (nil, nil, nil) so collection falls through to the legacy
+// iterators. This way a transient GraphQL problem doesn't take down the
+// entire repo's collection — we just lose the speedup for this cycle.
+func (sc *StagedCollector) preEnumerateIfGraphQL(ctx context.Context, owner, repo string, since time.Time, _ *CollectResult) ([]model.Issue, []model.PullRequest, []platform.MessageWithRef) {
 	if sc.listingMode != "graphql" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	batch, err := sc.client.ListIssuesAndPRs(ctx, owner, repo, since)
 	if err != nil {
 		if isOptionalEndpointSkip(err) {
 			sc.logger.Info("unified listing skipped — falling back to REST iterators",
 				"owner", owner, "repo", repo, "reason", err)
-			return nil, nil
+			return nil, nil, nil
 		}
 		sc.logger.Warn("unified GraphQL listing failed — falling back to REST iterators",
 			"owner", owner, "repo", repo, "error", err)
-		return nil, nil
+		return nil, nil, nil
 	}
 	sc.logger.Info("unified listing complete",
-		"owner", owner, "repo", repo, "issues", len(batch.Issues), "prs", len(batch.PullRequests))
+		"owner", owner, "repo", repo,
+		"issues", len(batch.Issues), "prs", len(batch.PullRequests),
+		"inline_issue_comments", len(batch.IssueComments))
 	// Initialize to non-nil empty slices when the batch had zero items
 	// so the caller can distinguish "pre-fetched, found none" from
 	// "not pre-fetched, use iterator". Legacy rest-mode callers still
-	// see (nil, nil).
+	// see (nil, nil, nil).
 	issues := batch.Issues
 	if issues == nil {
 		issues = []model.Issue{}
@@ -341,7 +345,41 @@ func (sc *StagedCollector) preEnumerateIfGraphQL(ctx context.Context, owner, rep
 	if prs == nil {
 		prs = []model.PullRequest{}
 	}
-	return issues, prs
+	return issues, prs, batch.IssueComments
+}
+
+// stageInlineIssueComments stages the issue comments that came inline
+// with the phase-2 unified listing. No-op when the slice is empty
+// (listingMode=rest, or a GitHub repo with zero issue comments, or a
+// GitLab repo where the REST composition didn't deliver inline comments).
+func (sc *StagedCollector) stageInlineIssueComments(ctx context.Context, sw *db.StagingWriter, comments []platform.MessageWithRef, result *CollectResult) {
+	if len(comments) == 0 {
+		return
+	}
+	for _, msg := range comments {
+		if err := sw.Stage(ctx, EntityMessage, msg); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("stage inline issue message: %w", err))
+			continue
+		}
+		result.Messages++
+	}
+	sc.logger.Info("staged inline issue comments", "count", len(comments))
+}
+
+// fullGraphQLMode reports whether this collector is set up to deliver
+// PR conversation comments, issue conversation comments, and inline
+// review comments through the phase 1+2 GraphQL batches — which makes
+// the repo-wide REST collectMessages call redundant.
+//
+// Requires BOTH pr_child_mode AND listing_mode to be "graphql" AND the
+// platform to be GitHub. GitLab's FetchPRBatch composes REST calls and
+// does not populate StagedPR.Comments / StagedPR.ReviewComments, so
+// GitLab repos must keep running the repo-wide REST fetch regardless
+// of mode flags.
+func (sc *StagedCollector) fullGraphQLMode() bool {
+	return sc.prChildMode == "graphql" &&
+		sc.listingMode == "graphql" &&
+		sc.platID == int16(model.PlatformGitHub)
 }
 
 // collectParallel runs issues, PRs, and events concurrently in 3 goroutines,
@@ -356,7 +394,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 	// Pre-enumerate once before forking goroutines when listingMode is
 	// graphql. Calling ListIssuesAndPRs in each child goroutine would
 	// double-fetch the entire data set.
-	preIssues, prePRs := sc.preEnumerateIfGraphQL(ctx, owner, repo, since, result)
+	preIssues, prePRs, preIssueComments := sc.preEnumerateIfGraphQL(ctx, owner, repo, since, result)
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex // protects result.Errors and counts
@@ -365,22 +403,24 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 	// thread-safe staging. Results are merged under the mutex.
 	wg.Add(3)
 
-	// Goroutine 1: Issues
+	// Goroutine 1: Issues + inline issue comments from the unified listing.
 	go func() {
 		defer wg.Done()
 		issueSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
 		sc.collectIssues(ctx, issueSW, owner, repo, since, localResult, preIssues)
+		sc.stageInlineIssueComments(ctx, issueSW, preIssueComments, localResult)
 		if err := issueSW.Flush(ctx); err != nil {
 			localResult.Errors = append(localResult.Errors, fmt.Errorf("issue flush: %w", err))
 		}
 		mu.Lock()
 		result.Issues += localResult.Issues
+		result.Messages += localResult.Messages
 		result.Errors = append(result.Errors, localResult.Errors...)
 		mu.Unlock()
 	}()
 
-	// Goroutine 2: Pull Requests
+	// Goroutine 2: Pull Requests + inline PR / review comments (phase 4).
 	go func() {
 		defer wg.Done()
 		prSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
@@ -391,6 +431,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 		}
 		mu.Lock()
 		result.PullRequests += localResult.PullRequests
+		result.Messages += localResult.Messages
 		result.Errors = append(result.Errors, localResult.Errors...)
 		mu.Unlock()
 	}()
@@ -784,6 +825,21 @@ func stagePRBatch(ctx context.Context, sw *db.StagingWriter, batch []platform.St
 		if result.PullRequests%100 == 0 {
 			logger.Info("pull requests progress", "owner", owner, "repo", repo, "staged", result.PullRequests, "mode", "graphql")
 		}
+
+		// Phase 4: stage inline PR conversation comments delivered with
+		// the PR node. Inline diff-anchored review comments are NOT
+		// fetched via GraphQL (see platform.StagedPR.Comments godoc for
+		// why) — they continue to arrive through the repo-wide REST
+		// /pulls/comments endpoint in collectMessages. GitLab's
+		// FetchPRBatch leaves s.Comments empty, so this is a no-op on
+		// GitLab repos.
+		for _, cm := range s.Comments {
+			if err := sw.Stage(ctx, EntityMessage, cm); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("stage inline pr comment: %w", err))
+				continue
+			}
+			result.Messages++
+		}
 	}
 }
 
@@ -823,23 +879,48 @@ func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWrit
 	sc.logger.Info("events staged", "count", result.Events)
 }
 
-// collectMessages stages issue comments, PR comments, and review comments.
+// collectMessages stages issue + PR conversation comments (via repo-wide
+// /issues/comments) and diff-anchored review comments (via repo-wide
+// /pulls/comments).
+//
+// Phase 4 partial skip: when pr_child_mode AND listing_mode are both
+// "graphql" on GitHub, the issue + PR conversation comments arrive inline
+// from the phase-1 PR batch and the phase-2 issue listing and are already
+// staged by stagePRBatch + stageInlineIssueComments. In that mode the
+// /issues/comments iterator is redundant and gets skipped.
+//
+// The /pulls/comments (review-inline) iterator is NOT skipped even in
+// full-GraphQL mode. GitHub's GraphQL `PullRequestReviewComment` omits
+// the `side` / `startSide` fields the REST schema carries, and deriving
+// them from `line`/`originalLine` is not bijective on context-line
+// comments. Running ListReviewComments here preserves byte-for-byte
+// fidelity on `review_comments.pr_cmt_side` / `pr_cmt_start_side` and
+// gives shadow-diff a clean comparison against the REST shadow. The
+// trade-off is one extra REST call per collection — /pulls/comments
+// returns far fewer rows than /issues/comments so the net phase-4
+// speedup is preserved.
 func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
-	sc.logger.Info("collecting messages", "owner", owner, "repo", repo)
-	for msg, err := range sc.client.ListIssueComments(ctx, owner, repo, since) {
-		if err != nil {
-			if isOptionalEndpointSkip(err) {
-				sc.logger.Info("skipping issue comments endpoint",
-					"owner", owner, "repo", repo, "reason", err)
+	full := sc.fullGraphQLMode()
+	if full {
+		sc.logger.Info("collectMessages: skipping /issues/comments — delivered inline; still running /pulls/comments for side/startSide",
+			"owner", owner, "repo", repo)
+	} else {
+		sc.logger.Info("collecting messages", "owner", owner, "repo", repo)
+		for msg, err := range sc.client.ListIssueComments(ctx, owner, repo, since) {
+			if err != nil {
+				if isOptionalEndpointSkip(err) {
+					sc.logger.Info("skipping issue comments endpoint",
+						"owner", owner, "repo", repo, "reason", err)
+					break
+				}
+				result.Errors = append(result.Errors, fmt.Errorf("issue comments: %w", err))
 				break
 			}
-			result.Errors = append(result.Errors, fmt.Errorf("issue comments: %w", err))
-			break
+			if err := sw.Stage(ctx, EntityMessage, msg); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("stage message: %w", err))
+			}
+			result.Messages++
 		}
-		if err := sw.Stage(ctx, EntityMessage, msg); err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("stage message: %w", err))
-		}
-		result.Messages++
 	}
 	for rc, err := range sc.client.ListReviewComments(ctx, owner, repo, since) {
 		if err != nil {

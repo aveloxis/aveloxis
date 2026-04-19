@@ -1,0 +1,38 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "user": "aveloxis",
+    "password": "fuckoffdawn",
+    "dbname": "aveloxis_shadow_graphql",
+    "sslmode": "prefer"
+  },
+  "github": {
+    "api_keys": [],
+    "base_url": "https://api.github.com"
+  },
+  "gitlab": {
+    "api_keys": [],
+    "base_url": "https://gitlab.com/api/v4",
+    "gitlab_hosts": []
+  },
+  "collection": {
+    "batch_size": 500,
+    "days_until_recollect": 6,
+    "workers": 40,
+    "force_full": false,
+    "repo_clone_dir": "~/aveloxis-repos-shadow-graphql/",
+    "matview_rebuild_day": "friday",
+    "matview_rebuild_on_startup": false,
+    "pr_child_mode": "graphql",
+    "listing_mode": "graphql",
+    "threading_mode": "sharded",
+    "shard_size": 500
+  },
+  "web": {
+    "addr": ":9082",
+    "dev_mode": true,
+    "base_url": "http://localhost:9082"
+  },
+  "log_level": "info"
+}

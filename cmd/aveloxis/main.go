@@ -155,6 +155,8 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		ForceFullCollection: cfg.Collection.ForceFullCollection,
 		PRChildMode:         cfg.Collection.PRChildMode,
 		ListingMode:         cfg.Collection.ListingMode,
+		ThreadingMode:       cfg.Collection.ThreadingMode,
+		ShardSize:           cfg.Collection.ShardSize,
 	})
 	go sched.Run(ctx)
 

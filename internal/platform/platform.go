@@ -73,9 +73,18 @@ type RepoCollector interface {
 // GraphQL API is too weak on merge_request fields to use here. Parity is
 // preserved at the row/column level; the only observable difference is
 // the call pattern inside the platform package.
+//
+// Phase 4 adds IssueComments: per-issue conversation comments delivered
+// inline with the issue listing. Each entry carries an IssueRef so the
+// staged collector can skip the repo-wide /issues/comments REST call
+// when running in full-GraphQL mode. IssueComments is nil when the
+// platform implementation doesn't support inline comments (GitLab REST
+// composition); callers fall back to the MessageCollector interface in
+// that case.
 type IssueAndPRBatch struct {
-	Issues       []model.Issue
-	PullRequests []model.PullRequest
+	Issues        []model.Issue
+	PullRequests  []model.PullRequest
+	IssueComments []MessageWithRef
 }
 
 // IssueCollector fetches issues and related entities.
@@ -116,6 +125,16 @@ type StagedPR struct {
 	MetaBase  *model.PullRequestMeta
 	RepoHead  *model.PullRequestRepo
 	RepoBase  *model.PullRequestRepo
+
+	// Phase 4: inline comment payloads. Populated by GraphQL FetchPRBatch
+	// (PR.comments and PullRequestReview.comments connections); nil when
+	// the implementation doesn't fetch comments inline (GitLab REST
+	// composition). Each Comments entry carries a PRRef so the staged
+	// collector can write to pull_request_message_ref; each ReviewComments
+	// entry carries the parent's platform review ID so msg_id / pr_review_id
+	// resolution happens the same way it does on the REST path.
+	Comments       []MessageWithRef
+	ReviewComments []ReviewCommentWithRef
 }
 
 // PullRequestCollector fetches pull requests / merge requests and related entities.

@@ -34,11 +34,12 @@ import (
 func (c *Client) ListIssuesAndPRs(ctx context.Context, owner, repo string, since time.Time) (*platform.IssueAndPRBatch, error) {
 	batch := &platform.IssueAndPRBatch{}
 
-	issues, err := c.listIssuesGraphQL(ctx, owner, repo, since)
+	issues, comments, err := c.listIssuesGraphQL(ctx, owner, repo, since)
 	if err != nil {
 		return batch, fmt.Errorf("graphql issues listing: %w", err)
 	}
 	batch.Issues = issues
+	batch.IssueComments = comments
 
 	prs, err := c.listPullRequestsGraphQL(ctx, owner, repo, since)
 	if err != nil {
@@ -53,14 +54,28 @@ func (c *Client) ListIssuesAndPRs(ctx context.Context, owner, repo string, since
 // server-side since filter. ORDER BY UPDATED_AT DESC so pages arrive
 // most-recent-first — matches REST's /issues?sort=updated&direction=desc
 // ordering.
-func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, since time.Time) ([]model.Issue, error) {
+//
+// Phase 4 addition: selects the `comments(first: 100)` connection per
+// issue so conversation comments arrive inline. Issues with more than
+// 100 comments are followed up with paginateIssueComments, keeping the
+// initial page fast. The returned comments slice is flat (one entry per
+// comment, IssueRef populated) so the staged collector can stage them
+// directly without regrouping.
+func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, since time.Time) ([]model.Issue, []platform.MessageWithRef, error) {
 	const query = `query IssuesList($owner: String!, $repo: String!, $cursor: String, $since: DateTime) {
   repository(owner: $owner, name: $repo) {
     issues(first: 100, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}, filterBy: {since: $since}) {
       nodes {
         databaseId id number title body state url
         createdAt updatedAt closedAt
-        comments { totalCount }
+        comments(first: 100) {
+          totalCount
+          nodes {
+            databaseId id body createdAt updatedAt url authorAssociation
+            author { __typename login ... on User { databaseId avatarUrl url name email } }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
         author {
           __typename login
           ... on User { databaseId avatarUrl url name email }
@@ -73,7 +88,12 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
 }`
 
 	var out []model.Issue
+	var comments []platform.MessageWithRef
 	var cursor string
+	origin := model.DataOrigin{
+		ToolSource: "aveloxis",
+		DataSource: "GitHub GraphQL (listing)",
+	}
 	for {
 		vars := map[string]any{"owner": owner, "repo": repo}
 		if cursor != "" {
@@ -103,6 +123,17 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
 						ClosedAt   *time.Time `json:"closedAt"`
 						Comments   struct {
 							TotalCount int `json:"totalCount"`
+							Nodes      []struct {
+								DatabaseID        int64        `json:"databaseId"`
+								ID                string       `json:"id"`
+								Body              string       `json:"body"`
+								CreatedAt         time.Time    `json:"createdAt"`
+								UpdatedAt         time.Time    `json:"updatedAt"`
+								URL               string       `json:"url"`
+								AuthorAssociation string       `json:"authorAssociation"`
+								Author            *prBatchUser `json:"author"`
+							} `json:"nodes"`
+							PageInfo prBatchPageInfo `json:"pageInfo"`
 						} `json:"comments"`
 						Author *prBatchUser `json:"author"`
 					} `json:"nodes"`
@@ -111,7 +142,7 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
 			} `json:"repository"`
 		}
 		if err := c.http.GraphQL(ctx, query, vars, &resp); err != nil {
-			return out, err
+			return out, comments, err
 		}
 
 		for _, n := range resp.Repository.Issues.Nodes {
@@ -128,20 +159,121 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
 				UpdatedAt:    n.UpdatedAt,
 				ClosedAt:     n.ClosedAt,
 				CommentCount: n.Comments.TotalCount,
-				Origin: model.DataOrigin{
-					ToolSource: "aveloxis",
-					DataSource: "GitHub GraphQL (listing)",
-				},
+				Origin:       origin,
 			}
 			if n.Author != nil {
 				issue.ReporterRef = userRefFromGraphQL(n.Author)
 			}
 			out = append(out, issue)
+
+			// Inline issue comments: each one becomes a row in
+			// aveloxis_data.messages + aveloxis_data.issue_message_ref.
+			for _, cm := range n.Comments.Nodes {
+				msg := model.Message{
+					PlatformMsgID: cm.DatabaseID,
+					PlatformID:    model.PlatformGitHub,
+					NodeID:        cm.ID,
+					Text:          cm.Body,
+					Timestamp:     cm.CreatedAt,
+					Origin:        origin,
+				}
+				if cm.Author != nil {
+					msg.AuthorRef = userRefFromGraphQL(cm.Author)
+				}
+				comments = append(comments, platform.MessageWithRef{
+					Message: msg,
+					IssueRef: &model.IssueMessageRef{
+						PlatformSrcID:       cm.DatabaseID,
+						PlatformNodeID:     cm.ID,
+						PlatformIssueNumber: n.Number,
+					},
+				})
+			}
+			// Oversized issues: paginate the rest of this one's comments
+			// before moving on so downstream ordering matches REST.
+			if n.Comments.PageInfo.HasNextPage {
+				extra, err := c.paginateIssueComments(ctx, owner, repo, n.Number, n.Comments.PageInfo.EndCursor, origin)
+				if err != nil {
+					return out, comments, fmt.Errorf("paginating comments for issue #%d: %w", n.Number, err)
+				}
+				comments = append(comments, extra...)
+			}
 		}
 		if !resp.Repository.Issues.PageInfo.HasNextPage {
-			return out, nil
+			return out, comments, nil
 		}
 		cursor = resp.Repository.Issues.PageInfo.EndCursor
+	}
+}
+
+// paginateIssueComments follows Issue.comments past the first 100.
+// Mirrors the PR-side paginatePRComments helper but anchored on an issue
+// number instead of a PR number.
+func (c *Client) paginateIssueComments(ctx context.Context, owner, repo string, issueNumber int, cursor string, origin model.DataOrigin) ([]platform.MessageWithRef, error) {
+	const query = `query PagIssueComments($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $number) {
+      comments(first: 100, after: $after) {
+        nodes {
+          databaseId id body createdAt updatedAt url authorAssociation
+          author { __typename login ... on User { databaseId avatarUrl url name email } }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`
+	var out []platform.MessageWithRef
+	for {
+		vars := map[string]any{"owner": owner, "repo": repo, "number": issueNumber, "after": cursor}
+		var resp struct {
+			Repository struct {
+				Issue struct {
+					Comments struct {
+						Nodes []struct {
+							DatabaseID        int64        `json:"databaseId"`
+							ID                string       `json:"id"`
+							Body              string       `json:"body"`
+							CreatedAt         time.Time    `json:"createdAt"`
+							UpdatedAt         time.Time    `json:"updatedAt"`
+							URL               string       `json:"url"`
+							AuthorAssociation string       `json:"authorAssociation"`
+							Author            *prBatchUser `json:"author"`
+						} `json:"nodes"`
+						PageInfo prBatchPageInfo `json:"pageInfo"`
+					} `json:"comments"`
+				} `json:"issue"`
+			} `json:"repository"`
+		}
+		if err := c.http.GraphQL(ctx, query, vars, &resp); err != nil {
+			return out, err
+		}
+		for _, cm := range resp.Repository.Issue.Comments.Nodes {
+			msg := model.Message{
+				PlatformMsgID: cm.DatabaseID,
+				PlatformID:    model.PlatformGitHub,
+				NodeID:        cm.ID,
+				Text:          cm.Body,
+				Timestamp:     cm.CreatedAt,
+				Origin:        origin,
+			}
+			if cm.Author != nil {
+				msg.AuthorRef = userRefFromGraphQL(cm.Author)
+			}
+			out = append(out, platform.MessageWithRef{
+				Message: msg,
+				IssueRef: &model.IssueMessageRef{
+					PlatformSrcID:       cm.DatabaseID,
+					PlatformNodeID:     cm.ID,
+					PlatformIssueNumber: issueNumber,
+				},
+			})
+		}
+		pi := resp.Repository.Issue.Comments.PageInfo
+		if !pi.HasNextPage {
+			return out, nil
+		}
+		cursor = pi.EndCursor
 	}
 }
 

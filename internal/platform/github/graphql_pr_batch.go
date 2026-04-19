@@ -177,17 +177,6 @@ const prNodeFragment = `
           databaseId id state body submittedAt authorAssociation url
           author { __typename login ... on User { databaseId avatarUrl url } }
           commit { oid }
-          comments(first: 100) {
-            nodes {
-              databaseId id body createdAt updatedAt url path diffHunk
-              line originalLine startLine originalStartLine side startSide
-              authorAssociation
-              commit { oid }
-              originalCommit { oid }
-              author { __typename login ... on User { databaseId avatarUrl url } }
-            }
-            pageInfo { hasNextPage endCursor }
-          }
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -338,8 +327,14 @@ type prBatchReviews struct {
 }
 
 // prBatchReviewNode carries everything we need from a PullRequestReview
-// GraphQL node: review body + nested inline comment connection. Pulled
-// into a named type so the pagination helpers can reuse the same shape.
+// GraphQL node: review metadata + body. Inline review comments are NOT
+// fetched via GraphQL — GitHub's GraphQL `PullRequestReviewComment` type
+// does not expose the `side` / `startSide` fields the REST schema carries,
+// and deriving them from `line`/`originalLine` is not bijective with
+// REST's values on context-line comments. Phase 4 keeps the repo-wide
+// REST `/pulls/comments` endpoint running (via `ListReviewComments`) so
+// `review_comments.pr_cmt_side` / `pr_cmt_start_side` stay populated and
+// the phase-4 shadow-diff has clean comparability against the REST shadow.
 type prBatchReviewNode struct {
 	DatabaseID        int64        `json:"databaseId"`
 	ID                string       `json:"id"`
@@ -352,7 +347,6 @@ type prBatchReviewNode struct {
 	Commit            *struct {
 		OID string `json:"oid"`
 	} `json:"commit"`
-	Comments prBatchReviewComments `json:"comments"`
 }
 
 // prBatchComments decodes the PullRequest.comments connection (conversation
@@ -373,41 +367,6 @@ type prBatchComments struct {
 	PageInfo prBatchPageInfo `json:"pageInfo"`
 }
 
-// prBatchReviewComments decodes the PullRequestReview.comments connection
-// (the diff-line-anchored inline review comments). GraphQL exposes line /
-// originalLine / startLine / originalStartLine as the modern anchor fields;
-// the deprecated position / originalPosition integer positions are NOT
-// available through GraphQL. Mapping to model.ReviewComment leaves
-// Position / OriginalPosition as their zero values — a documented parity
-// gap (like Label.databaseId from phase 1). REST-path rows continue to
-// populate those columns.
-type prBatchReviewComments struct {
-	Nodes []struct {
-		DatabaseID        int64        `json:"databaseId"`
-		ID                string       `json:"id"`
-		Body              string       `json:"body"`
-		CreatedAt         time.Time    `json:"createdAt"`
-		UpdatedAt         time.Time    `json:"updatedAt"`
-		URL               string       `json:"url"`
-		Path              string       `json:"path"`
-		DiffHunk          string       `json:"diffHunk"`
-		Line              *int         `json:"line"`
-		OriginalLine      *int         `json:"originalLine"`
-		StartLine         *int         `json:"startLine"`
-		OriginalStartLine *int         `json:"originalStartLine"`
-		Side              string       `json:"side"`
-		StartSide         string       `json:"startSide"`
-		AuthorAssociation string       `json:"authorAssociation"`
-		Commit            *struct {
-			OID string `json:"oid"`
-		} `json:"commit"`
-		OriginalCommit *struct {
-			OID string `json:"oid"`
-		} `json:"originalCommit"`
-		Author *prBatchUser `json:"author"`
-	} `json:"nodes"`
-	PageInfo prBatchPageInfo `json:"pageInfo"`
-}
 
 type prBatchCommits struct {
 	Nodes []struct {
@@ -540,16 +499,6 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 			review.CommitID = rv.Commit.OID
 		}
 		staged.Reviews = append(staged.Reviews, review)
-
-		// Inline review comments arrive nested under each review. Each
-		// one is one row in aveloxis_data.review_comments plus one message.
-		// The enclosing review's DatabaseID becomes PlatformReviewID so
-		// the processor resolves msg_id / pr_review_id the same way REST
-		// does. Pagination of oversized review.comments is handled by
-		// paginateReviewComments in the oversized-children pass.
-		for _, rc := range rv.Comments.Nodes {
-			staged.ReviewComments = append(staged.ReviewComments, reviewCommentFromGraphQL(rc, rv.DatabaseID, pr.Origin))
-		}
 	}
 
 	for _, c := range n.Commits.Nodes {
@@ -647,70 +596,6 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 	return staged
 }
 
-// reviewCommentFromGraphQL converts a decoded inline review comment node
-// into the collector's ReviewCommentWithRef envelope. platformReviewID is
-// the enclosing review's DatabaseID — passed explicitly because the
-// GraphQL node doesn't repeat it inside the comment object the way REST
-// does (REST serializes pull_request_review_id on every comment).
-func reviewCommentFromGraphQL(rc struct {
-	DatabaseID        int64        `json:"databaseId"`
-	ID                string       `json:"id"`
-	Body              string       `json:"body"`
-	CreatedAt         time.Time    `json:"createdAt"`
-	UpdatedAt         time.Time    `json:"updatedAt"`
-	URL               string       `json:"url"`
-	Path              string       `json:"path"`
-	DiffHunk          string       `json:"diffHunk"`
-	Line              *int         `json:"line"`
-	OriginalLine      *int         `json:"originalLine"`
-	StartLine         *int         `json:"startLine"`
-	OriginalStartLine *int         `json:"originalStartLine"`
-	Side              string       `json:"side"`
-	StartSide         string       `json:"startSide"`
-	AuthorAssociation string       `json:"authorAssociation"`
-	Commit            *struct {
-		OID string `json:"oid"`
-	} `json:"commit"`
-	OriginalCommit *struct {
-		OID string `json:"oid"`
-	} `json:"originalCommit"`
-	Author *prBatchUser `json:"author"`
-}, platformReviewID int64, origin model.DataOrigin) platform.ReviewCommentWithRef {
-	msg := model.Message{
-		PlatformMsgID: rc.DatabaseID,
-		PlatformID:    model.PlatformGitHub,
-		NodeID:        rc.ID,
-		Text:          rc.Body,
-		Timestamp:     rc.CreatedAt,
-		Origin:        origin,
-	}
-	if rc.Author != nil {
-		msg.AuthorRef = userRefFromGraphQL(rc.Author)
-	}
-	comment := model.ReviewComment{
-		PlatformSrcID:     rc.DatabaseID,
-		PlatformReviewID:  platformReviewID,
-		NodeID:            rc.ID,
-		DiffHunk:          rc.DiffHunk,
-		Path:              rc.Path,
-		Line:              rc.Line,
-		OriginalLine:      rc.OriginalLine,
-		StartLine:         rc.StartLine,
-		OriginalStartLine: rc.OriginalStartLine,
-		Side:              rc.Side,
-		StartSide:         rc.StartSide,
-		AuthorAssociation: rc.AuthorAssociation,
-		HTMLURL:           rc.URL,
-		UpdatedAt:         rc.UpdatedAt,
-	}
-	if rc.Commit != nil {
-		comment.CommitID = rc.Commit.OID
-	}
-	if rc.OriginalCommit != nil {
-		comment.OriginalCommitID = rc.OriginalCommit.OID
-	}
-	return platform.ReviewCommentWithRef{Message: msg, Comment: comment}
-}
 
 // mapPRState turns GraphQL's state enum (OPEN/CLOSED/MERGED) into the
 // lowercase string the existing schema stores. MERGED dominates CLOSED
@@ -817,20 +702,6 @@ func (c *Client) paginateOversizedChildren(ctx context.Context, owner, repo stri
 			return err
 		}
 		staged.Comments = append(staged.Comments, extra...)
-	}
-	// Inline review comments paginate per review — GitHub caps each
-	// review at 100 inline comments by default but some code-review-heavy
-	// PRs go well past that. For each review whose comments.hasNextPage
-	// is true, follow the cursor until exhausted.
-	for _, rv := range n.Reviews.Nodes {
-		if !rv.Comments.PageInfo.HasNextPage {
-			continue
-		}
-		extra, err := c.paginateReviewComments(ctx, owner, repo, number, rv.ID, rv.DatabaseID, rv.Comments.PageInfo.EndCursor, staged.PR.Origin)
-		if err != nil {
-			return err
-		}
-		staged.ReviewComments = append(staged.ReviewComments, extra...)
 	}
 	return nil
 }
@@ -1170,54 +1041,3 @@ func (c *Client) paginatePRComments(ctx context.Context, owner, repo string, num
 	}
 }
 
-// paginateReviewComments follows a single PullRequestReview.comments
-// connection (diff-line-anchored inline review comments). The review is
-// identified by its GraphQL node ID via the `node` top-level query rather
-// than by navigating from the PR — that avoids an extra nested traversal
-// and is O(1) in cursor depth.
-//
-// platformReviewID is the enclosing review's databaseId; passed in so the
-// returned ReviewComments match the same platform-review linkage the main
-// batch's inline comments did.
-func (c *Client) paginateReviewComments(ctx context.Context, owner, repo string, prNumber int, reviewNodeID string, platformReviewID int64, cursor string, origin model.DataOrigin) ([]platform.ReviewCommentWithRef, error) {
-	query := `query PagReviewComments($id: ID!, $after: String) {
-  node(id: $id) {
-    ... on PullRequestReview {
-      comments(first: 100, after: $after) {
-        nodes {
-          databaseId id body createdAt updatedAt url path diffHunk
-          line originalLine startLine originalStartLine side startSide
-          authorAssociation
-          commit { oid }
-          originalCommit { oid }
-          author { __typename login ... on User { databaseId avatarUrl url } }
-        }
-        pageInfo { hasNextPage endCursor }
-      }
-    }
-  }
-}`
-	_ = owner
-	_ = repo
-	_ = prNumber // owner/repo/prNumber retained for future diagnostic hooks
-	var out []platform.ReviewCommentWithRef
-	for {
-		vars := map[string]any{"id": reviewNodeID, "after": cursor}
-		var resp struct {
-			Node struct {
-				Comments prBatchReviewComments `json:"comments"`
-			} `json:"node"`
-		}
-		if err := c.http.GraphQL(ctx, query, vars, &resp); err != nil {
-			return out, err
-		}
-		for _, rc := range resp.Node.Comments.Nodes {
-			out = append(out, reviewCommentFromGraphQL(rc, platformReviewID, origin))
-		}
-		pi := resp.Node.Comments.PageInfo
-		if !pi.HasNextPage {
-			return out, nil
-		}
-		cursor = pi.EndCursor
-	}
-}

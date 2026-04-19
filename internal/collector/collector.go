@@ -14,6 +14,13 @@ import (
 )
 
 // Collector orchestrates data collection for a single repository.
+//
+// NOTE: This is the legacy direct-write path used by `aveloxis collect`.
+// The production `aveloxis serve` path uses StagedCollector (staged.go)
+// instead. Phase 1's pr_child_mode gate applies to the staged path only;
+// this Collector continues to use the per-PR REST waterfall unconditionally.
+// The legacy path is kept for its one-shot CLI use case and will be
+// consolidated with staged in a later phase.
 type Collector struct {
 	client         platform.Client
 	store          *db.PostgresStore

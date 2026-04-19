@@ -180,6 +180,13 @@ const prNodeFragment = `
         }
         pageInfo { hasNextPage endCursor }
       }
+      comments(first: 100) {
+        nodes {
+          databaseId id body createdAt updatedAt url authorAssociation
+          author { __typename login ... on User { databaseId avatarUrl url name email } }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
       commits(first: 100) {
         nodes {
           commit {
@@ -252,6 +259,7 @@ type prBatchPRNode struct {
 	Reviews        prBatchReviews     `json:"reviews"`
 	Commits        prBatchCommits     `json:"commits"`
 	Files          prBatchFiles       `json:"files"`
+	Comments       prBatchComments    `json:"comments"`
 
 	// Persistent scalar fields — see prNodeFragment comment. Always
 	// populated from GitHub as long as the PR exists, even after the
@@ -314,21 +322,51 @@ type prBatchReviewReqs struct {
 }
 
 type prBatchReviews struct {
+	Nodes    []prBatchReviewNode `json:"nodes"`
+	PageInfo prBatchPageInfo     `json:"pageInfo"`
+}
+
+// prBatchReviewNode carries everything we need from a PullRequestReview
+// GraphQL node: review metadata + body. Inline review comments are NOT
+// fetched via GraphQL — GitHub's GraphQL `PullRequestReviewComment` type
+// does not expose the `side` / `startSide` fields the REST schema carries,
+// and deriving them from `line`/`originalLine` is not bijective with
+// REST's values on context-line comments. Phase 4 keeps the repo-wide
+// REST `/pulls/comments` endpoint running (via `ListReviewComments`) so
+// `review_comments.pr_cmt_side` / `pr_cmt_start_side` stay populated and
+// the phase-4 shadow-diff has clean comparability against the REST shadow.
+type prBatchReviewNode struct {
+	DatabaseID        int64        `json:"databaseId"`
+	ID                string       `json:"id"`
+	State             string       `json:"state"`
+	Body              string       `json:"body"`
+	SubmittedAt       time.Time    `json:"submittedAt"`
+	AuthorAssociation string       `json:"authorAssociation"`
+	URL               string       `json:"url"`
+	Author            *prBatchUser `json:"author"`
+	Commit            *struct {
+		OID string `json:"oid"`
+	} `json:"commit"`
+}
+
+// prBatchComments decodes the PullRequest.comments connection (conversation
+// comments — NOT inline review comments). On GitHub these are IssueComment
+// nodes, identical in shape to Issue.comments. Mapped to MessageWithRef
+// with a PRRef so the staged collector writes to pull_request_message_ref.
+type prBatchComments struct {
 	Nodes []struct {
 		DatabaseID        int64        `json:"databaseId"`
 		ID                string       `json:"id"`
-		State             string       `json:"state"`
 		Body              string       `json:"body"`
-		SubmittedAt       time.Time    `json:"submittedAt"`
-		AuthorAssociation string       `json:"authorAssociation"`
+		CreatedAt         time.Time    `json:"createdAt"`
+		UpdatedAt         time.Time    `json:"updatedAt"`
 		URL               string       `json:"url"`
+		AuthorAssociation string       `json:"authorAssociation"`
 		Author            *prBatchUser `json:"author"`
-		Commit            *struct {
-			OID string `json:"oid"`
-		} `json:"commit"`
 	} `json:"nodes"`
 	PageInfo prBatchPageInfo `json:"pageInfo"`
 }
+
 
 type prBatchCommits struct {
 	Nodes []struct {
@@ -528,8 +566,36 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 		staged.RepoBase = repoFromGraphQL(n.BaseRepository, "base", pr.Origin)
 	}
 
+	// PR conversation comments: IssueComment nodes on the PullRequest.
+	// Each becomes one message + one pull_request_message_ref row.
+	// PRRef.PlatformPRNumber ties the comment back to the parent PR
+	// without relying on the local pull_request_id serial, same contract
+	// as the REST ListIssueComments path.
+	for _, c := range n.Comments.Nodes {
+		msg := model.Message{
+			PlatformMsgID: c.DatabaseID,
+			PlatformID:    model.PlatformGitHub,
+			NodeID:        c.ID,
+			Text:          c.Body,
+			Timestamp:     c.CreatedAt,
+		}
+		if c.Author != nil {
+			msg.AuthorRef = userRefFromGraphQL(c.Author)
+		}
+		msg.Origin = pr.Origin
+		staged.Comments = append(staged.Comments, platform.MessageWithRef{
+			Message: msg,
+			PRRef: &model.PullRequestMessageRef{
+				PlatformSrcID:    c.DatabaseID,
+				PlatformNodeID:   c.ID,
+				PlatformPRNumber: pr.Number,
+			},
+		})
+	}
+
 	return staged
 }
+
 
 // mapPRState turns GraphQL's state enum (OPEN/CLOSED/MERGED) into the
 // lowercase string the existing schema stores. MERGED dominates CLOSED
@@ -629,6 +695,13 @@ func (c *Client) paginateOversizedChildren(ctx context.Context, owner, repo stri
 			return err
 		}
 		staged.Reviewers = append(staged.Reviewers, extra...)
+	}
+	if n.Comments.PageInfo.HasNextPage {
+		extra, err := c.paginatePRComments(ctx, owner, repo, number, n.Comments.PageInfo.EndCursor, staged.PR.Origin)
+		if err != nil {
+			return err
+		}
+		staged.Comments = append(staged.Comments, extra...)
 	}
 	return nil
 }
@@ -907,3 +980,64 @@ func (c *Client) paginatePRReviewers(ctx context.Context, owner, repo string, nu
 		cursor = pi.EndCursor
 	}
 }
+
+// paginatePRComments follows the PR.comments connection (conversation
+// comments — the equivalent of REST's /issues/{n}/comments). Each comment
+// lands in aveloxis_data.messages via the staged collector, paired with a
+// PullRequestMessageRef so it joins back to the PR.
+func (c *Client) paginatePRComments(ctx context.Context, owner, repo string, number int, cursor string, origin model.DataOrigin) ([]platform.MessageWithRef, error) {
+	query := `query PagPRComments($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      comments(first: 100, after: $after) {
+        nodes {
+          databaseId id body createdAt updatedAt url authorAssociation
+          author { __typename login ... on User { databaseId avatarUrl url name email } }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`
+	var out []platform.MessageWithRef
+	for {
+		vars := map[string]any{"owner": owner, "repo": repo, "number": number, "after": cursor}
+		var resp struct {
+			Repository struct {
+				PullRequest struct {
+					Comments prBatchComments `json:"comments"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		}
+		if err := c.http.GraphQL(ctx, query, vars, &resp); err != nil {
+			return out, err
+		}
+		for _, cm := range resp.Repository.PullRequest.Comments.Nodes {
+			msg := model.Message{
+				PlatformMsgID: cm.DatabaseID,
+				PlatformID:    model.PlatformGitHub,
+				NodeID:        cm.ID,
+				Text:          cm.Body,
+				Timestamp:     cm.CreatedAt,
+				Origin:        origin,
+			}
+			if cm.Author != nil {
+				msg.AuthorRef = userRefFromGraphQL(cm.Author)
+			}
+			out = append(out, platform.MessageWithRef{
+				Message: msg,
+				PRRef: &model.PullRequestMessageRef{
+					PlatformSrcID:    cm.DatabaseID,
+					PlatformNodeID:   cm.ID,
+					PlatformPRNumber: number,
+				},
+			})
+		}
+		pi := resp.Repository.PullRequest.Comments.PageInfo
+		if !pi.HasNextPage {
+			return out, nil
+		}
+		cursor = pi.EndCursor
+	}
+}
+

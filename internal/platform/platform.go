@@ -73,9 +73,18 @@ type RepoCollector interface {
 // GraphQL API is too weak on merge_request fields to use here. Parity is
 // preserved at the row/column level; the only observable difference is
 // the call pattern inside the platform package.
+//
+// Phase 4 adds IssueComments: per-issue conversation comments delivered
+// inline with the issue listing. Each entry carries an IssueRef so the
+// staged collector can skip the repo-wide /issues/comments REST call
+// when running in full-GraphQL mode. IssueComments is nil when the
+// platform implementation doesn't support inline comments (GitLab REST
+// composition); callers fall back to the MessageCollector interface in
+// that case.
 type IssueAndPRBatch struct {
-	Issues       []model.Issue
-	PullRequests []model.PullRequest
+	Issues        []model.Issue
+	PullRequests  []model.PullRequest
+	IssueComments []MessageWithRef
 }
 
 // IssueCollector fetches issues and related entities.
@@ -116,6 +125,24 @@ type StagedPR struct {
 	MetaBase  *model.PullRequestMeta
 	RepoHead  *model.PullRequestRepo
 	RepoBase  *model.PullRequestRepo
+
+	// Phase 4: inline PR conversation comments delivered by GitHub's
+	// GraphQL `PullRequest.comments` connection. Each entry carries a
+	// PRRef so the staged collector writes to pull_request_message_ref
+	// the same way the REST path does. Nil when the implementation
+	// doesn't deliver comments inline (GitLab's REST-composition
+	// FetchPRBatch leaves this empty).
+	//
+	// Inline REVIEW comments (diff-anchored) are NOT delivered here.
+	// GitHub's GraphQL `PullRequestReviewComment` type omits the `side`
+	// / `startSide` fields the REST schema carries, and deriving them
+	// from `line`/`originalLine` is not bijective on context-line
+	// comments. Phase 4 keeps the repo-wide REST `/pulls/comments`
+	// endpoint running (`MessageCollector.ListReviewComments`) so those
+	// columns stay populated with byte-for-byte REST fidelity. Only
+	// `/issues/comments` (issue + PR conversation — the larger endpoint)
+	// is skipped in full-GraphQL mode.
+	Comments []MessageWithRef
 }
 
 // PullRequestCollector fetches pull requests / merge requests and related entities.

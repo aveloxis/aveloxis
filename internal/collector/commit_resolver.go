@@ -508,8 +508,13 @@ func (r *CommitResolver) ResolveEmailsToCanonical(ctx context.Context) (int, err
 		resp, err := r.http.Get(ctx, path)
 		if err != nil {
 			// Mark as enriched even on failure to avoid retrying on
-			// deleted/suspended users every pass.
-			r.store.MarkContributorEnriched(ctx, c.Login)
+			// deleted/suspended users every pass. Marking itself
+			// can't fail in ways we'd act on — worst case the user
+			// gets re-queried on the next pass, which is a cost, not
+			// a correctness issue.
+			if mErr := r.store.MarkContributorEnriched(ctx, c.Login); mErr != nil {
+				r.logger.Debug("failed to mark contributor enriched", "login", c.Login, "error", mErr)
+			}
 			continue
 		}
 
@@ -530,7 +535,9 @@ func (r *CommitResolver) ResolveEmailsToCanonical(ctx context.Context) (int, err
 
 		// Mark enrichment timestamp to prevent re-querying users with
 		// private emails (where canonical will always stay null).
-		r.store.MarkContributorEnriched(ctx, c.Login)
+		if mErr := r.store.MarkContributorEnriched(ctx, c.Login); mErr != nil {
+			r.logger.Debug("failed to mark contributor enriched", "login", c.Login, "error", mErr)
+		}
 
 		// Small delay to be respectful of rate limits on the Users API.
 		time.Sleep(100 * time.Millisecond)

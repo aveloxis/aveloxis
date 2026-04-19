@@ -149,6 +149,32 @@ type CollectionConfig struct {
 	// Default "rest" so existing deployments pick up v0.18.2 without
 	// a behavior change until operators explicitly opt in.
 	ListingMode string `json:"listing_mode"`
+
+	// ThreadingMode selects between single-goroutine PR batch fetching
+	// ("single", default — pre-phase-3 behavior) and sharded multi-
+	// goroutine fetching ("sharded"). In sharded mode, when the PR
+	// count exceeds ShardSize, the enumerated PR list is partitioned
+	// and each shard runs in its own goroutine with its own GraphQL
+	// batch calls. Added in phase 3 of the REST→GraphQL refactor.
+	// Uses ParallelSlots to coordinate with the scheduler's worker
+	// pool so the total goroutine count stays within the configured
+	// workers budget.
+	//
+	// Default "single" so v0.18.3 is a no-op for operators who don't
+	// opt in. Sharding only activates when threading_mode=sharded
+	// AND pr_child_mode=graphql (the REST child path is per-PR
+	// sequential and doesn't benefit from shard-level fan-out).
+	ThreadingMode string `json:"threading_mode"`
+
+	// ShardSize is the item-count threshold above which sharded mode
+	// fans out. Default 3000 per the refactor plan ("1 additional
+	// worker per 3000 issues and PRs"). Operators running very large
+	// fleets may want a smaller value to exercise sharding on medium
+	// repos; the equivalence-test harness overrides it to 500 to
+	// trigger sharding on augur (2,623 PRs).
+	//
+	// Ignored when ThreadingMode != "sharded".
+	ShardSize int `json:"shard_size"`
 }
 
 // Load reads configuration from a JSON file.
@@ -233,6 +259,8 @@ func DefaultConfig() *Config {
 			MatviewRebuildOnStartup: false,
 			PRChildMode:             "rest",
 			ListingMode:             "rest",
+			ThreadingMode:           "single",
+			ShardSize:               3000,
 		},
 		LogLevel: "info",
 	}

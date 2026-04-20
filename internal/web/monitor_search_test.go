@@ -30,7 +30,11 @@ func TestMonitorSearchBarExists(t *testing.T) {
 	}
 }
 
-// TestMonitorFirstLastPageNav verifies the monitor has First and Last page links.
+// TestMonitorFirstLastPageNav verifies the monitor still renders First
+// and Last page controls. After the v0.18.8 refactor, the pagination
+// markup lives in the shared {{define "paginationNav"}} block rather
+// than inline inside the monitor template — so this check now targets
+// the shared block.
 func TestMonitorFirstLastPageNav(t *testing.T) {
 	src, err := os.ReadFile("templates.go")
 	if err != nil {
@@ -38,9 +42,9 @@ func TestMonitorFirstLastPageNav(t *testing.T) {
 	}
 	code := string(src)
 
-	idx := strings.Index(code, `{{define "monitor"}}`)
+	idx := strings.Index(code, `{{define "paginationNav"}}`)
 	if idx < 0 {
-		t.Fatal("cannot find monitor template")
+		t.Fatal("cannot find paginationNav template — did the refactor regress?")
 	}
 	tmpl := code[idx:]
 	end := strings.Index(tmpl[1:], "{{define")
@@ -49,10 +53,10 @@ func TestMonitorFirstLastPageNav(t *testing.T) {
 	}
 
 	if !strings.Contains(tmpl, "First") {
-		t.Error("monitor template must have a 'First' page navigation link")
+		t.Error("paginationNav must have a 'First' page navigation link")
 	}
 	if !strings.Contains(tmpl, "Last") {
-		t.Error("monitor template must have a 'Last' page navigation link")
+		t.Error("paginationNav must have a 'Last' page navigation link")
 	}
 }
 

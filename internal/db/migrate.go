@@ -72,6 +72,13 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_repo_meta_head_base
 		ON aveloxis_data.pull_request_repo (pr_repo_meta_id, pr_repo_head_or_base)`)
 
+	// Users table: dedupe + enforce PK/UNIQUE (v0.18.9).
+	// Older installs used CREATE TABLE IF NOT EXISTS with inline UNIQUE, which
+	// silently skipped on pre-existing tables created without the constraint —
+	// duplicate rows accumulated, and pg_restore to a fresh server failed
+	// applying users_pkey / users_login_name_key after the data load.
+	dedupeUsers(ctx, pg, logger)
+
 	// Users table OAuth columns (added in v0.5.0).
 	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "avatar_url", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "gh_user_id", "BIGINT")
@@ -307,6 +314,87 @@ func cleanupRepoNameGitSuffix(ctx context.Context, pg *PostgresStore, logger *sl
 	}
 	if n := tag.RowsAffected(); n > 0 {
 		logger.Info("stripped .git suffix from repo_name", "rows_updated", n)
+	}
+}
+
+// dedupeUsers removes duplicate rows from aveloxis_ops.users and ensures the
+// primary key + UNIQUE(login_name) constraints actually exist. Tables created
+// by early versions of schema.sql via `CREATE TABLE IF NOT EXISTS` escaped the
+// later addition of inline UNIQUE/PRIMARY KEY because IF NOT EXISTS silently
+// skips. Duplicate rows then accumulated through OAuth logins, and pg_restore
+// to a fresh server failed when applying users_pkey / users_login_name_key
+// after the data load. Idempotent: after the first run, matches zero rows.
+func dedupeUsers(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+	// 1. Drop rows that duplicate an existing user_id. Keep the row with the
+	//    smallest ctid (physical position — stable within a single transaction
+	//    and usable before a PRIMARY KEY exists).
+	tag, err := pg.pool.Exec(ctx, `
+		DELETE FROM aveloxis_ops.users a
+		USING aveloxis_ops.users b
+		WHERE a.ctid > b.ctid
+		  AND a.user_id = b.user_id`)
+	if err != nil {
+		logger.Warn("users user_id dedup failed", "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		logger.Info("deduped users by user_id", "rows_removed", n)
+	}
+
+	// 2. Drop rows that duplicate login_name across distinct user_ids. Keep
+	//    the lowest user_id so FKs pointing at the older row stay valid.
+	tag, err = pg.pool.Exec(ctx, `
+		DELETE FROM aveloxis_ops.users
+		WHERE user_id NOT IN (
+			SELECT MIN(user_id)
+			FROM aveloxis_ops.users
+			GROUP BY login_name
+		)`)
+	if err != nil {
+		logger.Warn("users login_name dedup failed", "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		logger.Info("deduped users by login_name", "rows_removed", n)
+	}
+
+	// 3. Ensure the PRIMARY KEY exists. Postgres has no ADD CONSTRAINT IF NOT
+	//    EXISTS, so we check pg_constraint first.
+	_, err = pg.pool.Exec(ctx, `
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conrelid = 'aveloxis_ops.users'::regclass
+				  AND contype = 'p'
+			) THEN
+				ALTER TABLE aveloxis_ops.users ADD PRIMARY KEY (user_id);
+			END IF;
+		END $$`)
+	if err != nil {
+		logger.Warn("users PRIMARY KEY add failed", "error", err)
+	}
+
+	// 4. Ensure UNIQUE(login_name) exists.
+	_, err = pg.pool.Exec(ctx, `
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conrelid = 'aveloxis_ops.users'::regclass
+				  AND contype = 'u'
+				  AND conkey = ARRAY[
+				      (SELECT attnum FROM pg_attribute
+				       WHERE attrelid = 'aveloxis_ops.users'::regclass
+				         AND attname = 'login_name')
+				  ]
+			) THEN
+				ALTER TABLE aveloxis_ops.users
+				  ADD CONSTRAINT users_login_name_key UNIQUE (login_name);
+			END IF;
+		END $$`)
+	if err != nil {
+		logger.Warn("users UNIQUE(login_name) add failed", "error", err)
 	}
 }
 

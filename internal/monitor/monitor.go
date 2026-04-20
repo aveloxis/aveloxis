@@ -10,13 +10,74 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/augurlabs/aveloxis/internal/db"
 	"github.com/augurlabs/aveloxis/internal/scheduler"
 	"github.com/augurlabs/aveloxis/internal/static"
 )
+
+// Dashboard pagination bounds. The default size keeps the rendered table
+// small enough that client-side JS sort stays responsive, and the cap
+// prevents a hostile or careless ?page_size=10000000 from flooding the
+// response and competing with collection workers for DB connections.
+const (
+	defaultDashboardPageSize = 100
+	maxDashboardPageSize     = 500
+)
+
+// pageParams is the validated, bounded result of parsing a dashboard
+// request. Offset is derived from Page and PageSize so callers pass it
+// straight to ListQueuePage.
+type pageParams struct {
+	Page     int
+	PageSize int
+	Search   string
+	Offset   int
+}
+
+// parsePageParams extracts page, page_size, and q from the URL query,
+// falling back to safe defaults on missing/non-numeric/out-of-range
+// input. Never returns PageSize > maxDashboardPageSize.
+func parsePageParams(r *http.Request) pageParams {
+	q := r.URL.Query()
+	p := pageParams{Page: 1, PageSize: defaultDashboardPageSize}
+
+	if v, err := strconv.Atoi(q.Get("page")); err == nil && v > 0 {
+		p.Page = v
+	}
+	if v, err := strconv.Atoi(q.Get("page_size")); err == nil && v > 0 {
+		if v > maxDashboardPageSize {
+			v = maxDashboardPageSize
+		}
+		p.PageSize = v
+	}
+	p.Search = strings.TrimSpace(q.Get("q"))
+	p.Offset = (p.Page - 1) * p.PageSize
+	return p
+}
+
+// totalPages returns how many pages the given total item count spans at
+// the given page size. Always returns at least 1 so the pagination
+// controls still render for an empty fleet. A zero pageSize (defensive
+// guard — parsePageParams won't produce one) also returns 1 rather than
+// dividing by zero.
+func totalPages(total, pageSize int) int {
+	if pageSize <= 0 {
+		return 1
+	}
+	if total <= 0 {
+		return 1
+	}
+	n := total / pageSize
+	if total%pageSize != 0 {
+		n++
+	}
+	return n
+}
 
 // renderMatviewBanner writes a visible pause banner at the top of the
 // dashboard while scheduler.MatviewRebuildActive is set. Operators were
@@ -158,8 +219,11 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	stats, _ := s.store.QueueStats(r.Context())
-	jobs, _ := s.store.ListQueue(r.Context())
+	ctx := r.Context()
+	params := parsePageParams(r)
+
+	stats, _ := s.store.QueueStats(ctx)
+	jobs, total, _ := s.store.ListQueuePage(ctx, params.PageSize, params.Offset, params.Search)
 
 	// Look up repo details and stats for display.
 	type enrichedJob struct {
@@ -176,17 +240,20 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		MetaCommits    int
 	}
 
-	// Collect repo IDs for batch stats lookup.
+	// Collect the page's repo IDs, then fetch repos and stats in two
+	// batched queries — not one-query-per-row like the pre-v0.18.6
+	// N+1 loop that starved collection workers for pgx pool connections.
 	repoIDs := make([]int64, 0, len(jobs))
 	for _, j := range jobs {
 		repoIDs = append(repoIDs, j.RepoID)
 	}
-	repoStats, _ := s.store.GetRepoStatsBatch(r.Context(), repoIDs)
+	repos, _ := s.store.GetReposBatch(ctx, repoIDs)
+	repoStats, _ := s.store.GetRepoStatsBatch(ctx, repoIDs)
 
 	enriched := make([]enrichedJob, 0, len(jobs))
 	for _, j := range jobs {
 		ej := enrichedJob{QueueJob: j}
-		if repo, err := s.store.GetRepoByID(r.Context(), j.RepoID); err == nil {
+		if repo, ok := repos[j.RepoID]; ok {
 			ej.Owner = repo.Owner
 			ej.Repo = repo.Name
 			ej.URL = repo.GitURL
@@ -268,8 +335,30 @@ function sortTable(col) {
 	fmt.Fprintf(w, `<div class="stat"><div class="value">%d</div><div class="label">Total</div></div>`, stats["total"])
 	fmt.Fprintf(w, `<div class="stat"><div class="value">%d</div><div class="label">Queued</div></div>`, stats["queued"])
 	fmt.Fprintf(w, `<div class="stat"><div class="value">%d</div><div class="label">Collecting</div></div>`, stats["collecting"])
-	fmt.Fprint(w, `</div>
-<table>
+	fmt.Fprint(w, `</div>`)
+
+	// Search box + page-size selector. Server-side search replaces the
+	// Ctrl-F workflow from the all-rows-at-once era: much better for
+	// known lookups on large fleets.
+	escSearch := template.HTMLEscapeString(params.Search)
+	fmt.Fprintf(w, `<form method="GET" action="/" style="margin-bottom:1rem;display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+<input type="text" name="q" value="%s" placeholder="Search owner/name…" style="padding:0.4rem 0.6rem;border:1px solid #ddd;border-radius:4px;min-width:240px">
+<select name="page_size" style="padding:0.4rem 0.6rem;border:1px solid #ddd;border-radius:4px">`, escSearch)
+	for _, sz := range []int{50, 100, 200, 500} {
+		selected := ""
+		if sz == params.PageSize {
+			selected = ` selected`
+		}
+		fmt.Fprintf(w, `<option value="%d"%s>%d per page</option>`, sz, selected, sz)
+	}
+	fmt.Fprint(w, `</select>
+<button class="btn" type="submit">Apply</button>`)
+	if params.Search != "" || params.PageSize != defaultDashboardPageSize {
+		fmt.Fprint(w, ` <a class="btn" href="/" style="text-decoration:none;color:inherit">Clear</a>`)
+	}
+	fmt.Fprintf(w, `<span style="color:#666;font-size:0.85rem;margin-left:auto">Matched %d repos</span></form>`, total)
+
+	fmt.Fprint(w, `<table>
 <tr>
   <th onclick="sortTable(0)"># <span class="arrow">&#9652;</span></th>
   <th onclick="sortTable(1)">Repo <span class="arrow">&#9652;</span></th>
@@ -344,8 +433,28 @@ function sortTable(col) {
 		fmt.Fprint(w, `</td></tr>`)
 	}
 
-	fmt.Fprint(w, `</table>
-<p style="color:#999;margin-top:1rem;font-size:0.8rem">
+	fmt.Fprint(w, `</table>`)
+
+	// Pagination controls. Page links preserve the active search and
+	// page_size so the three controls compose cleanly.
+	pages := totalPages(total, params.PageSize)
+	if pages > 1 {
+		qsNoPage := fmt.Sprintf("page_size=%d", params.PageSize)
+		if params.Search != "" {
+			qsNoPage += "&q=" + url.QueryEscape(params.Search)
+		}
+		fmt.Fprintf(w, `<div style="display:flex;gap:0.5rem;margin-top:1rem;align-items:center;font-size:0.9rem">`)
+		if params.Page > 1 {
+			fmt.Fprintf(w, `<a class="btn" href="/?page=%d&%s" style="text-decoration:none;color:inherit">&larr; Prev</a>`, params.Page-1, qsNoPage)
+		}
+		fmt.Fprintf(w, `<span style="color:#666">Page %d of %d</span>`, params.Page, pages)
+		if params.Page < pages {
+			fmt.Fprintf(w, `<a class="btn" href="/?page=%d&%s" style="text-decoration:none;color:inherit">Next &rarr;</a>`, params.Page+1, qsNoPage)
+		}
+		fmt.Fprint(w, `</div>`)
+	}
+
+	fmt.Fprint(w, `<p style="color:#999;margin-top:1rem;font-size:0.8rem">
 API: GET /api/queue | GET /api/stats | POST /api/prioritize/{repoID} | REST API: aveloxis api --addr :8383
 </p></body></html>`)
 }

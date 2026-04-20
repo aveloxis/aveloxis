@@ -41,7 +41,8 @@ The top of the dashboard shows aggregate queue statistics:
 
 ### Repo status table
 
-Below the statistics, a table shows every repo in the queue with:
+Below the statistics, a paginated table shows the queue ordered by
+`collecting` first, then `queued`, then priority and due date.
 
 | Column | Description |
 |---|---|
@@ -51,6 +52,27 @@ Below the statistics, a table shows every repo in the queue with:
 | **Due Time** | When the repo is next eligible for collection |
 | **Last Run** | Results of the most recent collection (entity counts, errors) |
 | **Actions** | Boost button to push the repo to the front |
+
+### Search and pagination (v0.18.6)
+
+The dashboard supports a search box and per-page selector above the table,
+and Prev/Next controls below it. Query parameters:
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `page` | `1` | 1-based page number |
+| `page_size` | `100` | Rows per page; capped at `500` |
+| `q` | *(empty)* | Case-insensitive substring match on `repo_owner` or `repo_name` |
+
+Example: `http://localhost:5555/?q=apache&page_size=200&page=2`.
+
+Before v0.18.6 the dashboard rendered every row on a single page and
+issued one `SELECT` per row to look up repo metadata (N+1). On large
+fleets that combination (1) made the page slow to render during active
+collection and (2) competed with collection workers for pgx pool
+connections. The dashboard now issues three queries total per refresh
+(`QueueStats`, `ListQueuePage`, and a batched `GetReposBatch` +
+`GetRepoStatsBatch`), regardless of fleet size.
 
 ---
 

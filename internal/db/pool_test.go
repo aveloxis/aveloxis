@@ -41,30 +41,45 @@ func TestDefaultPoolSizeIsReasonable(t *testing.T) {
 	}
 }
 
-// TestPoolDisablesStatementCache verifies NewPostgresStore configures pgx
-// to NOT cache server-side prepared-statement names per connection.
+// TestPoolUsesStatementCache verifies NewPostgresStore configures pgx to
+// cache prepared statements on each pooled connection.
 //
-// Background: pgx v5's default is QueryExecModeCacheStatement, which assigns
-// names like "stmtcache_<hash>" and re-uses them. Any event that silently
-// swaps the TCP connection's backend — pgbouncer in txn/statement pool mode,
-// a stateful NAT/firewall/cloud LB expiring an idle connection, a DB
-// restart mid-collection — leaves pgx's client cache out of sync and
-// SendBatch fails with SQLSTATE 26000 "prepared statement does not exist".
-// QueryExecModeExec re-prepares per call as an unnamed statement, so
-// there is no cache to go stale.
+// Background: pgx v5's QueryExecModeCacheStatement assigns server-side
+// statement names ("stmtcache_<hash>") and re-uses them, so repeat queries
+// skip Parse+Describe on the server — a meaningful win on the hot
+// INSERT/SELECT paths when the DB is on a LAN rather than a loopback
+// socket.
 //
-// Regressing this flag out would reintroduce the gap-fill / refresh-open
-// batch flush failures we chased in v0.18.10.
-func TestPoolDisablesStatementCache(t *testing.T) {
+// The v0.18.10 deployment briefly used QueryExecModeExec as a defensive
+// patch against SQLSTATE 26000 "prepared statement does not exist"
+// surprises when a TCP connection got silently swapped under pgx — seen
+// in NAT/firewall/pgbouncer deployments. For the direct-Postgres LAN
+// setup this code targets, that risk is covered by cfg.MaxConnIdleTime
+// (4 min) cycling connections before NAT timeouts, so we get the
+// caching win without the correctness hazard.
+//
+// If a pgbouncer in transaction or statement pooling mode ever appears
+// in front of the DB, revert this flag to QueryExecModeExec (or switch
+// to QueryExecModeCacheDescribe) — prepared statements are connection-
+// scoped and transaction-pooling breaks the cache.
+func TestPoolUsesStatementCache(t *testing.T) {
 	data, err := os.ReadFile("postgres.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(data)
-	if !strings.Contains(src, "cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec") {
-		t.Error("postgres.go must set cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec " +
-			"to avoid SQLSTATE 26000 when a TCP connection is silently replaced by an upstream " +
-			"NAT/firewall/pgbouncer")
+	if !strings.Contains(src, "cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement") {
+		t.Error("postgres.go must set cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement " +
+			"so repeat queries skip server-side Parse+Describe on the hot INSERT/SELECT paths. " +
+			"Revert to QueryExecModeExec only if a pgbouncer in txn/statement pooling mode is " +
+			"introduced in front of the DB.")
+	}
+	// Defensive: the legacy Exec-mode line must not linger alongside the
+	// new one — that would set the field twice and the second assignment
+	// would win silently.
+	if strings.Contains(src, "cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec") {
+		t.Error("postgres.go still contains a QueryExecModeExec assignment — remove it so only " +
+			"the CacheStatement line remains as the single source of truth")
 	}
 }
 

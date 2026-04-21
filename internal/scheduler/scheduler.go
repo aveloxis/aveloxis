@@ -507,7 +507,8 @@ func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 // the API, then process staged data into relational tables with bulk
 // contributor resolution.
 func (s *Scheduler) collectAndProcess(ctx context.Context, repoID int64, repo *model.Repo, client platform.Client, since time.Time) (*collector.CollectResult, error) {
-	sc := collector.NewStagedCollectorWithAllModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode, s.cfg.ThreadingMode, s.cfg.ShardSize)
+	sc := collector.NewStagedCollectorWithAllModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode, s.cfg.ThreadingMode, s.cfg.ShardSize).
+		WithWorkers(s.cfg.Workers)
 	result, err := sc.CollectRepo(ctx, repoID, repo.Owner, repo.Name, since)
 
 	if err == nil {

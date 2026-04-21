@@ -105,6 +105,20 @@ type StagedCollector struct {
 	listingMode   string // "rest" (default) or "graphql" — see CollectionConfig.ListingMode
 	threadingMode string // "single" (default) or "sharded" — see CollectionConfig.ThreadingMode
 	shardSize     int    // item-count threshold for sharded fan-out (default 3000)
+	workers       int    // scheduler worker pool size — feeds parallelSlotsForWorkers
+}
+
+// WithWorkers records the scheduler's worker-pool size on a
+// StagedCollector so collectParallel can scale its ParallelSlots
+// claim (see parallelSlotsForWorkers). Returns the same collector
+// for chaining. A zero or negative value leaves the legacy 3-slot
+// fallback in place.
+func (sc *StagedCollector) WithWorkers(n int) *StagedCollector {
+	if n < 0 {
+		n = 0
+	}
+	sc.workers = n
+	return sc
 }
 
 // NewStagedCollector creates a staged collector in the fully-default
@@ -384,12 +398,15 @@ func (sc *StagedCollector) fullGraphQLMode() bool {
 
 // collectParallel runs issues, PRs, and events concurrently in 3 goroutines,
 // each with its own StagingWriter for thread safety. The parent waits for all
-// three to complete before collecting messages. Claims 3 extra parallel slots
-// from the global counter so fillWorkerSlots can respect the capacity.
+// three to complete before collecting messages. Claims ParallelSlots so
+// fillWorkerSlots can respect the reserved capacity — see
+// parallelSlotsForWorkers for why the claim scales with worker count.
 func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, owner, repo string, since time.Time, result *CollectResult) {
-	// Claim 3 extra parallel slots.
-	ParallelSlots.Add(3)
-	defer ParallelSlots.Add(-3)
+	// Claim extra parallel slots scaled to the worker pool so the
+	// scheduler's throttle rule actually engages on large fleets.
+	slots := int32(parallelSlotsForWorkers(sc.workers))
+	ParallelSlots.Add(slots)
+	defer ParallelSlots.Add(-slots)
 
 	// Pre-enumerate once before forking goroutines when listingMode is
 	// graphql. Calling ListIssuesAndPRs in each child goroutine would

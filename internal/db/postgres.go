@@ -39,18 +39,28 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	}
 	cfg.MinConns = 2
 
-	// Avoid pgx's per-connection prepared-statement cache. The default
-	// QueryExecModeCacheStatement assigns server-side statement names
-	// ("stmtcache_...") and re-uses them across queries — which breaks
-	// as SQLSTATE 26000 "prepared statement does not exist" whenever a
-	// TCP connection gets silently replaced out from under pgx. That
-	// happens under pgbouncer (transaction/statement pooling) AND
-	// across stateful NAT/firewalls/cloud LBs with idle-connection
-	// timeouts when the DB is on a different host. QueryExecModeExec
-	// uses the extended protocol with unnamed statements — re-prepared
-	// per call, no client-side cache to go stale. Tiny per-query
-	// overhead; no correctness loss.
-	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+	// Use pgx's per-connection prepared-statement cache. Server-side
+	// statement names ("stmtcache_...") let repeat queries skip Parse +
+	// Describe on every call — a meaningful win on the hot INSERT /
+	// SELECT paths when the DB is on a LAN rather than a loopback
+	// socket.
+	//
+	// The correctness hazard this mode carries is SQLSTATE 26000
+	// "prepared statement does not exist" when a TCP connection is
+	// silently replaced out from under pgx (pgbouncer in transaction
+	// or statement pooling mode, or a stateful NAT/firewall/cloud LB
+	// expiring an idle connection). For the direct-Postgres LAN
+	// deployment this code targets, MaxConnIdleTime (4 min, below) is
+	// set below the typical 5-minute NAT idle timeout so pgx cycles
+	// connections before upstream gear does — the cache stays in sync.
+	//
+	// If a pgbouncer in txn/statement pooling mode ever appears in
+	// front of the DB, swap this to QueryExecModeExec (unnamed
+	// statements, no client cache) or QueryExecModeCacheDescribe
+	// (cache type info but not server-side names). Prepared statements
+	// are connection-scoped; transaction pooling shares backends
+	// across clients and the cache goes stale immediately.
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
 
 	// Cycle idle connections before network gear does. The common NAT
 	// idle timeout is 5 minutes; we cycle at 4 so pgx opens a fresh

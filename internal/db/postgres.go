@@ -29,11 +29,15 @@ type PostgresStore struct {
 // For scheduler use, pass workers+15 so collection workers don't starve
 // each other for database connections.
 func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logger, maxConns ...int32) (*PostgresStore, error) {
-	connString = appendKeepaliveParams(connString)
 	cfg, err := pgxpool.ParseConfig(connString)
 	if err != nil {
 		return nil, fmt.Errorf("parsing connection string: %w", err)
 	}
+	// Install TCP keepalives via a custom DialFunc so every pooled
+	// socket detects dead peers in ~2 minutes instead of the OS
+	// default 2 hours. See installKeepaliveDialer for why this is
+	// not done via conn-string params.
+	installKeepaliveDialer(cfg)
 	cfg.MaxConns = 20
 	if len(maxConns) > 0 && maxConns[0] > 0 {
 		cfg.MaxConns = maxConns[0]
@@ -52,12 +56,15 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	// defenses that together keep this path safe for direct-Postgres
 	// LAN deployments:
 	//
-	//   1. appendKeepaliveParams (prepared_stmt_retry.go) merges
-	//      libpq keepalive settings into the conn string so pgx's
-	//      dialer sets TCP_KEEPIDLE/INTVL/CNT on every socket. A
-	//      silently-dead socket is detected in ~2 minutes instead
-	//      of the OS default 2 hours, and pgxpool evicts it before
+	//   1. installKeepaliveDialer (prepared_stmt_retry.go) sets a
+	//      custom pgconn DialFunc that builds every socket with
+	//      net.KeepAliveConfig — TCP_KEEPIDLE/INTVL/CNT tuned for
+	//      ~2-minute dead-peer detection instead of the OS default
+	//      2 hours. pgxpool evicts the broken connection before
 	//      the cache can fire many queries at a swapped backend.
+	//      (Libpq-style conn-string keepalive params do NOT work —
+	//      pgx v5 forwards them to Postgres as RuntimeParams and
+	//      the startup fails with FATAL 42704.)
 	//
 	//   2. sendBatchWithRetry (prepared_stmt_retry.go) wraps
 	//      pool.SendBatch to retry once on SQLSTATE 26000. The

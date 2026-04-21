@@ -3,58 +3,13 @@ package db
 import (
 	"context"
 	"errors"
-	"strings"
+	"net"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-// keepaliveParams are the libpq-compatible TCP keepalive settings
-// appended to the pgx connection string by appendKeepaliveParams.
-// pgx's dialer reads these and sets TCP_KEEPIDLE / TCP_KEEPINTVL /
-// TCP_KEEPCNT on every pooled socket.
-//
-// Values tuned for dead-socket detection in ~2 minutes (60 idle + 6
-// probes × 10s interval), which is fast enough that pgxpool evicts
-// the broken connection before the per-connection prepared-statement
-// cache can fire many queries at a swapped backend. The
-// sendBatchWithRetry wrapper handles any residual race.
-//
-// connect_timeout=10 caps initial dial time so a misconfigured host
-// fails fast instead of blocking the scheduler's startup-Migrate
-// path for the default 2-minute kernel syn timeout.
-const keepaliveParams = "keepalives=1&keepalives_idle=60&keepalives_interval=10&keepalives_count=6&connect_timeout=10"
-
-// appendKeepaliveParams merges keepaliveParams into a pgx connection
-// string. Idempotent: if the caller already set keepalives=, returns
-// the string unchanged so per-deployment overrides survive.
-//
-// Handles both URL-form ("postgres://user:pass@host:port/db?sslmode=prefer")
-// and libpq keyword-form ("host=... port=... sslmode=prefer") conn
-// strings. ConnectionString() in internal/config/config.go emits
-// URL-form today, but pgx accepts both.
-func appendKeepaliveParams(connString string) string {
-	if strings.Contains(connString, "keepalives=") {
-		return connString
-	}
-	if strings.Contains(connString, "://") {
-		// URL form — query string gets an extra param. If there's
-		// no query string yet, start one with '?'; otherwise extend
-		// with '&'.
-		sep := "&"
-		if !strings.Contains(connString, "?") {
-			sep = "?"
-		}
-		return connString + sep + keepaliveParams
-	}
-	// Keyword form — space-separated key=value pairs. Convert the
-	// '&'-joined keepalive string to space-joined.
-	kw := strings.ReplaceAll(keepaliveParams, "&", " ")
-	if connString == "" {
-		return kw
-	}
-	return connString + " " + kw
-}
 
 // staleStatementSQLSTATE is the PostgreSQL error code for "prepared
 // statement does not exist" — the symptom when pgx's per-connection
@@ -108,4 +63,47 @@ func (s *PostgresStore) sendBatchWithRetry(ctx context.Context, batch *pgx.Batch
 	s.logger.Warn("prepared statement cache miss on SendBatch — retrying once",
 		"sqlstate", staleStatementSQLSTATE, "rows", batch.Len(), "error", err)
 	return s.pool.SendBatch(ctx, batch).Close()
+}
+
+// keepaliveIdle, keepaliveInterval, keepaliveCount tune dead-socket
+// detection. At 60s idle + 6 probes × 10s interval the kernel
+// declares a silent socket dead in ~2 minutes, pgxpool evicts it,
+// and the stale-prepared-statement race window shrinks dramatically.
+// Values are deliberately conservative; tighten further if a
+// deployment has a very flaky link.
+const (
+	keepaliveIdle     = 60 * time.Second
+	keepaliveInterval = 10 * time.Second
+	keepaliveCount    = 6
+	connectTimeout    = 10 * time.Second
+)
+
+// installKeepaliveDialer configures a custom pgconn DialFunc that
+// sets TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT on every pooled
+// socket via net.KeepAliveConfig (Go 1.23+). Also sets
+// ConnectTimeout so a misconfigured host fails fast instead of
+// blocking the scheduler's startup-Migrate path on the default
+// kernel syn timeout.
+//
+// WHY NOT CONN-STRING PARAMS: pgx v5 does NOT parse libpq's
+// keepalives / keepalives_idle / keepalives_interval / keepalives_count
+// keys from the connection string. Unrecognized keys get forwarded to
+// the server as StartupMessage RuntimeParams, and Postgres responds
+// with FATAL "unrecognized configuration parameter (SQLSTATE 42704)"
+// — observed in production when v0.18.14 first shipped with a
+// conn-string approach. The DialFunc path below is the pgx-v5
+// idiomatic way to achieve what libpq accepts as conn-string params.
+func installKeepaliveDialer(cfg *pgxpool.Config) {
+	dialer := &net.Dialer{
+		KeepAliveConfig: net.KeepAliveConfig{
+			Enable:   true,
+			Idle:     keepaliveIdle,
+			Interval: keepaliveInterval,
+			Count:    keepaliveCount,
+		},
+	}
+	cfg.ConnConfig.DialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, addr)
+	}
+	cfg.ConnConfig.ConnectTimeout = connectTimeout
 }

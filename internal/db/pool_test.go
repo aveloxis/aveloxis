@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestNewPostgresStoreAcceptsMaxConns verifies the constructor supports an
@@ -127,115 +129,112 @@ func TestPoolCyclesIdleConnections(t *testing.T) {
 	}
 }
 
-// TestPoolAppendsKeepaliveParams verifies NewPostgresStore amends the
-// connection string with libpq-compatible TCP keepalive settings so
-// pgx's dialer installs aggressive kernel-level keepalive probes on
-// every pooled socket.
+// TestPoolInstallsKeepaliveDialer verifies NewPostgresStore installs
+// a custom DialFunc that configures TCP_KEEPIDLE/INTVL/CNT on every
+// pooled socket via net.KeepAliveConfig.
 //
-// Without these, macOS + Linux defaults give ~2h of silence before a
-// dead socket is detected — long enough that pgx's per-connection
-// prepared-statement cache diverges from the server and the next
-// SendBatch hits SQLSTATE 26000 (the v0.18.11 failure we retried
-// around in v0.18.14 via sendBatchWithRetry).
+// Why not conn-string params: pgx v5 does NOT parse libpq's
+// keepalives_idle / keepalives_interval / keepalives_count from
+// either URL or keyword-form conn strings. Unrecognized keys get
+// forwarded to the server as StartupMessage RuntimeParams, and
+// Postgres responds with FATAL "unrecognized configuration
+// parameter 'keepalives_idle' (SQLSTATE 42704)" — observed in
+// production when v0.18.14 first shipped with the conn-string
+// approach.
 //
-// With keepalives_idle=60 / keepalives_interval=10 / keepalives_count=6,
-// the kernel declares a silent socket dead in ~2 minutes, pgxpool
-// evicts it, and the stale-cache race window shrinks dramatically.
-// The retry wrapper handles the residue; keepalives keep the residue
-// small.
+// The correct pgx-v5 path is a custom DialFunc that builds a
+// net.Dialer with KeepAliveConfig set, requires Go 1.23+.
 //
-// The constant and helper live in prepared_stmt_retry.go alongside
-// the retry wrapper — the two defenses are a package deal and
-// belong next to each other.
-func TestPoolAppendsKeepaliveParams(t *testing.T) {
-	// The hot-path wiring: NewPostgresStore must call the helper.
+// Why it matters: without a tighter-than-default keepalive
+// configuration, macOS + Linux give ~2h of silence before a dead
+// socket is detected. At 60s idle + 10s interval × 6 probes we
+// detect in ~2 minutes, pgxpool evicts the broken connection, and
+// the v0.18.11 "SQLSTATE 26000" race window shrinks dramatically.
+// sendBatchWithRetry handles any residue.
+func TestPoolInstallsKeepaliveDialer(t *testing.T) {
+	// Hot-path wiring: NewPostgresStore must call the installer
+	// after ParseConfig so the dialer is set on the pool's
+	// ConnConfig before pgxpool.NewWithConfig.
 	pgData, err := os.ReadFile("postgres.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(pgData), "appendKeepaliveParams(connString)") {
-		t.Error("NewPostgresStore must call appendKeepaliveParams(connString) " +
-			"before pgxpool.ParseConfig so every pooled socket gets the " +
-			"keepalive settings")
+	pgSrc := string(pgData)
+	if !strings.Contains(pgSrc, "installKeepaliveDialer(cfg)") {
+		t.Error("NewPostgresStore must call installKeepaliveDialer(cfg) after " +
+			"pgxpool.ParseConfig so every pooled socket gets TCP keepalives " +
+			"set via net.KeepAliveConfig (not via libpq-style conn-string " +
+			"params, which pgx v5 forwards to Postgres as unknown runtime " +
+			"parameters and causes 42704 on connect)")
+	}
+	// Defensive: the old conn-string approach must be gone. Keeping
+	// both would send keepalives= to Postgres as a RuntimeParam and
+	// the FATAL 42704 startup error would return.
+	if strings.Contains(pgSrc, "appendKeepaliveParams") {
+		t.Error("postgres.go still references appendKeepaliveParams — the conn-" +
+			"string approach was removed in v0.18.14 because pgx v5 forwards " +
+			"the params to Postgres as runtime parameters (FATAL 42704)")
 	}
 
-	// The params themselves: must live in the helper file.
 	helperData, err := os.ReadFile("prepared_stmt_retry.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	helperSrc := string(helperData)
 	required := []string{
-		"keepalives=1",
-		"keepalives_idle=60",
-		"keepalives_interval=10",
-		"keepalives_count=6",
-		"connect_timeout=10",
+		"installKeepaliveDialer",
+		"net.KeepAliveConfig",
+		"DialFunc",
+		"Idle:",
+		"Interval:",
+		"Count:",
 	}
 	for _, want := range required {
 		if !strings.Contains(helperSrc, want) {
-			t.Errorf("prepared_stmt_retry.go must define keepalive param %q "+
-				"so kernel TCP keepalives detect dead sockets in ~2 minutes "+
-				"instead of the OS default 2 hours", want)
+			t.Errorf("prepared_stmt_retry.go must contain %q so the installer "+
+				"wires TCP keepalive socket options via net.KeepAliveConfig", want)
 		}
 	}
-}
-
-// TestAppendKeepaliveParams_URLForm — runtime behavior check on the
-// helper. Must merge the params into URL-form conn strings correctly,
-// whether or not the caller already included other query params.
-func TestAppendKeepaliveParams_URLForm(t *testing.T) {
-	cases := []struct {
-		name, in string
-		want     []string // substrings that must appear in the output
-	}{
-		{
-			name: "with existing query",
-			in:   "postgres://u:p@h:5432/db?sslmode=prefer",
-			want: []string{"sslmode=prefer", "&keepalives=1", "keepalives_idle=60"},
-		},
-		{
-			name: "without query",
-			in:   "postgres://u:p@h:5432/db",
-			want: []string{"?keepalives=1", "keepalives_idle=60"},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := appendKeepaliveParams(tc.in)
-			for _, w := range tc.want {
-				if !strings.Contains(got, w) {
-					t.Errorf("output %q must contain %q", got, w)
-				}
-			}
-		})
+	// The const-string keepalive params from the first v0.18.14
+	// attempt must be gone.
+	if strings.Contains(helperSrc, "keepalives=1") {
+		t.Error("prepared_stmt_retry.go still contains a libpq-style " +
+			"keepalive param string — remove it so pgx doesn't forward " +
+			"these keys to Postgres as runtime params")
 	}
 }
 
-// TestAppendKeepaliveParams_Idempotent — if the caller already set
-// keepalives=, the helper must not clobber or duplicate. Per-
-// deployment overrides have to survive the merge.
-func TestAppendKeepaliveParams_Idempotent(t *testing.T) {
-	in := "postgres://u:p@h:5432/db?sslmode=prefer&keepalives=1&keepalives_idle=30"
-	got := appendKeepaliveParams(in)
-	if got != in {
-		t.Errorf("appendKeepaliveParams must be a no-op when keepalives= is already set\n  in:  %s\n  got: %s", in, got)
+// TestInstallKeepaliveDialer_SetsDialFuncAndTimeout — runtime
+// behavior check. The installer must populate DialFunc (replacing
+// pgx's default) and ConnectTimeout on the pool config.
+//
+// ConnectTimeout going from 0 → non-zero is the cheapest observable
+// signal that the installer ran. We don't try to compare DialFunc
+// pointers (Go forbids function equality) but we do verify a non-
+// nil function is present after installation — pgxpool.ParseConfig
+// sets its own default, so this mostly guards "the installer did
+// not forget to set a DialFunc at all".
+func TestInstallKeepaliveDialer_SetsDialFuncAndTimeout(t *testing.T) {
+	// Build a minimal config — ParseConfig doesn't actually connect,
+	// so any well-formed DSN is fine here.
+	cfg, err := pgxpool.ParseConfig("postgres://u:p@localhost:5432/test?sslmode=disable")
+	if err != nil {
+		t.Fatalf("ParseConfig failed on test DSN: %v", err)
 	}
-}
+	beforeTimeout := cfg.ConnConfig.ConnectTimeout
 
-// TestAppendKeepaliveParams_KeywordForm — libpq keyword-form conn
-// strings use space-separated key=value pairs, not URL query syntax.
-// The helper must emit the right shape.
-func TestAppendKeepaliveParams_KeywordForm(t *testing.T) {
-	in := "host=h port=5432 user=u dbname=db sslmode=prefer"
-	got := appendKeepaliveParams(in)
-	if !strings.Contains(got, "host=h") {
-		t.Errorf("original fields must survive: %s", got)
+	installKeepaliveDialer(cfg)
+
+	if cfg.ConnConfig.DialFunc == nil {
+		t.Error("installKeepaliveDialer must set cfg.ConnConfig.DialFunc")
 	}
-	if !strings.Contains(got, " keepalives=1") {
-		t.Errorf("keyword-form output must use space-separator for new params: %s", got)
+	if cfg.ConnConfig.ConnectTimeout == beforeTimeout {
+		t.Errorf("installKeepaliveDialer must change ConnectTimeout from its "+
+			"pre-install value %v so a misconfigured host fails fast instead "+
+			"of blocking on the default kernel syn timeout",
+			beforeTimeout)
 	}
-	if strings.Contains(got, "&keepalives") {
-		t.Errorf("keyword-form output must NOT use URL-query '&' separator: %s", got)
+	if cfg.ConnConfig.ConnectTimeout == 0 {
+		t.Error("installKeepaliveDialer must set a non-zero ConnectTimeout")
 	}
 }

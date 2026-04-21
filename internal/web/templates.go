@@ -310,33 +310,7 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 </table>
 </div>
 
-{{if gt .TotalPages 1}}
-<div class="pagination">
-{{if gt .Page 1}}
-<a href="/groups/{{.Group.GroupID}}?page=1{{if .Query}}&q={{.Query}}{{end}}" title="First page">First</a>
-<a href="/groups/{{.Group.GroupID}}?page={{subtract .Page 1}}{{if .Query}}&q={{.Query}}{{end}}">Previous</a>
-{{else}}
-<span class="disabled">First</span>
-<span class="disabled">Previous</span>
-{{end}}
-
-{{range .PageWindow}}
-{{if eq . $.Page}}
-<span class="current-page">{{.}}</span>
-{{else}}
-<a href="/groups/{{$.Group.GroupID}}?page={{.}}{{if $.Query}}&q={{$.Query}}{{end}}">{{.}}</a>
-{{end}}
-{{end}}
-
-{{if lt .Page .TotalPages}}
-<a href="/groups/{{.Group.GroupID}}?page={{add .Page 1}}{{if .Query}}&q={{.Query}}{{end}}">Next</a>
-<a href="/groups/{{.Group.GroupID}}?page={{.TotalPages}}{{if .Query}}&q={{.Query}}{{end}}" title="Last page">Last</a>
-{{else}}
-<span class="disabled">Next</span>
-<span class="disabled">Last</span>
-{{end}}
-</div>
-{{end}}
+{{template "paginationNav" (dict "BasePath" (printf "/groups/%d" .Group.GroupID) "Page" .Page "TotalPages" .TotalPages "Query" .Query "PageWindow" .PageWindow)}}
 {{else}}
 {{if .Query}}
 <p class="empty">No repositories match your search.</p>
@@ -1084,25 +1058,7 @@ if (urlRepos.length > 0) {
 </tbody>
 </table>
 
-{{if gt .TotalPages 1}}
-<div style="display:flex;justify-content:center;gap:6px;margin-top:16px;align-items:center">
-{{if gt .Page 1}}
-<a href="/monitor?page=1{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem" title="First page">First</a>
-<a href="/monitor?page={{subtract .Page 1}}{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem">&laquo; Prev</a>
-{{else}}
-<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">First</span>
-<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">&laquo; Prev</span>
-{{end}}
-<span style="color:#666;font-size:0.85rem;padding:0 8px">{{.Page}} / {{.TotalPages}}</span>
-{{if lt .Page .TotalPages}}
-<a href="/monitor?page={{add .Page 1}}{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem">Next &raquo;</a>
-<a href="/monitor?page={{.TotalPages}}{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem" title="Last page">Last</a>
-{{else}}
-<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">Next &raquo;</span>
-<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">Last</span>
-{{end}}
-</div>
-{{end}}
+{{template "paginationNav" (dict "BasePath" "/monitor" "Page" .Page "TotalPages" .TotalPages "Query" .Query "PageWindow" .PageWindow)}}
 </div>
 </div>
 <script>setTimeout(function(){ location.reload(); }, 10000);</script>
@@ -1110,4 +1066,50 @@ if (urlRepos.length > 0) {
 {{end}}
 
 {{define "dict"}}{{end}}
+
+{{/*
+  paginationNav — shared pagination control used by /monitor and /groups.
+  Parameters (passed as a map via the dict template func):
+    BasePath    string  — e.g. "/monitor" or "/groups/42"
+    Page        int     — 1-based current page
+    TotalPages  int     — always >= 1
+    Query       string  — search term (optional; empty means no search)
+    PageWindow  []int   — sliding window of page numbers to display
+
+  Renders First / Previous / page-numbers / Next / Last controls.
+  Disabled boundaries render as span.disabled. Every link preserves
+  Query via &q= when Query is non-empty. Inline variants were prone
+  to drift and subtle breakage — the original /monitor inline block
+  had correct hrefs in unit tests but failed in practice because the
+  10s auto-refresh raced with click navigation on slow page renders.
+*/}}
+{{define "paginationNav"}}
+{{if gt .TotalPages 1}}
+<div class="pagination">
+{{if gt .Page 1}}
+<a href="{{.BasePath}}?page=1{{if .Query}}&q={{.Query}}{{end}}" title="First page">First</a>
+<a href="{{.BasePath}}?page={{subtract .Page 1}}{{if .Query}}&q={{.Query}}{{end}}">Previous</a>
+{{else}}
+<span class="disabled">First</span>
+<span class="disabled">Previous</span>
+{{end}}
+
+{{range .PageWindow}}
+{{if eq . $.Page}}
+<span class="current-page">{{.}}</span>
+{{else}}
+<a href="{{$.BasePath}}?page={{.}}{{if $.Query}}&q={{$.Query}}{{end}}">{{.}}</a>
+{{end}}
+{{end}}
+
+{{if lt .Page .TotalPages}}
+<a href="{{.BasePath}}?page={{add .Page 1}}{{if .Query}}&q={{.Query}}{{end}}">Next</a>
+<a href="{{.BasePath}}?page={{.TotalPages}}{{if .Query}}&q={{.Query}}{{end}}" title="Last page">Last</a>
+{{else}}
+<span class="disabled">Next</span>
+<span class="disabled">Last</span>
+{{end}}
+</div>
+{{end}}
+{{end}}
 `

@@ -39,6 +39,27 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	}
 	cfg.MinConns = 2
 
+	// Avoid pgx's per-connection prepared-statement cache. The default
+	// QueryExecModeCacheStatement assigns server-side statement names
+	// ("stmtcache_...") and re-uses them across queries — which breaks
+	// as SQLSTATE 26000 "prepared statement does not exist" whenever a
+	// TCP connection gets silently replaced out from under pgx. That
+	// happens under pgbouncer (transaction/statement pooling) AND
+	// across stateful NAT/firewalls/cloud LBs with idle-connection
+	// timeouts when the DB is on a different host. QueryExecModeExec
+	// uses the extended protocol with unnamed statements — re-prepared
+	// per call, no client-side cache to go stale. Tiny per-query
+	// overhead; no correctness loss.
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+
+	// Cycle idle connections before network gear does. The common NAT
+	// idle timeout is 5 minutes; we cycle at 4 so pgx opens a fresh
+	// TCP connection rather than discover a silently-dropped one at
+	// the next SendBatch. MaxConnLifetime caps total age so credentials
+	// rotation / failover eventually reaches every connection.
+	cfg.MaxConnIdleTime = 4 * time.Minute
+	cfg.MaxConnLifetime = 1 * time.Hour
+
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to database: %w", err)

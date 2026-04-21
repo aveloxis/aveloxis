@@ -40,3 +40,50 @@ func TestDefaultPoolSizeIsReasonable(t *testing.T) {
 		t.Error("postgres.go must set MaxConns on the pool config")
 	}
 }
+
+// TestPoolDisablesStatementCache verifies NewPostgresStore configures pgx
+// to NOT cache server-side prepared-statement names per connection.
+//
+// Background: pgx v5's default is QueryExecModeCacheStatement, which assigns
+// names like "stmtcache_<hash>" and re-uses them. Any event that silently
+// swaps the TCP connection's backend — pgbouncer in txn/statement pool mode,
+// a stateful NAT/firewall/cloud LB expiring an idle connection, a DB
+// restart mid-collection — leaves pgx's client cache out of sync and
+// SendBatch fails with SQLSTATE 26000 "prepared statement does not exist".
+// QueryExecModeExec re-prepares per call as an unnamed statement, so
+// there is no cache to go stale.
+//
+// Regressing this flag out would reintroduce the gap-fill / refresh-open
+// batch flush failures we chased in v0.18.10.
+func TestPoolDisablesStatementCache(t *testing.T) {
+	data, err := os.ReadFile("postgres.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if !strings.Contains(src, "cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec") {
+		t.Error("postgres.go must set cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec " +
+			"to avoid SQLSTATE 26000 when a TCP connection is silently replaced by an upstream " +
+			"NAT/firewall/pgbouncer")
+	}
+}
+
+// TestPoolCyclesIdleConnections verifies MaxConnIdleTime is set below the
+// typical 5-minute stateful-NAT idle timeout so pgx cycles connections
+// before a network intermediary does — eliminating "silently dropped
+// connection" surprises at the next SendBatch.
+func TestPoolCyclesIdleConnections(t *testing.T) {
+	data, err := os.ReadFile("postgres.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if !strings.Contains(src, "cfg.MaxConnIdleTime") {
+		t.Error("postgres.go must set cfg.MaxConnIdleTime so pgx recycles idle connections " +
+			"before upstream NAT/firewalls do")
+	}
+	if !strings.Contains(src, "cfg.MaxConnLifetime") {
+		t.Error("postgres.go must set cfg.MaxConnLifetime to cap total connection age " +
+			"so credential rotation / failover eventually reaches every connection")
+	}
+}

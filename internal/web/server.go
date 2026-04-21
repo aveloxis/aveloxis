@@ -843,11 +843,39 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 		totalPages = 1
 	}
 
+	// Sliding window of up to 5 page numbers centered on the current
+	// page, same shape as handleGroup. The shared paginationNav block
+	// renders clickable links for each; combined with First/Prev/Next/
+	// Last at the edges, a user is never more than one click from any
+	// nearby page.
+	const windowSize = 5
+	winStart := page - windowSize/2
+	if winStart < 1 {
+		winStart = 1
+	}
+	winEnd := winStart + windowSize - 1
+	if winEnd > totalPages {
+		winEnd = totalPages
+		winStart = winEnd - windowSize + 1
+		if winStart < 1 {
+			winStart = 1
+		}
+	}
+	var pageWindow []int
+	for i := winStart; i <= winEnd; i++ {
+		pageWindow = append(pageWindow, i)
+	}
+
 	// Enrich jobs with repo details and gathered vs metadata counts.
+	// Both lookups are batched (single SQL round-trip each). The prior
+	// version called GetRepoByID inside the per-row loop — 200 serial
+	// SELECTs per page render that made Prev/Next click navigation race
+	// against the 10s auto-refresh and get cancelled.
 	repoIDs := make([]int64, 0, len(jobs))
 	for _, j := range jobs {
 		repoIDs = append(repoIDs, j.RepoID)
 	}
+	repos, _ := s.store.GetReposBatch(r.Context(), repoIDs)
 	repoStats, _ := s.store.GetRepoStatsBatch(r.Context(), repoIDs)
 
 	type monitorRow struct {
@@ -879,7 +907,7 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 			Priority: j.Priority,
 		}
 
-		if repo, err := s.store.GetRepoByID(r.Context(), j.RepoID); err == nil {
+		if repo, ok := repos[j.RepoID]; ok {
 			row.Owner = repo.Owner
 			row.Repo = repo.Name
 			row.Plat = repo.Platform.String()
@@ -922,6 +950,7 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 		"TotalPages": totalPages,
 		"Total":      total,
 		"Query":      query,
+		"PageWindow": pageWindow,
 	})
 }
 

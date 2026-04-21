@@ -1202,7 +1202,7 @@ aveloxis/
     api/
       server.go           # REST API server (stats, timeseries, licenses, scancode, SBOM, search)
     monitor/
-      monitor.go          # HTTP dashboard with sortable gathered vs metadata columns
+      monitor.go          # HTTP dashboard with sortable gathered vs metadata columns; paginated + server-side search (v0.18.6)
     platform/
       platform.go         # Client interface (7 sub-interfaces + FetchIssueByNumber, FetchPRByNumber)
       httpclient.go       # HTTP client with rate limiting, key rotation, ETag caching, retries

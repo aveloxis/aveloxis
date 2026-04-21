@@ -244,7 +244,7 @@ func (s *PostgresStore) ListQueue(ctx context.Context) ([]QueueJob, error) {
 		FROM aveloxis_ops.collection_queue
 		ORDER BY
 			CASE status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
-			priority, due_at`)
+			priority, due_at, repo_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +301,7 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 		%s
 		ORDER BY
 			CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
-			q.priority, q.due_at
+			q.priority, q.due_at, q.repo_id
 		LIMIT $%d OFFSET $%d`, whereClause, argIdx, argIdx+1)
 	args = append(args, limit, offset)
 

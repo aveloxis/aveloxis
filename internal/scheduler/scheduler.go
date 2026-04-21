@@ -128,10 +128,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.logger.Warn("FORCE FULL COLLECTION enabled — all repos will be fully re-collected. Set collection.force_full to false in aveloxis.json after this pass completes.")
 	}
 
-	// On startup: check for tool updates (monthly), process leftover staging,
-	// and release stale locks.
+	// On startup: check for tool updates (monthly), then release any
+	// stale locks BEFORE processing leftover staging. Lock recovery
+	// is a single UPDATE that takes milliseconds; leftover staging
+	// can block for many minutes on a realistic backlog. Running
+	// lock recovery first gets the queue into a correct state
+	// immediately — monitor shows accurate "collecting" counts,
+	// orphaned jobs from a crashed prior process stop appearing as
+	// in-flight, and the next fillWorkerSlots tick sees reality.
 	collector.CheckAndUpdateTools(s.logger)
-	s.processLeftoverStaging(ctx)
 
 	// Immediately reclaim all locks held by dead worker IDs. A fresh process
 	// cannot have any legitimate in-flight work, so all locks from other
@@ -146,6 +151,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 	s.recoverStale(ctx)
 	s.releaseOurLocks(ctx)
+
+	// Process leftover staging rows from a previous interrupted run.
+	// Runs AFTER lock recovery so orphan locks don't wait on this
+	// multi-minute drain. Still synchronous: we must finish draining
+	// before fillWorkerSlots starts claiming new jobs, because
+	// PurgeStagedForRepo at the top of CollectRepo would wipe any
+	// unprocessed rows from the repo being re-claimed.
+	s.processLeftoverStaging(ctx)
 
 	// Recompute due_at = last_collected + recollectAfter for already-queued
 	// rows so a changed days_until_recollect takes effect immediately. Without

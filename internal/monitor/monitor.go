@@ -437,19 +437,29 @@ function sortTable(col) {
 
 	// Pagination controls. Page links preserve the active search and
 	// page_size so the three controls compose cleanly.
+	//
+	// XSS note: params.Search is user-controlled. Build the query with
+	// url.Values (URL-escapes each value) and then HTML-escape the
+	// whole result before interpolating into the href — the HTML pass
+	// turns "&" into "&amp;" per HTML spec AND gives a static analyzer
+	// an obvious "HTML-escaped" trust boundary. Previously the raw "&"
+	// separator also meant href="/?page=1&q=foo" was not spec-correct
+	// HTML.
 	pages := totalPages(total, params.PageSize)
 	if pages > 1 {
-		qsNoPage := fmt.Sprintf("page_size=%d", params.PageSize)
+		qs := url.Values{}
+		qs.Set("page_size", strconv.Itoa(params.PageSize))
 		if params.Search != "" {
-			qsNoPage += "&q=" + url.QueryEscape(params.Search)
+			qs.Set("q", params.Search)
 		}
+		qsNoPage := template.HTMLEscapeString(qs.Encode())
 		fmt.Fprintf(w, `<div style="display:flex;gap:0.5rem;margin-top:1rem;align-items:center;font-size:0.9rem">`)
 		if params.Page > 1 {
-			fmt.Fprintf(w, `<a class="btn" href="/?page=%d&%s" style="text-decoration:none;color:inherit">&larr; Prev</a>`, params.Page-1, qsNoPage)
+			fmt.Fprintf(w, `<a class="btn" href="/?page=%d&amp;%s" style="text-decoration:none;color:inherit">&larr; Prev</a>`, params.Page-1, qsNoPage)
 		}
 		fmt.Fprintf(w, `<span style="color:#666">Page %d of %d</span>`, params.Page, pages)
 		if params.Page < pages {
-			fmt.Fprintf(w, `<a class="btn" href="/?page=%d&%s" style="text-decoration:none;color:inherit">Next &rarr;</a>`, params.Page+1, qsNoPage)
+			fmt.Fprintf(w, `<a class="btn" href="/?page=%d&amp;%s" style="text-decoration:none;color:inherit">Next &rarr;</a>`, params.Page+1, qsNoPage)
 		}
 		fmt.Fprint(w, `</div>`)
 	}

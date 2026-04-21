@@ -62,6 +62,49 @@ func TestMonitorEscapesLockedBy(t *testing.T) {
 	}
 }
 
+// TestMonitorEscapesPaginationQuery verifies that the pagination href
+// built from the user-controlled `q` search parameter passes through
+// BOTH url.Values encoding AND template.HTMLEscapeString before being
+// interpolated into the pagination link href attributes. CodeQL flagged
+// the pre-fix code (raw "&" concatenation + url.QueryEscape only) as a
+// reflected XSS sink even though url.QueryEscape alone is in fact safe
+// against HTML-attribute breakout — the double-escape plus `&amp;`
+// separator is spec-correct HTML and unambiguous to static analyzers.
+func TestMonitorEscapesPaginationQuery(t *testing.T) {
+	src, err := os.ReadFile("monitor.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+
+	// The old pattern — raw "&" concatenation with url.QueryEscape —
+	// must not come back.
+	if strings.Contains(code, `qsNoPage += "&q=" + url.QueryEscape(`) {
+		t.Error("monitor.go must not build pagination query strings via raw '&' concatenation " +
+			"with url.QueryEscape — use url.Values.Encode() + template.HTMLEscapeString for " +
+			"static-analyzer-friendly, spec-correct HTML escaping")
+	}
+
+	// The new pattern must be present: url.Values{} + template.HTMLEscapeString.
+	if !strings.Contains(code, `qs := url.Values{}`) {
+		t.Error("monitor.go pagination must build the query with url.Values{} (structured) " +
+			"so each value gets URL-escaped before HTML-escaping")
+	}
+	if !strings.Contains(code, `template.HTMLEscapeString(qs.Encode())`) {
+		t.Error("monitor.go pagination must HTML-escape qs.Encode() before interpolating " +
+			"into the href attribute")
+	}
+
+	// The href template must use &amp; (HTML entity) not raw & between params.
+	if strings.Contains(code, `href="/?page=%d&%s"`) {
+		t.Error("monitor.go pagination href must use &amp; (HTML entity) not raw & as the " +
+			"parameter separator inside an href attribute")
+	}
+	if !strings.Contains(code, `href="/?page=%d&amp;%s"`) {
+		t.Error("monitor.go pagination href must use &amp; as the parameter separator")
+	}
+}
+
 // TestHTMLEscapeStringBehavior verifies the escaping function works as expected
 // for the XSS payloads identified in the security audit.
 func TestHTMLEscapeStringBehavior(t *testing.T) {

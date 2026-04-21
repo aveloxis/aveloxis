@@ -182,6 +182,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 	defer matviewCheckTicker.Stop()
 	var lastMatviewRebuild time.Time
 
+	// Staging table cleanup: delete processed rows older than 7 days
+	// so the table doesn't accumulate bloat indefinitely. v0.18.15
+	// observed a 21.5M-row table on a long-running deployment
+	// (PurgeStagedProcessed was defined but wired to nothing),
+	// enough to visibly slow every staging INSERT and DELETE.
+	// Hourly keeps the bloat bounded with negligible overhead.
+	stagingCleanupTicker := time.NewTicker(1 * time.Hour)
+	defer stagingCleanupTicker.Stop()
+
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
 	// this avoids a visible delay before collection begins.
@@ -226,10 +235,32 @@ func (s *Scheduler) Run(ctx context.Context) {
 				}
 			}
 
+		case <-stagingCleanupTicker.C:
+			go s.runStagingCleanup(ctx)
+
 		case <-pollTicker.C:
 			s.fillWorkerSlots(ctx, sem)
 			s.maybeStartMatviewRebuild(ctx, sem, &lastMatviewRebuild)
 		}
+	}
+}
+
+// runStagingCleanup deletes processed staging rows older than 7 days.
+// The DELETE is run in a background goroutine so an unusually slow
+// cleanup pass (e.g. just after a first enablement against a table
+// with millions of stale rows) does not block the scheduler's main
+// poll loop. PurgeStagedProcessed itself is serializable — concurrent
+// fires are rare (ticker is hourly, cleanup typically finishes in
+// seconds) and at worst race on the same DELETE WHERE, which is
+// safe because the predicate is monotonic.
+func (s *Scheduler) runStagingCleanup(ctx context.Context) {
+	deleted, err := s.store.PurgeStagedProcessed(ctx)
+	if err != nil {
+		s.logger.Warn("staging cleanup failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		s.logger.Info("staging cleanup complete", "rows_deleted", deleted)
 	}
 }
 

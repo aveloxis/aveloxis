@@ -29,6 +29,7 @@ type PostgresStore struct {
 // For scheduler use, pass workers+15 so collection workers don't starve
 // each other for database connections.
 func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logger, maxConns ...int32) (*PostgresStore, error) {
+	connString = appendKeepaliveParams(connString)
 	cfg, err := pgxpool.ParseConfig(connString)
 	if err != nil {
 		return nil, fmt.Errorf("parsing connection string: %w", err)
@@ -39,27 +40,49 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	}
 	cfg.MinConns = 2
 
-	// Use pgx's per-connection prepared-statement cache. Server-side
-	// statement names ("stmtcache_...") let repeat queries skip Parse +
-	// Describe on every call — a meaningful win on the hot INSERT /
-	// SELECT paths when the DB is on a LAN rather than a loopback
-	// socket.
+	// Cache server-side prepared statements on each pooled
+	// connection. Named statements ("stmtcache_<hash>") let repeat
+	// queries skip Parse+plan on the server — the real cost on the
+	// hot INSERT/SELECT paths when the DB is on a LAN rather than a
+	// loopback socket.
 	//
-	// The correctness hazard this mode carries is SQLSTATE 26000
+	// The correctness hazard of this mode is SQLSTATE 26000
 	// "prepared statement does not exist" when a TCP connection is
-	// silently replaced out from under pgx (pgbouncer in transaction
-	// or statement pooling mode, or a stateful NAT/firewall/cloud LB
-	// expiring an idle connection). For the direct-Postgres LAN
-	// deployment this code targets, MaxConnIdleTime (4 min, below) is
-	// set below the typical 5-minute NAT idle timeout so pgx cycles
-	// connections before upstream gear does — the cache stays in sync.
+	// silently replaced out from under pgx. v0.18.14 adds two
+	// defenses that together keep this path safe for direct-Postgres
+	// LAN deployments:
 	//
-	// If a pgbouncer in txn/statement pooling mode ever appears in
-	// front of the DB, swap this to QueryExecModeExec (unnamed
-	// statements, no client cache) or QueryExecModeCacheDescribe
-	// (cache type info but not server-side names). Prepared statements
-	// are connection-scoped; transaction pooling shares backends
-	// across clients and the cache goes stale immediately.
+	//   1. appendKeepaliveParams (prepared_stmt_retry.go) merges
+	//      libpq keepalive settings into the conn string so pgx's
+	//      dialer sets TCP_KEEPIDLE/INTVL/CNT on every socket. A
+	//      silently-dead socket is detected in ~2 minutes instead
+	//      of the OS default 2 hours, and pgxpool evicts it before
+	//      the cache can fire many queries at a swapped backend.
+	//
+	//   2. sendBatchWithRetry (prepared_stmt_retry.go) wraps
+	//      pool.SendBatch to retry once on SQLSTATE 26000. The
+	//      retry picks up a fresh connection from the pool and the
+	//      batch succeeds. Residual races during the keepalive
+	//      window become single transparent retries instead of
+	//      500-row batch data loss.
+	//
+	// Full incident record leading to the v0.18.14 configuration:
+	//
+	//   - v0.18.10  QueryExecModeExec. Safe everywhere (no cache),
+	//               but Parse+plan on every query dominated cost
+	//               once the DB moved off loopback.
+	//   - v0.18.11  Flipped to CacheStatement. Hit SQLSTATE 26000
+	//               within hours — client load was stressing TCP
+	//               faster than MaxConnIdleTime could defend.
+	//   - v0.18.12  Retreated to CacheDescribe. Safe, but server-
+	//               side Parse+plan still ran per query — most of
+	//               the CacheStatement speedup never materialized.
+	//   - v0.18.14  Back to CacheStatement with keepalive + retry.
+	//
+	// Reversion triggers: sustained 26000s surviving the retry, or
+	// pgbouncer landing in front of the DB in txn/statement pooling
+	// mode. In either case, swap to QueryExecModeCacheDescribe (or
+	// QueryExecModeExec for absolute safety).
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
 
 	// Cycle idle connections before network gear does. The common NAT

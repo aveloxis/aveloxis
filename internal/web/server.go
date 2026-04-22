@@ -12,6 +12,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +39,7 @@ type Server struct {
 	sessionMu sync.RWMutex
 	sessions  map[string]*Session // session token -> session
 	tmpl     *template.Template
+	apiProxy http.Handler // reverse proxy for /api/* → cfg.APIInternalURL; nil on parse failure
 }
 
 // Session tracks a logged-in user.
@@ -94,6 +97,35 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 			},
 			RedirectURL: baseURL + "/auth/gitlab/callback",
 		}
+	}
+
+	// Build the internal API reverse proxy. The web server forwards /api/*
+	// to cfg.APIInternalURL so the browser can fetch data using relative
+	// URLs (same-origin, no CORS). This works transparently behind an nginx
+	// front proxy: nginx → web(:8082) → reverse proxy → api(:8383). If an
+	// operator prefers to handle /api/* in nginx directly, adding a
+	// `location /api/` block pointing at the api port takes precedence and
+	// the web server's built-in proxy becomes unused — no code change needed.
+	apiURL := strings.TrimSpace(cfg.APIInternalURL)
+	if apiURL == "" {
+		apiURL = "http://127.0.0.1:8383"
+	}
+	if target, err := url.Parse(apiURL); err == nil && target.Host != "" {
+		rp := httputil.NewSingleHostReverseProxy(target)
+		rp.Transport = &http.Transport{
+			// Short timeouts so a dead api process fails fast instead of
+			// blocking browser requests. The browser sees 502 Bad Gateway.
+			ResponseHeaderTimeout: 15 * time.Second,
+			IdleConnTimeout:       60 * time.Second,
+		}
+		rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			logger.Warn("api reverse proxy error", "path", r.URL.Path, "error", err)
+			http.Error(w, "API backend unavailable", http.StatusBadGateway)
+		}
+		s.apiProxy = rp
+	} else {
+		logger.Warn("invalid api_internal_url; /api proxy disabled",
+			"api_internal_url", apiURL, "error", err)
 	}
 
 	// Parse embedded templates.
@@ -155,6 +187,15 @@ func (s *Server) Handler() http.Handler {
 	// Monitor dashboard — integrated from the standalone monitor server.
 	mux.HandleFunc("/monitor", s.requireAuth(s.handleMonitor))
 	mux.HandleFunc("POST /monitor/prioritize/{repoID}", s.requireAuth(s.handleMonitorPrioritize))
+
+	// Same-origin API reverse proxy. Browser fetch calls use relative
+	// /api/v1/... URLs; this handler forwards them to cfg.APIInternalURL.
+	// Gated by requireAuth so an anonymous visitor can't query collected
+	// data through the proxy. The browser sends the aveloxis_session cookie
+	// on same-origin requests, which the auth middleware validates.
+	if s.apiProxy != nil {
+		mux.Handle("/api/", s.requireAuth(s.apiProxy.ServeHTTP))
+	}
 
 	return mux
 }

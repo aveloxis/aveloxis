@@ -90,6 +90,16 @@ type WebConfig struct {
 	GitLabClientID     string `json:"gitlab_client_id"`
 	GitLabClientSecret string `json:"gitlab_client_secret"`
 	GitLabBaseURL      string `json:"gitlab_base_url"` // default "https://gitlab.com"
+
+	// APIInternalURL is where the web server reaches the `aveloxis api` process
+	// server-to-server. The web server reverse-proxies /api/* requests to this
+	// URL so the browser talks only to the web origin — eliminating the old
+	// hardcoded `http://localhost:8383` JS fetch that broke for any
+	// non-localhost browser and was further broken by CORS tightening on
+	// 2026-04-14. Default assumes the api process runs on the same host as
+	// the web process, which matches `aveloxis start all`. Override to point
+	// at a remote API instance.
+	APIInternalURL string `json:"api_internal_url"`
 }
 
 // CollectionConfig controls collection behavior.
@@ -247,8 +257,9 @@ func DefaultConfig() *Config {
 			BaseURL: "https://gitlab.com/api/v4",
 		},
 		Web: WebConfig{
-			Addr:          ":8082",
-			GitLabBaseURL: "https://gitlab.com",
+			Addr:           ":8082",
+			GitLabBaseURL:  "https://gitlab.com",
+			APIInternalURL: "http://127.0.0.1:8383",
 		},
 		Collection: CollectionConfig{
 			BatchSize:               1000,

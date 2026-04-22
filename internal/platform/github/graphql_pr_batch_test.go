@@ -404,21 +404,35 @@ func TestFetchPRBatch_PaginatesOversizedCommits(t *testing.T) {
 
 // TestFetchPRBatch_BatchSize — callers may pass more PR numbers than the
 // per-query batch size; the implementation must split them into multiple
-// queries transparently. Verify exactly the expected number of HTTP
-// requests for a batch of 30 PRs (should be 2 at batch-size=25).
+// queries transparently. Uses prBatchSize as the source of truth so this
+// test remains correct if the constant is tuned again in the future.
+//
+// For Fix B (v0.18.22) the constant is 10, so len(numbers)=prBatchSize*3+5
+// produces exactly 4 queries: 10+10+10+5. The invariant we're pinning is
+// the SPLIT BEHAVIOR, not a specific count.
 func TestFetchPRBatch_BatchSize(t *testing.T) {
 	var queries atomic.Int32
-	// Canned response for a batch — always returns an empty PR for each
-	// aliased field, because we're counting requests, not validating content.
-	var canned []string
-	for batch := 0; batch < 2; batch++ {
+	totalPRs := prBatchSize*3 + 5 // exactly 4 batches
+
+	// Per-batch canned response builder. The outer handler decides WHICH
+	// batch index is being served based on the request count, then emits
+	// a response matching the expected alias count for that batch.
+	batchStart := func(idx int) int { return idx * prBatchSize }
+	batchEnd := func(idx int) int {
+		e := batchStart(idx) + prBatchSize
+		if e > totalPRs {
+			e = totalPRs
+		}
+		return e
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		batchIdx := int(queries.Add(1)) - 1
+		start := batchStart(batchIdx)
+		end := batchEnd(batchIdx)
+
 		var sb strings.Builder
 		sb.WriteString(`{"data":{"repository":{`)
-		start := batch * 25
-		end := start + 25
-		if end > 30 {
-			end = 30
-		}
 		for i := start; i < end; i++ {
 			if i > start {
 				sb.WriteString(",")
@@ -431,25 +445,17 @@ func TestFetchPRBatch_BatchSize(t *testing.T) {
 			sb.WriteString(sprintInt(i + 1))
 			sb.WriteString(`","number":`)
 			sb.WriteString(sprintInt(i + 1))
-			sb.WriteString(`,"title":"","body":"","state":"OPEN","locked":false,"createdAt":"2026-04-01T12:00:00Z","updatedAt":"2026-04-01T12:00:00Z","closedAt":null,"mergedAt":null,"mergeCommit":null,"url":"","authorAssociation":"NONE","author":null,"labels":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"assignees":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"reviewRequests":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"reviews":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"commits":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"files":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"headRef":null,"baseRef":null,"headRepository":null,"baseRepository":null}`)
+			sb.WriteString(`,"title":"","body":"","state":"OPEN","locked":false,"createdAt":"2026-04-01T12:00:00Z","updatedAt":"2026-04-01T12:00:00Z","closedAt":null,"mergedAt":null,"mergeCommit":null,"url":"","authorAssociation":"NONE","author":null,"labels":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"assignees":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"reviewRequests":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"reviews":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"comments":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"commits":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"files":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"headRef":null,"baseRef":null,"headRepository":null,"baseRepository":null}`)
 		}
 		sb.WriteString(`}}}`)
-		canned = append(canned, sb.String())
-	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := int(queries.Add(1)) - 1
-		if n >= len(canned) {
-			http.Error(w, "too many queries", http.StatusInternalServerError)
-			return
-		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(canned[n]))
+		_, _ = w.Write([]byte(sb.String()))
 	}))
 	defer server.Close()
 	client := newTestGraphQLClient(t, server.URL)
 
-	numbers := make([]int, 30)
+	numbers := make([]int, totalPRs)
 	for i := range numbers {
 		numbers[i] = i + 1
 	}
@@ -457,12 +463,14 @@ func TestFetchPRBatch_BatchSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchPRBatch: %v", err)
 	}
-	if len(out) != 30 {
-		t.Errorf("expected 30 PRs, got %d", len(out))
+	if len(out) != totalPRs {
+		t.Errorf("expected %d PRs, got %d", totalPRs, len(out))
 	}
-	// Exactly 2 queries: 25 + 5 at batchSize=25.
-	if queries.Load() != 2 {
-		t.Errorf("expected 2 HTTP requests (batchSize=25, numbers=30), got %d", queries.Load())
+	// Exactly ceil(totalPRs / prBatchSize) queries.
+	want := (totalPRs + prBatchSize - 1) / prBatchSize
+	if int(queries.Load()) != want {
+		t.Errorf("expected %d HTTP requests (prBatchSize=%d, numbers=%d), got %d",
+			want, prBatchSize, totalPRs, queries.Load())
 	}
 }
 

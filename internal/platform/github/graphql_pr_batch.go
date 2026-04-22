@@ -17,14 +17,18 @@ import (
 // be removed once the test files migrate.
 type StagedPR = platform.StagedPR
 
-// prBatchSize is how many PRs go into one GraphQL query. Sized so the
-// response payload stays under ~1 MB on a typical repo and the query's
-// point cost (floor(nodes/100)+1) stays under ~50 points — well below
-// one key's hourly GraphQL budget of 5000 points.
-//
-// Can be tuned later; exported via this const so benchmarks can change
-// it without re-reading the file.
-const prBatchSize = 25
+// prBatchSize is how many PRs go into one GraphQL query. Lowered from 25
+// to 10 in v0.18.22 (Fix B) after production repos like apache/spark and
+// grpc/grpc hit GitHub's server-side "Timeout on validation of query" and
+// mid-body stream-CANCEL limits. A 25-alias query with 8 child
+// connections × (pre-Fix-A) 100 items could produce responses with tens
+// of thousands of sub-records — too expensive for GitHub's planner.
+// The smaller batch amortizes poorly on tiny repos but eliminates the
+// expensive-query failure mode for active ones; net throughput was still
+// better than REST in benchmarks because the per-query cost is bounded.
+// Point budget is not a concern: each batch is ~2–10 points and the
+// per-key GraphQL quota is 5000/hour.
+const prBatchSize = 10
 
 // FetchPRBatch fetches up to prBatchSize PRs and all their children in a
 // single GraphQL query (repeating for each batch when len(numbers) > 25).
@@ -155,15 +159,15 @@ const prNodeFragment = `
         ... on Bot { databaseId avatarUrl url }
         ... on Organization { databaseId avatarUrl url name }
       }
-      labels(first: 100) {
+      labels(first: 50) {
         nodes { id name color description isDefault }
         pageInfo { hasNextPage endCursor }
       }
-      assignees(first: 100) {
+      assignees(first: 50) {
         nodes { databaseId login avatarUrl url name email }
         pageInfo { hasNextPage endCursor }
       }
-      reviewRequests(first: 100) {
+      reviewRequests(first: 50) {
         nodes {
           requestedReviewer {
             __typename
@@ -172,7 +176,7 @@ const prNodeFragment = `
         }
         pageInfo { hasNextPage endCursor }
       }
-      reviews(first: 100) {
+      reviews(first: 50) {
         nodes {
           databaseId id state body submittedAt authorAssociation url
           author { __typename login ... on User { databaseId avatarUrl url } }
@@ -180,14 +184,14 @@ const prNodeFragment = `
         }
         pageInfo { hasNextPage endCursor }
       }
-      comments(first: 100) {
+      comments(first: 50) {
         nodes {
           databaseId id body createdAt updatedAt url authorAssociation
           author { __typename login ... on User { databaseId avatarUrl url name email } }
         }
         pageInfo { hasNextPage endCursor }
       }
-      commits(first: 100) {
+      commits(first: 50) {
         nodes {
           commit {
             oid message committedDate
@@ -199,7 +203,7 @@ const prNodeFragment = `
         }
         pageInfo { hasNextPage endCursor }
       }
-      files(first: 100) {
+      files(first: 50) {
         nodes { path additions deletions }
         pageInfo { hasNextPage endCursor }
       }

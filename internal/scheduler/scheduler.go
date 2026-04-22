@@ -128,10 +128,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.logger.Warn("FORCE FULL COLLECTION enabled — all repos will be fully re-collected. Set collection.force_full to false in aveloxis.json after this pass completes.")
 	}
 
-	// On startup: check for tool updates (monthly), process leftover staging,
-	// and release stale locks.
+	// On startup: check for tool updates (monthly), then release any
+	// stale locks BEFORE processing leftover staging. Lock recovery
+	// is a single UPDATE that takes milliseconds; leftover staging
+	// can block for many minutes on a realistic backlog. Running
+	// lock recovery first gets the queue into a correct state
+	// immediately — monitor shows accurate "collecting" counts,
+	// orphaned jobs from a crashed prior process stop appearing as
+	// in-flight, and the next fillWorkerSlots tick sees reality.
 	collector.CheckAndUpdateTools(s.logger)
-	s.processLeftoverStaging(ctx)
 
 	// Immediately reclaim all locks held by dead worker IDs. A fresh process
 	// cannot have any legitimate in-flight work, so all locks from other
@@ -146,6 +151,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 	s.recoverStale(ctx)
 	s.releaseOurLocks(ctx)
+
+	// Process leftover staging rows from a previous interrupted run.
+	// Runs AFTER lock recovery so orphan locks don't wait on this
+	// multi-minute drain. Still synchronous: we must finish draining
+	// before fillWorkerSlots starts claiming new jobs, because
+	// PurgeStagedForRepo at the top of CollectRepo would wipe any
+	// unprocessed rows from the repo being re-claimed.
+	s.processLeftoverStaging(ctx)
 
 	// Recompute due_at = last_collected + recollectAfter for already-queued
 	// rows so a changed days_until_recollect takes effect immediately. Without
@@ -181,6 +194,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 	matviewCheckTicker := time.NewTicker(1 * time.Hour)
 	defer matviewCheckTicker.Stop()
 	var lastMatviewRebuild time.Time
+
+	// Staging table cleanup: delete processed rows older than 7 days
+	// so the table doesn't accumulate bloat indefinitely. v0.18.15
+	// observed a 21.5M-row table on a long-running deployment
+	// (PurgeStagedProcessed was defined but wired to nothing),
+	// enough to visibly slow every staging INSERT and DELETE.
+	// Hourly keeps the bloat bounded with negligible overhead.
+	stagingCleanupTicker := time.NewTicker(1 * time.Hour)
+	defer stagingCleanupTicker.Stop()
 
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
@@ -226,10 +248,32 @@ func (s *Scheduler) Run(ctx context.Context) {
 				}
 			}
 
+		case <-stagingCleanupTicker.C:
+			go s.runStagingCleanup(ctx)
+
 		case <-pollTicker.C:
 			s.fillWorkerSlots(ctx, sem)
 			s.maybeStartMatviewRebuild(ctx, sem, &lastMatviewRebuild)
 		}
+	}
+}
+
+// runStagingCleanup deletes processed staging rows older than 7 days.
+// The DELETE is run in a background goroutine so an unusually slow
+// cleanup pass (e.g. just after a first enablement against a table
+// with millions of stale rows) does not block the scheduler's main
+// poll loop. PurgeStagedProcessed itself is serializable — concurrent
+// fires are rare (ticker is hourly, cleanup typically finishes in
+// seconds) and at worst race on the same DELETE WHERE, which is
+// safe because the predicate is monotonic.
+func (s *Scheduler) runStagingCleanup(ctx context.Context) {
+	deleted, err := s.store.PurgeStagedProcessed(ctx)
+	if err != nil {
+		s.logger.Warn("staging cleanup failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		s.logger.Info("staging cleanup complete", "rows_deleted", deleted)
 	}
 }
 
@@ -507,7 +551,8 @@ func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 // the API, then process staged data into relational tables with bulk
 // contributor resolution.
 func (s *Scheduler) collectAndProcess(ctx context.Context, repoID int64, repo *model.Repo, client platform.Client, since time.Time) (*collector.CollectResult, error) {
-	sc := collector.NewStagedCollectorWithAllModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode, s.cfg.ThreadingMode, s.cfg.ShardSize)
+	sc := collector.NewStagedCollectorWithAllModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode, s.cfg.ThreadingMode, s.cfg.ShardSize).
+		WithWorkers(s.cfg.Workers)
 	result, err := sc.CollectRepo(ctx, repoID, repo.Owner, repo.Name, since)
 
 	if err == nil {

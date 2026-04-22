@@ -677,6 +677,23 @@ If the service outage is prolonged, the repo will fail after 10 retries and be r
 
 ---
 
+## `prepared statement "stmtcache_..." does not exist (SQLSTATE 26000)`
+
+**Symptom:** Log shows sporadic `ERROR: prepared statement "stmtcache_<hash>" does not exist (SQLSTATE 26000)` on staging flushes, followed a few lines later by `prepared statement cache miss on SendBatch — retrying once`.
+
+**Cause:** pgx's per-connection prepared-statement cache diverged from the server backend. A TCP connection between the aveloxis host and the Postgres host was silently replaced under heavy client load (NIC buffer pressure, kernel scheduling jitter, etc.) faster than the configured keepalive / idle-cycle could detect.
+
+**Solution:** No action needed on single occurrences -- v0.18.14 added a transparent single-shot retry on SQLSTATE 26000. The retry picks up a fresh connection from the pool, pgx re-prepares the statement, and the batch succeeds.
+
+**If you see sustained 26000s surviving the retry**, something more systemic is wrong. Investigate in this order:
+
+1. **Check your worker count.** On Mac-based deployments, `"workers": 80` can stress the kernel network stack hard enough to induce TCP instability. Try `"workers": 40` in `aveloxis.json` -- each worker does more DB throughput now that `CacheStatement` reuses plans, so 40 workers with `CacheStatement` is roughly equivalent to 80 workers with the older `CacheDescribe` from the DB's perspective, with dramatically less packet pressure on the client.
+2. **Ping the DB host under load.** Run `ping -i 1 <db-host>` while `aveloxis serve` is active and look for packet loss. Any drops indicate the client is saturating something (NIC, switch port queue, ephemeral-port pool) and reducing `workers` is the right move.
+3. **Check for pgbouncer.** If a pgbouncer in transaction or statement pooling mode has appeared in the path, `CacheStatement` cannot work -- pgbouncer shares backends across clients and prepared-statement names are connection-scoped. In `internal/db/postgres.go`, change `pgx.QueryExecModeCacheStatement` to `pgx.QueryExecModeCacheDescribe` (safe with all pgbouncer modes; gives up the plan-cache speedup but keeps client-side describe caching).
+4. **Tighten keepalives further.** The `appendKeepaliveParams` defaults (idle 60s, interval 10s, count 6 = ~2 min detection) are conservative. On a very flaky link, drop them to `keepalives_idle=30 keepalives_interval=5 keepalives_count=4` (~50 sec detection) in `internal/db/prepared_stmt_retry.go`.
+
+---
+
 ## Next steps
 
 - [Monitoring](monitoring.md) -- use the dashboard for real-time status

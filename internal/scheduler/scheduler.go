@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -492,6 +493,23 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		s.logger.Warn("failed to complete job", "repo_id", job.RepoID, "error", err)
 	}
 
+	// Auto-flag repos whose failure class indicates incomplete PR child
+	// data. Set AFTER CompleteJob so the flag isn't cleared by the
+	// success branch of CompleteJob (which only fires on outcome.success,
+	// but keep ordering explicit). The flag is picked up on the repo's
+	// next DequeueNext and causes determineSince to return zero for a
+	// full re-collection. See v0.18.24 troubleshooting docs.
+	if !outcome.success && shouldForceFullRecollect(outcome.errMsg) {
+		if err := s.store.SetForceFullCollect(ctx, job.RepoID, true); err != nil {
+			s.logger.Warn("failed to set force_full_collect flag", "repo_id", job.RepoID, "error", err)
+		} else {
+			s.logger.Warn("force_full_recollect set — GraphQL PR batch error class, next cycle will re-collect from since=zero",
+				"repo_id", job.RepoID,
+				"owner", repo.Owner, "repo", repo.Name,
+				"error", outcome.errMsg)
+		}
+	}
+
 	s.logger.Info("job complete",
 		"repo_id", job.RepoID,
 		"owner", repo.Owner, "repo", repo.Name,
@@ -535,16 +553,48 @@ func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
 // determineSince returns the starting point for incremental collection.
 // For repos that have never been collected, it returns zero time (full collection).
 // For repos previously collected, it returns now minus the recollect window.
-// When ForceFullCollection is true, always returns zero time to trigger a
-// full re-collection. Use this after bug fixes to repopulate data.
+//
+// Full-recollect overrides (both return zero time, regardless of LastCollected):
+//   - cfg.ForceFullCollection: fleet-wide toggle in aveloxis.json. Used
+//     after a systemic bug fix that invalidates collected data.
+//   - job.ForceFullCollect: per-repo flag on the queue row. Set
+//     automatically by the scheduler when a collection ended with a
+//     GraphQL-batch error class that leaves PR child data incomplete
+//     (v0.18.24), or manually via `aveloxis recollect <url>`.
 func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 	if s.cfg.ForceFullCollection {
-		return time.Time{} // force full re-collection
+		return time.Time{} // force full re-collection (fleet-wide)
+	}
+	if job.ForceFullCollect {
+		return time.Time{} // force full re-collection (this repo only)
 	}
 	if job.LastCollected != nil {
 		return time.Now().Add(-s.cfg.RecollectAfter)
 	}
 	return time.Time{} // zero = full collection
+}
+
+// shouldForceFullRecollect returns true when an error message indicates
+// the completed job likely left PR child data incomplete (reviews,
+// commits, files, comments, assignees, etc. for some subset of PRs). The
+// scheduler sets the force_full_collect flag on the repo so the next
+// cycle re-collects everything from since=zero, which backfills what the
+// failed batch missed.
+//
+// Pinned to the specific string shapes the GraphQL PR batch path emits —
+// intentionally case-sensitive and substring-narrow so unrelated errors
+// don't trigger expensive full re-collections. See
+// TestShouldForceFullRecollect and TestShouldForceFullRecollect_CaseSensitive
+// for the contract.
+func shouldForceFullRecollect(errMsg string) bool {
+	if errMsg == "" {
+		return false
+	}
+	// All three production shapes share the "graphql PR batch" prefix
+	// which the collector and platform layer produce when wrapping the
+	// underlying transport/validation/rate failure. Checking this single
+	// substring keeps the matcher narrow.
+	return strings.Contains(errMsg, "graphql PR batch")
 }
 
 // collectAndProcess runs the two-phase staged pipeline: stage raw JSON from

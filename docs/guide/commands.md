@@ -240,6 +240,35 @@ Where `42` is the repo's `repo_id`.
 
 ---
 
+## `aveloxis recollect`
+
+Flags one or more repositories for a **full** (`since=zero`) re-collection on their next scheduler cycle.
+
+```bash
+aveloxis recollect <url>...
+```
+
+Sets the `force_full_collect` flag on each named repo's `aveloxis_ops.collection_queue` row. When the scheduler dequeues a flagged repo, `determineSince()` returns zero time, triggering a full re-collection regardless of `last_collected`. The flag clears itself on the next successful completion.
+
+```bash
+aveloxis recollect https://github.com/chaoss/augur
+aveloxis recollect https://github.com/a/b https://github.com/c/d     # multiple
+```
+
+Use this command:
+
+- After a bugfix or schema change that invalidates previously-collected data for a specific repo.
+- To manually force a refresh when you suspect the incremental-since window missed something.
+- In combination with `aveloxis prioritize <url>` to start the full re-collection immediately rather than at the repo's normal due time.
+
+### Automatic triggering (v0.18.24+)
+
+The scheduler also sets this flag **automatically** when a collection ends with an error that indicates incomplete PR child data — specifically the GraphQL PR batch error classes (stream CANCEL mid-body, "Timeout on validation of query", or retry exhaustion). The next cycle then backfills whatever the failed batch missed. Operators see a `force_full_recollect set` WARN log line when auto-flagging fires.
+
+See the [troubleshooting guide](troubleshooting.md#graphql-pr-batch-errors-on-large-repos) for details on the error classes that trigger auto-flagging.
+
+---
+
 ## `aveloxis migrate`
 
 Creates or updates the database schema.

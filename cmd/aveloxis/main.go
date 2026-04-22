@@ -56,6 +56,7 @@ func main() {
 		importFoundationsCmd(&cfgPath),
 		addKeyCmd(&cfgPath),
 		prioritizeCmd(&cfgPath),
+		recollectCmd(&cfgPath),
 		migrateCmd(&cfgPath),
 		refreshViewsCmd(&cfgPath),
 		installToolsCmd(),
@@ -805,6 +806,95 @@ func runPrioritize(cfgPath, target string) error {
 
 	// Not a URL — error.
 	return fmt.Errorf("could not parse %q as a repo URL: %w", target, parseErr)
+}
+
+// --- recollect: flag repos for full (since=zero) re-collection ---
+//
+// v0.18.24: two triggers set the `force_full_collect` flag on a repo's
+// collection_queue row:
+//
+//   - Manual: `aveloxis recollect <url>...` — this command. One or more
+//     URLs, each flipped to force_full_collect=TRUE. The flag is picked
+//     up on the repo's next scheduled DequeueNext and determineSince
+//     returns zero time for a full pass.
+//   - Automatic: the scheduler flips the flag itself when a job ends
+//     with a GraphQL-batch error class (see shouldForceFullRecollect in
+//     internal/scheduler/scheduler.go).
+//
+// The flag is cleared by CompleteJob on the next successful collection.
+// This command does NOT prioritize the repo — operators who want it
+// sooner should also run `aveloxis prioritize <url>`.
+
+func recollectCmd(cfgPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "recollect [repo-urls...]",
+		Short: "Flag one or more repos for a full (since=zero) re-collection on their next scheduled cycle",
+		Long: `Sets the force_full_collect flag on each named repo's collection_queue row.
+The flag is picked up on the next scheduler cycle — the repo is re-collected
+from the beginning of time (since=zero) instead of using the incremental
+window, and the flag is cleared on successful completion.
+
+Use this after a bug fix that invalidates a repo's collected data, or after
+a GraphQL PR batch error that may have left some PR child data incomplete
+(the scheduler auto-flags this case too).
+
+This command does not change queue priority. Combine with 'aveloxis
+prioritize <url>' if you want the repo collected immediately.`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRecollect(*cfgPath, args)
+		},
+	}
+}
+
+func runRecollect(cfgPath string, targets []string) error {
+	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	cfg := loadConfig(cfgPath, bootLog)
+	logger := newLogger(cfg)
+
+	ctx := context.Background()
+	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	var firstErr error
+	for _, target := range targets {
+		parsed, parseErr := platform.ParseRepoURL(target)
+		if parseErr != nil {
+			logger.Error("could not parse repo URL — skipping", "url", target, "error", parseErr)
+			if firstErr == nil {
+				firstErr = parseErr
+			}
+			continue
+		}
+		// UpsertRepo is idempotent; use it to resolve the URL to a
+		// repo_id without requiring the caller to know the ID.
+		repoID, err := store.UpsertRepo(ctx, &model.Repo{
+			Platform: parsed.Platform,
+			GitURL:   target,
+			Name:     parsed.Repo,
+			Owner:    parsed.Owner,
+		})
+		if err != nil {
+			logger.Error("failed to resolve repo_id — skipping", "url", target, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := store.SetForceFullCollect(ctx, repoID, true); err != nil {
+			logger.Error("failed to set force_full_collect — skipping", "url", target, "repo_id", repoID, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		logger.Info("force_full_collect set — repo will be fully re-collected on next scheduler cycle",
+			"url", target, "repo_id", repoID)
+	}
+	return firstErr
 }
 
 // --- migrate ---

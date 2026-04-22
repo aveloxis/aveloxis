@@ -612,6 +612,50 @@ aveloxis collect --full https://github.com/owner/repo
 
 ---
 
+## GraphQL PR batch errors on large repos
+
+**Symptoms:**
+
+- `graphql PR batch: read graphql response: stream error: stream ID N; CANCEL; received from peer`
+- `graphql PR batch: graphql errors: Timeout on validation of query`
+- `graphql PR batch: graphql: exhausted 10 retries for https://api.github.com/graphql`
+
+**Cause:** GitHub's GraphQL edge rejected or terminated the query because the response was too expensive to compute within their server-side time budget. Historically concentrated on repos with thousands of active PRs (e.g. apache/spark, grpc/grpc, apache/ozone) when the per-PR child connections produce large responses when multiplied across the batch.
+
+**What was done (v0.18.21+):**
+
+- **Fix A (v0.18.21).** Shrunk each child connection page inside the batched PR fragment from `first: 100` → `first: 50` (`prNodeFragment` in `internal/platform/github/graphql_pr_batch.go`). Halves the worst-case per-PR payload. Oversized children (over 50 items of any type) are still fetched completely via the existing cursor-based `paginateOversizedChildren` path — no data loss.
+- **Fix B (v0.18.22).** Lowered `prBatchSize` from 25 → 10 PRs per GraphQL call. Proportionally smaller queries, lighter validation, shorter per-call wall clock. Roughly 2.5× more calls, still well under the 5,000 point/hour GraphQL budget per key.
+- **Fix C (v0.18.23).** Retries mid-body stream-CANCEL and unexpected-EOF errors. Previously a RST_STREAM during body read was treated as terminal; now classified transient and retried with bounded attempts.
+- **Auto force-recollect (v0.18.24+).** A repo whose collection ends with a GraphQL-batch error class is automatically flagged for a full (since=zero) recollection on its next cycle. That catches whatever the failed batch missed without operator intervention. See below for manual triggering.
+
+**If you still see these errors:**
+
+- Check the affected repo's PR and comment volume. An extreme outlier (tens of thousands of very active PRs) may still overrun the per-query budget; drop `pr_child_mode` to `"rest"` for that specific deployment until the adaptive-shrink fallback is implemented.
+- Inspect `pull_request_reviews`, `pull_request_commits`, `pull_request_files`, and `messages` row counts for the affected repos to confirm completeness. The next successful collection will backfill via the `refresh_open` and `gap_fill` paths.
+
+---
+
+## Force-recollect a single repository
+
+When you want a specific repo to be re-collected from scratch (since=zero) without touching the rest of the fleet — for example, after a bugfix that changed how a field is parsed, or after seeing the "GraphQL PR batch errors" above — run:
+
+```bash
+aveloxis recollect https://github.com/owner/repo
+```
+
+This sets a `force_full_collect` flag on the repo's queue row. On the next scheduler pass the collector treats the repo as never-before-seen (ignores `last_collected`) and re-collects everything. The flag auto-clears on successful completion.
+
+Batch form (multiple repos at once):
+
+```bash
+aveloxis recollect https://github.com/a/b https://github.com/c/d
+```
+
+The scheduler also sets this flag automatically when a collection ends with an error class that indicates partial data (currently: GraphQL PR batch stream-CANCEL, validation timeout, or retry exhaustion).
+
+---
+
 ## Dead repo sidelining and un-sidelining
 
 ### How sidelining works

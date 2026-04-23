@@ -153,25 +153,38 @@ func (s *Scheduler) Run(ctx context.Context) {
 	s.recoverStale(ctx)
 	s.releaseOurLocks(ctx)
 
-	// Process leftover staging rows from a previous interrupted run.
-	// Runs AFTER lock recovery so orphan locks don't wait on this
-	// multi-minute drain. Still synchronous: we must finish draining
-	// before fillWorkerSlots starts claiming new jobs, because
-	// PurgeStagedForRepo at the top of CollectRepo would wipe any
-	// unprocessed rows from the repo being re-claimed.
-	s.processLeftoverStaging(ctx)
-
 	// Recompute due_at = last_collected + recollectAfter for already-queued
 	// rows so a changed days_until_recollect takes effect immediately. Without
 	// this, due_at is baked in by CompleteJob under the old setting and stays
 	// that way until each repo's next completion — which defeats the point of
 	// changing the cooldown in the config.
+	//
+	// Runs BEFORE processLeftoverStaging (v0.18.26). Previously this was
+	// called after the drain, which meant a restart with a non-empty staging
+	// backlog silently delayed the realignment by however long ProcessRepo
+	// took across every repo with unprocessed rows — minutes to hours on a
+	// large fleet. During that window the monitor's Due column showed stale
+	// due_at values, and operators reasonably concluded "config change
+	// didn't take effect." Realignment is a single UPDATE; it has no data
+	// dependency on staging being drained, so it goes first and is visible
+	// within seconds of restart. The fillWorkerSlots invariant (no new
+	// claims until staging is drained) is still enforced by the explicit
+	// call order below.
 	if realigned, err := s.store.RealignDueDates(ctx, s.cfg.RecollectAfter); err != nil {
 		s.logger.Error("failed to realign queue due_at from config", "error", err)
 	} else if realigned > 0 {
 		s.logger.Info("realigned queue due_at from current days_until_recollect",
 			"rows_updated", realigned, "recollect_after", s.cfg.RecollectAfter)
 	}
+
+	// Process leftover staging rows from a previous interrupted run.
+	// Runs AFTER lock recovery and due_at realignment so orphan locks and
+	// stale schedules don't wait on this multi-minute drain. Still
+	// synchronous: we must finish draining before fillWorkerSlots starts
+	// claiming new jobs, because PurgeStagedForRepo at the top of
+	// CollectRepo would wipe any unprocessed rows from the repo being
+	// re-claimed.
+	s.processLeftoverStaging(ctx)
 
 	sem := make(chan struct{}, s.cfg.Workers)
 

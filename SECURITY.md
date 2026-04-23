@@ -4,6 +4,7 @@
 
 | Version | Supported          |      End of Life |
 |---------|--------------------|---------------------|
+| 0.19.x  | Not Yet Released    |   July 31, 2027    |
 | 0.18.x  | Yes                |   July 31, 2026    |
 | 0.17.x  | Yes                 |May 31, 2026    |
 | 0.16.x  | No                 |  EOL |

@@ -47,6 +47,12 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// Collection queue: commits column (added in v0.5.4).
 	addColumnIfMissing(ctx, pg, "aveloxis_ops.collection_queue", "last_commits", "INT DEFAULT 0")
 
+	// Collection queue: force-full-recollect flag (added in v0.18.24).
+	// Set automatically when a job ends with a GraphQL PR batch error
+	// class that leaves PR child data incomplete; set manually via
+	// `aveloxis recollect <url>`. CompleteJob clears it on success.
+	addColumnIfMissing(ctx, pg, "aveloxis_ops.collection_queue", "force_full_collect", "BOOLEAN NOT NULL DEFAULT FALSE")
+
 	// SBOM storage: format and timestamp columns (added in v0.5.4).
 	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_sbom_scans", "sbom_format", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_sbom_scans", "sbom_version", "TEXT DEFAULT ''")

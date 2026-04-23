@@ -10,6 +10,34 @@ Aveloxis uses GitHub Actions for continuous integration and deployment. All work
 
 Runs `go test -race ./...` with race detection enabled. Uploads coverage artifact on main branch pushes.
 
+Tests split into two tiers:
+
+* **Unit tier (default, always runs).** Pure Go, no database, covers source-contract tests and logic that can be exercised in-process.
+* **Integration tier (gated by `AVELOXIS_TEST_DB`).** Runs SQL against a live Postgres. Tests skip with a clear message when the env var is unset, so local `go test ./...` stays fast. To run locally:
+
+  ```bash
+  # Create a scratch DB on your existing Postgres instance.
+  psql -h localhost -U aveloxis -d postgres -c "CREATE DATABASE aveloxis_test;"
+
+  # Apply the schema.
+  AVELOXIS_DBNAME=aveloxis_test aveloxis migrate --config /path/to/test.json
+
+  # Run only the integration suite.
+  AVELOXIS_TEST_DB="host=localhost port=5432 user=aveloxis password=... dbname=aveloxis_test sslmode=prefer" \
+    go test ./... -run 'Integration|RealignDueDates_|CompleteJob_' -v
+
+  # Drop when done.
+  psql -h localhost -U aveloxis -d postgres -c "DROP DATABASE aveloxis_test;"
+  ```
+
+  **Never** run the integration suite against the production `aveloxis` database. `RealignDueDates` is unscoped — it updates every `status='queued'` row in the queue, and an integration test that passes `7*24h` would silently realign the entire fleet.
+
+  Conventions for adding integration tests:
+
+  * Name the test `TestX_YIntegration` or put it in a file ending in `_integration_test.go`.
+  * Seed rows with nanosecond-suffixed synthetic slugs (see `seedRealignRepo` in `internal/db/queue_realign_integration_test.go`) so parallel or repeated runs do not collide on `ON CONFLICT` constraints.
+  * Prefer strict-equality assertions (`approxEqual(..., time.Millisecond)`) where the SQL does not involve `NOW()`, since source-text tests cannot catch interval-arithmetic drift and this is where runtime regressions hide.
+
 ### Lint (`lint.yml`)
 
 **Trigger:** Every PR to main.

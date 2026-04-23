@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -128,10 +129,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.logger.Warn("FORCE FULL COLLECTION enabled — all repos will be fully re-collected. Set collection.force_full to false in aveloxis.json after this pass completes.")
 	}
 
-	// On startup: check for tool updates (monthly), process leftover staging,
-	// and release stale locks.
+	// On startup: check for tool updates (monthly), then release any
+	// stale locks BEFORE processing leftover staging. Lock recovery
+	// is a single UPDATE that takes milliseconds; leftover staging
+	// can block for many minutes on a realistic backlog. Running
+	// lock recovery first gets the queue into a correct state
+	// immediately — monitor shows accurate "collecting" counts,
+	// orphaned jobs from a crashed prior process stop appearing as
+	// in-flight, and the next fillWorkerSlots tick sees reality.
 	collector.CheckAndUpdateTools(s.logger)
-	s.processLeftoverStaging(ctx)
 
 	// Immediately reclaim all locks held by dead worker IDs. A fresh process
 	// cannot have any legitimate in-flight work, so all locks from other
@@ -152,12 +158,33 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// this, due_at is baked in by CompleteJob under the old setting and stays
 	// that way until each repo's next completion — which defeats the point of
 	// changing the cooldown in the config.
+	//
+	// Runs BEFORE processLeftoverStaging (v0.18.26). Previously this was
+	// called after the drain, which meant a restart with a non-empty staging
+	// backlog silently delayed the realignment by however long ProcessRepo
+	// took across every repo with unprocessed rows — minutes to hours on a
+	// large fleet. During that window the monitor's Due column showed stale
+	// due_at values, and operators reasonably concluded "config change
+	// didn't take effect." Realignment is a single UPDATE; it has no data
+	// dependency on staging being drained, so it goes first and is visible
+	// within seconds of restart. The fillWorkerSlots invariant (no new
+	// claims until staging is drained) is still enforced by the explicit
+	// call order below.
 	if realigned, err := s.store.RealignDueDates(ctx, s.cfg.RecollectAfter); err != nil {
 		s.logger.Error("failed to realign queue due_at from config", "error", err)
 	} else if realigned > 0 {
 		s.logger.Info("realigned queue due_at from current days_until_recollect",
 			"rows_updated", realigned, "recollect_after", s.cfg.RecollectAfter)
 	}
+
+	// Process leftover staging rows from a previous interrupted run.
+	// Runs AFTER lock recovery and due_at realignment so orphan locks and
+	// stale schedules don't wait on this multi-minute drain. Still
+	// synchronous: we must finish draining before fillWorkerSlots starts
+	// claiming new jobs, because PurgeStagedForRepo at the top of
+	// CollectRepo would wipe any unprocessed rows from the repo being
+	// re-claimed.
+	s.processLeftoverStaging(ctx)
 
 	sem := make(chan struct{}, s.cfg.Workers)
 
@@ -181,6 +208,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 	matviewCheckTicker := time.NewTicker(1 * time.Hour)
 	defer matviewCheckTicker.Stop()
 	var lastMatviewRebuild time.Time
+
+	// Staging table cleanup: delete processed rows older than 7 days
+	// so the table doesn't accumulate bloat indefinitely. v0.18.15
+	// observed a 21.5M-row table on a long-running deployment
+	// (PurgeStagedProcessed was defined but wired to nothing),
+	// enough to visibly slow every staging INSERT and DELETE.
+	// Hourly keeps the bloat bounded with negligible overhead.
+	stagingCleanupTicker := time.NewTicker(1 * time.Hour)
+	defer stagingCleanupTicker.Stop()
 
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
@@ -226,10 +262,32 @@ func (s *Scheduler) Run(ctx context.Context) {
 				}
 			}
 
+		case <-stagingCleanupTicker.C:
+			go s.runStagingCleanup(ctx)
+
 		case <-pollTicker.C:
 			s.fillWorkerSlots(ctx, sem)
 			s.maybeStartMatviewRebuild(ctx, sem, &lastMatviewRebuild)
 		}
+	}
+}
+
+// runStagingCleanup deletes processed staging rows older than 7 days.
+// The DELETE is run in a background goroutine so an unusually slow
+// cleanup pass (e.g. just after a first enablement against a table
+// with millions of stale rows) does not block the scheduler's main
+// poll loop. PurgeStagedProcessed itself is serializable — concurrent
+// fires are rare (ticker is hourly, cleanup typically finishes in
+// seconds) and at worst race on the same DELETE WHERE, which is
+// safe because the predicate is monotonic.
+func (s *Scheduler) runStagingCleanup(ctx context.Context) {
+	deleted, err := s.store.PurgeStagedProcessed(ctx)
+	if err != nil {
+		s.logger.Warn("staging cleanup failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		s.logger.Info("staging cleanup complete", "rows_deleted", deleted)
 	}
 }
 
@@ -448,6 +506,23 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		s.logger.Warn("failed to complete job", "repo_id", job.RepoID, "error", err)
 	}
 
+	// Auto-flag repos whose failure class indicates incomplete PR child
+	// data. Set AFTER CompleteJob so the flag isn't cleared by the
+	// success branch of CompleteJob (which only fires on outcome.success,
+	// but keep ordering explicit). The flag is picked up on the repo's
+	// next DequeueNext and causes determineSince to return zero for a
+	// full re-collection. See v0.18.24 troubleshooting docs.
+	if !outcome.success && shouldForceFullRecollect(outcome.errMsg) {
+		if err := s.store.SetForceFullCollect(ctx, job.RepoID, true); err != nil {
+			s.logger.Warn("failed to set force_full_collect flag", "repo_id", job.RepoID, "error", err)
+		} else {
+			s.logger.Warn("force_full_recollect set — GraphQL PR batch error class, next cycle will re-collect from since=zero",
+				"repo_id", job.RepoID,
+				"owner", repo.Owner, "repo", repo.Name,
+				"error", outcome.errMsg)
+		}
+	}
+
 	s.logger.Info("job complete",
 		"repo_id", job.RepoID,
 		"owner", repo.Owner, "repo", repo.Name,
@@ -491,11 +566,20 @@ func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
 // determineSince returns the starting point for incremental collection.
 // For repos that have never been collected, it returns zero time (full collection).
 // For repos previously collected, it returns now minus the recollect window.
-// When ForceFullCollection is true, always returns zero time to trigger a
-// full re-collection. Use this after bug fixes to repopulate data.
+//
+// Full-recollect overrides (both return zero time, regardless of LastCollected):
+//   - cfg.ForceFullCollection: fleet-wide toggle in aveloxis.json. Used
+//     after a systemic bug fix that invalidates collected data.
+//   - job.ForceFullCollect: per-repo flag on the queue row. Set
+//     automatically by the scheduler when a collection ended with a
+//     GraphQL-batch error class that leaves PR child data incomplete
+//     (v0.18.24), or manually via `aveloxis recollect <url>`.
 func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 	if s.cfg.ForceFullCollection {
-		return time.Time{} // force full re-collection
+		return time.Time{} // force full re-collection (fleet-wide)
+	}
+	if job.ForceFullCollect {
+		return time.Time{} // force full re-collection (this repo only)
 	}
 	if job.LastCollected != nil {
 		return time.Now().Add(-s.cfg.RecollectAfter)
@@ -503,11 +587,35 @@ func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 	return time.Time{} // zero = full collection
 }
 
+// shouldForceFullRecollect returns true when an error message indicates
+// the completed job likely left PR child data incomplete (reviews,
+// commits, files, comments, assignees, etc. for some subset of PRs). The
+// scheduler sets the force_full_collect flag on the repo so the next
+// cycle re-collects everything from since=zero, which backfills what the
+// failed batch missed.
+//
+// Pinned to the specific string shapes the GraphQL PR batch path emits —
+// intentionally case-sensitive and substring-narrow so unrelated errors
+// don't trigger expensive full re-collections. See
+// TestShouldForceFullRecollect and TestShouldForceFullRecollect_CaseSensitive
+// for the contract.
+func shouldForceFullRecollect(errMsg string) bool {
+	if errMsg == "" {
+		return false
+	}
+	// All three production shapes share the "graphql PR batch" prefix
+	// which the collector and platform layer produce when wrapping the
+	// underlying transport/validation/rate failure. Checking this single
+	// substring keeps the matcher narrow.
+	return strings.Contains(errMsg, "graphql PR batch")
+}
+
 // collectAndProcess runs the two-phase staged pipeline: stage raw JSON from
 // the API, then process staged data into relational tables with bulk
 // contributor resolution.
 func (s *Scheduler) collectAndProcess(ctx context.Context, repoID int64, repo *model.Repo, client platform.Client, since time.Time) (*collector.CollectResult, error) {
-	sc := collector.NewStagedCollectorWithAllModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode, s.cfg.ThreadingMode, s.cfg.ShardSize)
+	sc := collector.NewStagedCollectorWithAllModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode, s.cfg.ThreadingMode, s.cfg.ShardSize).
+		WithWorkers(s.cfg.Workers)
 	result, err := sc.CollectRepo(ctx, repoID, repo.Owner, repo.Name, since)
 
 	if err == nil {

@@ -1608,6 +1608,13 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_queue (
     last_contributors INT DEFAULT 0,
     last_commits     INT DEFAULT 0,
     last_duration_ms BIGINT DEFAULT 0,
+    -- Force a full (since=zero) re-collection on the next scheduler
+    -- cycle. Auto-set by the scheduler when a collection ends with a
+    -- GraphQL-batch error that leaves PR child data incomplete (stream
+    -- CANCEL, validation timeout, retry exhaustion — v0.18.24). Also
+    -- settable manually via `aveloxis recollect <url>`. Cleared by
+    -- CompleteJob on the next successful collection.
+    force_full_collect BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at       TIMESTAMPTZ DEFAULT NOW()
 );
 

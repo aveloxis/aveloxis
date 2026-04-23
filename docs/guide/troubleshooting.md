@@ -578,7 +578,7 @@ The `cooldown` column should equal your configured `days_until_recollect` (as an
 
 1. Confirm the new value is in the file: `jq .collection.days_until_recollect aveloxis.json`.
 2. Confirm the serve process was restarted *after* you saved the file: `ps -o lstart= -p $(cat ~/.aveloxis/aveloxis-serve.pid)` — the start time must be later than the file's `mtime`.
-3. Grep the log for the realign confirmation: `grep "realigned queue due_at" ~/.aveloxis/aveloxis.log | tail -1`. The `recollect_after` in the message reflects the value the process is actually running under. If it's absent, the scheduler never ran that prelude step — either it failed to start or an older build without v0.16.6 is on disk.
+3. Grep the log for the realign confirmation: `grep "realigned queue due_at" ~/.aveloxis/aveloxis.log | tail -1`. The `recollect_after` in the message reflects the value the process is actually running under. Under v0.18.26+ this line appears within seconds of scheduler startup (the realignment runs before the leftover-staging drain). If the line is absent, the scheduler never reached the realignment step — either it failed to start, or a pre-v0.16.6 binary is still on disk.
 
 If step 3 shows the correct `recollect_after` but the monitor page still shows stale values, re-run the verifying SQL query above. `(due_at - last_collected)` should already reflect the new interval. If it does, the issue is in the monitor render path, not the store layer. The v0.18.25 integration tests (see `internal/db/queue_realign_integration_test.go`) prove the SQL is correct against a live Postgres across 8 scenarios, so store-layer regressions will fail CI.
 

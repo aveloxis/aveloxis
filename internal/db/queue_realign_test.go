@@ -99,3 +99,57 @@ func TestSchedulerCallsRealignDueDatesOnStartup(t *testing.T) {
 			"any job is dequeued")
 	}
 }
+
+// TestSchedulerRealignsBeforeLeftoverStagingDrain pins the ordering of the
+// two startup steps within Scheduler.Run's prelude. RealignDueDates MUST
+// run before processLeftoverStaging — otherwise, with a non-empty staging
+// backlog on restart, the realignment waits behind the "multi-minute
+// drain" (per the comment on processLeftoverStaging) and the monitor
+// page shows stale due_at values for the whole drain window. Operators
+// see that and conclude the config change didn't take effect. The v0.16.6
+// fix is functionally correct either way; the ordering only affects how
+// quickly the config change becomes visible.
+//
+// This test would have failed on v0.18.24's ordering (staging drain first,
+// then realign) and passes after the v0.18.26 swap. Regressing the order
+// will fail this test before shipping.
+func TestSchedulerRealignsBeforeLeftoverStagingDrain(t *testing.T) {
+	data, err := os.ReadFile("../scheduler/scheduler.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(data)
+
+	idx := strings.Index(code, "func (s *Scheduler) Run(")
+	if idx < 0 {
+		t.Fatal("cannot find Scheduler.Run")
+	}
+	fnBody := code[idx:]
+	forIdx := strings.Index(fnBody, "\n\tfor {")
+	if forIdx > 0 {
+		fnBody = fnBody[:forIdx]
+	}
+
+	// Pin the actual call sites, not mentions in comments. Without the
+	// open-paren anchor, a comment line like "runs BEFORE
+	// processLeftoverStaging" would be indexed first and make the
+	// assertion say the wrong thing.
+	realignIdx := strings.Index(fnBody, "s.store.RealignDueDates(")
+	stagingIdx := strings.Index(fnBody, "s.processLeftoverStaging(")
+
+	if realignIdx < 0 {
+		t.Fatal("Scheduler.Run must call s.store.RealignDueDates(...) (see TestSchedulerCallsRealignDueDatesOnStartup)")
+	}
+	if stagingIdx < 0 {
+		t.Fatal("Scheduler.Run must call s.processLeftoverStaging(...) during startup to drain orphaned staging rows")
+	}
+
+	if realignIdx > stagingIdx {
+		t.Errorf("RealignDueDates is called AFTER processLeftoverStaging in Scheduler.Run "+
+			"(realign_pos=%d, staging_pos=%d). Restart a scheduler with a large staging "+
+			"backlog and the monitor's Due column keeps showing stale due_at values for "+
+			"the whole drain window — operators interpret that as 'days_until_recollect "+
+			"change didn't take effect'. Realign first (it's a single UPDATE); then drain.",
+			realignIdx, stagingIdx)
+	}
+}

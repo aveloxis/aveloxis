@@ -574,6 +574,14 @@ The `cooldown` column should equal your configured `days_until_recollect` (as an
 
 **If you want to force a one-shot re-queue *despite* the cooldown**, use `aveloxis prioritize <url>` or the "Prioritize" button in the web UI — that explicitly sets `due_at = NOW()` for a single repo.
 
+**If the "Due" column on the monitor page still shows the old schedule after editing the config:** this is almost always because `aveloxis serve` was not restarted — or the wrong process was restarted. The realignment fires exactly once, inside `scheduler.Run()`'s startup prelude. Reloading the browser, restarting `aveloxis web`, or restarting `aveloxis api` will not re-read `aveloxis.json` and will not call `RealignDueDates`. Three-step diagnostic:
+
+1. Confirm the new value is in the file: `jq .collection.days_until_recollect aveloxis.json`.
+2. Confirm the serve process was restarted *after* you saved the file: `ps -o lstart= -p $(cat ~/.aveloxis/aveloxis-serve.pid)` — the start time must be later than the file's `mtime`.
+3. Grep the log for the realign confirmation: `grep "realigned queue due_at" ~/.aveloxis/aveloxis.log | tail -1`. The `recollect_after` in the message reflects the value the process is actually running under. If it's absent, the scheduler never ran that prelude step — either it failed to start or an older build without v0.16.6 is on disk.
+
+If step 3 shows the correct `recollect_after` but the monitor page still shows stale values, re-run the verifying SQL query above. `(due_at - last_collected)` should already reflect the new interval. If it does, the issue is in the monitor render path, not the store layer. The v0.18.25 integration tests (see `internal/db/queue_realign_integration_test.go`) prove the SQL is correct against a live Postgres across 8 scenarios, so store-layer regressions will fail CI.
+
 ---
 
 ## Checking collection status

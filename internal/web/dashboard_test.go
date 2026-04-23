@@ -95,21 +95,70 @@ func TestComparePrePopulateDoesNotNestStatsFetch(t *testing.T) {
 
 // TestGroupTemplateHasCompareSearch verifies the group detail page includes
 // the API-powered compare search widget, not just the server-side filter.
+// As of v0.18.18 the widget lives in the shared compareSearchWidget template;
+// we assert the group template invokes that shared definition.
 func TestGroupTemplateHasCompareSearch(t *testing.T) {
-	// The group template must contain the compare search input and the
-	// API fetch call. We search between the group define and the next
-	// template define to isolate the group section.
 	start := strings.Index(allTemplates, `{{define "group"}}`)
 	end := strings.Index(allTemplates, `{{define "repo_detail"}}`)
 	if start < 0 || end < 0 || end <= start {
 		t.Fatal("could not locate group template boundaries")
 	}
 	groupSection := allTemplates[start:end]
-	if !strings.Contains(groupSection, "grp-repo-search") {
-		t.Error("group template should include an API-powered compare search widget (grp-repo-search)")
+	if !strings.Contains(groupSection, `{{template "compareSearchWidget" (dict "Prefix" "grp")}}`) {
+		t.Error(`group template must invoke the shared compareSearchWidget template with Prefix "grp"`)
 	}
-	if !strings.Contains(groupSection, "/api/v1/repos/search") {
-		t.Error("group template compare search should call the repos search API")
+}
+
+// TestCompareSearchWidgetIsShared pins the recommendation #5 contract: the
+// dashboard and group pages both invoke a single shared compareSearchWidget
+// template. If a future refactor duplicates the markup back into each page
+// (the pre-v0.18.18 state), this fails before ship. That duplication was
+// the shape that produced "fixed on home page, not on group page" drift.
+func TestCompareSearchWidgetIsShared(t *testing.T) {
+	if !strings.Contains(allTemplates, `{{define "compareSearchWidget"}}`) {
+		t.Fatal("missing shared compareSearchWidget template definition")
+	}
+
+	dashStart := strings.Index(allTemplates, `{{define "dashboard"}}`)
+	dashEnd := strings.Index(allTemplates[dashStart+1:], `{{define "`)
+	if dashStart < 0 || dashEnd < 0 {
+		t.Fatal("could not locate dashboard template boundaries")
+	}
+	dashSection := allTemplates[dashStart : dashStart+1+dashEnd]
+	if !strings.Contains(dashSection, `{{template "compareSearchWidget" (dict "Prefix" "dash")}}`) {
+		t.Error(`dashboard template must invoke compareSearchWidget with Prefix "dash" — do not re-inline the markup`)
+	}
+
+	grpStart := strings.Index(allTemplates, `{{define "group"}}`)
+	grpEnd := strings.Index(allTemplates[grpStart+1:], `{{define "`)
+	if grpStart < 0 || grpEnd < 0 {
+		t.Fatal("could not locate group template boundaries")
+	}
+	grpSection := allTemplates[grpStart : grpStart+1+grpEnd]
+	if !strings.Contains(grpSection, `{{template "compareSearchWidget" (dict "Prefix" "grp")}}`) {
+		t.Error(`group template must invoke compareSearchWidget with Prefix "grp" — do not re-inline the markup`)
+	}
+
+	// The old #dash-repo-search and #grp-repo-search IDs must not appear
+	// as inline hardcoded strings outside the shared template. The shared
+	// template builds them via the Prefix parameter, so a hardcoded
+	// literal inside dashboard/group indicates a regression.
+	widgetStart := strings.Index(allTemplates, `{{define "compareSearchWidget"}}`)
+	widgetEnd := strings.Index(allTemplates[widgetStart:], `{{end}}`) + widgetStart
+	inWidget := allTemplates[widgetStart:widgetEnd]
+	for _, literal := range []string{"'dash-repo-search'", "'grp-repo-search'", "'dash-search-results'", "'grp-search-results'"} {
+		// Literal string occurrences outside the shared widget would mean
+		// someone started hand-rolling the JS again. The widget itself
+		// builds IDs from the prefix so doesn't contain these literals.
+		if strings.Contains(inWidget, literal) {
+			t.Errorf("compareSearchWidget should derive %s from the Prefix parameter, not hardcode it", literal)
+		}
+		// Count occurrences across the whole template string: anything
+		// outside the shared widget is a duplicate.
+		total := strings.Count(allTemplates, literal)
+		if total > 0 {
+			t.Errorf("found %d hardcoded occurrences of %s — the shared widget builds these from Prefix", total, literal)
+		}
 	}
 }
 

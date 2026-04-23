@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 // graphqlPath is the suffix appended to baseURL for GraphQL POST requests.
@@ -96,6 +99,16 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 
 	url := c.graphqlEndpoint()
 
+	// Body-read retries (Fix C) have a tighter sub-budget than the outer
+	// retry loop. If three fresh streams in a row all abort mid-body, the
+	// query shape itself is probably the problem and further retries
+	// won't help — better to fail fast and let the scheduler flag the
+	// repo for a force-full-recollect (Fix D) on the next cycle than to
+	// burn a 10-minute backoff chain. The outer loop's maxRetries=10
+	// budget still applies to status-code-driven retries (5xx, 403, etc.).
+	const maxReadRetries = 3
+	readRetries := 0
+
 	for attempt := range maxRetries {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -147,6 +160,35 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			respBody, readErr := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			if readErr != nil {
+				// Fix C (v0.18.23): an HTTP/2 RST_STREAM or a connection
+				// abort during body read used to be terminal here. In
+				// production against large repos (apache/spark,
+				// grpc/grpc) GitHub's edge frequently ended streams
+				// mid-response when the query was expensive to compute
+				// — a retry on a fresh stream usually succeeds. We now
+				// classify these shapes as retryable under a tight
+				// sub-budget (maxReadRetries) so a genuinely-broken
+				// query fails fast instead of grinding through the full
+				// 10-retry budget with exponential backoff. Genuine
+				// decode/wire-format errors still return immediately.
+				if isRetryableGraphQLReadError(readErr) && readRetries < maxReadRetries {
+					readRetries++
+					// Use a short linear wait (1s, 2s, 3s) for body-read
+					// retries, not the exponential jitteredBackoff —
+					// stream CANCELs are not a "server is overloaded"
+					// signal and we don't want to compound latency on
+					// the happy-path-after-abort recovery.
+					wait := time.Duration(readRetries) * time.Second
+					c.logger.Warn("graphql body read error, retrying",
+						"url", url, "error", readErr,
+						"read_retry", readRetries, "wait", wait)
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(wait):
+					}
+					continue
+				}
 				return fmt.Errorf("read graphql response: %w", readErr)
 			}
 			return parseGraphQLResponse(respBody, dest, c.logger)
@@ -341,3 +383,60 @@ func joinErrs(msgs []string) string {
 // later phase we may add a marker so callers can distinguish "this came
 // from GraphQL" vs REST. For now the classes are enough.
 var ErrNotGraphQLClassified = errors.New("graphql: not classified")
+
+// isRetryableGraphQLReadError classifies an error returned by io.ReadAll
+// on a 200-OK GraphQL response body. Added in v0.18.23 (Fix C) after
+// production logs showed GitHub's edge RST_STREAM'ing mid-body responses
+// to expensive batch queries on large repos. The pre-Fix-C code returned
+// these as terminal errors, fooling the scheduler into recording
+// `last_error` on repos that merely needed a retry on a fresh stream.
+//
+// We recognize four shapes:
+//
+//   - http2.StreamError — the HTTP/2 transport surfaces RST_STREAM frames
+//     as this concrete type. CANCEL and INTERNAL_ERROR are the codes
+//     GitHub uses when it gives up; both retryable.
+//   - io.ErrUnexpectedEOF — the transport closed before the declared
+//     Content-Length was delivered. Common when a load balancer times
+//     out mid-response.
+//   - Substring match on "stream error" / "CANCEL" / "connection reset"
+//     / "unexpected EOF" in the error message. Belt and braces for
+//     wrapped/translated errors that don't preserve As-compatible types.
+//
+// Not retryable: decode failures, context cancellation (ctx path handles
+// that separately), nil. Keeping the substring list tight avoids the
+// classic "retry everything" failure mode.
+func isRetryableGraphQLReadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var streamErr http2.StreamError
+	if errors.As(err, &streamErr) {
+		return true
+	}
+	msg := err.Error()
+	for _, needle := range retryableReadErrorSubstrings {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// retryableReadErrorSubstrings is the list of error-message fragments we
+// treat as transient transport failures. Kept small on purpose — each
+// entry is a concrete production-observed shape, not a speculative "this
+// might be flaky" pattern.
+var retryableReadErrorSubstrings = []string{
+	"stream error", // http2.StreamError wrapped by outer errors
+	"CANCEL",       // HTTP/2 RST_STREAM code (observed in production log)
+	"connection reset",
+	"unexpected EOF",
+	"broken pipe",
+}

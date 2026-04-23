@@ -33,11 +33,72 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	if err != nil {
 		return nil, fmt.Errorf("parsing connection string: %w", err)
 	}
+	// Install TCP keepalives via a custom DialFunc so every pooled
+	// socket detects dead peers in ~2 minutes instead of the OS
+	// default 2 hours. See installKeepaliveDialer for why this is
+	// not done via conn-string params.
+	installKeepaliveDialer(cfg)
 	cfg.MaxConns = 20
 	if len(maxConns) > 0 && maxConns[0] > 0 {
 		cfg.MaxConns = maxConns[0]
 	}
 	cfg.MinConns = 2
+
+	// Cache server-side prepared statements on each pooled
+	// connection. Named statements ("stmtcache_<hash>") let repeat
+	// queries skip Parse+plan on the server — the real cost on the
+	// hot INSERT/SELECT paths when the DB is on a LAN rather than a
+	// loopback socket.
+	//
+	// The correctness hazard of this mode is SQLSTATE 26000
+	// "prepared statement does not exist" when a TCP connection is
+	// silently replaced out from under pgx. v0.18.14 adds two
+	// defenses that together keep this path safe for direct-Postgres
+	// LAN deployments:
+	//
+	//   1. installKeepaliveDialer (prepared_stmt_retry.go) sets a
+	//      custom pgconn DialFunc that builds every socket with
+	//      net.KeepAliveConfig — TCP_KEEPIDLE/INTVL/CNT tuned for
+	//      ~2-minute dead-peer detection instead of the OS default
+	//      2 hours. pgxpool evicts the broken connection before
+	//      the cache can fire many queries at a swapped backend.
+	//      (Libpq-style conn-string keepalive params do NOT work —
+	//      pgx v5 forwards them to Postgres as RuntimeParams and
+	//      the startup fails with FATAL 42704.)
+	//
+	//   2. sendBatchWithRetry (prepared_stmt_retry.go) wraps
+	//      pool.SendBatch to retry once on SQLSTATE 26000. The
+	//      retry picks up a fresh connection from the pool and the
+	//      batch succeeds. Residual races during the keepalive
+	//      window become single transparent retries instead of
+	//      500-row batch data loss.
+	//
+	// Full incident record leading to the v0.18.14 configuration:
+	//
+	//   - v0.18.10  QueryExecModeExec. Safe everywhere (no cache),
+	//               but Parse+plan on every query dominated cost
+	//               once the DB moved off loopback.
+	//   - v0.18.11  Flipped to CacheStatement. Hit SQLSTATE 26000
+	//               within hours — client load was stressing TCP
+	//               faster than MaxConnIdleTime could defend.
+	//   - v0.18.12  Retreated to CacheDescribe. Safe, but server-
+	//               side Parse+plan still ran per query — most of
+	//               the CacheStatement speedup never materialized.
+	//   - v0.18.14  Back to CacheStatement with keepalive + retry.
+	//
+	// Reversion triggers: sustained 26000s surviving the retry, or
+	// pgbouncer landing in front of the DB in txn/statement pooling
+	// mode. In either case, swap to QueryExecModeCacheDescribe (or
+	// QueryExecModeExec for absolute safety).
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
+
+	// Cycle idle connections before network gear does. The common NAT
+	// idle timeout is 5 minutes; we cycle at 4 so pgx opens a fresh
+	// TCP connection rather than discover a silently-dropped one at
+	// the next SendBatch. MaxConnLifetime caps total age so credentials
+	// rotation / failover eventually reaches every connection.
+	cfg.MaxConnIdleTime = 4 * time.Minute
+	cfg.MaxConnLifetime = 1 * time.Hour
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

@@ -112,85 +112,7 @@ h3{font-size:16px;margin-bottom:12px;color:#24292e}
 <div class="card" id="compare-card">
 <h2>Compare Repositories</h2>
 <p style="color:#586069;font-size:14px;margin-bottom:12px">Search and select up to 5 repositories to compare side-by-side with weekly activity charts. Use 100% or Z-Score modes to normalize for community size.</p>
-<form id="compare-form" action="/compare" method="GET" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
-<div style="position:relative;flex:1;min-width:250px">
-<input type="text" id="dash-repo-search" placeholder="Type to search repositories..." autocomplete="off" style="width:100%">
-<div id="dash-search-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #d1d5da;border-top:none;border-radius:0 0 6px 6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-height:220px;overflow-y:auto;z-index:100"></div>
-</div>
-<input type="hidden" id="dash-repo-ids" name="repos" value="">
-<button type="submit" class="btn btn-primary">Compare</button>
-</form>
-<div id="dash-selected" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
-<script>
-(function() {
-  const API = 'http://localhost:8383';
-  const input = document.getElementById('dash-repo-search');
-  const results = document.getElementById('dash-search-results');
-  const selected = document.getElementById('dash-selected');
-  const hiddenIds = document.getElementById('dash-repo-ids');
-  const COLORS = ['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6'];
-  let repos = [];
-  let timer;
-
-  input.addEventListener('input', function() {
-    clearTimeout(timer);
-    const q = this.value.trim();
-    if (q.length < 2) { results.style.display = 'none'; return; }
-    timer = setTimeout(() => {
-      fetch(API + '/api/v1/repos/search?q=' + encodeURIComponent(q))
-        .then(r => r.json())
-        .then(data => {
-          if (!data || data.length === 0) { results.style.display = 'none'; return; }
-          results.innerHTML = data.slice(0, 15).map(r =>
-            '<div style="padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0" ' +
-            'onmouseover="this.style.background=\'#f6f8fa\'" onmouseout="this.style.background=\'white\'" ' +
-            'data-id="' + r.id + '" data-owner="' + r.owner + '" data-name="' + r.name + '">' +
-            r.owner + '/<strong>' + r.name + '</strong></div>'
-          ).join('');
-          results.style.display = 'block';
-          results.querySelectorAll('div').forEach(el => {
-            el.onclick = () => addRepo(+el.dataset.id, el.dataset.owner, el.dataset.name);
-          });
-        })
-        .catch(() => { results.style.display = 'none'; });
-    }, 200);
-  });
-
-  input.addEventListener('focus', function() {
-    if (results.innerHTML && this.value.length >= 2) results.style.display = 'block';
-  });
-
-  document.addEventListener('click', e => {
-    if (!e.target.closest('#dash-repo-search') && !e.target.closest('#dash-search-results'))
-      results.style.display = 'none';
-  });
-
-  function addRepo(id, owner, name) {
-    if (repos.length >= 5) { alert('Maximum 5 repos.'); return; }
-    if (repos.find(r => r.id === id)) return;
-    repos.push({id, owner, name});
-    results.style.display = 'none';
-    input.value = '';
-    render();
-  }
-
-  function removeRepo(id) {
-    repos = repos.filter(r => r.id !== id);
-    render();
-  }
-  window._dashRemoveRepo = removeRepo;
-
-  function render() {
-    selected.innerHTML = repos.map((r, i) =>
-      '<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:13px;font-weight:500;background:' +
-      COLORS[i] + '20;color:' + COLORS[i] + '">' +
-      r.owner + '/' + r.name +
-      ' <button onclick="_dashRemoveRepo(' + r.id + ')" style="background:none;border:none;cursor:pointer;color:inherit;font-size:14px">&times;</button></span>'
-    ).join('');
-    hiddenIds.value = repos.map(r => r.id).join(',');
-  }
-})();
-</script>
+{{template "compareSearchWidget" (dict "Prefix" "dash")}}
 </div>
 </div>
 </body></html>
@@ -254,15 +176,7 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 <div class="section" id="grp-compare-card">
 <h3>Compare Repositories</h3>
 <p style="color:#586069;font-size:13px;margin-bottom:8px">Search and select up to 5 repositories to compare activity charts side-by-side.</p>
-<form id="grp-compare-form" action="/compare" method="GET" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
-<div style="position:relative;flex:1;min-width:250px">
-<input type="text" id="grp-repo-search" placeholder="Type to search repositories..." autocomplete="off" style="width:100%">
-<div id="grp-search-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #d1d5da;border-top:none;border-radius:0 0 6px 6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-height:220px;overflow-y:auto;z-index:100"></div>
-</div>
-<input type="hidden" id="grp-repo-ids" name="repos" value="">
-<button type="submit" class="btn btn-primary">Compare</button>
-</form>
-<div id="grp-selected" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+{{template "compareSearchWidget" (dict "Prefix" "grp")}}
 </div>
 
 <div class="section">
@@ -310,33 +224,7 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 </table>
 </div>
 
-{{if gt .TotalPages 1}}
-<div class="pagination">
-{{if gt .Page 1}}
-<a href="/groups/{{.Group.GroupID}}?page=1{{if .Query}}&q={{.Query}}{{end}}" title="First page">First</a>
-<a href="/groups/{{.Group.GroupID}}?page={{subtract .Page 1}}{{if .Query}}&q={{.Query}}{{end}}">Previous</a>
-{{else}}
-<span class="disabled">First</span>
-<span class="disabled">Previous</span>
-{{end}}
-
-{{range .PageWindow}}
-{{if eq . $.Page}}
-<span class="current-page">{{.}}</span>
-{{else}}
-<a href="/groups/{{$.Group.GroupID}}?page={{.}}{{if $.Query}}&q={{$.Query}}{{end}}">{{.}}</a>
-{{end}}
-{{end}}
-
-{{if lt .Page .TotalPages}}
-<a href="/groups/{{.Group.GroupID}}?page={{add .Page 1}}{{if .Query}}&q={{.Query}}{{end}}">Next</a>
-<a href="/groups/{{.Group.GroupID}}?page={{.TotalPages}}{{if .Query}}&q={{.Query}}{{end}}" title="Last page">Last</a>
-{{else}}
-<span class="disabled">Next</span>
-<span class="disabled">Last</span>
-{{end}}
-</div>
-{{end}}
+{{template "paginationNav" (dict "BasePath" (printf "/groups/%d" .Group.GroupID) "Page" .Page "TotalPages" .TotalPages "Query" .Query "PageWindow" .PageWindow)}}
 {{else}}
 {{if .Query}}
 <p class="empty">No repositories match your search.</p>
@@ -347,78 +235,6 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 </div>
 </div>
 </div>
-<script>
-// Compare search widget for the group detail page.
-// Uses the same API-powered autocomplete as the dashboard and compare pages.
-(function() {
-  const API = 'http://localhost:8383';
-  const input = document.getElementById('grp-repo-search');
-  const results = document.getElementById('grp-search-results');
-  const selected = document.getElementById('grp-selected');
-  const hiddenIds = document.getElementById('grp-repo-ids');
-  const COLORS = ['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6'];
-  let repos = [];
-  let timer;
-
-  input.addEventListener('input', function() {
-    clearTimeout(timer);
-    const q = this.value.trim();
-    if (q.length < 2) { results.style.display = 'none'; return; }
-    timer = setTimeout(() => {
-      fetch(API + '/api/v1/repos/search?q=' + encodeURIComponent(q))
-        .then(r => r.json())
-        .then(data => {
-          if (!data || data.length === 0) { results.style.display = 'none'; return; }
-          results.innerHTML = data.slice(0, 15).map(r =>
-            '<div style="padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0" ' +
-            'onmouseover="this.style.background=\'#f6f8fa\'" onmouseout="this.style.background=\'white\'" ' +
-            'data-id="' + r.id + '" data-owner="' + r.owner + '" data-name="' + r.name + '">' +
-            r.owner + '/<strong>' + r.name + '</strong></div>'
-          ).join('');
-          results.style.display = 'block';
-          results.querySelectorAll('div').forEach(el => {
-            el.onclick = () => addRepo(+el.dataset.id, el.dataset.owner, el.dataset.name);
-          });
-        })
-        .catch(() => { results.style.display = 'none'; });
-    }, 200);
-  });
-
-  input.addEventListener('focus', function() {
-    if (results.innerHTML && this.value.length >= 2) results.style.display = 'block';
-  });
-
-  document.addEventListener('click', e => {
-    if (!e.target.closest('#grp-repo-search') && !e.target.closest('#grp-search-results'))
-      results.style.display = 'none';
-  });
-
-  function addRepo(id, owner, name) {
-    if (repos.length >= 5) { alert('Maximum 5 repos.'); return; }
-    if (repos.find(r => r.id === id)) return;
-    repos.push({id, owner, name});
-    results.style.display = 'none';
-    input.value = '';
-    render();
-  }
-
-  function removeRepo(id) {
-    repos = repos.filter(r => r.id !== id);
-    render();
-  }
-  window._grpRemoveRepo = removeRepo;
-
-  function render() {
-    selected.innerHTML = repos.map((r, i) =>
-      '<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:13px;font-weight:500;background:' +
-      COLORS[i] + '20;color:' + COLORS[i] + '">' +
-      r.owner + '/' + r.name +
-      ' <button onclick="_grpRemoveRepo(' + r.id + ')" style="background:none;border:none;cursor:pointer;color:inherit;font-size:14px">&times;</button></span>'
-    ).join('');
-    hiddenIds.value = repos.map(r => r.id).join(',');
-  }
-})();
-</script>
 </body></html>
 {{end}}
 
@@ -502,7 +318,10 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 </div>
 
 <script>
-const API_BASE = 'http://localhost:8383';
+// Same-origin fetch: the web server reverse-proxies /api/* to the
+// configured api process (web.api_internal_url), so relative URLs
+// work behind nginx/TLS and eliminate CORS concerns.
+const API_BASE = '';
 const REPO_ID = {{.RepoID}};
 
 // Chart color palette.
@@ -753,7 +572,10 @@ fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-files')
 </div>
 
 <script>
-const API_BASE = 'http://localhost:8383';
+// Same-origin fetch: the web server reverse-proxies /api/* to the
+// configured api process (web.api_internal_url), so relative URLs
+// work behind nginx/TLS and eliminate CORS concerns.
+const API_BASE = '';
 const CHART_COLORS = ['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6'];
 let selectedRepos = [];
 let allRepoData = {};
@@ -1084,25 +906,7 @@ if (urlRepos.length > 0) {
 </tbody>
 </table>
 
-{{if gt .TotalPages 1}}
-<div style="display:flex;justify-content:center;gap:6px;margin-top:16px;align-items:center">
-{{if gt .Page 1}}
-<a href="/monitor?page=1{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem" title="First page">First</a>
-<a href="/monitor?page={{subtract .Page 1}}{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem">&laquo; Prev</a>
-{{else}}
-<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">First</span>
-<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">&laquo; Prev</span>
-{{end}}
-<span style="color:#666;font-size:0.85rem;padding:0 8px">{{.Page}} / {{.TotalPages}}</span>
-{{if lt .Page .TotalPages}}
-<a href="/monitor?page={{add .Page 1}}{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem">Next &raquo;</a>
-<a href="/monitor?page={{.TotalPages}}{{if .Query}}&q={{.Query}}{{end}}" class="btn" style="font-size:0.85rem" title="Last page">Last</a>
-{{else}}
-<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">Next &raquo;</span>
-<span class="btn" style="font-size:0.85rem;opacity:0.4;cursor:default">Last</span>
-{{end}}
-</div>
-{{end}}
+{{template "paginationNav" (dict "BasePath" "/monitor" "Page" .Page "TotalPages" .TotalPages "Query" .Query "PageWindow" .PageWindow)}}
 </div>
 </div>
 <script>setTimeout(function(){ location.reload(); }, 10000);</script>
@@ -1110,4 +914,157 @@ if (urlRepos.length > 0) {
 {{end}}
 
 {{define "dict"}}{{end}}
+
+{{/*
+  paginationNav — shared pagination control used by /monitor and /groups.
+  Parameters (passed as a map via the dict template func):
+    BasePath    string  — e.g. "/monitor" or "/groups/42"
+    Page        int     — 1-based current page
+    TotalPages  int     — always >= 1
+    Query       string  — search term (optional; empty means no search)
+    PageWindow  []int   — sliding window of page numbers to display
+
+  Renders First / Previous / page-numbers / Next / Last controls.
+  Disabled boundaries render as span.disabled. Every link preserves
+  Query via &q= when Query is non-empty. Inline variants were prone
+  to drift and subtle breakage — the original /monitor inline block
+  had correct hrefs in unit tests but failed in practice because the
+  10s auto-refresh raced with click navigation on slow page renders.
+*/}}
+{{/*
+  compareSearchWidget: the type-to-search autocomplete used on the
+  dashboard and the group detail page to pick up to 5 repos to compare.
+  Takes a Prefix string (e.g. "dash", "grp") which scopes all DOM IDs so
+  multiple widgets can coexist if ever needed.
+
+  Extracted from two near-identical copies that had drifted apart in the
+  past — the group-page copy never worked correctly because the hardcoded
+  API URL (pre-v0.18.18) resolved to the user's own machine. Sharing a
+  single definition eliminates that drift class: a fix on one page is a
+  fix on both, and the source-contract test below asserts every compare
+  page invokes this template by name.
+
+  Not used by the full /compare page's widget (#repo-search): that one is
+  interleaved with charts and date-range state and would require a
+  heavier refactor. The compareSearchWidget invariants (endpoint, debounce,
+  dropdown behavior) still apply there and are covered by runtime tests.
+*/}}
+{{define "compareSearchWidget"}}
+<form id="{{.Prefix}}-compare-form" action="/compare" method="GET" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+<div style="position:relative;flex:1;min-width:250px">
+<input type="text" id="{{.Prefix}}-repo-search" placeholder="Type to search repositories..." autocomplete="off" style="width:100%">
+<div id="{{.Prefix}}-search-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #d1d5da;border-top:none;border-radius:0 0 6px 6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-height:220px;overflow-y:auto;z-index:100"></div>
+</div>
+<input type="hidden" id="{{.Prefix}}-repo-ids" name="repos" value="">
+<button type="submit" class="btn btn-primary">Compare</button>
+</form>
+<div id="{{.Prefix}}-selected" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+<script>
+(function() {
+  // Same-origin fetch: the web server reverse-proxies /api/* to the
+  // configured api process (web.api_internal_url), so relative URLs
+  // work behind nginx/TLS and eliminate CORS concerns.
+  const API = '';
+  const prefix = {{.Prefix}};
+  const input = document.getElementById(prefix + '-repo-search');
+  const results = document.getElementById(prefix + '-search-results');
+  const selected = document.getElementById(prefix + '-selected');
+  const hiddenIds = document.getElementById(prefix + '-repo-ids');
+  const COLORS = ['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6'];
+  let repos = [];
+  let timer;
+
+  input.addEventListener('input', function() {
+    clearTimeout(timer);
+    const q = this.value.trim();
+    if (q.length < 2) { results.style.display = 'none'; return; }
+    timer = setTimeout(() => {
+      fetch(API + '/api/v1/repos/search?q=' + encodeURIComponent(q))
+        .then(r => r.json())
+        .then(data => {
+          if (!data || data.length === 0) { results.style.display = 'none'; return; }
+          results.innerHTML = data.slice(0, 15).map(r =>
+            '<div style="padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0" ' +
+            'onmouseover="this.style.background=\'#f6f8fa\'" onmouseout="this.style.background=\'white\'" ' +
+            'data-id="' + r.id + '" data-owner="' + r.owner + '" data-name="' + r.name + '">' +
+            r.owner + '/<strong>' + r.name + '</strong></div>'
+          ).join('');
+          results.style.display = 'block';
+          results.querySelectorAll('div').forEach(el => {
+            el.onclick = () => addRepo(+el.dataset.id, el.dataset.owner, el.dataset.name);
+          });
+        })
+        .catch(() => { results.style.display = 'none'; });
+    }, 200);
+  });
+
+  input.addEventListener('focus', function() {
+    if (results.innerHTML && this.value.length >= 2) results.style.display = 'block';
+  });
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#' + prefix + '-repo-search') && !e.target.closest('#' + prefix + '-search-results'))
+      results.style.display = 'none';
+  });
+
+  function addRepo(id, owner, name) {
+    if (repos.length >= 5) { alert('Maximum 5 repos.'); return; }
+    if (repos.find(r => r.id === id)) return;
+    repos.push({id, owner, name});
+    results.style.display = 'none';
+    input.value = '';
+    render();
+  }
+
+  function removeRepo(id) {
+    repos = repos.filter(r => r.id !== id);
+    render();
+  }
+  // Expose a uniquely-named global so multiple widgets on one page (not
+  // today, but nothing prevents it in the future) don't collide.
+  const removeFnName = '_' + prefix + 'RemoveRepo';
+  window[removeFnName] = removeRepo;
+
+  function render() {
+    selected.innerHTML = repos.map((r, i) =>
+      '<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:13px;font-weight:500;background:' +
+      COLORS[i] + '20;color:' + COLORS[i] + '">' +
+      r.owner + '/' + r.name +
+      ' <button onclick="' + removeFnName + '(' + r.id + ')" style="background:none;border:none;cursor:pointer;color:inherit;font-size:14px">&times;</button></span>'
+    ).join('');
+    hiddenIds.value = repos.map(r => r.id).join(',');
+  }
+})();
+</script>
+{{end}}
+
+{{define "paginationNav"}}
+{{if gt .TotalPages 1}}
+<div class="pagination">
+{{if gt .Page 1}}
+<a href="{{.BasePath}}?page=1{{if .Query}}&q={{.Query}}{{end}}" title="First page">First</a>
+<a href="{{.BasePath}}?page={{subtract .Page 1}}{{if .Query}}&q={{.Query}}{{end}}">Previous</a>
+{{else}}
+<span class="disabled">First</span>
+<span class="disabled">Previous</span>
+{{end}}
+
+{{range .PageWindow}}
+{{if eq . $.Page}}
+<span class="current-page">{{.}}</span>
+{{else}}
+<a href="{{$.BasePath}}?page={{.}}{{if $.Query}}&q={{$.Query}}{{end}}">{{.}}</a>
+{{end}}
+{{end}}
+
+{{if lt .Page .TotalPages}}
+<a href="{{.BasePath}}?page={{add .Page 1}}{{if .Query}}&q={{.Query}}{{end}}">Next</a>
+<a href="{{.BasePath}}?page={{.TotalPages}}{{if .Query}}&q={{.Query}}{{end}}" title="Last page">Last</a>
+{{else}}
+<span class="disabled">Next</span>
+<span class="disabled">Last</span>
+{{end}}
+</div>
+{{end}}
+{{end}}
 `

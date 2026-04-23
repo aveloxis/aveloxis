@@ -534,6 +534,19 @@ Sets priority to 0 and due time to now. The scheduler will collect this repo nex
 
 Also available via the monitor dashboard's "Boost" button at `/monitor`, or by clicking "Boost" next to any queued repo.
 
+### `aveloxis recollect` — Flag a repo for full (since=zero) re-collection
+
+```bash
+aveloxis recollect https://github.com/chaoss/augur
+aveloxis recollect https://github.com/a/b https://github.com/c/d   # batch
+```
+
+Sets `force_full_collect` on the named repos' queue rows. On each repo's next scheduler cycle the collector ignores `last_collected` and re-collects from the beginning of time; the flag clears itself on successful completion. Use this after a bugfix that invalidates collected data, or when you want to make sure a specific repo is fully refreshed.
+
+The scheduler also sets this flag **automatically** when a collection ends with a GraphQL PR batch error class (stream CANCEL, validation timeout, retry exhaustion) so that next pass backfills whatever the failed batch missed. See [docs/guide/troubleshooting.md](docs/guide/troubleshooting.md) for details.
+
+Combine with `aveloxis prioritize <url>` if you want the re-collection to start immediately rather than on the repo's normal cycle.
+
 ### `aveloxis migrate` — Set up the database schema
 
 ```bash
@@ -1137,7 +1150,7 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 ```
 aveloxis/
   cmd/aveloxis/           # CLI entry point (cobra commands)
-    main.go               # serve, web, api, collect, add-repo, add-key, prioritize, migrate, version
+    main.go               # serve, web, api, collect, add-repo, add-key, prioritize, recollect, migrate, version
   internal/
     collector/            # Collection orchestration
       collector.go        # Direct pipeline (used by `collect` command)
@@ -1202,7 +1215,7 @@ aveloxis/
     api/
       server.go           # REST API server (stats, timeseries, licenses, scancode, SBOM, search)
     monitor/
-      monitor.go          # HTTP dashboard with sortable gathered vs metadata columns
+      monitor.go          # HTTP dashboard with sortable gathered vs metadata columns; paginated + server-side search (v0.18.6)
     platform/
       platform.go         # Client interface (7 sub-interfaces + FetchIssueByNumber, FetchPRByNumber)
       httpclient.go       # HTTP client with rate limiting, key rotation, ETag caching, retries

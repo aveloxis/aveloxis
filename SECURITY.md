@@ -2,12 +2,16 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-|---------|--------------------|
-| 0.15.x  | Yes                |
-| 0.14.x  | No                 |
-| 0.13.x  | No                 |
-| < 0.13  | No                 |
+| Version | Supported          |      End of Life |
+|---------|--------------------|---------------------|
+| 0.19.x  | Not Yet Released    |   July 31, 2027    |
+| 0.18.x  | Yes                |   July 31, 2026    |
+| 0.17.x  | Yes                 |May 31, 2026    |
+| 0.16.x  | No                 |  EOL |
+| 0.15.x  | No                | EOL  |
+| 0.14.x  | No                 |  EOL |
+| 0.13.x  | No                 | EOL  |
+| < 0.13  | No                 | EOL  |
 
 We provide security fixes for the latest minor release only.
 

@@ -574,6 +574,14 @@ The `cooldown` column should equal your configured `days_until_recollect` (as an
 
 **If you want to force a one-shot re-queue *despite* the cooldown**, use `aveloxis prioritize <url>` or the "Prioritize" button in the web UI — that explicitly sets `due_at = NOW()` for a single repo.
 
+**If the "Due" column on the monitor page still shows the old schedule after editing the config:** this is almost always because `aveloxis serve` was not restarted — or the wrong process was restarted. The realignment fires exactly once, inside `scheduler.Run()`'s startup prelude. Reloading the browser, restarting `aveloxis web`, or restarting `aveloxis api` will not re-read `aveloxis.json` and will not call `RealignDueDates`. Three-step diagnostic:
+
+1. Confirm the new value is in the file: `jq .collection.days_until_recollect aveloxis.json`.
+2. Confirm the serve process was restarted *after* you saved the file: `ps -o lstart= -p $(cat ~/.aveloxis/aveloxis-serve.pid)` — the start time must be later than the file's `mtime`.
+3. Grep the log for the realign confirmation: `grep "realigned queue due_at" ~/.aveloxis/aveloxis.log | tail -1`. The `recollect_after` in the message reflects the value the process is actually running under. Under v0.18.26+ this line appears within seconds of scheduler startup (the realignment runs before the leftover-staging drain). If the line is absent, the scheduler never reached the realignment step — either it failed to start, or a pre-v0.16.6 binary is still on disk.
+
+If step 3 shows the correct `recollect_after` but the monitor page still shows stale values, re-run the verifying SQL query above. `(due_at - last_collected)` should already reflect the new interval. If it does, the issue is in the monitor render path, not the store layer. The v0.18.25 integration tests (see `internal/db/queue_realign_integration_test.go`) prove the SQL is correct against a live Postgres across 8 scenarios, so store-layer regressions will fail CI.
+
 ---
 
 ## Checking collection status
@@ -609,6 +617,50 @@ For a full historical re-collection (ignoring the incremental window):
 ```bash
 aveloxis collect --full https://github.com/owner/repo
 ```
+
+---
+
+## GraphQL PR batch errors on large repos
+
+**Symptoms:**
+
+- `graphql PR batch: read graphql response: stream error: stream ID N; CANCEL; received from peer`
+- `graphql PR batch: graphql errors: Timeout on validation of query`
+- `graphql PR batch: graphql: exhausted 10 retries for https://api.github.com/graphql`
+
+**Cause:** GitHub's GraphQL edge rejected or terminated the query because the response was too expensive to compute within their server-side time budget. Historically concentrated on repos with thousands of active PRs (e.g. apache/spark, grpc/grpc, apache/ozone) when the per-PR child connections produce large responses when multiplied across the batch.
+
+**What was done (v0.18.21+):**
+
+- **Fix A (v0.18.21).** Shrunk each child connection page inside the batched PR fragment from `first: 100` → `first: 50` (`prNodeFragment` in `internal/platform/github/graphql_pr_batch.go`). Halves the worst-case per-PR payload. Oversized children (over 50 items of any type) are still fetched completely via the existing cursor-based `paginateOversizedChildren` path — no data loss.
+- **Fix B (v0.18.22).** Lowered `prBatchSize` from 25 → 10 PRs per GraphQL call. Proportionally smaller queries, lighter validation, shorter per-call wall clock. Roughly 2.5× more calls, still well under the 5,000 point/hour GraphQL budget per key.
+- **Fix C (v0.18.23).** Retries mid-body stream-CANCEL and unexpected-EOF errors. Previously a RST_STREAM during body read was treated as terminal; now classified transient and retried with bounded attempts.
+- **Auto force-recollect (v0.18.24+).** A repo whose collection ends with a GraphQL-batch error class is automatically flagged for a full (since=zero) recollection on its next cycle. That catches whatever the failed batch missed without operator intervention. See below for manual triggering.
+
+**If you still see these errors:**
+
+- Check the affected repo's PR and comment volume. An extreme outlier (tens of thousands of very active PRs) may still overrun the per-query budget; drop `pr_child_mode` to `"rest"` for that specific deployment until the adaptive-shrink fallback is implemented.
+- Inspect `pull_request_reviews`, `pull_request_commits`, `pull_request_files`, and `messages` row counts for the affected repos to confirm completeness. The next successful collection will backfill via the `refresh_open` and `gap_fill` paths.
+
+---
+
+## Force-recollect a single repository
+
+When you want a specific repo to be re-collected from scratch (since=zero) without touching the rest of the fleet — for example, after a bugfix that changed how a field is parsed, or after seeing the "GraphQL PR batch errors" above — run:
+
+```bash
+aveloxis recollect https://github.com/owner/repo
+```
+
+This sets a `force_full_collect` flag on the repo's queue row. On the next scheduler pass the collector treats the repo as never-before-seen (ignores `last_collected`) and re-collects everything. The flag auto-clears on successful completion.
+
+Batch form (multiple repos at once):
+
+```bash
+aveloxis recollect https://github.com/a/b https://github.com/c/d
+```
+
+The scheduler also sets this flag automatically when a collection ends with an error class that indicates partial data (currently: GraphQL PR batch stream-CANCEL, validation timeout, or retry exhaustion).
 
 ---
 
@@ -674,6 +726,23 @@ If the service outage is prolonged, the repo will fail after 10 retries and be r
 **Cause:** Concurrent writes to the same rows (rare, usually during high-concurrency processing).
 
 **Solution:** No action needed. All database upserts use exponential backoff retry on deadlock errors, up to 10 attempts. The operation is retried transparently.
+
+---
+
+## `prepared statement "stmtcache_..." does not exist (SQLSTATE 26000)`
+
+**Symptom:** Log shows sporadic `ERROR: prepared statement "stmtcache_<hash>" does not exist (SQLSTATE 26000)` on staging flushes, followed a few lines later by `prepared statement cache miss on SendBatch — retrying once`.
+
+**Cause:** pgx's per-connection prepared-statement cache diverged from the server backend. A TCP connection between the aveloxis host and the Postgres host was silently replaced under heavy client load (NIC buffer pressure, kernel scheduling jitter, etc.) faster than the configured keepalive / idle-cycle could detect.
+
+**Solution:** No action needed on single occurrences -- v0.18.14 added a transparent single-shot retry on SQLSTATE 26000. The retry picks up a fresh connection from the pool, pgx re-prepares the statement, and the batch succeeds.
+
+**If you see sustained 26000s surviving the retry**, something more systemic is wrong. Investigate in this order:
+
+1. **Check your worker count.** On Mac-based deployments, `"workers": 80` can stress the kernel network stack hard enough to induce TCP instability. Try `"workers": 40` in `aveloxis.json` -- each worker does more DB throughput now that `CacheStatement` reuses plans, so 40 workers with `CacheStatement` is roughly equivalent to 80 workers with the older `CacheDescribe` from the DB's perspective, with dramatically less packet pressure on the client.
+2. **Ping the DB host under load.** Run `ping -i 1 <db-host>` while `aveloxis serve` is active and look for packet loss. Any drops indicate the client is saturating something (NIC, switch port queue, ephemeral-port pool) and reducing `workers` is the right move.
+3. **Check for pgbouncer.** If a pgbouncer in transaction or statement pooling mode has appeared in the path, `CacheStatement` cannot work -- pgbouncer shares backends across clients and prepared-statement names are connection-scoped. In `internal/db/postgres.go`, change `pgx.QueryExecModeCacheStatement` to `pgx.QueryExecModeCacheDescribe` (safe with all pgbouncer modes; gives up the plan-cache speedup but keeps client-side describe caching).
+4. **Tighten keepalives further.** The `appendKeepaliveParams` defaults (idle 60s, interval 10s, count 6 = ~2 min detection) are conservative. On a very flaky link, drop them to `keepalives_idle=30 keepalives_interval=5 keepalives_count=4` (~50 sec detection) in `internal/db/prepared_stmt_retry.go`.
 
 ---
 

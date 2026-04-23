@@ -27,6 +27,12 @@ type QueueJob struct {
 	LastContributors int
 	LastCommits     int
 	LastDurationMs  int64
+	// ForceFullCollect, when true, causes the scheduler to collect this
+	// repo from since=zero on its next pass regardless of last_collected.
+	// Cleared on the next successful collection. Set automatically by the
+	// scheduler when a job ends with a GraphQL-batch error class, and
+	// settable manually via `aveloxis recollect <url>`.
+	ForceFullCollect bool
 	UpdatedAt       time.Time
 }
 
@@ -76,6 +82,11 @@ func (s *PostgresStore) PrioritizeRepo(ctx context.Context, repoID int64) error 
 // DequeueNext atomically claims the highest-priority due job using
 // SELECT ... FOR UPDATE SKIP LOCKED. Returns nil if no job is available.
 // workerID identifies this worker for observability.
+//
+// The RETURNING clause includes force_full_collect so the scheduler can
+// atomically learn the flag state at dequeue time and apply it when
+// computing since. Skipping it would open a race where the flag is set
+// between dequeue and collection start.
 func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string) (*QueueJob, error) {
 	var job QueueJob
 	err := s.pool.QueryRow(ctx, `
@@ -88,9 +99,9 @@ func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string) (*Queu
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING repo_id, priority, status, due_at, locked_by, locked_at, last_collected`,
+		RETURNING repo_id, priority, status, due_at, locked_by, locked_at, last_collected, force_full_collect`,
 		workerID,
-	).Scan(&job.RepoID, &job.Priority, &job.Status, &job.DueAt, &job.LockedBy, &job.LockedAt, &job.LastCollected)
+	).Scan(&job.RepoID, &job.Priority, &job.Status, &job.DueAt, &job.LockedBy, &job.LockedAt, &job.LastCollected, &job.ForceFullCollect)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil // no work available
@@ -102,6 +113,12 @@ func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string) (*Queu
 }
 
 // CompleteJob marks a job as done and re-queues it for future collection.
+//
+// Successful completions clear the force_full_collect flag so a repo that
+// was previously auto/manually flagged returns to normal incremental
+// collection after a good pass. Failed completions leave the flag as-is
+// — the scheduler decides separately (via shouldForceFullRecollect) if
+// the error class warrants setting it via SetForceFullCollect.
 func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success bool, recollectAfter time.Duration,
 	issues, prs, messages, events, releases, contributors, commits int, durationMs int64, errMsg string) error {
 
@@ -129,11 +146,39 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 				last_contributors = $10,
 				last_commits = $11,
 				last_duration_ms = $12,
+				force_full_collect = CASE WHEN $13::boolean THEN FALSE ELSE force_full_collect END,
 				updated_at = NOW()
 			WHERE repo_id = $1`,
 			repoID, status, recollectAfter.String(),
-			lastErr, issues, prs, messages, events, releases, contributors, commits, durationMs)
+			lastErr, issues, prs, messages, events, releases, contributors, commits, durationMs,
+			success)
 		return err
+	})
+}
+
+// SetForceFullCollect sets the force_full_collect flag for a single repo.
+// Used by the `aveloxis recollect` CLI (value=true) and by the scheduler's
+// auto-flag path when a collection ends with an error class that leaves
+// PR child data incomplete. Idempotent.
+//
+// Does NOT change status, priority, or due_at — the flag is independent
+// of queue ordering. The repo will be picked up on its next scheduled
+// cycle; operators who want it sooner should call PrioritizeRepo
+// separately.
+func (s *PostgresStore) SetForceFullCollect(ctx context.Context, repoID int64, value bool) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tag, err := s.pool.Exec(ctx, `
+			UPDATE aveloxis_ops.collection_queue
+			SET force_full_collect = $2, updated_at = NOW()
+			WHERE repo_id = $1`,
+			repoID, value)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("repo %d not found in collection_queue", repoID)
+		}
+		return nil
 	})
 }
 
@@ -244,7 +289,7 @@ func (s *PostgresStore) ListQueue(ctx context.Context) ([]QueueJob, error) {
 		FROM aveloxis_ops.collection_queue
 		ORDER BY
 			CASE status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
-			priority, due_at`)
+			priority, due_at, repo_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +346,7 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 		%s
 		ORDER BY
 			CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
-			q.priority, q.due_at
+			q.priority, q.due_at, q.repo_id
 		LIMIT $%d OFFSET $%d`, whereClause, argIdx, argIdx+1)
 	args = append(args, limit, offset)
 

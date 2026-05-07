@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // Client implements platform.Client for GitLab (API v4).
@@ -970,29 +970,29 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	community := c.fetchCommunityFiles(ctx, pp)
 
 	return &model.RepoInfo{
-		LastUpdated:        raw.LastActivityAt,
-		IssuesEnabled:      raw.IssuesEnabled,
-		PRsEnabled:         raw.MergeRequestsEnabled,
-		WikiEnabled:        raw.WikiEnabled,
-		PagesEnabled:       raw.PagesAccessLevel != "disabled",
-		ForkCount:          raw.ForksCount,
-		StarCount:          raw.StarCount,
-		OpenIssues:         raw.OpenIssuesCount,
-		DefaultBranch:      raw.DefaultBranch,
-		License:            license,
-		LicenseFile:        license,
-		CommitCount:        commitCount,
-		IssuesCount:        issueStats.Statistics.Counts.All,
-		IssuesClosed:       issueStats.Statistics.Counts.Closed,
-		PRCount:            mrTotal,
-		PRsOpen:            mrOpen,
-		PRsClosed:          mrClosed,
-		PRsMerged:          mrMerged,
-		ChangelogFile:      community.Changelog,
-		ContributingFile:   community.Contributing,
-		CodeOfConductFile:  community.CodeOfConduct,
-		SecurityIssueFile:  community.Security,
-		Status:             status,
+		LastUpdated:       raw.LastActivityAt,
+		IssuesEnabled:     raw.IssuesEnabled,
+		PRsEnabled:        raw.MergeRequestsEnabled,
+		WikiEnabled:       raw.WikiEnabled,
+		PagesEnabled:      raw.PagesAccessLevel != "disabled",
+		ForkCount:         raw.ForksCount,
+		StarCount:         raw.StarCount,
+		OpenIssues:        raw.OpenIssuesCount,
+		DefaultBranch:     raw.DefaultBranch,
+		License:           license,
+		LicenseFile:       license,
+		CommitCount:       commitCount,
+		IssuesCount:       issueStats.Statistics.Counts.All,
+		IssuesClosed:      issueStats.Statistics.Counts.Closed,
+		PRCount:           mrTotal,
+		PRsOpen:           mrOpen,
+		PRsClosed:         mrClosed,
+		PRsMerged:         mrMerged,
+		ChangelogFile:     community.Changelog,
+		ContributingFile:  community.Contributing,
+		CodeOfConductFile: community.CodeOfConduct,
+		SecurityIssueFile: community.Security,
+		Status:            status,
 		Origin: model.DataOrigin{
 			ToolSource: "aveloxis",
 			DataSource: "GitLab API",

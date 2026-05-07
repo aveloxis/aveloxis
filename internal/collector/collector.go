@@ -8,9 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // Collector orchestrates data collection for a single repository.
@@ -22,13 +22,13 @@ import (
 // The legacy path is kept for its one-shot CLI use case and will be
 // consolidated with staged in a later phase.
 type Collector struct {
-	client         platform.Client
-	store          *db.PostgresStore
-	resolver       *db.ContributorResolver
-	logger         *slog.Logger
-	platID         int16
-	facade         *FacadeCollector
-	ghKeys         *platform.KeyPool // for commit resolution (GitHub only)
+	client   platform.Client
+	store    *db.PostgresStore
+	resolver *db.ContributorResolver
+	logger   *slog.Logger
+	platID   int16
+	facade   *FacadeCollector
+	ghKeys   *platform.KeyPool // for commit resolution (GitHub only)
 }
 
 // New creates a collector for the given platform client and database store.

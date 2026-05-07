@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/importers"
+	"github.com/aveloxis/aveloxis/internal/importers"
 	"gopkg.in/yaml.v3"
 )
 

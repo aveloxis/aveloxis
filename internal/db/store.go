@@ -4,8 +4,8 @@ package db
 import (
 	"context"
 
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // Store is the interface for persisting collected data. All methods use
@@ -72,28 +72,28 @@ type Store interface {
 
 // CollectionState tracks per-phase status for a repo.
 type CollectionState struct {
-	RepoID                    int64
-	CoreStatus                string
-	CoreTaskID                string
-	CoreDataLastCollected     *string // RFC3339 timestamp or nil
-	CoreWeight                *int64
-	SecondaryStatus           string
-	SecondaryTaskID           string
+	RepoID                     int64
+	CoreStatus                 string
+	CoreTaskID                 string
+	CoreDataLastCollected      *string // RFC3339 timestamp or nil
+	CoreWeight                 *int64
+	SecondaryStatus            string
+	SecondaryTaskID            string
 	SecondaryDataLastCollected *string
-	SecondaryWeight           *int64
-	FacadeStatus              string
-	FacadeTaskID              string
-	FacadeDataLastCollected   *string
-	FacadeWeight              *int64
-	EventLastCollected        *string
-	IssuePRSum                *int64
-	CommitSum                 *int64
-	MLStatus                  string
-	MLTaskID                  string
-	MLDataLastCollected       *string
-	MLWeight                  *int64
+	SecondaryWeight            *int64
+	FacadeStatus               string
+	FacadeTaskID               string
+	FacadeDataLastCollected    *string
+	FacadeWeight               *int64
+	EventLastCollected         *string
+	IssuePRSum                 *int64
+	CommitSum                  *int64
+	MLStatus                   string
+	MLTaskID                   string
+	MLDataLastCollected        *string
+	MLWeight                   *int64
 }
 
 // Convenience aliases used by the collector.
-func (s *CollectionState) CoreLastCollected() *string   { return s.CoreDataLastCollected }
+func (s *CollectionState) CoreLastCollected() *string     { return s.CoreDataLastCollected }
 func (s *CollectionState) SetCoreLastCollected(v *string) { s.CoreDataLastCollected = v }

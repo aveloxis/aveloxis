@@ -24,8 +24,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // GapThreshold is the minimum gap percentage (gathered vs metadata) to trigger

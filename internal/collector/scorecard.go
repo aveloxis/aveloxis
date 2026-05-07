@@ -29,7 +29,7 @@ import (
 	"log/slog"
 	"os/exec"
 
-	"github.com/augurlabs/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // ScorecardResult holds the parsed output from the scorecard tool.
@@ -40,9 +40,9 @@ type ScorecardResult struct {
 
 // ScorecardCheck is a single scorecard check result.
 type ScorecardCheck struct {
-	Name    string `json:"name"`
-	Score   int    `json:"score"`
-	Reason  string `json:"reason"`
+	Name    string   `json:"name"`
+	Score   int      `json:"score"`
+	Reason  string   `json:"reason"`
 	Details []string `json:"details,omitempty"`
 }
 

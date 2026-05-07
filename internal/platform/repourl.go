@@ -6,12 +6,12 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 var (
-	ErrInvalidRepoURL   = errors.New("invalid repository URL")
-	ErrUnknownPlatform  = errors.New("cannot determine platform from URL")
+	ErrInvalidRepoURL  = errors.New("invalid repository URL")
+	ErrUnknownPlatform = errors.New("cannot determine platform from URL")
 )
 
 // RepoURL is a parsed repository URL with platform awareness.

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // TestEnrichContributorPopulatesAllFields verifies that EnrichContributor

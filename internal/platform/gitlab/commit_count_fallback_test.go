@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // captureHandler is a slog.Handler that appends every log record's message

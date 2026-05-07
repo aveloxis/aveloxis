@@ -3,7 +3,7 @@ package platform
 import (
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func TestParseRepoURL(t *testing.T) {

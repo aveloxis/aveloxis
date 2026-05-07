@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // ============================================================

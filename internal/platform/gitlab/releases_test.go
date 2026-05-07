@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // TestListReleases_404ReturnsErrNotFound — GitLab returns 404 for releases

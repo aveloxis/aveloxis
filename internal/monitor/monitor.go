@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/scheduler"
-	"github.com/augurlabs/aveloxis/internal/static"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/scheduler"
+	"github.com/aveloxis/aveloxis/internal/static"
 )
 
 // Dashboard pagination bounds. The default size keeps the rendered table
@@ -136,21 +136,21 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type jobView struct {
-		RepoID       int64   `json:"repo_id"`
-		Priority     int     `json:"priority"`
-		Status       string  `json:"status"`
-		DueAt        string  `json:"due_at"`
-		LockedBy     *string `json:"locked_by,omitempty"`
+		RepoID        int64   `json:"repo_id"`
+		Priority      int     `json:"priority"`
+		Status        string  `json:"status"`
+		DueAt         string  `json:"due_at"`
+		LockedBy      *string `json:"locked_by,omitempty"`
 		LastCollected *string `json:"last_collected,omitempty"`
-		LastError    *string `json:"last_error,omitempty"`
-		Issues       int     `json:"issues"`
-		PRs          int     `json:"pull_requests"`
-		Messages     int     `json:"messages"`
-		Events       int     `json:"events"`
-		Releases     int     `json:"releases"`
-		Contributors int     `json:"contributors"`
-		Commits      int     `json:"commits"`
-		DurationMs   int64   `json:"duration_ms"`
+		LastError     *string `json:"last_error,omitempty"`
+		Issues        int     `json:"issues"`
+		PRs           int     `json:"pull_requests"`
+		Messages      int     `json:"messages"`
+		Events        int     `json:"events"`
+		Releases      int     `json:"releases"`
+		Contributors  int     `json:"contributors"`
+		Commits       int     `json:"commits"`
+		DurationMs    int64   `json:"duration_ms"`
 	}
 
 	views := make([]jobView, 0, len(jobs))
@@ -228,16 +228,16 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// Look up repo details and stats for display.
 	type enrichedJob struct {
 		db.QueueJob
-		Owner          string
-		Repo           string
-		URL            string
-		Plat           string
-		GatheredPRs    int
-		GatheredIssues int
+		Owner           string
+		Repo            string
+		URL             string
+		Plat            string
+		GatheredPRs     int
+		GatheredIssues  int
 		GatheredCommits int
-		MetaPRs        int
-		MetaIssues     int
-		MetaCommits    int
+		MetaPRs         int
+		MetaIssues      int
+		MetaCommits     int
 	}
 
 	// Collect the page's repo IDs, then fetch repos and stats in two

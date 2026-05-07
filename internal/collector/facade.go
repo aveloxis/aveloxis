@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // FacadeCollector handles git clone/fetch + log parsing for commit data.
@@ -223,10 +223,10 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) e
 }
 
 // gitCloneEnv returns environment variables for git clone commands:
-// - GIT_LFS_SKIP_SMUDGE=1: prevents LFS smudge filter failures when remote
-//   objects are missing (common with free GitHub LFS quota).
-// - GIT_TERMINAL_PROMPT=0: prevents macOS keychain prompts
-//   (errSecInteractionNotAllowed) when running as a background process.
+//   - GIT_LFS_SKIP_SMUDGE=1: prevents LFS smudge filter failures when remote
+//     objects are missing (common with free GitHub LFS quota).
+//   - GIT_TERMINAL_PROMPT=0: prevents macOS keychain prompts
+//     (errSecInteractionNotAllowed) when running as a background process.
 func gitCloneEnv() []string {
 	env := os.Environ()
 	env = append(env, "GIT_LFS_SKIP_SMUDGE=1", "GIT_TERMINAL_PROMPT=0")

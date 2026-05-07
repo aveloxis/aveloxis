@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // Force-recollect (v0.18.24): scheduler-side contract for the flag that

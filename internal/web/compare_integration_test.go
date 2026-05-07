@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/config"
-	"github.com/augurlabs/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/config"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // This file implements recommendation #1 from the compare-autocomplete

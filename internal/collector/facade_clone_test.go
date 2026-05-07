@@ -18,11 +18,11 @@ func TestCloneOriginURL_Extraction(t *testing.T) {
 	filemode = true
 	bare = true
 [remote "origin"]
-	url = https://github.com/augurlabs/augur.git
+	url = https://github.com/aveloxis/augur.git
 	fetch = +refs/*:refs/*
 `
 	url := parseOriginURL(cfg)
-	if url != "https://github.com/augurlabs/augur.git" {
+	if url != "https://github.com/aveloxis/augur.git" {
 		t.Errorf("parseOriginURL = %q, want augur URL", url)
 	}
 }
@@ -52,7 +52,7 @@ func TestNormalizeCloneURL_Matches(t *testing.T) {
 		{"https://github.com/org/repo.git", "https://github.com/org/repo.git", true},
 		{"https://github.com/Org/Repo.git", "https://github.com/org/repo", true},
 		{"https://github.com/org/repo", "https://github.com/other/repo", false},
-		{"https://github.com/augurlabs/augur.git", "https://github.com/aveloxis/OCDX-Specification.git", false},
+		{"https://github.com/aveloxis/augur.git", "https://github.com/aveloxis/OCDX-Specification.git", false},
 	}
 	for _, tt := range tests {
 		got := normalizeCloneURL(tt.a) == normalizeCloneURL(tt.b)

@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // seedRealignRepo creates a single repo with a unique slug and returns its

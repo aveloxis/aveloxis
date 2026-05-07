@@ -7,7 +7,7 @@ import (
 	"iter"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // Client is the top-level interface every forge must implement.
@@ -248,9 +248,9 @@ type ContributorCollector interface {
 
 // MessageWithRef pairs a message with its parent reference (issue or PR).
 type MessageWithRef struct {
-	Message    model.Message
-	IssueRef   *model.IssueMessageRef
-	PRRef      *model.PullRequestMessageRef
+	Message  model.Message
+	IssueRef *model.IssueMessageRef
+	PRRef    *model.PullRequestMessageRef
 }
 
 // ReviewCommentWithRef pairs a review comment with its message.

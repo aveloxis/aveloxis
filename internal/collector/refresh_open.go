@@ -20,8 +20,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // OpenItemRefresher re-fetches open issues and PRs to capture state changes.

@@ -7,7 +7,8 @@
 // working copy is immediately deleted to minimize disk usage.
 //
 // Design: bare clones (permanent, small) for git log/commits.
-//         full clones (temporary, on-demand) for file analysis.
+//
+//	full clones (temporary, on-demand) for file analysis.
 package collector
 
 import (
@@ -23,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // AnalysisCollector runs file-content analysis on repos.
@@ -144,20 +145,20 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 
 // manifestFiles maps filename patterns to their language/ecosystem.
 var manifestFiles = map[string]string{
-	"package.json":    "JavaScript",
-	"yarn.lock":       "JavaScript",
-	"requirements.txt": "Python",
-	"setup.py":        "Python",
-	"setup.cfg":       "Python",
-	"pyproject.toml":  "Python",
-	"Pipfile":         "Python",
-	"poetry.lock":     "Python",
-	"go.mod":          "Go",
-	"go.sum":          "Go",
-	"Cargo.toml":      "Rust",
-	"Cargo.lock":      "Rust",
-	"Gemfile":         "Ruby",
-	"Gemfile.lock":    "Ruby",
+	"package.json":             "JavaScript",
+	"yarn.lock":                "JavaScript",
+	"requirements.txt":         "Python",
+	"setup.py":                 "Python",
+	"setup.cfg":                "Python",
+	"pyproject.toml":           "Python",
+	"Pipfile":                  "Python",
+	"poetry.lock":              "Python",
+	"go.mod":                   "Go",
+	"go.sum":                   "Go",
+	"Cargo.toml":               "Rust",
+	"Cargo.lock":               "Rust",
+	"Gemfile":                  "Ruby",
+	"Gemfile.lock":             "Ruby",
 	"pom.xml":                  "Java",
 	"build.gradle":             "Java",
 	"build.gradle.kts":         "Java",
@@ -1201,11 +1202,11 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 }
 
 type libyearDep struct {
-	Name       string
-	Version    string
+	Name        string
+	Version     string
 	Requirement string
-	Type       string // "runtime", "dev"
-	Manager    string // "npm", "pypi"
+	Type        string // "runtime", "dev"
+	Manager     string // "npm", "pypi"
 }
 
 func parsePackageJSONVersions(path string) ([]libyearDep, error) {
@@ -1583,7 +1584,9 @@ func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, erro
 		var curOut bytes.Buffer
 		curCmd.Stdout = &curOut
 		if err := curCmd.Run(); err == nil {
-			var curInfo struct{ Time string `json:"Time"` }
+			var curInfo struct {
+				Time string `json:"Time"`
+			}
 			json.Unmarshal(curOut.Bytes(), &curInfo)
 			currentDate = curInfo.Time
 		}
@@ -2001,11 +2004,11 @@ func parseBuildGradleVersions(content string) []libyearDep {
 						depType = "dev"
 					}
 					deps = append(deps, libyearDep{
-						Name:       name,
-						Version:    version,
+						Name:        name,
+						Version:     version,
 						Requirement: coord,
-						Type:       depType,
-						Manager:    "maven",
+						Type:        depType,
+						Manager:     "maven",
 					})
 				}
 				break
@@ -2449,8 +2452,8 @@ func resolvePackagistLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRo
 	}
 	var info struct {
 		Packages map[string][]struct {
-			Version string `json:"version"`
-			Time    string `json:"time"`
+			Version string   `json:"version"`
+			Time    string   `json:"time"`
 			License []string `json:"license"`
 		} `json:"packages"`
 	}
@@ -2501,7 +2504,7 @@ func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 	}
 	var info struct {
 		Releases []struct {
-			Version   string `json:"version"`
+			Version    string `json:"version"`
 			InsertedAt string `json:"inserted_at"`
 		} `json:"releases"`
 		Meta struct {
@@ -2558,8 +2561,8 @@ func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 			Upper string `json:"upper"`
 			Items []struct {
 				CatalogEntry struct {
-					Version   string `json:"version"`
-					Published string `json:"published"`
+					Version           string `json:"version"`
+					Published         string `json:"published"`
 					LicenseExpression string `json:"licenseExpression"`
 				} `json:"catalogEntry"`
 			} `json:"items"`
@@ -2685,7 +2688,7 @@ func resolvePubDevLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, 
 	}
 	var info struct {
 		Latest struct {
-			Version string `json:"version"`
+			Version   string `json:"version"`
 			Published string `json:"published"`
 		} `json:"latest"`
 		Versions []struct {
@@ -2860,15 +2863,15 @@ func resolveSwiftPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 
 	return &db.LibyearRow{
-		Name:               dep.Name,
-		Requirement:        dep.Requirement,
-		Type:               dep.Type,
-		PackageManager:     "swiftpm",
-		CurrentVersion:     dep.Version,
-		LatestVersion:      latestVersion,
-		LatestReleaseDate:  release.PublishedAt,
-		Libyear:            0, // No current release date without per-tag API call.
-		Purl:               fmt.Sprintf("pkg:swift/%s/%s@%s", owner, repo, dep.Version),
+		Name:              dep.Name,
+		Requirement:       dep.Requirement,
+		Type:              dep.Type,
+		PackageManager:    "swiftpm",
+		CurrentVersion:    dep.Version,
+		LatestVersion:     latestVersion,
+		LatestReleaseDate: release.PublishedAt,
+		Libyear:           0, // No current release date without per-tag API call.
+		Purl:              fmt.Sprintf("pkg:swift/%s/%s@%s", owner, repo, dep.Version),
 	}, nil
 }
 

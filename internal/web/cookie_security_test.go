@@ -3,7 +3,7 @@ package web
 import (
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/config"
+	"github.com/aveloxis/aveloxis/internal/config"
 )
 
 // TestSessionCookie_SecureByDefault verifies that in production mode (default),

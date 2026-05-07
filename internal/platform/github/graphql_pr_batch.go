@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // StagedPR is a package-local alias for platform.StagedPR so existing
@@ -212,7 +212,7 @@ const prNodeFragment = `
       # the *Name and *Oid scalars are frozen at PR-open time and live forever.
       # Without this distinction, meta rows (and by extension repo rows, which
       # require a meta_id) were missing for ~65% of PRs in phase 1's first
-      # equivalence run against augurlabs/augur.
+      # equivalence run against aveloxis/augur.
       headRefName
       headRefOid
       baseRefName
@@ -257,13 +257,13 @@ type prBatchPRNode struct {
 
 	Author *prBatchUser `json:"author"`
 
-	Labels         prBatchLabels      `json:"labels"`
-	Assignees      prBatchUserConn    `json:"assignees"`
-	ReviewRequests prBatchReviewReqs  `json:"reviewRequests"`
-	Reviews        prBatchReviews     `json:"reviews"`
-	Commits        prBatchCommits     `json:"commits"`
-	Files          prBatchFiles       `json:"files"`
-	Comments       prBatchComments    `json:"comments"`
+	Labels         prBatchLabels     `json:"labels"`
+	Assignees      prBatchUserConn   `json:"assignees"`
+	ReviewRequests prBatchReviewReqs `json:"reviewRequests"`
+	Reviews        prBatchReviews    `json:"reviews"`
+	Commits        prBatchCommits    `json:"commits"`
+	Files          prBatchFiles      `json:"files"`
+	Comments       prBatchComments   `json:"comments"`
 
 	// Persistent scalar fields — see prNodeFragment comment. Always
 	// populated from GitHub as long as the PR exists, even after the
@@ -370,7 +370,6 @@ type prBatchComments struct {
 	} `json:"nodes"`
 	PageInfo prBatchPageInfo `json:"pageInfo"`
 }
-
 
 type prBatchCommits struct {
 	Nodes []struct {
@@ -599,7 +598,6 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 
 	return staged
 }
-
 
 // mapPRState turns GraphQL's state enum (OPEN/CLOSED/MERGED) into the
 // lowercase string the existing schema stores. MERGED dominates CLOSED
@@ -1044,4 +1042,3 @@ func (c *Client) paginatePRComments(ctx context.Context, owner, repo string, num
 		cursor = pi.EndCursor
 	}
 }
-

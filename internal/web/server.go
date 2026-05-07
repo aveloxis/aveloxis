@@ -19,27 +19,27 @@ import (
 	"sync"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/collector"
-	"github.com/augurlabs/aveloxis/internal/config"
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
-	"github.com/augurlabs/aveloxis/internal/static"
+	"github.com/aveloxis/aveloxis/internal/collector"
+	"github.com/aveloxis/aveloxis/internal/config"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/static"
 	"golang.org/x/oauth2"
 )
 
 // Server is the web GUI server.
 type Server struct {
-	store    *db.PostgresStore
-	cfg      config.WebConfig
-	logger   *slog.Logger
-	ghOAuth  *oauth2.Config
-	glOAuth  *oauth2.Config
+	store     *db.PostgresStore
+	cfg       config.WebConfig
+	logger    *slog.Logger
+	ghOAuth   *oauth2.Config
+	glOAuth   *oauth2.Config
 	ghKeys    *platform.KeyPool // for immediate org scanning
 	sessionMu sync.RWMutex
 	sessions  map[string]*Session // session token -> session
-	tmpl     *template.Template
-	apiProxy http.Handler // reverse proxy for /api/* → cfg.APIInternalURL; nil on parse failure
+	tmpl      *template.Template
+	apiProxy  http.Handler // reverse proxy for /api/* → cfg.APIInternalURL; nil on parse failure
 }
 
 // Session tracks a logged-in user.
@@ -699,7 +699,9 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 			var items []struct {
 				HTMLURL string `json:"html_url"`
 				Name    string `json:"name"`
-				Owner   struct{ Login string `json:"login"` } `json:"owner"`
+				Owner   struct {
+					Login string `json:"login"`
+				} `json:"owner"`
 			}
 			json.NewDecoder(resp.Body).Decode(&items)
 			resp.Body.Close()

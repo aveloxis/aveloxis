@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/importers"
+	"github.com/aveloxis/aveloxis/internal/importers"
 )
 
 // Project is re-exported for caller convenience.

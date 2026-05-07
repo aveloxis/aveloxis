@@ -16,8 +16,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // BreadthWorker discovers cross-repo activity for contributors.
@@ -136,13 +136,13 @@ func (bw *BreadthWorker) processContributor(ctx context.Context, c db.BreadthCon
 			}
 
 			err := bw.store.InsertContributorRepo(ctx, &db.ContributorRepoRow{
-				CntrbID:      c.ID,
-				RepoGit:      event.Repo.URL,
-				RepoName:     event.Repo.Name,
-				GHRepoID:     event.Repo.ID,
-				Category:     event.Type,
-				EventID:      event.ID,
-				CreatedAt:    eventTime,
+				CntrbID:   c.ID,
+				RepoGit:   event.Repo.URL,
+				RepoName:  event.Repo.Name,
+				GHRepoID:  event.Repo.ID,
+				Category:  event.Type,
+				EventID:   event.ID,
+				CreatedAt: eventTime,
 			})
 			if err != nil {
 				// Duplicate events are expected (ON CONFLICT DO NOTHING).
@@ -159,9 +159,9 @@ func (bw *BreadthWorker) processContributor(ctx context.Context, c db.BreadthCon
 
 // ghUserEvent is a GitHub user event from GET /users/{login}/events.
 type ghUserEvent struct {
-	ID        int64  `json:"id,string"`
-	Type      string `json:"type"` // PushEvent, PullRequestEvent, IssuesEvent, etc.
-	Repo      struct {
+	ID   int64  `json:"id,string"`
+	Type string `json:"type"` // PushEvent, PullRequestEvent, IssuesEvent, etc.
+	Repo struct {
 		ID   int64  `json:"id"`
 		Name string `json:"name"` // "owner/repo"
 		URL  string `json:"url"`  // "https://api.github.com/repos/owner/repo"

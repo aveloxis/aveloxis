@@ -20,26 +20,26 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/collector"
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/collector"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // Config configures the scheduler.
 type Config struct {
-	Workers          int           // concurrent collection goroutines (default 1)
-	PollInterval     time.Duration // how often to check for due jobs (default 10s)
-	RecollectAfter   time.Duration // how long before re-collecting a repo (default 24h)
-	StaleLockTimeout time.Duration // how long before reclaiming a locked job (default 1h)
-	RepoCloneDir         string        // directory for bare git clones (can be terabytes)
-	OrgRefreshInterval   time.Duration // how often to re-scan orgs for new/renamed repos (default 4h)
-	MatviewRebuildDay    int           // day of week for matview rebuild (0=Sun..6=Sat, -1=disabled)
-	ForceFullCollection  bool          // when true, all collections use since=zero (full re-collection)
-	PRChildMode          string        // "rest" (default) or "graphql" — routes PR child fetch through FetchPRBatch
-	ListingMode          string        // "rest" (default) or "graphql" — routes issue+PR listing through ListIssuesAndPRs
-	ThreadingMode        string        // "single" (default) or "sharded" — fans out PR batch fetching across goroutines
-	ShardSize            int           // item-count threshold for spawning an additional shard (default 3000)
+	Workers             int           // concurrent collection goroutines (default 1)
+	PollInterval        time.Duration // how often to check for due jobs (default 10s)
+	RecollectAfter      time.Duration // how long before re-collecting a repo (default 24h)
+	StaleLockTimeout    time.Duration // how long before reclaiming a locked job (default 1h)
+	RepoCloneDir        string        // directory for bare git clones (can be terabytes)
+	OrgRefreshInterval  time.Duration // how often to re-scan orgs for new/renamed repos (default 4h)
+	MatviewRebuildDay   int           // day of week for matview rebuild (0=Sun..6=Sat, -1=disabled)
+	ForceFullCollection bool          // when true, all collections use since=zero (full re-collection)
+	PRChildMode         string        // "rest" (default) or "graphql" — routes PR child fetch through FetchPRBatch
+	ListingMode         string        // "rest" (default) or "graphql" — routes issue+PR listing through ListIssuesAndPRs
+	ThreadingMode       string        // "single" (default) or "sharded" — fans out PR batch fetching across goroutines
+	ShardSize           int           // item-count threshold for spawning an additional shard (default 3000)
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -1162,7 +1162,9 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context) {
 					var items []struct {
 						HTMLURL string `json:"html_url"`
 						Name    string `json:"name"`
-						Owner   struct{ Login string `json:"login"` } `json:"owner"`
+						Owner   struct {
+							Login string `json:"login"`
+						} `json:"owner"`
 					}
 					if decErr := json.NewDecoder(resp.Body).Decode(&items); decErr != nil {
 						s.logger.Warn("failed to decode org repos response", "path", path, "error", decErr)

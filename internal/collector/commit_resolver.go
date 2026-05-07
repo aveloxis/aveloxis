@@ -14,10 +14,10 @@
 //  4. GitHub Search API — search/users?q=email (for non-noreply emails)
 //
 // The resolver also:
-//  - Backfills all gh_* columns on the contributor row
-//  - Handles login renames (same gh_user_id, different login)
-//  - Creates contributor aliases for commit emails
-//  - Uses deterministic GithubUUID for contributor IDs (Augur-compatible)
+//   - Backfills all gh_* columns on the contributor row
+//   - Handles login renames (same gh_user_id, different login)
+//   - Creates contributor aliases for commit emails
+//   - Uses deterministic GithubUUID for contributor IDs (Augur-compatible)
 package collector
 
 import (
@@ -29,8 +29,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // CommitResolver resolves commit authors to platform users.
@@ -299,21 +299,21 @@ type ghCommitAuthor struct {
 	UserID int64
 	NodeID string
 	// All the gh_* profile fields.
-	AvatarURL        string
-	HTMLURL          string
-	GravatarID       string
-	URL              string
-	FollowersURL     string
-	FollowingURL     string
-	GistsURL         string
-	StarredURL       string
-	SubscriptionsURL string
-	OrganizationsURL string
-	ReposURL         string
-	EventsURL        string
+	AvatarURL         string
+	HTMLURL           string
+	GravatarID        string
+	URL               string
+	FollowersURL      string
+	FollowingURL      string
+	GistsURL          string
+	StarredURL        string
+	SubscriptionsURL  string
+	OrganizationsURL  string
+	ReposURL          string
+	EventsURL         string
 	ReceivedEventsURL string
-	Type             string
-	SiteAdmin        bool
+	Type              string
+	SiteAdmin         bool
 	// From commit.author (git-level).
 	Name  string
 	Email string

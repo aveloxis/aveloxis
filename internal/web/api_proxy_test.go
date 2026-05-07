@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/config"
+	"github.com/aveloxis/aveloxis/internal/config"
 )
 
 // TestTemplatesHaveNoHardcodedLocalhostAPI regresses the root cause of the
@@ -61,7 +61,7 @@ func TestAPIProxyForwardsToInternalURL(t *testing.T) {
 		gotPath = r.URL.Path
 		gotQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"id":42,"owner":"augurlabs","name":"aveloxis"}]`))
+		w.Write([]byte(`[{"id":42,"owner":"aveloxis","name":"aveloxis"}]`))
 	}))
 	defer fakeAPI.Close()
 
@@ -86,7 +86,7 @@ func TestAPIProxyForwardsToInternalURL(t *testing.T) {
 		t.Fatalf("authenticated proxy request: got %d, want 200. body=%q", w.Code, w.Body.String())
 	}
 	body, _ := io.ReadAll(w.Body)
-	if !strings.Contains(string(body), "augurlabs") {
+	if !strings.Contains(string(body), "aveloxis") {
 		t.Errorf("upstream response not forwarded: body=%q", body)
 	}
 	if gotPath != "/api/v1/repos/search" {

@@ -3,8 +3,8 @@ package collector
 import (
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // fakeClient is a minimal implementation of platform.Client for testing

@@ -13,8 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // PostgresStore implements Store using pgx connection pool.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // ListIssuesAndPRs is GitLab's implementation of phase 2's unified

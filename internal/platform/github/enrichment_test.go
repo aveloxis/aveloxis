@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // testGHClient creates a GitHub client pointed at a test HTTP server.

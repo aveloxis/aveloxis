@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // TestGapFillFetchErrorsAreClassified verifies that the per-item fetch in
@@ -65,14 +65,14 @@ func TestGapFillFetchErrorsAreClassified(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(haystack, "isOptionalEndpointSkip") {
-			t.Errorf("%s (or its helper) must classify per-item fetch errors with " +
-				"isOptionalEndpointSkip — silently `continue`-ing on every " +
-				"error hides rate limits and turns a partial outage into a " +
+			t.Errorf("%s (or its helper) must classify per-item fetch errors with "+
+				"isOptionalEndpointSkip — silently `continue`-ing on every "+
+				"error hides rate limits and turns a partial outage into a "+
 				"permanent silent gap.", fn)
 		}
 		// Non-skippable errors should surface at WARN, not Debug only.
 		if !strings.Contains(haystack, "Warn") && !strings.Contains(haystack, "Error") {
-			t.Errorf("%s (or its helper): non-skippable fetch errors must log at WARN/ERROR " +
+			t.Errorf("%s (or its helper): non-skippable fetch errors must log at WARN/ERROR "+
 				"so on-call sees rate-limit pressure", fn)
 		}
 	}

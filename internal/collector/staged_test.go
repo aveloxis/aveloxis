@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func TestEntityTypeConstants(t *testing.T) {

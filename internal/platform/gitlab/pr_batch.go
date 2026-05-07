@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // FetchPRBatch is GitLab's implementation of platform.Client.FetchPRBatch.

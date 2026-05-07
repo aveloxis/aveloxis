@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // ListIssuesAndPRs enumerates issues and PRs via two paginated GraphQL
@@ -184,7 +184,7 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
 					Message: msg,
 					IssueRef: &model.IssueMessageRef{
 						PlatformSrcID:       cm.DatabaseID,
-						PlatformNodeID:     cm.ID,
+						PlatformNodeID:      cm.ID,
 						PlatformIssueNumber: n.Number,
 					},
 				})
@@ -264,7 +264,7 @@ func (c *Client) paginateIssueComments(ctx context.Context, owner, repo string, 
 				Message: msg,
 				IssueRef: &model.IssueMessageRef{
 					PlatformSrcID:       cm.DatabaseID,
-					PlatformNodeID:     cm.ID,
+					PlatformNodeID:      cm.ID,
 					PlatformIssueNumber: issueNumber,
 				},
 			})
@@ -314,19 +314,19 @@ func (c *Client) listPullRequestsGraphQL(ctx context.Context, owner, repo string
 			Repository struct {
 				PullRequests struct {
 					Nodes []struct {
-						DatabaseID        int64        `json:"databaseId"`
-						ID                string       `json:"id"`
-						Number            int          `json:"number"`
-						Title             string       `json:"title"`
-						Body              string       `json:"body"`
-						State             string       `json:"state"`
-						Locked            bool         `json:"locked"`
-						URL               string       `json:"url"`
-						CreatedAt         time.Time    `json:"createdAt"`
-						UpdatedAt         time.Time    `json:"updatedAt"`
-						ClosedAt          *time.Time   `json:"closedAt"`
-						MergedAt          *time.Time   `json:"mergedAt"`
-						AuthorAssociation string       `json:"authorAssociation"`
+						DatabaseID        int64      `json:"databaseId"`
+						ID                string     `json:"id"`
+						Number            int        `json:"number"`
+						Title             string     `json:"title"`
+						Body              string     `json:"body"`
+						State             string     `json:"state"`
+						Locked            bool       `json:"locked"`
+						URL               string     `json:"url"`
+						CreatedAt         time.Time  `json:"createdAt"`
+						UpdatedAt         time.Time  `json:"updatedAt"`
+						ClosedAt          *time.Time `json:"closedAt"`
+						MergedAt          *time.Time `json:"mergedAt"`
+						AuthorAssociation string     `json:"authorAssociation"`
 						MergeCommit       *struct {
 							OID string `json:"oid"`
 						} `json:"mergeCommit"`

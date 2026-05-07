@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/google/uuid"
 )
 
@@ -60,13 +60,13 @@ func GenerateSBOM(ctx context.Context, store *db.PostgresStore, repoID int64, fo
 // ============================================================
 
 type cycloneDX struct {
-	BOMFormat    string            `json:"bomFormat"`
-	SpecVersion  string            `json:"specVersion"`
-	SerialNumber string            `json:"serialNumber"`
-	Version      int               `json:"version"`
-	Metadata     cdxMetadata       `json:"metadata"`
-	Components   []cdxComponent    `json:"components"`
-	Dependencies []cdxDependency   `json:"dependencies,omitempty"`
+	BOMFormat    string          `json:"bomFormat"`
+	SpecVersion  string          `json:"specVersion"`
+	SerialNumber string          `json:"serialNumber"`
+	Version      int             `json:"version"`
+	Metadata     cdxMetadata     `json:"metadata"`
+	Components   []cdxComponent  `json:"components"`
+	Dependencies []cdxDependency `json:"dependencies,omitempty"`
 }
 
 type cdxMetadata struct {
@@ -110,7 +110,7 @@ type cdxLicense struct {
 // cdxEvidence holds CycloneDX 1.5 evidence for concluded (detected) data.
 // Used to distinguish source-code-detected licenses from registry-declared ones.
 type cdxEvidence struct {
-	Licenses  []cdxLicense          `json:"licenses,omitempty"`
+	Licenses  []cdxLicense           `json:"licenses,omitempty"`
 	Copyright []cdxCopyrightEvidence `json:"copyright,omitempty"`
 }
 

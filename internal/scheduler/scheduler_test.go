@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/collector"
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/collector"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // TestSchedulerSourceHasImmediateFirstPoll verifies the scheduler doesn't wait

@@ -9,9 +9,9 @@
 //  2. If the final URL differs from the stored URL (redirect followed):
 //     a. Checks if we already have a repo entry for the NEW URL.
 //     b. If yes: marks the OLD repo as archived/duplicate and removes it
-//        from the queue. We're already collecting on the canonical URL.
+//     from the queue. We're already collecting on the canonical URL.
 //     c. If no: updates the OLD repo's URL to the new canonical URL so
-//        future collection uses the correct URL.
+//     future collection uses the correct URL.
 package collector
 
 import (
@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // PrelimResult describes what the prelim phase found.

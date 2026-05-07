@@ -3,10 +3,11 @@
 // The web GUI and monitoring dashboard call this API for repo statistics.
 //
 // Endpoints:
-//   GET /api/v1/repos/{repoID}/stats    — gathered vs metadata counts for one repo
-//   GET /api/v1/repos/stats?ids=1,2,3   — batch stats for multiple repos
-//   GET /api/v1/repos/{repoID}/sbom?format=cyclonedx|spdx — download SBOM
-//   GET /api/v1/health                   — health check
+//
+//	GET /api/v1/repos/{repoID}/stats    — gathered vs metadata counts for one repo
+//	GET /api/v1/repos/stats?ids=1,2,3   — batch stats for multiple repos
+//	GET /api/v1/repos/{repoID}/sbom?format=cyclonedx|spdx — download SBOM
+//	GET /api/v1/health                   — health check
 package api
 
 import (
@@ -18,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/collector"
-	"github.com/augurlabs/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/collector"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // Server is the Aveloxis REST API server.
@@ -230,7 +231,7 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 
 	resp := struct {
 		Licenses   []db.ScancodeSourceLicense   `json:"licenses"`
-		Copyrights []db.ScancodeSourceCopyright  `json:"copyrights"`
+		Copyrights []db.ScancodeSourceCopyright `json:"copyrights"`
 	}{
 		Licenses:   licenses,
 		Copyrights: copyrights,

@@ -38,7 +38,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // scancodeSem limits concurrent ScanCode invocations across all scheduler
@@ -64,17 +64,17 @@ type ScancodeResult struct {
 
 // ScancodeFileResult holds per-file findings from ScanCode.
 type ScancodeFileResult struct {
-	Path                             string
-	FileType                         string
-	ProgrammingLanguage              string
-	DetectedLicenseExpression        string
-	DetectedLicenseExpressionSPDX    string
-	PercentageOfLicenseText          float64
-	Copyrights                       json.RawMessage // JSONB array of {copyright, start_line, end_line}
-	Holders                          json.RawMessage // JSONB array of {holder, start_line, end_line}
-	LicenseDetections                json.RawMessage // JSONB array of detection details
-	PackageData                      json.RawMessage // JSONB array of package metadata
-	ScanErrors                       json.RawMessage // JSONB array of error strings
+	Path                          string
+	FileType                      string
+	ProgrammingLanguage           string
+	DetectedLicenseExpression     string
+	DetectedLicenseExpressionSPDX string
+	PercentageOfLicenseText       float64
+	Copyrights                    json.RawMessage // JSONB array of {copyright, start_line, end_line}
+	Holders                       json.RawMessage // JSONB array of {holder, start_line, end_line}
+	LicenseDetections             json.RawMessage // JSONB array of detection details
+	PackageData                   json.RawMessage // JSONB array of package metadata
+	ScanErrors                    json.RawMessage // JSONB array of error strings
 }
 
 // RunScanCode executes ScanCode Toolkit against a local checkout and stores

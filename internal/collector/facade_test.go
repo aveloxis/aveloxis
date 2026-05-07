@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func TestParseCommitHeader_ValidLine(t *testing.T) {

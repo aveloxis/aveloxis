@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/scheduler"
+	"github.com/aveloxis/aveloxis/internal/scheduler"
 )
 
 func mustReadMonitorSource(t *testing.T) string {
@@ -39,7 +39,7 @@ func TestRenderMatviewBannerWhenActive(t *testing.T) {
 	mustContain := []string{"materialized view", "rebuild"}
 	for _, term := range mustContain {
 		if !strings.Contains(lowered, term) {
-			t.Errorf("banner must mention %q so operators understand why " +
+			t.Errorf("banner must mention %q so operators understand why "+
 				"collection is paused; got: %s", term, out)
 		}
 	}

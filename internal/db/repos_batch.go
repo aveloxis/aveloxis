@@ -3,7 +3,7 @@ package db
 import (
 	"context"
 
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // GetReposBatch returns the repos for a slice of IDs in a single round-trip.

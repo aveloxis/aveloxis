@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/augurlabs/aveloxis/internal/model"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // Client implements platform.Client for GitHub.
@@ -1014,35 +1014,72 @@ type graphQLRepo struct {
 	IsDisabled       bool      `json:"isDisabled"`
 	ForkCount        int       `json:"forkCount"`
 	StargazerCount   int       `json:"stargazerCount"`
-	Watchers         struct{ TotalCount int `json:"totalCount"` } `json:"watchers"`
-	OpenIssues       struct{ TotalCount int `json:"totalCount"` } `json:"openIssues"`
-	TotalIssues      struct{ TotalCount int `json:"totalCount"` } `json:"totalIssues"`
-	ClosedIssues     struct{ TotalCount int `json:"totalCount"` } `json:"closedIssues"`
-	OpenPRs          struct{ TotalCount int `json:"totalCount"` } `json:"openPRs"`
-	TotalPRs         struct{ TotalCount int `json:"totalCount"` } `json:"totalPRs"`
-	ClosedPRs        struct{ TotalCount int `json:"totalCount"` } `json:"closedPRs"`
-	MergedPRs        struct{ TotalCount int `json:"totalCount"` } `json:"mergedPRs"`
+	Watchers         struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"watchers"`
+	OpenIssues struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"openIssues"`
+	TotalIssues struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"totalIssues"`
+	ClosedIssues struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"closedIssues"`
+	OpenPRs struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"openPRs"`
+	TotalPRs struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"totalPRs"`
+	ClosedPRs struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"closedPRs"`
+	MergedPRs struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"mergedPRs"`
 	DefaultBranchRef *struct {
 		Name   string `json:"name"`
 		Target struct {
-			History struct{ TotalCount int `json:"totalCount"` } `json:"history"`
+			History struct {
+				TotalCount int `json:"totalCount"`
+			} `json:"history"`
 		} `json:"target"`
 	} `json:"defaultBranchRef"`
-	LicenseInfo    *struct{ Name string `json:"name"`; SpdxId string `json:"spdxId"` } `json:"licenseInfo"`
-	CodeOfConduct  *struct{ Name string `json:"name"` } `json:"codeOfConduct"`
-	Contributing   *struct{ Text string `json:"text"` } `json:"contributing"`
-	Changelog      *struct{ Text string `json:"text"` } `json:"changelog"`
-	SecurityPolicy *struct{ Text string `json:"text"` } `json:"securityPolicy"`
+	LicenseInfo *struct {
+		Name   string `json:"name"`
+		SpdxId string `json:"spdxId"`
+	} `json:"licenseInfo"`
+	CodeOfConduct *struct {
+		Name string `json:"name"`
+	} `json:"codeOfConduct"`
+	Contributing *struct {
+		Text string `json:"text"`
+	} `json:"contributing"`
+	Changelog *struct {
+		Text string `json:"text"`
+	} `json:"changelog"`
+	SecurityPolicy *struct {
+		Text string `json:"text"`
+	} `json:"securityPolicy"`
 }
 
-func filePresent(obj *struct{ Text string `json:"text"` }) string {
-	if obj != nil { return "present" }
+func filePresent(obj *struct {
+	Text string `json:"text"`
+}) string {
+	if obj != nil {
+		return "present"
+	}
 	return ""
 }
 
 func statusStr(archived, disabled bool) string {
-	if disabled { return "Disabled" }
-	if archived { return "Archived" }
+	if disabled {
+		return "Disabled"
+	}
+	if archived {
+		return "Archived"
+	}
 	return "Active"
 }
 

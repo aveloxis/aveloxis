@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/augurlabs/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // TestGetReposBatchUsesArrayParam enforces that the batch lookup runs as a

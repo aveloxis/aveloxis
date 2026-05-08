@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"log/slog"
 )
@@ -13,17 +14,37 @@ var schemaSQL string
 // RunMigrations executes the embedded schema DDL and data cleanup fixes.
 // All statements use IF NOT EXISTS / ON CONFLICT DO NOTHING, so it is safe
 // to run repeatedly.
+//
+// Error semantics (v0.19.4): every schema-changing step routes through
+// execMigrationStep or addColumnIfMissing, both of which log at ERROR
+// and append the error to a collector. The function returns
+// errors.Join of every collected error so `aveloxis serve` and
+// `aveloxis migrate` print the FULL list of failures and exit
+// non-zero — operators can fix everything in one pass instead of
+// chasing failures one at a time. Materialized view rebuild and
+// pg_trgm extension creation remain warn-only (they're derived
+// data / performance optimizations, not schema integrity).
 func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
 	logger.Info("running schema migrations")
-	_, err := pg.pool.Exec(ctx, schemaSQL)
-	if err != nil {
-		return fmt.Errorf("schema migration failed: %w", err)
+
+	// errs collects every schema-integrity failure across the run. We
+	// fail closed: serve refuses to start when this slice is non-empty
+	// at the end, even if individual steps wrote successfully.
+	var errs []error
+
+	if _, err := pg.pool.Exec(ctx, schemaSQL); err != nil {
+		// The base DDL block is the foundation — if it fails, every
+		// subsequent step is operating against an unknown schema. We
+		// still keep going to surface as many follow-up errors as
+		// possible, but record this one first.
+		logger.Error("schema migration error", "step", "base schema DDL", "error", err)
+		errs = append(errs, fmt.Errorf("base schema DDL: %w", err))
 	}
 
 	// Run data cleanup for any garbage timestamps from prior versions.
 	if err := cleanupBadTimestamps(ctx, pg, logger); err != nil {
-		logger.Warn("timestamp cleanup had errors", "error", err)
-		// Non-fatal — don't block startup.
+		logger.Error("schema migration error", "step", "cleanupBadTimestamps", "error", err)
+		errs = append(errs, fmt.Errorf("cleanupBadTimestamps: %w", err))
 	}
 
 	// Set tool_version column defaults to the current version so new inserts
@@ -35,32 +56,36 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	backfillToolVersion(ctx, pg, logger)
 
 	// Add columns that may not exist on older schemas.
-	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_deps_libyear", "license", "TEXT DEFAULT ''")
-	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_deps_libyear", "purl", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_libyear", "license", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_libyear", "purl", "TEXT DEFAULT ''")
 
 	// Relax users.email constraint for OAuth users who may not have a public email.
-	pg.pool.Exec(ctx, `ALTER TABLE aveloxis_ops.users ALTER COLUMN email DROP NOT NULL`)
-	pg.pool.Exec(ctx, `ALTER TABLE aveloxis_ops.users DROP CONSTRAINT IF EXISTS "user-unique-email"`)
-	pg.pool.Exec(ctx, `ALTER TABLE aveloxis_ops.users ALTER COLUMN text_phone DROP NOT NULL`)
-	pg.pool.Exec(ctx, `ALTER TABLE aveloxis_ops.users DROP CONSTRAINT IF EXISTS "user-unique-phone"`)
+	execMigrationStep(ctx, pg, logger, &errs, "users.email DROP NOT NULL",
+		`ALTER TABLE aveloxis_ops.users ALTER COLUMN email DROP NOT NULL`)
+	execMigrationStep(ctx, pg, logger, &errs, "users drop user-unique-email",
+		`ALTER TABLE aveloxis_ops.users DROP CONSTRAINT IF EXISTS "user-unique-email"`)
+	execMigrationStep(ctx, pg, logger, &errs, "users.text_phone DROP NOT NULL",
+		`ALTER TABLE aveloxis_ops.users ALTER COLUMN text_phone DROP NOT NULL`)
+	execMigrationStep(ctx, pg, logger, &errs, "users drop user-unique-phone",
+		`ALTER TABLE aveloxis_ops.users DROP CONSTRAINT IF EXISTS "user-unique-phone"`)
 
 	// Collection queue: commits column (added in v0.5.4).
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.collection_queue", "last_commits", "INT DEFAULT 0")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.collection_queue", "last_commits", "INT DEFAULT 0")
 
 	// Collection queue: force-full-recollect flag (added in v0.18.24).
 	// Set automatically when a job ends with a GraphQL PR batch error
 	// class that leaves PR child data incomplete; set manually via
 	// `aveloxis recollect <url>`. CompleteJob clears it on success.
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.collection_queue", "force_full_collect", "BOOLEAN NOT NULL DEFAULT FALSE")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.collection_queue", "force_full_collect", "BOOLEAN NOT NULL DEFAULT FALSE")
 
 	// SBOM storage: format and timestamp columns (added in v0.5.4).
-	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_sbom_scans", "sbom_format", "TEXT DEFAULT ''")
-	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_sbom_scans", "sbom_version", "TEXT DEFAULT ''")
-	addColumnIfMissing(ctx, pg, "aveloxis_data.repo_sbom_scans", "created_at", "TIMESTAMPTZ DEFAULT NOW()")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_sbom_scans", "sbom_format", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_sbom_scans", "sbom_version", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_sbom_scans", "created_at", "TIMESTAMPTZ DEFAULT NOW()")
 
 	// Contributors: enrichment tracking column (added in v0.14.4).
 	// Prevents infinite re-enrichment of users with genuinely empty profiles.
-	addColumnIfMissing(ctx, pg, "aveloxis_data.contributors", "cntrb_last_enriched_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "cntrb_last_enriched_at", "TIMESTAMPTZ")
 
 	// Contributors: search-resolve tracking column (v0.19.2). The
 	// scheduler's runSearchResolve background task takes contributors
@@ -69,7 +94,7 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// by GetContributorsNeedingSearch as the cooldown filter so the
 	// same emails aren't re-searched every cycle, wasting the
 	// 30/min/token search-API quota.
-	addColumnIfMissing(ctx, pg, "aveloxis_data.contributors", "cntrb_last_search_attempted_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "cntrb_last_search_attempted_at", "TIMESTAMPTZ")
 
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection
@@ -90,23 +115,26 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// O(log n + matches). CREATE EXTENSION is idempotent and a no-op if
 	// the extension already exists; CREATE INDEX IF NOT EXISTS is safe
 	// to run on every startup.
+	//
+	// pg_trgm is the only step that stays warn-only — the extension
+	// requires superuser/pg_create_extensions and is a perf optimization,
+	// not data integrity. The follow-up index creation is fatal because
+	// once the extension exists, the index DDL failing means a real
+	// schema problem.
 	if _, err := pg.pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm`); err != nil {
 		logger.Warn("failed to create pg_trgm extension; monitor search will use sequential scans",
 			"error", err,
 			"hint", "the extension requires superuser or membership in pg_create_extensions; check your role grants")
 	} else {
-		_, err := pg.pool.Exec(ctx, `
-			CREATE INDEX IF NOT EXISTS idx_repos_owner_name_trgm
-			ON aveloxis_data.repos
-			USING GIN ((repo_owner || '/' || repo_name) gin_trgm_ops)`)
-		if err != nil {
-			logger.Warn("failed to create idx_repos_owner_name_trgm GIN index", "error", err)
-		}
+		execMigrationStep(ctx, pg, logger, &errs, "create idx_repos_owner_name_trgm GIN index",
+			`CREATE INDEX IF NOT EXISTS idx_repos_owner_name_trgm
+				ON aveloxis_data.repos
+				USING GIN ((repo_owner || '/' || repo_name) gin_trgm_ops)`)
 	}
 
 	// pull_request_repo: add unique constraint for ON CONFLICT support (v0.12.0).
-	pg.pool.Exec(ctx, `
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_repo_meta_head_base
+	execMigrationStep(ctx, pg, logger, &errs, "create idx_pr_repo_meta_head_base",
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_repo_meta_head_base
 		ON aveloxis_data.pull_request_repo (pr_repo_meta_id, pr_repo_head_or_base)`)
 
 	// Users table: dedupe + enforce PK/UNIQUE (v0.18.9).
@@ -117,13 +145,13 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	dedupeUsers(ctx, pg, logger)
 
 	// Users table OAuth columns (added in v0.5.0).
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "avatar_url", "TEXT DEFAULT ''")
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "gh_user_id", "BIGINT")
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "gh_login", "TEXT DEFAULT ''")
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "gl_user_id", "BIGINT")
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "gl_username", "TEXT DEFAULT ''")
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "oauth_provider", "TEXT DEFAULT ''")
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "oauth_token", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.users", "avatar_url", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.users", "gh_user_id", "BIGINT")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.users", "gh_login", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.users", "gl_user_id", "BIGINT")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.users", "gl_username", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.users", "oauth_provider", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.users", "oauth_token", "TEXT DEFAULT ''")
 
 	// v0.19.0 public-access feature: email confirmation timestamp +
 	// group approval workflow. Set email_confirmed_at to NOW() at
@@ -132,10 +160,10 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// columns track admin review of non-admin submissions: status
 	// flips between 'pending' (the default for new groups created by
 	// non-admins), 'approved', and 'rejected'.
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "email_confirmed_at", "TIMESTAMPTZ")
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.user_groups", "status", "TEXT NOT NULL DEFAULT 'approved'")
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.user_groups", "approved_by", "INT")
-	addColumnIfMissing(ctx, pg, "aveloxis_ops.user_groups", "approved_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.users", "email_confirmed_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.user_groups", "status", "TEXT NOT NULL DEFAULT 'approved'")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.user_groups", "approved_by", "INT")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.user_groups", "approved_at", "TIMESTAMPTZ")
 	// Existing rows from pre-v0.19.0 deployments default to
 	// 'approved' so the upgrade doesn't suddenly hide groups that
 	// already exist. New rows from non-admins go to 'pending' via
@@ -146,11 +174,24 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// Set collection.matview_rebuild_on_startup=true in aveloxis.json to enable,
 	// or run `aveloxis refresh-views` manually. The scheduler rebuilds them
 	// weekly on the configured day (default: Saturday).
-	if pg.matviewOnStartup {
+	//
+	// Matview refresh is warn-only — these are derived data, refreshable
+	// via `aveloxis refresh-views` or the next scheduler tick, and
+	// failing them shouldn't block serve startup.
+	//
+	// matviewSkip (set by `aveloxis migrate --skip-views`) bypasses both
+	// branches so an operator iterating on schema-error fixes doesn't
+	// pay the rebuild cost on every retry. The user can run
+	// `aveloxis refresh-views` separately when ready, or let the
+	// scheduler's weekly rebuild handle it.
+	switch {
+	case pg.matviewSkip:
+		logger.Info("matview block skipped (--skip-views); run `aveloxis refresh-views` separately to materialize")
+	case pg.matviewOnStartup:
 		if err := CreateMaterializedViews(ctx, pg, logger); err != nil {
 			logger.Warn("materialized view creation had errors", "error", err)
 		}
-	} else {
+	default:
 		// Still create views if they don't exist (first run), but don't refresh existing ones.
 		if err := CreateMaterializedViewsIfNotExist(ctx, pg, logger); err != nil {
 			logger.Warn("materialized view creation had errors", "error", err)
@@ -161,8 +202,29 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// when the schema is behind the binary and warn the operator.
 	stampSchemaVersion(ctx, pg, logger)
 
+	if len(errs) > 0 {
+		// Fail closed: surface every collected error so the operator
+		// sees the FULL list and can fix them all before retrying.
+		// errors.Join produces a multi-line error string by default,
+		// which prints cleanly to stderr from cobra.
+		logger.Error("schema migrations completed with errors — aveloxis serve will refuse to start until these are resolved",
+			"count", len(errs))
+		return fmt.Errorf("schema migration had %d error(s):\n%w", len(errs), errors.Join(errs...))
+	}
+
 	logger.Info("schema migrations complete", "schema_version", ToolVersion)
 	return nil
+}
+
+// execMigrationStep runs a schema-changing SQL statement, logging the
+// step at INFO before and recording any error in the collector. Used
+// by RunMigrations for ALTER TABLE / CREATE INDEX / etc. statements
+// where pre-v0.19.4 the err was discarded entirely.
+func execMigrationStep(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, label, sql string) {
+	if _, err := pg.pool.Exec(ctx, sql); err != nil {
+		logger.Error("schema migration error", "step", label, "error", err)
+		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+	}
 }
 
 // stampSchemaVersion writes the current ToolVersion into schema_meta.
@@ -346,9 +408,21 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 	}
 }
 
-func addColumnIfMissing(ctx context.Context, pg *PostgresStore, table, column, colType string) {
-	_, _ = pg.pool.Exec(ctx, fmt.Sprintf(
-		`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s`, table, column, colType))
+// addColumnIfMissing runs ALTER TABLE ... ADD COLUMN IF NOT EXISTS for
+// the given table/column/type. Pre-v0.19.4 this helper used the
+// `_, _ = pg.pool.Exec(...)` discard-everything pattern, which made
+// every failure silent — that's how the v0.19.0 user_groups status/
+// approved_by/approved_at columns went missing on chaoss.tv even
+// though `aveloxis migrate` had completed successfully. The fixed
+// helper logs at ERROR and appends to the collector so the run
+// surfaces every failure, and so RunMigrations can fail closed.
+func addColumnIfMissing(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, table, column, colType string) {
+	stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s`, table, column, colType)
+	if _, err := pg.pool.Exec(ctx, stmt); err != nil {
+		label := fmt.Sprintf("add column %s.%s (%s)", table, column, colType)
+		logger.Error("schema migration error", "step", label, "error", err)
+		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+	}
 }
 
 // cleanupRepoNameGitSuffix strips a trailing ".git" from aveloxis_data.repos.repo_name.

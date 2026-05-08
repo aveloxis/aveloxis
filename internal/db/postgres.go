@@ -22,6 +22,7 @@ type PostgresStore struct {
 	pool             *pgxpool.Pool
 	logger           *slog.Logger
 	matviewOnStartup bool // whether to refresh materialized views during migration
+	matviewSkip      bool // whether to skip the matview block entirely (--skip-views on migrate)
 }
 
 // NewPostgresStore connects to PostgreSQL and returns a Store.
@@ -120,6 +121,15 @@ func (s *PostgresStore) Close() {
 // SetMatviewOnStartup controls whether materialized views are refreshed during migration.
 func (s *PostgresStore) SetMatviewOnStartup(enabled bool) {
 	s.matviewOnStartup = enabled
+}
+
+// SetMatviewSkip controls whether the matview block in RunMigrations is
+// skipped entirely. Used by `aveloxis migrate --skip-views` so an
+// operator iterating on schema-error fixes doesn't pay the matview
+// rebuild cost on every retry. Wins over SetMatviewOnStartup when both
+// are set — skip is the stronger signal.
+func (s *PostgresStore) SetMatviewSkip(skip bool) {
+	s.matviewSkip = skip
 }
 
 func (s *PostgresStore) Migrate(ctx context.Context) error {

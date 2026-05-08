@@ -927,9 +927,18 @@ func runRecollect(cfgPath string, targets []string) error {
 // --- migrate ---
 
 func migrateCmd(cfgPath *string) *cobra.Command {
-	return &cobra.Command{
+	var skipViews bool
+	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Run database schema migrations",
+		Long: `Runs the schema migrations and (by default) creates/refreshes
+materialized views used by 8Knot and analytics.
+
+Use --skip-views to skip the materialized view block entirely. This is
+useful when you're iterating on a schema-error fix on a large database
+where the matview rebuild adds significant time per attempt — run a
+plain ` + "`aveloxis refresh-views`" + ` (or wait for the next scheduler
+tick) once the schema errors are resolved.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)
@@ -940,11 +949,18 @@ func migrateCmd(cfgPath *string) *cobra.Command {
 				return err
 			}
 			defer store.Close()
-			// The explicit migrate command always creates/refreshes views.
-			store.SetMatviewOnStartup(true)
+			// The explicit migrate command always creates/refreshes views,
+			// unless --skip-views is passed.
+			store.SetMatviewSkip(skipViews)
+			if !skipViews {
+				store.SetMatviewOnStartup(true)
+			}
 			return store.Migrate(ctx)
 		},
 	}
+	cmd.Flags().BoolVar(&skipViews, "skip-views", false,
+		"skip materialized view creation/refresh (run `aveloxis refresh-views` separately when ready)")
+	return cmd
 }
 
 func refreshViewsCmd(cfgPath *string) *cobra.Command {

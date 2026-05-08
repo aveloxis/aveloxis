@@ -137,6 +137,22 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_repo_meta_head_base
 		ON aveloxis_data.pull_request_repo (pr_repo_meta_id, pr_repo_head_or_base)`)
 
+	// contributors.gh_login partial index (v0.19.9). The 2026-05-08
+	// pg_stat_activity diagnostic on a fleet-scale DB caught 25+
+	// concurrent backends running
+	// `SELECT cntrb_id FROM contributors WHERE gh_login = $1 LIMIT 1`
+	// (FindContributorIDByLogin, called once per resolved commit by
+	// CommitResolver.ensureAlias) — each one a sequential scan of the
+	// ~5M-row contributors table because cntrb_login was indexed but
+	// gh_login wasn't. The same missing index made
+	// BackfillCommitAuthorIDs's join probe a hash join over the entire
+	// contributors table, producing 2:30-minute UPDATE durations.
+	// Partial — `WHERE gh_login != ''` excludes the email-only
+	// contributor cohort, mirroring the idx_contributors_login pattern.
+	execMigrationStep(ctx, pg, logger, &errs, "create idx_contributors_gh_login",
+		`CREATE INDEX IF NOT EXISTS idx_contributors_gh_login
+		ON aveloxis_data.contributors (gh_login) WHERE gh_login != ''`)
+
 	// Users table: dedupe + enforce PK/UNIQUE (v0.18.9).
 	// Older installs used CREATE TABLE IF NOT EXISTS with inline UNIQUE, which
 	// silently skipped on pre-existing tables created without the constraint —

@@ -581,16 +581,31 @@ func (c *Collector) collectReleases(ctx context.Context, repoID int64, owner, re
 
 func (c *Collector) collectContributors(ctx context.Context, repoID int64, owner, repo string, result *CollectResult) error {
 	c.logger.Info("collecting contributors", "owner", owner, "repo", repo)
+
+	// v0.18.29 Fix 4: accumulate into a slice and call UpsertContributorBatch
+	// once at the end. Per-row UpsertContributor created one transaction per
+	// contributor — for repos with hundreds of contributors that's hundreds of
+	// tiny transactions and corresponding race windows where concurrent
+	// workers seeing the same hot user (popular contributor across many repos)
+	// trip contributors_pkey before Fix 3's ON CONFLICT (cntrb_id) routing.
+	// Batching also lets UpsertContributorBatch's in-memory dedup merge any
+	// duplicate observations within the same iterator pass (richest-data wins).
+	var contribs []model.Contributor
 	for contrib, err := range c.client.ListContributors(ctx, owner, repo) {
 		if err != nil {
 			return err
 		}
-		if err := c.store.UpsertContributor(ctx, &contrib); err != nil {
-			c.logger.Warn("failed to upsert contributor", "login", contrib.Login, "error", err)
-			continue
-		}
-		result.Contributors++
+		contribs = append(contribs, contrib)
 	}
+	if len(contribs) == 0 {
+		return nil
+	}
+	if err := c.store.UpsertContributorBatch(ctx, contribs); err != nil {
+		c.logger.Warn("failed to upsert contributor batch",
+			"owner", owner, "repo", repo, "count", len(contribs), "error", err)
+		return err
+	}
+	result.Contributors += len(contribs)
 	return nil
 }
 

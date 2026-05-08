@@ -321,10 +321,14 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 	argIdx := 1
 
 	if search != "" {
+		// v0.18.30: filter on the concatenated `(repo_owner || '/' ||
+		// repo_name)` expression so the GIN trigram index
+		// idx_repos_owner_name_trgm (created by migrate.go) can serve
+		// the lookup. The pre-fix per-column ILIKE pattern couldn't
+		// use the trigram index even when it existed.
 		whereClause = fmt.Sprintf(` WHERE q.repo_id IN (
 			SELECT repo_id FROM aveloxis_data.repos
-			WHERE repo_owner ILIKE '%%' || $%d || '%%'
-			   OR repo_name ILIKE '%%' || $%d || '%%')`, argIdx, argIdx)
+			WHERE (repo_owner || '/' || repo_name) ILIKE '%%' || $%d || '%%')`, argIdx)
 		args = append(args, search)
 		argIdx++
 	}

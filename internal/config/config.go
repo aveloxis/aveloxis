@@ -24,6 +24,7 @@ type Config struct {
 	Database DatabaseConfig `json:"database"`
 	GitHub   PlatformConfig `json:"github"`
 	GitLab   PlatformConfig `json:"gitlab"`
+	Mail     MailConfig     `json:"mail"` // v0.19.0: Gmail-backed transactional mailer
 
 	// Collection controls how repositories are collected.
 	Collection CollectionConfig `json:"collection"`
@@ -199,6 +200,15 @@ type CollectionConfig struct {
 	// contributors and 73 keys, even 60 minutes is comfortably within
 	// the 5K/key/hour budget.
 	EnrichIntervalMinutes int `json:"enrich_interval_minutes"`
+
+	// SearchResolveIntervalMinutes controls how often the v0.19.2
+	// search-resolve background task runs. The task takes
+	// contributors with email but no gh_user_id and calls GitHub's
+	// search API to backfill the platform identity. GitHub search
+	// is rate-limited to 30/min/token (separate budget from the
+	// 5000/hour core API), so this runs at a deliberately low
+	// cadence. Default 60 (minutes) when unset.
+	SearchResolveIntervalMinutes int `json:"search_resolve_interval_minutes"`
 }
 
 // EnrichIntervalDuration converts EnrichIntervalMinutes to a time.Duration.
@@ -209,6 +219,34 @@ func (c *CollectionConfig) EnrichIntervalDuration() time.Duration {
 		return 30 * time.Minute
 	}
 	return time.Duration(c.EnrichIntervalMinutes) * time.Minute
+}
+
+// SearchResolveIntervalDuration converts SearchResolveIntervalMinutes to
+// a time.Duration. Falls back to 60 minutes when unset.
+func (c *CollectionConfig) SearchResolveIntervalDuration() time.Duration {
+	if c.SearchResolveIntervalMinutes <= 0 {
+		return 60 * time.Minute
+	}
+	return time.Duration(c.SearchResolveIntervalMinutes) * time.Minute
+}
+
+// MailConfig configures the Gmail-backed transactional mailer
+// (v0.19.0). When GmailUser is empty the mailer is a no-op — the rest
+// of the application works without email enabled.
+//
+// Setup:
+//  1. Enable 2-Step Verification on the Gmail account
+//  2. Generate an App Password (https://myaccount.google.com/apppasswords)
+//  3. Paste the 16-character password into GmailAppPassword
+//
+// SiteURL goes into outbound email bodies as the link target. Set it
+// to the public-facing URL operators land on (e.g.
+// https://your-host.example).
+type MailConfig struct {
+	GmailUser        string `json:"gmail_user"`
+	GmailAppPassword string `json:"gmail_app_password"`
+	FromName         string `json:"from_name"`
+	SiteURL          string `json:"site_url"`
 }
 
 // Load reads configuration from a JSON file.

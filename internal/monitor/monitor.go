@@ -90,16 +90,55 @@ func renderMatviewBanner(w io.Writer) {
 	fmt.Fprint(w, `<div style="background:#fde68a;color:#78350f;padding:0.75rem 1rem;border-radius:8px;margin-bottom:1rem;border:1px solid #f59e0b;font-weight:600">Weekly materialized view rebuild in progress — collection paused. New jobs will resume automatically when the rebuild completes.</div>`)
 }
 
+// formatRelativeAgo renders a duration as "Xs ago" / "Ym Zs ago" /
+// "Hh Mm ago" — short enough to fit in the dashboard header without
+// wrapping but precise enough that operators can tell at a glance how
+// stale the numbers are.
+func formatRelativeAgo(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
+// DefaultQueueStatsCacheTTL is the cache window for QueueStats results
+// served to the monitor dashboard. The user explicitly accepts periodic
+// freshness ("freshness CAN be periodic. Perhaps every 10 minutes")
+// and asked for a "last updated" / "next update" header. 60 seconds
+// gives the dashboard responsive feedback while still amortizing the
+// GROUP BY scan over many tab refreshes.
+const DefaultQueueStatsCacheTTL = 60 * time.Second
+
+// DefaultDashboardRefreshSeconds is the meta-refresh cadence emitted
+// in the dashboard HTML. v0.18.30 raised this from 10s — the
+// per-render scans the 10s refresh triggered against a 100K-repo
+// fleet were the proximate cause of the dashboard's perceived
+// slowness.
+const DefaultDashboardRefreshSeconds = 60
+
 // Server is the monitoring HTTP server.
 type Server struct {
-	store  *db.PostgresStore
-	logger *slog.Logger
-	mux    *http.ServeMux
+	store            *db.PostgresStore
+	logger           *slog.Logger
+	mux              *http.ServeMux
+	queueStatsCache  *QueueStatsCache
 }
 
 // New creates a monitor server.
 func New(store *db.PostgresStore, logger *slog.Logger) *Server {
-	s := &Server{store: store, logger: logger, mux: http.NewServeMux()}
+	s := &Server{
+		store:           store,
+		logger:          logger,
+		mux:             http.NewServeMux(),
+		queueStatsCache: NewQueueStatsCache(DefaultQueueStatsCacheTTL),
+	}
 	s.mux.HandleFunc("GET /", s.handleDashboard)
 	s.mux.HandleFunc("GET /api/queue", s.handleQueue)
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
@@ -119,17 +158,30 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := s.store.QueueStats(r.Context())
+	// v0.18.30: route through queueStatsCache so /api/stats polls
+	// don't re-trigger the GROUP BY scan on every call.
+	stats, lastRefreshed, nextRefresh, err := s.queueStatsCache.Get(r.Context(), s.store.QueueStats)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	json.NewEncoder(w).Encode(map[string]any{
+		"stats":           stats,
+		"last_refreshed":  lastRefreshed.Format(time.RFC3339),
+		"next_refresh":    nextRefresh.Format(time.RFC3339),
+	})
 }
 
 func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.store.ListQueue(r.Context())
+	// v0.18.30: paginated. The pre-fix endpoint called ListQueue which
+	// returned every row in the queue — at 100K repos that's a 100K-row
+	// JSON payload per request, which any polling client (the
+	// dashboard's JavaScript, external tooling) would re-fetch
+	// repeatedly. Route through ListQueuePage with the same
+	// page/page_size/q semantics as the dashboard.
+	params := parsePageParams(r)
+	jobs, total, err := s.store.ListQueuePage(r.Context(), params.PageSize, params.Offset, params.Search)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -178,7 +230,12 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 		views = append(views, v)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(views)
+	json.NewEncoder(w).Encode(map[string]any{
+		"total":     total,
+		"page":      params.Page,
+		"page_size": params.PageSize,
+		"jobs":      views,
+	})
 }
 
 func (s *Server) handlePrioritize(w http.ResponseWriter, r *http.Request) {
@@ -222,7 +279,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	params := parsePageParams(r)
 
-	stats, _ := s.store.QueueStats(ctx)
+	// v0.18.30: stats served from in-memory cache (default 60s TTL).
+	// At v0.18.29 every dashboard render fired QueueStats — a `SELECT
+	// status, COUNT(*) … GROUP BY status` against a 100K-row queue
+	// table per browser tab per 10 seconds. Now once per TTL window.
+	stats, lastRefreshed, nextRefresh, _ := s.queueStatsCache.Get(ctx, s.store.QueueStats)
 	jobs, total, _ := s.store.ListQueuePage(ctx, params.PageSize, params.Offset, params.Search)
 
 	// Look up repo details and stats for display.
@@ -271,10 +332,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, `<!DOCTYPE html>
+	fmt.Fprintf(w, `<!DOCTYPE html>
 <html><head><title>Aveloxis Monitor</title>
-<meta http-equiv="refresh" content="10">
-<style>
+<meta http-equiv="refresh" content="%d">
+<style>`, DefaultDashboardRefreshSeconds)
+	fmt.Fprint(w, `
   body { font-family: system-ui, sans-serif; margin: 2rem; background: #f5f5f5; color: #333; }
   h1 { margin-bottom: 0.5rem; }
   .sub { color: #666; margin-bottom: 1.5rem; }
@@ -326,8 +388,27 @@ function sortTable(col) {
 </script>
 </head><body>
 <div style="display:flex;align-items:center;justify-content:space-between"><h1>Aveloxis Monitor</h1><img src="/icon.png" alt="Aveloxis" style="height:48px;border-radius:8px"></div>
-<div class="sub">Auto-refreshes every 10s. API: <code>aveloxis api --addr :8383</code></div>
 `)
+	// v0.18.30: freshness header. Shows when the cached fleet stats
+	// were last refreshed and when the next refresh is due. Surfaces
+	// the trade-off the user explicitly accepted ("freshness CAN be
+	// periodic") so it's clear how stale numbers can be.
+	lastRefreshedTxt := "just now"
+	if !lastRefreshed.IsZero() {
+		lastRefreshedTxt = formatRelativeAgo(time.Since(lastRefreshed))
+	}
+	nextRefreshTxt := "—"
+	if !nextRefresh.IsZero() {
+		dur := time.Until(nextRefresh)
+		if dur < 0 {
+			nextRefreshTxt = "due now"
+		} else {
+			nextRefreshTxt = "in " + formatRelativeAgo(dur)
+		}
+	}
+	fmt.Fprintf(w, `<div class="sub">Auto-refreshes every %ds. Stats last refreshed %s. Next refresh %s. API: <code>aveloxis api --addr :8383</code></div>`,
+		DefaultDashboardRefreshSeconds, lastRefreshedTxt, nextRefreshTxt)
+
 
 	renderMatviewBanner(w)
 

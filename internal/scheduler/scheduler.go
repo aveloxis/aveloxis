@@ -42,6 +42,7 @@ type Config struct {
 	ShardSize           int           // item-count threshold for spawning an additional shard (default 3000)
 	EnrichInterval      time.Duration // how often to run thin-contributor enrichment (default 30 min). v0.18.29 moved enrichment out of per-job processing into a periodic scheduler task.
 	SearchResolveInterval time.Duration // how often to run the search-resolve background task (default 1 hour). v0.19.2 added this to backfill gh_user_id on contributors with email but no platform identity, using GitHub's search API at controlled rate.
+	AffiliationInterval   time.Duration // how often to run the periodic singleton PopulateAffiliations task (default 1 hour). v0.19.7 moved this off the per-job hot path to eliminate cross-worker contention on UNIQUE (ca_domain).
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -88,6 +89,9 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	}
 	if cfg.SearchResolveInterval == 0 {
 		cfg.SearchResolveInterval = 1 * time.Hour
+	}
+	if cfg.AffiliationInterval == 0 {
+		cfg.AffiliationInterval = 1 * time.Hour
 	}
 
 	hostname, _ := os.Hostname()
@@ -262,6 +266,20 @@ func (s *Scheduler) Run(ctx context.Context) {
 	searchResolveTicker := time.NewTicker(s.cfg.SearchResolveInterval)
 	defer searchResolveTicker.Stop()
 
+	// v0.19.7: contributor_affiliations population. Was per-job
+	// (Phase 5b in runJob), where every of N workers fired
+	// PopulateAffiliations after every repo completed. The function
+	// scans the global contributors table and INSERTs (ca_domain,
+	// company) pairs racing on UNIQUE (ca_domain), producing the
+	// ShareLock contention the operator's pg_locks watch caught on
+	// 2026-05-08. As a periodic singleton, one writer at a time
+	// touches the table — contention disappears. The map only changes
+	// when contributor enrichment data changes (bounded by the 30-day
+	// cntrb_last_enriched_at cooldown), so hourly cadence is plenty
+	// fresh.
+	affiliationsTicker := time.NewTicker(s.cfg.AffiliationInterval)
+	defer affiliationsTicker.Stop()
+
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
 	// this avoids a visible delay before collection begins.
@@ -314,6 +332,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-searchResolveTicker.C:
 			go s.runSearchResolve(ctx)
+
+		case <-affiliationsTicker.C:
+			go s.runAffiliationsPopulation(ctx)
 
 		case <-pollTicker.C:
 			s.fillWorkerSlots(ctx, sem)
@@ -429,6 +450,30 @@ func (s *Scheduler) runEnrichment(ctx context.Context) {
 	}
 	resolver := db.NewContributorResolver(s.store)
 	collector.EnrichThinContributors(ctx, s.store, resolver, client, s.logger)
+}
+
+// runAffiliationsPopulation runs PopulateAffiliations as a periodic
+// singleton task. v0.19.7 replaced the per-job invocation in runJob
+// (Phase 5b) with this ticker after the operator's 2026-05-08
+// pg_locks watch caught ShareLock contention on the
+// `INSERT INTO contributor_affiliations` statement: with 120 workers
+// firing the same global table scan + ON CONFLICT race after every
+// completed repo, the contention pile-up was visible as
+// elevated CPU and intermittent deadlocks. As a singleton, one
+// writer at a time touches contributor_affiliations — the contention
+// pattern that drove the hotfix disappears. The map only changes
+// when contributor enrichment data changes (bounded by the
+// 30-day cntrb_last_enriched_at cooldown), so hourly cadence is
+// plenty fresh.
+func (s *Scheduler) runAffiliationsPopulation(ctx context.Context) {
+	count, err := s.store.PopulateAffiliations(ctx)
+	if err != nil {
+		s.logger.Warn("affiliations population failed", "error", err)
+		return
+	}
+	if count > 0 {
+		s.logger.Info("affiliations population complete", "rows", count)
+	}
 }
 
 // fillWorkerSlots fills all available semaphore slots with jobs from the queue.
@@ -612,15 +657,11 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// since we don't know where the contributor identities live.
 	s.runCommitResolution(ctx, job.RepoID, repo)
 
-	// Phase 5b: Auto-populate contributor affiliations.
-	// Maps contributor email domains to organizations using company data from
-	// GitHub/GitLab user profiles. Must run after enrichment + commit resolution
-	// so we have the most complete email/company data.
-	if affCount, err := s.store.PopulateAffiliations(ctx); err != nil {
-		s.logger.Warn("affiliation population failed", "error", err)
-	} else if affCount > 0 {
-		s.logger.Info("auto-populated affiliations", "count", affCount)
-	}
+	// v0.19.7: PopulateAffiliations moved out of runJob into a
+	// periodic singleton ticker (Run's affiliationsTicker →
+	// runAffiliationsPopulation). The per-job invocation produced
+	// fan-out contention on UNIQUE (ca_domain) — see the v0.19.7
+	// changelog for the production diagnostic that drove the move.
 
 	// Phase 6: SBOM generation.
 	s.generateSBOMs(ctx, job.RepoID)
@@ -892,11 +933,15 @@ func (s *Scheduler) runCommitResolution(ctx context.Context, repoID int64, repo 
 			"resolved_noreply", resolveResult.ResolvedNoreply,
 			"unresolved", resolveResult.Unresolved)
 	}
-	// Also enrich canonical emails for contributors missing them.
-	// This runs best-effort — a failure here doesn't block the job.
-	if _, err := resolver.ResolveEmailsToCanonical(ctx); err != nil {
-		s.logger.Warn("canonical email enrichment failed", "repo_id", repoID, "error", err)
-	}
+	// v0.19.7: ResolveEmailsToCanonical removed from the per-job hot
+	// path. It selected up to 500 contributors fleet-wide and called
+	// GET /users/{login} per row with a 100ms sleep — duplicate work
+	// because EnrichContributor (called by the v0.18.29 runEnrichment
+	// ticker) populates Canonical from the same endpoint. Keeping it
+	// here meant 120 workers each running the same global pass after
+	// every job, racing on cntrb_last_enriched_at UPDATEs and burning
+	// REST tokens. The function definition stays — operators may call
+	// it manually — but the hot-path call site is gone.
 }
 
 // buildOutcome evaluates the collection and facade results to determine

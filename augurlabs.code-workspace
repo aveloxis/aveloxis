@@ -1,7 +1,7 @@
 {
 	"folders": [
 		{
-			"path": "../../augurlabs"
+			"path": "../../aveloxis"
 		},
 		{
 			"path": "."
@@ -16,7 +16,7 @@
 			"path": "../aveloxis-mailer"
 		},
 		{
-			"path": "../../augurlabs/augurlytics"
+			"path": "../../aveloxis/augurlytics"
 		},
 		{
 			"path": "../aveloxis-secret-menu"

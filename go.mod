@@ -1,4 +1,4 @@
-module github.com/augurlabs/aveloxis
+module github.com/aveloxis/aveloxis
 
 go 1.25.0
 

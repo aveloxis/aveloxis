@@ -4,7 +4,7 @@ claude.md
 prompts.md
 issue-pr-prompt.md
 aveloxis.docker.json 
-augurlabs.code-workspace
+aveloxis.code-workspace
 ~/
 # Bare git clone directories (created by facade collector).
 # These are stored at ~/aveloxis-repos/ by default, not in the project dir.

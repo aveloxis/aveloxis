@@ -31,7 +31,7 @@ git --version     # Any recent version
 This method places the `aveloxis` binary in your `$GOPATH/bin` directory (or `$HOME/go/bin` if `$GOPATH` is not set), making it available system-wide.
 
 ```bash
-git clone https://github.com/augurlabs/aveloxis.git
+git clone https://github.com/aveloxis/aveloxis.git
 cd aveloxis
 go mod tidy
 go install ./cmd/aveloxis
@@ -54,7 +54,7 @@ If you see `aveloxis: command not found`, your Go bin directory is not on your P
 This method builds the binary into the repository directory. Use this if you prefer not to install globally.
 
 ```bash
-git clone https://github.com/augurlabs/aveloxis.git
+git clone https://github.com/aveloxis/aveloxis.git
 cd aveloxis
 go mod tidy
 go build -o bin/aveloxis ./cmd/aveloxis

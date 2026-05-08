@@ -37,7 +37,7 @@ services:
   # Run migrations once before starting other services.
   # This container exits after migrations complete.
   migrate:
-    image: ghcr.io/augurlabs/aveloxis:latest
+    image: ghcr.io/aveloxis/aveloxis:latest
     build: .
     command: ["migrate"]
     volumes:
@@ -48,7 +48,7 @@ services:
     restart: "no"
 
   serve:
-    image: ghcr.io/augurlabs/aveloxis:latest
+    image: ghcr.io/aveloxis/aveloxis:latest
     build: .
     command: ["serve", "--workers", "${AVELOXIS_WORKERS:-12}", "--monitor", ":5555"]
     volumes:
@@ -62,7 +62,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ghcr.io/augurlabs/aveloxis:latest
+    image: ghcr.io/aveloxis/aveloxis:latest
     build: .
     command: ["web"]
     volumes:
@@ -75,7 +75,7 @@ services:
     restart: unless-stopped
 
   api:
-    image: ghcr.io/augurlabs/aveloxis:latest
+    image: ghcr.io/aveloxis/aveloxis:latest
     build: .
     command: ["api", "--addr", ":8383"]
     volumes:

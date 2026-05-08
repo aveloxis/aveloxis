@@ -7,11 +7,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/augurlabs/aveloxis/internal/db"
-	"github.com/augurlabs/aveloxis/internal/importers"
-	"github.com/augurlabs/aveloxis/internal/importers/apache"
-	"github.com/augurlabs/aveloxis/internal/importers/cncf"
-	"github.com/augurlabs/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/importers"
+	"github.com/aveloxis/aveloxis/internal/importers/apache"
+	"github.com/aveloxis/aveloxis/internal/importers/cncf"
+	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/spf13/cobra"
 )
 

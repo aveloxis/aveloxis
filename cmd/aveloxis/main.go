@@ -29,6 +29,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/platform/github"
 	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 	"github.com/aveloxis/aveloxis/internal/scheduler"
+	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/web"
 	"github.com/spf13/cobra"
 )
@@ -158,7 +159,8 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		ListingMode:         cfg.Collection.ListingMode,
 		ThreadingMode:       cfg.Collection.ThreadingMode,
 		ShardSize:           cfg.Collection.ShardSize,
-		EnrichInterval:      cfg.Collection.EnrichIntervalDuration(),
+		EnrichInterval:        cfg.Collection.EnrichIntervalDuration(),
+		SearchResolveInterval: cfg.Collection.SearchResolveIntervalDuration(),
 	})
 	go sched.Run(ctx)
 
@@ -1105,7 +1107,13 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			// can still serve the GUI without keys, just can't scan orgs).
 			ghKeys, _, _ := loadKeys(ctx, cfg, store, false, logger)
 
-			webServer := web.New(store, cfg.Web, ghKeys, logger)
+			webServer := web.New(store, cfg.Web, ghKeys, logger).
+				WithMailer(mailer.New(mailer.Config{
+					GmailUser:        cfg.Mail.GmailUser,
+					GmailAppPassword: cfg.Mail.GmailAppPassword,
+					FromName:         cfg.Mail.FromName,
+					SiteURL:          cfg.Mail.SiteURL,
+				}, logger))
 			srv := &http.Server{Addr: cfg.Web.Addr, Handler: webServer.Handler()}
 
 			go func() {

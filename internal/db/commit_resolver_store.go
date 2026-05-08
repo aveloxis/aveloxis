@@ -2,6 +2,9 @@ package db
 
 import (
 	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // UnresolvedCommit is a commit needing author resolution.
@@ -152,6 +155,37 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 			    data_collection_date = NOW()
 			WHERE cntrb_id = $1::uuid`,
 			cntrbID, login, ghUserID, commitEmail)
+		if err != nil {
+			// v0.19.2: catch SQLSTATE 23505 (unique_violation) on
+			// idx_contributors_login. Fires when another row already
+			// holds this login string under a different cntrb_id —
+			// most commonly because a lazy-resolver random-UUID row
+			// was created earlier with the new login (e.g., user
+			// renamed and a fresh issue stamped the new login with
+			// userID=0). We can't relabel cntrbID without violating
+			// the partial unique index, but the OTHER row already
+			// represents this person fine. Retry the UPDATE without
+			// touching cntrb_login — backfill gh_user_id and
+			// cntrb_canonical only. The two rows continue to coexist
+			// (suboptimal data quality, but no error and no orphan
+			// references).
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				_, retryErr := s.pool.Exec(ctx, `
+					UPDATE aveloxis_data.contributors
+					SET gh_user_id = COALESCE(gh_user_id, $2),
+					    cntrb_canonical = COALESCE(NULLIF(cntrb_canonical,''), $3),
+					    data_collection_date = NOW()
+					WHERE cntrb_id = $1::uuid`,
+					cntrbID, ghUserID, commitEmail)
+				if retryErr != nil {
+					return retryErr
+				}
+				s.logger.Debug("commit resolver login update skipped — login already held by a different row",
+					"cntrb_id", cntrbID, "target_login", login, "constraint", pgErr.ConstraintName)
+				err = nil
+			}
+		}
 		actualID = cntrbID
 		created = false
 		return err

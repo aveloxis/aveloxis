@@ -4,6 +4,77 @@ Common errors, their causes, and solutions.
 
 ---
 
+## Monitor dashboard renders slowly on a large fleet
+
+**Symptom:** On a fleet approaching 100K repos, the monitor dashboard takes seconds to render each page, multiple browser tabs make it worse, and `aveloxis serve` collection workers become starved for DB connections.
+
+**Cause (v0.18.29 and earlier):** Each dashboard render fired five separate aggregate queries against the heaviest tables in the schema — `COUNT(*) FROM pull_requests`, `COUNT(*) FROM issues`, `COUNT(DISTINCT cmt_commit_hash) FROM commits`, plus repo_info and vulnerability scans. With the dashboard's `<meta http-equiv="refresh" content="10">` triggering all of those every 10 seconds per browser tab, the cumulative scan load saturated the pgx pool.
+
+**Solution (v0.18.30):**
+- `GetRepoStatsBatch` now reads gathered counts directly from `collection_queue.last_issues / last_prs / last_commits` (already populated at `CompleteJob` time). Two queries replace the five aggregates.
+- `QueueStats` GROUP BY scans are cached in-memory for 60 seconds. The dashboard header surfaces "Stats last refreshed Xs" and "Next refresh in Ys" so operators can see how stale the numbers are.
+- The `<meta refresh>` cadence raised from 10s to 60s (`DefaultDashboardRefreshSeconds`). Combined with the cache, the per-tab load is dramatically lower.
+
+**Confirm the fix is active:**
+
+```bash
+# 1. Header shows the freshness indicator (visible in the browser):
+#    "Auto-refreshes every 60s. Stats last refreshed 12s. Next refresh in 48s."
+#
+# 2. Postgres pg_stat_statements: COUNT(*) on pull_requests/issues/commits
+#    should drop dramatically after upgrade to v0.18.30.
+psql -d aveloxis -c "
+  SELECT query, calls
+  FROM pg_stat_statements
+  WHERE query ILIKE 'SELECT%COUNT(*)%pull_requests%'
+     OR query ILIKE 'SELECT%COUNT(*)%issues%'
+  ORDER BY calls DESC LIMIT 5"
+```
+
+The cache TTL (default 60 seconds) is set in `internal/monitor/monitor.go` as `DefaultQueueStatsCacheTTL`. Operators can rebuild with a longer TTL if their fleet tolerates more staleness.
+
+---
+
+## Search keystrokes freeze the dashboard at 100K repos
+
+**Symptom:** Typing in the dashboard's search box (e.g. `?q=apache/`) makes each keystroke take seconds. The dashboard's "Matched X repos" counter takes its time updating.
+
+**Cause:** Pre-v0.18.30, the search filter used `repo_owner ILIKE '%q%' OR repo_name ILIKE '%q%'`. The leading wildcard means no B-tree index can serve the lookup; every keystroke ran a full sequential scan over `aveloxis_data.repos` (100K+ rows on a busy fleet).
+
+**Solution (v0.18.30):** A pg_trgm GIN index on the concatenated `(repo_owner || '/' || repo_name)` expression. `ListQueuePage` rewrites the filter to query the same expression. The trigram index serves leading-wildcard ILIKE patterns natively, turning the search into an O(log n + matches) lookup.
+
+**Confirm the index exists:**
+
+```bash
+psql -d aveloxis -c "\\d aveloxis_data.repos" | grep -i trgm
+# Expected: idx_repos_owner_name_trgm gin (((repo_owner || '/' || repo_name)) gin_trgm_ops)
+```
+
+If the index is missing, check `~/.aveloxis/aveloxis.log` for `failed to create pg_trgm extension`. The extension typically requires superuser or membership in `pg_create_extensions`. Grant the role and run `aveloxis migrate` again.
+
+---
+
+## /api/queue endpoint slow or returns huge JSON
+
+**Symptom:** Calling `GET /api/queue` directly (curl, scripts, dashboard JavaScript polling) returns a multi-megabyte JSON payload and takes seconds. At 100K repos, the response size starves any client that polls it.
+
+**Cause:** Pre-v0.18.30, `/api/queue` called `ListQueue(ctx)` which is unbounded — every row in the collection queue dumped to JSON on every request.
+
+**Solution (v0.18.30):** `/api/queue` now mirrors the dashboard's pagination contract. Accepts `?page=N&page_size=M&q=search` with the same `parsePageParams` helper used by `handleDashboard`. Default page size is 100, capped at 500. Response envelope is now:
+
+```json
+{
+  "total": 100000,
+  "page": 1,
+  "page_size": 100,
+  "jobs": [ /* paginated rows */ ]
+}
+```
+
+Update any external tooling polling `/api/queue` to consume this envelope and to paginate with `?page=` instead of expecting all rows. The pre-v0.18.30 array-only response shape is gone.
+
+---
+
 ## Token invalidation (401 vs 403)
 
 ### HTTP 401 Bad Credentials

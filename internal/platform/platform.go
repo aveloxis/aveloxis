@@ -38,6 +38,21 @@ type Client interface {
 	// substitute one for the other without column-level drift.
 	ListIssuesAndPRs(ctx context.Context, owner, repo string, since time.Time) (*IssueAndPRBatch, error)
 
+	// SearchUserByEmail looks up a platform user by email address using
+	// the platform's user search API. Returns ("", 0, nil) when no user
+	// is found — that's a normal outcome, not an error. Used by the
+	// scheduler's v0.19.2 search-resolve background task to backfill
+	// gh_user_id on contributors with email but no platform identity.
+	//
+	// On GitHub: GET /search/users?q={email}+in:email&per_page=1.
+	// Rate limit: 30 requests/minute/token (separate from the core
+	// 5000/hour budget).
+	//
+	// GitLab implementations may return ("", 0, nil) unconditionally
+	// if their search-by-email endpoint is unavailable or unreliable —
+	// the caller treats that as "no resolution available" and moves on.
+	SearchUserByEmail(ctx context.Context, email string) (login string, userID int64, err error)
+
 	// Repo metadata
 	RepoCollector
 	// Issues and their related data

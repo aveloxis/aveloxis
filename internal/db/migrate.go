@@ -62,6 +62,15 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// Prevents infinite re-enrichment of users with genuinely empty profiles.
 	addColumnIfMissing(ctx, pg, "aveloxis_data.contributors", "cntrb_last_enriched_at", "TIMESTAMPTZ")
 
+	// Contributors: search-resolve tracking column (v0.19.2). The
+	// scheduler's runSearchResolve background task takes contributors
+	// with email but no gh_user_id, calls /search/users?q=email, and
+	// stamps this column on every attempt (success or no-hit). Used
+	// by GetContributorsNeedingSearch as the cooldown filter so the
+	// same emails aren't re-searched every cycle, wasting the
+	// 30/min/token search-API quota.
+	addColumnIfMissing(ctx, pg, "aveloxis_data.contributors", "cntrb_last_search_attempted_at", "TIMESTAMPTZ")
+
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection
 	// created duplicate rows. Clean up first, then create the unique index.
@@ -72,6 +81,28 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// stored names like "naturf.git", which 404s every API call (/releases,
 	// /issues, /pulls). One-time cleanup; idempotent.
 	cleanupRepoNameGitSuffix(ctx, pg, logger)
+
+	// pg_trgm extension + GIN index on repos for monitor search
+	// (v0.18.30). The dashboard's `?q=foo/bar` ILIKE search at v0.18.29
+	// was unindexable (leading wildcard). With pg_trgm + a GIN index on
+	// (repo_owner || '/' || repo_name), the planner uses the index even
+	// for `ILIKE '%foo/bar%'` patterns. Turns the search from O(n) into
+	// O(log n + matches). CREATE EXTENSION is idempotent and a no-op if
+	// the extension already exists; CREATE INDEX IF NOT EXISTS is safe
+	// to run on every startup.
+	if _, err := pg.pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm`); err != nil {
+		logger.Warn("failed to create pg_trgm extension; monitor search will use sequential scans",
+			"error", err,
+			"hint", "the extension requires superuser or membership in pg_create_extensions; check your role grants")
+	} else {
+		_, err := pg.pool.Exec(ctx, `
+			CREATE INDEX IF NOT EXISTS idx_repos_owner_name_trgm
+			ON aveloxis_data.repos
+			USING GIN ((repo_owner || '/' || repo_name) gin_trgm_ops)`)
+		if err != nil {
+			logger.Warn("failed to create idx_repos_owner_name_trgm GIN index", "error", err)
+		}
+	}
 
 	// pull_request_repo: add unique constraint for ON CONFLICT support (v0.12.0).
 	pg.pool.Exec(ctx, `
@@ -93,6 +124,22 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "gl_username", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "oauth_provider", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "oauth_token", "TEXT DEFAULT ''")
+
+	// v0.19.0 public-access feature: email confirmation timestamp +
+	// group approval workflow. Set email_confirmed_at to NOW() at
+	// signup since GitHub OAuth has already verified the address —
+	// the column is for audit only, not gating. Group approval
+	// columns track admin review of non-admin submissions: status
+	// flips between 'pending' (the default for new groups created by
+	// non-admins), 'approved', and 'rejected'.
+	addColumnIfMissing(ctx, pg, "aveloxis_ops.users", "email_confirmed_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, "aveloxis_ops.user_groups", "status", "TEXT NOT NULL DEFAULT 'approved'")
+	addColumnIfMissing(ctx, pg, "aveloxis_ops.user_groups", "approved_by", "INT")
+	addColumnIfMissing(ctx, pg, "aveloxis_ops.user_groups", "approved_at", "TIMESTAMPTZ")
+	// Existing rows from pre-v0.19.0 deployments default to
+	// 'approved' so the upgrade doesn't suddenly hide groups that
+	// already exist. New rows from non-admins go to 'pending' via
+	// CreateUserGroup's branch.
 
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).

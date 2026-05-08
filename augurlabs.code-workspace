@@ -1,0 +1,32 @@
+{
+	"folders": [
+		{
+			"path": "../../augurlabs"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../../sociallycompute/wellcome-trust-2025"
+		},
+		{
+			"path": "../../oss-aspen/8Knot"
+		},
+		{
+			"path": "../aveloxis-mailer"
+		},
+		{
+			"path": "../../augurlabs/augurlytics"
+		},
+		{
+			"path": "../aveloxis-secret-menu"
+		},
+		{
+			"path": "../aveloxis-analytics"
+		},
+		{
+			"path": "../../sociallycompute/cs4050-Instructor"
+		}
+	],
+	"settings": {}
+}

@@ -802,7 +802,7 @@ For repos with **>10,000 commits** (detected from repo_info metadata), steps 3-5
 4. **ScanCode license/copyright detection** (`aveloxis_scan.scancode_file_results`): if `scancode` is installed, runs `scancode -clpi --only-findings --json` to detect per-file licenses (SPDX expressions), copyrights, holders, and packages. **Only runs every 30 days** per repo — license/copyright data changes infrequently. Results stored in dedicated `aveloxis_scan` schema with history rotation. Install via `pipx install scancode-toolkit-mini` (requires Python 3.10+).
 5. **OpenSSF Scorecard** (`repo_deps_scorecard`): if the `scorecard` binary is installed, runs locally against the checkout with `scorecard --local <path>` (much faster than remote mode). Each check (Code-Review, Maintained, Vulnerabilities, etc.) is stored with its score, reason, and details as JSONB. Previous results are rotated to `repo_deps_scorecard_history`. Install via `aveloxis install-tools`.
 
-**Phase 5 — Commit Author Resolution (GitHub only):** After facade completes, resolves git commit author emails to GitHub user accounts. This is the Go implementation of the [augur-contributor-resolver](https://github.com/augurlabs/augur-contributor-resolver) scripts. Resolution strategy, cheapest first:
+**Phase 5 — Commit Author Resolution (GitHub only):** After facade completes, resolves git commit author emails to GitHub user accounts. This is the Go implementation of the [augur-contributor-resolver](https://github.com/aveloxis/augur-contributor-resolver) scripts. Resolution strategy, cheapest first:
 
 1. **Noreply email parse** (free) — `12345+user@users.noreply.github.com` extracts login and `gh_user_id` directly from the email format
 2. **Database lookup** — checks `contributors` (cntrb_email, cntrb_canonical) and `contributors_aliases` (alias_email)
@@ -872,7 +872,7 @@ There are two layers of contributor resolution:
 2. **Database lookup**: `contributor_identities` table (platform_id + platform_user_id unique key)
 3. **Create new**: Insert into `contributors` + `contributor_identities` if no match found
 
-**Git-phase resolution** (after facade commits are inserted): Commit author emails are resolved to GitHub user accounts. This is the equivalent of the [augur-contributor-resolver](https://github.com/augurlabs/augur-contributor-resolver) scripts, implemented natively in Go:
+**Git-phase resolution** (after facade commits are inserted): Commit author emails are resolved to GitHub user accounts. This is the equivalent of the [augur-contributor-resolver](https://github.com/aveloxis/augur-contributor-resolver) scripts, implemented natively in Go:
 
 1. **Noreply parse** (free) — extract login + user ID from GitHub noreply email format
 2. **DB lookup** — check contributors and aliases tables by email

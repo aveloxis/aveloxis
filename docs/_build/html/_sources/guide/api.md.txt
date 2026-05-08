@@ -73,7 +73,7 @@ Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues
 {
   "repo_id": 42,
   "repo_name": "augur",
-  "repo_owner": "augurlabs",
+  "repo_owner": "aveloxis",
   "commits": [
     {"week_start": "2024-01-01T00:00:00Z", "count": 15},
     {"week_start": "2024-01-08T00:00:00Z", "count": 22}
@@ -114,7 +114,7 @@ Case-insensitive search across repo name, owner, and URL. Returns up to 20 match
 
 ```json
 [
-  {"id": 2, "owner": "augurlabs", "name": "augur"},
+  {"id": 2, "owner": "aveloxis", "name": "augur"},
   {"id": 31, "owner": "chaoss", "name": "augur-license"}
 ]
 ```

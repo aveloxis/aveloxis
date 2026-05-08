@@ -189,7 +189,7 @@ The per-repo helpers `RefreshRepoAggregates(repoID)` and `RefreshRepoGroupAggreg
 
 ## Phase 4: Commit author resolution
 
-After facade completes, git commit author emails are resolved to GitHub user accounts. This is the Go implementation of the [augur-contributor-resolver](https://github.com/augurlabs/augur-contributor-resolver) scripts.
+After facade completes, git commit author emails are resolved to GitHub user accounts. This is the Go implementation of the [augur-contributor-resolver](https://github.com/aveloxis/augur-contributor-resolver) scripts.
 
 ### Resolution strategy (cheapest first)
 

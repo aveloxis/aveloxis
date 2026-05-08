@@ -87,7 +87,7 @@ UUID: 01003039-0000-0000-0000-000000000000
 
 ## Git-phase resolution: Commit resolver
 
-After the facade phase inserts commit rows, the commit resolver maps git commit author emails to GitHub user accounts. This is the Go implementation of the [augur-contributor-resolver](https://github.com/augurlabs/augur-contributor-resolver) scripts.
+After the facade phase inserts commit rows, the commit resolver maps git commit author emails to GitHub user accounts. This is the Go implementation of the [augur-contributor-resolver](https://github.com/aveloxis/augur-contributor-resolver) scripts.
 
 ### Resolution strategy (cheapest first)
 

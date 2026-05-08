@@ -59,7 +59,9 @@ func TestMigrateAddsForceFullCollectColumn(t *testing.T) {
 	// Expect an addColumnIfMissing line targeting the flag on the queue
 	// table, so operators upgrading from <0.18.24 get the column without
 	// having to re-run schema.sql by hand.
-	needle := `addColumnIfMissing(ctx, pg, "aveloxis_ops.collection_queue", "force_full_collect"`
+	// v0.19.4 changed addColumnIfMissing to take logger + *[]error after
+	// the swallow-everything pattern was removed; needle updated accordingly.
+	needle := `addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.collection_queue", "force_full_collect"`
 	if !strings.Contains(src, needle) {
 		t.Error("migrate.go must call addColumnIfMissing for aveloxis_ops.collection_queue.force_full_collect so operators upgrading an existing database get the column automatically")
 	}

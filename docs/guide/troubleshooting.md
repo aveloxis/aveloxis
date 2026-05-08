@@ -746,6 +746,77 @@ If the service outage is prolonged, the repo will fail after 10 retries and be r
 
 ---
 
+## Restart appears to take days before collection resumes
+
+**Symptom:** After `aveloxis serve` restarts on a large fleet (10K+ repos), the monitor dashboard shows zero active workers for hours or days, even though the queue has thousands of due repos. New collection traffic doesn't begin until what looks like a multi-day "warm-up" finishes.
+
+**Cause:** Before v0.18.29, `processLeftoverStaging` ran synchronously on the scheduler's main goroutine before `fillWorkerSlots` could claim any new jobs. Each repo with backlogged staging from a prior interrupted run could take 30+ hours to process; with 23 backlogged repos, the worker pool sat idle for ~3 days while staging drained.
+
+**Solution (v0.18.29):** The drain now runs in a background goroutine. Repos with leftover staging are atomically lock-parked (`status='collecting'`, `locked_by='<workerID>:drain'`) before the goroutine launches, so `fillWorkerSlots` skips them naturally and immediately starts claiming the rest of the fleet's queued repos. Each drained repo rejoins the queue as draining completes.
+
+**Confirm the fix is active:**
+
+```bash
+grep "launching background leftover-staging drain" ~/.aveloxis/aveloxis.log
+# v0.18.29: this line appears within seconds of restart with the count
+# of repos being drained. Workers begin claiming queued repos in parallel.
+```
+
+If the log instead shows `processing leftover staging data from previous run (synchronous fallback)`, the drain-park UPDATE failed (e.g. transient DB error) and the scheduler fell back to the synchronous path to preserve data integrity. The fallback is rare; investigate the preceding `failed to lock-park leftover drain set` warning.
+
+**The first-collection invariant is preserved:** for repos whose initial collection was interrupted (`last_collected = NULL` in `aveloxis_ops.collection_queue`), the drain processes pre-staged data into relational tables but does NOT set `last_collected`. The repo rejoins the queue with `last_collected = NULL`, so its next claim runs `since=zero` (a fresh full re-fetch) and only `CompleteJob` ever sets the timestamp after a successful end-to-end collection. This is enforced by source-contract test `TestLockReposForDrainSQLDoesNotTouchLastCollected` and integration test `TestLockReposForDrainPreservesNullLastCollected` (gated on `AVELOXIS_TEST_DB`).
+
+---
+
+## All API tokens exhausted within minutes of restart
+
+**Symptom:** After `aveloxis serve` finishes startup, the log fills with `all API keys rate-limited, waiting for reset` within 10–15 minutes. All 73 (or however many) GitHub keys hit zero remaining requests almost simultaneously, and collection pauses for ~45 minutes until the GitHub rate window resets.
+
+**Cause:** Before v0.18.29, `EnrichThinContributors(EnrichBatchSize=14000)` was called from inside `runJob` — i.e. **once per repo collection**. Every worker, after finishing its (often tiny) repo, would query up to 14,000 thin-profile logins and fire `GET /users/{login}` against REST for each one. With 120 workers all firing concurrently, the fleet attempted on the order of 1.7 million REST calls in parallel windows. The 73-key pool's hourly budget (~365K calls) was exhausted in ~11 minutes on production fleets.
+
+**Solution (v0.18.29):** Enrichment moved to a periodic scheduler-level task (`Scheduler.runEnrichment`) driven by `cfg.EnrichInterval` (default 30 minutes). Single goroutine, single 14K batch per tick, ~28K REST calls per hour against the available budget — well within headroom and leaves the rest of the budget for actual collection traffic.
+
+**Configure the cadence in `aveloxis.json`:**
+
+```json
+{
+  "collection": {
+    "enrich_interval_minutes": 30
+  }
+}
+```
+
+Faster (e.g. `15`) catches up enrichment sooner; slower (e.g. `60`) leaves more REST headroom. Default is 30 if unset.
+
+**Confirm the fix is active:**
+
+```bash
+grep "enriching thin contributor profiles" ~/.aveloxis/aveloxis.log | head -5
+# v0.18.29: should appear at most twice per hour (default 30-min interval),
+# not 120 times within a few seconds after a restart.
+```
+
+---
+
+## Repeated `duplicate key value violates unique constraint "contributors_pkey"` in Postgres logs
+
+**Symptom:** PostgreSQL logs show thousands of `ERROR: duplicate key value violates unique constraint "contributors_pkey"` warnings per day, all from `INSERT INTO aveloxis_data.contributors`. The errors don't crash collection (the upsert is wrapped in a retry/skip), but they generate log noise and individual contributor rows may end up with stale `cntrb_login` values.
+
+**Cause:** Before v0.18.29, `ContributorResolver.Resolve` (`internal/db/contributors.go`) passed the deterministic `cntrb_id = PlatformUUID(platform, userID)` as `$1` but used `ON CONFLICT (cntrb_login) WHERE cntrb_login != ''`. When two workers race to insert the same numeric platform user under different login strings (historical login drift across repos, GitHub renames, or just two workers seeing the same hot user — like `dependabot[bot]` appearing in hundreds of repos — concurrently), the login-targeted conflict check fails to match (the new login differs from the existing row's login), so the INSERT proceeds, then trips `contributors_pkey` because that `cntrb_id` already exists in the table.
+
+**Solution (v0.18.29):** `Resolve` now branches on `userID > 0`. The deterministic-UUID path uses `ON CONFLICT (cntrb_id) DO UPDATE SET cntrb_login = COALESCE(NULLIF(EXCLUDED.cntrb_login,''), contributors.cntrb_login), …`. Concurrent inserts of the same numeric user route cleanly to DO UPDATE; renamed users' rows pick up the new login on next observation. The `userID == 0` branch (random UUID for email-only contributors, no platform user) keeps `ON CONFLICT (cntrb_login) WHERE cntrb_login != ''` because login is the natural unique key there.
+
+**Confirm the fix is active:**
+
+```bash
+# Should show very few or zero contributors_pkey errors per day after v0.18.29.
+grep "contributors_pkey" /var/log/postgresql/postgresql-*.log | wc -l
+```
+
+If you still see them after upgrading, ensure both `aveloxis migrate` AND `aveloxis serve` are running v0.18.29 (mismatched binaries can leave the old SQL active in some code paths).
+
+---
+
 ## Next steps
 
 - [Monitoring](monitoring.md) -- use the dashboard for real-time status

@@ -84,23 +84,58 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 		}
 		defer tx.Rollback(ctx)
 
-		// Use the partial unique index form — NOT ON CONSTRAINT, because
-		// idx_contributors_login is an index (not a constraint) and the
-		// ON CONSTRAINT form doesn't accept a WHERE clause. The previous
-		// syntax caused a SQL error on every lazy contributor creation,
-		// resulting in 131K+ messages with NULL cntrb_id.
-		err = tx.QueryRow(ctx, `
-			INSERT INTO aveloxis_data.contributors
-				(cntrb_id, cntrb_login, cntrb_email, cntrb_full_name, cntrb_created_at)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (cntrb_login) WHERE cntrb_login != ''
-			DO UPDATE SET
-				cntrb_email = COALESCE(NULLIF(EXCLUDED.cntrb_email,''), contributors.cntrb_email),
-				cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name,''), contributors.cntrb_full_name),
-				data_collection_date = NOW()
-			RETURNING cntrb_id::text`,
-			newID, login, email, name, time.Now(),
-		).Scan(&cntrbID)
+		// Two upsert SQL flavors depending on whether the contributor has
+		// a numeric platform user ID (deterministic cntrb_id) or not
+		// (random UUID). Postgres has no multi-target ON CONFLICT, so
+		// we branch.
+		//
+		// userID > 0: cntrb_id is PlatformUUID(platformID, userID),
+		// deterministic per platform user. The natural unique key here
+		// is cntrb_id — concurrent inserts of the same numeric user
+		// under different login strings (historical login drift across
+		// repos, GitHub renames, two workers seeing the same hot user
+		// at once) all collide on cntrb_id, so ON CONFLICT (cntrb_id)
+		// routes them all to DO UPDATE. The DO UPDATE clause also
+		// updates cntrb_login from EXCLUDED so a renamed user's row
+		// picks up the new login on next observation.
+		//
+		// At v0.18.28 this used ON CONFLICT (cntrb_login) — which
+		// failed to match when login strings differed across observers,
+		// letting INSERT proceed and trip contributors_pkey, raising
+		// thousands of WARNs/day on a 40K-repo fleet.
+		//
+		// userID == 0: cntrb_id is a random UUID per call (email-only
+		// contributor, no platform user). Two observations of the
+		// same person generate different cntrb_ids but the same login,
+		// so ON CONFLICT (cntrb_login) WHERE cntrb_login != '' is the
+		// right target.
+		if userID > 0 {
+			err = tx.QueryRow(ctx, `
+				INSERT INTO aveloxis_data.contributors
+					(cntrb_id, cntrb_login, cntrb_email, cntrb_full_name, cntrb_created_at)
+				VALUES ($1, $2, $3, $4, $5)
+				ON CONFLICT (cntrb_id) DO UPDATE SET
+					cntrb_login = COALESCE(NULLIF(EXCLUDED.cntrb_login,''), contributors.cntrb_login),
+					cntrb_email = COALESCE(NULLIF(EXCLUDED.cntrb_email,''), contributors.cntrb_email),
+					cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name,''), contributors.cntrb_full_name),
+					data_collection_date = NOW()
+				RETURNING cntrb_id::text`,
+				newID, login, email, name, time.Now(),
+			).Scan(&cntrbID)
+		} else {
+			err = tx.QueryRow(ctx, `
+				INSERT INTO aveloxis_data.contributors
+					(cntrb_id, cntrb_login, cntrb_email, cntrb_full_name, cntrb_created_at)
+				VALUES ($1, $2, $3, $4, $5)
+				ON CONFLICT (cntrb_login) WHERE cntrb_login != ''
+				DO UPDATE SET
+					cntrb_email = COALESCE(NULLIF(EXCLUDED.cntrb_email,''), contributors.cntrb_email),
+					cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name,''), contributors.cntrb_full_name),
+					data_collection_date = NOW()
+				RETURNING cntrb_id::text`,
+				newID, login, email, name, time.Now(),
+			).Scan(&cntrbID)
+		}
 		if err != nil {
 			return err
 		}

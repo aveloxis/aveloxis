@@ -88,6 +88,12 @@ h3{font-size:16px;margin-bottom:12px;color:#24292e}
 </div>
 <div class="breadcrumb"><span class="current">Home</span><span class="sep">|</span><a href="/monitor">Monitor</a></div>
 <div class="container">
+{{if .PendingOnly}}
+<div class="card" style="background:#fff8c5;border:1px solid #d4a72c">
+<strong>Your account is awaiting administrator approval.</strong>
+<p style="margin:8px 0 0 0;color:#5a4500">An aveloxis administrator will review your registration shortly. You'll be notified by email once your groups are approved and collection begins. While you wait, you can continue to add repositories and organizations to your group; they will be queued for collection automatically once your account is approved.</p>
+</div>
+{{end}}
 <div class="card">
 <h2>Your Groups</h2>
 <form method="POST" action="/groups/new" class="form-row">
@@ -113,6 +119,31 @@ h3{font-size:16px;margin-bottom:12px;color:#24292e}
 <h2>Compare Repositories</h2>
 <p style="color:#586069;font-size:14px;margin-bottom:12px">Search and select up to 5 repositories to compare side-by-side with weekly activity charts. Use 100% or Z-Score modes to normalize for community size.</p>
 {{template "compareSearchWidget" (dict "Prefix" "dash")}}
+</div>
+</div>
+</body></html>
+{{end}}
+
+{{define "account_email"}}
+{{template "head" (dict "Title" "Confirm your email")}}
+<div class="nav">
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
+<div class="nav-user">
+{{if .Session.AvatarURL}}<img src="{{.Session.AvatarURL}}" alt="">{{end}}
+<span>{{.Session.LoginName}}</span>
+<a href="/logout">Logout</a>
+</div>
+</div>
+<div class="container">
+<div class="card">
+<h2>Confirm your email</h2>
+<p style="color:#586069">We need an email address to coordinate with you about your account and notify you when your groups are approved. Your OAuth provider did not return a verified public email for this account, so please confirm one below.</p>
+{{if .Error}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">{{.Error}}</p>{{end}}
+<form method="POST" action="/account/email" class="form-row" style="margin-top:12px">
+<input type="email" name="email" placeholder="you@example.com" required autofocus>
+<button type="submit" class="btn btn-primary">Save email</button>
+</form>
+<p style="color:#586069;font-size:13px;margin-top:12px">Your email is used only by aveloxis administrators for coordination and approval notifications.</p>
 </div>
 </div>
 </body></html>

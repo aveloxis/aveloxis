@@ -10,6 +10,46 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// GetUserEmail returns the email column for the given user_id.
+// Returns ("", nil) when the row exists but the email column is
+// empty/NULL — used by the v0.19.10 email-gate check on the
+// dashboard path. Returns an error only on actual DB failures.
+func (s *PostgresStore) GetUserEmail(ctx context.Context, userID int) (string, error) {
+	var email *string
+	err := s.pool.QueryRow(ctx,
+		`SELECT email FROM aveloxis_ops.users WHERE user_id = $1`, userID).Scan(&email)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	if email == nil {
+		return "", nil
+	}
+	return *email, nil
+}
+
+// UpdateUserEmail writes the email column for the given user_id.
+// Used by the v0.19.10 POST handler for /account/email when the OAuth
+// flow couldn't surface an email automatically. Returns an error if
+// the user doesn't exist or the write fails.
+func (s *PostgresStore) UpdateUserEmail(ctx context.Context, userID int, email string) error {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return errors.New("email cannot be empty")
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE aveloxis_ops.users SET email = $2 WHERE user_id = $1`, userID, email)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user_id %d not found", userID)
+	}
+	return nil
+}
+
 // ErrEmptyLogin is returned by UpsertOAuthUser when the supplied
 // OAuthUserInfo.Login is empty (or whitespace-only). An empty login
 // is never a legitimate OAuth result; allowing it through inserts a

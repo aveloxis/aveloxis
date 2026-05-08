@@ -200,6 +200,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Authenticated routes.
 	mux.HandleFunc("/dashboard", s.requireAuth(s.handleDashboard))
+	mux.HandleFunc("/account/email", s.requireAuth(s.handleAccountEmail))
 	mux.HandleFunc("/groups/new", s.requireAuth(s.handleNewGroup))
 	mux.HandleFunc("/groups/", s.requireAuth(s.handleGroup))
 	mux.HandleFunc("/groups/add-repo", s.requireAuth(s.handleAddRepo))
@@ -446,6 +447,20 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// v0.19.10: when /user returns an empty email field — which happens
+	// when the user has set their email to private — fall back to
+	// GitHub's /user/emails endpoint. The user:email OAuth scope is
+	// already requested at OAuth init (see ghOAuth.Scopes), so this
+	// call works without the user re-authorizing. We pick the primary
+	// verified email; if none, the first verified email; if still
+	// nothing, we fall through to the email-prompt flow at
+	// /account/email.
+	if ghUser.Email == "" {
+		if email := fetchGitHubPrimaryEmail(r.Context(), client, s.logger); email != "" {
+			ghUser.Email = email
+		}
+	}
+
 	// Create or find user. v0.19.0: UpsertOAuthUser auto-promotes the
 	// first-ever user to admin so a fresh deployment can review
 	// subsequent submissions.
@@ -488,6 +503,54 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	sessToken := s.createSession(userID, ghUser.Login, ghUser.AvatarURL, "github", isAdmin)
 	http.SetCookie(w, s.sessionCookie(sessToken))
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
+}
+
+// fetchGitHubPrimaryEmail calls GitHub's /user/emails endpoint and
+// returns the user's primary verified email, or the first verified
+// email if no primary is flagged, or "" if no verified email exists.
+// Used as the v0.19.10 fallback when /user returned an empty email
+// field (the common case for users with private email visibility).
+//
+// The user:email OAuth scope must be requested by ghOAuth — without
+// it, /user/emails returns 404. The scope IS requested as of v0.19.0;
+// see ghOAuth.Scopes in NewServer.
+func fetchGitHubPrimaryEmail(ctx context.Context, client *http.Client, logger *slog.Logger) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user/emails", nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Warn("failed to call /user/emails for OAuth fallback", "error", err)
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		logger.Warn("github /user/emails returned non-200",
+			"status", resp.StatusCode,
+			"hint", "scope user:email may not be granted")
+		return ""
+	}
+	var emails []struct {
+		Email    string `json:"email"`
+		Primary  bool   `json:"primary"`
+		Verified bool   `json:"verified"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&emails); err != nil {
+		logger.Warn("failed to decode /user/emails", "error", err)
+		return ""
+	}
+	for _, e := range emails {
+		if e.Primary && e.Verified {
+			return e.Email
+		}
+	}
+	for _, e := range emails {
+		if e.Verified {
+			return e.Email
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleGitLabAuth(w http.ResponseWriter, r *http.Request) {
@@ -595,10 +658,78 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
+
+	// v0.19.10 email gate: when the OAuth flow couldn't surface an
+	// email (private GitHub email + /user/emails also empty), redirect
+	// to the email-collection form before rendering the dashboard.
+	// Operators need a usable email to coordinate with new users; we
+	// enforce it at the gate rather than at signup so the OAuth
+	// callback path stays simple.
+	if email, err := s.store.GetUserEmail(r.Context(), sess.UserID); err == nil && strings.TrimSpace(email) == "" {
+		http.Redirect(w, r, "/account/email", http.StatusFound)
+		return
+	}
+
 	groups, _ := s.store.GetUserGroups(r.Context(), sess.UserID)
+
+	// v0.19.10 pending-approval banner: non-admin users whose groups
+	// are all status='pending' get a clear signal their account is
+	// awaiting administrator approval. Without this they see an empty
+	// dashboard indistinguishable from a fresh admin login.
+	pendingOnly := !sess.IsAdmin && len(groups) > 0
+	if pendingOnly {
+		for _, g := range groups {
+			if g.Status != "pending" {
+				pendingOnly = false
+				break
+			}
+		}
+	}
+
 	s.tmpl.ExecuteTemplate(w, "dashboard", map[string]interface{}{
+		"Session":     sess,
+		"Groups":      groups,
+		"PendingOnly": pendingOnly,
+	})
+}
+
+// handleAccountEmail renders (GET) and processes (POST) the
+// email-collection form. This is the v0.19.10 fallback when both /user
+// and /user/emails came back empty during OAuth callback. After the
+// form is submitted, users.email is set and the user redirects to
+// /dashboard.
+func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
+	sess := s.getSession(r)
+
+	if r.Method == http.MethodPost {
+		email := strings.TrimSpace(r.FormValue("email"))
+		if email == "" || !strings.Contains(email, "@") {
+			s.tmpl.ExecuteTemplate(w, "account_email", map[string]any{
+				"Session": sess,
+				"Error":   "Please enter a valid email address.",
+			})
+			return
+		}
+		if err := s.store.UpdateUserEmail(r.Context(), sess.UserID, email); err != nil {
+			s.logger.Warn("failed to set user email", "user_id", sess.UserID, "error", err)
+			s.tmpl.ExecuteTemplate(w, "account_email", map[string]any{
+				"Session": sess,
+				"Error":   "Could not save email. Try again.",
+			})
+			return
+		}
+		http.Redirect(w, r, "/dashboard", http.StatusFound)
+		return
+	}
+
+	// GET: show the form. If the user already has an email, they
+	// don't need to be here — bounce them back to dashboard.
+	if email, _ := s.store.GetUserEmail(r.Context(), sess.UserID); strings.TrimSpace(email) != "" {
+		http.Redirect(w, r, "/dashboard", http.StatusFound)
+		return
+	}
+	s.tmpl.ExecuteTemplate(w, "account_email", map[string]any{
 		"Session": sess,
-		"Groups":  groups,
 	})
 }
 

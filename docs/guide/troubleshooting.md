@@ -888,6 +888,96 @@ If you still see them after upgrading, ensure both `aveloxis migrate` AND `avelo
 
 ---
 
+## Orphaned postgres backend after `aveloxis stop serve`
+
+**Symptom:** After stopping serve and starting it again (or running `aveloxis migrate`), the new process appears to hang. Specifically:
+
+- Migration never finishes — `aveloxis migrate` sits silent, no progress logs.
+- Or, restarted serve never enters its main loop — `aveloxis monitor` shows no workers, queue stays at 100% queued.
+- A pg_locks watch shows ONE long-held `RowExclusiveLock` on `aveloxis_data.commits`, held for 5+ minutes, with the holder PID running an aveloxis-flavored `UPDATE` (most commonly `BackfillCommitAuthorIDs` from commit resolution).
+- The waiter is the new process's startup `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX` from the embedded `schema.sql`.
+
+**Cause:** When `aveloxis stop serve` (or any SIGTERM) fires while a postgres backend is mid-statement, the Go client process exits, but the postgres backend keeps executing the in-flight statement until it finishes (or until TCP keepalive notices the dead client — can be tens of minutes by default). The orphaned backend continues to hold its row/table locks for the duration. A fresh `aveloxis migrate` or restarted `aveloxis serve` blocks on those locks during its own startup DDL.
+
+`BackfillCommitAuthorIDs` is the most common offender: at the end of every commit resolution (`internal/collector/commit_resolver.go`), it runs an UPDATE joining all the repo's commits against `contributors`. On large repos (kubernetes-scale, millions of commits) this UPDATE can run for many minutes. If serve is stopped while one of these is in flight, the orphan can persist for the full TCP-keepalive timeout.
+
+**Diagnose:**
+
+```sql
+-- 1. Check for active backends older than 5 minutes
+SELECT pid, state, application_name, age(now(), backend_start) AS conn_age,
+       age(now(), query_start) AS query_age, left(query, 100) AS query
+FROM pg_stat_activity
+WHERE datname = 'aveloxis_large'   -- substitute your DB name
+  AND state = 'active'
+  AND query_start < now() - interval '5 minutes'
+ORDER BY query_start;
+```
+
+```bash
+# 2. Cross-check OS-side: any aveloxis processes actually running?
+ps -ef | grep -E "aveloxis serve|aveloxis collect" | grep -v grep
+```
+
+If the SQL shows a long-running aveloxis backend but `ps` shows no matching aveloxis-side process, the backend is orphaned.
+
+**Show both sides of the contention** (helpful when you want to confirm the waiter is your migrate / new serve, not something else):
+
+```sql
+SELECT
+  blocked_locks.pid                                AS waiter_pid,
+  age(now(), blocked_activity.query_start)         AS waiter_age,
+  blocked_locks.mode                               AS waiter_mode,
+  left(blocked_activity.query, 200)                AS waiter_query,
+  blocking_locks.pid                               AS holder_pid,
+  blocking_locks.mode                              AS holder_mode,
+  left(blocking_activity.query, 200)               AS holder_query
+FROM pg_locks blocked_locks
+JOIN pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid
+JOIN pg_locks blocking_locks
+  ON blocking_locks.locktype = blocked_locks.locktype
+ AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database
+ AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation
+ AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page
+ AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple
+ AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid
+ AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid
+ AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid
+ AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid
+ AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid
+ AND blocking_locks.pid != blocked_locks.pid
+JOIN pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid
+WHERE NOT blocked_locks.granted;
+```
+
+**Fix:** terminate the orphan.
+
+```sql
+SELECT pg_terminate_backend(<pid>);
+```
+
+The in-flight statement rolls back (no committed work is lost — uncommitted UPDATEs are reverted). Locks release immediately. Whatever was waiting (your migrate or new serve startup) gets its lock and proceeds within seconds.
+
+After terminating, sanity-check no other orphans linger:
+
+```sql
+SELECT pid, state, application_name,
+       age(now(), query_start) AS query_age,
+       left(query, 100) AS query
+FROM pg_stat_activity
+WHERE datname = 'aveloxis_large'
+  AND state = 'active'
+  AND query_start < now() - interval '5 minutes';
+```
+
+**Prevent:**
+
+- Run `aveloxis migrate` (and any schema-changing operation) only when serve is fully stopped, not while it's processing repos. Use `aveloxis stop all` first; resume with `aveloxis start all` after migrate completes.
+- For large-fleet operators, schedule serve restarts during quiet periods rather than mid-collection. Restarting while a 20+ minute commits UPDATE is in flight guarantees an orphan.
+- Filed for v0.20.x: graceful pgx-pool shutdown in the scheduler's ctx-cancel path so backends disconnect cleanly on stop, eliminating the TCP-keepalive-wait window. Tracked alongside two related improvements: a post-stop verification that no aveloxis backends remain in `pg_stat_activity`, and surfacing blocked-startup-DDL with the holder PID in serve's startup log.
+
+---
+
 ## Next steps
 
 - [Monitoring](monitoring.md) -- use the dashboard for real-time status

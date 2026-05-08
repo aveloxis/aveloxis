@@ -1207,6 +1207,7 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 					cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name, ''), contributors.cntrb_full_name),
 					cntrb_company = COALESCE(NULLIF(EXCLUDED.cntrb_company, ''), contributors.cntrb_company),
 					cntrb_location = COALESCE(NULLIF(EXCLUDED.cntrb_location, ''), contributors.cntrb_location),
+					cntrb_canonical = COALESCE(NULLIF(EXCLUDED.cntrb_canonical, ''), contributors.cntrb_canonical),
 					cntrb_created_at = COALESCE(contributors.cntrb_created_at, EXCLUDED.cntrb_created_at),
 					tool_version = EXCLUDED.tool_version,
 					data_collection_date = NOW()

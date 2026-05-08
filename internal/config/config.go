@@ -209,6 +209,17 @@ type CollectionConfig struct {
 	// 5000/hour core API), so this runs at a deliberately low
 	// cadence. Default 60 (minutes) when unset.
 	SearchResolveIntervalMinutes int `json:"search_resolve_interval_minutes"`
+
+	// AffiliationIntervalMinutes controls how often the v0.19.7
+	// PopulateAffiliations task runs as a periodic singleton.
+	// Pre-v0.19.7 this fired from every worker after every repo
+	// completed (Phase 5b in runJob), producing fan-out contention on
+	// UNIQUE (ca_domain) and the ShareLock pile-up the operator
+	// caught on 2026-05-08. The domain→company map is global state;
+	// recomputing it from contributor data once an hour is sufficient
+	// because the source data (cntrb_company) is itself bounded by
+	// the 30-day enrichment cooldown. Default 60 (minutes) when unset.
+	AffiliationIntervalMinutes int `json:"affiliation_interval_minutes"`
 }
 
 // EnrichIntervalDuration converts EnrichIntervalMinutes to a time.Duration.
@@ -228,6 +239,15 @@ func (c *CollectionConfig) SearchResolveIntervalDuration() time.Duration {
 		return 60 * time.Minute
 	}
 	return time.Duration(c.SearchResolveIntervalMinutes) * time.Minute
+}
+
+// AffiliationIntervalDuration converts AffiliationIntervalMinutes to
+// a time.Duration. Falls back to 60 minutes when unset.
+func (c *CollectionConfig) AffiliationIntervalDuration() time.Duration {
+	if c.AffiliationIntervalMinutes <= 0 {
+		return 60 * time.Minute
+	}
+	return time.Duration(c.AffiliationIntervalMinutes) * time.Minute
 }
 
 // MailConfig configures the Gmail-backed transactional mailer

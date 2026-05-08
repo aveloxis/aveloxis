@@ -282,6 +282,36 @@ func (s *PostgresStore) GetOrgRepoGroups(ctx context.Context) ([]OrgGroup, error
 	return groups, rows.Err()
 }
 
+// GetUserGroupIDsForOrgURL returns every user_group whose user_org_requests
+// row points at the given org URL. Used by the scan-time / refresh paths
+// to bridge legacy repo_groups discovery into modern aveloxis_ops.user_repos
+// linkage so every repo (including forks) discovered while scanning a
+// tracked org lands in user_repos for the operator's group view.
+//
+// Returns an empty slice (not an error) when nothing is tracking the org —
+// callers can range over the result unconditionally.
+func (s *PostgresStore) GetUserGroupIDsForOrgURL(ctx context.Context, orgURL string) ([]int64, error) {
+	if orgURL == "" {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT group_id FROM aveloxis_ops.user_org_requests WHERE org_url = $1`,
+		orgURL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetReposForRenameCheck returns repos that should be checked for renames.
 // Picks repos not collected recently, limited to n repos per check cycle.
 func (s *PostgresStore) GetReposForRenameCheck(ctx context.Context, limit int) ([]model.Repo, error) {

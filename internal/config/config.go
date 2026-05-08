@@ -185,6 +185,30 @@ type CollectionConfig struct {
 	//
 	// Ignored when ThreadingMode != "sharded".
 	ShardSize int `json:"shard_size"`
+
+	// EnrichIntervalMinutes controls how often thin-contributor profile
+	// enrichment runs as a periodic scheduler task. v0.18.29 moved
+	// enrichment off the per-job hot path because every worker calling
+	// EnrichThinContributors(14000) after its own repo finished
+	// exhausted the GitHub key pool in ~11 minutes on a 120-worker
+	// fleet. The periodic task runs once per interval on a single
+	// goroutine, well under the rate-limit budget.
+	//
+	// Default 30 (minutes) when unset. Faster (10) catches up enrichment
+	// sooner; slower (60) leaves more REST headroom. With 14K thin
+	// contributors and 73 keys, even 60 minutes is comfortably within
+	// the 5K/key/hour budget.
+	EnrichIntervalMinutes int `json:"enrich_interval_minutes"`
+}
+
+// EnrichIntervalDuration converts EnrichIntervalMinutes to a time.Duration.
+// Falls back to 30 minutes when unset (zero) so existing aveloxis.json
+// files without the new key keep the documented default.
+func (c *CollectionConfig) EnrichIntervalDuration() time.Duration {
+	if c.EnrichIntervalMinutes <= 0 {
+		return 30 * time.Minute
+	}
+	return time.Duration(c.EnrichIntervalMinutes) * time.Minute
 }
 
 // Load reads configuration from a JSON file.

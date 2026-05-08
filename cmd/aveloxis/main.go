@@ -158,6 +158,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		ListingMode:         cfg.Collection.ListingMode,
 		ThreadingMode:       cfg.Collection.ThreadingMode,
 		ShardSize:           cfg.Collection.ShardSize,
+		EnrichInterval:      cfg.Collection.EnrichIntervalDuration(),
 	})
 	go sched.Run(ctx)
 

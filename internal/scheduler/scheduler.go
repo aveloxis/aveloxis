@@ -40,6 +40,7 @@ type Config struct {
 	ListingMode         string        // "rest" (default) or "graphql" — routes issue+PR listing through ListIssuesAndPRs
 	ThreadingMode       string        // "single" (default) or "sharded" — fans out PR batch fetching across goroutines
 	ShardSize           int           // item-count threshold for spawning an additional shard (default 3000)
+	EnrichInterval      time.Duration // how often to run thin-contributor enrichment (default 30 min). v0.18.29 moved enrichment out of per-job processing into a periodic scheduler task.
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -80,6 +81,9 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	}
 	if cfg.OrgRefreshInterval == 0 {
 		cfg.OrgRefreshInterval = 4 * time.Hour
+	}
+	if cfg.EnrichInterval == 0 {
+		cfg.EnrichInterval = 30 * time.Minute
 	}
 
 	hostname, _ := os.Hostname()
@@ -177,14 +181,32 @@ func (s *Scheduler) Run(ctx context.Context) {
 			"rows_updated", realigned, "recollect_after", s.cfg.RecollectAfter)
 	}
 
-	// Process leftover staging rows from a previous interrupted run.
-	// Runs AFTER lock recovery and due_at realignment so orphan locks and
-	// stale schedules don't wait on this multi-minute drain. Still
-	// synchronous: we must finish draining before fillWorkerSlots starts
-	// claiming new jobs, because PurgeStagedForRepo at the top of
-	// CollectRepo would wipe any unprocessed rows from the repo being
-	// re-claimed.
-	s.processLeftoverStaging(ctx)
+	// Identify the leftover-staging drain set and lock-park those repos
+	// as status='collecting', locked_by='<workerID>:drain' BEFORE
+	// launching the background drain. The lock keeps fillWorkerSlots
+	// (which only claims status='queued') from racing the goroutine
+	// and triggering CollectRepo.PurgeStagedForRepo, which would wipe
+	// the in-flight staging rows. As each repo finishes draining, the
+	// goroutine releases its lock so it rejoins the queue mid-drain.
+	//
+	// v0.18.29 change from v0.18.28: the drain used to run synchronously
+	// here, blocking fillWorkerSlots for hours on a backlogged fleet
+	// (production observed 33+ hours per repo, ~3 days total). Moving
+	// it to a goroutine unblocks worker scheduling immediately while
+	// keeping data-integrity intact via the lock-park.
+	drainSet, lockErr := s.identifyLeftoverDrainSet(ctx)
+	if lockErr != nil {
+		s.logger.Warn("failed to identify leftover drain set; skipping drain this cycle", "error", lockErr)
+	} else if len(drainSet) > 0 {
+		locked, lockErr := s.store.LockReposForDrain(ctx, drainSet, s.workerID)
+		if lockErr != nil {
+			s.logger.Error("failed to lock-park leftover drain set; falling back to synchronous drain to preserve data integrity", "error", lockErr)
+			s.processLeftoverStaging(ctx)
+		} else if len(locked) > 0 {
+			s.logger.Info("launching background leftover-staging drain", "repos", len(locked))
+			go s.processLeftoverStagingBackground(ctx, locked)
+		}
+	}
 
 	sem := make(chan struct{}, s.cfg.Workers)
 
@@ -217,6 +239,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// Hourly keeps the bloat bounded with negligible overhead.
 	stagingCleanupTicker := time.NewTicker(1 * time.Hour)
 	defer stagingCleanupTicker.Stop()
+
+	// Thin contributor enrichment: runs on a single goroutine at a
+	// scheduled cadence (default 30 min). v0.18.29 moved this off the
+	// per-job hot path — running it inside runJob meant 120 workers
+	// each fired EnrichThinContributors(14000) after their tiny repo
+	// finished, attempting ~1.68M REST calls in parallel and
+	// exhausting all GitHub keys in ~11 minutes (production verified).
+	enrichTicker := time.NewTicker(s.cfg.EnrichInterval)
+	defer enrichTicker.Stop()
 
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
@@ -265,6 +296,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-stagingCleanupTicker.C:
 			go s.runStagingCleanup(ctx)
 
+		case <-enrichTicker.C:
+			go s.runEnrichment(ctx)
+
 		case <-pollTicker.C:
 			s.fillWorkerSlots(ctx, sem)
 			s.maybeStartMatviewRebuild(ctx, sem, &lastMatviewRebuild)
@@ -289,6 +323,30 @@ func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 	if deleted > 0 {
 		s.logger.Info("staging cleanup complete", "rows_deleted", deleted)
 	}
+}
+
+// runEnrichment runs thin-contributor enrichment as a single periodic
+// task. Replaces the v0.18.28 per-job EnrichThinContributors call that
+// fired from every worker after every repo collection — that pattern
+// fanned out to ~120 concurrent EnrichThinContributors(14000) calls and
+// burned the GitHub key pool in ~11 minutes.
+//
+// Picks a single platform client per tick: GitHub when configured
+// (matching the production fleet's typical 70+ GitHub keys vs single
+// GitLab key); falls back to GitLab if no GitHub client is wired. A
+// future iteration could split the enrichment queue per platform if a
+// deployment needs symmetric coverage.
+func (s *Scheduler) runEnrichment(ctx context.Context) {
+	var client platform.Client
+	if s.ghClient != nil {
+		client = s.ghClient
+	} else if s.glClient != nil {
+		client = s.glClient
+	} else {
+		return
+	}
+	resolver := db.NewContributorResolver(s.store)
+	collector.EnrichThinContributors(ctx, s.store, resolver, client, s.logger)
 }
 
 // fillWorkerSlots fills all available semaphore slots with jobs from the queue.
@@ -452,12 +510,14 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 				}
 			}
 		}
-		// Enrich thin contributor profiles. Contributors from the Contributors
-		// API and lazy resolution only get basic data (login, avatar). This
-		// calls GET /users/{login} for company, location, email, name.
-		// Runs incrementally: up to 500 per pass.
-		resolver := db.NewContributorResolver(s.store)
-		collector.EnrichThinContributors(ctx, s.store, resolver, client, s.logger)
+		// v0.18.29: thin-contributor enrichment moved out of runJob into
+		// a periodic scheduler-level ticker (see Run's enrichTicker and
+		// runEnrichment). With 120 workers each enriching 14000 logins
+		// after finishing their tiny repo, the fleet attempted ~1.68M
+		// REST calls in parallel windows and exhausted all 73 GitHub
+		// keys in ~11 minutes. The periodic-task model runs the
+		// enrichment once per cycle, single goroutine, well under the
+		// rate-limit budget.
 	} else {
 		s.logger.Info("git-only repo, skipping API collection", "repo_id", job.RepoID)
 	}
@@ -812,16 +872,14 @@ func (s *Scheduler) generateSBOMs(ctx context.Context, repoID int64) {
 	collector.GenerateAndStoreSBOMs(ctx, s.store, repoID, s.logger)
 }
 
-// processLeftoverStaging drains any unprocessed staging rows from a previous
-// interrupted run. This ensures we don't lose data that was staged but never
-// processed into relational tables.
-func (s *Scheduler) processLeftoverStaging(ctx context.Context) {
-	// Find repos with unprocessed staging rows.
+// identifyLeftoverDrainSet returns the set of repo_ids with unprocessed
+// staging rows from a previous interrupted run. Used by Run() to feed
+// LockReposForDrain before launching the background drain.
+func (s *Scheduler) identifyLeftoverDrainSet(ctx context.Context) ([]int64, error) {
 	rows, err := s.store.Pool().Query(ctx, `
 		SELECT DISTINCT repo_id FROM aveloxis_ops.staging WHERE NOT processed`)
 	if err != nil {
-		s.logger.Warn("failed to check for leftover staging rows", "error", err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -832,25 +890,72 @@ func (s *Scheduler) processLeftoverStaging(ctx context.Context) {
 			repoIDs = append(repoIDs, id)
 		}
 	}
+	return repoIDs, rows.Err()
+}
 
+// processLeftoverStaging drains any unprocessed staging rows from a previous
+// interrupted run, synchronously. Kept as a fallback path for when the
+// drain-park lock fails (so we never lose data — better to block startup
+// than to risk PurgeStagedForRepo wiping in-flight rows). The normal path
+// is processLeftoverStagingBackground, called as a goroutine from Run().
+func (s *Scheduler) processLeftoverStaging(ctx context.Context) {
+	repoIDs, err := s.identifyLeftoverDrainSet(ctx)
+	if err != nil {
+		s.logger.Warn("failed to check for leftover staging rows", "error", err)
+		return
+	}
 	if len(repoIDs) == 0 {
 		return
 	}
 
-	s.logger.Info("processing leftover staging data from previous run", "repos", len(repoIDs))
+	s.logger.Info("processing leftover staging data from previous run (synchronous fallback)", "repos", len(repoIDs))
 	for _, repoID := range repoIDs {
-		repo, err := s.store.GetRepoByID(ctx, repoID)
-		if err != nil {
-			s.logger.Warn("failed to look up repo for leftover processing", "repo_id", repoID, "error", err)
-			continue
+		s.drainOneRepo(ctx, repoID)
+	}
+}
+
+// processLeftoverStagingBackground is the goroutine entry point for the
+// non-blocking drain path. The caller must have already lock-parked
+// drainSet via store.LockReposForDrain — those repos are status='collecting'
+// with locked_by='<workerID>:drain', invisible to fillWorkerSlots. As each
+// repo finishes draining, ReleaseDrainLock returns it to 'queued' so it
+// can be picked up for a fresh re-collection without waiting for the
+// rest of the drain set to complete.
+//
+// On context cancel (process shutting down), the loop exits cleanly. Any
+// repos still locked stay 'collecting' under the synthetic worker ID;
+// the next process startup's RecoverOtherWorkerLocks will release them
+// and the drain set will be re-identified and re-parked.
+func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainSet []int64) {
+	for i, repoID := range drainSet {
+		if ctx.Err() != nil {
+			s.logger.Info("background drain interrupted by ctx cancel; remaining repos will be re-parked on next startup",
+				"remaining", len(drainSet)-i)
+			return
 		}
-		proc := collector.NewProcessor(s.store, s.logger)
-		if err := proc.ProcessRepo(ctx, repoID, int16(repo.Platform)); err != nil {
-			s.logger.Warn("failed to process leftover staging", "repo_id", repoID, "error", err)
-		} else {
-			s.logger.Info("processed leftover staging data", "repo_id", repoID)
+		s.drainOneRepo(ctx, repoID)
+		if err := s.store.ReleaseDrainLock(ctx, repoID, s.workerID); err != nil {
+			s.logger.Warn("failed to release drain lock; repo stays locked until next restart's RecoverOtherWorkerLocks", "repo_id", repoID, "error", err)
 		}
 	}
+	s.logger.Info("background leftover-staging drain complete", "repos", len(drainSet))
+}
+
+// drainOneRepo processes one repo's leftover staging rows. Shared by the
+// synchronous fallback (processLeftoverStaging) and the background path
+// (processLeftoverStagingBackground).
+func (s *Scheduler) drainOneRepo(ctx context.Context, repoID int64) {
+	repo, err := s.store.GetRepoByID(ctx, repoID)
+	if err != nil {
+		s.logger.Warn("failed to look up repo for leftover processing", "repo_id", repoID, "error", err)
+		return
+	}
+	proc := collector.NewProcessor(s.store, s.logger)
+	if err := proc.ProcessRepo(ctx, repoID, int16(repo.Platform)); err != nil {
+		s.logger.Warn("failed to process leftover staging", "repo_id", repoID, "error", err)
+		return
+	}
+	s.logger.Info("processed leftover staging data", "repo_id", repoID)
 }
 
 // releaseOurLocks releases all queue locks held by this worker instance,

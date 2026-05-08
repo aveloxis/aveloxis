@@ -22,6 +22,7 @@ type PostgresStore struct {
 	pool             *pgxpool.Pool
 	logger           *slog.Logger
 	matviewOnStartup bool // whether to refresh materialized views during migration
+	matviewSkip      bool // whether to skip the matview block entirely (--skip-views on migrate)
 }
 
 // NewPostgresStore connects to PostgreSQL and returns a Store.
@@ -120,6 +121,15 @@ func (s *PostgresStore) Close() {
 // SetMatviewOnStartup controls whether materialized views are refreshed during migration.
 func (s *PostgresStore) SetMatviewOnStartup(enabled bool) {
 	s.matviewOnStartup = enabled
+}
+
+// SetMatviewSkip controls whether the matview block in RunMigrations is
+// skipped entirely. Used by `aveloxis migrate --skip-views` so an
+// operator iterating on schema-error fixes doesn't pay the matview
+// rebuild cost on every retry. Wins over SetMatviewOnStartup when both
+// are set — skip is the stronger signal.
+func (s *PostgresStore) SetMatviewSkip(skip bool) {
+	s.matviewSkip = skip
 }
 
 func (s *PostgresStore) Migrate(ctx context.Context) error {
@@ -280,6 +290,36 @@ func (s *PostgresStore) GetOrgRepoGroups(ctx context.Context) ([]OrgGroup, error
 		groups = append(groups, g)
 	}
 	return groups, rows.Err()
+}
+
+// GetUserGroupIDsForOrgURL returns every user_group whose user_org_requests
+// row points at the given org URL. Used by the scan-time / refresh paths
+// to bridge legacy repo_groups discovery into modern aveloxis_ops.user_repos
+// linkage so every repo (including forks) discovered while scanning a
+// tracked org lands in user_repos for the operator's group view.
+//
+// Returns an empty slice (not an error) when nothing is tracking the org —
+// callers can range over the result unconditionally.
+func (s *PostgresStore) GetUserGroupIDsForOrgURL(ctx context.Context, orgURL string) ([]int64, error) {
+	if orgURL == "" {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT group_id FROM aveloxis_ops.user_org_requests WHERE org_url = $1`,
+		orgURL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // GetReposForRenameCheck returns repos that should be checked for renames.

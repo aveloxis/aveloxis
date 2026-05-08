@@ -1098,6 +1098,16 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	}
 	http := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
 
+	// Bridge from legacy aveloxis_data.repo_groups to modern
+	// aveloxis_ops.user_groups: any user_group whose user_org_requests
+	// row points at this org's URL gets every discovered repo linked
+	// into aveloxis_ops.user_repos. Hoisted out of the page loop so we
+	// pay the lookup once per scan.
+	userGroupIDs, ugErr := s.store.GetUserGroupIDsForOrgURL(ctx, g.Website)
+	if ugErr != nil {
+		s.logger.Warn("failed to look up user_groups for org", "org_url", g.Website, "error", ugErr)
+	}
+
 	newCount := 0
 	page := 1
 	for {
@@ -1124,30 +1134,41 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		for _, item := range items {
-			// Check if we already have this repo.
+			// Resolve repo_id — either from the existing catalog row or
+			// by inserting a new one. The user_repos linkage step runs
+			// in BOTH cases so pre-bridge drift heals on subsequent
+			// refresh ticks.
+			var repoID int64
 			existing, findErr := s.store.FindRepoByURL(ctx, item.HTMLURL)
 			if findErr != nil {
 				s.logger.Warn("failed to check for existing repo", "url", item.HTMLURL, "error", findErr)
 			}
 			if existing > 0 {
-				continue
+				repoID = existing
+			} else {
+				rid, err := s.store.UpsertRepo(ctx, &model.Repo{
+					Platform: model.PlatformGitHub,
+					GitURL:   item.HTMLURL,
+					Name:     item.Name,
+					Owner:    item.Owner.Login,
+					GroupID:  g.ID,
+				})
+				if err != nil {
+					continue
+				}
+				repoID = rid
+				if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
+					continue
+				}
+				s.logger.Info("new repo discovered", "org", g.Name, "repo", item.HTMLURL)
+				newCount++
 			}
-			// New repo — add it.
-			repoID, err := s.store.UpsertRepo(ctx, &model.Repo{
-				Platform: model.PlatformGitHub,
-				GitURL:   item.HTMLURL,
-				Name:     item.Name,
-				Owner:    item.Owner.Login,
-				GroupID:  g.ID,
-			})
-			if err != nil {
-				continue
+			for _, gid := range userGroupIDs {
+				if err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
+					s.logger.Warn("failed to link discovered repo into user_repos",
+						"group_id", gid, "repo_id", repoID, "error", err)
+				}
 			}
-			if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
-				continue
-			}
-			s.logger.Info("new repo discovered", "org", g.Name, "repo", item.HTMLURL)
-			newCount++
 		}
 		page++
 	}
@@ -1164,6 +1185,12 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	// We'll reuse the ghKeys pool for now; in practice GitLab keys are separate.
 	// TODO: pass glKeys to the scheduler for GitLab org refresh.
 	http := platform.NewHTTPClient("https://"+glHost+"/api/v4", s.ghKeys, s.logger, platform.AuthGitLab)
+
+	// Same legacy → user_groups bridge as the GitHub path.
+	userGroupIDs, ugErr := s.store.GetUserGroupIDsForOrgURL(ctx, g.Website)
+	if ugErr != nil {
+		s.logger.Warn("failed to look up user_groups for group", "org_url", g.Website, "error", ugErr)
+	}
 
 	newCount := 0
 	page := 1
@@ -1192,28 +1219,37 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		for _, item := range items {
+			var repoID int64
 			existing, findErr := s.store.FindRepoByURL(ctx, item.WebURL)
 			if findErr != nil {
 				s.logger.Warn("failed to check for existing repo", "url", item.WebURL, "error", findErr)
 			}
 			if existing > 0 {
-				continue
+				repoID = existing
+			} else {
+				rid, err := s.store.UpsertRepo(ctx, &model.Repo{
+					Platform: model.PlatformGitLab,
+					GitURL:   item.WebURL,
+					Name:     item.Name,
+					Owner:    item.Namespace.FullPath,
+					GroupID:  g.ID,
+				})
+				if err != nil {
+					continue
+				}
+				repoID = rid
+				if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
+					continue
+				}
+				s.logger.Info("new repo discovered", "group", g.Name, "repo", item.WebURL)
+				newCount++
 			}
-			repoID, err := s.store.UpsertRepo(ctx, &model.Repo{
-				Platform: model.PlatformGitLab,
-				GitURL:   item.WebURL,
-				Name:     item.Name,
-				Owner:    item.Namespace.FullPath,
-				GroupID:  g.ID,
-			})
-			if err != nil {
-				continue
+			for _, gid := range userGroupIDs {
+				if err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
+					s.logger.Warn("failed to link discovered repo into user_repos",
+						"group_id", gid, "repo_id", repoID, "error", err)
+				}
 			}
-			if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
-				continue
-			}
-			s.logger.Info("new repo discovered", "group", g.Name, "repo", item.WebURL)
-			newCount++
 		}
 		page++
 	}

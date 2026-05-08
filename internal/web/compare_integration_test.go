@@ -193,7 +193,7 @@ func TestFetchURLFromRenderedPageIsServedByProxy(t *testing.T) {
 	// 3. Issue that exact URL against the web server's Handler with a
 	//    session cookie (what the browser would do automatically for a
 	//    same-origin fetch).
-	token := s.createSession(1, "tester", "", "github")
+	token := s.createSession(1, "tester", "", "github", false)
 	req := httptest.NewRequest(http.MethodGet, fetchURL, nil)
 	req.AddCookie(&http.Cookie{Name: "aveloxis_session", Value: token})
 	w := httptest.NewRecorder()

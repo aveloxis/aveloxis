@@ -76,7 +76,7 @@ func TestAPIProxyForwardsToInternalURL(t *testing.T) {
 	}
 
 	// Authenticated request: must proxy.
-	token := s.createSession(1, "tester", "", "github")
+	token := s.createSession(1, "tester", "", "github", false)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/repos/search?q=av", nil)
 	req.AddCookie(&http.Cookie{Name: "aveloxis_session", Value: token})
 	w := httptest.NewRecorder()
@@ -104,7 +104,7 @@ func TestAPIProxyReturns502WhenBackendDown(t *testing.T) {
 	// Point at a port nothing is listening on. 127.0.0.1:1 is almost always
 	// closed; the proxy should fail immediately.
 	s := newTestServerWithAPIURL(t, "http://127.0.0.1:1")
-	token := s.createSession(1, "tester", "", "github")
+	token := s.createSession(1, "tester", "", "github", false)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/repos/search?q=a", nil)
 	req.AddCookie(&http.Cookie{Name: "aveloxis_session", Value: token})

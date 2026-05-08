@@ -57,6 +57,48 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 		return "", err
 	}
 
+	// 2.5. Not found by (platform, user_id), but the login may already
+	// exist in contributors from a prior lazy resolution. Look up by
+	// cntrb_login before generating a new UUID — without this step,
+	// every UserRef whose login already lives in the table creates a
+	// fresh row that races the existing one on idx_contributors_login.
+	// The race is what produced the "duplicate key value violates
+	// unique constraint idx_contributors_login" floods in production
+	// logs from 2026-05-02. Skipped when login is empty (matches the
+	// partial unique index's WHERE clause and avoids a meaningless
+	// query).
+	if login != "" {
+		var existingID string
+		err = r.store.pool.QueryRow(ctx, `
+			SELECT cntrb_id::text
+			FROM aveloxis_data.contributors
+			WHERE cntrb_login = $1`, login).Scan(&existingID)
+		if err == nil {
+			// Reuse the existing row. If we have a real platform_user_id,
+			// backfill the contributor_identities row so future lookups
+			// by (platform_id, platform_user_id) hit the cache directly
+			// instead of falling through to login lookup again.
+			if userID > 0 {
+				_, _ = r.store.pool.Exec(ctx, `
+					INSERT INTO aveloxis_data.contributor_identities
+						(cntrb_id, platform_id, platform_user_id, login, name, email,
+						 avatar_url, profile_url, node_id, user_type, is_admin)
+					VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, FALSE)
+					ON CONFLICT (platform_id, platform_user_id) DO UPDATE SET
+						login = EXCLUDED.login,
+						name = EXCLUDED.name,
+						email = COALESCE(NULLIF(EXCLUDED.email,''), contributor_identities.email)`,
+					existingID, platformID, userID, login, name, email,
+					avatarURL, profileURL, nodeID, userType)
+			}
+			r.cache[key] = existingID
+			return existingID, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", err
+		}
+	}
+
 	// 3. Not found — create contributor + identity in a transaction.
 	//
 	// The cntrb_id UUID is deterministic per (platform_id, userID) via

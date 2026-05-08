@@ -2,12 +2,20 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// ErrEmptyLogin is returned by UpsertOAuthUser when the supplied
+// OAuthUserInfo.Login is empty (or whitespace-only). An empty login
+// is never a legitimate OAuth result; allowing it through inserts a
+// blank row that subsequent logins keep matching, shadowing the
+// real user account. See the v0.18.28 incident in CLAUDE.md.
+var ErrEmptyLogin = errors.New("oauth login name is empty")
 
 // OAuthUserInfo holds user data from an OAuth provider.
 type OAuthUserInfo struct {
@@ -23,7 +31,15 @@ type OAuthUserInfo struct {
 }
 
 // UpsertOAuthUser creates or updates a user from OAuth login. Returns user_id.
+// Rejects an empty Login with ErrEmptyLogin so a blank row never gets
+// inserted. Distinguishes pgx.ErrNoRows from real DB errors on the
+// initial lookup so a transient query failure doesn't silently
+// trigger an INSERT and produce a duplicate user row.
 func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo) (int, error) {
+	if strings.TrimSpace(info.Login) == "" {
+		return 0, ErrEmptyLogin
+	}
+
 	var userID int
 
 	// Try to find existing user by login.
@@ -32,6 +48,12 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 		info.Login).Scan(&userID)
 
 	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			// Real DB error — surface it. Treating this as "not
+			// found" and falling through to INSERT is what created
+			// blank/duplicate rows in the v0.18.28 incident.
+			return 0, fmt.Errorf("lookup user by login: %w", err)
+		}
 		// Not found — create.
 		firstName := info.Name
 		if idx := strings.Index(firstName, " "); idx > 0 {

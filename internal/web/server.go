@@ -287,6 +287,16 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
+// truncateForLog returns a string-safe slice of body capped at max
+// bytes, suitable for surfacing in an error log without flooding it
+// when the upstream returns an HTML error page or other large body.
+func truncateForLog(body []byte, max int) string {
+	if len(body) <= max {
+		return string(body)
+	}
+	return string(body[:max]) + "...(truncated)"
+}
+
 // ============================================================
 // Auth handlers
 // ============================================================
@@ -359,6 +369,13 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Error("github /user returned non-200",
+			"status", resp.StatusCode, "body", truncateForLog(body, 200))
+		http.Error(w, "GitHub user fetch failed", http.StatusBadGateway)
+		return
+	}
+
 	var ghUser struct {
 		ID        int64  `json:"id"`
 		Login     string `json:"login"`
@@ -366,7 +383,16 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		Email     string `json:"email"`
 		AvatarURL string `json:"avatar_url"`
 	}
-	json.Unmarshal(body, &ghUser)
+	if err := json.Unmarshal(body, &ghUser); err != nil {
+		s.logger.Error("github /user response unmarshal failed", "error", err)
+		http.Error(w, "GitHub user payload invalid", http.StatusBadGateway)
+		return
+	}
+	if strings.TrimSpace(ghUser.Login) == "" {
+		s.logger.Error("github /user response missing login field", "body", truncateForLog(body, 200))
+		http.Error(w, "GitHub did not return a login. Try again, or check token scopes.", http.StatusBadGateway)
+		return
+	}
 
 	// Create or find user.
 	userID, err := s.store.UpsertOAuthUser(r.Context(), db.OAuthUserInfo{
@@ -431,6 +457,13 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Error("gitlab /user returned non-200",
+			"status", resp.StatusCode, "body", truncateForLog(body, 200))
+		http.Error(w, "GitLab user fetch failed", http.StatusBadGateway)
+		return
+	}
+
 	var glUser struct {
 		ID        int64  `json:"id"`
 		Username  string `json:"username"`
@@ -438,7 +471,16 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		Email     string `json:"email"`
 		AvatarURL string `json:"avatar_url"`
 	}
-	json.Unmarshal(body, &glUser)
+	if err := json.Unmarshal(body, &glUser); err != nil {
+		s.logger.Error("gitlab /user response unmarshal failed", "error", err)
+		http.Error(w, "GitLab user payload invalid", http.StatusBadGateway)
+		return
+	}
+	if strings.TrimSpace(glUser.Username) == "" {
+		s.logger.Error("gitlab /user response missing username field", "body", truncateForLog(body, 200))
+		http.Error(w, "GitLab did not return a username. Try again, or check token scopes.", http.StatusBadGateway)
+		return
+	}
 
 	userID, err := s.store.UpsertOAuthUser(r.Context(), db.OAuthUserInfo{
 		Login:      glUser.Username,
@@ -450,6 +492,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		Provider:   "gitlab",
 	})
 	if err != nil {
+		s.logger.Error("failed to upsert OAuth user", "error", err)
 		http.Error(w, "Failed to create user", http.StatusInternalServerError)
 		return
 	}

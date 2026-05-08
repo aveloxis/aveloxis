@@ -41,6 +41,7 @@ type Config struct {
 	ThreadingMode       string        // "single" (default) or "sharded" — fans out PR batch fetching across goroutines
 	ShardSize           int           // item-count threshold for spawning an additional shard (default 3000)
 	EnrichInterval      time.Duration // how often to run thin-contributor enrichment (default 30 min). v0.18.29 moved enrichment out of per-job processing into a periodic scheduler task.
+	SearchResolveInterval time.Duration // how often to run the search-resolve background task (default 1 hour). v0.19.2 added this to backfill gh_user_id on contributors with email but no platform identity, using GitHub's search API at controlled rate.
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -84,6 +85,9 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	}
 	if cfg.EnrichInterval == 0 {
 		cfg.EnrichInterval = 30 * time.Minute
+	}
+	if cfg.SearchResolveInterval == 0 {
+		cfg.SearchResolveInterval = 1 * time.Hour
 	}
 
 	hostname, _ := os.Hostname()
@@ -249,6 +253,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 	enrichTicker := time.NewTicker(s.cfg.EnrichInterval)
 	defer enrichTicker.Stop()
 
+	// v0.19.2: search-resolve background task. Takes contributors
+	// with email but no gh_user_id, calls /search/users?q=email at
+	// controlled rate (search API is 30/min/token — separate from
+	// the core 5000/hour budget), and backfills gh_user_id on
+	// successful matches WITHOUT changing cntrb_id or cntrb_login
+	// (those would orphan FK refs / trip the partial unique index).
+	searchResolveTicker := time.NewTicker(s.cfg.SearchResolveInterval)
+	defer searchResolveTicker.Stop()
+
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
 	// this avoids a visible delay before collection begins.
@@ -299,6 +312,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-enrichTicker.C:
 			go s.runEnrichment(ctx)
 
+		case <-searchResolveTicker.C:
+			go s.runSearchResolve(ctx)
+
 		case <-pollTicker.C:
 			s.fillWorkerSlots(ctx, sem)
 			s.maybeStartMatviewRebuild(ctx, sem, &lastMatviewRebuild)
@@ -324,6 +340,72 @@ func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 		s.logger.Info("staging cleanup complete", "rows_deleted", deleted)
 	}
 }
+
+// runSearchResolve runs the v0.19.2 search-resolve background task.
+// Takes a batch of contributors with email but no gh_user_id and
+// calls /search/users?q=email for each — on hit, backfills the
+// platform identity onto the existing row WITHOUT changing
+// cntrb_id or cntrb_login. On miss / error, stamps
+// cntrb_last_search_attempted_at so the row exits the candidate
+// pool until the cooldown elapses.
+//
+// Batch size is bounded by SearchResolveBatchSize so a single tick
+// can't burn through more than a fraction of the search-API quota.
+// At default 100 candidates per hour, the task uses ~1.7 search
+// requests per minute — comfortable headroom against the 30/min
+// per-token budget.
+func (s *Scheduler) runSearchResolve(ctx context.Context) {
+	if s.ghClient == nil {
+		return
+	}
+	candidates, err := s.store.GetContributorsNeedingSearch(ctx, SearchResolveBatchSize)
+	if err != nil {
+		s.logger.Warn("search resolve: failed to get candidates", "error", err)
+		return
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	s.logger.Info("search resolve cycle starting", "candidates", len(candidates))
+
+	resolved := 0
+	for _, c := range candidates {
+		if ctx.Err() != nil {
+			return
+		}
+		login, ghUserID, err := s.ghClient.SearchUserByEmail(ctx, c.Email)
+		if err != nil {
+			// API failure — stamp the attempt so we don't immediately
+			// retry the same email next cycle, and continue.
+			_ = s.store.MarkContributorSearchAttempted(ctx, c.CntrbID)
+			s.logger.Debug("search resolve: API call failed", "email", c.Email, "error", err)
+			continue
+		}
+		if login == "" || ghUserID == 0 {
+			// No hit — stamp so we don't re-search the same email
+			// every cycle until the cooldown.
+			_ = s.store.MarkContributorSearchAttempted(ctx, c.CntrbID)
+			continue
+		}
+		if err := s.store.LinkContributorToGitHubUser(ctx, c.CntrbID, login, ghUserID); err != nil {
+			s.logger.Warn("search resolve: failed to link contributor",
+				"cntrb_id", c.CntrbID, "login", login, "error", err)
+			continue
+		}
+		resolved++
+	}
+
+	if resolved > 0 {
+		s.logger.Info("search resolve cycle complete",
+			"resolved", resolved, "of", len(candidates))
+	}
+}
+
+// SearchResolveBatchSize bounds how many candidates per
+// runSearchResolve tick get a search-API call. With a default
+// SearchResolveInterval of 1 hour, 100 candidates/hour = ~1.7
+// requests/minute — well under the 30/min/token search limit.
+const SearchResolveBatchSize = 100
 
 // runEnrichment runs thin-contributor enrichment as a single periodic
 // task. Replaces the v0.18.28 per-job EnrichThinContributors call that

@@ -171,6 +171,59 @@ Do not delete this directory while Aveloxis is running. If deleted while stopped
 
 ---
 
+## Email (Gmail SMTP, optional)
+
+Aveloxis can send transactional emails (welcome on first signup, group-approval notifications) via Gmail SMTP. The mailer is **optional** — when not configured, the application works fine without sending email.
+
+### Setup
+
+1. Use a Gmail account dedicated to the deployment (e.g. `aveloxis-ops@yourdomain.com`).
+2. Enable **2-Step Verification** on that account: <https://myaccount.google.com/security>.
+3. Generate an **App Password** for "Mail": <https://myaccount.google.com/apppasswords>. You'll get a 16-character password — copy it.
+4. Add a `mail` block to `aveloxis.json`:
+
+```json
+{
+  "mail": {
+    "gmail_user": "aveloxis-ops@yourdomain.com",
+    "gmail_app_password": "xxxx xxxx xxxx xxxx",
+    "from_name": "Aveloxis",
+    "site_url": "https://your-host.example"
+  }
+}
+```
+
+| Field | Purpose |
+|---|---|
+| `gmail_user` | The Gmail address used for SMTP auth and as the `From` address. Leaving this empty disables the mailer (silent no-op). |
+| `gmail_app_password` | The 16-character App Password generated in step 3. Spaces are allowed. **Not the account's regular password.** |
+| `from_name` | Display name shown in recipients' inboxes. Defaults to the bare email address when omitted. |
+| `site_url` | Public-facing URL for your Aveloxis deployment. Used in email body links. |
+
+### Transport details
+
+The mailer uses Go's stdlib `net/smtp` against `smtp.gmail.com:587` with STARTTLS and PLAIN auth. No third-party email library is required.
+
+### Verifying the setup
+
+Once configured:
+
+1. Restart `aveloxis web`.
+2. Have a fresh user log in via OAuth — they should receive a welcome email within seconds.
+3. Check `~/.aveloxis/web.log` for `mailer.Send failed` warnings if the email doesn't arrive.
+
+Common failure modes:
+
+- **`535 5.7.8 Username and Password not accepted`** — the App Password is wrong, or 2-Step Verification isn't enabled on the Gmail account.
+- **`550 5.7.0 Mail relay denied`** — sending to a recipient address Gmail considers invalid. Re-check the captured email address in `aveloxis_ops.users`.
+- **No log entry at all** — `gmail_user` is empty (mailer disabled). Add the config block and restart.
+
+### Disabling
+
+Remove or empty the `gmail_user` field. The mailer becomes a no-op and the rest of the application continues to work.
+
+---
+
 ## Next steps
 
 - [Quick Start](quickstart.md) -- get collecting in 5 steps

@@ -22,6 +22,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/static"
@@ -40,14 +41,26 @@ type Server struct {
 	sessions  map[string]*Session // session token -> session
 	tmpl      *template.Template
 	apiProxy  http.Handler // reverse proxy for /api/* → cfg.APIInternalURL; nil on parse failure
+	mailer    *mailer.Mailer // gmail-backed transactional mailer; safely nil if unconfigured (v0.19.0)
 }
 
 // Session tracks a logged-in user.
+//
+// IsAdmin (v0.19.0) is set at session-create time from the
+// admin column on aveloxis_ops.users. Cached on the session so
+// requireAdmin doesn't need a DB roundtrip per request. Refreshed
+// only on next login — if an admin demotes a user mid-session, the
+// session retains its old IsAdmin value until the next login. That's
+// acceptable for the admin/non-admin distinction (worst case: user
+// keeps admin access for up to one session lifetime); the
+// alternative is a DB hit per request, which is what we're trying
+// to avoid in v0.18.30.
 type Session struct {
 	UserID    int
 	LoginName string
 	AvatarURL string
 	Provider  string
+	IsAdmin   bool
 	ExpiresAt time.Time
 }
 
@@ -154,6 +167,16 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 	return s
 }
 
+// WithMailer attaches a transactional mailer to the server. Returns
+// the server for chaining. Optional — when not called, mailer-related
+// hooks (welcome email on signup, group-approved notification) are
+// silently skipped, matching mailer.Send's no-op-when-unconfigured
+// semantics.
+func (s *Server) WithMailer(m *mailer.Mailer) *Server {
+	s.mailer = m
+	return s
+}
+
 // Handler returns the HTTP handler for the web GUI.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -187,6 +210,15 @@ func (s *Server) Handler() http.Handler {
 	// Monitor dashboard — integrated from the standalone monitor server.
 	mux.HandleFunc("/monitor", s.requireAuth(s.handleMonitor))
 	mux.HandleFunc("POST /monitor/prioritize/{repoID}", s.requireAuth(s.handleMonitorPrioritize))
+
+	// v0.19.0 admin pages. requireAdmin gates on Session.IsAdmin so
+	// non-admin users get a 403 instead of seeing other people's
+	// pending submissions or being able to toggle admin roles.
+	mux.HandleFunc("/admin/groups/pending", s.requireAdmin(s.handleAdminPendingGroups))
+	mux.HandleFunc("POST /admin/groups/{id}/approve", s.requireAdmin(s.handleApproveGroup))
+	mux.HandleFunc("POST /admin/groups/{id}/reject", s.requireAdmin(s.handleRejectGroup))
+	mux.HandleFunc("/admin/users", s.requireAdmin(s.handleAdminUsers))
+	mux.HandleFunc("POST /admin/users/{id}/admin", s.requireAdmin(s.handleSetUserAdmin))
 
 	// Same-origin API reverse proxy. Browser fetch calls use relative
 	// /api/v1/... URLs; this handler forwards them to cfg.APIInternalURL.
@@ -243,7 +275,7 @@ func (s *Server) expireCookie(name string) *http.Cookie {
 	}
 }
 
-func (s *Server) createSession(userID int, loginName, avatarURL, provider string) string {
+func (s *Server) createSession(userID int, loginName, avatarURL, provider string, isAdmin bool) string {
 	token := generateToken()
 	s.sessionMu.Lock()
 	s.sessions[token] = &Session{
@@ -251,6 +283,7 @@ func (s *Server) createSession(userID int, loginName, avatarURL, provider string
 		LoginName: loginName,
 		AvatarURL: avatarURL,
 		Provider:  provider,
+		IsAdmin:   isAdmin,
 		ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
 	s.sessionMu.Unlock()
@@ -275,6 +308,25 @@ func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.getSession(r) == nil {
 			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		handler(w, r)
+	}
+}
+
+// requireAdmin gates a route on the session's IsAdmin flag. Returns
+// 403 for authenticated non-admins so they don't even see what's
+// behind the route. Unauthenticated users still get redirected to
+// /login (matching requireAuth's UX).
+func (s *Server) requireAdmin(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sess := s.getSession(r)
+		if sess == nil {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		if !sess.IsAdmin {
+			http.Error(w, "Administrator access required.", http.StatusForbidden)
 			return
 		}
 		handler(w, r)
@@ -394,7 +446,15 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create or find user.
+	// Create or find user. v0.19.0: UpsertOAuthUser auto-promotes the
+	// first-ever user to admin so a fresh deployment can review
+	// subsequent submissions.
+	wasNewUser := false
+	preCount := 0
+	_ = s.store.Pool().QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1`, ghUser.Login).Scan(&preCount)
+	wasNewUser = preCount == 0
+
 	userID, err := s.store.UpsertOAuthUser(r.Context(), db.OAuthUserInfo{
 		Login:     ghUser.Login,
 		Email:     ghUser.Email,
@@ -410,8 +470,22 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read fresh admin flag — set to TRUE for the first-ever user
+	// (auto-promotion in UpsertOAuthUser) and stays whatever the
+	// admin user-management page set it to thereafter.
+	isAdmin, _ := s.store.IsUserAdmin(r.Context(), userID)
+
+	// Send welcome email on first signup. No-op if mailer
+	// unconfigured. Failures here don't block login — the email is a
+	// nice-to-have, not a gate.
+	if wasNewUser && s.mailer != nil && ghUser.Email != "" {
+		if err := s.mailer.SendWelcome(ghUser.Email, ghUser.Login, "GitHub"); err != nil {
+			s.logger.Warn("failed to send welcome email", "login", ghUser.Login, "error", err)
+		}
+	}
+
 	// Create session.
-	sessToken := s.createSession(userID, ghUser.Login, ghUser.AvatarURL, "github")
+	sessToken := s.createSession(userID, ghUser.Login, ghUser.AvatarURL, "github", isAdmin)
 	http.SetCookie(w, s.sessionCookie(sessToken))
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
@@ -482,6 +556,12 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	wasNewUser := false
+	preCount := 0
+	_ = s.store.Pool().QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1`, glUser.Username).Scan(&preCount)
+	wasNewUser = preCount == 0
+
 	userID, err := s.store.UpsertOAuthUser(r.Context(), db.OAuthUserInfo{
 		Login:      glUser.Username,
 		Email:      glUser.Email,
@@ -496,8 +576,15 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to create user", http.StatusInternalServerError)
 		return
 	}
+	isAdmin, _ := s.store.IsUserAdmin(r.Context(), userID)
 
-	sessToken := s.createSession(userID, glUser.Username, glUser.AvatarURL, "gitlab")
+	if wasNewUser && s.mailer != nil && glUser.Email != "" {
+		if err := s.mailer.SendWelcome(glUser.Email, glUser.Username, "GitLab"); err != nil {
+			s.logger.Warn("failed to send welcome email", "login", glUser.Username, "error", err)
+		}
+	}
+
+	sessToken := s.createSession(userID, glUser.Username, glUser.AvatarURL, "gitlab", isAdmin)
 	http.SetCookie(w, s.sessionCookie(sessToken))
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }

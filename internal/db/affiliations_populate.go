@@ -69,8 +69,21 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 	affMap := buildAffiliationMap(candidates)
 
 	// Upsert into contributor_affiliations.
+	//
+	// v0.19.2: scrub invalid UTF-8 from domain and company before
+	// the INSERT. Postgres rejects whole statements with
+	// `invalid byte sequence for encoding "UTF8"` when any
+	// parameter contains a non-UTF-8 byte. Production logs from
+	// 2026-05-02 showed repeated 0x89-style errors here because
+	// some contributors' GitHub profile fields contained binary
+	// content that rode through to cntrb_company.
 	count := 0
 	for domain, company := range affMap {
+		domain = safeUTF8(domain)
+		company = safeUTF8(company)
+		if domain == "" || company == "" {
+			continue
+		}
 		_, err := s.pool.Exec(ctx, `
 			INSERT INTO aveloxis_data.contributor_affiliations
 				(ca_domain, ca_affiliation, ca_active, ca_last_used,

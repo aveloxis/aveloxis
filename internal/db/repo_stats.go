@@ -81,7 +81,19 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 }
 
 // GetRepoStatsBatch returns stats for multiple repos in fewer queries.
-// Used by the web GUI group detail page to avoid N+1 queries.
+// Used by the web GUI group detail page and the monitor dashboard.
+//
+// v0.18.30 rewrite: instead of issuing 5 separate aggregate queries
+// against the heavy child tables (pull_requests / issues / commits /
+// repo_info / repo_deps_vulnerabilities), this reads gathered counts
+// directly from collection_queue.last_* — those columns are populated
+// at CompleteJob time, so they're always in sync with the actual rows
+// without requiring a COUNT(*) over millions of rows on every
+// dashboard render. Metadata counts come from repo_info via a single
+// LATERAL-style DISTINCT ON join, and vulnerability counts use a
+// scoped subquery filtered by `WHERE repo_id = ANY($1)` so the GROUP
+// BY only touches relevant rows. Total: two queries instead of five,
+// no million-row scans.
 func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) (map[int64]*RepoStats, error) {
 	result := make(map[int64]*RepoStats, len(repoIDs))
 	if len(repoIDs) == 0 {
@@ -93,74 +105,48 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 		result[id] = &RepoStats{RepoID: id}
 	}
 
-	// Gathered PRs.
-	rows, err := s.pool.Query(ctx,
-		`SELECT repo_id, COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = ANY($1) GROUP BY repo_id`, repoIDs)
+	// Gathered counts (last_issues / last_prs / last_commits) come from
+	// collection_queue's pre-computed cache. Metadata counts come from
+	// the latest repo_info snapshot. Single query, single scan of the
+	// queue index, single index lookup per repo into repo_info.
+	rows, err := s.pool.Query(ctx, `
+		SELECT q.repo_id,
+		       COALESCE(q.last_issues, 0),
+		       COALESCE(q.last_prs, 0),
+		       COALESCE(q.last_commits, 0),
+		       COALESCE(ri.pr_count, 0),
+		       COALESCE(ri.issues_count, 0),
+		       COALESCE(ri.commit_count, 0)
+		FROM aveloxis_ops.collection_queue q
+		LEFT JOIN LATERAL (
+		    SELECT pr_count, issues_count, commit_count
+		    FROM aveloxis_data.repo_info
+		    WHERE repo_id = q.repo_id
+		    ORDER BY data_collection_date DESC
+		    LIMIT 1
+		) ri ON TRUE
+		WHERE q.repo_id = ANY($1)`, repoIDs)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var id int64
-			var cnt int
-			rows.Scan(&id, &cnt)
+			var gIssues, gPRs, gCommits, mPRs, mIssues, mCommits int
+			if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &mPRs, &mIssues, &mCommits); err != nil {
+				continue
+			}
 			if st, ok := result[id]; ok {
-				st.GatheredPRs = cnt
+				st.GatheredIssues = gIssues
+				st.GatheredPRs = gPRs
+				st.GatheredCommits = gCommits
+				st.MetadataPRs = mPRs
+				st.MetadataIssues = mIssues
+				st.MetadataCommits = mCommits
 			}
 		}
 	}
 
-	// Gathered issues.
-	rows2, err := s.pool.Query(ctx,
-		`SELECT repo_id, COUNT(*) FROM aveloxis_data.issues WHERE repo_id = ANY($1) GROUP BY repo_id`, repoIDs)
-	if err == nil {
-		defer rows2.Close()
-		for rows2.Next() {
-			var id int64
-			var cnt int
-			rows2.Scan(&id, &cnt)
-			if st, ok := result[id]; ok {
-				st.GatheredIssues = cnt
-			}
-		}
-	}
-
-	// Gathered commits — count distinct hashes since the commits table
-	// has one row per file touched per commit.
-	rows3, err := s.pool.Query(ctx,
-		`SELECT repo_id, COUNT(DISTINCT cmt_commit_hash) FROM aveloxis_data.commits WHERE repo_id = ANY($1) GROUP BY repo_id`, repoIDs)
-	if err == nil {
-		defer rows3.Close()
-		for rows3.Next() {
-			var id int64
-			var cnt int
-			rows3.Scan(&id, &cnt)
-			if st, ok := result[id]; ok {
-				st.GatheredCommits = cnt
-			}
-		}
-	}
-
-	// Metadata counts — latest repo_info per repo.
-	rows4, err := s.pool.Query(ctx, `
-		SELECT DISTINCT ON (repo_id)
-			repo_id, COALESCE(pr_count, 0), COALESCE(issues_count, 0), COALESCE(commit_count, 0)
-		FROM aveloxis_data.repo_info
-		WHERE repo_id = ANY($1)
-		ORDER BY repo_id, data_collection_date DESC`, repoIDs)
-	if err == nil {
-		defer rows4.Close()
-		for rows4.Next() {
-			var id int64
-			var prs, issues, commits int
-			rows4.Scan(&id, &prs, &issues, &commits)
-			if st, ok := result[id]; ok {
-				st.MetadataPRs = prs
-				st.MetadataIssues = issues
-				st.MetadataCommits = commits
-			}
-		}
-	}
-
-	// Vulnerability counts.
+	// Vulnerability counts. Scoped subquery: only scans rows whose
+	// repo_id is in the requested set, so this stays cheap.
 	rows5, err := s.pool.Query(ctx, `
 		SELECT repo_id, COUNT(*), COUNT(*) FILTER (WHERE severity = 'CRITICAL' OR cvss_score >= 9.0)
 		FROM aveloxis_data.repo_deps_vulnerabilities

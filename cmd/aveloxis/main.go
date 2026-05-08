@@ -432,8 +432,32 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 				continue
 			}
 			logger.Info("found repos in organization", "org", orgName, "count", len(repos))
+
+			// Bridge legacy repo_groups discovery into modern
+			// aveloxis_ops.user_repos so any user_group tracking this
+			// org (via user_org_requests.org_url) gets every repo
+			// (including forks — listGitHub/GitLab use ?type=all)
+			// linked. Hoisted out of the per-repo loop so the lookup
+			// runs once per scan.
+			userGroupIDs, ugErr := store.GetUserGroupIDsForOrgURL(ctx, repoURL)
+			if ugErr != nil {
+				logger.Warn("failed to look up user_groups for org", "org_url", repoURL, "error", ugErr)
+			}
 			for _, r := range repos {
 				addOneRepoWithGroup(ctx, store, logger, r.URL, r.Owner, r.Name, plat, priority, groupID)
+				if len(userGroupIDs) == 0 {
+					continue
+				}
+				repoID, ferr := store.FindRepoByURL(ctx, r.URL)
+				if ferr != nil || repoID == 0 {
+					continue
+				}
+				for _, gid := range userGroupIDs {
+					if err := store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
+						logger.Warn("failed to link repo into user_repos",
+							"group_id", gid, "repo_id", repoID, "error", err)
+					}
+				}
 			}
 			continue
 		}

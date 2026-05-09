@@ -84,6 +84,7 @@ type ContributorIdentity struct {
 	NodeID    string // GraphQL node ID (GitHub) or empty
 	Type      string // "User", "Bot", "Organization"
 	IsAdmin   bool
+	State     string // GitLab account state ("active", "blocked", "banned", "deactivated") — empty for GitHub. v0.20.3.
 
 	// GitHub-specific URL fields for denormalized gh_* columns on contributors.
 	GravatarID        string

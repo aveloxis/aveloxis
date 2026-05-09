@@ -254,7 +254,7 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 		}
 
 		// Use NULL for zero timestamps — they'll be populated by FetchRepoInfo during collection.
-		var createdAt, updatedAt interface{}
+		var createdAt, updatedAt any
 		if !r.CreatedAt.IsZero() {
 			createdAt = r.CreatedAt
 		}
@@ -504,8 +504,8 @@ func extractRepoPath(u string) string {
 	u = strings.TrimSuffix(u, "/")
 	u = strings.TrimSuffix(u, ".git")
 	// Remove host: "github.com/owner/repo" -> "owner/repo"
-	if idx := strings.Index(u, "/"); idx >= 0 {
-		return u[idx+1:]
+	if _, after, ok := strings.Cut(u, "/"); ok {
+		return after
 	}
 	return ""
 }
@@ -1089,7 +1089,7 @@ func (s *PostgresStore) UpsertReviewCommentBatch(ctx context.Context, comments [
 
 			rc.Comment.MsgID = msgID
 			// Use NULL for pr_review_id when it's zero (review not yet in DB).
-			var reviewID interface{}
+			var reviewID any
 			if rc.Comment.ReviewID != 0 {
 				reviewID = rc.Comment.ReviewID
 			}
@@ -1230,7 +1230,7 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 			// If the login already exists, backfill empty fields and update tool_version.
 			// This replaces the previous savepoint pattern — ON CONFLICT on partial
 			// unique indexes works in PostgreSQL when the WHERE clause matches exactly.
-			var createdAt interface{}
+			var createdAt any
 			if !contrib.CreatedAt.IsZero() {
 				createdAt = contrib.CreatedAt
 			}

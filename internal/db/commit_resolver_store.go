@@ -56,24 +56,30 @@ func (s *PostgresStore) SetCommitAuthorLogin(ctx context.Context, repoID int64, 
 func (s *PostgresStore) FindLoginByEmail(ctx context.Context, email string) (string, error) {
 	var login string
 
-	// Check contributors by email.
+	// Check contributors by email. Filter cntrb_deleted = 0 so a
+	// merged-loser row's email doesn't shadow the active winner.
 	err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(gh_login, cntrb_login)
 		FROM aveloxis_data.contributors
 		WHERE (cntrb_email = $1 OR cntrb_canonical = $1)
 		  AND (gh_login IS NOT NULL AND gh_login != '')
+		  AND COALESCE(cntrb_deleted, 0) = 0
 		LIMIT 1`, email).Scan(&login)
 	if err == nil && login != "" {
 		return login, nil
 	}
 
-	// Check aliases.
+	// Check aliases. Per R5, an alias_email maps to one cntrb_id;
+	// after a v0.20.2 rename merge, that cntrb_id is the winner.
+	// Filter on c.cntrb_deleted = 0 defensively in case an alias row
+	// somehow points at a since-soft-deleted row.
 	err = s.pool.QueryRow(ctx, `
 		SELECT COALESCE(c.gh_login, c.cntrb_login)
 		FROM aveloxis_data.contributors_aliases a
 		JOIN aveloxis_data.contributors c ON c.cntrb_id = a.cntrb_id
 		WHERE a.alias_email = $1
 		  AND (c.gh_login IS NOT NULL AND c.gh_login != '')
+		  AND COALESCE(c.cntrb_deleted, 0) = 0
 		LIMIT 1`, email).Scan(&login)
 	if err == nil && login != "" {
 		return login, nil
@@ -253,10 +259,15 @@ func (s *PostgresStore) EnsureContributorAlias(ctx context.Context, cntrbID, ali
 }
 
 // FindContributorIDByLogin returns the cntrb_id for a given gh_login, or "" if not found.
+//
+// Filters cntrb_deleted = 0 so a v0.20.2 rename-merge loser row
+// doesn't shadow the active winner. Per R3 / Phase D semantics.
 func (s *PostgresStore) FindContributorIDByLogin(ctx context.Context, login string) (string, error) {
 	var id string
 	err := s.pool.QueryRow(ctx,
-		`SELECT cntrb_id::text FROM aveloxis_data.contributors WHERE gh_login = $1 LIMIT 1`,
+		`SELECT cntrb_id::text FROM aveloxis_data.contributors
+		 WHERE gh_login = $1 AND COALESCE(cntrb_deleted, 0) = 0
+		 LIMIT 1`,
 		login).Scan(&id)
 	if err != nil {
 		return "", nil
@@ -304,7 +315,8 @@ func (s *PostgresStore) GetContributorsMissingCanonical(ctx context.Context) ([]
 	rows, err := s.pool.Query(ctx, `
 		SELECT cntrb_id::text, gh_login
 		FROM aveloxis_data.contributors
-		WHERE gh_login IS NOT NULL AND gh_login != ''
+		WHERE COALESCE(cntrb_deleted, 0) = 0
+		  AND gh_login IS NOT NULL AND gh_login != ''
 		  AND (cntrb_canonical IS NULL OR length(cntrb_canonical) < 2)
 		  AND (cntrb_last_enriched_at IS NULL
 		       OR cntrb_last_enriched_at < NOW() - INTERVAL '30 days')

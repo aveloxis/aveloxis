@@ -452,6 +452,13 @@ func parseNumstatLine(c *parsedCommit, line string) {
 }
 
 // insertCommitBatch inserts a batch of parsed commits into the database.
+//
+// result.Commits is incremented ONCE per parsedCommit (not once per
+// inserted row), so it reflects the distinct commit count rather than
+// the row count. The commits table stores one row per file per commit,
+// so a naive per-row increment inflated by the average files-per-commit
+// — that bug was the source of the v0.19.11 dashboard mis-display.
+// See `summary/04-refactoring-plan.md` for the diagnosis.
 func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, batch []*parsedCommit, result *FacadeResult) error {
 	for _, pc := range batch {
 		now := time.Now()
@@ -465,6 +472,7 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 		authorAff := f.affiliations.Resolve(ctx, pc.AuthorEmail)
 		committerAff := f.affiliations.Resolve(ctx, pc.CommitterEmail)
 
+		commitInserted := false
 		for _, file := range files {
 			commit := &model.Commit{
 				RepoID:               repoID,
@@ -491,6 +499,9 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 				f.logger.Warn("failed to upsert commit", "hash", pc.Hash, "file", file.Filename, "error", err)
 				continue
 			}
+			commitInserted = true
+		}
+		if commitInserted {
 			result.Commits++
 		}
 

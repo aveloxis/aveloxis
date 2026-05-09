@@ -153,6 +153,34 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		`CREATE INDEX IF NOT EXISTS idx_contributors_gh_login
 		ON aveloxis_data.contributors (gh_login) WHERE gh_login != ''`)
 
+	// collection_queue.last_commits backfill (v0.19.11). Pre-v0.19.11
+	// the FacadeCollector incremented result.Commits once per inserted
+	// ROW rather than once per distinct commit. Since the commits table
+	// stores one row per file per commit, the cached last_commits value
+	// on collection_queue ended up inflated by the average
+	// files-per-commit (typically 5×–50×). That bogus value flowed
+	// into GetRepoStatsBatch and from there to every dashboard.
+	// v0.19.11 fixes the increment at the source AND runs this one-time
+	// backfill so existing rows pick up the correct count without
+	// waiting for natural re-collection.
+	//
+	// `WHERE last_commits IS DISTINCT FROM sub.cnt` ensures the UPDATE
+	// only touches mismatched rows — after the first run completes,
+	// subsequent migrate runs are effectively no-ops. The
+	// COUNT(DISTINCT) subquery itself is the cost; on a 100K-repo
+	// fleet with hundreds of millions of commit rows this takes a few
+	// minutes once, then never matters again.
+	execMigrationStep(ctx, pg, logger, &errs, "backfill collection_queue.last_commits with distinct counts",
+		`UPDATE aveloxis_ops.collection_queue q
+		SET last_commits = sub.cnt
+		FROM (
+		    SELECT repo_id, COUNT(DISTINCT cmt_commit_hash) AS cnt
+		    FROM aveloxis_data.commits
+		    GROUP BY repo_id
+		) sub
+		WHERE q.repo_id = sub.repo_id
+		  AND q.last_commits IS DISTINCT FROM sub.cnt`)
+
 	// Users table: dedupe + enforce PK/UNIQUE (v0.18.9).
 	// Older installs used CREATE TABLE IF NOT EXISTS with inline UNIQUE, which
 	// silently skipped on pre-existing tables created without the constraint —

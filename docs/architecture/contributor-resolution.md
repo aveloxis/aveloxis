@@ -414,6 +414,44 @@ Per [R7](#r7-cached-resolution-on-the-hot-path), the `ContributorResolver` cache
 
 ---
 
+## GitLab vs GitHub: column-by-column parity matrix (v0.20.3)
+
+Aveloxis collects contributor data from both GitHub and GitLab and stores them in the same `aveloxis_data.contributors` table. Some columns map cleanly between platforms; others are intentionally GitHub-only or GitLab-only. This matrix is the contract for what to expect when querying contributor data on a mixed-platform fleet.
+
+| GitHub column | GitLab column | API source | Status |
+|---|---|---|---|
+| `gh_user_id` | `gl_id` | GitHub `/user`, `/users/{login}` ; GitLab `/user`, `/users?username=` | ✓ both populated (`ContributorIdentity.UserID`) |
+| `gh_login` | `gl_username` | same | ✓ both populated (`ContributorIdentity.Login`) |
+| `gh_url` / `gh_html_url` | `gl_web_url` | same | ✓ both populated (`ContributorIdentity.URL`) |
+| `gh_avatar_url` | `gl_avatar_url` | same | ✓ both populated (`ContributorIdentity.AvatarURL`) |
+| `cntrb_full_name` | `cntrb_full_name` (also `gl_full_name`) | same | ✓ both populated (`ContributorIdentity.Name`) |
+| `cntrb_email` | `cntrb_email` | GitHub `/user.email` (public only) ; GitLab `/users.public_email` | ✓ both populated when available; private-email users get `''` on either platform |
+| `cntrb_company`, `cntrb_location` | same | both via the enrichment endpoint | ✓ both populated when set on the user profile |
+| `gh_site_admin` | (gl_state implies isAdmin via `access_level >= 50`) | GitHub `/user.site_admin` ; GitLab project member `/access_level` | ≈ approximate. GitLab "Owner" role on a project maps to admin; the deployment-wide "is admin" GitHub field has no GitLab single-flag equivalent. Stored as a stringified bool on `gh_site_admin`; for GitLab the equivalent is implicit in `IsAdmin` at the identity row. |
+| (none) | `gl_state` | GitLab `/users/.state` ("active", "blocked", "banned", "deactivated") | **GitLab-only field, populated as of v0.20.3.** Useful for filtering blocked/deactivated users out of contributor analytics. GitHub has no equivalent — its `/user` endpoint doesn't expose account-state lifecycle. |
+| `gh_node_id` | (none) | GitHub GraphQL global node ID | accepted limitation. GitLab uses numeric project/user IDs; there's no GraphQL globally-unique node ID. `cntrb_id` (deterministic UUID) plays the same role at the aveloxis layer. |
+| `gh_type` (User / Bot / Organization) | (none) | GitHub `/user.type` | accepted limitation. GitLab doesn't classify user accounts as Bot vs Organization at this granularity. Bot detection on GitLab data uses email patterns / heuristics. |
+| `gh_gravatar_id` | (none — `avatar_url` already returns gravatar) | GitHub `/user.gravatar_id` | accepted limitation. GitLab's `avatar_url` is a complete URL that already includes gravatar where applicable; there's no separate id. |
+| `gh_followers_url`, `gh_following_url`, `gh_gists_url`, `gh_starred_url`, `gh_subscriptions_url`, `gh_organizations_url`, `gh_repos_url`, `gh_events_url`, `gh_received_events_url` | (none) | GitHub `/user.{field}` | accepted limitation (8 fields). These are GitHub REST hypermedia links; GitLab's REST API uses path-based URLs derived from `gl_web_url`. Aveloxis stores them denormalized for backward-compatible Augur queries; downstream tools that need GitLab-side equivalents construct them as `gl_web_url + "/<segment>"`. |
+
+### Querying contributor data on mixed-platform fleets
+
+When you need a single value across both platforms, prefer the platform-agnostic `cntrb_*` columns over the platform-specific `gh_*` / `gl_*` ones. The `cntrb_login`, `cntrb_email`, `cntrb_company`, `cntrb_location`, `cntrb_full_name` fields are populated regardless of platform and are the recommended targets for analytics queries.
+
+Use the platform-specific columns when you specifically need the GitHub or GitLab perspective — e.g., `gh_user_id` to join against externally-collected GitHub data, or `gl_state` to filter out blocked GitLab accounts.
+
+### Closable gaps that aren't planned
+
+The following GitHub fields don't have a GitLab equivalent we plan to add. They appear above as "accepted limitation":
+
+- `gh_node_id`: GitLab has no GraphQL globally-unique node ID system. Numeric `gl_id` serves the same purpose at the GitLab side; `cntrb_id` (deterministic UUID per R1) serves the cross-platform role.
+- `gh_type`: GitLab user-account taxonomy is binary (User vs not-a-User); the Bot/Organization distinction GitHub exposes doesn't exist there.
+- `gh_followers_url` etc.: GitLab's REST URL scheme is path-derivable from `gl_web_url`. Storing duplicates would just be aveloxis copying a hyperlink that's reconstructable.
+
+These are documented for transparency, not blocking issues. Closing them would require fabricating data — which would be worse for analyst trust than leaving the cells empty.
+
+---
+
 ## Related code
 
 | Function | File | Role |

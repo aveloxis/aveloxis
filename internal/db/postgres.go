@@ -1313,16 +1313,22 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 						ident.ReceivedEventsURL,
 					)
 				} else if ident.Platform == model.PlatformGitLab && ident.UserID > 0 {
+					// gl_state added in v0.20.3 — Phase F closable gap.
+					// GitLab's user state ("active", "blocked", "banned",
+					// "deactivated") was previously parsed from JSON in
+					// glUser.State / glMember.State but never plumbed
+					// through to contributors.gl_state.
 					_, _ = tx.Exec(ctx, `
 						UPDATE aveloxis_data.contributors SET
 							gl_id = COALESCE(gl_id, $2),
 							gl_username = COALESCE(NULLIF(gl_username,''), $3),
 							gl_avatar_url = COALESCE(NULLIF(gl_avatar_url,''), $4),
 							gl_web_url = COALESCE(NULLIF(gl_web_url,''), $5),
-							gl_full_name = COALESCE(NULLIF(gl_full_name,''), $6)
+							gl_full_name = COALESCE(NULLIF(gl_full_name,''), $6),
+							gl_state = COALESCE(NULLIF(gl_state,''), $7)
 						WHERE cntrb_id = $1::uuid`,
 						cntrb_id, ident.UserID, ident.Login, ident.AvatarURL,
-						ident.URL, ident.Name,
+						ident.URL, ident.Name, ident.State,
 					)
 				}
 			}

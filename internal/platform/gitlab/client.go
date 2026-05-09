@@ -831,6 +831,7 @@ func (c *Client) ListContributors(ctx context.Context, owner, repo string) iter.
 					AvatarURL: raw.AvatarURL,
 					URL:       raw.WebURL,
 					IsAdmin:   isAdmin,
+					State:     raw.State,
 				}},
 			}, nil) {
 				return
@@ -895,6 +896,7 @@ func (c *Client) EnrichContributor(ctx context.Context, login string) (*model.Co
 			Email:     raw.PublicEmail,
 			AvatarURL: raw.AvatarURL,
 			URL:       raw.WebURL,
+			State:     raw.State,
 		}},
 	}, nil
 }

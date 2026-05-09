@@ -28,6 +28,56 @@ var schemaSQL string
 func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
 	logger.Info("running schema migrations")
 
+	// v0.20.1: acquire a postgres advisory lock so two `aveloxis
+	// migrate` processes (or migrate + serve's startup-migrate) can't
+	// race on table-level locks. The lock is held on a dedicated pool
+	// connection for the entire migration; released via defer.
+	//
+	// Without this, two concurrent migrations contend on schema-level
+	// locks and produce the kind of confusion the 2026-05-08 incident
+	// surfaced (orphan UPDATE blocking a CREATE INDEX, with no clean
+	// way to tell which migrate is doing what).
+	lockConn, err := pg.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration advisory-lock connection: %w", err)
+	}
+	defer lockConn.Release()
+
+	if pg.migrateNoWait {
+		var ok bool
+		if err := lockConn.QueryRow(ctx,
+			`SELECT pg_try_advisory_lock($1)`, MigrateAdvisoryLockID).Scan(&ok); err != nil {
+			return fmt.Errorf("try advisory lock: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("another aveloxis migration is in progress (advisory lock held); use without --no-wait to wait, or check pg_stat_activity for the holder")
+		}
+	} else {
+		// Blocking acquire. Log if it takes more than 5 seconds so
+		// the operator knows we're waiting on someone else.
+		acquireDone := make(chan struct{})
+		go func() {
+			t := time.NewTimer(5 * time.Second)
+			defer t.Stop()
+			select {
+			case <-acquireDone:
+			case <-t.C:
+				logger.Info("waiting for migration advisory lock — another aveloxis migration is in progress")
+			}
+		}()
+		if _, err := lockConn.Exec(ctx, `SELECT pg_advisory_lock($1)`, MigrateAdvisoryLockID); err != nil {
+			close(acquireDone)
+			return fmt.Errorf("acquire advisory lock: %w", err)
+		}
+		close(acquireDone)
+	}
+	defer func() {
+		// Best-effort release. If this fails, the lock release happens
+		// on connection close (lockConn.Release returns to pool, where
+		// pgxpool's reset handlers eventually close idle connections).
+		_, _ = lockConn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, MigrateAdvisoryLockID)
+	}()
+
 	// errs collects every schema-integrity failure across the run. We
 	// fail closed: serve refuses to start when this slice is non-empty
 	// at the end, even if individual steps wrote successfully.
@@ -141,15 +191,17 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 			"error", err,
 			"hint", "the extension requires superuser or membership in pg_create_extensions; check your role grants")
 	} else {
-		execMigrationStep(ctx, pg, logger, &errs, "create idx_repos_owner_name_trgm GIN index",
-			`CREATE INDEX IF NOT EXISTS idx_repos_owner_name_trgm
+		execCreateIndexConcurrently(ctx, pg, logger, &errs,
+			"aveloxis_data", "idx_repos_owner_name_trgm",
+			`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_owner_name_trgm
 				ON aveloxis_data.repos
 				USING GIN ((repo_owner || '/' || repo_name) gin_trgm_ops)`)
 	}
 
 	// pull_request_repo: add unique constraint for ON CONFLICT support (v0.12.0).
-	execMigrationStep(ctx, pg, logger, &errs, "create idx_pr_repo_meta_head_base",
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_repo_meta_head_base
+	execCreateIndexConcurrently(ctx, pg, logger, &errs,
+		"aveloxis_data", "idx_pr_repo_meta_head_base",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_pr_repo_meta_head_base
 		ON aveloxis_data.pull_request_repo (pr_repo_meta_id, pr_repo_head_or_base)`)
 
 	// contributors.gh_login partial index (v0.19.9). The 2026-05-08
@@ -164,8 +216,9 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// contributors table, producing 2:30-minute UPDATE durations.
 	// Partial — `WHERE gh_login != ''` excludes the email-only
 	// contributor cohort, mirroring the idx_contributors_login pattern.
-	execMigrationStep(ctx, pg, logger, &errs, "create idx_contributors_gh_login",
-		`CREATE INDEX IF NOT EXISTS idx_contributors_gh_login
+	execCreateIndexConcurrently(ctx, pg, logger, &errs,
+		"aveloxis_data", "idx_contributors_gh_login",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_gh_login
 		ON aveloxis_data.contributors (gh_login) WHERE gh_login != ''`)
 
 	// collection_queue.last_commits backfill (v0.19.11). Pre-v0.19.11
@@ -273,6 +326,53 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 
 	logger.Info("schema migrations complete", "schema_version", ToolVersion)
 	return nil
+}
+
+// MigrateAdvisoryLockID is the postgres advisory-lock id used by
+// RunMigrations to coordinate with concurrent migrate processes (and
+// `aveloxis serve`'s startup migrate). Stable constant — chosen once
+// in v0.20.1, must not change across versions or different aveloxis
+// instances pointing at the same DB will fail to coordinate.
+//
+// Value chosen as ASCII "AVELOXIS" packed into 64 bits (just memorable;
+// any stable int64 would do).
+const MigrateAdvisoryLockID int64 = 0x4156454C4F584953
+
+// execCreateIndexConcurrently wraps a CREATE INDEX CONCURRENTLY
+// statement with self-healing INVALID-index cleanup. CONCURRENTLY's
+// failure mode (interrupt mid-build, network blip, OOM) leaves an
+// INVALID index — `CREATE INDEX CONCURRENTLY IF NOT EXISTS` then
+// fails with "relation already exists" forever. This helper detects
+// the INVALID index via pg_index.indisvalid = false and DROPs it
+// before retrying the create, so operators don't have to manually
+// intervene.
+//
+// The schema and indexName are passed separately (rather than parsing
+// from the SQL) because the helper needs them for the indisvalid
+// query.
+func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, schema, indexName, sql string) {
+	var isInvalid bool
+	err := pg.pool.QueryRow(ctx, `
+		SELECT NOT i.indisvalid
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = $1 AND c.relname = $2`,
+		schema, indexName).Scan(&isInvalid)
+	if err == nil && isInvalid {
+		logger.Warn("dropping invalid index from prior interrupted CONCURRENT build",
+			"index", schema+"."+indexName)
+		if _, derr := pg.pool.Exec(ctx, fmt.Sprintf(`DROP INDEX IF EXISTS %s.%s`, schema, indexName)); derr != nil {
+			logger.Error("schema migration error", "step", "drop invalid "+indexName, "error", derr)
+			*errs = append(*errs, fmt.Errorf("drop invalid %s: %w", indexName, derr))
+			return
+		}
+	}
+	if _, err := pg.pool.Exec(ctx, sql); err != nil {
+		label := "create index " + indexName
+		logger.Error("schema migration error", "step", label, "error", err)
+		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+	}
 }
 
 // watchBlockers periodically polls pg_stat_activity for aveloxis
@@ -530,9 +630,24 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 		logger.Info("deduplicated commits", "rows_removed", tag.RowsAffected())
 	}
 
-	// Create the unique index now that duplicates are gone.
+	// Create the unique index now that duplicates are gone. v0.20.1
+	// uses CONCURRENTLY so the index build doesn't ShareLock the
+	// commits table while the scheduler is running. deduplicateCommits
+	// itself is warn-only (this isn't through the err-collector), so
+	// keep that behavior here too.
+	var existsInvalid bool
+	pg.pool.QueryRow(ctx, `
+		SELECT NOT i.indisvalid
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'idx_commits_repo_hash_file'`).Scan(&existsInvalid)
+	if existsInvalid {
+		logger.Warn("dropping invalid idx_commits_repo_hash_file from prior interrupted CONCURRENT build")
+		pg.pool.Exec(ctx, `DROP INDEX IF EXISTS aveloxis_data.idx_commits_repo_hash_file`)
+	}
 	_, err := pg.pool.Exec(ctx, `
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_repo_hash_file
+		CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_commits_repo_hash_file
 		ON aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename)`)
 	if err != nil {
 		logger.Warn("failed to create commits unique index", "error", err)

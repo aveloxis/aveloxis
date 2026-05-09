@@ -42,10 +42,18 @@ This rule is the reason aveloxis does not ship a 16-table merge migration. The c
 
 The partial unique index `idx_contributors_login` enforces that no two rows share the same non-empty `cntrb_login`. Empty logins are unconstrained — multiple email-only contributors can coexist with `cntrb_login = ''`.
 
-**Rename edge case.** When a platform user renames between observations, two outcomes are possible:
+**Rename edge case.** When a platform user renames between observations, three outcomes are possible:
 
 1. The new login is unobserved elsewhere — `Resolve` updates the existing row's `cntrb_login` to the new value via the `ON CONFLICT (cntrb_id) DO UPDATE` branch. Clean.
-2. The new login is already observed under a different `cntrb_id` (e.g., a contributor created from an old observation with `userID = 0`, then a new observation where the renamed user shows up with their new login) — the constraint trips. The `UpsertContributorFull` 23505 fallback then UPDATEs the row's other fields without touching `cntrb_login`. Two rows representing the same person coexist with different logins. This is a **known data-quality limitation** documented under [Intentional limitations](#intentional-limitations).
+2. The new login is already observed under a different `cntrb_id` AND the partial unique index trips at write time — the `UpsertContributorFull` 23505 fallback UPDATEs the row's other fields without touching `cntrb_login`. Two rows representing the same person coexist with different logins, both visible in lookup queries. This was the steady-state behavior pre-v0.20.2.
+3. **(v0.20.2 onward)** When `runSearchResolve` later identifies the duplicate via the search API result and calls `LinkContributorToGitHubUser`, the function now performs a **logical merge** (soft-delete pattern). It picks a winner — preferring the row whose `cntrb_id` matches `PlatformUUID(1, ghUserID)` per R1, falling back to the older row — copies non-empty fields from the loser(s) into the winner, inserts `contributors_aliases` rows so the loser's emails resolve to the winner, and sets `cntrb_deleted = 1` on the loser(s). The loser rows are NOT deleted physically (preserving R2 identity-key immutability and R10 FK integrity); they're filtered out of every lookup query via `COALESCE(cntrb_deleted, 0) = 0`. Analytics/aggregate queries that JOIN on `cntrb_id` continue to see the loser rows so historical activity stays attributed correctly.
+
+The v0.20.2 logical merge means outcome #2 is now self-correcting: the next search-resolve cycle that processes the duplicate's email cleans it up automatically.
+
+**`cntrb_deleted` semantics (v0.20.2):**
+- `0` (default) — active row, returned by lookup queries.
+- `1` — loser of a rename merge. Filtered out of `Resolve`'s lookup-by-login, `FindLoginByEmail`, `FindContributorIDByLogin`, `GetThinContributorLogins`, `GetContributorsNeedingSearch`, `GetContributorsMissingCanonical`, and `PopulateAffiliations` candidate selection. Still visible to analytics queries that JOIN on `cntrb_id` directly (so historical FK references continue to resolve).
+- The column already existed in the schema (legacy Augur compatibility); v0.20.2 repurposes it for the soft-delete merge semantics. Pre-v0.20.2 rows are all `cntrb_deleted = 0` or NULL — both treated as active by `COALESCE(cntrb_deleted, 0) = 0`.
 
 ### R4: Identity rows are denormalized truth
 
@@ -365,11 +373,11 @@ WHERE p.author_id IS NOT NULL AND ct.cntrb_id IS NULL;
 
 These are accepted trade-offs, NOT bugs. Operators should be aware before filing issues.
 
-### The rename edge case
+### The rename edge case (largely closed by v0.20.2)
 
-Per [R3](#r3-cntrb_login-partial-uniqueness), a platform user who renames between observations may produce two contributor rows when the new login was already observed under a different `cntrb_id`. Both rows are valid; they refer to the same person. The 23505 fallback in `UpsertContributorFull` ensures the rename does not produce a database error, only suboptimal data quality.
+Per [R3](#r3-cntrb_login-partial-uniqueness), a platform user who renames between observations historically produced two contributor rows when the new login was already observed under a different `cntrb_id`. v0.20.2 added a logical-merge path in `LinkContributorToGitHubUser` that resolves these duplicates the next time `runSearchResolve` processes the relevant email — see R3 for the full description.
 
-A future release (Phase D of `summary/04-refactoring-plan.md`) plans to add a logical merge via `cntrb_deleted = 1`. Until then, queries that need a single row per person should coalesce by `gh_user_id`:
+The remaining residual case: a duplicate where the loser's email never gets re-observed by search-resolve (e.g., the email is private, or the user has set noreply). Those duplicates persist until either the email surfaces or an operator manually invokes the merge. For this rare case, a coalesce query is still useful:
 
 ```sql
 -- Coalesce duplicate rows by gh_user_id, picking the most recently collected

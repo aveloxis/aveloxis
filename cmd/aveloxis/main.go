@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -125,10 +126,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	// Scale the database connection pool to the worker count so collection
 	// workers don't starve each other for connections. Each worker makes many
 	// concurrent DB calls (inserts, queries) during collection phases.
-	poolSize := int32(workers + 15)
-	if poolSize < 20 {
-		poolSize = 20
-	}
+	poolSize := max(int32(workers+15), 20)
 	// application_name = "aveloxis-serve" so post-stop verification
 	// (and operators reading pg_stat_activity) can filter per-process.
 	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-serve"), logger, poolSize)
@@ -1209,14 +1207,7 @@ Use 'aveloxis stop' to shut them down gracefully.`,
 			if target == "all" {
 				components = validComponents
 			} else {
-				valid := false
-				for _, c := range validComponents {
-					if target == c {
-						valid = true
-						break
-					}
-				}
-				if !valid {
+				if !slices.Contains(validComponents, target) {
 					return fmt.Errorf("unknown component %q (use serve, web, api, or all)", target)
 				}
 				components = []string{target}
@@ -1361,14 +1352,7 @@ PID files are cleaned up automatically.`,
 			if target == "all" {
 				components = validComponents
 			} else {
-				valid := false
-				for _, c := range validComponents {
-					if target == c {
-						valid = true
-						break
-					}
-				}
-				if !valid {
+				if !slices.Contains(validComponents, target) {
 					return fmt.Errorf("unknown component %q (use serve, web, api, or all)", target)
 				}
 				components = []string{target}
@@ -1416,7 +1400,7 @@ func stopComponent(component string) bool {
 
 	myPID := os.Getpid()
 	stopped := false
-	for _, field := range strings.Fields(strings.TrimSpace(string(out))) {
+	for field := range strings.FieldsSeq(strings.TrimSpace(string(out))) {
 		pid, err := strconv.Atoi(field)
 		if err != nil || pid == myPID {
 			continue

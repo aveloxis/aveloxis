@@ -72,7 +72,8 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 		err = r.store.pool.QueryRow(ctx, `
 			SELECT cntrb_id::text
 			FROM aveloxis_data.contributors
-			WHERE cntrb_login = $1`, login).Scan(&existingID)
+			WHERE cntrb_login = $1
+			  AND COALESCE(cntrb_deleted, 0) = 0`, login).Scan(&existingID)
 		if err == nil {
 			// Reuse the existing row. If we have a real platform_user_id,
 			// backfill the contributor_identities row so future lookups
@@ -226,7 +227,8 @@ const EnrichmentCooldown = "30 days"
 func (r *ContributorResolver) GetThinContributorLogins(ctx context.Context, limit int) ([]string, error) {
 	rows, err := r.store.pool.Query(ctx, `
 		SELECT cntrb_login FROM aveloxis_data.contributors
-		WHERE cntrb_login != ''
+		WHERE COALESCE(cntrb_deleted, 0) = 0
+			AND cntrb_login != ''
 			AND (cntrb_company = '' OR cntrb_company IS NULL)
 			AND (cntrb_location = '' OR cntrb_location IS NULL)
 			AND (cntrb_last_enriched_at IS NULL

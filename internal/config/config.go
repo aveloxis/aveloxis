@@ -56,6 +56,15 @@ func (d DatabaseConfig) ConnectionString() string {
 		d.User, d.Password, d.Host, d.Port, d.DBName, sslmode)
 }
 
+// ConnectionStringWithAppName returns a PostgreSQL DSN with an
+// `application_name` parameter set, so pg_stat_activity rows from
+// long-running queries can be filtered down to a specific aveloxis
+// process (serve / web / api). v0.20.0 introduced this so
+// `aveloxis stop` can verify backend disconnection post-SIGTERM.
+func (d DatabaseConfig) ConnectionStringWithAppName(name string) string {
+	return d.ConnectionString() + "&application_name=" + name
+}
+
 // PlatformConfig holds API keys and settings for a forge platform.
 type PlatformConfig struct {
 	APIKeys []string `json:"api_keys"`
@@ -220,6 +229,15 @@ type CollectionConfig struct {
 	// because the source data (cntrb_company) is itself bounded by
 	// the 30-day enrichment cooldown. Default 60 (minutes) when unset.
 	AffiliationIntervalMinutes int `json:"affiliation_interval_minutes"`
+
+	// ShutdownGraceSeconds caps how long Scheduler.Run's ctx-cancel
+	// branch waits for in-flight workers to finish before closing the
+	// pgx pool. Default 10 (seconds) when unset. Pre-v0.20.0 the wait
+	// was unbounded — a 26-minute commits UPDATE blocked shutdown for
+	// the full duration. Setting this too low means workers' transactions
+	// abort mid-flight (Postgres rolls them back; safe but log-noisy);
+	// too high means a slow shutdown. 10 seconds matches the pollInterval.
+	ShutdownGraceSeconds int `json:"shutdown_grace_seconds"`
 }
 
 // EnrichIntervalDuration converts EnrichIntervalMinutes to a time.Duration.
@@ -248,6 +266,15 @@ func (c *CollectionConfig) AffiliationIntervalDuration() time.Duration {
 		return 60 * time.Minute
 	}
 	return time.Duration(c.AffiliationIntervalMinutes) * time.Minute
+}
+
+// ShutdownGraceDuration converts ShutdownGraceSeconds to a
+// time.Duration. Falls back to 10 seconds when unset.
+func (c *CollectionConfig) ShutdownGraceDuration() time.Duration {
+	if c.ShutdownGraceSeconds <= 0 {
+		return 10 * time.Second
+	}
+	return time.Duration(c.ShutdownGraceSeconds) * time.Second
 }
 
 // MailConfig configures the Gmail-backed transactional mailer

@@ -932,6 +932,7 @@ func runRecollect(cfgPath string, targets []string) error {
 
 func migrateCmd(cfgPath *string) *cobra.Command {
 	var skipViews bool
+	var noWait bool
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Run database schema migrations",
@@ -942,13 +943,19 @@ Use --skip-views to skip the materialized view block entirely. This is
 useful when you're iterating on a schema-error fix on a large database
 where the matview rebuild adds significant time per attempt — run a
 plain ` + "`aveloxis refresh-views`" + ` (or wait for the next scheduler
-tick) once the schema errors are resolved.`,
+tick) once the schema errors are resolved.
+
+Use --no-wait to fail fast if another aveloxis migration is already in
+progress (rather than blocking on the advisory lock until the holder
+releases). Useful in CI and ` + "`aveloxis stop all && aveloxis start all`" + `
+flows where you want a clear error if a stale process is still
+running migrations.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)
 			logger := newLogger(cfg)
 			ctx := context.Background()
-			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)
+			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-migrate"), logger)
 			if err != nil {
 				return err
 			}
@@ -959,11 +966,14 @@ tick) once the schema errors are resolved.`,
 			if !skipViews {
 				store.SetMatviewOnStartup(true)
 			}
+			store.SetMigrateNoWait(noWait)
 			return store.Migrate(ctx)
 		},
 	}
 	cmd.Flags().BoolVar(&skipViews, "skip-views", false,
 		"skip materialized view creation/refresh (run `aveloxis refresh-views` separately when ready)")
+	cmd.Flags().BoolVar(&noWait, "no-wait", false,
+		"fail fast if another aveloxis migration is in progress (don't block on the advisory lock)")
 	return cmd
 }
 

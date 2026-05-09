@@ -43,27 +43,28 @@ func TestMigrationCreatesGhLoginIndex(t *testing.T) {
 			"writers were removed and this cost surfaced.")
 	}
 
-	// Pin that the index creation goes through execMigrationStep —
-	// per the v0.19.4 fail-closed contract, every schema-changing
-	// statement in RunMigrations must log+collect errors so a
-	// permission failure surfaces instead of being swallowed.
+	// Pin that the index creation goes through one of the
+	// error-collecting helpers (execMigrationStep OR
+	// execCreateIndexConcurrently — v0.20.1 swapped to the latter
+	// for CONCURRENTLY support). Both helpers honor the v0.19.4
+	// fail-closed contract: log at ERROR + append to the errs
+	// collector + cause RunMigrations to return a non-nil error.
 	idxPos := strings.Index(src, "idx_contributors_gh_login")
 	if idxPos < 0 {
 		return
 	}
-	// Look back ~600 chars for the call wrapper. execMigrationStep
-	// is on the line above the inline SQL string most of the time.
 	lookback := idxPos - 600
 	if lookback < 0 {
 		lookback = 0
 	}
 	preceding := src[lookback:idxPos]
-	if !strings.Contains(preceding, "execMigrationStep") {
+	if !strings.Contains(preceding, "execMigrationStep") &&
+		!strings.Contains(preceding, "execCreateIndexConcurrently") {
 		t.Error("idx_contributors_gh_login creation must be wrapped in " +
-			"execMigrationStep so a permission failure (e.g., role lacking " +
-			"CREATE on the schema) surfaces as a fatal migration error " +
-			"per the v0.19.4 fail-closed contract instead of being " +
-			"silently swallowed.")
+			"execMigrationStep OR execCreateIndexConcurrently so a " +
+			"permission failure (e.g., role lacking CREATE on the schema) " +
+			"surfaces as a fatal migration error per the v0.19.4 " +
+			"fail-closed contract instead of being silently swallowed.")
 	}
 
 	// Pin partial-index condition. Without WHERE gh_login != '' the

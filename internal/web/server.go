@@ -201,6 +201,7 @@ func (s *Server) Handler() http.Handler {
 	// Authenticated routes.
 	mux.HandleFunc("/dashboard", s.requireAuth(s.handleDashboard))
 	mux.HandleFunc("/account/email", s.requireAuth(s.handleAccountEmail))
+	mux.HandleFunc("/account/email/confirm", s.requireAuth(s.handleEmailConfirm))
 	mux.HandleFunc("/groups/new", s.requireAuth(s.handleNewGroup))
 	mux.HandleFunc("/groups/", s.requireAuth(s.handleGroup))
 	mux.HandleFunc("/groups/add-repo", s.requireAuth(s.handleAddRepo))
@@ -659,13 +660,15 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 
-	// v0.19.10 email gate: when the OAuth flow couldn't surface an
-	// email (private GitHub email + /user/emails also empty), redirect
-	// to the email-collection form before rendering the dashboard.
-	// Operators need a usable email to coordinate with new users; we
-	// enforce it at the gate rather than at signup so the OAuth
-	// callback path stays simple.
-	if email, err := s.store.GetUserEmail(r.Context(), sess.UserID); err == nil && strings.TrimSpace(email) == "" {
+	// v0.19.10 email gate, v0.20.4 pending-aware: redirect to
+	// /account/email ONLY when the user has neither a confirmed email
+	// NOR a pending one. With a pending email the dashboard renders
+	// with a "check your inbox" banner instead of redirecting (avoids
+	// a loop where the user submits the form, gets redirected back,
+	// and never sees the confirmation prompt).
+	confirmedEmail, _ := s.store.GetUserEmail(r.Context(), sess.UserID)
+	pendingEmail, _ := s.store.GetUserPendingEmail(r.Context(), sess.UserID)
+	if strings.TrimSpace(confirmedEmail) == "" && strings.TrimSpace(pendingEmail) == "" {
 		http.Redirect(w, r, "/account/email", http.StatusFound)
 		return
 	}
@@ -686,10 +689,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.tmpl.ExecuteTemplate(w, "dashboard", map[string]interface{}{
-		"Session":     sess,
-		"Groups":      groups,
-		"PendingOnly": pendingOnly,
+	s.tmpl.ExecuteTemplate(w, "dashboard", map[string]any{
+		"Session":      sess,
+		"Groups":       groups,
+		"PendingOnly":  pendingOnly,
+		"PendingEmail": pendingEmail,
 	})
 }
 
@@ -710,20 +714,53 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		if err := s.store.UpdateUserEmail(r.Context(), sess.UserID, email); err != nil {
-			s.logger.Warn("failed to set user email", "user_id", sess.UserID, "error", err)
+		// v0.20.4: write to email_pending (not users.email) and send
+		// a click-to-confirm link. The email becomes canonical only
+		// after the user clicks through.
+		if err := s.store.SetUserPendingEmail(r.Context(), sess.UserID, email); err != nil {
+			s.logger.Warn("failed to set pending email", "user_id", sess.UserID, "error", err)
 			s.tmpl.ExecuteTemplate(w, "account_email", map[string]any{
 				"Session": sess,
 				"Error":   "Could not save email. Try again.",
 			})
 			return
 		}
+		token, err := s.store.CreateEmailConfirmation(r.Context(), sess.UserID, email)
+		if err != nil {
+			s.logger.Warn("failed to create email confirmation", "user_id", sess.UserID, "error", err)
+			s.tmpl.ExecuteTemplate(w, "account_email", map[string]any{
+				"Session": sess,
+				"Error":   "Could not generate confirmation. Try again.",
+			})
+			return
+		}
+		// Build the confirmation URL — operator-configured site URL
+		// from MailConfig.SiteURL when set; otherwise derive from the
+		// request host (works for local dev).
+		base := strings.TrimRight(s.mailer.SiteURL(), "/")
+		if base == "" {
+			scheme := "https"
+			if r.TLS == nil && (strings.HasPrefix(r.Host, "localhost") || strings.HasPrefix(r.Host, "127.")) {
+				scheme = "http"
+			}
+			base = scheme + "://" + r.Host
+		}
+		confirmURL := base + "/account/email/confirm?token=" + token
+		if s.mailer != nil {
+			if err := s.mailer.SendEmailConfirmation(email, sess.LoginName, confirmURL); err != nil {
+				s.logger.Warn("failed to send confirmation email",
+					"user_id", sess.UserID, "email", email, "error", err)
+				// Don't fail the form — the token is in the DB and the
+				// operator can resend manually if needed. User sees the
+				// "check your inbox" banner regardless.
+			}
+		}
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 		return
 	}
 
-	// GET: show the form. If the user already has an email, they
-	// don't need to be here — bounce them back to dashboard.
+	// GET: show the form. If the user already has a confirmed email,
+	// they don't need to be here — bounce them back to dashboard.
 	if email, _ := s.store.GetUserEmail(r.Context(), sess.UserID); strings.TrimSpace(email) != "" {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 		return
@@ -731,6 +768,41 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 	s.tmpl.ExecuteTemplate(w, "account_email", map[string]any{
 		"Session": sess,
 	})
+}
+
+// handleEmailConfirm consumes the v0.20.4 confirmation token from the
+// query string, promotes email_pending to users.email, and redirects
+// back to the dashboard. On token error (expired or unknown), redirects
+// to /account/email with a flag so the form shows a fresh-start prompt.
+func (s *Server) handleEmailConfirm(w http.ResponseWriter, r *http.Request) {
+	sess := s.getSession(r)
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
+		return
+	}
+	userID, email, err := s.store.ConsumeEmailConfirmation(r.Context(), token)
+	if err != nil {
+		s.logger.Info("email confirmation token rejected",
+			"session_user_id", sess.UserID, "error", err)
+		http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
+		return
+	}
+	// Defense in depth: confirm the token belongs to the logged-in
+	// user. A leaked link from another user's inbox shouldn't grant
+	// the clicker an email change on their own account.
+	if userID != sess.UserID {
+		s.logger.Warn("email confirmation token user mismatch",
+			"token_user_id", userID, "session_user_id", sess.UserID)
+		http.Redirect(w, r, "/dashboard", http.StatusFound)
+		return
+	}
+	if err := s.store.ConfirmUserEmail(r.Context(), userID, email); err != nil {
+		s.logger.Warn("failed to confirm user email", "user_id", userID, "error", err)
+		http.Redirect(w, r, "/account/email?error=1", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
 func (s *Server) handleNewGroup(w http.ResponseWriter, r *http.Request) {

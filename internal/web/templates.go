@@ -88,6 +88,12 @@ h3{font-size:16px;margin-bottom:12px;color:#24292e}
 </div>
 <div class="breadcrumb"><span class="current">Home</span><span class="sep">|</span><a href="/monitor">Monitor</a></div>
 <div class="container">
+{{if .PendingEmail}}
+<div class="card" style="background:#dbeafe;border:1px solid #3b82f6">
+<strong>Check your inbox to confirm your email.</strong>
+<p style="margin:8px 0 0 0;color:#1e3a8a">We sent a confirmation link to <code>{{.PendingEmail}}</code>. Click the link in that email to finish setting up your account. The link expires in 24 hours. If you don't see it, check spam, or <a href="/account/email">submit a different email address</a>.</p>
+</div>
+{{end}}
 {{if .PendingOnly}}
 <div class="card" style="background:#fff8c5;border:1px solid #d4a72c">
 <strong>Your account is awaiting administrator approval.</strong>

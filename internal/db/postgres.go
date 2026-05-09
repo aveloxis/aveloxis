@@ -23,6 +23,7 @@ type PostgresStore struct {
 	logger           *slog.Logger
 	matviewOnStartup bool // whether to refresh materialized views during migration
 	matviewSkip      bool // whether to skip the matview block entirely (--skip-views on migrate)
+	migrateNoWait    bool // whether to fail fast on advisory-lock contention (--no-wait on migrate)
 }
 
 // NewPostgresStore connects to PostgreSQL and returns a Store.
@@ -158,6 +159,16 @@ func (s *PostgresStore) SetMatviewOnStartup(enabled bool) {
 // are set — skip is the stronger signal.
 func (s *PostgresStore) SetMatviewSkip(skip bool) {
 	s.matviewSkip = skip
+}
+
+// SetMigrateNoWait controls how RunMigrations handles advisory-lock
+// contention with another in-flight migration (or serve's startup
+// migrate). When false (default), the advisory-lock acquire blocks
+// until the holder releases. When true, RunMigrations fails fast with
+// a clear error if the lock is held. Set by `aveloxis migrate
+// --no-wait`.
+func (s *PostgresStore) SetMigrateNoWait(noWait bool) {
+	s.migrateNoWait = noWait
 }
 
 func (s *PostgresStore) Migrate(ctx context.Context) error {

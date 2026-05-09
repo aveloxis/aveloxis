@@ -112,6 +112,16 @@ func (m *Mailer) Send(to, subject, body string) error {
 // account exists, names the OAuth provider, and points at the
 // site URL. No verification link — GitHub/GitLab have already
 // verified the email before handing it to us.
+// SiteURL returns the configured site URL (e.g. "https://chaoss.tv")
+// or "" if unset. v0.20.4 uses this to build click-to-confirm links
+// in email bodies. Safely handles a nil mailer (returns "").
+func (m *Mailer) SiteURL() string {
+	if m == nil {
+		return ""
+	}
+	return m.cfg.SiteURL
+}
+
 func (m *Mailer) SendWelcome(toEmail, login, provider string) error {
 	subject := "Welcome to Aveloxis"
 	siteURL := m.cfg.SiteURL
@@ -131,6 +141,27 @@ Sign in: %s
 
 — Aveloxis
 `, login, provider, siteURL)
+	return m.Send(toEmail, subject, body)
+}
+
+// SendEmailConfirmation is the email sent when a user submits an
+// email at /account/email. Contains a click-through link to
+// /account/email/confirm?token=... that consumes the token and
+// promotes email_pending to email. v0.20.4. Tokens expire in
+// EmailConfirmationLifetime (24 hours by default).
+func (m *Mailer) SendEmailConfirmation(toEmail, login, confirmURL string) error {
+	subject := "Confirm your Aveloxis email address"
+	body := fmt.Sprintf(`Hello %s,
+
+Please confirm your email address by clicking the link below:
+
+%s
+
+This link expires in 24 hours. If you didn't request this confirmation,
+ignore this email — your account email won't change without confirming.
+
+— Aveloxis
+`, login, confirmURL)
 	return m.Send(toEmail, subject, body)
 }
 

@@ -273,6 +273,24 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// flips between 'pending' (the default for new groups created by
 	// non-admins), 'approved', and 'rejected'.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.users", "email_confirmed_at", "TIMESTAMPTZ")
+
+	// v0.20.4 email-verification: email_pending column + tokens table.
+	// Manual-entry emails at /account/email are written to email_pending
+	// (not directly to users.email) so they can be confirmed via
+	// click-through before becoming canonical. OAuth-callback emails
+	// (already provider-verified) bypass this flow.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.users", "email_pending", "TEXT")
+	execMigrationStep(ctx, pg, logger, &errs, "create email_confirmations table",
+		`CREATE TABLE IF NOT EXISTS aveloxis_ops.email_confirmations (
+			token TEXT PRIMARY KEY,
+			user_id INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE,
+			email TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMPTZ NOT NULL
+		)`)
+	execMigrationStep(ctx, pg, logger, &errs, "create idx_email_confirmations_user",
+		`CREATE INDEX IF NOT EXISTS idx_email_confirmations_user
+		 ON aveloxis_ops.email_confirmations (user_id)`)
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.user_groups", "status", "TEXT NOT NULL DEFAULT 'approved'")
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.user_groups", "approved_by", "INT")
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.user_groups", "approved_at", "TIMESTAMPTZ")

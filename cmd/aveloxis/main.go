@@ -52,7 +52,7 @@ func main() {
 		apiCmd(&cfgPath),
 		webCmd(&cfgPath),
 		startCmd(&cfgPath),
-		stopCmd(),
+		stopCmd(&cfgPath),
 		addRepoCmd(&cfgPath),
 		importFoundationsCmd(&cfgPath),
 		addKeyCmd(&cfgPath),
@@ -129,7 +129,9 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	if poolSize < 20 {
 		poolSize = 20
 	}
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger, poolSize)
+	// application_name = "aveloxis-serve" so post-stop verification
+	// (and operators reading pg_stat_activity) can filter per-process.
+	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-serve"), logger, poolSize)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
 	}
@@ -162,6 +164,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		EnrichInterval:        cfg.Collection.EnrichIntervalDuration(),
 		SearchResolveInterval: cfg.Collection.SearchResolveIntervalDuration(),
 		AffiliationInterval:   cfg.Collection.AffiliationIntervalDuration(),
+		ShutdownGrace:         cfg.Collection.ShutdownGraceDuration(),
 	})
 	go sched.Run(ctx)
 
@@ -211,7 +214,7 @@ func runAPI(cfgPath, addr string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)
+	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-api"), logger)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
 	}
@@ -1133,7 +1136,7 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer cancel()
 
-			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)
+			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-web"), logger)
 			if err != nil {
 				return err
 			}
@@ -1266,7 +1269,63 @@ func startComponent(component, cfgPath string) error {
 	return nil
 }
 
-func stopCmd() *cobra.Command {
+// verifyBackendsDisconnected polls pg_stat_activity for backends with
+// the given application_name (e.g., "aveloxis-serve") and waits up to
+// 30 seconds for the count to drop to zero. If any persist, prints
+// the persistent PIDs paired with a pg_terminate_backend recipe so
+// the operator can act in seconds rather than wait the full TCP
+// keepalive timeout (tens of minutes).
+//
+// v0.20.0 introduced this to close the gap that produced the
+// 2026-05-08 26-minute orphan: SIGTERM was sent successfully, but the
+// orphaned backend kept grinding a 26-minute UPDATE because the
+// operator had no signal it was happening.
+func verifyBackendsDisconnected(cfgPath, appName string) {
+	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		// No config means we can't check the DB. Operator gets the
+		// SIGTERM result but no verification. Acceptable for `stop` to
+		// degrade gracefully.
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), bootLog)
+	if err != nil {
+		fmt.Printf("(could not verify %s backends disconnected: %v)\n", appName, err)
+		return
+	}
+	defer store.Close()
+
+	// Poll once a second for up to 30 seconds.
+	deadline := time.Now().Add(30 * time.Second)
+	var lastPids []int
+	for time.Now().Before(deadline) {
+		pids, err := store.PidsByAppName(ctx, appName)
+		if err != nil {
+			return
+		}
+		if len(pids) == 0 {
+			return
+		}
+		lastPids = pids
+		time.Sleep(1 * time.Second)
+	}
+	// Persistent backends after 30s — surface PIDs and the actionable fix.
+	if len(lastPids) > 0 {
+		fmt.Printf("WARNING: %d %s backend(s) did not disconnect within 30s after SIGTERM.\n",
+			len(lastPids), appName)
+		fmt.Printf("Persistent PIDs: %v\n", lastPids)
+		fmt.Println("If you don't see a matching aveloxis process in `ps`, these are orphans.")
+		fmt.Println("Terminate them with:")
+		for _, pid := range lastPids {
+			fmt.Printf("  SELECT pg_terminate_backend(%d);\n", pid)
+		}
+	}
+}
+
+func stopCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stop [serve|web|api|all]",
 		Short: "Stop running aveloxis background processes",
@@ -1309,6 +1368,11 @@ PID files are cleaned up automatically.`,
 			for _, comp := range components {
 				if ok := stopComponent(comp); ok {
 					stopped++
+					// v0.20.0: poll pg_stat_activity for the matching
+					// application_name and warn if backends linger past
+					// 30 seconds. Surfaces orphans-after-stop without
+					// requiring the operator to know about pg_locks.
+					verifyBackendsDisconnected(*cfgPath, "aveloxis-"+comp)
 				}
 			}
 			if stopped == 0 {

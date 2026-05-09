@@ -101,6 +101,13 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	cfg.MaxConnIdleTime = 4 * time.Minute
 	cfg.MaxConnLifetime = 1 * time.Hour
 
+	// application_name is passed via the connection string by callers
+	// (cmd/aveloxis uses cfg.Database.ConnectionStringWithAppName).
+	// pgxpool.ParseConfig propagates it as a connection parameter, so
+	// every backend tags itself with e.g. "aveloxis-serve" /
+	// "aveloxis-web" / "aveloxis-api" — pg_stat_activity then filters
+	// cleanly per process. v0.20.0 stop-verification depends on this.
+
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to database: %w", err)
@@ -116,6 +123,27 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 
 func (s *PostgresStore) Close() {
 	s.pool.Close()
+}
+
+// PidsByAppName returns the postgres backend PIDs currently identified
+// by the given application_name. Used by `aveloxis stop` post-SIGTERM
+// to verify all aveloxis-component backends have disconnected before
+// returning. v0.20.0.
+func (s *PostgresStore) PidsByAppName(ctx context.Context, appName string) ([]int, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT pid FROM pg_stat_activity WHERE application_name = $1`, appName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pids []int
+	for rows.Next() {
+		var pid int
+		if err := rows.Scan(&pid); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids, rows.Err()
 }
 
 // SetMatviewOnStartup controls whether materialized views are refreshed during migration.

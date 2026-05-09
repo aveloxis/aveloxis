@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 //go:embed schema.sql
@@ -31,6 +32,20 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// fail closed: serve refuses to start when this slice is non-empty
 	// at the end, even if individual steps wrote successfully.
 	var errs []error
+
+	// v0.20.0: spawn a watcher goroutine that surfaces blocked-DDL with
+	// PID hints. Pre-v0.20.0, when migrate was blocked on a held lock
+	// (the 2026-05-08 incident: orphan PID 10323 holding RowExclusiveLock
+	// on commits while the new serve's startup DDL waited 14+ minutes),
+	// the only operator-visible signal was migrate sitting silent. The
+	// watcher polls pg_stat_activity every 60 seconds for backends that
+	// are blocked AND running schema/migration-style queries (filtered
+	// by application_name + wait_event_type='Lock'); when blocked, it
+	// uses pg_blocking_pids() to surface the holder with a
+	// pg_terminate_backend(N) recipe.
+	migrateDone := make(chan struct{})
+	go watchBlockers(ctx, pg, logger, migrateDone)
+	defer close(migrateDone)
 
 	if _, err := pg.pool.Exec(ctx, schemaSQL); err != nil {
 		// The base DDL block is the foundation — if it fails, every
@@ -258,6 +273,78 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 
 	logger.Info("schema migrations complete", "schema_version", ToolVersion)
 	return nil
+}
+
+// watchBlockers periodically polls pg_stat_activity for aveloxis
+// backends that are blocked on a lock and surfaces the holder PID(s)
+// to the operator log with a pg_terminate_backend(N) recipe.
+//
+// v0.20.0 introduced this to close the silence-during-blocked-migrate
+// gap from the 2026-05-08 incident: when migrate was waiting 14+
+// minutes for an orphan to release a lock, the only signal was
+// "aveloxis migrate" sitting quiet. The watcher now logs an actionable
+// hint within ~60 seconds of the block starting.
+//
+// Filters on application_name LIKE 'aveloxis-%' AND wait_event_type =
+// 'Lock' to scope to OUR backends only — third-party tools holding
+// locks elsewhere don't trigger the warning. The first poll fires at
+// 30 seconds (ignoring fast migrations) and subsequent polls every
+// 60 seconds.
+func watchBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger, done <-chan struct{}) {
+	first := time.NewTimer(30 * time.Second)
+	defer first.Stop()
+	select {
+	case <-done:
+		return
+	case <-ctx.Done():
+		return
+	case <-first.C:
+	}
+	tick := time.NewTicker(60 * time.Second)
+	defer tick.Stop()
+	for {
+		checkBlockers(ctx, pg, logger)
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// checkBlockers runs one poll cycle: find blocked aveloxis backends,
+// resolve their blockers via pg_blocking_pids, log holder + recipe.
+func checkBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+	rows, err := pg.pool.Query(ctx, `
+		SELECT a.pid,
+		       LEFT(a.query, 200)                  AS waiter_query,
+		       pg_blocking_pids(a.pid)              AS blockers
+		FROM pg_stat_activity a
+		WHERE a.application_name LIKE 'aveloxis-%'
+		  AND a.wait_event_type = 'Lock'
+		  AND a.state = 'active'`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var waiterPid int
+		var waiterQuery string
+		var blockers []int32
+		if err := rows.Scan(&waiterPid, &waiterQuery, &blockers); err != nil {
+			continue
+		}
+		if len(blockers) == 0 {
+			continue
+		}
+		logger.Warn("migration blocked on lock — investigate the holder PID(s)",
+			"waiter_pid", waiterPid,
+			"holder_pids", blockers,
+			"waiter_query_prefix", waiterQuery,
+			"hint", "if no aveloxis-side process matches a holder PID, it's an orphan; run `SELECT pg_terminate_backend(<pid>)` to release the lock")
+	}
 }
 
 // execMigrationStep runs a schema-changing SQL statement, logging the

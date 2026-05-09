@@ -43,6 +43,7 @@ type Config struct {
 	EnrichInterval      time.Duration // how often to run thin-contributor enrichment (default 30 min). v0.18.29 moved enrichment out of per-job processing into a periodic scheduler task.
 	SearchResolveInterval time.Duration // how often to run the search-resolve background task (default 1 hour). v0.19.2 added this to backfill gh_user_id on contributors with email but no platform identity, using GitHub's search API at controlled rate.
 	AffiliationInterval   time.Duration // how often to run the periodic singleton PopulateAffiliations task (default 1 hour). v0.19.7 moved this off the per-job hot path to eliminate cross-worker contention on UNIQUE (ca_domain).
+	ShutdownGrace         time.Duration // how long to wait for in-flight workers to finish during ctx-cancel before closing the pgx pool (default 10s). v0.20.0. Bounds shutdown wall-clock time so a single long UPDATE can't block stop indefinitely.
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -92,6 +93,9 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	}
 	if cfg.AffiliationInterval == 0 {
 		cfg.AffiliationInterval = 1 * time.Hour
+	}
+	if cfg.ShutdownGrace == 0 {
+		cfg.ShutdownGrace = 10 * time.Second
 	}
 
 	hostname, _ := os.Hostname()
@@ -288,15 +292,37 @@ func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.logger.Info("scheduler stopping, waiting for workers to finish")
-			// Drain semaphore to wait for active workers.
-			for range s.cfg.Workers {
-				sem <- struct{}{}
+			s.logger.Info("scheduler stopping, waiting for workers to finish",
+				"shutdown_grace", s.cfg.ShutdownGrace)
+			// Drain semaphore to wait for active workers, bounded by
+			// ShutdownGrace. Pre-v0.20.0 this loop was unbounded — a
+			// single 26-minute commits UPDATE blocked shutdown for the
+			// full duration, and any backend that didn't finish in
+			// time became an orphan once the parent process exited.
+			drained := 0
+			deadline := time.After(s.cfg.ShutdownGrace)
+		drain:
+			for drained < s.cfg.Workers {
+				select {
+				case sem <- struct{}{}:
+					drained++
+				case <-deadline:
+					s.logger.Warn("shutdown grace expired, proceeding with pool close",
+						"workers_drained", drained, "workers_total", s.cfg.Workers)
+					break drain
+				}
 			}
-			// Release all our locks so repos go back to queued immediately
-			// instead of waiting for stale lock timeout.
+			// Release queue locks so repos return to 'queued' immediately
+			// instead of waiting for stale-lock timeout.
 			s.releaseOurLocks(context.Background())
-			s.logger.Info("scheduler stopped, locks released")
+			// Explicitly close the pgx pool so backends disconnect
+			// cleanly. Without this, FIN-to-postgres only fires when
+			// runServe's defer chain runs — which can miss SIGKILL
+			// paths AND leaves connections held by mid-statement worker
+			// goroutines grinding for the full TCP-keepalive window.
+			// The 2026-05-08 26-minute orphan was the canonical case.
+			s.store.Close()
+			s.logger.Info("scheduler stopped, locks released, pgx pool closed")
 			return
 
 		case <-recoveryTicker.C:

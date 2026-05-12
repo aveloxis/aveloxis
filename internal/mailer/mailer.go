@@ -19,6 +19,7 @@ package mailer
 import (
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"net/smtp"
 	"strings"
 	"time"
@@ -79,12 +80,23 @@ func (m *Mailer) Send(to, subject, body string) error {
 		}
 		return nil
 	}
+	if strings.ContainsAny(to, "\r\n") || strings.ContainsAny(subject, "\r\n") {
+		return fmt.Errorf("invalid mail header value")
+	}
+
+	parsedTo, err := mail.ParseAddress(to)
+	if err != nil {
+		return fmt.Errorf("invalid recipient address: %w", err)
+	}
 
 	auth := smtp.PlainAuth("", m.cfg.GmailUser, m.cfg.GmailAppPassword, "smtp.gmail.com")
 
 	from := m.cfg.GmailUser
 	if m.cfg.FromName != "" {
 		from = fmt.Sprintf("%s <%s>", m.cfg.FromName, m.cfg.GmailUser)
+	}
+	if strings.ContainsAny(from, "\r\n") {
+		return fmt.Errorf("invalid from header value")
 	}
 
 	msg := []byte(fmt.Sprintf(
@@ -96,9 +108,9 @@ func (m *Mailer) Send(to, subject, body string) error {
 			"Content-Type: text/plain; charset=UTF-8\r\n"+
 			"\r\n"+
 			"%s\r\n",
-		from, to, subject, time.Now().Format(time.RFC1123Z), body))
+		from, parsedTo.String(), subject, time.Now().Format(time.RFC1123Z), body))
 
-	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{to}, msg); err != nil {
+	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{parsedTo.Address}, msg); err != nil {
 		if m.logger != nil {
 			m.logger.Warn("mailer.Send failed",
 				"to", to, "subject", subject, "error", err)

@@ -339,31 +339,30 @@ aveloxis start serve
 
 ## Configuration
 
-Create `aveloxis.json` (or copy from `aveloxis.example.json`):
+Create `aveloxis.json` (or copy from `aveloxis.example.json`).
+
+**The canonical reference for every supported `aveloxis.json` field** lives at [`docs/getting-started/configuration.md`](./docs/getting-started/configuration.md) (also rendered at the ReadTheDocs site). That document has the full table — 6 top-level sections, 29 fields — including all the v0.18.x REST→GraphQL options (`pr_child_mode`, `listing_mode`, `threading_mode`, `shard_size`), the v0.18.29+ periodic-task cadence knobs (`enrich_interval_minutes`, `search_resolve_interval_minutes`, `affiliation_interval_minutes`), v0.20.0's `shutdown_grace_seconds`, and the v0.19.0 Gmail-SMTP `mail` block.
+
+A minimal example to get started; see `aveloxis.example.json` for an all-fields template and the doc above for the full reference:
 
 ```json
 {
   "database": {
     "host": "localhost",
     "port": 5432,
-    "user": "augur",
+    "user": "aveloxis",
     "password": "your-password",
-    "dbname": "augur",
+    "dbname": "aveloxis",
     "sslmode": "prefer"
   },
   "github": {
-    "api_keys": ["ghp_your_token_here"],
-    "base_url": "https://api.github.com"
+    "api_keys": ["ghp_your_token_here"]
   },
   "gitlab": {
-    "api_keys": ["glpat-your_token_here"],
-    "base_url": "https://gitlab.com/api/v4",
-    "gitlab_hosts": ["gitlab.freedesktop.org"]
+    "api_keys": ["glpat-your_token_here"]
   },
   "collection": {
-    "batch_size": 1000,
-    "days_until_recollect": 1,
-    "workers": 4,
+    "workers": 12,
     "repo_clone_dir": "/data/aveloxis-repos"
   },
   "web": {
@@ -372,39 +371,29 @@ Create `aveloxis.json` (or copy from `aveloxis.example.json`):
     "session_secret": "change-me-to-a-random-string",
     "dev_mode": false,
     "github_client_id": "your-github-oauth-app-client-id",
-    "github_client_secret": "your-github-oauth-app-client-secret",
-    "gitlab_client_id": "your-gitlab-oauth-app-client-id",
-    "gitlab_client_secret": "your-gitlab-oauth-app-client-secret",
-    "gitlab_base_url": "https://gitlab.com"
+    "github_client_secret": "your-github-oauth-app-client-secret"
   },
   "log_level": "info"
 }
 ```
 
-| Field | Description | Default |
+The settings most operators tune (with v0.20.x defaults shown for reference):
+
+| Field | Default | Notes |
 |---|---|---|
-| `database.*` | PostgreSQL connection parameters | localhost:5432 |
-| `github.api_keys` | GitHub personal access tokens (multiple for rotation) | `[]` |
-| `github.base_url` | GitHub API URL (change for GHE) | `https://api.github.com` |
-| `gitlab.api_keys` | GitLab personal access tokens | `[]` |
-| `gitlab.base_url` | GitLab API URL | `https://gitlab.com/api/v4` |
-| `gitlab.gitlab_hosts` | Additional hostnames to recognize as GitLab instances | `[]` |
-| `collection.batch_size` | Staging flush batch size | `1000` |
-| `collection.days_until_recollect` | Days before a repo is re-collected | `1` |
-| `collection.workers` | Concurrent collection workers (for `serve`) | `12` |
-| `collection.repo_clone_dir` | Directory for bare git clones used by the facade phase. Can grow to terabytes for large instances. | `$HOME/aveloxis-repos` |
-| `collection.matview_rebuild_day` | Day of week to rebuild materialized views: `"monday"` through `"sunday"`, or `"disabled"` | `"saturday"` |
-| `collection.matview_rebuild_on_startup` | Whether to refresh materialized views during startup migration. Slow on large DBs. | `false` |
-| `web.addr` | Listen address for the web GUI | `":8082"` |
-| `web.base_url` | External URL for OAuth callback redirects | `"http://localhost:8082"` |
-| `web.session_secret` | Secret key for signing session cookies | (required for `aveloxis web`) |
-| `web.dev_mode` | Set `true` for local HTTP development. Disables `Secure` flag on cookies so they work without HTTPS. **Do not enable in production.** `HttpOnly` is always set regardless. | `false` |
-| `web.github_client_id` | GitHub OAuth app client ID | `""` |
-| `web.github_client_secret` | GitHub OAuth app client secret | `""` |
-| `web.gitlab_client_id` | GitLab OAuth app client ID | `""` |
-| `web.gitlab_client_secret` | GitLab OAuth app client secret | `""` |
-| `web.gitlab_base_url` | GitLab instance URL (for self-hosted GitLab) | `"https://gitlab.com"` |
-| `log_level` | Log verbosity: `debug`, `info`, `warn`, `error` | `info` |
+| `database.*` | localhost:5432 | PostgreSQL connection. |
+| `github.api_keys` / `gitlab.api_keys` | `[]` | Round-robin rotated. Production should prefer the `worker_oauth` table via `aveloxis add-key`. |
+| `collection.workers` | `12` | Concurrent collection goroutines. pgx pool sizes to `max(workers + 15, 20)`. |
+| `collection.days_until_recollect` | `1` | After collection, `due_at = last_collected + days_until_recollect`. |
+| `collection.repo_clone_dir` | `$HOME/aveloxis-repos` | Bare clones. Plan TB-scale for large fleets. |
+| `collection.pr_child_mode` | `"rest"` | Set to `"graphql"` for ~5× faster PR collection (v0.18.1+). |
+| `collection.listing_mode` | `"rest"` | Set to `"graphql"` to skip the repo-wide REST issue/PR scans (v0.18.2+). |
+| `collection.threading_mode` | `"single"` | Set to `"sharded"` with `pr_child_mode=graphql` to parallelize large-repo PR batches (v0.18.3+). |
+| `collection.matview_rebuild_day` | `"saturday"` | Or `"disabled"` to turn off scheduled rebuilds. |
+| `web.dev_mode` | `false` | Set `true` for local HTTP development (see Development Mode below). Never enable in production. |
+| `log_level` | `"info"` | `debug` / `info` / `warn` / `error`. |
+
+Every other setting (mail/SMTP, periodic-task cadences, OAuth credentials, shutdown grace, etc.) is documented in [`docs/getting-started/configuration.md`](./docs/getting-started/configuration.md).
 
 ### Development Mode
 

@@ -57,6 +57,66 @@ func TestConfigurationDocsCoverEveryJSONField(t *testing.T) {
 	}
 }
 
+// TestExampleConfigIncludesEveryJSONField pins
+// aveloxis.example.json against the struct tags. The example
+// config doubles as the canonical "all options" template: an
+// operator who copies it gets every field set to its default-ish
+// value. New code-side fields must land in the example same-
+// commit so a `cp aveloxis.example.json aveloxis.json` workflow
+// stays meaningful.
+func TestExampleConfigIncludesEveryJSONField(t *testing.T) {
+	tags, err := collectJSONTags("config.go")
+	if err != nil {
+		t.Fatalf("parsing config.go: %v", err)
+	}
+
+	examplePath := filepath.Join("..", "..", "aveloxis.example.json")
+	exampleBytes, err := os.ReadFile(examplePath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", examplePath, err)
+	}
+	example := string(exampleBytes)
+
+	for _, tag := range tags {
+		if tag == "" || tag == "-" {
+			continue
+		}
+		// The example is a JSON file so we look for the quoted key.
+		needle := `"` + tag + `"`
+		if !strings.Contains(example, needle) {
+			t.Errorf("aveloxis.example.json does not include JSON field %q — every json tag on Config must appear in the example template so operators using `cp aveloxis.example.json aveloxis.json` get a complete starting point. Add the field with a sensible default value.", tag)
+		}
+	}
+}
+
+// TestREADMEMentionsCanonicalConfigDoc pins README.md to keep a
+// pointer to docs/getting-started/configuration.md. Without
+// this, the README's Configuration section is the first thing
+// most users see and tends to drift into duplicating (and
+// becoming stale relative to) the canonical doc. The contract
+// is: README either (a) lists every JSON field, OR (b) clearly
+// points readers at the canonical doc for the full list.
+// Option (b) is the chosen pattern as of v0.20.12 — one source
+// of truth, with the README showing a minimal example and the
+// most-tuned settings only.
+func TestREADMEMentionsCanonicalConfigDoc(t *testing.T) {
+	readmePath := filepath.Join("..", "..", "README.md")
+	readmeBytes, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", readmePath, err)
+	}
+	readme := string(readmeBytes)
+
+	if !strings.Contains(readme, "docs/getting-started/configuration.md") {
+		t.Error("README.md must link to docs/getting-started/configuration.md as the canonical full-reference for aveloxis.json. Without this link, the README's Configuration section drifts into duplicating (and becoming stale relative to) the canonical doc — exactly what happened pre-v0.20.12 when the README's table was missing 11 config fields.")
+	}
+	if !strings.Contains(readme, "canonical reference") &&
+		!strings.Contains(readme, "full reference") &&
+		!strings.Contains(readme, "canonical full-reference") {
+		t.Error(`README.md's Configuration section should describe the linked doc as the "canonical reference" (or equivalent phrasing) so readers know that's where to look for fields not listed in the README itself`)
+	}
+}
+
 // collectJSONTags walks the AST of the given Go file and
 // returns the list of `json:"..."` tag values on every struct
 // field (recursively, via embedded type references — but we just

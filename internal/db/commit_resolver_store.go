@@ -277,13 +277,28 @@ func (s *PostgresStore) FindContributorIDByLogin(ctx context.Context, login stri
 
 // BackfillCommitAuthorIDs sets cmt_ght_author_id from contributor gh_login matches.
 // This is a pure SQL operation — no API calls.
+//
+// v0.20.12 (Fix H): the JOIN is case-insensitive. GitHub treats logins
+// as case-insensitive but case-preserving; commit metadata may store
+// the display case ("NitishT") while the contributors row was inserted
+// under a lowercased login from a different endpoint ("nitisht"), or
+// vice versa. A case-sensitive equality silently drops those commits
+// into a perpetual NULL-author state. Production diagnostic on the
+// live aveloxis_large DB showed 1,919 additional commits recoverable
+// under the case-insensitive comparison.
+//
+// Note: this side of the JOIN is fine without an index because gh_login
+// has the partial unique index from v0.19.9; the LOWER expression on
+// the inner table is a small cost vs the upper-table scan that already
+// happens anyway. If profiling shows this becomes a bottleneck, an
+// expression index on LOWER(gh_login) is the next step.
 func (s *PostgresStore) BackfillCommitAuthorIDs(ctx context.Context, repoID int64) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.commits c
 		SET cmt_ght_author_id = cn.cntrb_id
 		FROM aveloxis_data.contributors cn
 		WHERE c.repo_id = $1
-		  AND c.cmt_author_platform_username = cn.gh_login
+		  AND LOWER(c.cmt_author_platform_username) = LOWER(cn.gh_login)
 		  AND c.cmt_ght_author_id IS NULL
 		  AND c.cmt_author_platform_username IS NOT NULL`,
 		repoID)

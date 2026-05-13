@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package api provides a REST API for Aveloxis data access.
 // Started via `aveloxis api` as a separate process from the collection scheduler.
 // The web GUI and monitoring dashboard call this API for repo statistics.

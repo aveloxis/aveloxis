@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 package monitor
 
 // The monitor.Server takes a *db.PostgresStore directly (not an interface),

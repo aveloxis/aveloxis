@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 package web
 
 // Directly render the "monitor" template with concrete inputs and assert

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package scheduler runs continuous collection backed by a Postgres priority queue.
 //
 // Design goals (contrast with Augur's Celery-based scheduler):

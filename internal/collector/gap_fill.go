@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — gap_fill.go implements smart gap detection and targeted
 // re-collection for repos where gathered data is incomplete.
 //

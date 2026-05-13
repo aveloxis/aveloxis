@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package db — matviews.go manages materialized views used by 8Knot and other
 // analytics tools. Views are created during migration and refreshed periodically.
 package db

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package api — metrics.go implements Augur-compatible REST API endpoints
 // for CHAOSS metrics. These endpoints follow the swagger.json specification
 // ported from Augur's Python API.

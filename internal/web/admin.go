@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package web — admin.go provides the v0.19.0 admin pages:
 //   - /admin/groups/pending  list + approve/reject of pending submissions
 //   - /admin/users           list + toggle admin role

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract tests for v0.18.29 Fix 2: contributor enrichment runs
 // as a periodic scheduler task, not per-job inside processJob.
 //

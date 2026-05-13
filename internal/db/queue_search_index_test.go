@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract tests for the pg_trgm GIN index on aveloxis_data.repos
 // (v0.18.30 monitor performance fix #3).
 //

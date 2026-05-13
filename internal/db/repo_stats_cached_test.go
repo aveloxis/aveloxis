@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract tests for v0.18.30 monitor performance fixes.
 //
 // At v0.18.29, GetRepoStatsBatch fired 5 separate queries against massive

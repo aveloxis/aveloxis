@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package pidfile manages PID files for aveloxis background processes.
 // Each component (serve, web, api) writes its PID to a file at startup
 // and removes it on shutdown. The start/stop commands use these files

@@ -275,50 +275,66 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 
 ### Setup
 
-1. Use a Gmail account dedicated to the deployment (e.g. `aveloxis-ops@yourdomain.com`).
-2. Enable **2-Step Verification** on that account: <https://myaccount.google.com/security>.
-3. Generate an **App Password** for "Mail": <https://myaccount.google.com/apppasswords>. You'll get a 16-character password — copy it.
+1. Pick a Gmail account dedicated to the deployment. This can be a personal Gmail account (`something@gmail.com`) or a Google Workspace account on a custom domain (`ops@aveloxis.io`). Either way, the value you put into `gmail_user` must be the **full email address**, not just the domain.
+2. Enable **2-Step Verification** on that account: <https://myaccount.google.com/security>. App Passwords cannot be generated without 2SV, and regular account passwords stopped working with SMTP when Google deprecated "less secure app access" in 2022.
+3. Generate an **App Password** for "Mail": <https://myaccount.google.com/apppasswords>. Google displays the password as `xxxx xxxx xxxx xxxx` (four groups of four lowercase letters). The actual auth token is the **16 contiguous lowercase letters**; the spaces are display formatting only. Aveloxis strips the spaces on load, so either form in `aveloxis.json` works.
 4. Add a `mail` block to `aveloxis.json`:
 
 ```json
 {
   "mail": {
-    "gmail_user": "aveloxis-ops@yourdomain.com",
-    "gmail_app_password": "xxxx xxxx xxxx xxxx",
+    "gmail_user": "ops@aveloxis.io",
+    "gmail_app_password": "abcd efgh ijkl mnop",
     "from_name": "Aveloxis",
     "site_url": "https://your-host.example"
   }
 }
 ```
 
-| Field | Purpose |
-|---|---|
-| `gmail_user` | The Gmail address used for SMTP auth and as the `From` address. Leaving this empty disables the mailer (silent no-op). |
-| `gmail_app_password` | The 16-character App Password generated in step 3. Spaces are allowed. **Not the account's regular password.** |
-| `from_name` | Display name shown in recipients' inboxes. Defaults to the bare email address when omitted. |
-| `site_url` | Public-facing URL for your Aveloxis deployment. Used in email body links. |
+| Field | Required format | Purpose |
+|---|---|---|
+| `gmail_user` | Full email address with `@`. **Not** the bare domain. | Used both as the SMTP auth username and as the `From` address. Leaving this empty (along with `gmail_app_password`) disables the mailer (silent no-op). |
+| `gmail_app_password` | Exactly 16 lowercase ASCII letters (display-format spaces fine). **Not** a regular account password. | The App Password generated in step 3. Validation rejects anything else at startup with a clear error message. |
+| `from_name` | Free-form string | Display name shown in recipients' inboxes. Defaults to the bare email address when omitted. |
+| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. |
+
+### Validation at startup
+
+`aveloxis web` runs `mailer.ValidateConfig` against the supplied block when the server boots. If validation fails, the WARN line is emitted before any user can sign up:
+
+- `mail.gmail_user "aveloxis.io" is not an email address` — you set the bare domain. Use the full address (`ops@aveloxis.io`).
+- `mail.gmail_app_password is N character(s) after removing display-format spaces but Google App Passwords are exactly 16 lowercase letters` — you pasted a regular password or something else. Generate an actual App Password.
+- `mail.gmail_user is empty but mail.gmail_app_password is set` (or vice versa) — partial config. Either fill both fields or empty both.
+
+When validation fails, the mailer falls back to disabled behavior (no email sent, no errors raised by calling code) so the rest of the application keeps working. Fix the config and restart `aveloxis web` to enable the mailer.
+
+### Verifying the setup with `aveloxis test-mail`
+
+After fixing the config, send a one-shot test email without waiting for a user to sign up:
+
+```bash
+aveloxis test-mail your-personal-address@example.com
+```
+
+The command runs the same `ValidateConfig` check, then calls `mailer.Send` against `smtp.gmail.com:587`. Output:
+
+- **Success**: `test email sent successfully to=...` — credentials are working. The test email arrives within seconds.
+- **Validation error**: command exits non-zero with a clear message. Fix `aveloxis.json` and try again. No SMTP attempt is made.
+- **SMTP error from Gmail itself** (e.g. `535 5.7.8 Username and Password not accepted`): credentials look syntactically correct but Gmail rejected them. Most likely: App Password generated against a different account, or 2-Step Verification was just disabled on the account that owns the App Password.
 
 ### Transport details
 
 The mailer uses Go's stdlib `net/smtp` against `smtp.gmail.com:587` with STARTTLS and PLAIN auth. No third-party email library is required.
 
-### Verifying the setup
+### Common failure modes
 
-Once configured:
-
-1. Restart `aveloxis web`.
-2. Have a fresh user log in via OAuth — they should receive a welcome email within seconds.
-3. Check `~/.aveloxis/web.log` for `mailer.Send failed` warnings if the email doesn't arrive.
-
-Common failure modes:
-
-- **`535 5.7.8 Username and Password not accepted`** — the App Password is wrong, or 2-Step Verification isn't enabled on the Gmail account.
-- **`550 5.7.0 Mail relay denied`** — sending to a recipient address Gmail considers invalid. Re-check the captured email address in `aveloxis_ops.users`.
+- **`535 5.7.8 Username and Password not accepted`** — credentials passed `ValidateConfig`'s syntactic check but Gmail rejected them at auth time. Causes: App Password was revoked, 2SV was disabled after the password was generated, or the App Password belongs to a different account than the one named in `gmail_user`.
+- **`550 5.7.0 Mail relay denied`** — Gmail considers the recipient address invalid. Re-check the captured email in `aveloxis_ops.users`.
 - **No log entry at all** — `gmail_user` is empty (mailer disabled). Add the config block and restart.
 
 ### Disabling
 
-Remove or empty the `gmail_user` field. The mailer becomes a no-op and the rest of the application continues to work.
+Remove or empty BOTH `gmail_user` AND `gmail_app_password`. Setting only one without the other is treated as a misconfiguration. With both empty, the mailer is a silent no-op and the rest of the application continues to work.
 
 ---
 

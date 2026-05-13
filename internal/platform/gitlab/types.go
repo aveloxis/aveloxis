@@ -6,17 +6,17 @@ import "time"
 // Raw GitLab API v4 response types. Converted to platform-agnostic model types.
 
 type glUser struct {
-	ID        int64  `json:"id"`
-	Username  string `json:"username"`
-	Name      string `json:"name"`
-	State     string `json:"state"`
-	AvatarURL string `json:"avatar_url"`
-	WebURL    string `json:"web_url"`
-	Email     string `json:"email"`       // only from /users/:id with admin
+	ID          int64  `json:"id"`
+	Username    string `json:"username"`
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	AvatarURL   string `json:"avatar_url"`
+	WebURL      string `json:"web_url"`
+	Email       string `json:"email"`        // only from /users/:id with admin
 	PublicEmail string `json:"public_email"` // from /users/:id
-	Company   string `json:"organization"`
-	Location  string `json:"location"`
-	CreatedAt string `json:"created_at"`
+	Company     string `json:"organization"`
+	Location    string `json:"location"`
+	CreatedAt   string `json:"created_at"`
 }
 
 type glLabel struct {
@@ -27,58 +27,58 @@ type glLabel struct {
 }
 
 type glIssue struct {
-	ID          int64      `json:"id"`   // global ID
-	IID         int        `json:"iid"`  // project-scoped number
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	State       string     `json:"state"` // "opened", "closed"
-	WebURL      string     `json:"web_url"`
-	Author      glUser     `json:"author"`
-	Labels      []string   `json:"labels"` // label names only in list endpoint
-	Assignees   []glUser   `json:"assignees"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	ClosedAt    *time.Time `json:"closed_at"`
-	ClosedBy    *glUser    `json:"closed_by"`
-	UserNotesCount int    `json:"user_notes_count"`
+	ID             int64      `json:"id"`  // global ID
+	IID            int        `json:"iid"` // project-scoped number
+	Title          string     `json:"title"`
+	Description    string     `json:"description"`
+	State          string     `json:"state"` // "opened", "closed"
+	WebURL         string     `json:"web_url"`
+	Author         glUser     `json:"author"`
+	Labels         []string   `json:"labels"` // label names only in list endpoint
+	Assignees      []glUser   `json:"assignees"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	ClosedAt       *time.Time `json:"closed_at"`
+	ClosedBy       *glUser    `json:"closed_by"`
+	UserNotesCount int        `json:"user_notes_count"`
 }
 
 type glMergeRequest struct {
-	ID                 int64      `json:"id"`
-	IID                int        `json:"iid"`
-	Title              string     `json:"title"`
-	Description        string     `json:"description"`
-	State              string     `json:"state"` // "opened", "closed", "merged", "locked"
-	WebURL             string     `json:"web_url"`
-	DiffURL            string     // constructed from web_url
-	Author             glUser     `json:"author"`
-	Labels             []string   `json:"labels"`
-	Assignees          []glUser   `json:"assignees"`
-	Reviewers          []glUser   `json:"reviewers"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	ClosedAt           *time.Time `json:"closed_at"`
-	MergedAt           *time.Time `json:"merged_at"`
-	MergeCommitSHA     string     `json:"merge_commit_sha"`
-	SquashCommitSHA    string     `json:"squash_commit_sha"`
-	SourceBranch       string     `json:"source_branch"`
-	TargetBranch       string     `json:"target_branch"`
-	SourceProjectID    int64      `json:"source_project_id"`
-	TargetProjectID    int64      `json:"target_project_id"`
-	SHA                string     `json:"sha"` // head commit SHA
-	UserNotesCount     int        `json:"user_notes_count"`
-	Draft              bool       `json:"draft"`
+	ID              int64      `json:"id"`
+	IID             int        `json:"iid"`
+	Title           string     `json:"title"`
+	Description     string     `json:"description"`
+	State           string     `json:"state"` // "opened", "closed", "merged", "locked"
+	WebURL          string     `json:"web_url"`
+	DiffURL         string     // constructed from web_url
+	Author          glUser     `json:"author"`
+	Labels          []string   `json:"labels"`
+	Assignees       []glUser   `json:"assignees"`
+	Reviewers       []glUser   `json:"reviewers"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	ClosedAt        *time.Time `json:"closed_at"`
+	MergedAt        *time.Time `json:"merged_at"`
+	MergeCommitSHA  string     `json:"merge_commit_sha"`
+	SquashCommitSHA string     `json:"squash_commit_sha"`
+	SourceBranch    string     `json:"source_branch"`
+	TargetBranch    string     `json:"target_branch"`
+	SourceProjectID int64      `json:"source_project_id"`
+	TargetProjectID int64      `json:"target_project_id"`
+	SHA             string     `json:"sha"` // head commit SHA
+	UserNotesCount  int        `json:"user_notes_count"`
+	Draft           bool       `json:"draft"`
 }
 
 type glNote struct {
-	ID        int64     `json:"id"`
-	Body      string    `json:"body"`
-	Author    glUser    `json:"author"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	System    bool      `json:"system"` // true for events masquerading as notes
-	NoteableType string `json:"noteable_type"` // "Issue", "MergeRequest"
-	NoteableIID  int    `json:"noteable_iid"`
+	ID           int64     `json:"id"`
+	Body         string    `json:"body"`
+	Author       glUser    `json:"author"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	System       bool      `json:"system"`        // true for events masquerading as notes
+	NoteableType string    `json:"noteable_type"` // "Issue", "MergeRequest"
+	NoteableIID  int       `json:"noteable_iid"`
 }
 
 // glResourceEvent represents a label, state, or milestone event from
@@ -136,21 +136,21 @@ type glMRApproval struct {
 }
 
 type glProject struct {
-	ID                int64     `json:"id"`
-	Description       string    `json:"description"`
-	DefaultBranch     string    `json:"default_branch"`
-	WebURL            string    `json:"web_url"`
-	StarCount         int       `json:"star_count"`
-	ForksCount        int       `json:"forks_count"`
-	OpenIssuesCount   int       `json:"open_issues_count"`
-	LastActivityAt    time.Time `json:"last_activity_at"`
-	Archived          bool      `json:"archived"`
-	Visibility        string    `json:"visibility"`
-	IssuesEnabled     bool      `json:"issues_enabled"`
-	MergeRequestsEnabled bool  `json:"merge_requests_enabled"`
-	WikiEnabled       bool      `json:"wiki_enabled"`
-	PagesAccessLevel  string    `json:"pages_access_level"`
-	ForkedFromProject *struct {
+	ID                   int64     `json:"id"`
+	Description          string    `json:"description"`
+	DefaultBranch        string    `json:"default_branch"`
+	WebURL               string    `json:"web_url"`
+	StarCount            int       `json:"star_count"`
+	ForksCount           int       `json:"forks_count"`
+	OpenIssuesCount      int       `json:"open_issues_count"`
+	LastActivityAt       time.Time `json:"last_activity_at"`
+	Archived             bool      `json:"archived"`
+	Visibility           string    `json:"visibility"`
+	IssuesEnabled        bool      `json:"issues_enabled"`
+	MergeRequestsEnabled bool      `json:"merge_requests_enabled"`
+	WikiEnabled          bool      `json:"wiki_enabled"`
+	PagesAccessLevel     string    `json:"pages_access_level"`
+	ForkedFromProject    *struct {
 		PathWithNamespace string `json:"path_with_namespace"`
 	} `json:"forked_from_project"`
 	License *struct {
@@ -170,13 +170,13 @@ type glContributor struct {
 }
 
 type glMember struct {
-	ID        int64  `json:"id"`
-	Username  string `json:"username"`
-	Name      string `json:"name"`
-	State     string `json:"state"`
-	AvatarURL string `json:"avatar_url"`
-	WebURL    string `json:"web_url"`
-	AccessLevel int  `json:"access_level"`
+	ID          int64  `json:"id"`
+	Username    string `json:"username"`
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	AvatarURL   string `json:"avatar_url"`
+	WebURL      string `json:"web_url"`
+	AccessLevel int    `json:"access_level"`
 }
 
 // glDiscussion represents a threaded discussion on a merge request.
@@ -188,12 +188,12 @@ type glDiscussion struct {
 
 // glDiscussionNote is a note within a discussion, optionally positioned on a diff.
 type glDiscussionNote struct {
-	ID        int64          `json:"id"`
-	Body      string         `json:"body"`
-	Author    glUser         `json:"author"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	System    bool           `json:"system"`
+	ID        int64           `json:"id"`
+	Body      string          `json:"body"`
+	Author    glUser          `json:"author"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+	System    bool            `json:"system"`
 	Position  *glNotePosition `json:"position"`
 }
 

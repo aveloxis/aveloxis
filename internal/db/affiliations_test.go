@@ -32,9 +32,9 @@ func TestAffiliationResolver_ResolveWithPreloadedCache(t *testing.T) {
 	// Test the in-memory resolution logic without a database.
 	r := &AffiliationResolver{
 		cache: map[string]string{
-			"redhat.com":   "Red Hat",
-			"google.com":   "Google",
-			"mozilla.org":  "Mozilla",
+			"redhat.com":  "Red Hat",
+			"google.com":  "Google",
+			"mozilla.org": "Mozilla",
 		},
 		loaded: true,
 	}

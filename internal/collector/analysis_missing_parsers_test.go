@@ -24,12 +24,12 @@ dependencies {
 `
 	deps := parseBuildGradleVersions(content)
 	expected := map[string]string{
-		"org.springframework:spring-core":    "5.3.20",
-		"com.google.guava:guava":             "31.1-jre",
-		"junit:junit":                        "4.13.2",
-		"org.mockito:mockito-core":           "4.5.1",
-		"org.projectlombok:lombok":           "1.18.24",
-		"mysql:mysql-connector-java":         "8.0.29",
+		"org.springframework:spring-core": "5.3.20",
+		"com.google.guava:guava":          "31.1-jre",
+		"junit:junit":                     "4.13.2",
+		"org.mockito:mockito-core":        "4.5.1",
+		"org.projectlombok:lombok":        "1.18.24",
+		"mysql:mysql-connector-java":      "8.0.29",
 	}
 	if len(deps) != len(expected) {
 		t.Fatalf("parseBuildGradleVersions returned %d deps, want %d: %v", len(deps), len(expected), deps)

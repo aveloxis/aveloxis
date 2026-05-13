@@ -150,6 +150,7 @@ func ClassifyError(err error) ErrorClass {
 	case errors.Is(err, ErrNotFound),
 		errors.Is(err, ErrForbidden),
 		errors.Is(err, ErrGone),
+		errors.Is(err, ErrNoContent),
 		errors.Is(err, ErrWrongEntityKind):
 		return ClassSkip
 	case errors.Is(err, ErrAllKeysInvalidated):

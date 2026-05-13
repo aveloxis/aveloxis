@@ -28,19 +28,19 @@ import (
 
 // Config configures the scheduler.
 type Config struct {
-	Workers             int           // concurrent collection goroutines (default 1)
-	PollInterval        time.Duration // how often to check for due jobs (default 10s)
-	RecollectAfter      time.Duration // how long before re-collecting a repo (default 24h)
-	StaleLockTimeout    time.Duration // how long before reclaiming a locked job (default 1h)
-	RepoCloneDir        string        // directory for bare git clones (can be terabytes)
-	OrgRefreshInterval  time.Duration // how often to re-scan orgs for new/renamed repos (default 4h)
-	MatviewRebuildDay   int           // day of week for matview rebuild (0=Sun..6=Sat, -1=disabled)
-	ForceFullCollection bool          // when true, all collections use since=zero (full re-collection)
-	PRChildMode         string        // "rest" (default) or "graphql" — routes PR child fetch through FetchPRBatch
-	ListingMode         string        // "rest" (default) or "graphql" — routes issue+PR listing through ListIssuesAndPRs
-	ThreadingMode       string        // "single" (default) or "sharded" — fans out PR batch fetching across goroutines
-	ShardSize           int           // item-count threshold for spawning an additional shard (default 3000)
-	EnrichInterval      time.Duration // how often to run thin-contributor enrichment (default 30 min). v0.18.29 moved enrichment out of per-job processing into a periodic scheduler task.
+	Workers               int           // concurrent collection goroutines (default 1)
+	PollInterval          time.Duration // how often to check for due jobs (default 10s)
+	RecollectAfter        time.Duration // how long before re-collecting a repo (default 24h)
+	StaleLockTimeout      time.Duration // how long before reclaiming a locked job (default 1h)
+	RepoCloneDir          string        // directory for bare git clones (can be terabytes)
+	OrgRefreshInterval    time.Duration // how often to re-scan orgs for new/renamed repos (default 4h)
+	MatviewRebuildDay     int           // day of week for matview rebuild (0=Sun..6=Sat, -1=disabled)
+	ForceFullCollection   bool          // when true, all collections use since=zero (full re-collection)
+	PRChildMode           string        // "rest" (default) or "graphql" — routes PR child fetch through FetchPRBatch
+	ListingMode           string        // "rest" (default) or "graphql" — routes issue+PR listing through ListIssuesAndPRs
+	ThreadingMode         string        // "single" (default) or "sharded" — fans out PR batch fetching across goroutines
+	ShardSize             int           // item-count threshold for spawning an additional shard (default 3000)
+	EnrichInterval        time.Duration // how often to run thin-contributor enrichment (default 30 min). v0.18.29 moved enrichment out of per-job processing into a periodic scheduler task.
 	SearchResolveInterval time.Duration // how often to run the search-resolve background task (default 1 hour). v0.19.2 added this to backfill gh_user_id on contributors with email but no platform identity, using GitHub's search API at controlled rate.
 	AffiliationInterval   time.Duration // how often to run the periodic singleton PopulateAffiliations task (default 1 hour). v0.19.7 moved this off the per-job hot path to eliminate cross-worker contention on UNIQUE (ca_domain).
 	ShutdownGrace         time.Duration // how long to wait for in-flight workers to finish during ctx-cancel before closing the pgx pool (default 10s). v0.20.0. Bounds shutdown wall-clock time so a single long UPDATE can't block stop indefinitely.
@@ -622,6 +622,14 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// scorecard, and SBOM. Commit authors are resolved against both GitHub and
 	// GitLab Search APIs to find platform identities.
 	var result *collector.CollectResult
+	// gapFillErr is hoisted to runJob scope (v0.20.5) so the value
+	// produced inside the `if err == nil` gap-fill block survives long
+	// enough to be passed into buildOutcome below. Pre-v0.20.5 this was
+	// a block-local `gfErr` that got dropped immediately after the WARN
+	// log line, leaving last_error NULL and force_full_collect FALSE
+	// for every gap-fill failure — exactly the silent-loop class that
+	// the v0.18.24 force_full_collect mechanism exists to prevent.
+	var gapFillErr error
 	if !repo.Platform.IsGitOnly() {
 		client, clientErr := s.selectClient(repo.Platform)
 		if clientErr != nil {
@@ -658,6 +666,10 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 				filled, gfErr := gf.AssessAndFillGaps(ctx, job.RepoID, repo.Owner, repo.Name, metaIssues, metaPRs)
 				if gfErr != nil {
 					s.logger.Warn("gap fill error", "repo_id", job.RepoID, "error", gfErr)
+					// v0.20.5: hoist into runJob scope so buildOutcome
+					// records it as outcome.errMsg → last_error in the
+					// queue + shouldForceFullRecollect fires.
+					gapFillErr = gfErr
 				} else if filled > 0 {
 					s.logger.Info("gap fill completed", "repo_id", job.RepoID, "filled", filled)
 				}
@@ -705,7 +717,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	}
 
 	// Determine outcome and complete the job.
-	outcome := s.buildOutcome(result, facadeResult, analysisResult, err)
+	outcome := s.buildOutcome(result, facadeResult, analysisResult, err, gapFillErr)
 	duration := time.Since(start)
 
 	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, s.cfg.RecollectAfter,
@@ -972,7 +984,20 @@ func (s *Scheduler) runCommitResolution(ctx context.Context, repoID int64, repo 
 
 // buildOutcome evaluates the collection and facade results to determine
 // success/failure and extract counts for the job completion record.
-func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *collector.FacadeResult, analysisResult *collector.AnalysisResult, collectionErr error) jobOutcome {
+//
+// gapFillErr (v0.20.5) is folded into the outcome separately from the
+// main-collection error so a gap-fill failure produces:
+//   - success=false  → shouldForceFullRecollect can fire on the errMsg
+//   - errMsg populated with the gap-fill error text → last_error in
+//     aveloxis_ops.collection_queue is non-NULL so operators can
+//     SQL-query for the affected repos
+//
+// Before v0.20.5, the gap-fill error was only WARN-logged in runJob
+// and dropped before reaching buildOutcome. The result was a silent
+// loop: each incremental cycle re-detected the same gap, gap fill
+// failed the same way, last_error stayed NULL, force_full_collect
+// stayed FALSE.
+func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *collector.FacadeResult, analysisResult *collector.AnalysisResult, collectionErr error, gapFillErr error) jobOutcome {
 	out := jobOutcome{success: true}
 
 	if collectionErr != nil {
@@ -981,6 +1006,18 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 	} else if result != nil && len(result.Errors) > 0 {
 		out.success = false
 		out.errMsg = result.Errors[0].Error()
+	}
+
+	// Gap-fill error takes effect only when the main collection
+	// succeeded (otherwise the main error message is the more
+	// informative one to record). The substring "graphql PR batch"
+	// inside gapFillErr.Error() is what shouldForceFullRecollect
+	// matches on, so the next cycle re-collects with since=zero and
+	// the main collection picks up the historical PRs that gap fill
+	// could not.
+	if gapFillErr != nil && out.errMsg == "" {
+		out.success = false
+		out.errMsg = gapFillErr.Error()
 	}
 
 	if result != nil {
@@ -996,9 +1033,18 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 		out.commits = facadeResult.Commits
 	}
 
-	// A repo with zero data across all entity types likely had an auth failure
-	// or is truly empty — mark as failure so it gets retried.
-	if result != nil && out.issues == 0 && out.prs == 0 && out.releases == 0 && out.contributors == 0 {
+	// A repo with zero data across all entity types AND zero
+	// facade commits likely had an auth failure or is truly empty —
+	// mark as failure so it gets retried. v0.20.7 widened the gate
+	// to include facade commits: a repo with real git history
+	// (out.commits > 0) is provably not empty and provably not
+	// auth-failed (facade clones over HTTPS but doesn't go through
+	// the API token), so it should NOT be flagged as failure even
+	// when API entity counts are all zero. Pre-v0.20.7 this gate
+	// wrongly flagged ~100 small-but-real repos like
+	// biocorecrg/ggplot2_functions (9 commits, 0 API data) as
+	// failures every cycle.
+	if result != nil && out.issues == 0 && out.prs == 0 && out.releases == 0 && out.contributors == 0 && out.commits == 0 {
 		out.success = false
 		if out.errMsg == "" {
 			out.errMsg = "no data collected (possible API auth failure or empty repo)"

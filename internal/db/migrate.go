@@ -249,6 +249,59 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		WHERE q.repo_id = sub.repo_id
 		  AND q.last_commits IS DISTINCT FROM sub.cnt`)
 
+	// v0.20.5 backfill: set force_full_collect=TRUE on queue rows whose
+	// last_prs is materially below the latest repo_info.pr_count. These
+	// are repos affected by the pre-v0.20.5 gap-fill silent-failure bug:
+	// gap fill aborted with a transient GitHub error, the WARN was
+	// logged, the error never reached outcome.errMsg, force_full_collect
+	// stayed FALSE, and the repo went back into the incremental cycle
+	// where it would never close the historical PR gap. The 5% threshold
+	// matches the live gap detector in gap_fill.go (PRGapPctThreshold).
+	//
+	// Idempotent in two ways:
+	//   1. Subsequent migrate runs skip rows whose flag is already TRUE.
+	//   2. After a successful full re-collection, CompleteJob clears
+	//      force_full_collect AND last_prs catches up to pr_count, so
+	//      neither filter matches on the next migrate.
+	//
+	// DISTINCT ON (repo_id) ... ORDER BY repo_id, data_collection_date
+	// DESC picks the latest repo_info row per repo — the previous
+	// snapshot rotated to repo_info_history so the live table may hold
+	// just one row per repo on a steady-state install, but the
+	// DISTINCT ON is correct either way.
+	execMigrationStep(ctx, pg, logger, &errs, "v0.20.5 backfill force_full_collect for repos with PR gap",
+		`UPDATE aveloxis_ops.collection_queue q
+		SET force_full_collect = TRUE
+		FROM (
+		    SELECT DISTINCT ON (repo_id) repo_id, pr_count
+		    FROM aveloxis_data.repo_info
+		    ORDER BY repo_id, data_collection_date DESC
+		) ri
+		WHERE q.repo_id = ri.repo_id
+		  AND ri.pr_count > 0
+		  AND q.last_prs::float / ri.pr_count::float < 0.95
+		  AND q.force_full_collect = FALSE`)
+
+	// v0.20.7 backfill: clear last_error and force_full_collect for
+	// rows that were wrongly flagged by the pre-v0.20.7 "no data
+	// collected" heuristic. Affected repos have last_commits > 0
+	// (proves facade succeeded) AND last_error contains the
+	// specific "no data collected" string the heuristic emitted.
+	// Idempotent — once last_error is cleared, the row no longer
+	// matches the WHERE clause.
+	//
+	// We DON'T need to flip success state — the queue's notion of
+	// success is implicit (last_error IS NULL). Clearing the error
+	// AND any inappropriately-set force_full_collect lets the next
+	// cycle run incrementally, which is the correct cadence for a
+	// healthy small repo with no API activity.
+	execMigrationStep(ctx, pg, logger, &errs, "v0.20.7 clear false-positive 'no data collected' errors for repos with real commits",
+		`UPDATE aveloxis_ops.collection_queue
+		SET last_error = NULL,
+		    force_full_collect = FALSE
+		WHERE last_commits > 0
+		  AND last_error LIKE 'no data collected%'`)
+
 	// Users table: dedupe + enforce PK/UNIQUE (v0.18.9).
 	// Older installs used CREATE TABLE IF NOT EXISTS with inline UNIQUE, which
 	// silently skipped on pre-existing tables created without the constraint —

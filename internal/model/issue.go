@@ -11,9 +11,9 @@ type Issue struct {
 	NodeID       string // GraphQL node ID (GitHub) or empty
 	Title        string
 	Body         string
-	State        string // "open", "closed"
-	URL          string // API URL
-	HTMLURL      string // web URL
+	State        string  // "open", "closed"
+	URL          string  // API URL
+	HTMLURL      string  // web URL
 	ReporterID   *string // contributor UUID who opened
 	ClosedByID   *string // contributor UUID who closed (nullable)
 	ReporterRef  UserRef // raw platform user data for contributor resolution
@@ -58,7 +58,7 @@ type IssueEvent struct {
 	ActorRef         UserRef
 	PlatformID       Platform
 	PlatformEventID  int64
-	PlatformIssueID  int64  // issue number on the platform, used to resolve IssueID during staged processing
+	PlatformIssueID  int64 // issue number on the platform, used to resolve IssueID during staged processing
 	NodeID           string
 	Action           string // "opened", "closed", "labeled", "assigned", etc.
 	ActionCommitHash string

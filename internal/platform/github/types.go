@@ -7,28 +7,28 @@ import "time"
 // and are converted to platform-agnostic model types by the collector methods.
 
 type ghUser struct {
-	ID                 int64  `json:"id"`
-	Login              string `json:"login"`
-	NodeID             string `json:"node_id"`
-	AvatarURL          string `json:"avatar_url"`
-	GravatarID         string `json:"gravatar_id"`
-	HTMLURL            string `json:"html_url"`
-	FollowersURL       string `json:"followers_url"`
-	FollowingURL       string `json:"following_url"`
-	GistsURL           string `json:"gists_url"`
-	StarredURL         string `json:"starred_url"`
-	SubscriptionsURL   string `json:"subscriptions_url"`
-	OrganizationsURL   string `json:"organizations_url"`
-	ReposURL           string `json:"repos_url"`
-	EventsURL          string `json:"events_url"`
-	ReceivedEventsURL  string `json:"received_events_url"`
-	Type               string `json:"type"`
-	SiteAdmin          bool   `json:"site_admin"`
-	Name               string `json:"name"`
-	Email              string `json:"email"`
-	Company            string `json:"company"`
-	Location           string `json:"location"`
-	CreatedAt          string `json:"created_at"`
+	ID                int64  `json:"id"`
+	Login             string `json:"login"`
+	NodeID            string `json:"node_id"`
+	AvatarURL         string `json:"avatar_url"`
+	GravatarID        string `json:"gravatar_id"`
+	HTMLURL           string `json:"html_url"`
+	FollowersURL      string `json:"followers_url"`
+	FollowingURL      string `json:"following_url"`
+	GistsURL          string `json:"gists_url"`
+	StarredURL        string `json:"starred_url"`
+	SubscriptionsURL  string `json:"subscriptions_url"`
+	OrganizationsURL  string `json:"organizations_url"`
+	ReposURL          string `json:"repos_url"`
+	EventsURL         string `json:"events_url"`
+	ReceivedEventsURL string `json:"received_events_url"`
+	Type              string `json:"type"`
+	SiteAdmin         bool   `json:"site_admin"`
+	Name              string `json:"name"`
+	Email             string `json:"email"`
+	Company           string `json:"company"`
+	Location          string `json:"location"`
+	CreatedAt         string `json:"created_at"`
 }
 
 type ghLabel struct {
@@ -87,10 +87,10 @@ type ghPullRequest struct {
 }
 
 type ghPRBranch struct {
-	Label string       `json:"label"`
-	Ref   string       `json:"ref"`
-	SHA   string       `json:"sha"`
-	User  ghUser       `json:"user"`
+	Label string          `json:"label"`
+	Ref   string          `json:"ref"`
+	SHA   string          `json:"sha"`
+	User  ghUser          `json:"user"`
 	Repo  *ghPRBranchRepo `json:"repo"` // fork repo details; nil if fork was deleted
 }
 
@@ -130,27 +130,27 @@ type ghComment struct {
 }
 
 type ghReviewComment struct {
-	ID                    int64     `json:"id"`
-	NodeID                string    `json:"node_id"`
-	PullRequestReviewID   int64     `json:"pull_request_review_id"`
-	User                  ghUser    `json:"user"`
-	Body                  string    `json:"body"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
-	HTMLURL               string    `json:"html_url"`
-	DiffHunk              string    `json:"diff_hunk"`
-	Path                  string    `json:"path"`
-	Position              *int      `json:"position"`
-	OriginalPosition      *int      `json:"original_position"`
-	CommitID              string    `json:"commit_id"`
-	OriginalCommitID      string    `json:"original_commit_id"`
-	Line                  *int      `json:"line"`
-	OriginalLine          *int      `json:"original_line"`
-	Side                  string    `json:"side"`
-	StartLine             *int      `json:"start_line"`
-	OriginalStartLine     *int      `json:"original_start_line"`
-	StartSide             string    `json:"start_side"`
-	AuthorAssociation     string    `json:"author_association"`
+	ID                  int64     `json:"id"`
+	NodeID              string    `json:"node_id"`
+	PullRequestReviewID int64     `json:"pull_request_review_id"`
+	User                ghUser    `json:"user"`
+	Body                string    `json:"body"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+	HTMLURL             string    `json:"html_url"`
+	DiffHunk            string    `json:"diff_hunk"`
+	Path                string    `json:"path"`
+	Position            *int      `json:"position"`
+	OriginalPosition    *int      `json:"original_position"`
+	CommitID            string    `json:"commit_id"`
+	OriginalCommitID    string    `json:"original_commit_id"`
+	Line                *int      `json:"line"`
+	OriginalLine        *int      `json:"original_line"`
+	Side                string    `json:"side"`
+	StartLine           *int      `json:"start_line"`
+	OriginalStartLine   *int      `json:"original_start_line"`
+	StartSide           string    `json:"start_side"`
+	AuthorAssociation   string    `json:"author_association"`
 }
 
 type ghEvent struct {
@@ -186,7 +186,7 @@ type ghCommit struct {
 	SHA    string `json:"sha"`
 	NodeID string `json:"node_id"`
 	Commit struct {
-		Message   string `json:"message"`
+		Message   string     `json:"message"`
 		Author    ghGitActor `json:"author"`
 		Committer ghGitActor `json:"committer"`
 	} `json:"commit"`

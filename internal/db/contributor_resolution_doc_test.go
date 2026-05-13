@@ -93,10 +93,10 @@ func TestContributorResolutionDocHasOperatorSections(t *testing.T) {
 	doc := strings.ToLower(string(data))
 
 	sections := map[string]string{
-		"FAQ / data-quality":     "data quality",
-		"Diagnostic queries":     "diagnostic",
+		"FAQ / data-quality":      "data quality",
+		"Diagnostic queries":      "diagnostic",
 		"Intentional limitations": "limitation",
-		"Contract rules":         "contract",
+		"Contract rules":          "contract",
 	}
 	for label, needle := range sections {
 		if !strings.Contains(doc, needle) {

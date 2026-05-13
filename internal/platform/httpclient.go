@@ -41,6 +41,18 @@ var ErrForbidden = errors.New("forbidden")
 // ErrGone) to skip the resource without failing the whole collection.
 var ErrGone = errors.New("gone")
 
+// ErrNoContent wraps 204 No Content responses (v0.20.6). GitHub
+// returns 204 for /repos/{owner}/{repo}/contributors when the repo
+// has zero commits (empty / archived repo) or 5,000+ contributors
+// (GitHub gives up enumerating). The pre-v0.20.6 HTTPClient treated
+// 204 as "unexpected status" and burned the full 10-retry budget
+// before giving up — wasting ~110s of backoff and 10 API requests
+// per call. The fix: return ErrNoContent so the pagination engine
+// observes it as a clean end-of-iteration with zero items. Pre-fix
+// production logs (May 9–12) showed 1,430 such warnings across 143
+// unique repos = ~5.3h of wasted wall-clock per cycle.
+var ErrNoContent = errors.New("no content (204)")
+
 // maxRedirectHops caps how many 301/302/307/308 follows a single Get call
 // will perform before giving up. GitHub's best-practices guide says to
 // always follow redirects; this cap protects against pathological chains
@@ -234,6 +246,15 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		switch {
 		case resp.StatusCode == http.StatusOK:
 			return resp, nil
+		case resp.StatusCode == http.StatusNoContent:
+			// 204: legitimate "empty result" response. GitHub returns
+			// 204 for /contributors on empty or 5000+-contributor
+			// repos. Pre-v0.20.6 this fell into the default retry arm
+			// and burned the full 10-retry budget per call. Return
+			// ErrNoContent so the pagination engine completes the
+			// iteration with zero items.
+			resp.Body.Close()
+			return nil, ErrNoContent
 		case resp.StatusCode == http.StatusNotModified:
 			// 304: data hasn't changed since our last request.
 			// This does NOT count against GitHub's rate limit.
@@ -494,6 +515,17 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				// request (ETag match). This is not an error — just means zero new items.
 				if errors.Is(err, ErrNotModified) {
 					return // no new data, stop pagination
+				}
+				// 204 No Content (v0.20.6) is the legitimate empty-result
+				// response GitHub returns for /contributors on empty or
+				// 5,000+-contributor repos. Treat it like 304: end
+				// iteration cleanly with zero items, no error surfaced
+				// to the caller. Without this branch, every contributor
+				// fetch on an empty repo would yield (zero, ErrNoContent)
+				// to the caller, who would treat the error as a fatal
+				// "exhausted retries" equivalent.
+				if errors.Is(err, ErrNoContent) {
+					return
 				}
 				var zero T
 				yield(zero, err)

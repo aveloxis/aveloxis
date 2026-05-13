@@ -100,10 +100,10 @@ not fail the exit code on their own.`,
 
 // ShadowReport is the comparison result.
 type ShadowReport struct {
-	GeneratedAt time.Time       `json:"generated_at"`
-	RepoID      int64           `json:"repo_id,omitempty"`
-	Tables      []TableDiff     `json:"tables"`
-	Summary     ShadowSummary   `json:"summary"`
+	GeneratedAt time.Time     `json:"generated_at"`
+	RepoID      int64         `json:"repo_id,omitempty"`
+	Tables      []TableDiff   `json:"tables"`
+	Summary     ShadowSummary `json:"summary"`
 }
 
 type ShadowSummary struct {
@@ -116,9 +116,9 @@ type ShadowSummary struct {
 
 // TableDiff summarizes one table's diff.
 type TableDiff struct {
-	Table       string     `json:"table"`
-	RESTRows    int        `json:"rest_rows"`
-	GraphQLRows int        `json:"graphql_rows"`
+	Table       string `json:"table"`
+	RESTRows    int    `json:"rest_rows"`
+	GraphQLRows int    `json:"graphql_rows"`
 	// FailMissing: rows in REST but not in GraphQL — regression.
 	FailMissing []DeltaRow `json:"fail_missing,omitempty"`
 	// FailContent: rows present on both sides with differing content columns.

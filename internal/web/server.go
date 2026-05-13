@@ -366,9 +366,15 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// v0.20.13: surface a "Sign out" button on the login page when
+	// the visitor already has an active session. Use case: switching
+	// from user A to user B without manually clearing cookies in
+	// DevTools. The /logout handler does the cookie/session cleanup;
+	// this template flag just makes the affordance discoverable.
 	s.tmpl.ExecuteTemplate(w, "login", map[string]interface{}{
-		"HasGitHub": s.ghOAuth != nil,
-		"HasGitLab": s.glOAuth != nil,
+		"HasGitHub":  s.ghOAuth != nil,
+		"HasGitLab":  s.glOAuth != nil,
+		"HasSession": s.getSession(r) != nil,
 	})
 }
 
@@ -380,6 +386,14 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.sessionMu.Unlock()
 	}
 	http.SetCookie(w, s.expireCookie("aveloxis_session"))
+	// v0.20.13: also expire oauth_state defensively. A user who
+	// reached /auth/github but never completed the callback leaves
+	// this cookie behind. Clearing it alongside the session means
+	// the "switch users" flow exits with no stale aveloxis-side
+	// cookie state. (oauth_state has a 5-minute MaxAge so it would
+	// expire on its own soon, but cleaning it on explicit logout
+	// is the principled behavior.)
+	http.SetCookie(w, s.expireCookie("oauth_state"))
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 

@@ -71,6 +71,13 @@ h3{font-size:16px;margin-bottom:12px;color:#24292e}
 {{if .HasGitLab}}<a href="/auth/gitlab" class="btn btn-gitlab">Sign in with GitLab</a>{{end}}
 {{if not .HasGitHub}}{{if not .HasGitLab}}<p class="empty">No OAuth providers configured. Set github_client_id or gitlab_client_id in aveloxis.json.</p>{{end}}{{end}}
 </div>
+{{if .HasSession}}
+<div style="margin-top:24px;padding-top:20px;border-top:1px solid #eee;font-size:13px;color:#586069">
+You currently have an active session.
+<a href="/logout" style="margin-left:8px">Sign out &amp; clear cookies</a>
+to log in as a different user.
+</div>
+{{end}}
 </div>
 </div>
 </body></html>

@@ -44,7 +44,23 @@ type Mailer struct {
 // New returns a Mailer. Safe to call with a zero Config — Send will
 // then early-return on every call (no-op fallback for deployments
 // that haven't configured email yet).
+//
+// v0.20.14: runs ValidateAndLog against the supplied config. If
+// validation fails (typo in gmail_user, wrong App Password format,
+// partial config), the WARN is emitted at construction time —
+// well before the first Send — and the mailer falls back to
+// disabled behavior so the rest of the application keeps working.
+// The caller does not need to inspect a return error; the mailer
+// is always usable.
 func New(cfg Config, logger *slog.Logger) *Mailer {
+	if err := ValidateAndLog(cfg, logger); err != nil {
+		// Validation failed: drop the bad config and behave as
+		// if email were unconfigured. Send will hit its empty-
+		// user early return on every call. The operator sees
+		// the WARN at startup and the situation is recoverable
+		// by fixing the config and restarting.
+		return &Mailer{cfg: Config{}, logger: logger}
+	}
 	return &Mailer{cfg: cfg, logger: logger}
 }
 
@@ -80,7 +96,10 @@ func (m *Mailer) Send(to, subject, body string) error {
 		return nil
 	}
 
-	auth := smtp.PlainAuth("", m.cfg.GmailUser, m.cfg.GmailAppPassword, "smtp.gmail.com")
+	// v0.20.14: strip display-format spaces from the App Password
+	// (`abcd efgh ijkl mnop` → `abcdefghijklmnop`) so the value
+	// operators copy-paste from Google's UI auths correctly.
+	auth := smtp.PlainAuth("", m.cfg.GmailUser, normalizeAppPassword(m.cfg.GmailAppPassword), "smtp.gmail.com")
 
 	from := m.cfg.GmailUser
 	if m.cfg.FromName != "" {

@@ -291,8 +291,8 @@ Holds email addresses found in git commits that could not be resolved to a known
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `email_unresolved_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
-| `email` | TEXT NOT NULL | Git: `git log --all --numstat` | The unresolved email from a commit. |
-| `name` | TEXT | Git: `git log --all --numstat` | The name associated with the email in the commit. |
+| `email` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | The unresolved email from a commit. |
+| `name` | TEXT | Git: `git log --numstat` (default branch only, per v0.16.4) | The name associated with the email in the commit. |
 | | | | *Standard metadata columns* |
 
 ---
@@ -400,8 +400,8 @@ Join table linking issues to messages (comments). Each row maps one comment to o
 | `issue_id` | BIGINT NOT NULL (FK -> issues) | Computed | The issue. |
 | `repo_id` | BIGINT NOT NULL (FK -> repos) | Computed | Repository for denormalized querying. |
 | `msg_id` | BIGINT NOT NULL (FK -> messages) | Computed | The message/comment. |
-| `platform_src_id` | BIGINT | GitHub REST: `/issues/comments`, GitLab: `/projects/{id}/issues` | Platform's comment ID. |
-| `platform_node_id` | TEXT | GitHub REST: `/issues/comments` | GitHub GraphQL node ID. |
+| `platform_src_id` | BIGINT | GitHub (REST `/issues/comments` in rest mode; inline via GraphQL `Issue.comments` in graphql mode — see `messages` table for the per-mode source breakdown) ; GitLab `/projects/{id}/issues/{iid}/notes` | Platform's comment ID. |
+| `platform_node_id` | TEXT | GitHub (REST `/issues/comments` or GraphQL inline) | GitHub GraphQL node ID. |
 | | | | *Standard metadata columns* |
 
 **Unique constraint:** `(issue_id, msg_id)`
@@ -625,34 +625,19 @@ Fork repository metadata referenced in pull requests. Records source repos for P
 
 #### pull_request_review_message_ref
 
-Inline review comments on pull request diffs. Links a review to a message with full diff position metadata.
+Bridge table linking a pull request **review** to its review-body message in the `messages` table. One row per review whose author submitted body text alongside their Approve / Request Changes / Comment action. Reviews submitted without body text (the common "Approved" with no comment case) do NOT create a row here.
+
+This is NOT the inline-diff-comment table — those live in `review_comments` (below) and have their own messages-table row each. The schema retains a number of diff-position columns (`pr_review_msg_diff_hunk`, `pr_review_msg_path`, `pr_review_msg_position`, etc.) from the Augur-era schema, but Aveloxis writes ONLY `pr_review_id`, `repo_id`, `msg_id`, `pr_review_src_id`, and `pr_review_msg_node_id`. The diff-position columns are kept for schema parity / 8Knot compatibility but are not populated.
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `pr_review_msg_ref_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
-| `pr_review_id` | BIGINT NOT NULL (FK -> pull_request_reviews) | Computed | The review this comment belongs to. |
+| `pr_review_id` | BIGINT NOT NULL (FK -> pull_request_reviews) | Computed | The review whose body is linked. |
 | `repo_id` | BIGINT (FK -> repos) | Computed | Repository. |
-| `msg_id` | BIGINT NOT NULL | Computed | FK to messages table. |
-| `pr_review_msg_url` | TEXT | GitHub REST: `/pulls/comments` | API URL of the review comment. |
-| `pr_review_src_id` | BIGINT | GitHub REST: `/pulls/comments` | Platform review ID for the parent review. |
-| `pr_review_msg_src_id` | BIGINT | GitHub REST: `/pulls/comments` | Platform comment ID. |
-| `pr_review_msg_node_id` | TEXT | GitHub REST: `/pulls/comments` | GitHub GraphQL node ID. |
-| `pr_review_msg_diff_hunk` | TEXT | GitHub REST: `/pulls/comments` | The diff hunk surrounding this comment. |
-| `pr_review_msg_path` | TEXT | GitHub REST: `/pulls/comments` | File path the comment is on. |
-| `pr_review_msg_position` | BIGINT | GitHub REST: `/pulls/comments` | Line position in the diff. |
-| `pr_review_msg_original_position` | BIGINT | GitHub REST: `/pulls/comments` | Original position before rebases. |
-| `pr_review_msg_commit_id` | TEXT | GitHub REST: `/pulls/comments` | SHA of the commit the comment references. |
-| `pr_review_msg_original_commit_id` | TEXT | GitHub REST: `/pulls/comments` | Original commit SHA. |
-| `pr_review_msg_updated_at` | TIMESTAMPTZ | GitHub REST: `/pulls/comments` | Last update timestamp. |
-| `pr_review_msg_html_url` | TEXT | GitHub REST: `/pulls/comments` | Web URL. |
-| `pr_url` | TEXT | GitHub REST: `/pulls/comments` | URL of the parent PR. |
-| `pr_review_msg_author_association` | TEXT | GitHub REST: `/pulls/comments` | Author's association to the repo. |
-| `pr_review_msg_start_line` | BIGINT | GitHub REST: `/pulls/comments` | Multi-line comment start line. |
-| `pr_review_msg_original_start_line` | BIGINT | GitHub REST: `/pulls/comments` | Original start line. |
-| `pr_review_msg_start_side` | TEXT | GitHub REST: `/pulls/comments` | Side of the diff for start line. |
-| `pr_review_msg_line` | BIGINT | GitHub REST: `/pulls/comments` | End line of the comment. |
-| `pr_review_msg_original_line` | BIGINT | GitHub REST: `/pulls/comments` | Original end line. |
-| `pr_review_msg_side` | TEXT | GitHub REST: `/pulls/comments` | Side of the diff (`"LEFT"` or `"RIGHT"`). |
+| `msg_id` | BIGINT NOT NULL | Computed | FK to messages table; carries the review body text. |
+| `pr_review_src_id` | BIGINT | GitHub REST: `/pulls/{n}/reviews` (or GraphQL `reviews` connection on PullRequest in graphql mode) | Platform's review ID. |
+| `pr_review_msg_node_id` | TEXT | GitHub REST: `/pulls/{n}/reviews` | GitHub GraphQL node ID for the review. |
+| `pr_review_msg_url`, `pr_review_msg_src_id`, `pr_review_msg_diff_hunk`, `pr_review_msg_path`, `pr_review_msg_position`, `pr_review_msg_original_position`, `pr_review_msg_commit_id`, `pr_review_msg_original_commit_id`, `pr_review_msg_updated_at`, `pr_review_msg_html_url`, `pr_url`, `pr_review_msg_author_association`, `pr_review_msg_start_line`, `pr_review_msg_original_start_line`, `pr_review_msg_start_side`, `pr_review_msg_line`, `pr_review_msg_original_line`, `pr_review_msg_side` | (various) | Not populated by Aveloxis | Vestigial Augur-era columns. Use `review_comments` (below) for inline-diff comment data. |
 | | | | *Standard metadata columns* |
 
 ---
@@ -698,21 +683,32 @@ ML-based merge prediction results for pull requests. Schema parity table; not ye
 
 #### messages
 
-Unified comment/message table shared by issues and pull requests. Each row is one comment. The `issue_message_ref` and `pull_request_message_ref` join tables link messages to their parent entity.
+Unified comment/message table shared by issues and pull requests. Each row is one piece of text. The four bridge tables (`issue_message_ref`, `pull_request_message_ref`, `pull_request_review_message_ref`, `review_comments`) link messages to their semantic origin, enabling cross-type text analysis. The four kinds of text stored here:
+
+- **Issue conversation comments** — comments under an issue. Linked via `issue_message_ref`.
+- **PR conversation comments** — comments under a PR (the IssueComment-shaped nodes GitHub serves under `/issues/{n}/comments` on REST, even for PRs). Linked via `pull_request_message_ref`.
+- **PR review bodies** — text submitted alongside an Approve / Request Changes / Comment review action, when non-empty. Linked via `pull_request_review_message_ref`.
+- **Inline PR review comments** — diff-anchored comments attached to a specific file/line. Linked via `review_comments` (carries the diff position metadata).
+
+**Source endpoints by mode (GitHub):**
+- `pr_child_mode=rest` AND `listing_mode=rest`: comments fetched via `/issues/comments` (covers both issue and PR conversation comments), `/pulls/comments` (inline review comments), `/pulls/{n}/reviews` (review bodies).
+- `pr_child_mode=graphql` AND `listing_mode=graphql` (v0.18.5+ Phase 4): issue and PR conversation comments arrive **inline** via the GraphQL listing + PR-batch queries. `/issues/comments` is skipped entirely by the staged collector's `fullGraphQLMode()` gate. Review bodies are inline via `reviews` connection on PullRequest. The `/pulls/comments` REST iterator continues to run regardless of mode because GraphQL's PullRequestReviewComment type does not expose `side` / `startSide`.
+
+GitLab: all four kinds come from `/projects/{id}/merge_requests/{n}/notes` and `/projects/{id}/merge_requests/{n}/discussions` (REST composition; no GraphQL path on GitLab).
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `msg_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
 | `repo_id` | BIGINT NOT NULL (FK -> repos) | Computed | Repository. |
 | `rgls_id` | BIGINT | Computed | Optional FK to `repo_groups_list_serve` for mailing list messages. |
-| `platform_msg_id` | BIGINT NOT NULL | GitHub REST: `/issues/comments`, `/pulls/comments`, GitLab: `/merge_requests/{n}/notes`, `/merge_requests/{n}/discussions` | Platform's comment ID. |
+| `platform_msg_id` | BIGINT NOT NULL | GitHub (REST or GraphQL inline, see modes above) ; GitLab `/merge_requests/{n}/notes`, `/merge_requests/{n}/discussions` | Platform's comment / review ID. For review bodies this is the platform review ID. |
 | `platform_id` | SMALLINT NOT NULL (FK -> platforms) | Computed | Platform. |
-| `node_id` | TEXT | GitHub REST: `/issues/comments`, `/pulls/comments` | GitHub GraphQL node ID. |
-| `msg_text` | TEXT | GitHub REST: `/issues/comments`, `/pulls/comments`, GitLab: `/merge_requests/{n}/notes` | Comment body text. |
-| `msg_timestamp` | TIMESTAMPTZ | GitHub REST: `/issues/comments`, `/pulls/comments`, GitLab: `/merge_requests/{n}/notes` | When the comment was posted. |
+| `node_id` | TEXT | GitHub (REST or GraphQL inline) | GitHub GraphQL node ID. |
+| `msg_text` | TEXT | GitHub (REST or GraphQL inline) ; GitLab `/merge_requests/{n}/notes` | Comment / review body text. |
+| `msg_timestamp` | TIMESTAMPTZ | GitHub (REST or GraphQL inline) ; GitLab `/merge_requests/{n}/notes` | When the message was posted (or review submitted). |
 | `msg_sender_email` | TEXT | Computed | Email of the comment author (resolved from contributor). |
 | `msg_header` | TEXT | Not yet populated | Message header (for mailing list messages). |
-| `cntrb_id` | UUID (FK -> contributors) | GitHub REST: `/issues/comments`, `/pulls/comments`, GitLab: `/merge_requests/{n}/notes` | Comment author. |
+| `cntrb_id` | UUID (FK -> contributors) | Computed (resolved from platform user data) | Comment / review author. |
 | | | | *Standard metadata columns* |
 
 **Unique constraint:** `(platform_msg_id, platform_id)`
@@ -721,7 +717,7 @@ Unified comment/message table shared by issues and pull requests. Each row is on
 
 #### pull_request_message_ref
 
-Join table linking pull requests to their comments in the messages table.
+Join table linking pull requests to their **conversation** comments in the messages table. These are the IssueComment-shaped nodes GitHub serves under `/issues/{n}/comments` on REST (even for PRs); they are NOT diff-anchored inline review comments — those live in `review_comments`.
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
@@ -729,8 +725,8 @@ Join table linking pull requests to their comments in the messages table.
 | `pull_request_id` | BIGINT NOT NULL (FK -> pull_requests) | Computed | The PR. |
 | `repo_id` | BIGINT NOT NULL (FK -> repos) | Computed | Repository. |
 | `msg_id` | BIGINT NOT NULL (FK -> messages) | Computed | The message/comment. |
-| `platform_src_id` | BIGINT | GitHub REST: `/pulls/comments`, GitLab: `/merge_requests/{n}/notes` | Platform's comment ID. |
-| `platform_node_id` | TEXT | GitHub REST: `/pulls/comments` | GitHub GraphQL node ID. |
+| `platform_src_id` | BIGINT | GitHub (REST `/issues/comments` in rest mode; inline via GraphQL `PullRequest.comments` in graphql mode) ; GitLab `/merge_requests/{n}/notes` | Platform's comment ID. |
+| `platform_node_id` | TEXT | GitHub (REST or GraphQL inline) | GitHub GraphQL node ID. |
 | | | | *Standard metadata columns* |
 
 **Unique constraint:** `(pull_request_id, msg_id)`
@@ -739,7 +735,9 @@ Join table linking pull requests to their comments in the messages table.
 
 #### review_comments
 
-Inline code review comments with full diff positioning. Links to both a review and a message.
+Inline code review comments with full diff positioning. One row per diff-anchored review comment. Each row links to both a `pull_request_reviews` row (the parent review) and a `messages` row (the comment body text).
+
+**Always populated via REST `/repos/{o}/{r}/pulls/comments` regardless of `pr_child_mode` / `listing_mode` configuration.** GitHub's GraphQL `PullRequestReviewComment` type does not expose the `side` / `startSide` fields aveloxis requires for diff-side fidelity, so the v0.18.5 Phase 4 GraphQL-inline-comments work explicitly carved this endpoint out and kept the REST iterator running. See CLAUDE.md's "Inline REVIEW comments NOT fetched via GraphQL — deliberate" subsection for the schema-validation history.
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
@@ -773,32 +771,34 @@ Inline code review comments with full diff positioning. Links to both a review a
 
 #### commits
 
-Commit data from `git log --all --numstat`. One row per file per commit (the same commit hash appears multiple times, once for each file touched). Populated by the facade worker.
+Commit data from `git log --numstat` on the repo's **default branch only** (resolved via `git symbolic-ref HEAD`). One row per file per commit (the same commit hash appears multiple times, once for each file touched). Populated by the facade worker.
+
+> **Note (v0.16.4+):** earlier versions of aveloxis walked `git log --all --numstat` across every ref. That over-counted commits relative to GitHub's metadata `commit_count`, which reflects only the default branch. The facade was changed in v0.16.4 to use the default branch exclusively so the gathered count matches the metadata. Commits on side branches that never merged to default are NOT in this table by design.
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `cmt_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
 | `repo_id` | BIGINT NOT NULL (FK -> repos) | Computed | Repository. |
-| `cmt_commit_hash` | TEXT NOT NULL | Git: `git log --all --numstat` | Full SHA-1 hash. |
-| `cmt_author_name` | TEXT NOT NULL | Git: `git log --all --numstat` | Author name from the commit. |
-| `cmt_author_raw_email` | TEXT NOT NULL | Git: `git log --all --numstat` | Author email exactly as it appears in the commit. |
+| `cmt_commit_hash` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Full SHA-1 hash. |
+| `cmt_author_name` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Author name from the commit. |
+| `cmt_author_raw_email` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Author email exactly as it appears in the commit. |
 | `cmt_author_email` | TEXT NOT NULL | `aveloxis-commit-resolver` | Resolved/canonical author email. |
-| `cmt_author_date` | TEXT NOT NULL | Git: `git log --all --numstat` | Author date string. |
+| `cmt_author_date` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Author date string. |
 | `cmt_author_affiliation` | TEXT | `aveloxis-commit-resolver` | Resolved organizational affiliation of the author. |
-| `cmt_committer_name` | TEXT NOT NULL | Git: `git log --all --numstat` | Committer name. |
-| `cmt_committer_raw_email` | TEXT NOT NULL | Git: `git log --all --numstat` | Committer email exactly as in the commit. |
+| `cmt_committer_name` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Committer name. |
+| `cmt_committer_raw_email` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Committer email exactly as in the commit. |
 | `cmt_committer_email` | TEXT NOT NULL | `aveloxis-commit-resolver` | Resolved/canonical committer email. |
-| `cmt_committer_date` | TEXT NOT NULL | Git: `git log --all --numstat` | Committer date string. |
+| `cmt_committer_date` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Committer date string. |
 | `cmt_committer_affiliation` | TEXT | `aveloxis-commit-resolver` | Resolved organizational affiliation of the committer. |
-| `cmt_added` | INT NOT NULL | Git: `git log --all --numstat` | Lines added in this file. |
-| `cmt_removed` | INT NOT NULL | Git: `git log --all --numstat` | Lines removed in this file. |
-| `cmt_whitespace` | INT NOT NULL | Git: `git log --all --numstat` | Whitespace-only changes in this file. |
-| `cmt_filename` | TEXT NOT NULL | Git: `git log --all --numstat` | Path of the file changed. |
+| `cmt_added` | INT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Lines added in this file. |
+| `cmt_removed` | INT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Lines removed in this file. |
+| `cmt_whitespace` | INT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Whitespace-only changes in this file. |
+| `cmt_filename` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Path of the file changed. |
 | `cmt_date_attempted` | TIMESTAMPTZ NOT NULL | Auto-generated | When this row was first processed. |
 | `cmt_ght_committer_id` | INT | Augur import | Legacy GHTorrent committer ID. |
 | `cmt_ght_committed_at` | TIMESTAMPTZ | Augur import | Legacy GHTorrent commit timestamp. |
-| `cmt_committer_timestamp` | TIMESTAMPTZ | Git: `git log --all --numstat` | Parsed committer timestamp. |
-| `cmt_author_timestamp` | TIMESTAMPTZ | Git: `git log --all --numstat` | Parsed author timestamp. |
+| `cmt_committer_timestamp` | TIMESTAMPTZ | Git: `git log --numstat` (default branch only, per v0.16.4) | Parsed committer timestamp. |
+| `cmt_author_timestamp` | TIMESTAMPTZ | Git: `git log --numstat` (default branch only, per v0.16.4) | Parsed author timestamp. |
 | `cmt_author_platform_username` | TEXT | `aveloxis-commit-resolver` | Platform username resolved from the commit email. |
 | `cmt_ght_author_id` | UUID | `aveloxis-commit-resolver` | FK to contributors (resolved author). |
 | | | | *Standard metadata columns* |
@@ -813,8 +813,8 @@ Parent-child relationships between commits. Used to reconstruct commit DAGs and 
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
-| `cmt_id` | BIGINT NOT NULL (PK part 1) | Git: `git log --all --numstat` | The child commit ID. |
-| `parent_id` | BIGSERIAL NOT NULL (PK part 2) | Git: `git log --all --numstat` | Auto-incrementing parent ordinal. |
+| `cmt_id` | BIGINT NOT NULL (PK part 1) | Git: `git log --numstat` (default branch only, per v0.16.4) | The child commit ID. |
+| `parent_id` | BIGSERIAL NOT NULL (PK part 2) | Git: `git log --numstat` (default branch only, per v0.16.4) | Auto-incrementing parent ordinal. |
 | | | | *Standard metadata columns* |
 
 **Primary key:** `(cmt_id, parent_id)`
@@ -829,8 +829,8 @@ Stores the full commit message text, deduplicated per repo and commit hash.
 |--------|------|--------|-------------|
 | `cmt_msg_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
 | `repo_id` | BIGINT NOT NULL (FK -> repos) | Computed | Repository. |
-| `cmt_msg` | TEXT NOT NULL | Git: `git log --all --numstat` | Full commit message text. |
-| `cmt_hash` | TEXT NOT NULL | Git: `git log --all --numstat` | Commit SHA. |
+| `cmt_msg` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Full commit message text. |
+| `cmt_hash` | TEXT NOT NULL | Git: `git log --numstat` (default branch only, per v0.16.4) | Commit SHA. |
 | | | | *Standard metadata columns* |
 
 **Unique constraint:** `(repo_id, cmt_hash)`
@@ -1730,7 +1730,7 @@ Tracks the current working commit for facade processing per repository.
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `repos_id` | INT NOT NULL | Computed | Repository ID. |
-| `working_commit` | TEXT | Git: `git log --all --numstat` | The commit hash currently being processed. |
+| `working_commit` | TEXT | Git: `git log --numstat` (default branch only, per v0.16.4) | The commit hash currently being processed. |
 
 *No primary key defined.*
 
@@ -2146,7 +2146,7 @@ Operational working commit tracker (mirrors `aveloxis_data.working_commits` for 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `repos_id` | INT NOT NULL | Computed | Repository ID. |
-| `working_commit` | TEXT | Git: `git log --all --numstat` | Current working commit hash. |
+| `working_commit` | TEXT | Git: `git log --numstat` (default branch only, per v0.16.4) | Current working commit hash. |
 
 *No primary key defined.*
 

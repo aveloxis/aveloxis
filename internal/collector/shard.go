@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 package collector
 
 // Phase 3 sharding helpers — pure functions with no IO, kept in a

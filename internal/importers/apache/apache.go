@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package apache fetches and parses the Apache Software Foundation's
 // machine-readable project catalogues:
 //

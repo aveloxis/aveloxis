@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package github — search_user.go implements platform.Client.SearchUserByEmail
 // using GET /search/users?q={email}+in:email.
 //

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — sbom.go generates CycloneDX and SPDX Software Bill of
 // Materials from the dependency and libyear data collected for a repository.
 package collector

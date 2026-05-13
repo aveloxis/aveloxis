@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — refresh_open.go re-fetches all open issues and PRs for a
 // repo to capture status changes (closed, merged), label additions, assignee
 // changes, new reviews, etc. that occurred since the last collection pass.

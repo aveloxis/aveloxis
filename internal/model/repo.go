@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package model defines the platform-agnostic data model for Aveloxis.
 // All types here are shared between GitHub and GitLab collectors.
 package model

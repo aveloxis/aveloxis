@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package db — license_normalize.go maps common license name synonyms,
 // misspellings, and verbose expressions to canonical SPDX identifiers.
 //

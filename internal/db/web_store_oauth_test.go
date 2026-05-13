@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Tests for UpsertOAuthUser's defensive guards against blank-login OAuth
 // callbacks. The motivating incident: a user logged into the production
 // web GUI, the callback's `info.Login` was empty (GitHub /user response

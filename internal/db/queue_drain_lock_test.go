@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Tests for the queue lock-park primitives that support the background
 // staging drain (v0.18.29 Fix 1):
 //

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package db — metrics.go provides database queries for the Augur-compatible
 // REST API metrics. These queries are ported from Augur's Python API
 // (augur/api/metrics/*.py) and adapted for the Aveloxis schema.

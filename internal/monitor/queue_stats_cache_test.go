@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Tests for the in-memory QueueStats cache (v0.18.30 monitor perf fix #2).
 //
 // At v0.18.29, every dashboard render and every /api/stats poll fired a

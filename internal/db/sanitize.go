@@ -4,7 +4,8 @@
 // responses sometimes contain them in issue bodies, PR descriptions, commit
 // messages, and comments — especially from bot-generated content, copy-pasted
 // binary data, or malformed Unicode. Without sanitization these cause:
-//   ERROR: invalid byte sequence for encoding "UTF8": 0x00
+//
+//	ERROR: invalid byte sequence for encoding "UTF8": 0x00
 //
 // This module mirrors Augur's remove_null_characters_from_string() and the
 // encode('UTF-8', errors='backslashreplace').decode('UTF-8', errors='ignore')

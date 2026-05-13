@@ -79,9 +79,9 @@ foundation-named groups on that operator's web dashboard.`,
 }
 
 type runOpts struct {
-	priority                       int
-	dryRun, cncfOnly, apacheOnly   bool
-	dashboardUser                  string
+	priority                             int
+	dryRun, cncfOnly, apacheOnly         bool
+	dashboardUser                        string
 	cncfURL, apacheProjURL, apachePodURL string
 }
 

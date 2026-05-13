@@ -59,11 +59,90 @@ func (c *Client) FetchPRBatch(ctx context.Context, owner, repo string, numbers [
 		if end > len(numbers) {
 			end = len(numbers)
 		}
-		batch, err := c.fetchPRBatchOne(ctx, owner, repo, numbers[start:end])
+		batch, err := c.fetchPRBatchWithSubdivide(ctx, owner, repo, numbers[start:end])
 		if err != nil {
 			return out, err
 		}
 		out = append(out, batch...)
+	}
+	return out, nil
+}
+
+// fetchPRBatchWithSubdivide (v0.20.8 / Fix C) wraps fetchPRBatchOne
+// with a transient-failure retry path that splits the offending
+// slice in half and retries the halves separately. This protects
+// against the failure pattern observed in May 9–12 production
+// logs: a single batch of 10 PRs that contains one pathologically
+// expensive PR (huge file count, deep review chain) trips GitHub's
+// query planner with "Something went wrong" or exhausts the 10
+// retries on a transient 5xx burst. Pre-Fix-C, one bad batch in
+// 840 abandoned the remaining 700+ batches. Post-Fix-C, the bad
+// batch splits to 5+5; if the 5 containing the bad PR also fails,
+// it splits to 2+3; eventually the offending PR is isolated to a
+// batch of 1, where it either succeeds (the smaller query may fit
+// within GitHub's planner budget) or its individual failure
+// surfaces cleanly without dragging down the rest of the work.
+//
+// Recursion depth is bounded by log2(prBatchSize). At prBatchSize=10
+// the max depth is 4 sub-batches (10 → 5 → 2 → 1).
+//
+// Only ClassTransient and ClassRateLimit failures trigger
+// subdivision. ClassFatal (schema validation errors, bad queries)
+// and ClassAuth (token invalidation) bubble immediately because
+// retrying smaller batches won't fix them. ClassSkip and
+// ClassNotModified don't surface here — they're handled inside
+// fetchPRBatchOne (NOT_FOUND aliases come back as null in the
+// response, not as errors).
+func (c *Client) fetchPRBatchWithSubdivide(ctx context.Context, owner, repo string, numbers []int) ([]StagedPR, error) {
+	batch, err := c.fetchPRBatchOne(ctx, owner, repo, numbers)
+	if err == nil {
+		return batch, nil
+	}
+
+	class := platform.ClassifyError(err)
+	switch class {
+	case platform.ClassTransient, platform.ClassRateLimit:
+		// Retryable: try subdivision below.
+	default:
+		// ClassFatal, ClassAuth, ClassSkip, ClassOK, ClassNotModified
+		// all bubble immediately. The OK/NotModified cases shouldn't
+		// occur on err != nil but guard anyway.
+		return nil, err
+	}
+
+	if len(numbers) <= 1 {
+		// Already minimal — nothing left to subdivide. Bubble the
+		// error so the caller (and Fix A's outcome plumbing) records
+		// the failure cleanly.
+		c.logger.Warn("PR batch retry exhausted at size 1",
+			"owner", owner, "repo", repo,
+			"pr_number", numbers[0], "error", err)
+		return nil, err
+	}
+
+	mid := len(numbers) / 2
+	c.logger.Info("subdividing failed PR batch on transient error",
+		"owner", owner, "repo", repo,
+		"size", len(numbers), "left_size", mid, "right_size", len(numbers)-mid,
+		"error", err)
+
+	leftBatch, leftErr := c.fetchPRBatchWithSubdivide(ctx, owner, repo, numbers[:mid])
+	rightBatch, rightErr := c.fetchPRBatchWithSubdivide(ctx, owner, repo, numbers[mid:])
+
+	out := make([]StagedPR, 0, len(leftBatch)+len(rightBatch))
+	out = append(out, leftBatch...)
+	out = append(out, rightBatch...)
+
+	// If either half irrecoverably failed (sub-batch retry hit size 1
+	// or returned a non-transient class), bubble that error so the
+	// outer loop's force-full-recollect logic still fires for the
+	// repo. We do still return the partial successful results so
+	// Fix B's "stage partials" plumbing can use them.
+	if leftErr != nil {
+		return out, leftErr
+	}
+	if rightErr != nil {
+		return out, rightErr
 	}
 	return out, nil
 }

@@ -3,13 +3,15 @@
 // ported from Augur's Python API.
 //
 // Endpoint patterns:
-//   /api/v1/repos/{repoID}/{metric}           — per-repo metric
-//   /api/v1/repo-groups/{groupID}/{metric}     — per-group metric (aggregated)
+//
+//	/api/v1/repos/{repoID}/{metric}           — per-repo metric
+//	/api/v1/repo-groups/{groupID}/{metric}     — per-group metric (aggregated)
 //
 // Common query parameters:
-//   begin_date (YYYY-MM-DD) — start of date range, default 1 year ago
-//   end_date   (YYYY-MM-DD) — end of date range, default today
-//   period     (day|week|month|year) — aggregation period, default month
+//
+//	begin_date (YYYY-MM-DD) — start of date range, default 1 year ago
+//	end_date   (YYYY-MM-DD) — end of date range, default today
+//	period     (day|week|month|year) — aggregation period, default month
 //
 // Excluded: Login endpoints, DEI Badging endpoints (per task spec).
 package api

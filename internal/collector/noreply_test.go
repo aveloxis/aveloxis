@@ -40,8 +40,8 @@ func TestParseNoreplyEmail_NotNoreply(t *testing.T) {
 		"user@github.com",
 		"",
 		"not-an-email",
-		"@users.noreply.github.com",   // no login
-		"user@noreply.github.com",      // wrong subdomain
+		"@users.noreply.github.com", // no login
+		"user@noreply.github.com",   // wrong subdomain
 	}
 	for _, email := range tests {
 		if info := ParseNoreplyEmail(email); info != nil {

@@ -223,7 +223,7 @@ func TestParsePeriod_Valid(t *testing.T) {
 		{"week", "week"},
 		{"month", "month"},
 		{"year", "year"},
-		{"", "month"},       // default
+		{"", "month"},        // default
 		{"invalid", "month"}, // default
 	}
 	for _, tt := range tests {

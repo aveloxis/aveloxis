@@ -12,15 +12,15 @@ import (
 type LibyearRow struct {
 	Name               string
 	Requirement        string
-	Type               string  // "runtime", "dev"
-	PackageManager     string  // "npm", "pypi", "go", "cargo", "rubygems"
+	Type               string // "runtime", "dev"
+	PackageManager     string // "npm", "pypi", "go", "cargo", "rubygems"
 	CurrentVersion     string
 	LatestVersion      string
 	CurrentReleaseDate string
 	LatestReleaseDate  string
 	Libyear            float64
-	License            string  // SPDX license identifier (e.g., "MIT", "Apache-2.0")
-	Purl               string  // Package URL (e.g., "pkg:npm/express@4.18.0")
+	License            string // SPDX license identifier (e.g., "MIT", "Apache-2.0")
+	Purl               string // Package URL (e.g., "pkg:npm/express@4.18.0")
 }
 
 // RepoLaborRow is a row for the repo_labor table.

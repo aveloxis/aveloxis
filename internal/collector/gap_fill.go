@@ -273,16 +273,15 @@ func (gf *GapFiller) fillPRGaps(ctx context.Context, repoID int64, owner, repo s
 	// Fetch every PR envelope either via REST waterfall or GraphQL batch.
 	// Messages and review comments remain per-PR REST in both modes —
 	// phase 1 only consolidates the PR child fetch.
+	//
+	// v0.20.9 (Fix B): fetchPRsForGap may now return (partial, err)
+	// when the underlying FetchPRBatch's v0.20.8 subdivision
+	// recovered some sub-batches before the failure point. We stage
+	// the partial envelopes first AND then return the error so
+	// Fix A's force_full_collect logic still fires on the failure,
+	// while the partial work isn't discarded. The error bubbling
+	// happens after the staging loop and flush below.
 	envelopes, nonFatalErr := gf.fetchPRsForGap(ctx, repoID, owner, repo, numbers)
-	if nonFatalErr != nil {
-		if filled > 0 {
-			if ferr := sw.Flush(ctx); ferr != nil {
-				gf.logger.Warn("failed to flush partial gap-fill PR staging",
-					"repo_id", repoID, "staged", filled, "error", ferr)
-			}
-		}
-		return filled, nonFatalErr
-	}
 
 	for _, envelope := range envelopes {
 		num := envelope.PR.Number
@@ -344,7 +343,11 @@ func (gf *GapFiller) fillPRGaps(ctx context.Context, repoID int64, owner, repo s
 			return filled, fmt.Errorf("processing gap-fill staging: %w", err)
 		}
 	}
-	return filled, nil
+	// v0.20.9: bubble the partial-batch error AFTER staging the
+	// envelopes we did recover. Fix A's force_full_collect path
+	// still fires because the error reaches scheduler.runJob's
+	// gapFillErr capture, but we no longer waste the partial work.
+	return filled, nonFatalErr
 }
 
 // fetchPRsForGap returns stagedPR envelopes for the given PR numbers,
@@ -352,18 +355,21 @@ func (gf *GapFiller) fillPRGaps(ctx context.Context, repoID int64, owner, repo s
 // based on gf.prChildMode. Returns a non-nil error only for non-skippable
 // failures (rate limit, network) so the caller can bubble them and
 // avoid reporting a silent partial success.
+//
+// v0.20.9 (Fix B): when FetchPRBatch returns (partial, err) — which
+// v0.20.8's subdivision behavior produces when one sub-batch
+// succeeded but a sibling failed — we now return the partial
+// envelopes alongside the error so fillPRGaps can stage them
+// before propagating. Pre-v0.20.9, partial successful sub-batches
+// were thrown away, defeating most of the point of subdivision.
 func (gf *GapFiller) fetchPRsForGap(ctx context.Context, repoID int64, owner, repo string, numbers []int) ([]stagedPR, error) {
 	if gf.prChildMode == "graphql" {
 		batch, err := gf.client.FetchPRBatch(ctx, owner, repo, numbers)
-		if err != nil {
-			if isOptionalEndpointSkip(err) {
-				gf.logger.Debug("PR gap fill graphql batch skipped", "error", err)
-				return nil, nil
-			}
-			gf.logger.Warn("gap fill aborting on non-skippable PR batch error",
-				"repo_id", repoID, "error", err)
-			return nil, fmt.Errorf("gap fill PR batch: %w", err)
-		}
+		// Map whatever batch we got (possibly empty, possibly
+		// partial when err != nil) into the local envelope shape.
+		// FetchPRBatch's v0.20.8 contract is: (out, err) where out
+		// holds every successfully-fetched envelope before the
+		// failure point, even when err != nil.
 		out := make([]stagedPR, 0, len(batch))
 		for _, s := range batch {
 			out = append(out, stagedPR{
@@ -379,6 +385,19 @@ func (gf *GapFiller) fetchPRsForGap(ctx context.Context, repoID int64, owner, re
 				RepoHead:  s.RepoHead,
 				RepoBase:  s.RepoBase,
 			})
+		}
+		if err != nil {
+			if isOptionalEndpointSkip(err) {
+				gf.logger.Debug("PR gap fill graphql batch skipped", "error", err)
+				return out, nil
+			}
+			if len(batch) > 0 {
+				gf.logger.Info("gap fill partial batch — staging recovered envelopes before bubbling error",
+					"repo_id", repoID, "partial_count", len(batch), "total_requested", len(numbers), "error", err)
+			}
+			gf.logger.Warn("gap fill aborting on non-skippable PR batch error",
+				"repo_id", repoID, "error", err)
+			return out, fmt.Errorf("gap fill PR batch: %w", err)
 		}
 		return out, nil
 	}

@@ -9,9 +9,9 @@ import (
 // AffiliationResolver maps email domains to organizational affiliations using
 // the contributor_affiliations table. Results are cached in memory.
 type AffiliationResolver struct {
-	store *PostgresStore
-	mu    sync.RWMutex
-	cache map[string]string // domain -> affiliation
+	store  *PostgresStore
+	mu     sync.RWMutex
+	cache  map[string]string // domain -> affiliation
 	loaded bool
 }
 

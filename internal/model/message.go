@@ -18,34 +18,34 @@ type Message struct {
 
 // IssueMessageRef links a message to an issue.
 type IssueMessageRef struct {
-	ID              int64
-	IssueID         int64
-	RepoID          int64
-	MsgID           int64
-	PlatformSrcID   int64
-	PlatformNodeID  string
+	ID                  int64
+	IssueID             int64
+	RepoID              int64
+	MsgID               int64
+	PlatformSrcID       int64
+	PlatformNodeID      string
 	PlatformIssueNumber int // issue number on the platform, for staged processing lookup
 }
 
 // PullRequestMessageRef links a message to a PR/MR.
 type PullRequestMessageRef struct {
-	ID              int64
-	PRID            int64
-	RepoID          int64
-	MsgID           int64
-	PlatformSrcID   int64
-	PlatformNodeID  string
+	ID               int64
+	PRID             int64
+	RepoID           int64
+	MsgID            int64
+	PlatformSrcID    int64
+	PlatformNodeID   string
 	PlatformPRNumber int // PR number on the platform, for staged processing lookup
 }
 
 // ReviewComment is a comment within a PR review, with code position context.
 type ReviewComment struct {
 	ID                int64
-	ReviewID          int64  // DB pr_review_id (resolved during processing)
+	ReviewID          int64 // DB pr_review_id (resolved during processing)
 	RepoID            int64
 	MsgID             int64
 	PlatformSrcID     int64
-	PlatformReviewID  int64  // Platform review ID for staged processing lookup
+	PlatformReviewID  int64 // Platform review ID for staged processing lookup
 	NodeID            string
 	DiffHunk          string
 	Path              string

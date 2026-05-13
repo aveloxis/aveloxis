@@ -250,14 +250,14 @@ func TestEveryManifestFileHasParser(t *testing.T) {
 	// These lock files are intentionally unparsed for dep counting —
 	// we rely on the primary manifest (e.g., package.json, go.mod) instead.
 	lockFileExceptions := map[string]bool{
-		"yarn.lock":   true,
-		"go.sum":      true,
-		"poetry.lock": true,
-		"Cargo.lock":  true,
+		"yarn.lock":    true,
+		"go.sum":       true,
+		"poetry.lock":  true,
+		"Cargo.lock":   true,
 		"Gemfile.lock": true,
 		// Build system files that detect ecosystem presence but
 		// cannot be reliably parsed for individual dep names.
-		"Makefile":      true,
+		"Makefile":       true,
 		"CMakeLists.txt": true,
 	}
 
@@ -352,9 +352,9 @@ func TestParseDirectoryPackagesProps(t *testing.T) {
 		t.Fatalf("parseDirectoryPackagesProps returned %d deps, want 3: %v", len(deps), deps)
 	}
 	expected := map[string]bool{
-		"Newtonsoft.Json":                 true,
-		"NUnit":                           true,
-		"Microsoft.Extensions.Logging":    true,
+		"Newtonsoft.Json":              true,
+		"NUnit":                        true,
+		"Microsoft.Extensions.Logging": true,
 	}
 	for _, dep := range deps {
 		if !expected[dep] {

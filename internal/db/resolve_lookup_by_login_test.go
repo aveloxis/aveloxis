@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract tests for v0.19.2 Fix #1: ContributorResolver.Resolve
 // looks up an existing row by cntrb_login before generating a new UUID
 // and INSERTing.

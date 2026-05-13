@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package monitor — queue_stats_cache.go provides an in-memory cache
 // for QueueStats so the GROUP BY scan over aveloxis_ops.collection_queue
 // runs at most once per TTL window instead of once per dashboard render.

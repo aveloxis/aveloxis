@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — facade.go implements git-based commit collection.
 //
 // This is the equivalent of Augur's "facade worker". It clones a repository

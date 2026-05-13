@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract tests for v0.19.1 fix: UpsertContributorFull's
 // "Row exists by ID" UPDATE branch must catch SQLSTATE 23505
 // (unique violation on idx_contributors_login) and fall back to a

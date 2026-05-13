@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract test for v0.19.2: platform.Client must declare
 // SearchUserByEmail so the scheduler's search-resolve task can use
 // the same Client abstraction it uses for everything else.

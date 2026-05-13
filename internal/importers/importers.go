@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package importers pulls canonical project lists from open-source
 // foundations (CNCF, Apache) and turns them into queue-ready repo URLs.
 // Subpackages (cncf, apache) own the foundation-specific parsing; this

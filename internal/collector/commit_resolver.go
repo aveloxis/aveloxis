@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — commit_resolver.go resolves git commit authors to
 // GitHub/GitLab users, populating cmt_author_platform_username and enriching
 // the contributors table with full platform profile data.

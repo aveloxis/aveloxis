@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Helper: strip invalid UTF-8 bytes from a string before sending it
 // to Postgres as a TEXT column value. Postgres rejects whole INSERT
 // statements with `ERROR: invalid byte sequence for encoding "UTF8"`

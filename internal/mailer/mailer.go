@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package mailer sends transactional emails through Gmail SMTP using
 // stdlib net/smtp.
 //

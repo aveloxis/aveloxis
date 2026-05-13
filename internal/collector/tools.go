@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — tools.go defines all external tools that Aveloxis
 // can optionally use during collection. These tools are installed via
 // `aveloxis install-tools` and checked at runtime — if a tool is missing,

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Aveloxis is a data collection tool for open source software community health metrics.
 // It collects data from GitHub and GitLab with equal completeness, storing results
 // in a shared schema for cross-platform analysis.

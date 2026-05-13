@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract test for v0.19.2 Fix #3: PopulateAffiliations
 // must scrub non-UTF-8 bytes from cntrb_company values before
 // passing them to the contributor_affiliations INSERT. Production

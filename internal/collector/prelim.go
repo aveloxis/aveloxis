@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — prelim.go implements the preliminary phase that detects
 // repo redirects (renames/transfers) before collection begins.
 //

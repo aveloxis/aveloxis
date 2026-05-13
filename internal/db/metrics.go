@@ -32,13 +32,13 @@ type RepoGroupResult struct {
 
 // RepoResult represents a repo for API responses.
 type RepoResult struct {
-	ID        int64  `json:"repo_id"`
-	GroupID   int64  `json:"repo_group_id"`
-	GitURL    string `json:"repo_git"`
-	Name      string `json:"repo_name"`
-	Owner     string `json:"repo_owner"`
-	Platform  int    `json:"platform_id"`
-	Archived  bool   `json:"repo_archived"`
+	ID       int64  `json:"repo_id"`
+	GroupID  int64  `json:"repo_group_id"`
+	GitURL   string `json:"repo_git"`
+	Name     string `json:"repo_name"`
+	Owner    string `json:"repo_owner"`
+	Platform int    `json:"platform_id"`
+	Archived bool   `json:"repo_archived"`
 }
 
 // GetAllRepoGroups returns all repo groups.
@@ -441,14 +441,14 @@ func (s *PostgresStore) CodeChangesLines(ctx context.Context, repoID int64, peri
 
 // ContributorRow holds a contributor's activity summary.
 type ContributorRow struct {
-	UserID       string `json:"user_id"`
-	Commits      int    `json:"commits"`
-	Issues       int    `json:"issues"`
-	PRs          int    `json:"pull_requests"`
-	IssueComments int   `json:"issue_comments"`
-	PRComments   int    `json:"pull_request_comments"`
-	Total        int    `json:"total"`
-	Name         string `json:"repo_name,omitempty"`
+	UserID        string `json:"user_id"`
+	Commits       int    `json:"commits"`
+	Issues        int    `json:"issues"`
+	PRs           int    `json:"pull_requests"`
+	IssueComments int    `json:"issue_comments"`
+	PRComments    int    `json:"pull_request_comments"`
+	Total         int    `json:"total"`
+	Name          string `json:"repo_name,omitempty"`
 }
 
 // Contributors returns contributor activity summaries for a repo.
@@ -731,13 +731,13 @@ type CollectionStatusRow struct {
 
 // ComplexityRow holds code complexity metrics per language.
 type ComplexityRow struct {
-	Language string `json:"language"`
-	Files    int    `json:"files"`
-	Lines    int    `json:"lines"`
-	Blanks   int    `json:"blanks"`
-	Comments int    `json:"comments"`
-	Code     int    `json:"code"`
-	Complexity int  `json:"complexity"`
+	Language   string `json:"language"`
+	Files      int    `json:"files"`
+	Lines      int    `json:"lines"`
+	Blanks     int    `json:"blanks"`
+	Comments   int    `json:"comments"`
+	Code       int    `json:"code"`
+	Complexity int    `json:"complexity"`
 }
 
 // ProjectLanguages returns language breakdown from SCC data.

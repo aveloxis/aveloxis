@@ -80,12 +80,27 @@ type ResolveResult struct {
 // IsSuccess returns true if the resolution completed meaningfully —
 // i.e., most commits were resolved or legitimately unresolvable, not
 // failed due to key exhaustion or errors.
+//
+// v0.20.10 (Fix F) fixes an integer-division bug in the original
+// formulation `r.KeyExhausted < r.TotalCommits/2`. With TotalCommits=1,
+// the threshold collapsed to 0, and `KeyExhausted < 0` is impossible
+// for non-negative counters — so EVERY single-commit job was falsely
+// reported as a failure even when its one commit resolved via the DB
+// cache and no API call was made. 569 such false-positive ERRORs
+// appeared in the May 9–12 production log, drowning out real
+// key-exhaustion events.
+//
+// Correct form: failure if MORE than 50% of commits failed due to key
+// exhaustion. Integer-arithmetic equivalent: success iff
+// `KeyExhausted * 2 <= TotalCommits`. This treats 50%-exhausted as
+// the inclusive success boundary (matches the original "more than
+// 50%" docstring), and correctly identifies zero key exhaustion as
+// success at any TotalCommits including 1.
 func (r *ResolveResult) IsSuccess() bool {
 	if r.TotalCommits == 0 {
 		return true
 	}
-	// If more than 50% of commits failed due to key exhaustion, this is not a success.
-	return r.KeyExhausted < r.TotalCommits/2
+	return r.KeyExhausted*2 <= r.TotalCommits
 }
 
 // ShouldAbort422 returns true when the resolver should stop making API calls

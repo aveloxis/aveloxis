@@ -48,7 +48,7 @@ func TestParsePageParamsExplicit(t *testing.T) {
 
 func TestParsePageParamsInvalidFallsBackToDefault(t *testing.T) {
 	cases := []struct {
-		name, query           string
+		name, query            string
 		wantPage, wantPageSize int
 	}{
 		{"non-numeric page", "?page=abc", 1, defaultDashboardPageSize},
@@ -105,7 +105,7 @@ func TestTotalPagesCeiling(t *testing.T) {
 	cases := []struct {
 		total, pageSize, want int
 	}{
-		{0, 100, 1},   // empty fleet still renders one page
+		{0, 100, 1}, // empty fleet still renders one page
 		{1, 100, 1},
 		{100, 100, 1},
 		{101, 100, 2},

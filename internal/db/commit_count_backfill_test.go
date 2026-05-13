@@ -13,10 +13,10 @@ import (
 // 0 when facade also has nothing.
 func TestShouldBackfillCommitCount(t *testing.T) {
 	cases := []struct {
-		name      string
-		api       int
-		gathered  int
-		wantFill  bool
+		name     string
+		api      int
+		gathered int
+		wantFill bool
 	}{
 		{"api zero, gathered positive — backfill", 0, 500, true},
 		{"api positive — never overwrite", 1234, 500, false},

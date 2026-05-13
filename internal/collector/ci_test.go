@@ -16,11 +16,11 @@ func TestCIWorkflowsExist(t *testing.T) {
 	}
 
 	required := map[string]string{
-		"test.yml":           "Go tests on every push",
+		"test.yml":            "Go tests on every push",
 		"container-build.yml": "Docker/Podman build test on PRs",
-		"docker-publish.yml": "Docker image publish on main push",
-		"codeql.yml":         "CodeQL security analysis on PRs",
-		"lint.yml":           "Linting checks on PRs",
+		"docker-publish.yml":  "Docker image publish on main push",
+		"codeql.yml":          "CodeQL security analysis on PRs",
+		"lint.yml":            "Linting checks on PRs",
 	}
 
 	for filename, purpose := range required {

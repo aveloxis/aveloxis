@@ -40,7 +40,7 @@ type Server struct {
 	sessionMu sync.RWMutex
 	sessions  map[string]*Session // session token -> session
 	tmpl      *template.Template
-	apiProxy  http.Handler // reverse proxy for /api/* → cfg.APIInternalURL; nil on parse failure
+	apiProxy  http.Handler   // reverse proxy for /api/* → cfg.APIInternalURL; nil on parse failure
 	mailer    *mailer.Mailer // gmail-backed transactional mailer; safely nil if unconfigured (v0.19.0)
 }
 

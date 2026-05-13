@@ -154,9 +154,9 @@ func (s *PostgresStore) GetScancodeForSBOM(ctx context.Context, repoID int64) (*
 
 // ScancodeSourceLicense is a license detected in source code files by ScanCode.
 type ScancodeSourceLicense struct {
-	License  string `json:"license"`
-	FileCount int   `json:"file_count"`
-	IsOSI    bool   `json:"is_osi"`
+	License   string `json:"license"`
+	FileCount int    `json:"file_count"`
+	IsOSI     bool   `json:"is_osi"`
 }
 
 // GetScancodeSourceLicenses returns aggregated per-license file counts from

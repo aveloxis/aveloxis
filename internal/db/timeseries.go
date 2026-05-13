@@ -15,13 +15,13 @@ type WeeklyDataPoint struct {
 
 // TimeSeriesResult holds weekly time-series data for multiple metrics.
 type TimeSeriesResult struct {
-	RepoID     int64              `json:"repo_id"`
-	RepoName   string             `json:"repo_name"`
-	RepoOwner  string             `json:"repo_owner"`
-	Commits    []WeeklyDataPoint  `json:"commits"`
-	PRsOpened  []WeeklyDataPoint  `json:"prs_opened"`
-	PRsMerged  []WeeklyDataPoint  `json:"prs_merged"`
-	Issues     []WeeklyDataPoint  `json:"issues"`
+	RepoID    int64             `json:"repo_id"`
+	RepoName  string            `json:"repo_name"`
+	RepoOwner string            `json:"repo_owner"`
+	Commits   []WeeklyDataPoint `json:"commits"`
+	PRsOpened []WeeklyDataPoint `json:"prs_opened"`
+	PRsMerged []WeeklyDataPoint `json:"prs_merged"`
+	Issues    []WeeklyDataPoint `json:"issues"`
 }
 
 // GetRepoTimeSeries returns weekly aggregated counts for a repo's key metrics
@@ -126,9 +126,9 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 
 // LicenseCount is a single license with its count and OSI compliance status.
 type LicenseCount struct {
-	License     string `json:"license"`
-	Count       int    `json:"count"`
-	IsOSI       bool   `json:"is_osi"`
+	License string `json:"license"`
+	Count   int    `json:"count"`
+	IsOSI   bool   `json:"is_osi"`
 }
 
 // osiLicenses is the set of OSI-approved SPDX license identifiers.

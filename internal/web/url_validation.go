@@ -16,12 +16,12 @@ type URLValidationResult struct {
 
 // ValidateRepoURL checks a repo URL and determines its platform.
 //
-// - github.com → full collection (API + git)
-// - gitlab.com → full collection (API + git)
-// - any other host with a valid URL → git-only collection (facade, analysis,
-//   scorecard, SBOM — but no issues/PRs/events/messages from API).
-//   Commit authors will be resolved against both GitHub and GitLab Search APIs.
-// - invalid URL → error with guidance
+//   - github.com → full collection (API + git)
+//   - gitlab.com → full collection (API + git)
+//   - any other host with a valid URL → git-only collection (facade, analysis,
+//     scorecard, SBOM — but no issues/PRs/events/messages from API).
+//     Commit authors will be resolved against both GitHub and GitLab Search APIs.
+//   - invalid URL → error with guidance
 func ValidateRepoURL(rawURL string) URLValidationResult {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {

@@ -314,6 +314,83 @@ To backfill after upgrading: boost an affected repo with `aveloxis prioritize <u
 
 ---
 
+## Gap-fill failure on large repos persists across multiple cycles
+
+**Symptom (pre-v0.20.5):** A repo with a non-trivial PR backlog
+(e.g. `microsoft/WSL2-Linux-Kernel`, `Azure/azure-sdk-for-java`,
+`SAP/project-foxhound`) shows a stable gap between gathered and
+metadata PR counts that does not close even after many daily
+cycles. Logs show repeated `gap fill aborting on non-skippable
+PR batch error ... graphql PR batch: graphql: exhausted 10
+retries for https://api.github.com/graphql` lines for the same
+repo on consecutive days. `aveloxis_ops.collection_queue.last_error`
+is NULL and `force_full_collect` is FALSE for the affected rows.
+
+**Cause:** `Scheduler.runJob` captured the gap-fill error in a
+block-local variable, logged a WARN, and dropped it. The
+`shouldForceFullRecollect` auto-flag mechanism (which exists
+precisely for this error class — the substring `"graphql PR
+batch"` matches the gap-fill error wrapper) was unreachable
+because `outcome.errMsg` stayed empty. The repo went back into
+incremental cadence, where the next pass collected only PRs
+updated in the last cooldown window — historical missing PRs
+remained outside that window forever, and gap fill kept retrying
+the same large batch with the same flaky network conditions.
+
+**Fix (v0.20.5):** Two parts in one release.
+
+1. `runJob` hoists `gapFillErr` to function scope and passes it
+   into a new 5-argument `buildOutcome(..., gapFillErr)`.
+   `buildOutcome` records it as `outcome.errMsg` when the main
+   collection succeeded, which makes `shouldForceFullRecollect`
+   fire and `SetForceFullCollect(true)` get called. The next
+   cycle for that repo runs `since=zero`, which collects all PRs
+   via the main path instead of going through gap fill.
+2. An idempotent migration step backfills `force_full_collect =
+   TRUE` for all queue rows whose `last_prs` is below 95% of the
+   latest `repo_info.pr_count`. Repos already stuck in the pre-fix
+   state recover on the cycle after `aveloxis migrate` runs,
+   without operator intervention.
+
+Diagnostic queries:
+
+```sql
+-- Currently-affected repos: gap exceeds threshold, flag not yet set.
+SELECT r.repo_owner || '/' || r.repo_name AS repo,
+       q.last_prs,
+       ri.pr_count AS metadata_prs,
+       round((1.0 - q.last_prs::numeric / NULLIF(ri.pr_count, 0)) * 100, 1) AS gap_pct
+FROM aveloxis_ops.collection_queue q
+JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id
+JOIN LATERAL (
+    SELECT pr_count FROM aveloxis_data.repo_info
+    WHERE repo_id = q.repo_id
+    ORDER BY data_collection_date DESC LIMIT 1
+) ri ON true
+WHERE ri.pr_count > 0
+  AND q.last_prs::float / ri.pr_count::float < 0.95
+  AND q.force_full_collect = FALSE
+ORDER BY gap_pct DESC;
+
+-- Repos the v0.20.5 backfill flagged (after running migrate).
+SELECT r.repo_owner || '/' || r.repo_name AS repo,
+       q.last_collected, q.due_at, q.last_error
+FROM aveloxis_ops.collection_queue q
+JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id
+WHERE q.force_full_collect = TRUE
+ORDER BY q.due_at;
+```
+
+If you need a single repo to re-collect immediately rather than
+waiting for its scheduled `due_at`:
+
+```bash
+aveloxis recollect https://github.com/owner/repo
+aveloxis prioritize https://github.com/owner/repo
+```
+
+---
+
 ## Metadata shows issues/PRs but gathered count stays at 0
 
 **Symptom:** On the monitor dashboard or web repo detail page, a repo shows non-zero metadata counts for issues and/or PRs (e.g. `Meta 40`) but gathered stays at `0` (or a tiny number like `1 / 46`) across many collection cycles. Commits are collected correctly. Logs show `"gap fill completed filled=N"` with N in the dozens or low hundreds, but `aveloxis_data.issues` and `aveloxis_data.pull_requests` have zero rows for the repo.

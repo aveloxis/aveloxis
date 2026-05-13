@@ -122,12 +122,12 @@ func TestGet_403WithUnauthenticatedBodyLogsError(t *testing.T) {
 
 	out := logBuf.String()
 	if !strings.Contains(out, "level=ERROR") {
-		t.Errorf("unauthenticated-shape rate-limit body must log at ERROR " +
+		t.Errorf("unauthenticated-shape rate-limit body must log at ERROR "+
 			"level — this is the signal of a key-leak bug. Log output was:\n%s", out)
 	}
 	if !strings.Contains(strings.ToLower(out), "unauthenticated") &&
 		!strings.Contains(strings.ToLower(out), "anonymous") {
-		t.Errorf("error log must name the condition (unauthenticated/anonymous) so " +
+		t.Errorf("error log must name the condition (unauthenticated/anonymous) so "+
 			"on-call can route the page. Log output was:\n%s", out)
 	}
 }

@@ -14,10 +14,10 @@ type RepoStats struct {
 	GatheredIssues  int   `json:"gathered_issues"`
 	GatheredCommits int   `json:"gathered_commits"`
 	MetadataPRs     int   `json:"metadata_prs"`     // pr_count from repo_info (GitHub API reported total)
-	MetadataIssues  int   `json:"metadata_issues"`   // issues_count from repo_info
-	MetadataCommits int   `json:"metadata_commits"`  // commit_count from repo_info
-	Vulnerabilities int   `json:"vulnerabilities"`    // total known CVEs from OSV.dev scan
-	CriticalVulns   int   `json:"critical_vulns"`     // critical/high severity CVEs
+	MetadataIssues  int   `json:"metadata_issues"`  // issues_count from repo_info
+	MetadataCommits int   `json:"metadata_commits"` // commit_count from repo_info
+	Vulnerabilities int   `json:"vulnerabilities"`  // total known CVEs from OSV.dev scan
+	CriticalVulns   int   `json:"critical_vulns"`   // critical/high severity CVEs
 }
 
 // SearchRepoResult is a minimal repo record for search results.

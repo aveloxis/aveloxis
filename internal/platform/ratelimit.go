@@ -24,11 +24,11 @@ type APIKey struct {
 // before collection waits. This maximizes throughput when you have dozens
 // of tokens at 400K+ repos.
 type KeyPool struct {
-	mu       sync.Mutex
-	keys     []*APIKey
-	rrIndex  int // round-robin counter
-	buffer   int // stop using a key when remaining drops to this
-	logger   *slog.Logger
+	mu      sync.Mutex
+	keys    []*APIKey
+	rrIndex int // round-robin counter
+	buffer  int // stop using a key when remaining drops to this
+	logger  *slog.Logger
 }
 
 // DefaultBuffer is the number of requests to reserve on each key as a safety

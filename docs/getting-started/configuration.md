@@ -27,16 +27,16 @@ A minimal configuration only needs the `database` section:
 }
 ```
 
-A full configuration with all options:
+A full configuration with **every** supported option (current as of v0.20.12):
 
 ```json
 {
   "database": {
     "host": "localhost",
     "port": 5432,
-    "user": "augur",
+    "user": "aveloxis",
     "password": "your-password",
-    "dbname": "augur",
+    "dbname": "aveloxis",
     "sslmode": "prefer"
   },
   "github": {
@@ -48,15 +48,46 @@ A full configuration with all options:
     "base_url": "https://gitlab.com/api/v4",
     "gitlab_hosts": ["gitlab.freedesktop.org"]
   },
+  "mail": {
+    "gmail_user": "aveloxis-ops@yourdomain.com",
+    "gmail_app_password": "xxxx xxxx xxxx xxxx",
+    "from_name": "Aveloxis",
+    "site_url": "https://your-host.example"
+  },
   "collection": {
     "batch_size": 1000,
     "days_until_recollect": 1,
-    "workers": 4,
-    "repo_clone_dir": "/data/aveloxis-repos"
+    "workers": 12,
+    "repo_clone_dir": "/data/aveloxis-repos",
+    "force_full": false,
+    "matview_rebuild_day": "saturday",
+    "matview_rebuild_on_startup": false,
+    "pr_child_mode": "graphql",
+    "listing_mode": "graphql",
+    "threading_mode": "sharded",
+    "shard_size": 3000,
+    "enrich_interval_minutes": 30,
+    "search_resolve_interval_minutes": 60,
+    "affiliation_interval_minutes": 60,
+    "shutdown_grace_seconds": 10
+  },
+  "web": {
+    "addr": ":8082",
+    "session_secret": "generate-a-random-32-byte-string",
+    "base_url": "https://aveloxis.example.com",
+    "dev_mode": false,
+    "github_client_id": "your-github-oauth-app-client-id",
+    "github_client_secret": "your-github-oauth-app-client-secret",
+    "gitlab_client_id": "your-gitlab-oauth-app-id",
+    "gitlab_client_secret": "your-gitlab-oauth-app-secret",
+    "gitlab_base_url": "https://gitlab.com",
+    "api_internal_url": "http://127.0.0.1:8383"
   },
   "log_level": "info"
 }
 ```
+
+Every field is optional except `database` credentials and at least one API key source (config or `worker_oauth` table). Sections you don't need can be omitted entirely.
 
 ---
 
@@ -90,12 +121,79 @@ A full configuration with all options:
 
 ### Collection
 
+The `collection` block holds every knob for the staged-pipeline scheduler and its periodic background tasks. Group them by category:
+
+**Throughput / scheduling**
+
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `collection.batch_size` | integer | `1000` | Number of rows flushed per staging batch during the staged pipeline. |
-| `collection.days_until_recollect` | integer | `1` | Minimum number of days before a repo is re-collected. After collection, a repo's next due time is set to `now + days_until_recollect`. |
-| `collection.workers` | integer | `12` | Number of concurrent collection workers when running `aveloxis serve`. |
+| `collection.days_until_recollect` | integer | `1` | Minimum number of days before a repo is re-collected. After a successful job, `due_at = last_collected + days_until_recollect`. Changing this value takes effect on the next `aveloxis serve` restart (v0.16.6's startup-time `RealignDueDates` rewrites queued rows). |
+| `collection.workers` | integer | `12` | Number of concurrent collection workers when running `aveloxis serve`. Each worker may make many concurrent DB calls; the pgx pool is sized as `max(workers + 15, 20)`. |
 | `collection.repo_clone_dir` | string | `$HOME/aveloxis-repos` | Directory for bare git clones used by the facade phase. Can grow to terabytes for large instances (400K+ repos). |
+| `collection.force_full` | boolean | `false` | Fleet-wide: when `true`, every collection pass runs `since=zero` regardless of `last_collected`. Use this once after a systemic bug fix that invalidates collected data, then revert to `false`. For per-repo full re-collection, use `aveloxis recollect <url>` instead (sets a queue flag, doesn't touch this setting). |
+
+**Materialized views**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `collection.matview_rebuild_day` | string | `"saturday"` | Day of the week the scheduler refreshes the 22 materialized views. Values: `"sunday"`–`"saturday"`, or `"disabled"` / `"none"` / `"off"` to never auto-rebuild. Independent of `aveloxis refresh-views` which always refreshes on demand. |
+| `collection.matview_rebuild_on_startup` | boolean | `false` | When `true`, `aveloxis serve` rebuilds the matviews on every startup. Default `false` because the rebuild can take many minutes on large fleets and `migrate` already refreshes them on schema changes. |
+
+**REST → GraphQL refactor (v0.18.x phases)**
+
+These four settings control the staged collector's request shape. The default for all four matches the pre-v0.18.x REST behavior so existing deployments don't shift transport on upgrade. Operators running medium-to-large fleets should opt into the GraphQL path for the ~5× wall-clock speedup observed in benchmarks (augurlabs/augur, 73 keys: 125 min REST → 24 min GraphQL).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `collection.pr_child_mode` | string | `"rest"` | `"rest"` uses the per-PR REST waterfall (8 calls per PR). `"graphql"` (v0.18.1+) uses `FetchPRBatch` — one GraphQL query per 10 PRs returning all child data inline. GitLab path is REST composition in both modes (column parity preserved). |
+| `collection.listing_mode` | string | `"rest"` | `"rest"` uses separate iterators for `/issues` and `/pulls`. `"graphql"` (v0.18.2+) calls `ListIssuesAndPRs` once per repo — a pair of paginated GraphQL queries instead of two REST scans. Setting both this AND `pr_child_mode` to `"graphql"` activates v0.18.5's `fullGraphQLMode` gate: conversation comments are delivered inline, eliminating one repo-wide REST call. |
+| `collection.threading_mode` | string | `"single"` | `"single"` fetches PR batches sequentially. `"sharded"` (v0.18.3+) partitions the enumerated PR list and runs each shard in its own goroutine when the PR count exceeds `shard_size`. Only activates when `pr_child_mode=graphql`. |
+| `collection.shard_size` | integer | `3000` | Item-count threshold for `threading_mode=sharded`. Number of shards = `ceil(prs / shard_size)`. Smaller values fan out earlier on medium repos. Ignored when `threading_mode != "sharded"`. |
+
+**Background tasks**
+
+Periodic tickers that run on the scheduler. v0.16.5 / v0.18.29 / v0.19.7 moved each of these out of the per-repo hot path (where they caused fan-out contention) into single-goroutine periodic tasks. Cadence is configurable; defaults are conservative.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `collection.enrich_interval_minutes` | integer | `30` | Cadence (minutes) of the thin-contributor profile enrichment ticker. Each tick processes one batch of up to 14,000 thin contributors via `GET /users/{login}`. With 14K candidates and 73 keys, even 60 minutes is well under the rate budget. |
+| `collection.search_resolve_interval_minutes` | integer | `60` | Cadence (minutes) of the v0.19.2 search-resolve ticker. Each tick takes 100 contributors with email-but-no-`gh_user_id` and calls GitHub's search API to backfill the identity. GitHub search is rate-limited to 30/min/token (separate budget from the 5000/hour core API), so this runs at a deliberately low cadence. |
+| `collection.affiliation_interval_minutes` | integer | `60` | Cadence (minutes) of the v0.19.7 affiliation-population ticker. Recomputes the global domain→company map from `contributor_affiliations`. Pre-v0.19.7 this fired from every worker after every repo and caused `UNIQUE (ca_domain)` ShareLock contention. |
+
+**Shutdown**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `collection.shutdown_grace_seconds` | integer | `10` | v0.20.0: ctx-cancel grace window for in-flight workers before `Scheduler.Run` closes the pgx pool. Pre-v0.20.0 the wait was unbounded — a 26-minute `commits` UPDATE blocked shutdown for the full duration. Setting this too low means worker transactions abort mid-flight (Postgres rolls them back safely but logs are noisy); too high means slow shutdown. |
+
+### Web (OAuth + GUI)
+
+The `web` block configures the `aveloxis web` server. Optional — if you only run `serve` (collection scheduler), you can omit this entirely.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `web.addr` | string | `":8082"` | Listen address for the web GUI. |
+| `web.session_secret` | string | (none) | Secret used to sign session cookies. Generate a random 32+ byte string. Without this, sessions don't survive restarts. |
+| `web.base_url` | string | (none) | Public-facing external URL of the web GUI (e.g. `https://aveloxis.example.com`). Used to build OAuth callback URLs and outbound email links. |
+| `web.dev_mode` | boolean | `false` | When `true`, disables the `Secure` flag on cookies so the GUI works over plain HTTP. **Production must leave this `false`** so browsers only send cookies over HTTPS. `HttpOnly` is always set regardless. |
+| `web.github_client_id` | string | (none) | GitHub OAuth App client ID. Create one at <https://github.com/settings/developers>. The callback URL must match `<base_url>/auth/github/callback`. |
+| `web.github_client_secret` | string | (none) | GitHub OAuth App client secret. |
+| `web.gitlab_client_id` | string | (none) | GitLab OAuth Application ID. Create one at <https://gitlab.com/-/profile/applications> (or your self-hosted instance's `/admin/applications`). |
+| `web.gitlab_client_secret` | string | (none) | GitLab OAuth Application secret. |
+| `web.gitlab_base_url` | string | `"https://gitlab.com"` | GitLab base URL for OAuth (the HTML site, NOT the API URL). Override for self-hosted GitLab. |
+| `web.api_internal_url` | string | `"http://127.0.0.1:8383"` | Server-to-server URL where the web process reaches `aveloxis api`. The web server reverse-proxies `/api/*` requests to this URL so the browser only talks to the web origin. Set this to a remote URL if running the API on a different host. |
+
+### Mail (Gmail SMTP, optional)
+
+See the [Email section below](#email-gmail-smtp-optional) for setup details. The `mail` block fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `mail.gmail_user` | string | Gmail address used for SMTP auth and as the `From` address. Empty disables the mailer (no-op). |
+| `mail.gmail_app_password` | string | The 16-character App Password (spaces allowed). Not the account's regular password. |
+| `mail.from_name` | string | Display name shown in recipients' inboxes. |
+| `mail.site_url` | string | Public-facing URL used in email body links. |
 
 ### Logging
 

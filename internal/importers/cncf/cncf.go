@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package cncf fetches and parses the CNCF landscape.yml, filtering it
 // down to projects that are actual CNCF members (graduated / incubating /
 // sandbox). The landscape file also lists hundreds of ecosystem projects

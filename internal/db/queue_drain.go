@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Drain-park primitives for the background leftover-staging drain
 // (v0.18.29 Fix 1). The scheduler uses these to atomically take a set
 // of repos OUT of the worker-claim path before launching the drain

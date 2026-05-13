@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package monitor provides an HTTP dashboard for observing Aveloxis collection
 // progress. Serves the same purpose as Flower does for Celery, but backed by
 // Postgres queue state — no additional infrastructure required.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package web provides the user-facing web GUI with OAuth authentication,
 // group management, and repo/org tracking.
 package web

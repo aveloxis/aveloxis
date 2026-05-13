@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — scorecard.go runs the OpenSSF Scorecard tool against
 // a repository during the analysis phase.
 //

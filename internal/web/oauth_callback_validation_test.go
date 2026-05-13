@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract tests for the OAuth callback handlers' defensive
 // validation. The motivating incident: GitHub's /user response on
 // one production callback returned without a `login` field; the

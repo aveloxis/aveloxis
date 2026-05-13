@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — breadth.go implements the contributor breadth worker.
 //
 // This is the Go implementation of Augur's contributor_breadth_worker.

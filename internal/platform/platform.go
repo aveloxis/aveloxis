@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package platform defines the abstraction layer that both GitHub and GitLab
 // implement. This is the core interface contract that ensures feature parity.
 package platform

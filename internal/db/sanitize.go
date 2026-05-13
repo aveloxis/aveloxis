@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package db — sanitize.go provides text sanitization for data going into PostgreSQL.
 //
 // PostgreSQL's TEXT type cannot store null bytes (\x00). GitHub and GitLab API

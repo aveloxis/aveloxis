@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract tests for the Gmail-backed mailer (v0.19.0).
 //
 // We use net/smtp + smtp.gmail.com:587 with STARTTLS and an App

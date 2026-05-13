@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract tests for v0.19.2 Fix #4: the search-resolve
 // background task that takes contributors with cntrb_email !=  ''
 // AND gh_user_id IS NULL, calls GitHub /search/users?q=email, and

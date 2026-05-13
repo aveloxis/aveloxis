@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract tests for v0.18.29 Fix 3: ContributorResolver.Resolve
 // uses ON CONFLICT (cntrb_id) when the platform user has a numeric ID,
 // so concurrent inserts of the same person under different login strings

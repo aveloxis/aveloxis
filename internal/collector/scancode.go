@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — scancode.go runs ScanCode Toolkit against a local
 // repository checkout to detect licenses, copyrights, and packages per file.
 //

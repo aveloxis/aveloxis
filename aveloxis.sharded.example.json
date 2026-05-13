@@ -1,0 +1,54 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "user": "aveloxis",
+    "password": "xxxxxxxxxx",
+    "dbname": "aveloxis",
+    "sslmode": "prefer"
+  },
+  "github": {
+    "api_keys": [],
+    "base_url": "https://api.github.com"
+  },
+  "gitlab": {
+    "api_keys": [],
+    "base_url": "https://gitlab.com/api/v4",
+    "gitlab_hosts": []
+  },
+  "mail": {
+    "gmail_user": "aveloxis.io",
+    "gmail_app_password": "gmail-app-password",
+    "from_name": "Aveloxis Server - Sean Goggins",
+    "site_url": "https://rule.aveloxis.io"
+  },
+  "collection": {
+    "batch_size": 500,
+    "days_until_recollect": 30,
+    "search_resolve_interval_minutes": 15,
+    "enrich_interval_minutes": 30,
+    "affiliation_interval_minutes": 60,
+    "workers": 180,
+    "force_full": false,
+    "repo_clone_dir": "PATH FOR BARE CLONES",
+    "matview_rebuild_day": "sunday",
+    "matview_rebuild_on_startup": false,
+    "pr_child_mode": "graphql",
+    "listing_mode": "graphql",
+    "threading_mode": "sharded",
+    "shard_size": 2000, 
+    "shutdown_grace_seconds": 40
+  },
+  "web": {
+    "addr": ":8082",
+    "dev_mode": false,
+    "base_url": "https://aveloxis.server.name",
+    "github_client_id": "GH Client ID",
+    "github_client_secret": "GH Client Secret",
+    "gitlab_client_id": "GL Client ID ",
+    "gitlab_client_secret": "GL Client Secret",
+    "gitlab_base_url": "https://gitlab.com",
+    "api_internal_url": "http://127.0.0.1:8383"
+  },
+  "log_level": "info"
+}

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Source-contract tests for v0.18.29 Fix 1: the leftover-staging drain
 // runs in a background goroutine instead of blocking scheduler.Run.
 //

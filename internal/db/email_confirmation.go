@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Email-verification token flow (v0.20.4). Defense-in-depth on top of
 // v0.19.10's manual-entry path at /account/email — a user who enters
 // an email there has NOT been verified by the OAuth provider, so we

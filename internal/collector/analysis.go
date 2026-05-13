@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — analysis.go implements on-demand repo analysis phases:
 // dependency scanning, libyear calculation, and code complexity (scc).
 //

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package collector — staged.go implements the two-phase staged collection pipeline.
 //
 // At 400K repos, direct upserts create massive contention on the contributors

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
 // Package scripts_test verifies shell scripts under ./scripts/ stay sound.
 //
 // Shell scripts aren't covered by `go test ./...` by default; this file

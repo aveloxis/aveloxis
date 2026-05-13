@@ -233,6 +233,30 @@ type CollectionConfig struct {
 	// the 30-day enrichment cooldown. Default 60 (minutes) when unset.
 	AffiliationIntervalMinutes int `json:"affiliation_interval_minutes"`
 
+	// BreadthIntervalMinutes controls how often the contributor
+	// breadth worker ticks. v0.20.17: pre-fix the ticker was
+	// hardcoded to 6 hours and batch=100, capping throughput to
+	// 400 contributors/day — 9.6 years to cover a 1.4M-contributor
+	// fleet once. Combined with BreadthBatchSize=2000 the new
+	// 15-minute default targets ~192K contributors/day, putting
+	// first-pass coverage of a 1.4M fleet at about 7 days.
+	BreadthIntervalMinutes int `json:"breadth_interval_minutes"`
+
+	// BreadthBatchSize is the maximum number of contributors the
+	// breadth worker processes per tick. v0.20.17 default 2000.
+	// Each contributor takes 1–3 API calls (most users have ≤300
+	// recent events fitting in one page) so 2000 × 3 = 6000 API
+	// calls/tick is well under the 73-key budget at typical
+	// scheduler intervals.
+	BreadthBatchSize int `json:"breadth_batch_size"`
+
+	// BreadthCooldownDays is the minimum interval between
+	// successive attempts on the same contributor. v0.20.17
+	// default 7. Steady-state load with this cooldown over 1.4M
+	// contributors is 200K/day = 8K/hour ≈ 2% of the 365K/hr
+	// budget for a 73-key fleet.
+	BreadthCooldownDays int `json:"breadth_cooldown_days"`
+
 	// ShutdownGraceSeconds caps how long Scheduler.Run's ctx-cancel
 	// branch waits for in-flight workers to finish before closing the
 	// pgx pool. Default 10 (seconds) when unset. Pre-v0.20.0 the wait
@@ -278,6 +302,34 @@ func (c *CollectionConfig) ShutdownGraceDuration() time.Duration {
 		return 10 * time.Second
 	}
 	return time.Duration(c.ShutdownGraceSeconds) * time.Second
+}
+
+// BreadthIntervalDuration converts BreadthIntervalMinutes to a
+// time.Duration. Falls back to 15 minutes when unset — see field
+// comment for the throughput math behind that default.
+func (c *CollectionConfig) BreadthIntervalDuration() time.Duration {
+	if c.BreadthIntervalMinutes <= 0 {
+		return 15 * time.Minute
+	}
+	return time.Duration(c.BreadthIntervalMinutes) * time.Minute
+}
+
+// BreadthBatchSizeOrDefault returns BreadthBatchSize or 2000 when
+// unset.
+func (c *CollectionConfig) BreadthBatchSizeOrDefault() int {
+	if c.BreadthBatchSize <= 0 {
+		return 2000
+	}
+	return c.BreadthBatchSize
+}
+
+// BreadthCooldownDuration converts BreadthCooldownDays to a
+// time.Duration. Falls back to 7 days when unset.
+func (c *CollectionConfig) BreadthCooldownDuration() time.Duration {
+	if c.BreadthCooldownDays <= 0 {
+		return 7 * 24 * time.Hour
+	}
+	return time.Duration(c.BreadthCooldownDays) * 24 * time.Hour
 }
 
 // MailConfig configures the Gmail-backed transactional mailer

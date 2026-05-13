@@ -47,6 +47,9 @@ type Config struct {
 	SearchResolveInterval time.Duration // how often to run the search-resolve background task (default 1 hour). v0.19.2 added this to backfill gh_user_id on contributors with email but no platform identity, using GitHub's search API at controlled rate.
 	AffiliationInterval   time.Duration // how often to run the periodic singleton PopulateAffiliations task (default 1 hour). v0.19.7 moved this off the per-job hot path to eliminate cross-worker contention on UNIQUE (ca_domain).
 	ShutdownGrace         time.Duration // how long to wait for in-flight workers to finish during ctx-cancel before closing the pgx pool (default 10s). v0.20.0. Bounds shutdown wall-clock time so a single long UPDATE can't block stop indefinitely.
+	BreadthInterval       time.Duration // how often the contributor breadth worker ticks (default 15min). v0.20.17. Was hardcoded to 6h, capping coverage to 400/day = 9.6 years for 1.4M contribs.
+	BreadthBatchSize      int           // maximum contributors per breadth tick (default 2000). v0.20.17.
+	BreadthCooldown       time.Duration // minimum interval between successive attempts on the same contributor (default 7 days). v0.20.17. Replaces the pre-fix "spin on dead-end contributors forever" pattern.
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -96,6 +99,15 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	}
 	if cfg.AffiliationInterval == 0 {
 		cfg.AffiliationInterval = 1 * time.Hour
+	}
+	if cfg.BreadthInterval == 0 {
+		cfg.BreadthInterval = 15 * time.Minute
+	}
+	if cfg.BreadthBatchSize == 0 {
+		cfg.BreadthBatchSize = 2000
+	}
+	if cfg.BreadthCooldown == 0 {
+		cfg.BreadthCooldown = 7 * 24 * time.Hour
 	}
 	if cfg.ShutdownGrace == 0 {
 		cfg.ShutdownGrace = 10 * time.Second
@@ -236,8 +248,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// Run org refresh once on startup too.
 	go s.refreshOrgs(ctx)
 
-	// Contributor breadth: run every 6 hours to discover cross-repo activity.
-	breadthTicker := time.NewTicker(6 * time.Hour)
+	// Contributor breadth: discovers cross-repo activity for
+	// every contributor with a gh_login. v0.20.17: cadence and
+	// batch size are now config-driven (default 15min / 2000
+	// per tick / 7-day cooldown). The pre-fix hardcoded
+	// 6h/100/no-cooldown capped throughput to 400 contribs/day
+	// and left zero-event contributors stuck at the queue head
+	// forever.
+	breadthTicker := time.NewTicker(s.cfg.BreadthInterval)
 	defer breadthTicker.Stop()
 
 	// Materialized view rebuild: check hourly, run on Saturdays.
@@ -1572,7 +1590,7 @@ func (s *Scheduler) runBreadth(ctx context.Context) {
 		return
 	}
 	bw := collector.NewBreadthWorker(s.store, s.ghKeys, s.logger)
-	result, err := bw.Run(ctx, 100) // process up to 100 contributors per cycle
+	result, err := bw.Run(ctx, s.cfg.BreadthBatchSize, s.cfg.BreadthCooldown)
 	if err != nil {
 		s.logger.Warn("breadth worker failed", "error", err)
 		return

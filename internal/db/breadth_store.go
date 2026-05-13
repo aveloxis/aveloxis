@@ -27,28 +27,42 @@ type ContributorRepoRow struct {
 	CreatedAt time.Time
 }
 
-// GetContributorsForBreadth returns contributors that need breadth collection,
-// prioritizing those that have never been processed, then oldest.
-func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int) ([]BreadthContributor, error) {
+// GetContributorsForBreadth returns contributors that need breadth
+// collection, prioritizing those never attempted (NULL
+// cntrb_last_breadth_at) then those past the cooldown window.
+//
+// v0.20.17: replaces the pre-fix JOIN against contributor_repo's
+// MAX(data_collection_date). The old query treated a contributor
+// as "processed" only if at least one event row had been
+// inserted, so contributors whose /users/{login}/events returned
+// empty stayed at the head of the queue forever and the worker
+// reprocessed the same dead-end users every cycle. The new query
+// filters by cntrb_last_breadth_at — which MarkBreadthAttempted
+// stamps after EVERY attempt regardless of events found — so
+// every contributor exits the queue after one attempt and
+// re-enters only when the cooldown expires.
+//
+// Filter on cntrb_deleted = 0 (since v0.20.2 logical merges) so
+// soft-deleted loser rows aren't re-attempted on every cycle.
+// Filter on gh_login IS NOT NULL AND != ” since the breadth
+// worker hits the GitHub user events API.
+func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int, cooldown time.Duration) ([]BreadthContributor, error) {
 	if limit <= 0 {
-		limit = 100
+		limit = 2000
 	}
-	// Use a subquery to avoid the DISTINCT + ORDER BY mismatch.
-	// PostgreSQL requires ORDER BY columns in the SELECT list with DISTINCT.
+	if cooldown <= 0 {
+		cooldown = 7 * 24 * time.Hour
+	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT cntrb_id, gh_login FROM (
-			SELECT DISTINCT ON (c.cntrb_id) c.cntrb_id::text, c.gh_login, cr.last_collected
-			FROM aveloxis_data.contributors c
-			LEFT JOIN (
-				SELECT cntrb_id, MAX(data_collection_date) AS last_collected
-				FROM aveloxis_data.contributor_repo
-				GROUP BY cntrb_id
-			) cr ON cr.cntrb_id = c.cntrb_id
-			WHERE c.gh_login IS NOT NULL AND c.gh_login != ''
-			ORDER BY c.cntrb_id, cr.last_collected ASC NULLS FIRST
-		) sub
-		ORDER BY last_collected ASC NULLS FIRST
-		LIMIT $1`, limit)
+		SELECT cntrb_id::text, gh_login
+		FROM aveloxis_data.contributors
+		WHERE gh_login IS NOT NULL
+		  AND gh_login != ''
+		  AND COALESCE(cntrb_deleted, 0) = 0
+		  AND (cntrb_last_breadth_at IS NULL
+		       OR cntrb_last_breadth_at < NOW() - $2::interval)
+		ORDER BY cntrb_last_breadth_at ASC NULLS FIRST
+		LIMIT $1`, limit, cooldown.String())
 	if err != nil {
 		return nil, err
 	}
@@ -63,6 +77,21 @@ func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int
 		result = append(result, c)
 	}
 	return result, rows.Err()
+}
+
+// MarkBreadthAttempted stamps cntrb_last_breadth_at = NOW() for a
+// contributor. The breadth worker calls this AFTER every attempt
+// regardless of whether events were found. The unconditional
+// stamp is what makes the cooldown-based queue actually drain —
+// a contributor with zero public events still exits the
+// unprocessed-queue and won't reappear until the cooldown window
+// passes.
+func (s *PostgresStore) MarkBreadthAttempted(ctx context.Context, cntrbID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.contributors
+		SET cntrb_last_breadth_at = NOW()
+		WHERE cntrb_id = $1::uuid`, cntrbID)
+	return err
 }
 
 // GetNewestContributorRepoEvent returns the most recent event timestamp

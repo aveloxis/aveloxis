@@ -37,6 +37,9 @@
     "enrich_interval_minutes": 30,
     "search_resolve_interval_minutes": 60,
     "affiliation_interval_minutes": 60,
+    "breadth_interval_minutes": 15,
+    "breadth_batch_size": 2000,
+    "breadth_cooldown_days": 7,
     "shutdown_grace_seconds": 10
   },
   "web": {

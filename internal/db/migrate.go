@@ -164,6 +164,19 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// 30/min/token search-API quota.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "cntrb_last_search_attempted_at", "TIMESTAMPTZ")
 
+	// Contributors: breadth tracking column (v0.20.17). The
+	// scheduler's runBreadth ticker takes contributors past the
+	// configured cooldown, calls /users/{login}/events, and stamps
+	// this column on every attempt — even when the response is
+	// empty. Pre-v0.20.17 the worker used
+	// MAX(contributor_repo.data_collection_date) NULLS FIRST as
+	// the "processed" signal, which left contributors with zero
+	// public events permanently at the front of the queue. With
+	// 1.4M contributors observed on the live aveloxis_large
+	// fleet, only 225 (0.016%) ever got events recorded because
+	// the worker kept reselecting the same dead-end users.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "cntrb_last_breadth_at", "TIMESTAMPTZ")
+
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection
 	// created duplicate rows. Clean up first, then create the unique index.

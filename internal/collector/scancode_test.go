@@ -60,7 +60,9 @@ func TestScancodeOutputParsing(t *testing.T) {
 		t.Fatalf("Copyrights = %d, want 1", len(f.Copyrights))
 	}
 	// Copyrights are json.RawMessage — verify the raw JSON content.
-	var cr struct{ Copyright string `json:"copyright"` }
+	var cr struct {
+		Copyright string `json:"copyright"`
+	}
 	if err := json.Unmarshal(f.Copyrights[0], &cr); err != nil {
 		t.Fatalf("unmarshal copyright: %v", err)
 	}
@@ -72,14 +74,14 @@ func TestScancodeOutputParsing(t *testing.T) {
 // TestScancodeResultStruct verifies ScancodeResult has expected fields.
 func TestScancodeResultStruct(t *testing.T) {
 	r := ScancodeResult{
-		ScancodeVersion:  "32.5.0",
-		FilesScanned:     42,
+		ScancodeVersion:   "32.5.0",
+		FilesScanned:      42,
 		FilesWithFindings: 10,
-		DurationSecs:     12.5,
+		DurationSecs:      12.5,
 		FileResults: []ScancodeFileResult{
 			{
-				Path:                         "main.go",
-				ProgrammingLanguage:          "Go",
+				Path:                          "main.go",
+				ProgrammingLanguage:           "Go",
 				DetectedLicenseExpressionSPDX: "MIT",
 			},
 		},

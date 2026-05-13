@@ -213,7 +213,7 @@ func TestBuildOutcome_Success(t *testing.T) {
 	}
 	facade := &collector.FacadeResult{Commits: 100}
 
-	out := s.buildOutcome(result, facade, nil, nil)
+	out := s.buildOutcome(result, facade, nil, nil, nil)
 
 	if !out.success {
 		t.Error("expected success=true")
@@ -241,7 +241,7 @@ func TestBuildOutcome_CollectionError(t *testing.T) {
 	result := &collector.CollectResult{Issues: 5, PullRequests: 3}
 	err := fmt.Errorf("rate limited")
 
-	out := s.buildOutcome(result, nil, nil, err)
+	out := s.buildOutcome(result, nil, nil, err, nil)
 
 	if out.success {
 		t.Error("expected success=false on collection error")
@@ -262,7 +262,7 @@ func TestBuildOutcome_ResultErrors(t *testing.T) {
 		Errors:       []error{fmt.Errorf("partial failure")},
 	}
 
-	out := s.buildOutcome(result, nil, nil, nil)
+	out := s.buildOutcome(result, nil, nil, nil, nil)
 
 	if out.success {
 		t.Error("expected success=false when result has errors")
@@ -278,7 +278,7 @@ func TestBuildOutcome_ZeroData(t *testing.T) {
 	// Non-nil result with all zeros should be treated as failure.
 	result := &collector.CollectResult{}
 
-	out := s.buildOutcome(result, nil, nil, nil)
+	out := s.buildOutcome(result, nil, nil, nil, nil)
 
 	if out.success {
 		t.Error("expected success=false for zero-data result")
@@ -293,7 +293,7 @@ func TestBuildOutcome_NilResult(t *testing.T) {
 
 	// Nil result with no error should be success (can happen if collection
 	// short-circuits but no error was set).
-	out := s.buildOutcome(nil, nil, nil, nil)
+	out := s.buildOutcome(nil, nil, nil, nil, nil)
 
 	if !out.success {
 		t.Error("expected success=true for nil result with no error")
@@ -310,7 +310,7 @@ func TestBuildOutcome_FacadeOnlyCounts(t *testing.T) {
 	}
 	facade := &collector.FacadeResult{Commits: 500}
 
-	out := s.buildOutcome(result, facade, nil, nil)
+	out := s.buildOutcome(result, facade, nil, nil, nil)
 
 	if !out.success {
 		t.Error("expected success=true")

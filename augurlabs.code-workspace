@@ -26,6 +26,9 @@
 		},
 		{
 			"path": "../../sociallycompute/cs4050-Instructor"
+		},
+		{
+			"path": "../../sociallycompute/mhs-claude"
 		}
 	],
 	"settings": {}

@@ -23,6 +23,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/monitor"
 	"github.com/aveloxis/aveloxis/internal/pidfile"
@@ -30,7 +31,6 @@ import (
 	"github.com/aveloxis/aveloxis/internal/platform/github"
 	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 	"github.com/aveloxis/aveloxis/internal/scheduler"
-	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/web"
 	"github.com/spf13/cobra"
 )
@@ -76,8 +76,8 @@ func main() {
 
 func serveCmd(cfgPath *string) *cobra.Command {
 	var (
-		monitorAddr string
-		workers     int
+		monitorAddr  string
+		workers      int
 		useAugurKeys bool
 	)
 
@@ -150,15 +150,15 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	store.SetMatviewOnStartup(cfg.Collection.MatviewRebuildOnStartup)
 
 	sched := scheduler.NewWithKeys(store, ghClient, glClient, ghKeys, logger, scheduler.Config{
-		Workers:             workers,
-		RecollectAfter:      time.Duration(cfg.Collection.DaysUntilRecollect) * 24 * time.Hour,
-		RepoCloneDir:        cfg.Collection.RepoCloneDir,
-		MatviewRebuildDay:   cfg.Collection.MatviewRebuildWeekday(),
-		ForceFullCollection: cfg.Collection.ForceFullCollection,
-		PRChildMode:         cfg.Collection.PRChildMode,
-		ListingMode:         cfg.Collection.ListingMode,
-		ThreadingMode:       cfg.Collection.ThreadingMode,
-		ShardSize:           cfg.Collection.ShardSize,
+		Workers:               workers,
+		RecollectAfter:        time.Duration(cfg.Collection.DaysUntilRecollect) * 24 * time.Hour,
+		RepoCloneDir:          cfg.Collection.RepoCloneDir,
+		MatviewRebuildDay:     cfg.Collection.MatviewRebuildWeekday(),
+		ForceFullCollection:   cfg.Collection.ForceFullCollection,
+		PRChildMode:           cfg.Collection.PRChildMode,
+		ListingMode:           cfg.Collection.ListingMode,
+		ThreadingMode:         cfg.Collection.ThreadingMode,
+		ShardSize:             cfg.Collection.ShardSize,
 		EnrichInterval:        cfg.Collection.EnrichIntervalDuration(),
 		SearchResolveInterval: cfg.Collection.SearchResolveIntervalDuration(),
 		AffiliationInterval:   cfg.Collection.AffiliationIntervalDuration(),

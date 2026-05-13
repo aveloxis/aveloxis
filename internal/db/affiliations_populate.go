@@ -13,11 +13,11 @@ type affiliationCandidate struct {
 }
 
 // PopulateAffiliations auto-populates the contributor_affiliations table by:
-// 1. Querying all contributors with both an email and a company
-// 2. Extracting email domains and mapping them to the contributor's company
-// 3. Using consensus (most common company per domain) for domains shared by
-//    multiple contributors
-// 4. Upserting into contributor_affiliations
+//  1. Querying all contributors with both an email and a company
+//  2. Extracting email domains and mapping them to the contributor's company
+//  3. Using consensus (most common company per domain) for domains shared by
+//     multiple contributors
+//  4. Upserting into contributor_affiliations
 //
 // This is called after contributor enrichment so that company data from
 // GitHub/GitLab user profiles is available. Only corporate/institutional
@@ -185,34 +185,34 @@ func isPublicEmailDomain(domain string) bool {
 }
 
 var publicEmailDomains = map[string]bool{
-	"gmail.com":       true,
-	"yahoo.com":       true,
-	"yahoo.co.in":     true,
-	"yahoo.co.uk":     true,
-	"hotmail.com":     true,
-	"outlook.com":     true,
-	"live.com":        true,
-	"msn.com":         true,
-	"protonmail.com":  true,
-	"proton.me":       true,
-	"icloud.com":      true,
-	"me.com":          true,
-	"aol.com":         true,
-	"mail.com":        true,
-	"zoho.com":        true,
-	"yandex.ru":       true,
-	"yandex.com":      true,
-	"qq.com":          true,
-	"163.com":         true,
-	"126.com":         true,
-	"sina.com":        true,
-	"foxmail.com":     true,
-	"gmx.com":        true,
-	"gmx.de":         true,
-	"web.de":         true,
-	"mail.ru":        true,
-	"pm.me":          true,
-	"tutanota.com":   true,
-	"fastmail.com":   true,
+	"gmail.com":                true,
+	"yahoo.com":                true,
+	"yahoo.co.in":              true,
+	"yahoo.co.uk":              true,
+	"hotmail.com":              true,
+	"outlook.com":              true,
+	"live.com":                 true,
+	"msn.com":                  true,
+	"protonmail.com":           true,
+	"proton.me":                true,
+	"icloud.com":               true,
+	"me.com":                   true,
+	"aol.com":                  true,
+	"mail.com":                 true,
+	"zoho.com":                 true,
+	"yandex.ru":                true,
+	"yandex.com":               true,
+	"qq.com":                   true,
+	"163.com":                  true,
+	"126.com":                  true,
+	"sina.com":                 true,
+	"foxmail.com":              true,
+	"gmx.com":                  true,
+	"gmx.de":                   true,
+	"web.de":                   true,
+	"mail.ru":                  true,
+	"pm.me":                    true,
+	"tutanota.com":             true,
+	"fastmail.com":             true,
 	"users.noreply.github.com": true,
 }

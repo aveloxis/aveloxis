@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
 )
 
 // TestListIssuesAndPRs_EmptyRepo — a repo with no issues and no PRs must

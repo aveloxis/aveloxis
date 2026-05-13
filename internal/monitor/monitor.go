@@ -125,10 +125,10 @@ const DefaultDashboardRefreshSeconds = 60
 
 // Server is the monitoring HTTP server.
 type Server struct {
-	store            *db.PostgresStore
-	logger           *slog.Logger
-	mux              *http.ServeMux
-	queueStatsCache  *QueueStatsCache
+	store           *db.PostgresStore
+	logger          *slog.Logger
+	mux             *http.ServeMux
+	queueStatsCache *QueueStatsCache
 }
 
 // New creates a monitor server.
@@ -167,9 +167,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"stats":           stats,
-		"last_refreshed":  lastRefreshed.Format(time.RFC3339),
-		"next_refresh":    nextRefresh.Format(time.RFC3339),
+		"stats":          stats,
+		"last_refreshed": lastRefreshed.Format(time.RFC3339),
+		"next_refresh":   nextRefresh.Format(time.RFC3339),
 	})
 }
 
@@ -408,7 +408,6 @@ function sortTable(col) {
 	}
 	fmt.Fprintf(w, `<div class="sub">Auto-refreshes every %ds. Stats last refreshed %s. Next refresh %s. API: <code>aveloxis api --addr :8383</code></div>`,
 		DefaultDashboardRefreshSeconds, lastRefreshedTxt, nextRefreshTxt)
-
 
 	renderMatviewBanner(w)
 

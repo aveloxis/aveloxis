@@ -75,9 +75,9 @@ type classifiedGraphQLError struct {
 	wrapped error // sentinel for errors.Is, nil for rate limit / generic
 }
 
-func (e *classifiedGraphQLError) Error() string   { return e.message }
+func (e *classifiedGraphQLError) Error() string     { return e.message }
 func (e *classifiedGraphQLError) Class() ErrorClass { return e.class }
-func (e *classifiedGraphQLError) Unwrap() error    { return e.wrapped }
+func (e *classifiedGraphQLError) Unwrap() error     { return e.wrapped }
 
 // GraphQL executes a GraphQL query against <baseURL>/graphql.
 //

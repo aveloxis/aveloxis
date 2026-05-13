@@ -11,29 +11,29 @@ import (
 
 // QueueJob represents a repo in the collection queue.
 type QueueJob struct {
-	RepoID          int64
-	Priority        int
-	Status          string
-	DueAt           time.Time
-	LockedBy        *string
-	LockedAt        *time.Time
-	LastCollected   *time.Time
-	LastError       *string
-	LastIssues      int
-	LastPRs         int
-	LastMessages    int
-	LastEvents      int
-	LastReleases    int
+	RepoID           int64
+	Priority         int
+	Status           string
+	DueAt            time.Time
+	LockedBy         *string
+	LockedAt         *time.Time
+	LastCollected    *time.Time
+	LastError        *string
+	LastIssues       int
+	LastPRs          int
+	LastMessages     int
+	LastEvents       int
+	LastReleases     int
 	LastContributors int
-	LastCommits     int
-	LastDurationMs  int64
+	LastCommits      int
+	LastDurationMs   int64
 	// ForceFullCollect, when true, causes the scheduler to collect this
 	// repo from since=zero on its next pass regardless of last_collected.
 	// Cleared on the next successful collection. Set automatically by the
 	// scheduler when a job ends with a GraphQL-batch error class, and
 	// settable manually via `aveloxis recollect <url>`.
 	ForceFullCollect bool
-	UpdatedAt       time.Time
+	UpdatedAt        time.Time
 }
 
 // EnqueueRepo adds a repo to the collection queue or updates its priority.

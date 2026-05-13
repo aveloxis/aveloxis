@@ -22,9 +22,9 @@ type PullRequest struct {
 	MergedAt          *time.Time
 	MergeCommitSHA    string
 	AuthorID          *string // contributor UUID
-	AuthorRef         UserRef  // raw platform user data for contributor resolution
-	AuthorAssociation string // "CONTRIBUTOR", "COLLABORATOR", "MEMBER", etc.
-	MetaHeadID        *int64 // FK to PullRequestMeta
+	AuthorRef         UserRef // raw platform user data for contributor resolution
+	AuthorAssociation string  // "CONTRIBUTOR", "COLLABORATOR", "MEMBER", etc.
+	MetaHeadID        *int64  // FK to PullRequestMeta
 	MetaBaseID        *int64
 	Origin            DataOrigin
 }
@@ -147,7 +147,7 @@ type PullRequestEvent struct {
 	ActorRef         UserRef
 	PlatformID       Platform
 	PlatformEventID  int64
-	PlatformPRID     int64  // PR number on the platform, used to resolve PRID during staged processing
+	PlatformPRID     int64 // PR number on the platform, used to resolve PRID during staged processing
 	NodeID           string
 	Action           string
 	ActionCommitHash string

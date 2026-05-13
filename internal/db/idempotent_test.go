@@ -81,8 +81,8 @@ func TestBatchInsertsHaveOnConflict(t *testing.T) {
 	// Tables with their own lifecycle management (rotation, accumulation).
 	batchExceptions := map[string]bool{
 		"aveloxis_data.repo_sbom_scans":     true, // SBOMs accumulate per collection run
-		"aveloxis_data.repo_deps_scorecard":  true, // uses RotateScorecardToHistory before insert
-		"aveloxis_data.repo_deps_libyear":    true, // uses RotateLibyearToHistory before insert
+		"aveloxis_data.repo_deps_scorecard": true, // uses RotateScorecardToHistory before insert
+		"aveloxis_data.repo_deps_libyear":   true, // uses RotateLibyearToHistory before insert
 	}
 
 	for _, filename := range []string{"analysis_store.go", "breadth_store.go", "vulnerability_store.go"} {

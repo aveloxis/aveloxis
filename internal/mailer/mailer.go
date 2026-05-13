@@ -2,9 +2,9 @@
 // stdlib net/smtp.
 //
 // Setup (operator-side, see README):
-//   1. Enable 2-Step Verification on the Gmail account
-//   2. Generate an "App Password" for "Mail"
-//   3. Add the credentials to aveloxis.json under the "mail" block
+//  1. Enable 2-Step Verification on the Gmail account
+//  2. Generate an "App Password" for "Mail"
+//  3. Add the credentials to aveloxis.json under the "mail" block
 //
 // The mailer is a no-op when GmailUser is empty so deployments without
 // email config keep working — Send returns nil immediately. Operators

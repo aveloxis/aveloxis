@@ -1223,6 +1223,40 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 		}
 		defer tx.Rollback(ctx)
 
+		// v0.20.11 (Fix G): capture the first underlying SQL error
+		// across the per-contributor INSERT and per-identity INSERT/
+		// UPDATE inside this tx. Pre-v0.20.11 these were swallowed
+		// (Debug-level log, then `continue` for the contributor row;
+		// `_, _ = tx.Exec(...)` for the identity rows), so when
+		// tx.Commit eventually returned "commit unexpectedly resulted
+		// in rollback" we had no way to see WHICH statement poisoned
+		// the transaction. 70 such rollback events appeared in the
+		// May 9–12 production log; the diagnostic capture below
+		// surfaces the SQLSTATE and offending login so the next run
+		// gives us data to plan a real fix.
+		var firstFailedLogin string
+		var firstFailedSQLState string
+		var firstFailedKind string
+
+		captureErr := func(kind, login string, e error) {
+			if firstFailedLogin != "" {
+				return
+			}
+			firstFailedLogin = login
+			firstFailedKind = kind
+			var pgErr *pgconn.PgError
+			if errors.As(e, &pgErr) {
+				firstFailedSQLState = pgErr.Code
+				s.logger.Warn("contributor batch sub-statement failed",
+					"kind", kind, "login", login,
+					"sqlstate", pgErr.Code, "constraint", pgErr.ConstraintName,
+					"detail", pgErr.Detail, "message", pgErr.Message)
+			} else {
+				s.logger.Warn("contributor batch sub-statement failed",
+					"kind", kind, "login", login, "error", e)
+			}
+		}
+
 		for login, contrib := range merged {
 			var cntrb_id string
 
@@ -1256,15 +1290,24 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 				ToolVersion,
 			).Scan(&cntrb_id)
 			if err != nil {
-				// Duplicate key (23505) is a normal race condition between concurrent
-				// workers — the contributor exists either way. Log at Debug, not Warn.
-				s.logger.Debug("contributor upsert failed", "login", login, "error", err)
+				// Once any statement fails inside the tx, PostgreSQL
+				// puts the transaction in aborted state — every
+				// subsequent statement fails until ROLLBACK. Pre-Fix-G
+				// we `continue`d the for loop, which meant the
+				// remaining contributors all silently failed too, and
+				// the final Commit returned the cryptic "commit
+				// unexpectedly resulted in rollback." We still
+				// continue (changing behavior is deferred to a later
+				// fix once we have data on the SQLSTATE distribution),
+				// but we now capture enough diagnostic context to
+				// plan the real fix.
+				captureErr("contributors_insert", login, err)
 				continue
 			}
 
 			// Upsert platform identities and backfill gh_*/gl_* columns.
 			for _, ident := range identMap[login] {
-				_, _ = tx.Exec(ctx, `
+				_, identErr := tx.Exec(ctx, `
 					INSERT INTO aveloxis_data.contributor_identities
 						(cntrb_id, platform_id, platform_user_id, login, name, email,
 						 avatar_url, profile_url, node_id, user_type, is_admin)
@@ -1278,6 +1321,15 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 					cntrb_id, int16(ident.Platform), ident.UserID, ident.Login, ident.Name,
 					ident.Email, ident.AvatarURL, ident.URL, ident.NodeID, ident.Type, ident.IsAdmin,
 				)
+				if identErr != nil {
+					captureErr("contributor_identities_insert", login, identErr)
+					// Once one Exec fails the tx is poisoned; further
+					// Execs will also fail with "current transaction is
+					// aborted." Skip the rest of this contributor's
+					// identities so we don't pile up duplicate
+					// diagnostic logs from the same root cause.
+					break
+				}
 
 				// Backfill denormalized gh_*/gl_* columns on the contributors row
 				// from the identity data. This keeps the old Augur columns populated
@@ -1334,7 +1386,26 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 			}
 		}
 
-		return tx.Commit(ctx)
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			// v0.20.11 (Fix G): annotate the rollback error with the
+			// first-failed context captured above. Pre-fix the
+			// upstream caller saw only "commit unexpectedly resulted
+			// in rollback" with no clue which contributor or which
+			// statement poisoned the tx. With this annotation the
+			// next run's logs will include the SQLSTATE and the
+			// offending login alongside the bare commit error.
+			if firstFailedLogin != "" {
+				s.logger.Warn("contributor batch commit failed — root cause was earlier sub-statement",
+					"kind", firstFailedKind,
+					"first_failed_login", firstFailedLogin,
+					"first_failed_sqlstate", firstFailedSQLState,
+					"commit_error", commitErr)
+				return fmt.Errorf("contributor batch commit failed (first sub-statement failure was %s on login %q, SQLSTATE %s): %w",
+					firstFailedKind, firstFailedLogin, firstFailedSQLState, commitErr)
+			}
+			return commitErr
+		}
+		return nil
 	})
 }
 

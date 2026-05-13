@@ -48,13 +48,27 @@ type BreadthResult struct {
 }
 
 // Run processes contributors that need breadth collection.
-// It prioritizes contributors that have never been processed (NULL data_collection_date
-// in contributor_repo), then those with the oldest collection dates.
-// limit controls how many contributors to process per run (0 = all).
-func (bw *BreadthWorker) Run(ctx context.Context, limit int) (*BreadthResult, error) {
+//
+// v0.20.17 changes:
+//   - Cooldown-driven selection. GetContributorsForBreadth now
+//     filters by cntrb_last_breadth_at; contributors past the
+//     cooldown window are eligible regardless of whether their
+//     prior attempt yielded events.
+//   - MarkBreadthAttempted is called after EVERY contributor
+//     attempt, success or zero-events. Without this, contributors
+//     with no public activity stayed at the head of the queue
+//     forever (observed: 225/1.4M coverage on the live fleet).
+//   - The 200ms inter-contributor sleep is removed. HTTPClient
+//     rate limiting already paces requests via X-RateLimit-Remaining
+//     and 429 backoff; the sleep capped throughput at 5/sec
+//     single-threaded against a 73-key 365K/hr budget.
+//
+// limit and cooldown are caller-supplied; the scheduler passes
+// the configured BreadthBatchSize and BreadthCooldownDuration.
+func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Duration) (*BreadthResult, error) {
 	result := &BreadthResult{}
 
-	contribs, err := bw.store.GetContributorsForBreadth(ctx, limit)
+	contribs, err := bw.store.GetContributorsForBreadth(ctx, limit, cooldown)
 	if err != nil {
 		return result, fmt.Errorf("querying contributors for breadth: %w", err)
 	}
@@ -71,6 +85,18 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int) (*BreadthResult, er
 		}
 
 		n, err := bw.processContributor(ctx, c)
+
+		// Stamp the attempt timestamp BEFORE error handling so
+		// even fetch failures register as "we tried." Otherwise
+		// a contributor whose API call always errors stays at
+		// the front of the queue forever — exactly the spinning-
+		// on-dead-ends pattern Pre-v0.20.17 had with zero-event
+		// contributors.
+		if markErr := bw.store.MarkBreadthAttempted(ctx, c.ID); markErr != nil {
+			bw.logger.Debug("breadth: failed to mark contributor attempted",
+				"login", c.Login, "error", markErr)
+		}
+
 		if err != nil {
 			bw.logger.Warn("breadth: failed to process contributor",
 				"login", c.Login, "error", err)
@@ -80,9 +106,6 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int) (*BreadthResult, er
 
 		result.ContributorsProcessed++
 		result.EventsInserted += n
-
-		// Small delay between contributors to be respectful.
-		time.Sleep(200 * time.Millisecond)
 	}
 
 	bw.logger.Info("contributor breadth complete",

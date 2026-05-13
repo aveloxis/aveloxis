@@ -166,6 +166,9 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		EnrichInterval:        cfg.Collection.EnrichIntervalDuration(),
 		SearchResolveInterval: cfg.Collection.SearchResolveIntervalDuration(),
 		AffiliationInterval:   cfg.Collection.AffiliationIntervalDuration(),
+		BreadthInterval:       cfg.Collection.BreadthIntervalDuration(),
+		BreadthBatchSize:      cfg.Collection.BreadthBatchSizeOrDefault(),
+		BreadthCooldown:       cfg.Collection.BreadthCooldownDuration(),
 		ShutdownGrace:         cfg.Collection.ShutdownGraceDuration(),
 	})
 	go sched.Run(ctx)

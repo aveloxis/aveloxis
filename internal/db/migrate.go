@@ -621,14 +621,26 @@ func (s *PostgresStore) GetSchemaVersion(ctx context.Context) string {
 func (s *PostgresStore) CheckSchemaVersion(ctx context.Context, logger *slog.Logger) {
 	dbVersion := s.GetSchemaVersion(ctx)
 	if dbVersion == "" {
-		logger.Warn("schema version unknown — run 'aveloxis migrate' or restart 'aveloxis serve' to initialize schema tracking")
+		// schema_meta is empty — either migrate has never run or
+		// the row was deleted. Either way the binary is about to
+		// query columns/tables that may not exist. v0.20.15
+		// bumped this from WARN to ERROR after a production
+		// incident where the WARN was missed and the next hour
+		// produced repeated `column "email_pending" does not
+		// exist` runtime errors.
+		logger.Error("schema version unknown — `aveloxis migrate` has not run against this database. Run `aveloxis migrate --skip-views` then restart this process. Without it, queries against columns added by recent migrations (e.g. users.email_pending from v0.20.4) will fail at runtime.")
 		return
 	}
 	if dbVersion != ToolVersion {
-		logger.Warn("schema version mismatch: database schema is behind the binary",
+		// v0.20.15: ERROR not WARN. The binary is about to
+		// query columns/tables that the deployed schema may
+		// not have. The recovery action is in the message so
+		// operators reading the log don't have to dig through
+		// docs.
+		logger.Error("schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run `aveloxis migrate --skip-views` then restart. Until then, queries against columns added by intervening migrations will fail at runtime (e.g. `column \"email_pending\" does not exist` was the 2026-05-13 production symptom).",
 			"db_schema_version", dbVersion,
 			"binary_version", ToolVersion,
-			"action", "run 'aveloxis migrate' or restart 'aveloxis serve'")
+			"action", "aveloxis migrate --skip-views")
 	}
 }
 

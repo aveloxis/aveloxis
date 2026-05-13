@@ -69,6 +69,9 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "enrich_interval_minutes": 30,
     "search_resolve_interval_minutes": 60,
     "affiliation_interval_minutes": 60,
+    "breadth_interval_minutes": 15,
+    "breadth_batch_size": 2000,
+    "breadth_cooldown_days": 7,
     "shutdown_grace_seconds": 10
   },
   "web": {
@@ -160,6 +163,9 @@ Periodic tickers that run on the scheduler. v0.16.5 / v0.18.29 / v0.19.7 moved e
 | `collection.enrich_interval_minutes` | integer | `30` | Cadence (minutes) of the thin-contributor profile enrichment ticker. Each tick processes one batch of up to 14,000 thin contributors via `GET /users/{login}`. With 14K candidates and 73 keys, even 60 minutes is well under the rate budget. |
 | `collection.search_resolve_interval_minutes` | integer | `60` | Cadence (minutes) of the v0.19.2 search-resolve ticker. Each tick takes 100 contributors with email-but-no-`gh_user_id` and calls GitHub's search API to backfill the identity. GitHub search is rate-limited to 30/min/token (separate budget from the 5000/hour core API), so this runs at a deliberately low cadence. |
 | `collection.affiliation_interval_minutes` | integer | `60` | Cadence (minutes) of the v0.19.7 affiliation-population ticker. Recomputes the global domain→company map from `contributor_affiliations`. Pre-v0.19.7 this fired from every worker after every repo and caused `UNIQUE (ca_domain)` ShareLock contention. |
+| `collection.breadth_interval_minutes` | integer | `15` | Cadence (minutes) of the v0.20.17 contributor breadth ticker. Each tick calls `/users/{login}/events` for up to `breadth_batch_size` contributors past their cooldown window and stamps `contributors.cntrb_last_breadth_at`. Pre-v0.20.17 this was hardcoded to 6 hours / 100 batch / no cooldown — first-pass coverage of a 1.4M-contributor fleet would have taken 9.6 years. At 15-min interval × 2000 batch the new throughput targets ~192K contributors/day → first pass in ~7 days on a 1.4M fleet. |
+| `collection.breadth_batch_size` | integer | `2000` | Maximum contributors processed per breadth tick. Each contributor takes 1–3 API calls (most users have ≤300 recent events fitting in one page). |
+| `collection.breadth_cooldown_days` | integer | `7` | Minimum interval between successive breadth attempts on the same contributor. After this window the contributor becomes eligible again via the `cntrb_last_breadth_at IS NULL OR < NOW() - interval` filter. Steady-state load with a 7-day cooldown over 1.4M contributors is ~200K/day = 8K/hour ≈ 2% of the 365K/hr budget of a 73-key fleet. |
 
 **Shutdown**
 

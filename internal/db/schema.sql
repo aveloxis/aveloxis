@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributors (
     gl_id          BIGINT,
     cntrb_created_at TIMESTAMPTZ,
     cntrb_last_enriched_at TIMESTAMPTZ,
+    cntrb_last_breadth_at  TIMESTAMPTZ,
     tool_source    TEXT DEFAULT 'aveloxis',
     tool_version   TEXT DEFAULT '',
     data_source    TEXT DEFAULT '',

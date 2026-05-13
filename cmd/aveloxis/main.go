@@ -64,6 +64,7 @@ func main() {
 		installToolsCmd(),
 		sbomCmd(&cfgPath),
 		shadowDiffCmd(),
+		testMailCmd(&cfgPath),
 		versionCmd(),
 	)
 
@@ -1423,6 +1424,65 @@ func signalProcess(component string, pid int) bool {
 	}
 	fmt.Printf("Stopped %s (PID %d)\n", component, pid)
 	return true
+}
+
+// testMailCmd lets operators verify Gmail SMTP credentials
+// without waiting for a new user to sign up. v0.20.14 — added
+// after a production diagnostic where the first user signup hit
+// `535 5.7.8 Username and Password not accepted` because the
+// configured gmail_user wasn't an email address and the password
+// wasn't an App Password. Running this once at deploy time
+// surfaces both kinds of mistakes immediately.
+func testMailCmd(cfgPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "test-mail <recipient>",
+		Short: "Send a test email to verify Gmail SMTP credentials",
+		Long: `Reads the mail block from aveloxis.json, runs the same
+ValidateConfig that aveloxis web uses at startup, and attempts a
+single test send to the supplied recipient. Useful immediately
+after configuring Gmail to confirm credentials work before the
+first user signs up.
+
+Common failures and what they mean:
+  - "mail.gmail_user is not an email address" — gmail_user must
+    be a full address (you@gmail.com or you@yourdomain.com),
+    not a bare domain.
+  - "Google App Passwords are exactly 16 lowercase letters" —
+    you pasted a regular password. Generate an App Password at
+    https://myaccount.google.com/apppasswords (2-Step
+    Verification must be on first).
+  - "535 5.7.8 Username and Password not accepted" from Gmail
+    itself — credentials are syntactically valid but Gmail
+    rejected them. Most likely an App Password from the wrong
+    account, or 2-Step Verification was just disabled.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			recipient := args[0]
+			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			cfg := loadConfig(*cfgPath, bootLog)
+			logger := newLogger(cfg)
+
+			mc := mailer.Config{
+				GmailUser:        cfg.Mail.GmailUser,
+				GmailAppPassword: cfg.Mail.GmailAppPassword,
+				FromName:         cfg.Mail.FromName,
+				SiteURL:          cfg.Mail.SiteURL,
+			}
+			if err := mailer.ValidateConfig(mc); err != nil {
+				return fmt.Errorf("mail config invalid — fix aveloxis.json and try again: %w", err)
+			}
+			m := mailer.New(mc, logger)
+			logger.Info("sending test email", "to", recipient, "from", mc.GmailUser)
+			if err := m.Send(recipient, "Aveloxis SMTP test",
+				"This is a test email from `aveloxis test-mail`.\n\n"+
+					"If you received this, your Gmail SMTP credentials are working.\n"+
+					"— Aveloxis"); err != nil {
+				return fmt.Errorf("send failed: %w", err)
+			}
+			logger.Info("test email sent successfully", "to", recipient)
+			return nil
+		},
+	}
 }
 
 func versionCmd() *cobra.Command {

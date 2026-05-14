@@ -434,17 +434,18 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	//
 	// Pre-v0.21.0 scancode results were tracked exclusively via the
 	// aveloxis_scan.scancode_scans rows (one per scan run, with a
-	// created_at timestamp). The v0.21.0 ScancodeWorker reads its
-	// cadence gate off aveloxis_data.repos.scancode_last_run instead;
-	// this backfill seeds that column from the existing scancode_scans
-	// history so repos already scanned in the past 6 months don't all
-	// re-scan on first v0.21.0 startup. Repos with no prior scan stay
-	// at NULL and sort to the front of the worker's claim queue
-	// naturally.
+	// data_collection_date timestamp — the aveloxis-wide convention
+	// for "when did we record this"). The v0.21.0 ScancodeWorker
+	// reads its cadence gate off aveloxis_data.repos.scancode_last_run
+	// instead; this backfill seeds that column from the existing
+	// scancode_scans history so repos already scanned in the past 6
+	// months don't all re-scan on first v0.21.0 startup. Repos with
+	// no prior scan stay at NULL and sort to the front of the
+	// worker's claim queue naturally.
 	//
-	// The ARRAY_AGG(... ORDER BY created_at DESC)[1] picks the
-	// scancode_version from the most-recent scan in case different
-	// versions ran historically.
+	// The ARRAY_AGG(... ORDER BY data_collection_date DESC)[1] picks
+	// the scancode_version from the most-recent scan in case
+	// different versions ran historically.
 	//
 	// Idempotent: WHERE r.scancode_last_run IS NULL on the outer
 	// UPDATE means a second migrate run is a no-op once backfill
@@ -456,8 +457,8 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		    scancode_version = sub.last_version
 		FROM (
 		    SELECT repo_id,
-		           MAX(created_at) AS last_at,
-		           (ARRAY_AGG(scancode_version ORDER BY created_at DESC))[1] AS last_version
+		           MAX(data_collection_date) AS last_at,
+		           (ARRAY_AGG(scancode_version ORDER BY data_collection_date DESC))[1] AS last_version
 		    FROM aveloxis_scan.scancode_scans
 		    GROUP BY repo_id
 		) sub

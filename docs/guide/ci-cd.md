@@ -4,39 +4,65 @@ Aveloxis uses GitHub Actions for continuous integration and deployment. All work
 
 ## Workflows
 
-### Tests (`test.yml`)
+### Tests (`test.yml`) — unit tier
 
 **Trigger:** Every push to any branch, every PR to main.
 
-Runs `go test -race ./...` with race detection enabled. Uploads coverage artifact on main branch pushes.
+Runs `go test -race ./...` with race detection enabled. Uploads coverage artifact on main branch pushes. No database service; tests gated on `AVELOXIS_TEST_DB` self-skip.
 
-Tests split into two tiers:
+### Integration (`integration.yml`) — integration tier (v0.21.1)
 
-* **Unit tier (default, always runs).** Pure Go, no database, covers source-contract tests and logic that can be exercised in-process.
-* **Integration tier (gated by `AVELOXIS_TEST_DB`).** Runs SQL against a live Postgres. Tests skip with a clear message when the env var is unset, so local `go test ./...` stays fast. To run locally:
+**Trigger:** Every push to any branch, every PR to main. Runs in parallel with the unit-tier `test.yml` job.
 
-  ```bash
-  # Create a scratch DB on your existing Postgres instance.
-  psql -h localhost -U aveloxis -d postgres -c "CREATE DATABASE aveloxis_test;"
+Provisions a `postgres:16` service container, sets `AVELOXIS_TEST_DB=postgres://aveloxis_test:aveloxis_test@localhost:5432/aveloxis_test?sslmode=disable`, runs the migration-integration tests, then re-runs the entire test suite with the env var still set so any `AVELOXIS_TEST_DB`-gated tests added later (e.g. additional `*_integration_test.go` files) get exercised automatically.
 
-  # Apply the schema.
-  AVELOXIS_DBNAME=aveloxis_test aveloxis migrate --config /path/to/test.json
+**Why split from `test.yml`:** separation of green-badge semantics. A green **Tests** status means unit-tier passed; a green **Integration** status means migrations + cross-table backfills actually ran against a real Postgres. If only one is green, the failure mode is obvious from the workflow badge.
 
-  # Run only the integration suite.
-  AVELOXIS_TEST_DB="host=localhost port=5432 user=aveloxis password=... dbname=aveloxis_test sslmode=prefer" \
-    go test ./... -run 'Integration|RealignDueDates_|CompleteJob_' -v
+**Why this matters operationally:** the v0.21.0 ship contained a backfill SQL referencing `aveloxis_scan.scancode_scans.created_at` — a column that doesn't exist (the table uses `data_collection_date`). The source-contract test pinned `MAX(created_at)` and silently passed because both sides of the contract agreed on the wrong answer. Production migrate failed with SQLSTATE 42703. `TestRunMigrationsOnFreshDB` (added in v0.21.1) catches this class of bug end-to-end by actually running RunMigrations against a Postgres service container and observing whether each statement parses + executes cleanly.
 
-  # Drop when done.
-  psql -h localhost -U aveloxis -d postgres -c "DROP DATABASE aveloxis_test;"
-  ```
+### Local dev — running the integration tier
 
-  **Never** run the integration suite against the production `aveloxis` database. `RealignDueDates` is unscoped — it updates every `status='queued'` row in the queue, and an integration test that passes `7*24h` would silently realign the entire fleet.
+The simplest path uses a throwaway Postgres container:
 
-  Conventions for adding integration tests:
+```bash
+# Start an empty Postgres container.
+docker run --rm -d --name aveloxis-test-pg -p 5433:5432 \
+  -e POSTGRES_PASSWORD=test -e POSTGRES_DB=aveloxis_test postgres:16
 
-  * Name the test `TestX_YIntegration` or put it in a file ending in `_integration_test.go`.
-  * Seed rows with nanosecond-suffixed synthetic slugs (see `seedRealignRepo` in `internal/db/queue_realign_integration_test.go`) so parallel or repeated runs do not collide on `ON CONFLICT` constraints.
-  * Prefer strict-equality assertions (`approxEqual(..., time.Millisecond)`) where the SQL does not involve `NOW()`, since source-text tests cannot catch interval-arithmetic drift and this is where runtime regressions hide.
+# Run the integration tests against it.
+AVELOXIS_TEST_DB="postgres://postgres:test@localhost:5433/aveloxis_test?sslmode=disable" \
+  go test ./internal/db/ -run "TestRunMigrations" -v
+
+# Run any other AVELOXIS_TEST_DB-gated tests in the codebase.
+AVELOXIS_TEST_DB="postgres://postgres:test@localhost:5433/aveloxis_test?sslmode=disable" \
+  go test ./... -v
+
+# Tear down when done.
+docker stop aveloxis-test-pg
+```
+
+Or, if you have an existing Postgres you want to use:
+
+```bash
+# Create a scratch DB on your existing Postgres instance.
+psql -h localhost -U aveloxis -d postgres -c "CREATE DATABASE aveloxis_test;"
+
+# Run with the test DB.
+AVELOXIS_TEST_DB="host=localhost port=5432 user=aveloxis password=... dbname=aveloxis_test sslmode=prefer" \
+  go test ./... -v
+
+# Drop when done.
+psql -h localhost -U aveloxis -d postgres -c "DROP DATABASE aveloxis_test;"
+```
+
+**Never** run the integration suite against the production `aveloxis` database. `TestRunMigrationsOnFreshDB` is destructive (it owns the schema), and `RealignDueDates`-style integration tests are unscoped — they update every matching row in the queue and would silently realign the entire fleet.
+
+Conventions for adding integration tests:
+
+* Name the test `TestX_YIntegration` or put it in a file ending in `_integration_test.go`.
+* Always gate on `os.Getenv("AVELOXIS_TEST_DB")` with `t.Skip` when empty, so `go test ./...` without the env var stays fast.
+* For non-migration tests, seed rows with nanosecond-suffixed synthetic slugs (see `seedRealignRepo` in `internal/db/queue_realign_integration_test.go`) so parallel or repeated runs do not collide on `ON CONFLICT` constraints.
+* Prefer strict-equality assertions (`approxEqual(..., time.Millisecond)`) where the SQL does not involve `NOW()`, since source-text tests cannot catch interval-arithmetic drift and this is where runtime regressions hide.
 
 ### Lint (`lint.yml`)
 

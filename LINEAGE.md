@@ -18,7 +18,7 @@ though the two repositories have independent Git histories on GitHub.
 | **Splice date** | 2026-03-31 (UTC) |
 | **Splice commit (augur)** | AUGUR_TIP=`03b14ff19012912cfd4e4369f981bfae143156d1` — last Augur commit at or before the splice date |
 | **First commit (aveloxis)** | AVELOXIS_ROOT=`15fdc87288181206b33f74e47e58b2704adfd6ea` — root commit of the Go rewrite |
-| **Copyright holder** | Sean P. Goggins |
+| **Copyright holder** | Sean P. Goggins, University of Missouri, Derek Howard |
 | **License continuity** | Same license terms carry forward from Augur to Aveloxis |
 | **Contribution model** | Developer Certificate of Origin (DCO); no CLA |
 

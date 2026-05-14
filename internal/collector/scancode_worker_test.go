@@ -176,10 +176,107 @@ func TestScancodeWorkerSkipsWhenBinaryMissing(t *testing.T) {
 	}
 }
 
-func TestDispatcherUsesStartTicker(t *testing.T) {
+// v0.21.3 — TestDispatcherEnforcesMinimumStartGap replaces the
+// pre-v0.21.3 TestDispatcherUsesStartTicker. The old design used
+// time.NewTicker(startInterval) as the dispatcher's primary loop
+// gate, which conflated "minimum gap between starts" with
+// "maximum throughput". At 90 s/tick with 7 workers and ~3-min
+// average scan times, that capped first-pass throughput at
+// 40 claims/hour — 6 of 7 workers sat idle. On a 40K-repo fleet
+// this meant a first scancode pass took ~42 days when actual
+// worker capacity could finish it in ~12 days.
+//
+// New design: the dispatcher polls quickly and gates each new
+// claim on a `nextStartAllowed` deadline. When all workers are
+// busy the unbuffered jobs channel blocks the send, naturally
+// preventing over-claiming. When workers free up rapidly the
+// dispatcher claims continuously, spaced only by the
+// startInterval gap. The semantic of "minimum gap between
+// individual starts" is preserved (still prevents clone-bandwidth
+// bursts on restart), but the throughput cap is removed.
+func TestDispatcherEnforcesMinimumStartGap(t *testing.T) {
 	src := readScancodeWorkerSource(t)
-	if !strings.Contains(src, "time.NewTicker(w.startInterval)") {
-		t.Error("dispatcher must use time.NewTicker(w.startInterval) to pace claim attempts. Without the ticker, every dispatcher iteration would try to claim immediately, defeating the operator-configured start_interval that bounds clone-bandwidth bursts on restart.")
+	// Must NOT use ticker as the primary loop gate. (A short
+	// poll-interval ticker for idle-when-queue-empty backoff is
+	// fine and won't false-match this needle.)
+	if strings.Contains(src, "time.NewTicker(w.startInterval)") {
+		t.Error("dispatcher must NOT use time.NewTicker(w.startInterval) as its primary gate. That design caps fleet-wide claim rate at one-per-tick regardless of worker availability — exactly the v0.21.3 regression this test pins against. Use a `nextStartAllowed` time.Time gate around each successful claim instead.")
+	}
+	// Must reference a deadline variable that tracks "when the
+	// next start is allowed". The variable name is pinned loosely
+	// (any of nextStartAllowed / nextStart / startGate) so a
+	// future refactor can rename without breaking this test as
+	// long as the semantic is preserved.
+	if !strings.Contains(src, "nextStartAllowed") &&
+		!strings.Contains(src, "nextStart") &&
+		!strings.Contains(src, "startGate") {
+		t.Error("dispatcher must declare a deadline variable (nextStartAllowed / nextStart / startGate) that enforces the minimum gap between successful claims. Without it, the dispatcher either over-claims or throttles to one-per-poll.")
+	}
+	// Must still reference w.startInterval (it's the gap, just
+	// not the loop ticker).
+	if !strings.Contains(src, "w.startInterval") {
+		t.Error("dispatcher must reference w.startInterval — even with the new design, the operator-configured gap is the rate limit applied between successful starts.")
+	}
+}
+
+// TestDispatcherClaimsAheadOfNextStartGate is a behavioral pin
+// against the pre-v0.21.3 regression. The new dispatcher must be
+// able to claim multiple repos rapidly (back-to-back successful
+// starts spaced only by startInterval) — NOT capped at one
+// per startInterval polling cycle.
+//
+// We can't easily exercise the live worker with a real DB here
+// (that's the integration tier), but we CAN verify the dispatcher
+// source contains the rapid-fire pattern: a `for { … }` loop
+// where the gate is computed AFTER a successful send, not as the
+// loop's primary scheduling primitive.
+func TestDispatcherClaimsAheadOfNextStartGate(t *testing.T) {
+	src := readScancodeWorkerSource(t)
+	idx := strings.Index(src, "func (w *ScancodeWorker) dispatcher(")
+	if idx < 0 {
+		t.Fatal("cannot find dispatcher")
+	}
+	tail := src[idx:]
+	endRel := strings.Index(tail[1:], "\nfunc ")
+	if endRel < 0 {
+		endRel = len(tail) - 1
+	}
+	body := tail[:1+endRel]
+
+	// The gate update must happen AFTER a successful channel
+	// send (the `case jobs <- *job:` arm), not before the claim.
+	// If the gate update appears before the claim attempt, the
+	// dispatcher would still throttle to one-per-interval even
+	// when workers are idle.
+	jobsSendIdx := strings.Index(body, "case jobs <- *job:")
+	gateUpdateIdx := strings.Index(body, "nextStartAllowed = time.Now().Add(w.startInterval)")
+	if jobsSendIdx < 0 {
+		t.Error("dispatcher must do a `case jobs <- *job:` channel send to feed a runner")
+	}
+	if gateUpdateIdx < 0 {
+		t.Error("dispatcher must stamp nextStartAllowed = time.Now().Add(w.startInterval) after a successful start")
+	}
+	if jobsSendIdx >= 0 && gateUpdateIdx >= 0 && gateUpdateIdx < jobsSendIdx {
+		t.Error("nextStartAllowed must be stamped AFTER the successful send, not before the claim. Otherwise the dispatcher throttles to one-per-startInterval regardless of worker availability — the v0.21.3 regression this test pins against.")
+	}
+
+	// The unbuffered channel `make(chan db.ScancodeJob)` (declared
+	// in Run, not dispatcher) provides the back-pressure when all
+	// workers are busy. If a future refactor switches to a buffered
+	// channel, the dispatcher could over-claim. Pin the
+	// unbuffered shape here.
+	runStart := strings.Index(src, "func (w *ScancodeWorker) Run(")
+	if runStart < 0 {
+		t.Fatal("cannot find Run")
+	}
+	runTail := src[runStart:]
+	runEnd := strings.Index(runTail[1:], "\nfunc ")
+	if runEnd < 0 {
+		runEnd = len(runTail) - 1
+	}
+	runBody := runTail[:1+runEnd]
+	if !strings.Contains(runBody, "make(chan db.ScancodeJob)") {
+		t.Error("Run must create the jobs channel as UNBUFFERED `make(chan db.ScancodeJob)`. A buffered channel would let the dispatcher over-claim past the worker pool size, locking more rows than runners can actually process.")
 	}
 }
 

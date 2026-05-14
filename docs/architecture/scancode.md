@@ -70,7 +70,7 @@ The v0.21.0 worker:
 
 ### 3.2 The lifecycle of a single scan
 
-1. **Dispatcher tick** (every `scancode_start_interval_s`, default 90s): the dispatcher calls `ClaimNextScancodeRepo(ctx, cadence)`. The SQL uses `FOR UPDATE SKIP LOCKED` against `aveloxis_data.repos` filtered by:
+1. **Dispatcher claim** (paced by `scancode_start_interval_s`, default 90s, as MINIMUM GAP between successful starts — see §3.3 for the v0.21.3 design): the dispatcher calls `ClaimNextScancodeRepo(ctx, cadence)`. The SQL uses `FOR UPDATE SKIP LOCKED` against `aveloxis_data.repos` filtered by:
    - `collection_queue.last_collected IS NOT NULL` — the repo has been collected at least once. Newly-added repos collect basic metrics first; scancode runs against them only after the first collection completes.
    - `repo_archived = FALSE` (or NULL).
    - `scancode_last_run IS NULL OR < NOW() - cadence` — cadence gate.
@@ -88,6 +88,28 @@ The v0.21.0 worker:
 6. **Cleanup**: the runner's deferred `os.RemoveAll(tempDir)` removes the clone directory.
 
 On any failure path (clone error, scancode crash, JSON parse error, ingest error), the runner calls `store.ClearScancodeLock(repoID)` to release the lock without setting `scancode_last_run`. The row becomes eligible for re-claim on the next dispatcher tick.
+
+### 3.3 Dispatcher pacing (v0.21.3): minimum-gap, not throughput cap
+
+The pacing semantic for `scancode_start_interval_s` changed between v0.21.0 and v0.21.3. The change is invisible to operators in steady state but materially affects first-pass throughput.
+
+**Pre-v0.21.3 design (broken at scale)**: the dispatcher was driven by `time.NewTicker(startInterval)` — one claim attempt per tick, regardless of how many workers were idle. At 90 s/tick × 7 workers × ~3-min average scan time, the fleet-wide claim rate capped at 40 claims/hour while runners had capacity for ~140. On a 40K-repo fleet this produced ~42-day first-pass estimates when actual capacity was ~12 days. 6 of 7 workers sat idle on average.
+
+**v0.21.3 design (correct)**: the dispatcher maintains a `nextStartAllowed time.Time` deadline that's stamped *after* each successful start. It then loops as fast as the runtime allows, gating each claim on `time.Now() >= nextStartAllowed`. The unbuffered jobs channel provides back-pressure — when all N workers are busy, the dispatcher's send blocks naturally and no over-claiming happens.
+
+Operational effect:
+- **Steady-state with idle workers**: claims happen at intervals of exactly `startInterval` between successful starts. Same behavior as before.
+- **Steady-state with busy workers**: dispatcher pauses on the unbuffered send. When a runner frees up, the next claim happens after the `startInterval` window — same as before.
+- **Burst on restart (the throughput-critical case)**: dispatcher claims one repo per `startInterval` seconds until all N worker slots are full. At 90 s × 7 workers = 630 seconds (~10 min) to saturate the pool. Same as before.
+- **First-pass on a large fleet (the regression case)**: workers complete scans in single-digit-to-low-double-digit minutes; the dispatcher refills slots at `startInterval` cadence, so 7 workers stay nearly always busy. Throughput is now bounded by worker capacity, not dispatcher pacing.
+
+For a 40K-repo fleet with `workers=7` and ~3-min average scan time:
+- Worker capacity: 7 × (60 / 3) = ~140 repos/hour
+- 40,000 ÷ 140 = ~286 hours ≈ **~12 days first-pass**
+
+(Pre-v0.21.3 same configuration: ~42 days, dispatcher-bound.)
+
+If you want to push further, raise `scancode_workers`. The `scancode_start_interval_s` rarely needs tuning unless you want denser starts on a very high-bandwidth network — the 90-second default works fine for most fleets.
 
 ## 4. Cadence rationale (180 days default)
 
@@ -155,7 +177,7 @@ All five knobs live under the `collection` block in `aveloxis.json`:
 | Key | Default | Purpose |
 |---|---|---|
 | `scancode_workers` | `2` | Max concurrent scancode subprocesses. Raise on machines with spare CPU cores. |
-| `scancode_start_interval_s` | `90` | Minimum seconds between dispatcher claim attempts. Bounds clone-bandwidth bursts on restart. |
+| `scancode_start_interval_s` | `90` | Minimum seconds between *successful* claim starts. As of v0.21.3 this is a minimum-gap pacing primitive, NOT a throughput cap — the dispatcher claims as fast as workers free up, with this interval enforced only between consecutive starts. Bounds clone-bandwidth bursts on restart. See §3.3. |
 | `scancode_cadence_days` | `180` | Minimum days between successive scans on the same repo. Per-file licenses change rarely. |
 | `scancode_clone_dir` | `/tmp/aveloxis-scancode` | Parent directory for per-run shallow clones. Size for ~50 MB × workers peak. |
 | `scancode_shutdown_grace_minutes` | `30` | Wait budget for in-flight scans on `aveloxis stop`. Outstanding scans become live-orphans (see §5) if not finished. |

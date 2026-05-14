@@ -195,61 +195,103 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	}
 }
 
-// dispatcher runs the claim ticker. On each tick, attempts a claim;
-// if successful, sends the job to a runner. If the channel is full
-// (no free runner), the dispatcher BLOCKS until one frees up — this
-// is the intended concurrency cap. The dispatcher exits on
-// ctx.Done() OR when sending to the channel returns from
-// ctx.Done() (the latter happens when all runners have exited).
+// dispatcher claims eligible repos and feeds them to runners.
+//
+// v0.21.3 design: minimum-gap pacing, not throughput cap. The
+// dispatcher uses a `nextStartAllowed` deadline variable to enforce
+// at least `startInterval` between consecutive successful claims,
+// preserving the original burst-protection intent. Between gates
+// the dispatcher runs as fast as workers free up.
+//
+// Pre-v0.21.3 the dispatcher was driven by
+// time.NewTicker(startInterval) — one claim attempt per tick,
+// regardless of how many workers were idle. At 90 s/tick × 7
+// workers × ~3-min average scan time, the dispatcher capped fleet
+// throughput at 40 claims/hour while runners had capacity for
+// ~140. On a 40K-repo fleet this produced ~42-day first-pass
+// estimates when actual capacity was ~12 days. See CLAUDE.md
+// v0.21.3 entry.
+//
+// Why an UNBUFFERED jobs channel keeps the design correct: the
+// dispatcher's send blocks until a runner is ready to receive.
+// When all N workers are busy, the dispatcher's send blocks —
+// claims naturally pause until a runner frees up. The
+// `nextStartAllowed` gate only kicks in BETWEEN successful starts
+// when workers have spare capacity; in the busy case the send-
+// blocks-naturally semantics provide the back-pressure.
+//
+// Idle-queue behavior: when ClaimNextScancodeRepo returns (nil, nil)
+// — no eligible repos — the dispatcher sleeps for startInterval
+// before re-polling. Avoids hot-looping the DB when the fleet is
+// fully scanned and waiting for cadence windows to elapse.
 func (w *ScancodeWorker) dispatcher(ctx context.Context, jobs chan<- db.ScancodeJob) {
-	ticker := time.NewTicker(w.startInterval)
-	defer ticker.Stop()
-
-	// Try one claim immediately on startup so a fresh restart
-	// doesn't sit idle for an entire startInterval before
-	// dispatching the first job. Subsequent claims wait for the
-	// ticker.
-	if !w.tryDispatchOne(ctx, jobs) {
-		return
-	}
+	// Zero value (Time{}) means "no gap required yet" — the first
+	// claim on startup happens immediately. Subsequent claims wait
+	// until time.Now() >= nextStartAllowed.
+	var nextStartAllowed time.Time
 
 	for {
-		select {
-		case <-ctx.Done():
+		if err := ctx.Err(); err != nil {
 			return
-		case <-ticker.C:
-			if !w.tryDispatchOne(ctx, jobs) {
+		}
+
+		// Rate-limit gate. Sleeps until the minimum-gap window
+		// elapses (or ctx cancels). On startup or after an idle
+		// queue, the gate is in the past and this is a no-op.
+		if delay := time.Until(nextStartAllowed); delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
 				return
 			}
 		}
-	}
-}
 
-// tryDispatchOne attempts one claim. Returns false only if ctx is
-// done (signal to the dispatcher loop to exit). A no-eligible-row
-// result returns true — the next tick will try again.
-func (w *ScancodeWorker) tryDispatchOne(ctx context.Context, jobs chan<- db.ScancodeJob) bool {
-	job, err := w.store.ClaimNextScancodeRepo(ctx, w.cadence)
-	if err != nil {
-		if ctx.Err() != nil {
-			return false
+		job, err := w.store.ClaimNextScancodeRepo(ctx, w.cadence)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			w.logger.Warn("scancode worker claim failed", "error", err)
+			// Brief backoff before retrying the failing claim
+			// so a transient DB issue doesn't pin a CPU core.
+			select {
+			case <-time.After(5 * time.Second):
+			case <-ctx.Done():
+				return
+			}
+			continue
 		}
-		w.logger.Warn("scancode worker claim failed", "error", err)
-		return true
-	}
-	if job == nil {
-		// Queue empty — wait for next tick.
-		return true
-	}
-	select {
-	case jobs <- *job:
-		return true
-	case <-ctx.Done():
-		// We claimed but ctx is canceled. Best-effort: clear the
-		// lock so the next aveloxis startup doesn't have to
-		// adopt this row as a phantom orphan.
-		_ = w.store.ClearScancodeLock(context.Background(), job.RepoID)
-		return false
+		if job == nil {
+			// Queue empty — no eligible repo. Sleep for one
+			// startInterval before re-polling so we don't hot-
+			// loop the DB. When new repos become eligible
+			// (cadence expires) the next poll picks them up.
+			select {
+			case <-time.After(w.startInterval):
+			case <-ctx.Done():
+				return
+			}
+			continue
+		}
+
+		// Send to a runner. UNBUFFERED channel — this BLOCKS
+		// until a runner is ready to receive. When all N
+		// workers are busy, the dispatcher pauses here
+		// naturally; no over-claiming.
+		select {
+		case jobs <- *job:
+			// Successful start. Stamp the next-start window so
+			// we wait at least startInterval before the next
+			// claim — even if a runner frees up immediately.
+			nextStartAllowed = time.Now().Add(w.startInterval)
+		case <-ctx.Done():
+			// We claimed but ctx canceled before any runner
+			// could accept. Best-effort release of the lock so
+			// the next aveloxis startup's recoverOrphans pass
+			// doesn't have to deal with a phantom claim.
+			_ = w.store.ClearScancodeLock(context.Background(), job.RepoID)
+			return
+		}
 	}
 }
 

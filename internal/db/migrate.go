@@ -177,6 +177,40 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// the worker kept reselecting the same dead-end users.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "cntrb_last_breadth_at", "TIMESTAMPTZ")
 
+	// v0.21.0 — ScancodeWorker state on aveloxis_data.repos.
+	//
+	// Decouples the scancode per-file license + copyright + package
+	// scan from the per-repo collection pipeline. Pre-v0.21.0, scancode
+	// ran inside AnalysisCollector.AnalyzeRepo gated by a 2-slot
+	// package-level semaphore. The 2026-05-14 production incident
+	// (177 of 180 worker goroutines parked at scancode.go:114 for
+	// 7+ hours, queue depth growing monotonically) showed that semaphore
+	// shape doesn't survive fleet-scale operation. The ScancodeWorker
+	// pool runs in its own goroutines, claims eligible repos via the
+	// claim SQL below, and never blocks the main collection cycle.
+	//
+	// Six new columns. scancode_last_run + scancode_version capture
+	// completion state. scancode_locked_at + scancode_locked_pid +
+	// scancode_locked_boot_id capture in-flight state across restarts
+	// — the boot_id field is the kernel boot UUID from
+	// /proc/sys/kernel/random/boot_id, paired with the OS PID so the
+	// worker's recovery logic can distinguish "scan still running as
+	// orphan after aveloxis crashed" from "scan died, PID was reused
+	// by an unrelated process after reboot". scancode_output_path
+	// records where the subprocess writes results.json so the
+	// recovery monitor knows where to look when it observes the
+	// orphan exit.
+	//
+	// Full lock state machine — including the four post-restart states
+	// (reboot survivor, live orphan, recoverable corpse, lost run) —
+	// is documented in docs/architecture/scancode.md.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_last_run", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_version", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_locked_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_locked_pid", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_locked_boot_id", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_output_path", "TEXT")
+
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection
 	// created duplicate rows. Clean up first, then create the unique index.
@@ -236,6 +270,25 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		"aveloxis_data", "idx_contributors_gh_login",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_gh_login
 		ON aveloxis_data.contributors (gh_login) WHERE gh_login != ''`)
+
+	// v0.21.0 — ScancodeWorker claim-query index.
+	//
+	// The worker runs a claim query roughly every
+	// collection.scancode_start_interval_s seconds (default 90),
+	// against ALL repos. Without an index the planner falls back to a
+	// sequential scan of repos every claim — at fleet scale that's
+	// hundreds of thousands of rows examined per minute, all
+	// returning the same eligible head.
+	//
+	// Partial: WHERE COALESCE(repo_archived, FALSE) = FALSE excludes
+	// repos whose owning org marked them as archived (we never scan
+	// those). NULLS FIRST on scancode_last_run sorts never-scanned
+	// repos to the front, mirroring the claim query's ORDER BY.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs,
+		"aveloxis_data", "idx_repos_scancode_due",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_scancode_due
+		ON aveloxis_data.repos (scancode_last_run NULLS FIRST)
+		WHERE COALESCE(repo_archived, FALSE) = FALSE`)
 
 	// collection_queue.last_commits backfill (v0.19.11). Pre-v0.19.11
 	// the FacadeCollector incremented result.Commits once per inserted
@@ -376,6 +429,40 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		    force_full_collect = FALSE
 		WHERE last_commits > 0
 		  AND last_error LIKE 'no data collected%'`)
+
+	// v0.21.0 backfill scancode_last_run from aveloxis_scan.scancode_scans.
+	//
+	// Pre-v0.21.0 scancode results were tracked exclusively via the
+	// aveloxis_scan.scancode_scans rows (one per scan run, with a
+	// created_at timestamp). The v0.21.0 ScancodeWorker reads its
+	// cadence gate off aveloxis_data.repos.scancode_last_run instead;
+	// this backfill seeds that column from the existing scancode_scans
+	// history so repos already scanned in the past 6 months don't all
+	// re-scan on first v0.21.0 startup. Repos with no prior scan stay
+	// at NULL and sort to the front of the worker's claim queue
+	// naturally.
+	//
+	// The ARRAY_AGG(... ORDER BY created_at DESC)[1] picks the
+	// scancode_version from the most-recent scan in case different
+	// versions ran historically.
+	//
+	// Idempotent: WHERE r.scancode_last_run IS NULL on the outer
+	// UPDATE means a second migrate run is a no-op once backfill
+	// completes. Wrapped in execMigrationStep per the v0.19.4
+	// fail-closed contract.
+	execMigrationStep(ctx, pg, logger, &errs, "v0.21.0 backfill scancode_last_run from aveloxis_scan.scancode_scans",
+		`UPDATE aveloxis_data.repos r
+		SET scancode_last_run = sub.last_at,
+		    scancode_version = sub.last_version
+		FROM (
+		    SELECT repo_id,
+		           MAX(created_at) AS last_at,
+		           (ARRAY_AGG(scancode_version ORDER BY created_at DESC))[1] AS last_version
+		    FROM aveloxis_scan.scancode_scans
+		    GROUP BY repo_id
+		) sub
+		WHERE r.repo_id = sub.repo_id
+		  AND r.scancode_last_run IS NULL`)
 
 	// Users table: dedupe + enforce PK/UNIQUE (v0.18.9).
 	// Older installs used CREATE TABLE IF NOT EXISTS with inline UNIQUE, which

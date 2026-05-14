@@ -39,7 +39,12 @@
     "breadth_interval_minutes": 15,
     "breadth_batch_size": 2000,
     "breadth_cooldown_days": 7,
-    "shutdown_grace_seconds": 10
+    "shutdown_grace_seconds": 10,
+    "scancode_workers": 2,
+    "scancode_start_interval_s": 90,
+    "scancode_cadence_days": 180,
+    "scancode_clone_dir": "/tmp/aveloxis-scancode",
+    "scancode_shutdown_grace_minutes": 30
   },
   "web": {
     "addr": ":8082",

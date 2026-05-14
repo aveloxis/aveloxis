@@ -44,6 +44,39 @@ func (s *PostgresStore) ScancodeLastRun(ctx context.Context, repoID int64) (time
 	return t, nil
 }
 
+// ScancodeFreshness returns the v0.21.0 scancode_last_run timestamp
+// and scancode_version string off aveloxis_data.repos. Both values
+// are NULL-tolerant: a repo with no scancode_last_run returns
+// (zero-time, "", nil) — the API surfaces "not yet run" to the
+// user instead of an error.
+//
+// Reads from aveloxis_data.repos (NOT aveloxis_scan.scancode_scans)
+// because the ScancodeWorker writes the freshness columns
+// atomically alongside the scan inserts in MarkScancodeComplete.
+// This gives a single source of truth for "when did this repo last
+// successfully complete scancode" that the dashboard can rely on
+// without joining scancode_scans + max(date) on every render.
+func (s *PostgresStore) ScancodeFreshness(ctx context.Context, repoID int64) (time.Time, string, error) {
+	var lastRun *time.Time
+	var version *string
+	err := s.pool.QueryRow(ctx, `
+		SELECT scancode_last_run, scancode_version
+		FROM aveloxis_data.repos
+		WHERE repo_id = $1`, repoID).Scan(&lastRun, &version)
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	var t time.Time
+	if lastRun != nil {
+		t = *lastRun
+	}
+	var v string
+	if version != nil {
+		v = *version
+	}
+	return t, v, nil
+}
+
 // InsertScancodeScan inserts a scan metadata row and returns the scan_id.
 func (s *PostgresStore) InsertScancodeScan(ctx context.Context, repoID int64, scancodeVersion string, filesScanned, filesWithFindings int, durationSecs float64, scanErrors json.RawMessage) (int64, error) {
 	var scanID int64

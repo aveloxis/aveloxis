@@ -272,6 +272,82 @@ type CollectionConfig struct {
 	// abort mid-flight (Postgres rolls them back; safe but log-noisy);
 	// too high means a slow shutdown. 10 seconds matches the pollInterval.
 	ShutdownGraceSeconds int `json:"shutdown_grace_seconds"`
+
+	// v0.21.0 — Scancode is now run by a dedicated ScancodeWorker pool
+	// rather than inline in AnalysisCollector.AnalyzeRepo. The 2026-05-14
+	// production incident showed that gating scancode behind a 2-slot
+	// package-level semaphore at fleet scale parked 177 of 180 collection
+	// workers behind the queue for 7+ hours. The decoupled pool runs in
+	// its own goroutines, never blocks the main collection cycle, and
+	// re-clones repos shallowly on demand so scancode runs are
+	// independent of facade/analysis state.
+	//
+	// ScancodeWorkers is the maximum concurrent scancode invocations.
+	// Default 2 when unset — matches pre-v0.21.0 concurrency so
+	// operators upgrading don't see a sudden change in scancode CPU
+	// load. Operators on machines with spare CPU cores should raise
+	// this (operator running aveloxis_large at 64 cores has tested 12
+	// without issues).
+	ScancodeWorkers int `json:"scancode_workers"`
+
+	// ScancodeStartIntervalSec is the minimum time between consecutive
+	// scancode CLAIM operations. Default 90 seconds when unset.
+	// Different from the inter-completion time: the ticker fires every
+	// 90s and the dispatcher attempts a new claim. If no slot is free
+	// the tick is a no-op; if one is free the claim happens.
+	//
+	// Pacing reasoning: each scancode start triggers a shallow git
+	// clone followed by a scancode invocation. The 90s gate prevents
+	// new clones from bursting the network/disk when the operator
+	// wakes a freshly-restarted aveloxis serve with hundreds of
+	// eligible repos.
+	ScancodeStartIntervalSec int `json:"scancode_start_interval_s"`
+
+	// ScancodeCadenceDays is the minimum interval between successive
+	// scancode runs on the same repo. Default 180 days (6 months) when
+	// unset. Pre-v0.21.0 was 30 days; the change reflects that
+	// per-file license + copyright headers in source files change
+	// rarely on the timescale we care about, and the I/O cost of
+	// scanning a Linux-kernel-scale mirror doesn't justify monthly
+	// re-scans.
+	//
+	// Dependency-level licenses (which DO change as packages are
+	// updated) still flow through the per-cycle Phase 4 dependency
+	// scan + Phase 6 SBOM generation; scancode is specifically the
+	// per-source-file scan and benefits from a longer cadence.
+	ScancodeCadenceDays int `json:"scancode_cadence_days"`
+
+	// ScancodeCloneDir is the parent directory for the per-run
+	// shallow clones the ScancodeWorker creates. Each scan creates
+	// <ScancodeCloneDir>/repo_<id>_<unix_ts> and removes it on
+	// completion (success or failure). Default
+	// "/tmp/aveloxis-scancode" when unset.
+	//
+	// Disk-space budget: each clone is the working tree only
+	// (`git clone --depth 1`), so size ≈ checked-out repo size. With
+	// the default 2 workers and average ~50 MB clones, ~100 MB peak.
+	// On a fleet with 12 workers and Linux-kernel-scale repos, peak
+	// can reach several GB; size /tmp accordingly or set
+	// scancode_clone_dir to a dedicated mount.
+	ScancodeCloneDir string `json:"scancode_clone_dir"`
+
+	// ScancodeShutdownGraceMinutes caps how long the ScancodeWorker
+	// waits for in-flight scans to finish on aveloxis stop. Default
+	// 30 minutes when unset.
+	//
+	// Within the grace window: runners complete their scans naturally
+	// (parsing scancode JSON output, writing results to the DB,
+	// clearing lock columns). At grace expiry: the worker calls
+	// cmd.Process.Kill() on the still-running scancode subprocess,
+	// which causes cmd.Wait() to return with an error, which triggers
+	// the runner's lock-clear path. No orphaned scans from graceful
+	// shutdown.
+	//
+	// Separate from collection.shutdown_grace_seconds (which paces
+	// the main scheduler's stop). 30 min is much longer than 10s
+	// because scancode runs are intrinsically long-running on big
+	// repos and you usually want them to finish if they're close.
+	ScancodeShutdownGraceMinutes int `json:"scancode_shutdown_grace_minutes"`
 }
 
 // EnrichIntervalDuration converts EnrichIntervalMinutes to a time.Duration.
@@ -337,6 +413,60 @@ func (c *CollectionConfig) BreadthCooldownDuration() time.Duration {
 		return 7 * 24 * time.Hour
 	}
 	return time.Duration(c.BreadthCooldownDays) * 24 * time.Hour
+}
+
+// defaultScancodeCloneDir returns the default scancode clone parent
+// directory. Kept as a function (not a constant) so unit tests can
+// adjust on OSes where /tmp is unconventional. Mirrors the pattern in
+// defaultCloneDir for the main collection clone directory.
+func defaultScancodeCloneDir() string {
+	return "/tmp/aveloxis-scancode"
+}
+
+// ScancodeWorkersOrDefault returns ScancodeWorkers or 2 when unset
+// (v0.21.0). Default 2 matches pre-v0.21.0 hardcoded concurrency. See
+// CollectionConfig.ScancodeWorkers for the tuning rationale.
+func (c *CollectionConfig) ScancodeWorkersOrDefault() int {
+	if c.ScancodeWorkers <= 0 {
+		return 2
+	}
+	return c.ScancodeWorkers
+}
+
+// ScancodeStartInterval converts ScancodeStartIntervalSec to a
+// time.Duration. Falls back to 90 seconds when unset.
+func (c *CollectionConfig) ScancodeStartInterval() time.Duration {
+	if c.ScancodeStartIntervalSec <= 0 {
+		return 90 * time.Second
+	}
+	return time.Duration(c.ScancodeStartIntervalSec) * time.Second
+}
+
+// ScancodeCadence converts ScancodeCadenceDays to a time.Duration.
+// Falls back to 180 days (6 months) when unset.
+func (c *CollectionConfig) ScancodeCadence() time.Duration {
+	if c.ScancodeCadenceDays <= 0 {
+		return 180 * 24 * time.Hour
+	}
+	return time.Duration(c.ScancodeCadenceDays) * 24 * time.Hour
+}
+
+// ScancodeCloneDirOrDefault returns ScancodeCloneDir or the default
+// "/tmp/aveloxis-scancode" when unset.
+func (c *CollectionConfig) ScancodeCloneDirOrDefault() string {
+	if c.ScancodeCloneDir == "" {
+		return defaultScancodeCloneDir()
+	}
+	return c.ScancodeCloneDir
+}
+
+// ScancodeShutdownGrace converts ScancodeShutdownGraceMinutes to a
+// time.Duration. Falls back to 30 minutes when unset.
+func (c *CollectionConfig) ScancodeShutdownGrace() time.Duration {
+	if c.ScancodeShutdownGraceMinutes <= 0 {
+		return 30 * time.Minute
+	}
+	return time.Duration(c.ScancodeShutdownGraceMinutes) * time.Minute
 }
 
 // MailConfig configures the Gmail-backed transactional mailer
@@ -442,6 +572,13 @@ func DefaultConfig() *Config {
 			ListingMode:             "rest",
 			ThreadingMode:           "single",
 			ShardSize:               3000,
+			// v0.21.0 ScancodeWorker defaults — see CollectionConfig
+			// field docs for the full rationale.
+			ScancodeWorkers:              2,
+			ScancodeStartIntervalSec:     90,
+			ScancodeCadenceDays:          180,
+			ScancodeCloneDir:             defaultScancodeCloneDir(),
+			ScancodeShutdownGraceMinutes: 30,
 		},
 		LogLevel: "info",
 	}

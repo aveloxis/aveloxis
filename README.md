@@ -341,7 +341,7 @@ aveloxis start serve
 
 Create `aveloxis.json` (or copy from `aveloxis.example.json`).
 
-**The canonical reference for every supported `aveloxis.json` field** lives at [`docs/getting-started/configuration.md`](./docs/getting-started/configuration.md) (also rendered at the ReadTheDocs site). That document has the full table — 6 top-level sections, 29 fields — including all the v0.18.x REST→GraphQL options (`pr_child_mode`, `listing_mode`, `threading_mode`, `shard_size`), the v0.18.29+ periodic-task cadence knobs (`enrich_interval_minutes`, `search_resolve_interval_minutes`, `affiliation_interval_minutes`), v0.20.0's `shutdown_grace_seconds`, and the v0.19.0 Gmail-SMTP `mail` block.
+**The canonical reference for every supported `aveloxis.json` field** lives at [`docs/getting-started/configuration.md`](./docs/getting-started/configuration.md) (also rendered at the ReadTheDocs site). That document has the full table — 6 top-level sections, 34 fields — including all the v0.18.x REST→GraphQL options (`pr_child_mode`, `listing_mode`, `threading_mode`, `shard_size`), the v0.18.29+ periodic-task cadence knobs (`enrich_interval_minutes`, `search_resolve_interval_minutes`, `affiliation_interval_minutes`), v0.20.0's `shutdown_grace_seconds`, v0.21.0's decoupled scancode worker (`scancode_workers`, `scancode_cadence_days`, `scancode_start_interval_s`, `scancode_clone_dir`, `scancode_shutdown_grace_minutes` — see [`docs/architecture/scancode.md`](./docs/architecture/scancode.md) for the design), and the v0.19.0 Gmail-SMTP `mail` block.
 
 A minimal example to get started; see `aveloxis.example.json` for an all-fields template and the doc above for the full reference:
 

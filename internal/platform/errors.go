@@ -154,8 +154,11 @@ func ClassifyError(err error) ErrorClass {
 		errors.Is(err, ErrForbidden),
 		errors.Is(err, ErrGone),
 		errors.Is(err, ErrNoContent),
+		errors.Is(err, ErrPaginationLimitExceeded),
 		errors.Is(err, ErrWrongEntityKind):
 		return ClassSkip
+	case errors.Is(err, ErrTransient):
+		return ClassTransient
 	case errors.Is(err, ErrAllKeysInvalidated):
 		return ClassAuth
 	}

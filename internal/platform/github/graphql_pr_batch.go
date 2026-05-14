@@ -114,13 +114,40 @@ func (c *Client) fetchPRBatchWithSubdivide(ctx context.Context, owner, repo stri
 	}
 
 	if len(numbers) <= 1 {
-		// Already minimal — nothing left to subdivide. Bubble the
-		// error so the caller (and Fix A's outcome plumbing) records
-		// the failure cleanly.
-		c.logger.Warn("PR batch retry exhausted at size 1",
+		// Already minimal — subdivision can't go further.
+		//
+		// v0.20.20 (Fix L): before bubbling, fall back to a
+		// per-PR REST fetch. Production diagnostic on
+		// 2026-05-13 attributed the dominant 502-after-retries
+		// pattern to PRs with 60K+ character bodies tripping
+		// GitHub's GraphQL 10-second gateway timeout. The REST
+		// API streams list results sequentially and isn't
+		// subject to the same aggregation timeout, so the same
+		// PR fetched as 8 individual REST calls (PR + 7 child
+		// connections + comments) typically succeeds.
+		//
+		// Only fires when the original GraphQL error
+		// classified as ClassTransient/ClassRateLimit (the
+		// outer switch above already enforced that), so we're
+		// not throwing REST budget at fundamentally-broken
+		// queries.
+		c.logger.Warn("PR batch GraphQL exhausted at size 1 — falling back to REST",
 			"owner", owner, "repo", repo,
-			"pr_number", numbers[0], "error", err)
-		return nil, err
+			"pr_number", numbers[0], "graphql_error", err)
+		restBatch, restErr := c.fetchPRBatchOneREST(ctx, owner, repo, numbers)
+		if restErr == nil {
+			c.logger.Info("REST fallback succeeded for huge-body PR",
+				"owner", owner, "repo", repo, "pr_number", numbers[0])
+			return restBatch, nil
+		}
+		c.logger.Warn("REST fallback also failed for PR",
+			"owner", owner, "repo", repo,
+			"pr_number", numbers[0],
+			"rest_error", restErr, "original_graphql_error", err)
+		// Return whatever REST partial we got (may be empty),
+		// bubble the original GraphQL error so Fix A's
+		// outcome plumbing fires force_full_collect.
+		return restBatch, err
 	}
 
 	mid := len(numbers) / 2
@@ -146,6 +173,117 @@ func (c *Client) fetchPRBatchWithSubdivide(ctx context.Context, owner, repo stri
 	}
 	if rightErr != nil {
 		return out, rightErr
+	}
+	return out, nil
+}
+
+// fetchPRBatchOneREST is the v0.20.20 (Fix L) REST fallback
+// invoked by fetchPRBatchWithSubdivide at size 1 — i.e., when
+// the GraphQL path can't reduce the batch any further but the
+// single remaining PR still trips a transient classification
+// (typically 502 from GitHub's 10-second gateway timeout on
+// PRs with 60K+ character bodies).
+//
+// Composes the existing platform-level REST methods that
+// CLAUDE.md's "What stays forever" section explicitly
+// preserves for this purpose: FetchPRByNumber + the seven
+// child-list iterators + FetchPRMeta + FetchPRRepos +
+// ListCommentsForPR. The returned StagedPR has the same shape
+// as a successful GraphQL batch so the staging pipeline and
+// processor can't tell which path filled it in.
+//
+// ListCommentsForPR is the load-bearing extra: in
+// full-GraphQL mode (pr_child_mode=graphql AND
+// listing_mode=graphql) the collector's collectMessages
+// SKIPS the repo-wide /issues/comments REST iterator
+// entirely via the v0.18.5 fullGraphQLMode gate. The inline
+// comments delivered by the prNodeFragment.comments
+// connection are the only conversation-comment source. If the
+// REST fallback didn't fetch them per-PR, the rescued PR
+// would land with zero conversation comments. ListReviewComments
+// (inline diff comments) always runs from REST regardless of
+// mode, so those are already covered without an explicit call
+// here.
+func (c *Client) fetchPRBatchOneREST(ctx context.Context, owner, repo string, numbers []int) ([]StagedPR, error) {
+	out := make([]StagedPR, 0, len(numbers))
+	for _, num := range numbers {
+		pr, err := c.FetchPRByNumber(ctx, owner, repo, num)
+		if err != nil {
+			// On REST-side skip (404 — PR deleted between
+			// enumeration and now), drop the PR silently
+			// matching the GraphQL null-alias semantics in
+			// fetchPRBatchOne. On anything else (rate limit,
+			// transient, fatal), bubble.
+			class := platform.ClassifyError(err)
+			if class == platform.ClassSkip || class == platform.ClassNotModified {
+				continue
+			}
+			return out, fmt.Errorf("REST fallback PR #%d: %w", num, err)
+		}
+		envelope := StagedPR{PR: *pr}
+
+		// Children — each iterator is per-PR and bounded.
+		// On per-page error inside an iterator, the loop
+		// breaks (matches the gap-fill REST branch's existing
+		// pattern). Partial children are preferable to losing
+		// the whole rescued PR.
+		for label, lerr := range c.ListPRLabels(ctx, owner, repo, num) {
+			if lerr != nil {
+				break
+			}
+			envelope.Labels = append(envelope.Labels, label)
+		}
+		for assignee, aerr := range c.ListPRAssignees(ctx, owner, repo, num) {
+			if aerr != nil {
+				break
+			}
+			envelope.Assignees = append(envelope.Assignees, assignee)
+		}
+		for reviewer, rerr := range c.ListPRReviewers(ctx, owner, repo, num) {
+			if rerr != nil {
+				break
+			}
+			envelope.Reviewers = append(envelope.Reviewers, reviewer)
+		}
+		for review, rerr := range c.ListPRReviews(ctx, owner, repo, num) {
+			if rerr != nil {
+				break
+			}
+			envelope.Reviews = append(envelope.Reviews, review)
+		}
+		for commit, cerr := range c.ListPRCommits(ctx, owner, repo, num) {
+			if cerr != nil {
+				break
+			}
+			envelope.Commits = append(envelope.Commits, commit)
+		}
+		for file, ferr := range c.ListPRFiles(ctx, owner, repo, num) {
+			if ferr != nil {
+				break
+			}
+			envelope.Files = append(envelope.Files, file)
+		}
+		if head, base, merr := c.FetchPRMeta(ctx, owner, repo, num); merr == nil {
+			envelope.MetaHead = head
+			envelope.MetaBase = base
+		}
+		if headRepo, baseRepo, rerr := c.FetchPRRepos(ctx, owner, repo, num); rerr == nil {
+			envelope.RepoHead = headRepo
+			envelope.RepoBase = baseRepo
+		}
+
+		// Conversation comments — see function docstring for
+		// why this is required in full-GraphQL mode. The
+		// per-page error semantics match the children: break
+		// and keep what we have.
+		for cref, cerr := range c.ListCommentsForPR(ctx, owner, repo, num) {
+			if cerr != nil {
+				break
+			}
+			envelope.Comments = append(envelope.Comments, cref)
+		}
+
+		out = append(out, envelope)
 	}
 	return out, nil
 }

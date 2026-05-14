@@ -56,6 +56,38 @@ var ErrGone = errors.New("gone")
 // unique repos = ~5.3h of wasted wall-clock per cycle.
 var ErrNoContent = errors.New("no content (204)")
 
+// ErrTransient marks the "exhausted N retries" errors that
+// HTTPClient.Get and HTTPClient.GraphQL emit after their inner
+// retry loops give up. Added v0.20.19 (Fix J). Pre-fix these
+// errors were plain fmt.Errorf strings with no sentinel, so
+// platform.ClassifyError fell through to ClassFatal — making
+// the v0.20.8 sub-batch retry path (fetchPRBatchWithSubdivide
+// in internal/platform/github/graphql_pr_batch.go) bypass
+// subdivision entirely on the dominant production failure
+// mode. Production diagnostic on 2026-05-13: 6 of 7 stuck
+// repos had last_error starting with "graphql PR batch:
+// graphql: exhausted 10 retries for https://api.github.com/
+// graphql" and were looping indefinitely via v0.20.5's
+// force_full_collect path. With the sentinel, ClassifyError
+// returns ClassTransient and Fix C's subdivision actually
+// fires — halving the batch until it's small enough to fit
+// inside what GitHub will serve.
+var ErrTransient = errors.New("transient (retries exhausted)")
+
+// ErrPaginationLimitExceeded marks GitHub's hard cap on
+// certain endpoints' result count (notably /releases). Past
+// roughly 1000 results, GitHub returns HTTP 422 with body
+// "Only the first 1000 are available." Pre-v0.20.19 the
+// HTTPClient treated 422 as a fatal "unprocessable entity"
+// error and killed the entire collection job. Production
+// diagnostic on 2026-05-13: Azure/azure-sdk-for-java had
+// last_error = "releases: unprocessable entity:
+// .../releases?per_page=100&page=101" for this reason.
+// Classified as ClassSkip — same semantic as 304/204:
+// "no more data to fetch here." The paginator stops iterating
+// cleanly without bubbling an error.
+var ErrPaginationLimitExceeded = errors.New("pagination limit exceeded (GitHub serves at most 1000 results)")
+
 // maxRedirectHops caps how many 301/302/307/308 follows a single Get call
 // will perform before giving up. GitHub's best-practices guide says to
 // always follow redirects; this cap protects against pathological chains
@@ -353,11 +385,25 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 				"url", url, "status", 400, "body_snippet", truncateBody(string(body), 200))
 			return nil, fmt.Errorf("bad request: %s", url)
 		case resp.StatusCode == http.StatusUnprocessableEntity:
-			// 422 = validation failed. Also not retryable.
+			// 422 = validation failed. Not retryable for the same
+			// request shape. v0.20.19 (Fix K) carves out one
+			// subtype: GitHub's hard pagination cap (~1000
+			// results on /releases and similar) returns 422 with
+			// a body containing "Only the first 1000 are
+			// available" or "Only the first 1000 results are
+			// available." That's end-of-data, not a fatal
+			// validation problem — the paginator should stop
+			// cleanly via the ClassSkip path.
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			bodyStr := string(body)
+			if strings.Contains(bodyStr, "Only the first 1000") {
+				c.logger.Info("pagination limit reached (GitHub serves at most 1000 results)",
+					"url", url, "body_snippet", truncateBody(bodyStr, 200))
+				return nil, fmt.Errorf("%w: %s", ErrPaginationLimitExceeded, url)
+			}
 			c.logger.Warn("unprocessable entity (not retrying)",
-				"url", url, "status", 422, "body_snippet", truncateBody(string(body), 200))
+				"url", url, "status", 422, "body_snippet", truncateBody(bodyStr, 200))
 			return nil, fmt.Errorf("unprocessable entity: %s", url)
 		case resp.StatusCode == http.StatusForbidden:
 			// 403 can mean rate limit, secondary rate limit, or resource not
@@ -465,7 +511,12 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		}
 	}
 
-	return nil, fmt.Errorf("exhausted %d retries for %s", maxRetries, url)
+	// v0.20.19 (Fix J): wrap with ErrTransient so
+	// platform.ClassifyError returns ClassTransient instead of
+	// ClassFatal. Callers can then make informed retry/skip
+	// decisions (e.g. fetchPRBatchWithSubdivide subdivides
+	// the batch on transient classifications).
+	return nil, fmt.Errorf("exhausted %d retries for %s: %w", maxRetries, url, ErrTransient)
 }
 
 // GetJSON performs a GET and decodes the response JSON into dest.
@@ -528,6 +579,15 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				// to the caller, who would treat the error as a fatal
 				// "exhausted retries" equivalent.
 				if errors.Is(err, ErrNoContent) {
+					return
+				}
+				// v0.20.19 (Fix K): GitHub's hard 1000-result
+				// pagination cap on /releases and similar
+				// endpoints returns 422 with body "Only the
+				// first 1000 are available." End the iteration
+				// cleanly with whatever pages we've already
+				// yielded — no error surfaced to the caller.
+				if errors.Is(err, ErrPaginationLimitExceeded) {
 					return
 				}
 				var zero T

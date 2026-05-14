@@ -116,10 +116,17 @@ type WebConfig struct {
 }
 
 // CollectionConfig controls collection behavior.
+//
+// Note (v0.20.18): the former BatchSize / "batch_size" field was
+// removed here. It defaulted to 1000 but no production code
+// ever read it — operators tuning it saw no behavior change.
+// The actual batch sizes in the system are hardcoded constants
+// (stagingFlushSize = 500 in internal/db/staging.go, prBatchSize
+// = 10 in internal/platform/github/graphql_pr_batch.go, etc.).
+// If a tunable knob is genuinely needed later, add it with a
+// name that says what it controls (e.g. "staging_flush_size")
+// and wire it through to the actual consumer.
 type CollectionConfig struct {
-	// BatchSize is the number of items to insert per database batch.
-	BatchSize int `json:"batch_size"`
-
 	// DaysUntilRecollect is how many days before re-collecting a repo.
 	DaysUntilRecollect int `json:"days_until_recollect"`
 
@@ -426,7 +433,6 @@ func DefaultConfig() *Config {
 			APIInternalURL: "http://127.0.0.1:8383",
 		},
 		Collection: CollectionConfig{
-			BatchSize:               1000,
 			DaysUntilRecollect:      1,
 			Workers:                 12,
 			RepoCloneDir:            defaultCloneDir(),

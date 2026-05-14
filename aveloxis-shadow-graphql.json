@@ -17,7 +17,6 @@
     "gitlab_hosts": []
   },
   "collection": {
-    "batch_size": 500,
     "days_until_recollect": 6,
     "workers": 40,
     "force_full": false,

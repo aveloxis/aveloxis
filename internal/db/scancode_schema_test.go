@@ -112,7 +112,14 @@ func TestMigrationBackfillsFromScancodeScans(t *testing.T) {
 	for _, needle := range []string{
 		"v0.21.0 backfill scancode_last_run from aveloxis_scan.scancode_scans",
 		"aveloxis_scan.scancode_scans",
-		"MAX(created_at)",
+		// aveloxis_scan.scancode_scans uses data_collection_date,
+		// NOT created_at — that's the convention across the
+		// scan-related tables. A prior draft of this test pinned
+		// MAX(created_at), which silently passed the source-grep
+		// test but failed in production with SQLSTATE 42703. The
+		// test now pins the actual column name so any future
+		// refactor that re-introduces the wrong column fails CI.
+		"MAX(data_collection_date)",
 		"r.scancode_last_run IS NULL",
 	} {
 		if !strings.Contains(src, needle) {

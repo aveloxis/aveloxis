@@ -232,12 +232,31 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 		s.logger.Warn("failed to get scancode copyrights", "repo_id", repoID, "error", err)
 	}
 
+	// v0.21.0 — Freshness fields surface the cadence/run state of
+	// the decoupled ScancodeWorker. Web UI uses these to render
+	// "Last run YYYY-MM-DD" above the per-file table. NULL
+	// last_run on the repos row means scancode hasn't yet run for
+	// this repo and the dashboard should say "Not yet run" instead
+	// of "Loading...".
+	lastRun, scancodeVer, err := s.store.ScancodeFreshness(r.Context(), repoID)
+	if err != nil {
+		s.logger.Warn("failed to get scancode freshness", "repo_id", repoID, "error", err)
+	}
+	var lastRunStr string
+	if !lastRun.IsZero() {
+		lastRunStr = lastRun.UTC().Format("2006-01-02")
+	}
+
 	resp := struct {
-		Licenses   []db.ScancodeSourceLicense   `json:"licenses"`
-		Copyrights []db.ScancodeSourceCopyright `json:"copyrights"`
+		Licenses        []db.ScancodeSourceLicense   `json:"licenses"`
+		Copyrights      []db.ScancodeSourceCopyright `json:"copyrights"`
+		LastRun         string                       `json:"last_run"`
+		ScancodeVersion string                       `json:"scancode_version"`
 	}{
-		Licenses:   licenses,
-		Copyrights: copyrights,
+		Licenses:        licenses,
+		Copyrights:      copyrights,
+		LastRun:         lastRunStr,
+		ScancodeVersion: scancodeVer,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

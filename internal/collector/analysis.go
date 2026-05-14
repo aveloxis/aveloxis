@@ -118,12 +118,18 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 		result.Errors = append(result.Errors, fmt.Errorf("scc: %w", err))
 	}
 
-	// Phase 4: ScanCode — license, copyright, and package detection (if installed).
-	// Runs every 30 days per repo. Skipped if scancode is not installed or if
-	// the last scan was recent.
-	if err := ac.scanScanCode(ctx, repoID, workDir, result); err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("scancode: %w", err))
-	}
+	// Phase 4: ScanCode removed from the analysis pipeline in v0.21.0.
+	// Scancode is now run by a dedicated ScancodeWorker pool in
+	// internal/collector/scancode_worker.go, claimed via FOR UPDATE
+	// SKIP LOCKED against aveloxis_data.repos, paced by
+	// collection.scancode_start_interval_s, and run with a
+	// configurable cadence of (default) 180 days. The 2026-05-14
+	// production incident showed that running scancode inline here
+	// with a 2-slot semaphore parked 177 of 180 collection workers
+	// for 7+ hours. Do NOT put scancode back on this path — see
+	// docs/architecture/scancode.md for the architectural rationale
+	// and TestAnalyzeRepoNoLongerInvokesScancode for the regression
+	// guard.
 
 	// When RetainClone is true, hand the clone path to the caller for
 	// post-analysis work (e.g., local scorecard execution).
@@ -3012,16 +3018,8 @@ func ListRepoFiles(ctx context.Context, barePath string) ([]string, error) {
 	return files, scanner.Err()
 }
 
-// scanScanCode runs ScanCode Toolkit for per-file license and copyright detection.
-// Delegates to RunScanCode which handles the 30-day skip check, CLI invocation,
-// JSON parsing, and database storage.
-func (ac *AnalysisCollector) scanScanCode(ctx context.Context, repoID int64, workDir string, result *AnalysisResult) error {
-	scResult, err := RunScanCode(ctx, ac.store, repoID, workDir, ac.logger)
-	if err != nil {
-		return err
-	}
-	if scResult != nil {
-		result.ScancodeFiles = scResult.FilesWithFindings
-	}
-	return nil
-}
+// scanScanCode was the v0.20-and-earlier per-job wrapper around
+// RunScanCode. Removed in v0.21.0 along with RunScanCode itself
+// when scancode moved to the dedicated ScancodeWorker pool. See
+// internal/collector/scancode_worker.go and
+// docs/architecture/scancode.md.

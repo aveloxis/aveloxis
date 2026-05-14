@@ -54,7 +54,24 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
-    data_collection_date TIMESTAMPTZ DEFAULT NOW()
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    -- v0.21.0: ScancodeWorker state (decoupled from main pipeline).
+    -- scancode_last_run is the wall-clock time of the most recent
+    -- successful per-file scan; the worker's cadence gate compares
+    -- (NOW() - scancode_last_run) against collection.scancode_cadence_days
+    -- (default 180). When NULL the repo has never been scanned and
+    -- sorts to the front of the worker's claim queue.
+    scancode_last_run       TIMESTAMPTZ,
+    scancode_version        TEXT,
+    -- scancode_locked_at + locked_pid + locked_boot_id form the
+    -- in-flight scan state. Cleared on success and on failure.
+    -- (locked_boot_id, locked_pid) tuple makes the recovery liveness
+    -- check unambiguous across kernel reboots — see
+    -- docs/architecture/scancode.md for the four-state recovery table.
+    scancode_locked_at      TIMESTAMPTZ,
+    scancode_locked_pid     INTEGER,
+    scancode_locked_boot_id TEXT,
+    scancode_output_path    TEXT
 );
 
 -- ============================================================

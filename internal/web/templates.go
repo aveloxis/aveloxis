@@ -330,7 +330,8 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 
 <div class="section" style="margin-top:24px">
 <h3>Source Code Licenses</h3>
-<p style="font-size:13px;color:#6b7280;margin-bottom:8px">Detected by <a href="https://github.com/aboutcode-org/scancode-toolkit" target="_blank">ScanCode</a> from source file analysis (runs every 30 days)</p>
+<p style="font-size:13px;color:#6b7280;margin-bottom:4px">Detected by <a href="https://github.com/aboutcode-org/scancode-toolkit" target="_blank">ScanCode</a> from source file analysis. Each repo is rescanned on a configurable cadence (default 6 months — see <code>collection.scancode_cadence_days</code>).</p>
+<p id="scancode-freshness" style="font-size:13px;color:#6b7280;margin-bottom:8px">Last run: <em>loading…</em></p>
 <table id="scancode-license-table" style="max-width:600px">
 <tr><th>License (SPDX)</th><th style="text-align:right">Files</th><th style="text-align:center">OSI</th></tr>
 <tr><td colspan="3" class="empty">Loading...</td></tr>
@@ -458,6 +459,19 @@ fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-licenses')
     const table = document.getElementById('scancode-license-table');
     const licenses = data.licenses || [];
     const copyrights = data.copyrights || [];
+
+    // v0.21.0 freshness signal — show when scancode last ran on
+    // this repo so the user can interpret "stale" data correctly
+    // (vs assuming it represents today's source).
+    const freshEl = document.getElementById('scancode-freshness');
+    if (freshEl) {
+      if (data.last_run) {
+        const verSuffix = data.scancode_version ? ' (scancode ' + data.scancode_version + ')' : '';
+        freshEl.innerHTML = 'Last run: <strong>' + data.last_run + '</strong>' + verSuffix;
+      } else {
+        freshEl.innerHTML = 'Last run: <em>not yet run — will run in the next scancode worker cycle</em>';
+      }
+    }
 
     if (licenses.length === 0) {
       table.innerHTML = '<tr><th>License (SPDX)</th><th style="text-align:right">Files</th><th style="text-align:center">OSI</th></tr>' +

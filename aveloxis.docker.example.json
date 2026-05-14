@@ -21,7 +21,12 @@
     "workers": 12,
     "repo_clone_dir": "/data",
     "matview_rebuild_day": "saturday",
-    "matview_rebuild_on_startup": false
+    "matview_rebuild_on_startup": false,
+    "scancode_workers": 2,
+    "scancode_start_interval_s": 90,
+    "scancode_cadence_days": 180,
+    "scancode_clone_dir": "/tmp/aveloxis-scancode",
+    "scancode_shutdown_grace_minutes": 30
   },
   "web": {
     "addr": ":8082",

@@ -50,6 +50,19 @@ type Config struct {
 	BreadthInterval       time.Duration // how often the contributor breadth worker ticks (default 15min). v0.20.17. Was hardcoded to 6h, capping coverage to 400/day = 9.6 years for 1.4M contribs.
 	BreadthBatchSize      int           // maximum contributors per breadth tick (default 2000). v0.20.17.
 	BreadthCooldown       time.Duration // minimum interval between successive attempts on the same contributor (default 7 days). v0.20.17. Replaces the pre-fix "spin on dead-end contributors forever" pattern.
+
+	// v0.21.0 — ScancodeWorker config knobs. Scancode runs in its
+	// own goroutine pool, decoupled from the per-repo collection
+	// pipeline. The 2026-05-14 incident showed the pre-v0.21.0
+	// 2-slot semaphore stalled 177 of 180 collection workers for
+	// 7+ hours; the decoupled pool fixes the bottleneck and adds
+	// operator-tunable cadence. See internal/collector/
+	// scancode_worker.go and docs/architecture/scancode.md.
+	ScancodeWorkers       int           // max concurrent scancode subprocesses (default 2)
+	ScancodeStartInterval time.Duration // minimum interval between claim attempts (default 90s)
+	ScancodeCadence       time.Duration // minimum interval between scans on the same repo (default 180d)
+	ScancodeCloneDir      string        // parent directory for per-run shallow clones (default /tmp/aveloxis-scancode)
+	ScancodeShutdownGrace time.Duration // wait budget for in-flight scancode runs on aveloxis stop (default 30m)
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -111,6 +124,23 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	}
 	if cfg.ShutdownGrace == 0 {
 		cfg.ShutdownGrace = 10 * time.Second
+	}
+	// v0.21.0 ScancodeWorker defaults — see CollectionConfig field
+	// docs and docs/architecture/scancode.md for the rationale.
+	if cfg.ScancodeWorkers == 0 {
+		cfg.ScancodeWorkers = 2
+	}
+	if cfg.ScancodeStartInterval == 0 {
+		cfg.ScancodeStartInterval = 90 * time.Second
+	}
+	if cfg.ScancodeCadence == 0 {
+		cfg.ScancodeCadence = 180 * 24 * time.Hour
+	}
+	if cfg.ScancodeCloneDir == "" {
+		cfg.ScancodeCloneDir = "/tmp/aveloxis-scancode"
+	}
+	if cfg.ScancodeShutdownGrace == 0 {
+		cfg.ScancodeShutdownGrace = 30 * time.Minute
 	}
 
 	hostname, _ := os.Hostname()
@@ -257,6 +287,23 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// forever.
 	breadthTicker := time.NewTicker(s.cfg.BreadthInterval)
 	defer breadthTicker.Stop()
+
+	// v0.21.0 — ScancodeWorker goroutine. Runs its own pool of N
+	// scancode runners (default 2, configurable via
+	// collection.scancode_workers) with a 6-month default cadence
+	// and 90-second start-pacing. Decoupled from the main worker
+	// pool so a slow scancode run on one repo can't stall main
+	// collection across the fleet. See
+	// docs/architecture/scancode.md.
+	scancodeWorker := collector.NewScancodeWorker(
+		s.store, s.logger,
+		s.cfg.ScancodeWorkers,
+		s.cfg.ScancodeStartInterval,
+		s.cfg.ScancodeCadence,
+		s.cfg.ScancodeCloneDir,
+		s.cfg.ScancodeShutdownGrace,
+	)
+	go scancodeWorker.Run(ctx)
 
 	// Materialized view rebuild: check hourly, run on Saturdays.
 	// Collection is suspended during the rebuild.

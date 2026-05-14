@@ -28,9 +28,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Database.SSLMode != "prefer" {
 		t.Errorf("Database.SSLMode = %q, want %q", cfg.Database.SSLMode, "prefer")
 	}
-	if cfg.Collection.BatchSize != 1000 {
-		t.Errorf("Collection.BatchSize = %d, want %d", cfg.Collection.BatchSize, 1000)
-	}
 	if cfg.Collection.Workers != 12 {
 		t.Errorf("Collection.Workers = %d, want %d", cfg.Collection.Workers, 12)
 	}
@@ -102,7 +99,6 @@ func TestLoad_ValidJSON(t *testing.T) {
 			"api_keys": ["ghp_abc123"]
 		},
 		"collection": {
-			"batch_size": 500,
 			"workers": 8,
 			"days_until_recollect": 7
 		}
@@ -122,9 +118,6 @@ func TestLoad_ValidJSON(t *testing.T) {
 	}
 	if cfg.Database.Port != 5433 {
 		t.Errorf("Database.Port = %d, want %d", cfg.Database.Port, 5433)
-	}
-	if cfg.Collection.BatchSize != 500 {
-		t.Errorf("Collection.BatchSize = %d, want %d", cfg.Collection.BatchSize, 500)
 	}
 	if cfg.Collection.Workers != 8 {
 		t.Errorf("Collection.Workers = %d, want %d", cfg.Collection.Workers, 8)
@@ -158,9 +151,6 @@ func TestLoad_MergesWithDefaults(t *testing.T) {
 	}
 	if cfg.Database.User != "augur" {
 		t.Errorf("Database.User = %q, want default %q", cfg.Database.User, "augur")
-	}
-	if cfg.Collection.BatchSize != 1000 {
-		t.Errorf("Collection.BatchSize = %d, want default %d", cfg.Collection.BatchSize, 1000)
 	}
 	if cfg.GitHub.BaseURL != "https://api.github.com" {
 		t.Errorf("GitHub.BaseURL = %q, want default %q", cfg.GitHub.BaseURL, "https://api.github.com")

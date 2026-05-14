@@ -71,7 +71,12 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "breadth_interval_minutes": 15,
     "breadth_batch_size": 2000,
     "breadth_cooldown_days": 7,
-    "shutdown_grace_seconds": 10
+    "shutdown_grace_seconds": 10,
+    "scancode_workers": 2,
+    "scancode_start_interval_s": 90,
+    "scancode_cadence_days": 180,
+    "scancode_clone_dir": "/tmp/aveloxis-scancode",
+    "scancode_shutdown_grace_minutes": 30
   },
   "web": {
     "addr": ":8082",
@@ -170,6 +175,30 @@ Periodic tickers that run on the scheduler. v0.16.5 / v0.18.29 / v0.19.7 moved e
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `collection.shutdown_grace_seconds` | integer | `10` | v0.20.0: ctx-cancel grace window for in-flight workers before `Scheduler.Run` closes the pgx pool. Pre-v0.20.0 the wait was unbounded — a 26-minute `commits` UPDATE blocked shutdown for the full duration. Setting this too low means worker transactions abort mid-flight (Postgres rolls them back safely but logs are noisy); too high means slow shutdown. |
+
+**Scancode worker (v0.21.0)**
+
+The scancode per-file license + copyright + package scan is run by a dedicated `ScancodeWorker` pool, decoupled from the per-repo collection pipeline. Pre-v0.21.0 scancode ran inline in `AnalysisCollector.AnalyzeRepo` gated by a 2-slot package-level semaphore; the 2026-05-14 production incident showed that shape doesn't survive fleet-scale operation (177 of 180 collection workers parked behind the semaphore for 7+ hours). The decoupled pool fixes the structural problem and adds operator-tunable cadence + concurrency. See `docs/architecture/scancode.md` for the full architecture write-up.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `collection.scancode_workers` | integer | `2` | Maximum concurrent scancode invocations. Pre-v0.21.0 the limit was hardcoded to 2; the default matches that so upgrading operators don't see a sudden change in scancode CPU load. Operators with spare CPU cores should raise this (the user running the fleet that surfaced the 2026-05-14 incident has tested 12 against 64 cores). |
+| `collection.scancode_start_interval_s` | integer | `90` | Minimum seconds between consecutive scancode CLAIM operations. The dispatcher's ticker fires every `scancode_start_interval_s` seconds; if a worker slot is free, one eligible repo is claimed; if no slot is free, the tick is a no-op. The pacing prevents new shallow clones from bursting the network/disk on operator restart with hundreds of eligible repos. |
+| `collection.scancode_cadence_days` | integer | `180` | Minimum days between successive scancode runs on the same repo. Pre-v0.21.0 was 30 days; the change reflects that per-file license + copyright headers in source files change rarely on the timescale that matters, and the I/O cost of scanning a Linux-kernel-scale mirror doesn't justify monthly re-scans. Dependency-level licenses (which DO change as packages update) still flow through the per-cycle Phase 4 dependency scan + Phase 6 SBOM generation. |
+| `collection.scancode_clone_dir` | string | `"/tmp/aveloxis-scancode"` | Parent directory for per-run shallow clones. Each scan creates `<dir>/repo_<id>_<unix_ts>` and removes it on completion (success or failure). Size budget: each clone is the working tree only (`git clone --depth 1`), so ≈ checked-out repo size. With default 2 workers and average ~50 MB clones, ~100 MB peak; raise expectations for big-repo / many-worker installs. |
+| `collection.scancode_shutdown_grace_minutes` | integer | `30` | Time the `ScancodeWorker` waits for in-flight scans to finish on `aveloxis stop`. Within the grace window, runners complete naturally (parse JSON output, write DB, clear lock columns). At grace expiry, `cmd.Process.Kill()` is invoked on the still-running scancode subprocess; `cmd.Wait()` returns with an error, the runner's lock-clear path fires, no orphaned scans from graceful shutdown. Separate from `shutdown_grace_seconds` (which paces the main scheduler) because scancode scans are intrinsically long-running. |
+
+**Force-rerun cookbook** — to invalidate the cadence gate and trigger a fresh scan on the next worker tick, set `scancode_last_run` back to NULL:
+
+```sql
+-- Single repo:
+UPDATE aveloxis_data.repos SET scancode_last_run = NULL WHERE repo_owner = 'apache' AND repo_name = 'doris';
+
+-- Whole fleet (e.g. after a scancode major-version upgrade):
+UPDATE aveloxis_data.repos SET scancode_last_run = NULL;
+```
+
+The worker's claim query orders `NULLS FIRST`, so cleared repos move to the front of the queue.
 
 ### Web (OAuth + GUI)
 

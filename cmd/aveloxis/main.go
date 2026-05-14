@@ -170,6 +170,13 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		BreadthBatchSize:      cfg.Collection.BreadthBatchSizeOrDefault(),
 		BreadthCooldown:       cfg.Collection.BreadthCooldownDuration(),
 		ShutdownGrace:         cfg.Collection.ShutdownGraceDuration(),
+		// v0.21.0 ScancodeWorker knobs. See
+		// docs/architecture/scancode.md.
+		ScancodeWorkers:       cfg.Collection.ScancodeWorkersOrDefault(),
+		ScancodeStartInterval: cfg.Collection.ScancodeStartInterval(),
+		ScancodeCadence:       cfg.Collection.ScancodeCadence(),
+		ScancodeCloneDir:      cfg.Collection.ScancodeCloneDirOrDefault(),
+		ScancodeShutdownGrace: cfg.Collection.ScancodeShutdownGrace(),
 	})
 	go sched.Run(ctx)
 

@@ -1,32 +1,29 @@
 // SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
 // SPDX-License-Identifier: MIT
 
-// Package collector — scancode.go runs ScanCode Toolkit against a local
-// repository checkout to detect licenses, copyrights, and packages per file.
+// Package collector — scancode.go provides scancode JSON output
+// parsing and ingest into aveloxis_scan tables.
 //
-// ScanCode (https://github.com/aboutcode-org/scancode-toolkit) is a Python
-// tool installed via `pipx install scancode-toolkit`. If not installed on
-// PATH, this phase is silently skipped.
+// The actual scancode subprocess invocation lives in
+// scancode_worker.go (v0.21.0). Pre-v0.21.0 this file also owned
+// the subprocess invocation + a 2-slot package-level semaphore +
+// a 30-day inline skip check; all of that moved into the
+// ScancodeWorker pool after the 2026-05-14 incident showed the
+// semaphore stalled 177 of 180 collection workers for 7+ hours.
+// See docs/architecture/scancode.md for the architectural
+// rationale and the four-state recovery table.
 //
-// ScanCode only needs to run every 30 days per repo — license and copyright
-// data changes infrequently. The last-run timestamp is checked via
-// ScancodeLastRun before invoking the tool.
-//
-// Results are stored in the aveloxis_scan schema:
-//   - scancode_scans: one row per scan run (metadata, duration, file count)
-//   - scancode_file_results: per-file license, copyright, and package findings
-//   - History tables rotate previous results before each new scan.
-//
-// Assumptions:
-//   - The `scancode` binary is installed and on PATH
-//   - ScanCode is invoked with -clpi (copyright, license, package, info)
-//   - --only-findings reduces output to files with actual detections
-//   - --quiet suppresses progress output
-//   - --timeout 300 gives 5 min per file (some files are pathological)
-//   - --processes 2 limits internal Python parallelism (default is 1-per-core)
-//   - --max-in-memory 5000 caps memory for large repos
-//   - A package-level semaphore limits concurrent ScanCode invocations to 2
-//   - Output goes to a temp JSON file, parsed after completion
+// What stays here:
+//   - The scancode JSON output struct definitions (scancodeOutput,
+//     scancodeHeader, scancodeFile) — these are the wire format
+//     scancode emits to its --json output file.
+//   - hasFindings(f) — returns true if a parsed file entry has any
+//     detection worth persisting.
+//   - ingestScancodeOutput — parses the JSON output file at the
+//     given path and writes the results to aveloxis_scan tables
+//     (with history rotation). Called from scancode_worker.runOne
+//     after cmd.Wait() succeeds, and from the recovery monitor for
+//     orphaned scans that exited while aveloxis was down.
 package collector
 
 import (
@@ -35,214 +32,71 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
-	"strconv"
-	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
-// scancodeSem limits concurrent ScanCode invocations across all scheduler
-// workers. ScanCode is a Python tool that spawns multiple child processes
-// internally (controlled by --processes). Without this semaphore, 40 scheduler
-// workers could each launch ScanCode simultaneously, creating hundreds of
-// Python processes. Default: 2 concurrent scans.
-var scancodeSem = make(chan struct{}, 2)
-
-// ScancodeRunInterval is how often ScanCode should run per repo.
-// License and copyright data changes infrequently, so 30 days is sufficient.
-const ScancodeRunInterval = 30 * 24 * time.Hour
-
-// ScancodeResult holds the parsed summary from a ScanCode run.
-type ScancodeResult struct {
-	ScancodeVersion   string
-	FilesScanned      int
-	FilesWithFindings int
-	DurationSecs      float64
-	FileResults       []ScancodeFileResult
-	Errors            []string
-}
-
-// ScancodeFileResult holds per-file findings from ScanCode.
-type ScancodeFileResult struct {
-	Path                          string
-	FileType                      string
-	ProgrammingLanguage           string
-	DetectedLicenseExpression     string
-	DetectedLicenseExpressionSPDX string
-	PercentageOfLicenseText       float64
-	Copyrights                    json.RawMessage // JSONB array of {copyright, start_line, end_line}
-	Holders                       json.RawMessage // JSONB array of {holder, start_line, end_line}
-	LicenseDetections             json.RawMessage // JSONB array of detection details
-	PackageData                   json.RawMessage // JSONB array of package metadata
-	ScanErrors                    json.RawMessage // JSONB array of error strings
-}
-
-// RunScanCode executes ScanCode Toolkit against a local checkout and stores
-// results in the aveloxis_scan schema. Skips if scancode is not installed or
-// if the last scan was within 30 days.
+// ingestScancodeOutput parses a scancode JSON output file and
+// writes scancode_scans + scancode_file_results, rotating any
+// previous results to the *_history tables first. Returns the
+// scancode binary version that produced the output (from the
+// JSON's headers).
 //
-// The localPath must point to an existing checkout (the temp analysis clone).
-func RunScanCode(ctx context.Context, store *db.PostgresStore, repoID int64, localPath string, logger *slog.Logger) (*ScancodeResult, error) {
-	// Check if scancode is installed.
-	scancodePath, err := exec.LookPath("scancode")
+// Safe to call from multiple goroutines on different repoIDs
+// because all writes target rows keyed by repoID with appropriate
+// per-row history rotation.
+func ingestScancodeOutput(ctx context.Context, store *db.PostgresStore, repoID int64, outputPath string, logger *slog.Logger) (string, error) {
+	data, err := os.ReadFile(outputPath)
 	if err != nil {
-		logger.Info("scancode not installed, skipping ScanCode analysis",
-			"install", "pipx install scancode-toolkit")
-		return nil, nil
+		return "", fmt.Errorf("reading scancode output: %w", err)
 	}
-
-	// Check if we ran scancode within the last 30 days for this repo.
-	lastRun, err := store.ScancodeLastRun(ctx, repoID)
-	if err == nil && !lastRun.IsZero() && time.Since(lastRun) < ScancodeRunInterval {
-		logger.Info("scancode ran recently, skipping",
-			"repo_id", repoID,
-			"last_run", lastRun,
-			"next_due", lastRun.Add(ScancodeRunInterval).Format("2006-01-02"))
-		return nil, nil
-	}
-
-	if localPath == "" {
-		logger.Warn("scancode skipped: no local clone path", "repo_id", repoID)
-		return nil, nil
-	}
-
-	// Acquire the concurrency semaphore — blocks if too many ScanCode instances
-	// are already running. Respects context cancellation while waiting.
-	select {
-	case scancodeSem <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	defer func() { <-scancodeSem }()
-
-	logger.Info("running ScanCode", "repo_id", repoID, "path", localPath)
-
-	// Limit ScanCode's internal parallelism. By default ScanCode spawns one
-	// Python worker per CPU core, which is fine for a single invocation but
-	// catastrophic when the scheduler runs 40 concurrent collections.
-	// Cap at 2 processes per invocation (or 1 on single-core machines).
-	procs := 2
-	if runtime.NumCPU() < 2 {
-		procs = 1
-	}
-
-	// Write output to a temp file — scancode writes JSON to a file, not stdout.
-	outputFile := filepath.Join(os.TempDir(), fmt.Sprintf("aveloxis-scancode-%d-%d.json", repoID, time.Now().UnixNano()))
-	defer os.Remove(outputFile)
-
-	cmd := exec.CommandContext(ctx, scancodePath,
-		"-clpi",
-		"--only-findings",
-		"--json", outputFile,
-		"--quiet",
-		"--timeout", "300",
-		"--processes", strconv.Itoa(procs),
-		"--max-in-memory", "5000",
-		localPath,
-	)
-	var stderrBuf []byte
-	cmd.Stderr = nil // scancode writes progress to stderr; --quiet suppresses it
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("scancode failed: %w", err)
-	}
-
-	// Read and parse the output file.
-	data, err := os.ReadFile(outputFile)
-	if err != nil {
-		return nil, fmt.Errorf("reading scancode output: %w", err)
-	}
-	// stderrBuf is declared for future error context capture but currently unused.
-	if len(stderrBuf) > 0 {
-		logger.Debug("scancode stderr output", "repo_id", repoID, "stderr", string(stderrBuf))
-	}
-
 	var raw scancodeOutput
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parsing scancode output: %w", err)
+		return "", fmt.Errorf("parsing scancode output: %w", err)
 	}
 
-	// Build result from parsed output.
-	result := &ScancodeResult{}
+	var version string
+	var duration float64
+	var filesScanned int
 	if len(raw.Headers) > 0 {
-		result.ScancodeVersion = raw.Headers[0].ToolVersion
-		result.DurationSecs = raw.Headers[0].Duration
+		version = raw.Headers[0].ToolVersion
+		duration = raw.Headers[0].Duration
 		if raw.Headers[0].ExtraData.FilesCount > 0 {
-			result.FilesScanned = raw.Headers[0].ExtraData.FilesCount
+			filesScanned = raw.Headers[0].ExtraData.FilesCount
 		}
 	}
 
-	// Rotate previous results to history before inserting.
 	if err := store.RotateScancodeToHistory(ctx, repoID); err != nil {
 		logger.Warn("failed to rotate scancode history", "repo_id", repoID, "error", err)
 	}
 
-	// Insert scan metadata.
-	for _, f := range raw.Files {
-		if f.Type != "file" {
-			continue // skip directory entries
-		}
-		if hasFindings(f) {
-			result.FilesWithFindings++
-		}
-	}
-
-	scanID, err := store.InsertScancodeScan(ctx, repoID, result.ScancodeVersion,
-		result.FilesScanned, result.FilesWithFindings, result.DurationSecs, nil)
-	if err != nil {
-		return result, fmt.Errorf("inserting scancode scan: %w", err)
-	}
-	logger.Debug("scancode scan recorded", "repo_id", repoID, "scan_id", scanID)
-
-	// Collect file results for batch insert.
-	var fileResults []ScancodeFileResult
-	var dbRows []*db.ScancodeFileRow
+	var filesWithFindings int
 	for _, f := range raw.Files {
 		if f.Type != "file" {
 			continue
 		}
-		if !hasFindings(f) {
-			continue // --only-findings should filter, but double-check
+		if hasFindings(f) {
+			filesWithFindings++
 		}
+	}
 
-		copyrightsJSON, err := json.Marshal(f.Copyrights)
-		if err != nil {
-			logger.Warn("failed to marshal copyrights", "path", f.Path, "error", err)
-		}
-		holdersJSON, err := json.Marshal(f.Holders)
-		if err != nil {
-			logger.Warn("failed to marshal holders", "path", f.Path, "error", err)
-		}
-		licenseDetJSON, err := json.Marshal(f.LicenseDetections)
-		if err != nil {
-			logger.Warn("failed to marshal license detections", "path", f.Path, "error", err)
-		}
-		packageJSON, err := json.Marshal(f.PackageData)
-		if err != nil {
-			logger.Warn("failed to marshal package data", "path", f.Path, "error", err)
-		}
-		errorsJSON, err := json.Marshal(f.ScanErrors)
-		if err != nil {
-			logger.Warn("failed to marshal scan errors", "path", f.Path, "error", err)
-		}
+	scanID, err := store.InsertScancodeScan(ctx, repoID, version,
+		filesScanned, filesWithFindings, duration, nil)
+	if err != nil {
+		return version, fmt.Errorf("inserting scancode scan: %w", err)
+	}
+	logger.Debug("scancode scan recorded", "repo_id", repoID, "scan_id", scanID)
 
-		fileResults = append(fileResults, ScancodeFileResult{
-			Path:                          f.Path,
-			FileType:                      f.FileType,
-			ProgrammingLanguage:           f.ProgrammingLanguage,
-			DetectedLicenseExpression:     f.DetectedLicenseExpression,
-			DetectedLicenseExpressionSPDX: f.DetectedLicenseExpressionSPDX,
-			PercentageOfLicenseText:       f.PercentageOfLicenseText,
-			Copyrights:                    copyrightsJSON,
-			Holders:                       holdersJSON,
-			LicenseDetections:             licenseDetJSON,
-			PackageData:                   packageJSON,
-			ScanErrors:                    errorsJSON,
-		})
-
+	var dbRows []*db.ScancodeFileRow
+	for _, f := range raw.Files {
+		if f.Type != "file" || !hasFindings(f) {
+			continue
+		}
+		copyrightsJSON, _ := json.Marshal(f.Copyrights)
+		holdersJSON, _ := json.Marshal(f.Holders)
+		licenseDetJSON, _ := json.Marshal(f.LicenseDetections)
+		packageJSON, _ := json.Marshal(f.PackageData)
+		errorsJSON, _ := json.Marshal(f.ScanErrors)
 		dbRows = append(dbRows, &db.ScancodeFileRow{
 			Path:                          f.Path,
 			FileType:                      f.FileType,
@@ -258,31 +112,25 @@ func RunScanCode(ctx context.Context, store *db.PostgresStore, repoID int64, loc
 		})
 	}
 
-	result.FileResults = fileResults
-
-	// Batch insert file results.
 	if err := store.InsertScancodeFileResultBatch(ctx, repoID, dbRows); err != nil {
-		return result, fmt.Errorf("inserting scancode file results: %w", err)
+		return version, fmt.Errorf("inserting scancode file results: %w", err)
 	}
-
-	logger.Info("scancode complete",
-		"repo_id", repoID,
-		"version", result.ScancodeVersion,
-		"files_scanned", result.FilesScanned,
-		"files_with_findings", result.FilesWithFindings,
-		"duration_secs", result.DurationSecs)
-
-	return result, nil
+	return version, nil
 }
 
-// hasFindings returns true if a scancode file entry has any detections.
+// hasFindings returns true if a scancode file entry has any
+// detection worth recording. Pre-v0.21.0 this was conservative
+// (excluded files with only license-text-percentage signals); kept
+// as-is for behavioral parity with existing scancode_file_results
+// rows.
 func hasFindings(f scancodeFile) bool {
 	return f.DetectedLicenseExpression != "" ||
 		len(f.Copyrights) > 0 ||
 		len(f.PackageData) > 0
 }
 
-// scancodeOutput is the top-level JSON structure from `scancode --json`.
+// scancodeOutput is the top-level JSON structure from
+// `scancode --json`.
 type scancodeOutput struct {
 	Headers []scancodeHeader `json:"headers"`
 	Files   []scancodeFile   `json:"files"`

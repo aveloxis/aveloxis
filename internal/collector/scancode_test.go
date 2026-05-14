@@ -74,103 +74,20 @@ func TestScancodeOutputParsing(t *testing.T) {
 	}
 }
 
-// TestScancodeResultStruct verifies ScancodeResult has expected fields.
-func TestScancodeResultStruct(t *testing.T) {
-	r := ScancodeResult{
-		ScancodeVersion:   "32.5.0",
-		FilesScanned:      42,
-		FilesWithFindings: 10,
-		DurationSecs:      12.5,
-		FileResults: []ScancodeFileResult{
-			{
-				Path:                          "main.go",
-				ProgrammingLanguage:           "Go",
-				DetectedLicenseExpressionSPDX: "MIT",
-			},
-		},
-	}
-	if r.ScancodeVersion != "32.5.0" {
-		t.Errorf("ScancodeVersion = %q", r.ScancodeVersion)
-	}
-	if r.FilesScanned != 42 {
-		t.Errorf("FilesScanned = %d", r.FilesScanned)
-	}
-	if r.FilesWithFindings != 10 {
-		t.Errorf("FilesWithFindings = %d", r.FilesWithFindings)
-	}
-	if len(r.FileResults) != 1 {
-		t.Fatalf("FileResults = %d", len(r.FileResults))
-	}
-}
-
-// TestRunScanCodeFunctionExists verifies RunScanCode is defined with expected signature.
-func TestRunScanCodeFunctionExists(t *testing.T) {
-	src, err := os.ReadFile("scancode.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	if !strings.Contains(code, "func RunScanCode(") {
-		t.Error("RunScanCode function must exist in scancode.go")
-	}
-	// Must accept a local path to scan.
-	if !strings.Contains(code, "localPath string") {
-		t.Error("RunScanCode must accept a localPath parameter")
-	}
-}
-
-// TestRunScanCodeUsesCorrectFlags verifies the CLI flags used.
-func TestRunScanCodeUsesCorrectFlags(t *testing.T) {
-	src, err := os.ReadFile("scancode.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	// Must use license, copyright, package, and info flags.
-	if !strings.Contains(code, "-clpi") {
-		t.Error("RunScanCode must use -clpi flags (copyright, license, package, info)")
-	}
-	// Must use --only-findings to reduce output size.
-	if !strings.Contains(code, "--only-findings") {
-		t.Error("RunScanCode must use --only-findings to reduce output size")
-	}
-	// Must use --json for machine-readable output.
-	if !strings.Contains(code, "--json") {
-		t.Error("RunScanCode must use --json output format")
-	}
-	// Must use --quiet to suppress progress output.
-	if !strings.Contains(code, "--quiet") {
-		t.Error("RunScanCode must use --quiet flag")
-	}
-	// Must limit internal Python process parallelism.
-	if !strings.Contains(code, "--processes") {
-		t.Error("RunScanCode must use --processes to limit Python thread/process count")
-	}
-	// Must limit in-memory file count for large repos.
-	if !strings.Contains(code, "--max-in-memory") {
-		t.Error("RunScanCode must use --max-in-memory to cap memory usage")
-	}
-}
-
-// TestScancodeConcurrencySemaphore verifies that a package-level semaphore
-// limits concurrent ScanCode invocations.
-func TestScancodeConcurrencySemaphore(t *testing.T) {
-	src, err := os.ReadFile("scancode.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	if !strings.Contains(code, "scancodeSem") {
-		t.Error("scancode.go must define scancodeSem to limit concurrent invocations")
-	}
-	// The semaphore must be used in RunScanCode to acquire/release slots.
-	if !strings.Contains(code, "scancodeSem <-") || !strings.Contains(code, "<-scancodeSem") {
-		t.Error("RunScanCode must acquire and release scancodeSem")
-	}
-}
+// v0.21.0 — TestScancodeResultStruct / TestRunScanCodeFunctionExists /
+// TestRunScanCodeUsesCorrectFlags / TestScancodeConcurrencySemaphore /
+// TestAnalysisCallsScanCode were retired in this release. They
+// pinned the pre-v0.21.0 architecture: per-job RunScanCode call
+// from AnalysisCollector with a 2-slot package-level semaphore.
+// That architecture was the root cause of the 2026-05-14 incident
+// (177 of 180 workers parked on the semaphore for 7+ hours). The
+// equivalent invariants for the new architecture are pinned by:
+//
+//   - TestAnalyzeRepoNoLongerInvokesScancode      (analysis_no_scancode_test.go)
+//   - TestScancodeSemaphoreNoLongerExists         (analysis_no_scancode_test.go)
+//   - TestScancodeNoLongerHas30DaySkipCheck       (analysis_no_scancode_test.go)
+//   - TestScancodeWorker* family                  (scancode_worker_test.go)
+//   - TestClaim* family                           (scancode_worker_test.go)
 
 // TestAnalysisResultHasScancodeFiles verifies AnalysisResult tracks scancode findings.
 func TestAnalysisResultHasScancodeFiles(t *testing.T) {
@@ -180,19 +97,6 @@ func TestAnalysisResultHasScancodeFiles(t *testing.T) {
 	}
 	if r.ScancodeFiles != 5 {
 		t.Errorf("ScancodeFiles = %d, want 5", r.ScancodeFiles)
-	}
-}
-
-// TestAnalysisCallsScanCode verifies analysis.go includes scancode as a phase.
-func TestAnalysisCallsScanCode(t *testing.T) {
-	src, err := os.ReadFile("analysis.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	if !strings.Contains(code, "scanScanCode") || !strings.Contains(code, "RunScanCode") {
-		t.Error("analysis.go must call scancode as a phase (scanScanCode or RunScanCode)")
 	}
 }
 
@@ -288,22 +192,14 @@ func TestScancodeLastRunReturnsTime(t *testing.T) {
 	}
 }
 
-// TestScancode30DaySkipLogic verifies scancode checks last-run date and skips
-// if within 30 days.
-func TestScancode30DaySkipLogic(t *testing.T) {
-	src, err := os.ReadFile("scancode.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	if !strings.Contains(code, "ScancodeLastRun") {
-		t.Error("RunScanCode must check ScancodeLastRun to implement 30-day skip")
-	}
-	if !strings.Contains(code, "30") {
-		t.Error("RunScanCode must reference 30-day interval")
-	}
-}
+// v0.21.0 — TestScancode30DaySkipLogic was retired in this release.
+// The 30-day inline skip check in scancode.go was replaced by the
+// configurable cadence (default 180 days) enforced at claim time
+// in db.ClaimNextScancodeRepo. The equivalent invariant is now
+// pinned by TestClaimGatesOnCadenceAndStaleLock in
+// scancode_worker_test.go and the
+// collection.scancode_cadence_days knob in
+// scancode_knobs_test.go.
 
 // TestScancodeStoreHasSBOMMethod verifies the DB has a method to retrieve
 // scancode data for SBOM enrichment.

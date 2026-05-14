@@ -465,6 +465,54 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		WHERE r.repo_id = sub.repo_id
 		  AND r.scancode_last_run IS NULL`)
 
+	// v0.21.2 backfill collection_queue.last_issues with cumulative counts.
+	//
+	// Pre-v0.21.2 the column was the since-filtered per-cycle delta
+	// from the most recent collection. v0.21.2 changes CompleteJob
+	// to write the cumulative count instead (mirroring v0.19.11's
+	// commit-count treatment). This one-shot backfill brings
+	// existing rows into the new world without waiting for each
+	// repo's next collection cycle — operators on a 40K-repo fleet
+	// would otherwise see the misleading "Gathered: 0 / Meta: N"
+	// reads on the dashboard for days while the queue rolls.
+	//
+	// Idempotent in two ways:
+	//   1. `IS DISTINCT FROM` filter means once a row's
+	//      last_issues matches the cumulative count, subsequent
+	//      migrate runs skip it.
+	//   2. On a fresh deploy (no historical issues rows), the
+	//      subquery returns 0 and the UPDATE skips rows that are
+	//      already 0.
+	//
+	// The COUNT(*) is fast because idx_issues_repo_id exists; the
+	// outer subquery scans the full collection_queue but joins
+	// each row with a single indexed lookup. On a 40K-repo / 5M-
+	// row issues fleet this is a few seconds.
+	execMigrationStep(ctx, pg, logger, &errs, "v0.21.2 backfill collection_queue.last_issues with cumulative counts",
+		`UPDATE aveloxis_ops.collection_queue q
+		SET last_issues = sub.cnt
+		FROM (
+		    SELECT repo_id, COUNT(*) AS cnt
+		    FROM aveloxis_data.issues
+		    GROUP BY repo_id
+		) sub
+		WHERE q.repo_id = sub.repo_id
+		  AND q.last_issues IS DISTINCT FROM sub.cnt`)
+
+	// v0.21.2 backfill collection_queue.last_prs with cumulative counts.
+	// See last_issues backfill above for the rationale; same shape
+	// against aveloxis_data.pull_requests via idx_pull_requests_repo_id.
+	execMigrationStep(ctx, pg, logger, &errs, "v0.21.2 backfill collection_queue.last_prs with cumulative counts",
+		`UPDATE aveloxis_ops.collection_queue q
+		SET last_prs = sub.cnt
+		FROM (
+		    SELECT repo_id, COUNT(*) AS cnt
+		    FROM aveloxis_data.pull_requests
+		    GROUP BY repo_id
+		) sub
+		WHERE q.repo_id = sub.repo_id
+		  AND q.last_prs IS DISTINCT FROM sub.cnt`)
+
 	// Users table: dedupe + enforce PK/UNIQUE (v0.18.9).
 	// Older installs used CREATE TABLE IF NOT EXISTS with inline UNIQUE, which
 	// silently skipped on pre-existing tables created without the constraint —

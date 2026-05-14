@@ -55,7 +55,6 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "site_url": "https://your-host.example"
   },
   "collection": {
-    "batch_size": 1000,
     "days_until_recollect": 1,
     "workers": 12,
     "repo_clone_dir": "/data/aveloxis-repos",
@@ -130,7 +129,6 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `collection.batch_size` | integer | `1000` | Number of rows flushed per staging batch during the staged pipeline. |
 | `collection.days_until_recollect` | integer | `1` | Minimum number of days before a repo is re-collected. After a successful job, `due_at = last_collected + days_until_recollect`. Changing this value takes effect on the next `aveloxis serve` restart (v0.16.6's startup-time `RealignDueDates` rewrites queued rows). |
 | `collection.workers` | integer | `12` | Number of concurrent collection workers when running `aveloxis serve`. Each worker may make many concurrent DB calls; the pgx pool is sized as `max(workers + 15, 20)`. |
 | `collection.repo_clone_dir` | string | `$HOME/aveloxis-repos` | Directory for bare git clones used by the facade phase. Can grow to terabytes for large instances (400K+ repos). |

@@ -260,7 +260,15 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 		}
 	}
 
-	return fmt.Errorf("graphql: exhausted %d retries for %s", maxRetries, url)
+	// v0.20.19 (Fix J): wrap with ErrTransient so
+	// platform.ClassifyError returns ClassTransient. The
+	// v0.20.8 fetchPRBatchWithSubdivide path keys off this
+	// classification to halve the batch on transient errors;
+	// without the wrap, it falls through to ClassFatal and
+	// subdivision never fires. Production diagnostic on
+	// 2026-05-13 traced 6 of 7 stuck repos to exactly this
+	// missing classification.
+	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", maxRetries, url, ErrTransient)
 }
 
 // parseGraphQLResponse decodes a GraphQL response body, populates dest

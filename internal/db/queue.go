@@ -131,6 +131,27 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 		lastErr = &errMsg
 	}
 
+	// v0.21.2 — last_issues and last_prs are written as the
+	// CUMULATIVE COUNT from the data tables, not the per-cycle
+	// delta the caller passed via the issues/prs parameters. This
+	// mirrors v0.19.11's treatment of last_commits (facade always
+	// passes the full distinct-commit count from `git log` on the
+	// default branch). Pre-v0.21.2 these columns were the
+	// since-filtered count from the most recent cycle, which
+	// produced "Gathered: 0 / Meta: 53" dashboard reads on
+	// incremental cycles even when the DB had all 53 issues.
+	//
+	// The COUNT(*) subqueries are O(log n) because the schema
+	// declares idx_issues_repo_id and idx_pull_requests_repo_id —
+	// both partial-equality lookups, microseconds on typical repos.
+	// The issues and prs parameters are kept for backward
+	// compatibility with callers; they're currently unused inside
+	// the UPDATE but left in the signature so a follow-up refactor
+	// can expose them as separate "delta this cycle" columns if
+	// operators ever want that data surfaced.
+	_ = issues
+	_ = prs
+
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `
 			UPDATE aveloxis_ops.collection_queue
@@ -141,19 +162,19 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 				locked_at = NULL,
 				last_collected = NOW(),
 				last_error = $4,
-				last_issues = $5,
-				last_prs = $6,
-				last_messages = $7,
-				last_events = $8,
-				last_releases = $9,
-				last_contributors = $10,
-				last_commits = $11,
-				last_duration_ms = $12,
-				force_full_collect = CASE WHEN $13::boolean THEN FALSE ELSE force_full_collect END,
+				last_issues = (SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1),
+				last_prs = (SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1),
+				last_messages = $5,
+				last_events = $6,
+				last_releases = $7,
+				last_contributors = $8,
+				last_commits = $9,
+				last_duration_ms = $10,
+				force_full_collect = CASE WHEN $11::boolean THEN FALSE ELSE force_full_collect END,
 				updated_at = NOW()
 			WHERE repo_id = $1`,
 			repoID, status, recollectAfter.String(),
-			lastErr, issues, prs, messages, events, releases, contributors, commits, durationMs,
+			lastErr, messages, events, releases, contributors, commits, durationMs,
 			success)
 		return err
 	})

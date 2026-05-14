@@ -1,0 +1,86 @@
+# Integration tests against a live Postgres service container.
+#
+# Runs alongside test.yml (the unit-tier workflow) on every push and
+# pull request. The unit job in test.yml stays fast — no DB, no
+# service spin-up — and gives PR contributors quick feedback. This
+# workflow trades a few seconds of service-container boot for the
+# ability to catch the v0.21.0 bug shape (migration SQL that
+# references a non-existent column / wrong schema / wrong table)
+# before the change merges.
+#
+# Why a separate workflow rather than extending test.yml: separation
+# of concerns. A green "Tests" status means the unit tier passed; a
+# green "Integration" status means the migration ran end-to-end
+# against a real Postgres. If only one is green, the failure mode
+# is obvious from the badge.
+
+name: Integration
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+
+    # Postgres 16 service container. Empty DB on every job
+    # invocation — the test (TestRunMigrationsOnFreshDB) owns the
+    # full schema and is destructive. health-cmd + retries ensure
+    # the steps below don't try to connect before Postgres is
+    # accepting connections; ports binding to 5432:5432 makes the
+    # service reachable on localhost from the test binary.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aveloxis_test
+          POSTGRES_PASSWORD: aveloxis_test
+          POSTGRES_DB: aveloxis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The integration test (and any future AVELOXIS_TEST_DB-gated
+      # tests) read this and connect. sslmode=disable matches the
+      # default postgres:16 image configuration. The DSN points at
+      # localhost because GitHub Actions exposes service container
+      # ports via the runner's loopback interface.
+      AVELOXIS_TEST_DB: postgres://aveloxis_test:aveloxis_test@localhost:5432/aveloxis_test?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download dependencies
+        run: go mod download
+
+      # Run only the integration-tier tests. Filtering by name keeps
+      # this job focused — the unit tests already ran in test.yml.
+      # If a future integration test is added with a different
+      # naming pattern, update the -run regex here.
+      - name: Run migration integration tests
+        run: |
+          go test ./internal/db/ \
+            -run "TestRunMigrationsOnFreshDB|TestRunMigrationsIsIdempotent|TestRealign" \
+            -count=1 -v
+
+      # Final sanity check: run the entire test suite with the env
+      # var still set. Any other AVELOXIS_TEST_DB-gated tests that
+      # exist now or get added later will run here too, against the
+      # same Postgres service container.
+      - name: Run full suite with integration tier enabled
+        run: go test -count=1 ./...

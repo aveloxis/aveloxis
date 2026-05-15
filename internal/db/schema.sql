@@ -71,7 +71,19 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     scancode_locked_at      TIMESTAMPTZ,
     scancode_locked_pid     INTEGER,
     scancode_locked_boot_id TEXT,
-    scancode_output_path    TEXT
+    scancode_output_path    TEXT,
+    -- v0.21.4: per-repo failure tracking for the ScancodeWorker
+    -- backoff schedule. scancode_failed_attempts counts consecutive
+    -- failures (reset to 0 on success). scancode_last_failed_at is
+    -- the most recent failure time. The claim query consults both
+    -- to compute a per-row backoff window (quadratic, capped at
+    -- 7 days). After ScancodeMaxFailures consecutive failures the
+    -- failure-recording helper also stamps scancode_last_run = NOW()
+    -- so the cadence gate pushes the unrecoverable row out of the
+    -- queue for the full cadence window. See
+    -- internal/db/scancode_worker_store.go for the policy.
+    scancode_failed_attempts INTEGER DEFAULT 0,
+    scancode_last_failed_at  TIMESTAMPTZ
 );
 
 -- ============================================================

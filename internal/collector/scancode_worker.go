@@ -47,6 +47,12 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
+// scancodeStderrTailBytes is the cap on how much subprocess output
+// we keep in memory and log on failure. Big enough to surface a
+// meaningful traceback or error message, small enough that 100+
+// concurrent failures don't pressure the heap.
+const scancodeStderrTailBytes = 4096
+
 // bootIDPath is the kernel-generated UUID that changes on every
 // boot. Reading this file at lock-record time (paired with the
 // scancode subprocess PID) makes the recovery liveness check
@@ -342,19 +348,33 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
 		w.logger.Warn("scancode runOne mkdir failed",
 			"repo_id", job.RepoID, "error", err)
-		w.clearLockBestEffort(ctx, job.RepoID)
+		w.recordFailureBestEffort(ctx, job.RepoID)
 		return
 	}
 
 	// Shallow clone — scancode only needs current file state, not
 	// history. --depth 1 dramatically reduces bandwidth for big
 	// repos (Linux kernel: full history ~3 GB, shallow ~500 MB).
+	//
+	// GIT_LFS_SKIP_SMUDGE=1 (v0.21.4): suppresses the LFS smudge
+	// filter so pointer files come down as ~130-byte text blobs
+	// instead of triggering a fetch from the LFS endpoint. Scancode
+	// scans source-license + copyright headers — LFS payloads
+	// (tarballs, binary assets, compiled artifacts) aren't useful
+	// for that work. Critical for repos whose LFS budget is
+	// exhausted (2026-05-14 diagnostic: 214 clone failures on the
+	// chaoss.tv fleet, all "exceeded its LFS budget"); the LFS
+	// fetch fails, which fails the smudge filter, which fails the
+	// checkout, which fails the whole clone. Skipping smudge bypasses
+	// the entire chain. Also speeds up clones on every LFS-using
+	// repo (no payload fetch).
 	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--", job.RepoGit, tempDir)
+	cloneCmd.Env = append(os.Environ(), "GIT_LFS_SKIP_SMUDGE=1")
 	if out, err := cloneCmd.CombinedOutput(); err != nil {
 		w.logger.Warn("scancode runOne git clone failed",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
 			"error", err, "git_output", string(out))
-		w.clearLockBestEffort(ctx, job.RepoID)
+		w.recordFailureBestEffort(ctx, job.RepoID)
 		return
 	}
 
@@ -363,7 +383,7 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		// Should never happen — Run() already checked. Defensive.
 		w.logger.Warn("scancode runOne: binary not on PATH at run time",
 			"repo_id", job.RepoID, "error", err)
-		w.clearLockBestEffort(ctx, job.RepoID)
+		w.recordFailureBestEffort(ctx, job.RepoID)
 		return
 	}
 
@@ -384,6 +404,21 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		tempDir,
 	)
 
+	// Capture stdout + stderr to bounded ring buffers so we can
+	// log the tail on failure. Pre-v0.21.4, both streams were nil
+	// and Go's exec default discarded the subprocess output —
+	// producing log lines that said only "exit status 1" with no
+	// diagnostic information whatsoever. The 2026-05-14 production
+	// log had 87 such failures across 8 repos and we had no idea
+	// why scancode was crashing. The buffers are capped via
+	// tailBuffer so concurrent large failures can't pressure the
+	// heap (worst case: workerCount × 2 × scancodeStderrTailBytes
+	// ≈ a few hundred KB on a 7-worker pool).
+	stderrBuf := &tailBuffer{cap: scancodeStderrTailBytes}
+	stdoutBuf := &tailBuffer{cap: scancodeStderrTailBytes}
+	cmd.Stderr = stderrBuf
+	cmd.Stdout = stdoutBuf
+
 	// cmd.Start() is the key change from the legacy synchronous
 	// invocation: we need the OS PID BEFORE the subprocess
 	// finishes running, so we can persist it to scancode_locked_pid
@@ -393,7 +428,7 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	if err := cmd.Start(); err != nil {
 		w.logger.Warn("scancode runOne: cmd.Start() failed",
 			"repo_id", job.RepoID, "error", err)
-		w.clearLockBestEffort(ctx, job.RepoID)
+		w.recordFailureBestEffort(ctx, job.RepoID)
 		return
 	}
 
@@ -415,8 +450,10 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	if err := cmd.Wait(); err != nil {
 		w.logger.Warn("scancode runOne: scancode subprocess failed",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
-			"error", err, "pid", pid)
-		w.clearLockBestEffort(ctx, job.RepoID)
+			"error", err, "pid", pid,
+			"stderr_tail", stderrBuf.String(),
+			"stdout_tail", stdoutBuf.String())
+		w.recordFailureBestEffort(ctx, job.RepoID)
 		return
 	}
 
@@ -428,7 +465,7 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		w.logger.Warn("scancode runOne: ingest failed",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
 			"error", err)
-		w.clearLockBestEffort(ctx, job.RepoID)
+		w.recordFailureBestEffort(ctx, job.RepoID)
 		return
 	}
 
@@ -452,6 +489,13 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 // clearLockBestEffort attempts to clear the lock and logs if it
 // fails. Uses a background context so a canceled ctx (graceful
 // shutdown) doesn't prevent the cleanup write.
+//
+// As of v0.21.4 this is used ONLY by the dispatcher's
+// ctx-canceled-after-claim cleanup — that's a clean release of a
+// row we claimed but never dispatched to a runner, not a failure
+// event. All repo-specific failure paths in runOne use
+// recordFailureBestEffort instead so the failure-counter +
+// last_failed_at columns get updated and the backoff gate applies.
 func (w *ScancodeWorker) clearLockBestEffort(ctx context.Context, repoID int64) {
 	// Try the live ctx first; fall back to background if canceled.
 	useCtx := ctx
@@ -460,6 +504,26 @@ func (w *ScancodeWorker) clearLockBestEffort(ctx context.Context, repoID int64) 
 	}
 	if err := w.store.ClearScancodeLock(useCtx, repoID); err != nil {
 		w.logger.Warn("scancode runOne: ClearScancodeLock failed",
+			"repo_id", repoID, "error", err)
+	}
+}
+
+// recordFailureBestEffort (v0.21.4) is the failure-path counterpart
+// to clearLockBestEffort. It calls store.RecordScancodeFailure which
+// increments scancode_failed_attempts, stamps scancode_last_failed_at,
+// and conditionally stamps scancode_last_run when the failure count
+// reaches ScancodeMaxFailures.
+//
+// Falls back to a background context if the live ctx is canceled,
+// matching clearLockBestEffort's contract so graceful shutdown
+// doesn't lose the failure record.
+func (w *ScancodeWorker) recordFailureBestEffort(ctx context.Context, repoID int64) {
+	useCtx := ctx
+	if ctx.Err() != nil {
+		useCtx = context.Background()
+	}
+	if err := w.store.RecordScancodeFailure(useCtx, repoID); err != nil {
+		w.logger.Warn("scancode runOne: RecordScancodeFailure failed",
 			"repo_id", repoID, "error", err)
 	}
 }

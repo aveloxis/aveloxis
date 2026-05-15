@@ -211,6 +211,26 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_locked_boot_id", "TEXT")
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_output_path", "TEXT")
 
+	// v0.21.4: failure tracking + exponential backoff.
+	//
+	// 2026-05-14 production diagnostic: the v0.21.0 ScancodeWorker
+	// cleared the lock columns on failure but kept scancode_last_run
+	// NULL. The claim query orders NULLS FIRST on scancode_last_run,
+	// so failed repos became the highest-priority candidates for the
+	// next dispatcher tick. With ~45s failure scans and ~3-min
+	// healthy scans, 10 doomed repos dominated visible activity on
+	// a 7-worker pool.
+	//
+	// v0.21.4 adds a counter + last-failure-time column so the claim
+	// query can apply per-row exponential backoff (1h, 4h, 9h, ...,
+	// 7d cap). After ScancodeMaxFailures consecutive failures the
+	// RecordScancodeFailure helper also stamps scancode_last_run =
+	// NOW(), letting the cadence gate (default 180 days) shoulder
+	// the long-tail "this repo will never scan" cases out of the
+	// queue.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_failed_attempts", "INTEGER DEFAULT 0")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_last_failed_at", "TIMESTAMPTZ")
+
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection
 	// created duplicate rows. Clean up first, then create the unique index.

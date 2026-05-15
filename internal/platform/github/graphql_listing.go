@@ -37,12 +37,16 @@ import (
 func (c *Client) ListIssuesAndPRs(ctx context.Context, owner, repo string, since time.Time) (*platform.IssueAndPRBatch, error) {
 	batch := &platform.IssueAndPRBatch{}
 
-	issues, comments, err := c.listIssuesGraphQL(ctx, owner, repo, since)
+	issues, comments, labelsByNumber, assigneesByNumber, err := c.listIssuesGraphQL(ctx, owner, repo, since)
+	// Surface partial results even on error so the caller can stage what
+	// we have before bubbling. Mirrors v0.20.9 for PR gap fill.
+	batch.Issues = issues
+	batch.IssueComments = comments
+	batch.IssueLabels = labelsByNumber
+	batch.IssueAssignees = assigneesByNumber
 	if err != nil {
 		return batch, fmt.Errorf("graphql issues listing: %w", err)
 	}
-	batch.Issues = issues
-	batch.IssueComments = comments
 
 	prs, err := c.listPullRequestsGraphQL(ctx, owner, repo, since)
 	if err != nil {
@@ -64,7 +68,20 @@ func (c *Client) ListIssuesAndPRs(ctx context.Context, owner, repo string, since
 // initial page fast. The returned comments slice is flat (one entry per
 // comment, IssueRef populated) so the staged collector can stage them
 // directly without regrouping.
-func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, since time.Time) ([]model.Issue, []platform.MessageWithRef, error) {
+//
+// Phase 5 addition: selects `labels(first: 100)` and `assignees(first:
+// 100)` per issue so label + assignee fetching no longer needs the
+// two per-issue REST calls in collectIssues. Returns two maps keyed
+// by issue number; the staged collector drains them into stagedIssue
+// envelopes. Issues with >100 labels or >100 assignees fall through
+// to paginateIssueLabels / paginateIssueAssignees follow-ups. Label
+// PlatformID stays 0 (GitHub GraphQL's Label has no databaseId — same
+// gap as prBatchLabels documents for PRs).
+//
+// On a mid-pagination error the function returns the partial results
+// collected so far along with the error — caller can stage what it
+// got before bubbling. Matches the v0.20.9 pattern for PR gap fill.
+func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, since time.Time) ([]model.Issue, []platform.MessageWithRef, map[int][]model.IssueLabel, map[int][]model.IssueAssignee, error) {
 	const query = `query IssuesList($owner: String!, $repo: String!, $cursor: String, $since: DateTime) {
   repository(owner: $owner, name: $repo) {
     issues(first: 100, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}, filterBy: {since: $since}) {
@@ -77,6 +94,14 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
             databaseId id body createdAt updatedAt url authorAssociation
             author { __typename login ... on User { databaseId avatarUrl url name email } }
           }
+          pageInfo { hasNextPage endCursor }
+        }
+        labels(first: 100) {
+          nodes { id name color description isDefault }
+          pageInfo { hasNextPage endCursor }
+        }
+        assignees(first: 100) {
+          nodes { databaseId login avatarUrl url name email }
           pageInfo { hasNextPage endCursor }
         }
         author {
@@ -92,6 +117,8 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
 
 	var out []model.Issue
 	var comments []platform.MessageWithRef
+	labelsByNumber := map[int][]model.IssueLabel{}
+	assigneesByNumber := map[int][]model.IssueAssignee{}
 	var cursor string
 	origin := model.DataOrigin{
 		ToolSource: "aveloxis",
@@ -138,14 +165,16 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
 							} `json:"nodes"`
 							PageInfo prBatchPageInfo `json:"pageInfo"`
 						} `json:"comments"`
-						Author *prBatchUser `json:"author"`
+						Labels    prBatchLabels   `json:"labels"`
+						Assignees prBatchUserConn `json:"assignees"`
+						Author    *prBatchUser    `json:"author"`
 					} `json:"nodes"`
 					PageInfo prBatchPageInfo `json:"pageInfo"`
 				} `json:"issues"`
 			} `json:"repository"`
 		}
 		if err := c.http.GraphQL(ctx, query, vars, &resp); err != nil {
-			return out, comments, err
+			return out, comments, labelsByNumber, assigneesByNumber, err
 		}
 
 		for _, n := range resp.Repository.Issues.Nodes {
@@ -197,15 +226,146 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
 			if n.Comments.PageInfo.HasNextPage {
 				extra, err := c.paginateIssueComments(ctx, owner, repo, n.Number, n.Comments.PageInfo.EndCursor, origin)
 				if err != nil {
-					return out, comments, fmt.Errorf("paginating comments for issue #%d: %w", n.Number, err)
+					return out, comments, labelsByNumber, assigneesByNumber, fmt.Errorf("paginating comments for issue #%d: %w", n.Number, err)
 				}
 				comments = append(comments, extra...)
 			}
+
+			// Phase 5: inline labels for this issue. PlatformID stays 0 —
+			// see prBatchLabels comment for the GraphQL Label parity gap.
+			var labels []model.IssueLabel
+			for _, l := range n.Labels.Nodes {
+				labels = append(labels, model.IssueLabel{
+					NodeID:      l.ID,
+					Text:        l.Name,
+					Description: l.Description,
+					Color:       l.Color,
+					Origin:      origin,
+				})
+			}
+			if n.Labels.PageInfo.HasNextPage {
+				extra, err := c.paginateIssueLabels(ctx, owner, repo, n.Number, n.Labels.PageInfo.EndCursor, origin)
+				if err != nil {
+					return out, comments, labelsByNumber, assigneesByNumber, fmt.Errorf("paginating labels for issue #%d: %w", n.Number, err)
+				}
+				labels = append(labels, extra...)
+			}
+			if len(labels) > 0 {
+				labelsByNumber[n.Number] = labels
+			}
+
+			// Phase 5: inline assignees for this issue. databaseId IS
+			// available on User nodes (unlike Label), so PlatformSrcID
+			// is populated correctly and the unique constraint
+			// (issue_id, platform_assignee_id) works.
+			var assignees []model.IssueAssignee
+			for _, a := range n.Assignees.Nodes {
+				assignees = append(assignees, model.IssueAssignee{
+					PlatformSrcID:  a.DatabaseID,
+					PlatformNodeID: "", // GraphQL User node ID is the global ID, not what postgres stores here
+					Origin:         origin,
+				})
+			}
+			if n.Assignees.PageInfo.HasNextPage {
+				extra, err := c.paginateIssueAssignees(ctx, owner, repo, n.Number, n.Assignees.PageInfo.EndCursor, origin)
+				if err != nil {
+					return out, comments, labelsByNumber, assigneesByNumber, fmt.Errorf("paginating assignees for issue #%d: %w", n.Number, err)
+				}
+				assignees = append(assignees, extra...)
+			}
+			if len(assignees) > 0 {
+				assigneesByNumber[n.Number] = assignees
+			}
 		}
 		if !resp.Repository.Issues.PageInfo.HasNextPage {
-			return out, comments, nil
+			return out, comments, labelsByNumber, assigneesByNumber, nil
 		}
 		cursor = resp.Repository.Issues.PageInfo.EndCursor
+	}
+}
+
+// paginateIssueLabels follows Issue.labels past the first 100. Mirrors
+// the PR-side paginatePRLabels helper anchored on an issue number.
+// Phase 5 of the REST → GraphQL refactor.
+func (c *Client) paginateIssueLabels(ctx context.Context, owner, repo string, issueNumber int, cursor string, origin model.DataOrigin) ([]model.IssueLabel, error) {
+	const query = `query PagIssueLabels($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $number) {
+      labels(first: 100, after: $after) {
+        nodes { id name color description isDefault }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`
+	var out []model.IssueLabel
+	for {
+		vars := map[string]any{"owner": owner, "repo": repo, "number": issueNumber, "after": cursor}
+		var resp struct {
+			Repository struct {
+				Issue struct {
+					Labels prBatchLabels `json:"labels"`
+				} `json:"issue"`
+			} `json:"repository"`
+		}
+		if err := c.http.GraphQL(ctx, query, vars, &resp); err != nil {
+			return out, err
+		}
+		for _, l := range resp.Repository.Issue.Labels.Nodes {
+			out = append(out, model.IssueLabel{
+				NodeID:      l.ID,
+				Text:        l.Name,
+				Description: l.Description,
+				Color:       l.Color,
+				Origin:      origin,
+			})
+		}
+		pi := resp.Repository.Issue.Labels.PageInfo
+		if !pi.HasNextPage {
+			return out, nil
+		}
+		cursor = pi.EndCursor
+	}
+}
+
+// paginateIssueAssignees follows Issue.assignees past the first 100.
+// Mirrors the PR-side paginatePRAssignees helper anchored on an issue
+// number. Phase 5 of the REST → GraphQL refactor.
+func (c *Client) paginateIssueAssignees(ctx context.Context, owner, repo string, issueNumber int, cursor string, origin model.DataOrigin) ([]model.IssueAssignee, error) {
+	const query = `query PagIssueAssignees($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $number) {
+      assignees(first: 100, after: $after) {
+        nodes { databaseId login avatarUrl url name email }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`
+	var out []model.IssueAssignee
+	for {
+		vars := map[string]any{"owner": owner, "repo": repo, "number": issueNumber, "after": cursor}
+		var resp struct {
+			Repository struct {
+				Issue struct {
+					Assignees prBatchUserConn `json:"assignees"`
+				} `json:"issue"`
+			} `json:"repository"`
+		}
+		if err := c.http.GraphQL(ctx, query, vars, &resp); err != nil {
+			return out, err
+		}
+		for _, a := range resp.Repository.Issue.Assignees.Nodes {
+			out = append(out, model.IssueAssignee{
+				PlatformSrcID: a.DatabaseID,
+				Origin:        origin,
+			})
+		}
+		pi := resp.Repository.Issue.Assignees.PageInfo
+		if !pi.HasNextPage {
+			return out, nil
+		}
+		cursor = pi.EndCursor
 	}
 }
 

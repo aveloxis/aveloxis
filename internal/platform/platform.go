@@ -99,10 +99,21 @@ type RepoCollector interface {
 // platform implementation doesn't support inline comments (GitLab REST
 // composition); callers fall back to the MessageCollector interface in
 // that case.
+//
+// Phase 5 adds IssueLabels and IssueAssignees: per-issue labels and
+// assignees delivered inline with the issue listing, keyed by issue
+// number so the staged collector can demux them. When non-nil and
+// IssueChildMode == "graphql", the staged collector skips the two
+// per-issue REST calls (ListIssueLabels / ListIssueAssignees) and
+// drains these maps directly into the stagedIssue envelope. Both maps
+// are nil on the GitLab REST-composition path; the collector falls
+// back to the REST iterators in that case.
 type IssueAndPRBatch struct {
-	Issues        []model.Issue
-	PullRequests  []model.PullRequest
-	IssueComments []MessageWithRef
+	Issues         []model.Issue
+	PullRequests   []model.PullRequest
+	IssueComments  []MessageWithRef
+	IssueLabels    map[int][]model.IssueLabel
+	IssueAssignees map[int][]model.IssueAssignee
 }
 
 // IssueCollector fetches issues and related entities.

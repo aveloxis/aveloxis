@@ -33,6 +33,7 @@
     "listing_mode": "rest",
     "threading_mode": "single",
     "shard_size": 3000,
+    "issue_child_mode": "rest",
     "enrich_interval_minutes": 30,
     "search_resolve_interval_minutes": 60,
     "affiliation_interval_minutes": 60,

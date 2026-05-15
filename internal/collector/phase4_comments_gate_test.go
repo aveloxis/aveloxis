@@ -5,6 +5,7 @@ package collector
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -78,11 +79,17 @@ func TestPhase4StagedPRCarriesInlineComments(t *testing.T) {
 	}
 	code := string(src)
 
-	if !strings.Contains(code, "Comments []MessageWithRef") {
+	// Use whitespace-tolerant regex: gofmt aligns struct fields in
+	// columns, so adding a longer-named field later shifts the spacing
+	// on every existing field. The contract is "name + type", not
+	// "exact spacing".
+	commentsRE := regexp.MustCompile(`\bComments\s+\[\]MessageWithRef\b`)
+	if !commentsRE.MatchString(code) {
 		t.Error("platform.StagedPR must declare Comments []MessageWithRef for inline " +
 			"PR conversation comments delivered by phase 4's GraphQL PR batch")
 	}
-	if !strings.Contains(code, "IssueComments []MessageWithRef") {
+	issueCommentsRE := regexp.MustCompile(`\bIssueComments\s+\[\]MessageWithRef\b`)
+	if !issueCommentsRE.MatchString(code) {
 		t.Error("platform.IssueAndPRBatch must declare IssueComments []MessageWithRef for " +
 			"inline issue conversation comments delivered by phase 4's unified listing")
 	}

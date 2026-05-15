@@ -287,9 +287,10 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 	}
 	defer store.Close()
 
-	if err := store.Migrate(ctx); err != nil {
-		return fmt.Errorf("migrating database: %w", err)
-	}
+	// v0.21.5: store.Migrate(ctx) intentionally NOT called here.
+	// Schema migrations only run from `aveloxis serve` startup and
+	// the dedicated `aveloxis migrate` subcommand. Operators run
+	// migrate explicitly before kicking off one-off collections.
 
 	ghKeys, glKeys, err := loadKeys(ctx, cfg, store, useAugurKeys, logger)
 	if err != nil {
@@ -410,9 +411,9 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 	}
 	defer store.Close()
 
-	if err := store.Migrate(ctx); err != nil {
-		return fmt.Errorf("migrating database: %w", err)
-	}
+	// v0.21.5: store.Migrate(ctx) intentionally NOT called here.
+	// add-repo trusts that the operator has already run
+	// `aveloxis migrate` once for this database.
 
 	ghKeys, glKeys, err := loadKeys(ctx, cfg, store, false, logger)
 	if err != nil {
@@ -625,9 +626,9 @@ func runImportFromAugur(cfgPath string, priority int) error {
 	}
 	defer store.Close()
 
-	if err := store.Migrate(ctx); err != nil {
-		return fmt.Errorf("migrating database: %w", err)
-	}
+	// v0.21.5: store.Migrate(ctx) intentionally NOT called here.
+	// import-from-augur trusts that the operator has already run
+	// `aveloxis migrate` once for this database.
 
 	// Read all repos from Augur.
 	augurRepos, err := db.LoadAugurRepos(ctx, store.Pool())
@@ -764,9 +765,9 @@ func runAddKey(cfgPath, token, plat, name string) error {
 	}
 	defer store.Close()
 
-	if err := store.Migrate(ctx); err != nil {
-		return err
-	}
+	// v0.21.5: store.Migrate(ctx) intentionally NOT called here.
+	// add-key trusts that the operator has already run
+	// `aveloxis migrate` once for this database.
 
 	if err := db.SaveAPIKey(ctx, store.Pool(), name, token, plat); err != nil {
 		return fmt.Errorf("saving key: %w", err)
@@ -789,9 +790,9 @@ func runImportKeysFromAugur(cfgPath string) error {
 	}
 	defer store.Close()
 
-	if err := store.Migrate(ctx); err != nil {
-		return err
-	}
+	// v0.21.5: store.Migrate(ctx) intentionally NOT called here.
+	// import-keys-from-augur trusts that the operator has already run
+	// `aveloxis migrate` once for this database.
 
 	imported, err := db.ImportKeysFromAugur(ctx, store.Pool())
 	if err != nil {

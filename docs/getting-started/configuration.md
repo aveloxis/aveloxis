@@ -65,6 +65,7 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "listing_mode": "graphql",
     "threading_mode": "sharded",
     "shard_size": 3000,
+    "issue_child_mode": "graphql",
     "enrich_interval_minutes": 30,
     "search_resolve_interval_minutes": 60,
     "affiliation_interval_minutes": 60,
@@ -156,6 +157,7 @@ These four settings control the staged collector's request shape. The default fo
 | `collection.listing_mode` | string | `"rest"` | `"rest"` uses separate iterators for `/issues` and `/pulls`. `"graphql"` (v0.18.2+) calls `ListIssuesAndPRs` once per repo — a pair of paginated GraphQL queries instead of two REST scans. Setting both this AND `pr_child_mode` to `"graphql"` activates v0.18.5's `fullGraphQLMode` gate: conversation comments are delivered inline, eliminating one repo-wide REST call. |
 | `collection.threading_mode` | string | `"single"` | `"single"` fetches PR batches sequentially. `"sharded"` (v0.18.3+) partitions the enumerated PR list and runs each shard in its own goroutine when the PR count exceeds `shard_size`. Only activates when `pr_child_mode=graphql`. |
 | `collection.shard_size` | integer | `3000` | Item-count threshold for `threading_mode=sharded`. Number of shards = `ceil(prs / shard_size)`. Smaller values fan out earlier on medium repos. Ignored when `threading_mode != "sharded"`. |
+| `collection.issue_child_mode` | string | `"rest"` | `"rest"` fetches each issue's labels and assignees via two per-issue REST calls (the legacy waterfall — ~0.5s per issue on a 73-key fleet). `"graphql"` (v0.22.0+, phase 5) drains labels and assignees from the inline maps delivered by `ListIssuesAndPRs`, eliminating both REST calls per issue. ~100× speedup on the issue phase on repos with thousands of issues. Requires `listing_mode=graphql` to have effect (the inline maps come from that path). GitLab path is REST composition in both modes (column parity preserved). Trade-off: `platform_label_id` in `issue_labels` stays 0 on the GraphQL path because GitHub's GraphQL `Label` type has no `databaseId` — same gap as `pull_request_labels.platform_label_id`. The column has no downstream consumers (no SELECT/JOIN/WHERE) so this is a known parity gap, not a regression. Detection of label renames within a project becomes impossible (renamed labels look like distinct rows). |
 
 **Background tasks**
 

@@ -100,15 +100,16 @@ type stagedPR struct {
 // StagedCollector writes raw API data to the staging table instead of directly
 // into the relational schema. This is the fast path for high-throughput collection.
 type StagedCollector struct {
-	client        platform.Client
-	store         *db.PostgresStore
-	logger        *slog.Logger
-	platID        int16
-	prChildMode   string // "rest" (default) or "graphql" — see CollectionConfig.PRChildMode
-	listingMode   string // "rest" (default) or "graphql" — see CollectionConfig.ListingMode
-	threadingMode string // "single" (default) or "sharded" — see CollectionConfig.ThreadingMode
-	shardSize     int    // item-count threshold for sharded fan-out (default 3000)
-	workers       int    // scheduler worker pool size — feeds parallelSlotsForWorkers
+	client         platform.Client
+	store          *db.PostgresStore
+	logger         *slog.Logger
+	platID         int16
+	prChildMode    string // "rest" (default) or "graphql" — see CollectionConfig.PRChildMode
+	listingMode    string // "rest" (default) or "graphql" — see CollectionConfig.ListingMode
+	threadingMode  string // "single" (default) or "sharded" — see CollectionConfig.ThreadingMode
+	shardSize      int    // item-count threshold for sharded fan-out (default 3000)
+	issueChildMode string // "rest" (default) or "graphql" — phase 5: inline issue label+assignee fetch via the GraphQL listing
+	workers        int    // scheduler worker pool size — feeds parallelSlotsForWorkers
 }
 
 // WithWorkers records the scheduler's worker-pool size on a
@@ -121,6 +122,21 @@ func (sc *StagedCollector) WithWorkers(n int) *StagedCollector {
 		n = 0
 	}
 	sc.workers = n
+	return sc
+}
+
+// WithIssueChildMode sets the phase 5 mode controlling whether issue
+// labels + assignees are fetched via per-issue REST iterators (the
+// legacy path) or drained from the inline maps delivered by the
+// GraphQL listing. Unknown values collapse to "rest". Returns the
+// same collector for chaining. Kept as a chainable setter (rather
+// than a new constructor) because the phase 1/2/3 constructor
+// signature is already at 7 parameters.
+func (sc *StagedCollector) WithIssueChildMode(mode string) *StagedCollector {
+	if mode != "graphql" {
+		mode = "rest"
+	}
+	sc.issueChildMode = mode
 	return sc
 }
 
@@ -166,14 +182,15 @@ func NewStagedCollectorWithAllModes(client platform.Client, store *db.PostgresSt
 		shardSize = defaultShardSize
 	}
 	return &StagedCollector{
-		client:        client,
-		store:         store,
-		logger:        logger,
-		platID:        int16(client.Platform()),
-		prChildMode:   prChildMode,
-		listingMode:   listingMode,
-		threadingMode: threadingMode,
-		shardSize:     shardSize,
+		client:         client,
+		store:          store,
+		logger:         logger,
+		platID:         int16(client.Platform()),
+		prChildMode:    prChildMode,
+		listingMode:    listingMode,
+		threadingMode:  threadingMode,
+		shardSize:      shardSize,
+		issueChildMode: "rest", // phase 5 — opt in via WithIssueChildMode
 	}
 }
 
@@ -312,48 +329,77 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 // collectSequential runs issues, PRs, events, and messages one after another.
 // Used for repos with fewer than LargeRepoCommitThreshold commits.
 func (sc *StagedCollector) collectSequential(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
-	preIssues, prePRs, preIssueComments := sc.preEnumerateIfGraphQL(ctx, owner, repo, since, result)
-	sc.collectIssues(ctx, sw, owner, repo, since, result, preIssues)
-	sc.stageInlineIssueComments(ctx, sw, preIssueComments, result)
-	sc.collectPRs(ctx, sw, owner, repo, since, result, prePRs)
+	pre := sc.preEnumerateIfGraphQL(ctx, owner, repo, since, result)
+	sc.collectIssues(ctx, sw, owner, repo, since, result, pre.issues, pre.issueLabels, pre.issueAssignees)
+	sc.stageInlineIssueComments(ctx, sw, pre.issueComments, result)
+	sc.collectPRs(ctx, sw, owner, repo, since, result, pre.prs)
 	sc.collectEvents(ctx, sw, owner, repo, since, result)
 	sc.collectMessages(ctx, sw, owner, repo, since, result)
 }
 
+// preEnumerateBatch carries the result of the unified GraphQL
+// issue+PR listing. issues and prs are non-nil empty slices when the
+// listing succeeded with zero items, so the caller can distinguish
+// "pre-fetched, found none" from "not pre-fetched, use iterator".
+// issueLabels and issueAssignees are nil unless phase 5's
+// IssueChildMode is "graphql" (kept nil otherwise so collectIssues
+// can short-circuit cheaply).
+type preEnumerateBatch struct {
+	issues         []model.Issue
+	prs            []model.PullRequest
+	issueComments  []platform.MessageWithRef
+	issueLabels    map[int][]model.IssueLabel
+	issueAssignees map[int][]model.IssueAssignee
+}
+
 // preEnumerateIfGraphQL does the unified GraphQL issue+PR listing once
 // when listingMode=graphql, returning the issue and PR slices plus the
-// inline issue comments delivered with the listing (phase 4). In
-// listingMode=rest it returns (nil, nil, nil) — the legacy per-path
-// iterators in collectIssues and collectPRs remain in charge, and the
-// repo-wide collectMessages call keeps its job.
+// inline issue comments (phase 4) and the inline issue labels +
+// assignees (phase 5) delivered with the listing. In listingMode=rest
+// it returns an empty batch — the legacy per-path iterators in
+// collectIssues and collectPRs remain in charge.
 //
 // Non-fatal errors from the unified listing are logged and the function
-// returns (nil, nil, nil) so collection falls through to the legacy
+// returns an empty batch so collection falls through to the legacy
 // iterators. This way a transient GraphQL problem doesn't take down the
 // entire repo's collection — we just lose the speedup for this cycle.
-func (sc *StagedCollector) preEnumerateIfGraphQL(ctx context.Context, owner, repo string, since time.Time, _ *CollectResult) ([]model.Issue, []model.PullRequest, []platform.MessageWithRef) {
+func (sc *StagedCollector) preEnumerateIfGraphQL(ctx context.Context, owner, repo string, since time.Time, _ *CollectResult) preEnumerateBatch {
 	if sc.listingMode != "graphql" {
-		return nil, nil, nil
+		return preEnumerateBatch{}
 	}
 	batch, err := sc.client.ListIssuesAndPRs(ctx, owner, repo, since)
 	if err != nil {
+		// Surface partial results even on error: ListIssuesAndPRs (phase 5)
+		// returns the batch with whatever issues/labels/assignees made it
+		// before the error, so we still stage them rather than discarding
+		// all the work done so far.
+		if batch != nil && (len(batch.Issues) > 0 || len(batch.PullRequests) > 0) {
+			sc.logger.Warn("unified GraphQL listing errored after partial results — staging what we got, then falling back to REST iterators for the rest",
+				"owner", owner, "repo", repo, "error", err,
+				"partial_issues", len(batch.Issues), "partial_prs", len(batch.PullRequests))
+			return preEnumerateBatch{
+				issues:         batch.Issues,
+				prs:            batch.PullRequests,
+				issueComments:  batch.IssueComments,
+				issueLabels:    batch.IssueLabels,
+				issueAssignees: batch.IssueAssignees,
+			}
+		}
 		if isOptionalEndpointSkip(err) {
 			sc.logger.Info("unified listing skipped — falling back to REST iterators",
 				"owner", owner, "repo", repo, "reason", err)
-			return nil, nil, nil
+			return preEnumerateBatch{}
 		}
 		sc.logger.Warn("unified GraphQL listing failed — falling back to REST iterators",
 			"owner", owner, "repo", repo, "error", err)
-		return nil, nil, nil
+		return preEnumerateBatch{}
 	}
 	sc.logger.Info("unified listing complete",
 		"owner", owner, "repo", repo,
 		"issues", len(batch.Issues), "prs", len(batch.PullRequests),
-		"inline_issue_comments", len(batch.IssueComments))
-	// Initialize to non-nil empty slices when the batch had zero items
-	// so the caller can distinguish "pre-fetched, found none" from
-	// "not pre-fetched, use iterator". Legacy rest-mode callers still
-	// see (nil, nil, nil).
+		"inline_issue_comments", len(batch.IssueComments),
+		"inline_issue_labels_buckets", len(batch.IssueLabels),
+		"inline_issue_assignees_buckets", len(batch.IssueAssignees))
 	issues := batch.Issues
 	if issues == nil {
 		issues = []model.Issue{}
@@ -362,7 +408,13 @@ func (sc *StagedCollector) preEnumerateIfGraphQL(ctx context.Context, owner, rep
 	if prs == nil {
 		prs = []model.PullRequest{}
 	}
-	return issues, prs, batch.IssueComments
+	return preEnumerateBatch{
+		issues:         issues,
+		prs:            prs,
+		issueComments:  batch.IssueComments,
+		issueLabels:    batch.IssueLabels,
+		issueAssignees: batch.IssueAssignees,
+	}
 }
 
 // stageInlineIssueComments stages the issue comments that came inline
@@ -414,7 +466,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 	// Pre-enumerate once before forking goroutines when listingMode is
 	// graphql. Calling ListIssuesAndPRs in each child goroutine would
 	// double-fetch the entire data set.
-	preIssues, prePRs, preIssueComments := sc.preEnumerateIfGraphQL(ctx, owner, repo, since, result)
+	pre := sc.preEnumerateIfGraphQL(ctx, owner, repo, since, result)
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex // protects result.Errors and counts
@@ -428,8 +480,8 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 		defer wg.Done()
 		issueSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
-		sc.collectIssues(ctx, issueSW, owner, repo, since, localResult, preIssues)
-		sc.stageInlineIssueComments(ctx, issueSW, preIssueComments, localResult)
+		sc.collectIssues(ctx, issueSW, owner, repo, since, localResult, pre.issues, pre.issueLabels, pre.issueAssignees)
+		sc.stageInlineIssueComments(ctx, issueSW, pre.issueComments, localResult)
 		if err := issueSW.Flush(ctx); err != nil {
 			localResult.Errors = append(localResult.Errors, fmt.Errorf("issue flush: %w", err))
 		}
@@ -445,7 +497,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 		defer wg.Done()
 		prSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
-		sc.collectPRs(ctx, prSW, owner, repo, since, localResult, prePRs)
+		sc.collectPRs(ctx, prSW, owner, repo, since, localResult, pre.prs)
 		if err := prSW.Flush(ctx); err != nil {
 			localResult.Errors = append(localResult.Errors, fmt.Errorf("pr flush: %w", err))
 		}
@@ -490,13 +542,30 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 // unified ListIssuesAndPRs call (phase 2, listingMode=graphql); the
 // iterator path is bypassed. When nil, the legacy ListIssues iterator
 // drives enumeration (listingMode=rest, the default).
-func (sc *StagedCollector) collectIssues(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult, preEnumerated []model.Issue) {
+//
+// Phase 5: when issueChildMode=="graphql" AND the preLabels /
+// preAssignees maps are non-nil (delivered by ListIssuesAndPRs on
+// GitHub), labels and assignees are drained from the maps by issue
+// number — the per-issue ListIssueLabels and ListIssueAssignees REST
+// calls are skipped. In every other configuration (rest mode, GitLab
+// REST composition, GraphQL listing fell back) the legacy per-issue
+// REST iterators run as before.
+func (sc *StagedCollector) collectIssues(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult, preEnumerated []model.Issue, preLabels map[int][]model.IssueLabel, preAssignees map[int][]model.IssueAssignee) {
 	mode := sc.listingMode
 	if preEnumerated == nil && mode == "graphql" {
 		// Pre-enumeration failed or wasn't done. Fall back to REST.
 		mode = "rest"
 	}
-	sc.logger.Info("collecting issues", "owner", owner, "repo", repo, "listing_mode", mode)
+	// Phase 5 inline-child mode fires only when explicitly enabled AND
+	// the inline maps are present (GitHub graphql path). On GitLab
+	// FetchPRBatch-style REST composition the maps stay nil and we
+	// fall through to the legacy REST iterators below.
+	inlineChildren := sc.issueChildMode == "graphql" && (preLabels != nil || preAssignees != nil)
+	sc.logger.Info("collecting issues",
+		"owner", owner, "repo", repo,
+		"listing_mode", mode,
+		"issue_child_mode", sc.issueChildMode,
+		"inline_children", inlineChildren)
 
 	issues := preEnumerated
 	if preEnumerated == nil {
@@ -517,17 +586,26 @@ func (sc *StagedCollector) collectIssues(ctx context.Context, sw *db.StagingWrit
 
 	for _, issue := range issues {
 		envelope := stagedIssue{Issue: issue}
-		for label, err := range sc.client.ListIssueLabels(ctx, owner, repo, issue.Number) {
-			if err != nil {
-				break
+		if inlineChildren {
+			// Phase 5: labels + assignees came inline with the listing.
+			// preLabels and preAssignees are nil-safe to index (a nil map
+			// returns the zero value, which is a nil slice — fine).
+			envelope.Labels = preLabels[issue.Number]
+			envelope.Assignees = preAssignees[issue.Number]
+		} else {
+			// Legacy REST path: two per-issue iterators.
+			for label, err := range sc.client.ListIssueLabels(ctx, owner, repo, issue.Number) {
+				if err != nil {
+					break
+				}
+				envelope.Labels = append(envelope.Labels, label)
 			}
-			envelope.Labels = append(envelope.Labels, label)
-		}
-		for assignee, err := range sc.client.ListIssueAssignees(ctx, owner, repo, issue.Number) {
-			if err != nil {
-				break
+			for assignee, err := range sc.client.ListIssueAssignees(ctx, owner, repo, issue.Number) {
+				if err != nil {
+					break
+				}
+				envelope.Assignees = append(envelope.Assignees, assignee)
 			}
-			envelope.Assignees = append(envelope.Assignees, assignee)
 		}
 		if err := sw.Stage(ctx, EntityIssue, envelope); err != nil {
 			result.Errors = append(result.Errors, err)

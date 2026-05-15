@@ -206,6 +206,22 @@ type CollectionConfig struct {
 	// Ignored when ThreadingMode != "sharded".
 	ShardSize int `json:"shard_size"`
 
+	// IssueChildMode selects between per-issue REST label+assignee
+	// fetching (the legacy waterfall, ~2 REST calls per issue) and
+	// inline GraphQL delivery ("graphql" — labels and assignees arrive
+	// in the issue listing). When "graphql", the staged collector
+	// skips ListIssueLabels and ListIssueAssignees per-issue REST
+	// iterators; data comes from the IssueLabels / IssueAssignees
+	// maps on IssueAndPRBatch. GitLab repos keep running the REST
+	// path regardless of mode (GitLab's REST-composition
+	// ListIssuesAndPRs leaves the maps nil).
+	//
+	// Phase 5 of the REST → GraphQL refactor. See
+	// summary/06-issue-graphql-children.md for the full plan.
+	// Default "rest" so existing deployments pick up v0.22.0 without
+	// a behavior change until operators explicitly opt in.
+	IssueChildMode string `json:"issue_child_mode"`
+
 	// EnrichIntervalMinutes controls how often thin-contributor profile
 	// enrichment runs as a periodic scheduler task. v0.18.29 moved
 	// enrichment off the per-job hot path because every worker calling
@@ -572,6 +588,7 @@ func DefaultConfig() *Config {
 			ListingMode:             "rest",
 			ThreadingMode:           "single",
 			ShardSize:               3000,
+			IssueChildMode:          "rest",
 			// v0.21.0 ScancodeWorker defaults — see CollectionConfig
 			// field docs for the full rationale.
 			ScancodeWorkers:              2,

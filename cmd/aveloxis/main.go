@@ -163,6 +163,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		ListingMode:           cfg.Collection.ListingMode,
 		ThreadingMode:         cfg.Collection.ThreadingMode,
 		ShardSize:             cfg.Collection.ShardSize,
+		IssueChildMode:        cfg.Collection.IssueChildMode,
 		EnrichInterval:        cfg.Collection.EnrichIntervalDuration(),
 		SearchResolveInterval: cfg.Collection.SearchResolveIntervalDuration(),
 		AffiliationInterval:   cfg.Collection.AffiliationIntervalDuration(),

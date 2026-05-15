@@ -26,6 +26,25 @@ import (
 // this window is just the silent-fallback safety net.
 const ScancodeStaleLockWindow = 12 * time.Hour
 
+// ScancodeMaxFailures (v0.21.4) is the consecutive-failure count
+// after which RecordScancodeFailure stamps scancode_last_run = NOW()
+// so the cadence gate excludes the row for the full cadence window
+// (default 180 days). The exponential backoff schedule (quadratic,
+// capped at 7 days) handles attempts 1 through ScancodeMaxFailures-1;
+// once a repo has failed ScancodeMaxFailures times in a row it's
+// presumed permanently broken (LFS-budget exhausted, malformed
+// source tree, scancode-incompatible content) and shouldn't burn
+// further worker time until the cadence gate naturally expires.
+//
+// 10 means an operator who fixes the underlying problem (top-ups
+// the LFS budget, removes the broken file) gets up to ~10×7d = 70
+// days × the natural Sunday-cron cadence to see the repo retry on
+// its own. For faster retry, operators clear scancode_failed_attempts
+// directly: `UPDATE aveloxis_data.repos SET scancode_failed_attempts
+// = 0, scancode_last_failed_at = NULL, scancode_last_run = NULL
+// WHERE repo_id = X`.
+const ScancodeMaxFailures = 10
+
 // ScancodeJob is the unit of work the ScancodeWorker dispatcher
 // hands to a runner goroutine.
 type ScancodeJob struct {
@@ -86,6 +105,16 @@ func (s *PostgresStore) ClaimNextScancodeRepo(ctx context.Context, cadence time.
 	if cadence <= 0 {
 		cadence = 180 * 24 * time.Hour
 	}
+	// v0.21.4 backoff gate: rows that recently failed are gated by
+	// a per-row exponential window. The window is quadratic in
+	// scancode_failed_attempts (1h → 4h → 9h → 16h → 25h → 36h →
+	// 49h → 64h → 81h → 100h → 121h → 144h → 168h cap). Cap at
+	// 168 hours (7 days) so even pathological cases retry weekly
+	// rather than monthly. Implemented as
+	// `NOW() - make_interval(hours => LEAST(attempts*attempts,168))`
+	// — make_interval is the only built-in way to express a
+	// row-dependent interval; concatenating into ::interval works
+	// but is ugly and slower.
 	row := s.pool.QueryRow(ctx, `
 		WITH candidate AS (
 		    SELECT r.repo_id
@@ -97,6 +126,12 @@ func (s *PostgresStore) ClaimNextScancodeRepo(ctx context.Context, cadence time.
 		           OR r.scancode_last_run < NOW() - $1::interval)
 		      AND (r.scancode_locked_at IS NULL
 		           OR r.scancode_locked_at < NOW() - $2::interval)
+		      AND (r.scancode_last_failed_at IS NULL
+		           OR r.scancode_last_failed_at < NOW() - make_interval(
+		               hours => LEAST(
+		                   GREATEST(COALESCE(r.scancode_failed_attempts, 0), 1)
+		                   * GREATEST(COALESCE(r.scancode_failed_attempts, 0), 1),
+		                   168)))
 		    ORDER BY r.scancode_last_run NULLS FIRST, r.repo_id
 		    LIMIT 1
 		    FOR UPDATE SKIP LOCKED
@@ -144,6 +179,11 @@ func (s *PostgresStore) RecordScancodeLockState(ctx context.Context, repoID int6
 // Atomic: the worker's "I finished" signal is one row write; no
 // possibility of a partial state where last_run is set but a lock
 // column lingers (which would confuse the next recovery pass).
+//
+// v0.21.4: also resets the failure counter (scancode_failed_attempts
+// = 0, scancode_last_failed_at = NULL) so a repo that previously
+// failed several times then succeeds doesn't carry the old attempt
+// count into the next failure cycle.
 func (s *PostgresStore) MarkScancodeComplete(ctx context.Context, repoID int64, version string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.repos
@@ -152,8 +192,50 @@ func (s *PostgresStore) MarkScancodeComplete(ctx context.Context, repoID int64, 
 		    scancode_locked_at = NULL,
 		    scancode_locked_pid = NULL,
 		    scancode_locked_boot_id = NULL,
-		    scancode_output_path = NULL
+		    scancode_output_path = NULL,
+		    scancode_failed_attempts = 0,
+		    scancode_last_failed_at = NULL
 		WHERE repo_id = $1`, repoID, version)
+	return err
+}
+
+// RecordScancodeFailure (v0.21.4) is the failure-path counterpart
+// to MarkScancodeComplete. It clears the lock columns AND increments
+// scancode_failed_attempts AND stamps scancode_last_failed_at = NOW()
+// so the claim query's backoff gate can compute time-since-failure.
+//
+// When the resulting failed_attempts reaches ScancodeMaxFailures the
+// UPDATE also stamps scancode_last_run = NOW(), which lets the
+// cadence gate (default 180 days) push the unrecoverable row out of
+// the active queue. Without that escape valve, a permanently-failing
+// repo would never stop consuming worker time — even the 7-day
+// backoff cap would let it retry weekly forever.
+//
+// Replaces ClearScancodeLock on every repo-specific failure path
+// in scancode_worker.runOne. ClearScancodeLock still exists for the
+// dispatcher's ctx-canceled-after-claim cleanup (which is a clean
+// release, not a failure).
+func (s *PostgresStore) RecordScancodeFailure(ctx context.Context, repoID int64) error {
+	// One UPDATE that:
+	//   - clears the four lock columns,
+	//   - increments scancode_failed_attempts (COALESCE for legacy NULL),
+	//   - stamps scancode_last_failed_at = NOW(),
+	//   - if the post-increment count >= ScancodeMaxFailures, also
+	//     stamps scancode_last_run = NOW() so the cadence gate
+	//     excludes the row.
+	_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.repos
+		SET scancode_locked_at = NULL,
+		    scancode_locked_pid = NULL,
+		    scancode_locked_boot_id = NULL,
+		    scancode_output_path = NULL,
+		    scancode_failed_attempts = COALESCE(scancode_failed_attempts, 0) + 1,
+		    scancode_last_failed_at = NOW(),
+		    scancode_last_run = CASE
+		        WHEN COALESCE(scancode_failed_attempts, 0) + 1 >= $2 THEN NOW()
+		        ELSE scancode_last_run
+		    END
+		WHERE repo_id = $1`, repoID, ScancodeMaxFailures)
 	return err
 }
 

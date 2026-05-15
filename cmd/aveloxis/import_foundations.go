@@ -99,9 +99,13 @@ func runImportFoundations(cfgPath string, opts runOpts) error {
 		return fmt.Errorf("connecting to database: %w", err)
 	}
 	defer store.Close()
-	if err := store.Migrate(ctx); err != nil {
-		return fmt.Errorf("migrating database: %w", err)
-	}
+
+	// v0.21.5: store.Migrate(ctx) intentionally NOT called here.
+	// Pre-v0.21.5 this ran unconditionally, including on --dry-run,
+	// which silently mutated schema (CONCURRENTLY index builds +
+	// addColumnIfMissing) while the operator was only trying to
+	// preview what would be imported. Schema is the operator's
+	// responsibility via `aveloxis migrate`.
 
 	// Fetch both sources up front so we can report totals in one place.
 	var projects []importers.Project

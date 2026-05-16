@@ -77,7 +77,9 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "scancode_start_interval_s": 90,
     "scancode_cadence_days": 180,
     "scancode_clone_dir": "/tmp/aveloxis-scancode",
-    "scancode_shutdown_grace_minutes": 30
+    "scancode_shutdown_grace_minutes": 30,
+    "staging_retention_hours": 1,
+    "phase_watchdog_minutes": 75
   },
   "web": {
     "addr": ":8082",
@@ -189,6 +191,8 @@ The scancode per-file license + copyright + package scan is run by a dedicated `
 | `collection.scancode_cadence_days` | integer | `180` | Minimum days between successive scancode runs on the same repo. Pre-v0.21.0 was 30 days; the change reflects that per-file license + copyright headers in source files change rarely on the timescale that matters, and the I/O cost of scanning a Linux-kernel-scale mirror doesn't justify monthly re-scans. Dependency-level licenses (which DO change as packages update) still flow through the per-cycle Phase 4 dependency scan + Phase 6 SBOM generation. |
 | `collection.scancode_clone_dir` | string | `"/tmp/aveloxis-scancode"` | Parent directory for per-run shallow clones. Each scan creates `<dir>/repo_<id>_<unix_ts>` and removes it on completion (success or failure). Size budget: each clone is the working tree only (`git clone --depth 1`), so ≈ checked-out repo size. With default 2 workers and average ~50 MB clones, ~100 MB peak; raise expectations for big-repo / many-worker installs. |
 | `collection.scancode_shutdown_grace_minutes` | integer | `30` | Time the `ScancodeWorker` waits for in-flight scans to finish on `aveloxis stop`. Within the grace window, runners complete naturally (parse JSON output, write DB, clear lock columns). At grace expiry, `cmd.Process.Kill()` is invoked on the still-running scancode subprocess; `cmd.Wait()` returns with an error, the runner's lock-clear path fires, no orphaned scans from graceful shutdown. Separate from `shutdown_grace_seconds` (which paces the main scheduler) because scancode scans are intrinsically long-running. |
+| `collection.staging_retention_hours` | integer | `1` | How long processed staging rows are kept before the hourly `PurgeStagedProcessed` sweep deletes them. v0.22.4 cut from the prior hardcoded 7-day window: 2026-05-16 production diagnostics showed JSONB tombstones stacking 3–5× on frequently-re-collected repos (zephyr had 84K issue rows against an actual 28K count). Not a correctness bug (`Processor` reads `WHERE NOT processed`) but real disk waste. Operators who need forensic retention (shadow-diff debugging, post-mortem analysis) can raise this — `24` (one day) is a reasonable middle ground. |
+| `collection.phase_watchdog_minutes` | integer | `75` | Stall threshold for the v0.22.4 observation-only long-jobs watchdog. If a repo's staging row count has not grown for this many minutes, the watchdog appends one JSON-lines event to `~/.aveloxis/aveloxis-long-jobs.log` and writes a per-event goroutine dump under `~/.aveloxis/long-jobs/`. The watchdog **NEVER cancels the job, NEVER requeues the repo, NEVER kills anything** — large first-cycle collections (microsoft/vscode-class) may legitimately run for days, and aborting them would prevent them from ever completing. Re-emits every `phase_watchdog_minutes` while the stall persists; emits a `stall_resumed` event when staging row count grows again so analysts can compute total stall duration. Lower this (e.g. `30`) during active incident triage to spot smaller hangs; raise it on installations whose largest-repo collection routinely takes many hours. |
 
 **Force-rerun cookbook** — to invalidate the cadence gate and trigger a fresh scan on the next worker tick, set `scancode_last_run` back to NULL:
 

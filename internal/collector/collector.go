@@ -78,7 +78,15 @@ type CollectResult struct {
 	Releases     int
 	Contributors int
 	CommitCount  int // from repo_info metadata, used for large-repo detection
-	Errors       []error
+	// InlineIssueComments and InlinePRComments are per-cycle counters
+	// of conversation comments staged inline from the phase-2 unified
+	// GraphQL listing and the phase-1 PR batch respectively. They are
+	// SUBSETS of Messages, surfaced separately so collectMessages can
+	// emit a "phase plan" log line that explains why /issues/comments
+	// is being skipped (v0.22.4 item 4).
+	InlineIssueComments int
+	InlinePRComments    int
+	Errors              []error
 }
 
 // CollectRepo runs a full collection for the given repository.

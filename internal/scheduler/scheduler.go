@@ -64,6 +64,19 @@ type Config struct {
 	ScancodeCadence       time.Duration // minimum interval between scans on the same repo (default 180d)
 	ScancodeCloneDir      string        // parent directory for per-run shallow clones (default /tmp/aveloxis-scancode)
 	ScancodeShutdownGrace time.Duration // wait budget for in-flight scancode runs on aveloxis stop (default 30m)
+
+	// PhaseWatchdog is the no-staging-growth threshold the v0.22.4
+	// observation watchdog uses to emit a long-jobs event. Default
+	// 75 minutes. Watchdog is purely observational — it NEVER cancels
+	// the job or requeues the repo. See long_jobs_watchdog.go.
+	PhaseWatchdog time.Duration
+
+	// StagingRetention is how long processed staging rows are kept
+	// before the hourly PurgeStagedProcessed sweep deletes them.
+	// Default 1 hour. v0.22.4 cut from the prior hardcoded 7-day window
+	// after 2026-05-16 production diagnostics showed JSONB tombstones
+	// stacking 3–5× on frequently-re-collected repos.
+	StagingRetention time.Duration
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -142,6 +155,12 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	}
 	if cfg.ScancodeShutdownGrace == 0 {
 		cfg.ScancodeShutdownGrace = 30 * time.Minute
+	}
+	if cfg.StagingRetention == 0 {
+		cfg.StagingRetention = 1 * time.Hour
+	}
+	if cfg.PhaseWatchdog == 0 {
+		cfg.PhaseWatchdog = 75 * time.Minute
 	}
 
 	hostname, _ := os.Hostname()
@@ -447,7 +466,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 // seconds) and at worst race on the same DELETE WHERE, which is
 // safe because the predicate is monotonic.
 func (s *Scheduler) runStagingCleanup(ctx context.Context) {
-	deleted, err := s.store.PurgeStagedProcessed(ctx)
+	deleted, err := s.store.PurgeStagedProcessed(ctx, s.cfg.StagingRetention)
 	if err != nil {
 		s.logger.Warn("staging cleanup failed", "error", err)
 		return
@@ -675,6 +694,29 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		s.failJob(ctx, job.RepoID, err.Error())
 		return
 	}
+
+	// v0.22.4 item 7 — observation-only long-jobs watchdog. Polls
+	// staging row count for this repo every 30s; if no growth for
+	// PhaseWatchdog (default 75m), appends one event to
+	// ~/.aveloxis/aveloxis-long-jobs.log + a goroutine dump to
+	// ~/.aveloxis/long-jobs/. NEVER cancels this job; the watchdog
+	// is purely observational. The defer stop() runs at function
+	// return so it survives every job-exit path (success, failure,
+	// skip, panic).
+	watchdog := &LongJobsWatchdog{
+		Logger:    s.logger,
+		LogPath:   longJobsLogPath(),
+		DumpDir:   longJobsDumpDir(),
+		Threshold: s.cfg.PhaseWatchdog,
+		PollEvery: 30 * time.Second,
+		Owner:     repo.Owner,
+		Repo:      repo.Name,
+		RepoID:    job.RepoID,
+		WorkerID:  s.workerID,
+		CountFn:   s.store.StagingRowCount,
+	}
+	stopWatchdog := watchdog.Start(ctx)
+	defer stopWatchdog()
 
 	// Prelim phase: check for redirects and duplicates.
 	prelim, err := collector.RunPrelim(ctx, s.store, repo, s.logger)

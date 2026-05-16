@@ -218,8 +218,17 @@ type CollectionConfig struct {
 	//
 	// Phase 5 of the REST → GraphQL refactor. See
 	// summary/06-issue-graphql-children.md for the full plan.
-	// Default "rest" so existing deployments pick up v0.22.0 without
-	// a behavior change until operators explicitly opt in.
+	//
+	// Default flipped from "rest" to "graphql" in v0.22.3 after
+	// shadow-diff equivalence testing on augur confirmed zero
+	// regressions on the phase-5 target tables (issue_labels,
+	// issue_assignees, issue_message_ref). REST mode stays
+	// available as an escape hatch — same posture as PRChildMode
+	// after its v0.19.0 default flip. The known parity gap
+	// (issue_labels.platform_label_id stays 0 on GraphQL because
+	// GitHub's GraphQL Label type has no databaseId) is documented
+	// in CLAUDE.md v0.22.0; the column has no SELECT/JOIN/WHERE
+	// consumers anywhere in the codebase.
 	IssueChildMode string `json:"issue_child_mode"`
 
 	// EnrichIntervalMinutes controls how often thin-contributor profile
@@ -588,7 +597,7 @@ func DefaultConfig() *Config {
 			ListingMode:             "rest",
 			ThreadingMode:           "single",
 			ShardSize:               3000,
-			IssueChildMode:          "rest",
+			IssueChildMode:          "graphql",
 			// v0.21.0 ScancodeWorker defaults — see CollectionConfig
 			// field docs for the full rationale.
 			ScancodeWorkers:              2,

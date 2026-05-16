@@ -127,6 +127,14 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	pidfile.Write(pidPath, os.Getpid())
 	defer pidfile.Remove(pidPath)
 
+	// v0.22.4 item 8 — register SIGUSR1 handler so operators can
+	// snapshot the goroutine state of a running serve without killing
+	// it. Operator workflow:
+	//   kill -USR1 $(cat ~/.aveloxis/aveloxis-serve.pid)
+	//   ls -lh ~/.aveloxis/serve-goroutines-*.txt
+	uninstallDump := installGoroutineDumpHandler(logger, defaultGoroutineDumpDir())
+	defer uninstallDump()
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -183,6 +191,8 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		ScancodeShutdownGrace: cfg.Collection.ScancodeShutdownGrace(),
 		// v0.22.4 — staging-row cleanup retention. Default 1h.
 		StagingRetention: cfg.Collection.StagingRetentionDuration(),
+		// v0.22.4 — observation-only long-jobs watchdog. Default 75m.
+		PhaseWatchdog: cfg.Collection.PhaseWatchdogDuration(),
 	})
 	go sched.Run(ctx)
 

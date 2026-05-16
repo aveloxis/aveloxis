@@ -374,6 +374,18 @@ type CollectionConfig struct {
 	// repos and you usually want them to finish if they're close.
 	ScancodeShutdownGraceMinutes int `json:"scancode_shutdown_grace_minutes"`
 
+	// PhaseWatchdogMinutes controls the v0.22.4 observation watchdog's
+	// stall threshold. If staging row count for a repo does not grow
+	// for this many minutes, the watchdog appends an event to
+	// ~/.aveloxis/aveloxis-long-jobs.log plus a goroutine dump under
+	// ~/.aveloxis/long-jobs/. Default 75 minutes — chosen so that
+	// large first-cycle collections (microsoft/vscode-class) are
+	// observed for prevalence but never killed. The watchdog NEVER
+	// cancels the job or requeues the repo. Operators tune up to
+	// reduce noise on very-slow-but-legitimate workloads, or down
+	// (e.g. 30) to spot smaller hangs during incident triage.
+	PhaseWatchdogMinutes int `json:"phase_watchdog_minutes"`
+
 	// StagingRetentionHours is how long processed staging rows are kept
 	// before the hourly PurgeStagedProcessed sweep deletes them. Default
 	// 1 hour when unset. v0.22.4: pre-v0.22.4 the window was hardcoded
@@ -383,6 +395,15 @@ type CollectionConfig struct {
 	// shadow-diff debugging) can raise this to a value of their choice;
 	// 24 (one day) is a reasonable middle ground.
 	StagingRetentionHours int `json:"staging_retention_hours"`
+}
+
+// PhaseWatchdogDuration returns the v0.22.4 long-jobs watchdog
+// threshold. Falls back to 75 minutes when unset.
+func (c *CollectionConfig) PhaseWatchdogDuration() time.Duration {
+	if c.PhaseWatchdogMinutes <= 0 {
+		return 75 * time.Minute
+	}
+	return time.Duration(c.PhaseWatchdogMinutes) * time.Minute
 }
 
 // StagingRetentionDuration converts StagingRetentionHours to a

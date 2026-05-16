@@ -70,6 +70,7 @@ func main() {
 		sbomCmd(&cfgPath),
 		shadowDiffCmd(),
 		testMailCmd(&cfgPath),
+		stagingStatsCmd(&cfgPath),
 		versionCmd(),
 	)
 

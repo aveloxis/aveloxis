@@ -43,6 +43,7 @@ type Config struct {
 	ListingMode           string        // "rest" (default) or "graphql" — routes issue+PR listing through ListIssuesAndPRs
 	ThreadingMode         string        // "single" (default) or "sharded" — fans out PR batch fetching across goroutines
 	ShardSize             int           // item-count threshold for spawning an additional shard (default 3000)
+	IssueChildMode        string        // "rest" (default) or "graphql" — phase 5: inline issue label+assignee fetch via the GraphQL listing
 	EnrichInterval        time.Duration // how often to run thin-contributor enrichment (default 30 min). v0.18.29 moved enrichment out of per-job processing into a periodic scheduler task.
 	SearchResolveInterval time.Duration // how often to run the search-resolve background task (default 1 hour). v0.19.2 added this to backfill gh_user_id on contributors with email but no platform identity, using GitHub's search API at controlled rate.
 	AffiliationInterval   time.Duration // how often to run the periodic singleton PopulateAffiliations task (default 1 hour). v0.19.7 moved this off the per-job hot path to eliminate cross-worker contention on UNIQUE (ca_domain).
@@ -904,7 +905,8 @@ func shouldForceFullRecollect(errMsg string) bool {
 // contributor resolution.
 func (s *Scheduler) collectAndProcess(ctx context.Context, repoID int64, repo *model.Repo, client platform.Client, since time.Time) (*collector.CollectResult, error) {
 	sc := collector.NewStagedCollectorWithAllModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode, s.cfg.ThreadingMode, s.cfg.ShardSize).
-		WithWorkers(s.cfg.Workers)
+		WithWorkers(s.cfg.Workers).
+		WithIssueChildMode(s.cfg.IssueChildMode)
 	result, err := sc.CollectRepo(ctx, repoID, repo.Owner, repo.Name, since)
 
 	if err == nil {

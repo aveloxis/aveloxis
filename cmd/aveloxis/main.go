@@ -64,6 +64,7 @@ func main() {
 		recollectCmd(&cfgPath),
 		migrateCmd(&cfgPath),
 		migrateCntrbIDsCmd(&cfgPath),
+		mergeCntrbCollisionsCmd(&cfgPath),
 		refreshViewsCmd(&cfgPath),
 		installToolsCmd(),
 		sbomCmd(&cfgPath),

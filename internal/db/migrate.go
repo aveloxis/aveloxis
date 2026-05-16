@@ -583,6 +583,25 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// already exist. New rows from non-admins go to 'pending' via
 	// CreateUserGroup's branch.
 
+	// v0.22.1: ensure every FK pointing at contributors(cntrb_id)
+	// has ON UPDATE CASCADE. Required for v0.22.2's
+	// `aveloxis migrate-cntrb-ids` data migration to work — that
+	// command UPDATEs random-UUID cntrb_id values to deterministic
+	// PlatformUUID form, and Postgres cascades the change to all
+	// child FK columns automatically when CASCADE is declared. The
+	// pre-v0.22.1 default of NO ACTION would reject any such
+	// UPDATE the moment a child row references the old cntrb_id.
+	//
+	// Idempotent via ensureOnUpdateCascadeOnCntrbIDFKs which
+	// checks information_schema.referential_constraints first;
+	// already-CASCADE constraints are skipped. ADD CONSTRAINT
+	// uses NOT VALID + VALIDATE so the validation scan takes
+	// SHARE UPDATE EXCLUSIVE (concurrent reads + writes permitted)
+	// instead of ACCESS EXCLUSIVE for the full validation window
+	// — important on production where messages and
+	// pull_request_commits routinely exceed 50M rows.
+	ensureOnUpdateCascadeOnCntrbIDFKs(ctx, pg, logger, &errs)
+
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).
 	// Set collection.matview_rebuild_on_startup=true in aveloxis.json to enable,

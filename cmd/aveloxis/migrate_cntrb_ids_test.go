@@ -63,11 +63,23 @@ func TestMigrateCntrbIDsCommandHasFlags(t *testing.T) {
 }
 
 func TestMigrateCntrbIDsRefuses_WithoutCascade(t *testing.T) {
-	src, err := os.ReadFile("migrate_cntrb_ids.go")
-	if err != nil {
-		t.Fatal(err)
+	// v0.22.2 work spans the cmd wrapper (migrate_cntrb_ids.go) and
+	// the db helper (../../internal/db/cntrb_id_migrate.go). The
+	// pre-check helper PrecheckCntrbIDCascade lives in the db
+	// package; the cmd wrapper calls it. Scan both so a refactor
+	// that splits or relocates helpers doesn't break the contract.
+	parts := [][]byte{}
+	for _, path := range []string{
+		"migrate_cntrb_ids.go",
+		"../../internal/db/cntrb_id_migrate.go",
+	} {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		parts = append(parts, src)
 	}
-	code := string(src)
+	code := string(parts[0]) + "\n" + string(parts[1])
 
 	// The pre-check must query update_rule from
 	// information_schema.referential_constraints and refuse to
@@ -86,11 +98,20 @@ func TestMigrateCntrbIDsRefuses_WithoutCascade(t *testing.T) {
 }
 
 func TestMigrateCntrbIDsBuildsCandidateQuery(t *testing.T) {
-	src, err := os.ReadFile("migrate_cntrb_ids.go")
-	if err != nil {
-		t.Fatal(err)
+	// Same dual-file pattern — candidate-query SQL lives in the db
+	// helper but the cmd wrapper calls into it.
+	parts := [][]byte{}
+	for _, path := range []string{
+		"migrate_cntrb_ids.go",
+		"../../internal/db/cntrb_id_migrate.go",
+	} {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		parts = append(parts, src)
 	}
-	code := string(src)
+	code := string(parts[0]) + "\n" + string(parts[1])
 
 	// The candidate query must:
 	//   - join contributors against contributor_identities
@@ -116,11 +137,18 @@ func TestMigrateCntrbIDsBuildsCandidateQuery(t *testing.T) {
 }
 
 func TestMigrateCntrbIDsReportsCollisions(t *testing.T) {
-	src, err := os.ReadFile("migrate_cntrb_ids.go")
-	if err != nil {
-		t.Fatal(err)
+	parts := [][]byte{}
+	for _, path := range []string{
+		"migrate_cntrb_ids.go",
+		"../../internal/db/cntrb_id_migrate.go",
+	} {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		parts = append(parts, src)
 	}
-	code := string(src)
+	code := string(parts[0]) + "\n" + string(parts[1])
 
 	// The collision report distinguishes "safe to migrate" from
 	// "target cntrb_id already exists on a different row". The

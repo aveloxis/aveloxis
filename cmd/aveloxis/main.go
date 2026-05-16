@@ -63,6 +63,7 @@ func main() {
 		prioritizeCmd(&cfgPath),
 		recollectCmd(&cfgPath),
 		migrateCmd(&cfgPath),
+		migrateCntrbIDsCmd(&cfgPath),
 		refreshViewsCmd(&cfgPath),
 		installToolsCmd(),
 		sbomCmd(&cfgPath),

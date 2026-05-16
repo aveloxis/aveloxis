@@ -134,8 +134,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 
 		resp, err := c.inner.Do(req)
 		if err != nil {
-			c.logger.Warn("graphql request failed, retrying", "query", query,
-				"url", url, "attempt", attempt+1, "error", err)
+			c.logger.Warn("graphql request failed, retrying",
+				"url", url, "query", query, "attempt", attempt+1, "error", err)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

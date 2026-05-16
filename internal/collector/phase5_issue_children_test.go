@@ -190,10 +190,16 @@ func TestPhase5ConfigHasIssueChildMode(t *testing.T) {
 		t.Error("CollectionConfig.IssueChildMode must carry " +
 			`json:"issue_child_mode"` + " — operators set this in aveloxis.json")
 	}
-	if !strings.Contains(code, `IssueChildMode:`) ||
-		!strings.Contains(code, `"rest"`) {
-		t.Error("DefaultConfig must set IssueChildMode: \"rest\" — phase 5 " +
-			"ships opt-in; default flip to graphql is reserved for phase 5.2")
+	// v0.22.3 (phase 5.2): default flipped to "graphql" after
+	// shadow-diff confirmed zero regressions on phase-5 target
+	// tables. REST mode remains available as the escape hatch via
+	// `"issue_child_mode": "rest"` in aveloxis.json — same posture
+	// as pr_child_mode kept after its v0.19.0 default flip.
+	if !strings.Contains(code, `IssueChildMode:          "graphql"`) &&
+		!strings.Contains(code, `IssueChildMode: "graphql"`) {
+		t.Error("DefaultConfig must set IssueChildMode: \"graphql\" — v0.22.3 " +
+			"phase 5.2 default flip after shadow-diff equivalence on augur. " +
+			"REST stays available as escape hatch; the field hasn't been removed.")
 	}
 }
 

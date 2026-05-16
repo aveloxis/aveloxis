@@ -4,7 +4,7 @@
     "port": 5432,
     "user": "aveloxis",
     "password": "fuckoffdawn",
-    "dbname": "aveloxis_shadow_graphql",
+    "dbname": "aveloxis_shadow_rest",
     "sslmode": "prefer"
   },
   "github": {
@@ -20,24 +20,24 @@
     "days_until_recollect": 6,
     "workers": 40,
     "force_full": false,
-    "repo_clone_dir": "~/aveloxis-repos-shadow-graphql/",
+    "repo_clone_dir": "~/aveloxis-repos-shadow-rest/",
     "matview_rebuild_day": "friday",
     "matview_rebuild_on_startup": false,
-    "pr_child_mode": "graphql",
-    "listing_mode": "graphql",
-    "threading_mode": "sharded",
-    "shard_size": 500,
-    "issue_child_mode": "graphql",
+    "pr_child_mode": "rest",
+    "listing_mode": "rest",
+    "threading_mode": "single",
+    "shard_size": 3000,
+    "issue_child_mode": "rest",
     "scancode_workers": 2,
     "scancode_start_interval_s": 90,
     "scancode_cadence_days": 180,
-    "scancode_clone_dir": "/tmp/aveloxis-scancode-shadow",
+    "scancode_clone_dir": "/tmp/aveloxis-scancode-shadow-rest",
     "scancode_shutdown_grace_minutes": 30
   },
   "web": {
-    "addr": ":9082",
+    "addr": ":9081",
     "dev_mode": true,
-    "base_url": "http://localhost:9082"
+    "base_url": "http://localhost:9081"
   },
   "log_level": "info"
 }

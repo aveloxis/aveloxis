@@ -45,7 +45,8 @@
     "scancode_start_interval_s": 90,
     "scancode_cadence_days": 180,
     "scancode_clone_dir": "/tmp/aveloxis-scancode",
-    "scancode_shutdown_grace_minutes": 30
+    "scancode_shutdown_grace_minutes": 30,
+    "staging_retention_hours": 1
   },
   "web": {
     "addr": ":8082",

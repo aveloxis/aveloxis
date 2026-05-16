@@ -180,6 +180,8 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		ScancodeCadence:       cfg.Collection.ScancodeCadence(),
 		ScancodeCloneDir:      cfg.Collection.ScancodeCloneDirOrDefault(),
 		ScancodeShutdownGrace: cfg.Collection.ScancodeShutdownGrace(),
+		// v0.22.4 — staging-row cleanup retention. Default 1h.
+		StagingRetention: cfg.Collection.StagingRetentionDuration(),
 	})
 	go sched.Run(ctx)
 

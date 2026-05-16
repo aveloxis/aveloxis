@@ -373,6 +373,25 @@ type CollectionConfig struct {
 	// because scancode runs are intrinsically long-running on big
 	// repos and you usually want them to finish if they're close.
 	ScancodeShutdownGraceMinutes int `json:"scancode_shutdown_grace_minutes"`
+
+	// StagingRetentionHours is how long processed staging rows are kept
+	// before the hourly PurgeStagedProcessed sweep deletes them. Default
+	// 1 hour when unset. v0.22.4: pre-v0.22.4 the window was hardcoded
+	// to 7 days, which stacked 3–5 cycles of processed JSONB tombstones
+	// per frequently-re-collected repo and wasted multiple GB of disk
+	// across the fleet. Operators who need forensic retention (e.g. for
+	// shadow-diff debugging) can raise this to a value of their choice;
+	// 24 (one day) is a reasonable middle ground.
+	StagingRetentionHours int `json:"staging_retention_hours"`
+}
+
+// StagingRetentionDuration converts StagingRetentionHours to a
+// time.Duration. Falls back to 1 hour when unset. v0.22.4 default.
+func (c *CollectionConfig) StagingRetentionDuration() time.Duration {
+	if c.StagingRetentionHours <= 0 {
+		return time.Hour
+	}
+	return time.Duration(c.StagingRetentionHours) * time.Hour
 }
 
 // EnrichIntervalDuration converts EnrichIntervalMinutes to a time.Duration.

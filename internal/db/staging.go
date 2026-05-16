@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -239,11 +240,41 @@ func (s *PostgresStore) PurgeStagedForRepo(ctx context.Context, repoID int64) {
 	}
 }
 
-// PurgeStagedProcessed removes old processed rows to prevent table bloat.
-func (s *PostgresStore) PurgeStagedProcessed(ctx context.Context) (int64, error) {
+// StagingRowCount returns the count of staging rows (processed +
+// unprocessed) for the given repo_id. v0.22.4 — used by the long-
+// jobs watchdog as a low-cost monotonic progress proxy. The
+// underlying COUNT runs against idx_staging_unprocessed for
+// unprocessed rows and a sequential scan for processed (which is
+// rare during active collection); on a 100K-fleet production DB
+// the query lands in ~10ms.
+func (s *PostgresStore) StagingRowCount(ctx context.Context, repoID int64) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM aveloxis_ops.staging WHERE repo_id = $1`,
+		repoID,
+	).Scan(&n)
+	return n, err
+}
+
+// PurgeStagedProcessed removes processed rows older than retention to
+// prevent staging-table bloat. v0.22.4: retention is now caller-supplied
+// (sourced from collection.staging_retention_hours, defaulting to 1
+// hour) instead of the hardcoded 7-day window. Cutting from 7 days to 1
+// hour eliminates the 3–5× JSONB tombstone stacking observed on
+// frequently-re-collected repos in 2026-05-16 production diagnostics.
+//
+// The Postgres `INTERVAL` literal can't accept a Duration directly, so
+// we pass total seconds as a parameter via `make_interval(secs => $1)`.
+// This works for any retention from a few seconds upward and keeps the
+// duration arithmetic on the Go side.
+func (s *PostgresStore) PurgeStagedProcessed(ctx context.Context, retention time.Duration) (int64, error) {
+	if retention <= 0 {
+		retention = time.Hour
+	}
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM aveloxis_ops.staging
-		WHERE processed AND created_at < NOW() - INTERVAL '7 days'`)
+		WHERE processed AND created_at < NOW() - make_interval(secs => $1)`,
+		retention.Seconds())
 	if err != nil {
 		return 0, err
 	}

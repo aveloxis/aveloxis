@@ -298,8 +298,12 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 			result.Errors = append(result.Errors, err)
 		}
 		result.Contributors++
+		if result.Contributors%100 == 0 {
+			sc.logger.Info("contributors progress",
+				"owner", owner, "repo", repo, "staged", result.Contributors)
+		}
 	}
-	sc.logger.Info("contributors staged", "count", result.Contributors)
+	sc.logger.Info("contributors staged", "owner", owner, "repo", repo, "count", result.Contributors)
 
 	// Decide between parallel and sequential collection based on commit count.
 	// Large repos (>10K commits) typically have many issues, PRs, and events.
@@ -431,6 +435,7 @@ func (sc *StagedCollector) stageInlineIssueComments(ctx context.Context, sw *db.
 			continue
 		}
 		result.Messages++
+		result.InlineIssueComments++
 	}
 	sc.logger.Info("staged inline issue comments", "count", len(comments))
 }
@@ -615,7 +620,7 @@ func (sc *StagedCollector) collectIssues(ctx context.Context, sw *db.StagingWrit
 			sc.logger.Info("issues progress", "owner", owner, "repo", repo, "staged", result.Issues, "listing_mode", mode)
 		}
 	}
-	sc.logger.Info("issues staged", "count", result.Issues, "listing_mode", mode)
+	sc.logger.Info("issues staged", "owner", owner, "repo", repo, "count", result.Issues, "listing_mode", mode)
 }
 
 // collectPRs stages all pull requests with their children.
@@ -657,7 +662,7 @@ func (sc *StagedCollector) collectPRs(ctx context.Context, sw *db.StagingWriter,
 	default:
 		sc.collectPRsREST(ctx, sw, owner, repo, prs, result)
 	}
-	sc.logger.Info("pull requests staged", "count", result.PullRequests, "mode", sc.prChildMode)
+	sc.logger.Info("pull requests staged", "owner", owner, "repo", repo, "count", result.PullRequests, "mode", sc.prChildMode)
 }
 
 // collectPRsREST stages PRs using the per-PR REST child waterfall — 8
@@ -937,6 +942,7 @@ func stagePRBatch(ctx context.Context, sw *db.StagingWriter, batch []platform.St
 				continue
 			}
 			result.Messages++
+			result.InlinePRComments++
 		}
 	}
 }
@@ -974,7 +980,7 @@ func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWrit
 		}
 		result.Events++
 	}
-	sc.logger.Info("events staged", "count", result.Events)
+	sc.logger.Info("events staged", "owner", owner, "repo", repo, "count", result.Events)
 }
 
 // collectMessages stages issue + PR conversation comments (via repo-wide
@@ -1000,8 +1006,13 @@ func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWrit
 func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
 	full := sc.fullGraphQLMode()
 	if full {
-		sc.logger.Info("collectMessages: skipping /issues/comments — delivered inline; still running /pulls/comments for side/startSide",
-			"owner", owner, "repo", repo)
+		sc.logger.Info("collectMessages phase plan: issue + PR conversation comments arrived inline via GraphQL listing; "+
+			"repo-wide /issues/comments REST iterator intentionally skipped to avoid duplicate work; "+
+			"/pulls/comments REST iterator IS running here for review_comments.pr_cmt_side / pr_cmt_start_side fidelity "+
+			"(GitHub GraphQL PullRequestReviewComment omits those fields)",
+			"owner", owner, "repo", repo,
+			"issue_inline_comments", result.InlineIssueComments,
+			"pr_inline_comments", result.InlinePRComments)
 	} else {
 		sc.logger.Info("collecting messages", "owner", owner, "repo", repo)
 		for msg, err := range sc.client.ListIssueComments(ctx, owner, repo, since) {
@@ -1020,6 +1031,7 @@ func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWr
 			result.Messages++
 		}
 	}
+	reviewCount := 0
 	for rc, err := range sc.client.ListReviewComments(ctx, owner, repo, since) {
 		if err != nil {
 			if isOptionalEndpointSkip(err) {
@@ -1034,8 +1046,13 @@ func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWr
 			result.Errors = append(result.Errors, fmt.Errorf("stage review comment: %w", err))
 		}
 		result.Messages++
+		reviewCount++
+		if reviewCount%1000 == 0 {
+			sc.logger.Info("review comments progress",
+				"owner", owner, "repo", repo, "staged", reviewCount)
+		}
 	}
-	sc.logger.Info("messages staged", "count", result.Messages)
+	sc.logger.Info("messages staged", "owner", owner, "repo", repo, "count", result.Messages)
 }
 
 // Processor drains the staging table and writes to the relational schema.

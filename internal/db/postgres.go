@@ -1272,12 +1272,34 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 				createdAt = contrib.CreatedAt
 			}
 
+			// v0.22.0 deterministic-cntrb_id fix: compute PlatformUUID
+			// from the contributor's first identity with a non-zero
+			// platform user ID and pass it as $1. If no such identity
+			// exists (email-only commit-author contributor), pass NULL
+			// — the SQL falls back to gen_random_uuid() via COALESCE.
+			//
+			// ON CONFLICT (cntrb_login) DO UPDATE deliberately does NOT
+			// SET cntrb_id, so existing rows with random UUIDs (from
+			// pre-v0.22.0 collections) keep their cntrb_id and all FK
+			// references stay valid. New contributors get deterministic
+			// UUIDs going forward. Per CLAUDE.md v0.20.2 precedent
+			// (rejection of the 16-table FK rewrite), aveloxis does NOT
+			// migrate existing random cntrb_id values.
+			var desiredCntrbID any
+			for _, ident := range identMap[login] {
+				if ident.UserID > 0 {
+					desiredCntrbID = PlatformUUID(int(ident.Platform), ident.UserID).String()
+					break
+				}
+			}
+
 			err := tx.QueryRow(ctx, `
 				INSERT INTO aveloxis_data.contributors
-					(cntrb_login, cntrb_email, cntrb_full_name,
+					(cntrb_id, cntrb_login, cntrb_email, cntrb_full_name,
 					 cntrb_company, cntrb_location, cntrb_canonical, cntrb_created_at,
 					 tool_source, tool_version, data_source)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,'aveloxis',$8,'GitHub API')
+				VALUES (COALESCE($1::uuid, gen_random_uuid()),
+				        $2,$3,$4,$5,$6,$7,$8,'aveloxis',$9,'GitHub API')
 				ON CONFLICT (cntrb_login) WHERE cntrb_login != '' DO UPDATE SET
 					cntrb_email = COALESCE(NULLIF(EXCLUDED.cntrb_email, ''), contributors.cntrb_email),
 					cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name, ''), contributors.cntrb_full_name),
@@ -1288,6 +1310,7 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 					tool_version = EXCLUDED.tool_version,
 					data_collection_date = NOW()
 				RETURNING cntrb_id`,
+				desiredCntrbID,
 				contrib.Login, contrib.Email, contrib.FullName,
 				contrib.Company, contrib.Location, contrib.Canonical, createdAt,
 				ToolVersion,

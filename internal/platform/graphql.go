@@ -134,7 +134,7 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 
 		resp, err := c.inner.Do(req)
 		if err != nil {
-			c.logger.Warn("graphql request failed, retrying",
+			c.logger.Warn("graphql request failed, retrying", "query", query,
 				"url", url, "attempt", attempt+1, "error", err)
 			select {
 			case <-ctx.Done():
@@ -183,7 +183,7 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 					// the happy-path-after-abort recovery.
 					wait := time.Duration(readRetries) * time.Second
 					c.logger.Warn("graphql body read error, retrying",
-						"url", url, "error", readErr,
+						"url", url, "error", readErr, "query", query,
 						"read_retry", readRetries, "wait", wait)
 					select {
 					case <-ctx.Done():
@@ -208,7 +208,7 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			// means wait; otherwise it's a permission error.
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
-				c.logger.Info("graphql secondary rate limit", "url", url, "wait", wait)
+				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait)
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -237,7 +237,7 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			_ = resp.Body.Close()
 			wait := jitteredBackoff(attempt)
 			c.logger.Warn("graphql server error, retrying with backoff",
-				"url", url, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
+				"url", url, "query", query, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

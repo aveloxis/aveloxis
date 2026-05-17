@@ -602,6 +602,22 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// pull_request_commits routinely exceed 50M rows.
 	ensureOnUpdateCascadeOnCntrbIDFKs(ctx, pg, logger, &errs)
 
+	// v0.22.6: btree indexes on every unindexed FK column pointing
+	// at aveloxis_data.contributors(cntrb_id). Cascade (v0.22.1)
+	// adds the BEHAVIOR; these indexes make the behavior TRACTABLE.
+	// Without them, the cascade fan-out triggered by
+	// `aveloxis migrate-cntrb-ids` seq-scans every child table for
+	// every cntrb_id being rewritten — observed on the production
+	// aveloxis_large DB as a 17-hour stall on batch 1 (0 rows
+	// committed) on 2026-05-17 because 15 of 16 cntrb_id child FKs
+	// were unindexed.
+	//
+	// CONCURRENTLY so the build doesn't block running collection
+	// workers' INSERTs on the child tables. Build duration varies
+	// by table size; on production, messages and
+	// pull_request_commits dominate the wall clock.
+	ensureCntrbIDFKIndexes(ctx, pg, logger, &errs)
+
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).
 	// Set collection.matview_rebuild_on_startup=true in aveloxis.json to enable,

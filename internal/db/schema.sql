@@ -38,8 +38,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_groups (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     repo_id          BIGSERIAL PRIMARY KEY,
-    repo_group_id    BIGINT REFERENCES aveloxis_data.repo_groups(repo_group_id),
-    platform_id      SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id),
+    repo_group_id    BIGINT REFERENCES aveloxis_data.repo_groups(repo_group_id) DEFERRABLE INITIALLY DEFERRED,
+    platform_id      SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
     repo_git         TEXT NOT NULL UNIQUE,
     repo_name        TEXT NOT NULL DEFAULT '',
     repo_owner       TEXT NOT NULL DEFAULT '',
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_groups_list_serve (
     rgls_id          BIGSERIAL PRIMARY KEY,
-    repo_group_id    BIGINT NOT NULL REFERENCES aveloxis_data.repo_groups(repo_group_id),
+    repo_group_id    BIGINT NOT NULL REFERENCES aveloxis_data.repo_groups(repo_group_id) DEFERRABLE INITIALLY DEFERRED,
     rgls_name        TEXT,
     rgls_description TEXT,
     rgls_sponsor     TEXT,
@@ -168,8 +168,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_contributors_login
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_identities (
     identity_id    BIGSERIAL PRIMARY KEY,
-    cntrb_id       UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
-    platform_id    SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id),
+    cntrb_id       UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    platform_id    SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
     platform_user_id BIGINT NOT NULL,
     login          TEXT NOT NULL DEFAULT '',
     name           TEXT DEFAULT '',
@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributors_old (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.contributors_aliases (
     cntrb_alias_id BIGSERIAL PRIMARY KEY,
-    cntrb_id       UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    cntrb_id       UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     canonical_email TEXT NOT NULL,
     alias_email    TEXT NOT NULL UNIQUE,
     cntrb_active   SMALLINT NOT NULL DEFAULT 1,
@@ -271,7 +271,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_affiliations (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_repo (
     cntrb_repo_id  BIGSERIAL PRIMARY KEY,
-    cntrb_id       UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    cntrb_id       UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     repo_git       TEXT NOT NULL,
     repo_name      TEXT NOT NULL,
     gh_repo_id     BIGINT NOT NULL,
@@ -303,7 +303,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.unresolved_commit_emails (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.commits (
     cmt_id               BIGSERIAL PRIMARY KEY,
-    repo_id              BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id              BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     cmt_commit_hash      TEXT NOT NULL,
     cmt_author_name      TEXT NOT NULL DEFAULT '',
     cmt_author_raw_email TEXT NOT NULL DEFAULT '',
@@ -366,7 +366,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.commit_parents (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.commit_messages (
     cmt_msg_id     BIGSERIAL PRIMARY KEY,
-    repo_id        BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id        BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     cmt_msg        TEXT NOT NULL DEFAULT '',
     cmt_hash       TEXT NOT NULL DEFAULT '',
     tool_source    TEXT DEFAULT 'aveloxis',
@@ -382,7 +382,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.commit_messages (
 CREATE TABLE IF NOT EXISTS aveloxis_data.commit_comment_ref (
     cmt_comment_id BIGSERIAL PRIMARY KEY,
     cmt_id         BIGINT NOT NULL,
-    repo_id        BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id        BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     msg_id         BIGINT NOT NULL,
     user_id        BIGINT NOT NULL,
     body           TEXT DEFAULT '',
@@ -402,7 +402,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.commit_comment_ref (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.issues (
     issue_id         BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     platform_issue_id BIGINT NOT NULL,
     issue_number     INT NOT NULL,
     node_id          TEXT DEFAULT '',
@@ -411,8 +411,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.issues (
     issue_state      TEXT DEFAULT 'open',
     issue_url        TEXT DEFAULT '',
     html_url         TEXT DEFAULT '',
-    reporter_id      UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
-    closed_by_id     UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    reporter_id      UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    closed_by_id     UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     pull_request     BIGINT,
     pull_request_id  BIGINT,
     created_at       TIMESTAMPTZ,
@@ -429,8 +429,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.issues (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.issue_labels (
     issue_label_id   BIGSERIAL PRIMARY KEY,
-    issue_id         BIGINT NOT NULL REFERENCES aveloxis_data.issues(issue_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    issue_id         BIGINT NOT NULL REFERENCES aveloxis_data.issues(issue_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     platform_label_id BIGINT DEFAULT 0,
     node_id          TEXT DEFAULT '',
     label_text       TEXT NOT NULL DEFAULT '',
@@ -445,9 +445,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.issue_labels (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.issue_assignees (
     issue_assignee_id  BIGSERIAL PRIMARY KEY,
-    issue_id           BIGINT NOT NULL REFERENCES aveloxis_data.issues(issue_id),
-    repo_id            BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    cntrb_id           UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    issue_id           BIGINT NOT NULL REFERENCES aveloxis_data.issues(issue_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id            BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    cntrb_id           UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     platform_assignee_id BIGINT DEFAULT 0,
     platform_node_id   TEXT DEFAULT '',
     tool_source        TEXT DEFAULT 'aveloxis',
@@ -459,10 +459,10 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.issue_assignees (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.issue_events (
     issue_event_id     BIGSERIAL PRIMARY KEY,
-    issue_id           BIGINT NOT NULL REFERENCES aveloxis_data.issues(issue_id),
-    repo_id            BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    cntrb_id           UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
-    platform_id        SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id),
+    issue_id           BIGINT NOT NULL REFERENCES aveloxis_data.issues(issue_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id            BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
+    cntrb_id           UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    platform_id        SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
     platform_event_id  BIGINT NOT NULL,
     node_id            TEXT DEFAULT '',
     action             TEXT NOT NULL DEFAULT '',
@@ -480,7 +480,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.issue_events (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_requests (
     pull_request_id  BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     platform_pr_id   BIGINT NOT NULL,
     node_id          TEXT DEFAULT '',
     pr_number        INT NOT NULL,
@@ -496,7 +496,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_requests (
     closed_at        TIMESTAMPTZ,
     merged_at        TIMESTAMPTZ,
     merge_commit_sha TEXT DEFAULT '',
-    author_id        UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    author_id        UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     author_association TEXT DEFAULT '',
     meta_head_id     BIGINT,
     meta_base_id     BIGINT,
@@ -509,8 +509,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_requests (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_labels (
     pr_label_id      BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     platform_label_id BIGINT DEFAULT 0,
     node_id          TEXT DEFAULT '',
     label_name       TEXT NOT NULL DEFAULT '',
@@ -526,9 +526,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_labels (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_assignees (
     pr_assignee_id   BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     platform_assignee_id BIGINT DEFAULT 0,
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
@@ -539,9 +539,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_assignees (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_reviewers (
     pr_reviewer_id   BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     platform_reviewer_id BIGINT DEFAULT 0,
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
@@ -552,10 +552,10 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_reviewers (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_reviews (
     pr_review_id     BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
-    platform_id      SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id),
+    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    platform_id      SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
     platform_review_id BIGINT NOT NULL,
     node_id          TEXT DEFAULT '',
     review_state     TEXT DEFAULT '',
@@ -573,9 +573,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_reviews (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_meta (
     pr_meta_id       BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     head_or_base     TEXT NOT NULL,
     meta_label       TEXT DEFAULT '',
     meta_ref         TEXT DEFAULT '',
@@ -589,9 +589,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_meta (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_commits (
     pr_commit_id     BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    author_cntrb_id  UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    author_cntrb_id  UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     pr_cmt_sha       TEXT NOT NULL,
     pr_cmt_node_id   TEXT DEFAULT '',
     pr_cmt_message   TEXT DEFAULT '',
@@ -606,8 +606,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_commits (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_files (
     pr_file_id       BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     pr_file_path     TEXT NOT NULL DEFAULT '',
     pr_file_additions INT DEFAULT 0,
     pr_file_deletions INT DEFAULT 0,
@@ -620,10 +620,10 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_files (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_events (
     pr_event_id      BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
-    platform_id      SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id),
+    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
+    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    platform_id      SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
     platform_event_id BIGINT NOT NULL,
     node_id          TEXT DEFAULT '',
     action           TEXT NOT NULL DEFAULT '',
@@ -648,7 +648,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_repo (
     pr_repo_name     TEXT DEFAULT '',
     pr_repo_full_name TEXT DEFAULT '',
     pr_repo_private_bool BOOLEAN DEFAULT FALSE,
-    pr_cntrb_id      UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    pr_cntrb_id      UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
@@ -661,8 +661,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_repo (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_review_message_ref (
     pr_review_msg_ref_id BIGSERIAL PRIMARY KEY,
-    pr_review_id     BIGINT NOT NULL REFERENCES aveloxis_data.pull_request_reviews(pr_review_id),
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    pr_review_id     BIGINT NOT NULL REFERENCES aveloxis_data.pull_request_reviews(pr_review_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     msg_id           BIGINT NOT NULL,
     pr_review_msg_url TEXT DEFAULT '',
     pr_review_src_id BIGINT,
@@ -695,7 +695,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_review_message_ref (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_teams (
     pr_team_id       BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT REFERENCES aveloxis_data.pull_requests(pull_request_id),
+    pull_request_id  BIGINT REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     pr_src_team_id   BIGINT,
     pr_src_team_node TEXT DEFAULT '',
     pr_src_team_url  TEXT DEFAULT '',
@@ -718,7 +718,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_teams (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_analysis (
     pull_request_analysis_id BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT REFERENCES aveloxis_data.pull_requests(pull_request_id),
+    pull_request_id  BIGINT REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     merge_probability NUMERIC(256,250),
     mechanism        TEXT DEFAULT '',
     tool_source      TEXT DEFAULT 'aveloxis',
@@ -732,16 +732,16 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_analysis (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.messages (
     msg_id           BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     rgls_id          BIGINT,
     platform_msg_id  BIGINT NOT NULL,
-    platform_id      SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id),
+    platform_id      SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
     node_id          TEXT DEFAULT '',
     msg_text         TEXT DEFAULT '',
     msg_timestamp    TIMESTAMPTZ,
     msg_sender_email TEXT DEFAULT '',
     msg_header       TEXT DEFAULT '',
-    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE,
+    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
@@ -751,9 +751,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.messages (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.issue_message_ref (
     issue_msg_ref_id BIGSERIAL PRIMARY KEY,
-    issue_id         BIGINT NOT NULL REFERENCES aveloxis_data.issues(issue_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    msg_id           BIGINT NOT NULL REFERENCES aveloxis_data.messages(msg_id),
+    issue_id         BIGINT NOT NULL REFERENCES aveloxis_data.issues(issue_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    msg_id           BIGINT NOT NULL REFERENCES aveloxis_data.messages(msg_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     platform_src_id  BIGINT DEFAULT 0,
     platform_node_id TEXT DEFAULT '',
     tool_source      TEXT DEFAULT 'aveloxis',
@@ -765,9 +765,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.issue_message_ref (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_message_ref (
     pr_msg_ref_id    BIGSERIAL PRIMARY KEY,
-    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    msg_id           BIGINT NOT NULL REFERENCES aveloxis_data.messages(msg_id),
+    pull_request_id  BIGINT NOT NULL REFERENCES aveloxis_data.pull_requests(pull_request_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    msg_id           BIGINT NOT NULL REFERENCES aveloxis_data.messages(msg_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     platform_src_id  BIGINT DEFAULT 0,
     platform_node_id TEXT DEFAULT '',
     tool_source      TEXT DEFAULT 'aveloxis',
@@ -779,9 +779,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.pull_request_message_ref (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.review_comments (
     review_comment_id BIGSERIAL PRIMARY KEY,
-    pr_review_id     BIGINT REFERENCES aveloxis_data.pull_request_reviews(pr_review_id),
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    msg_id           BIGINT NOT NULL REFERENCES aveloxis_data.messages(msg_id),
+    pr_review_id     BIGINT REFERENCES aveloxis_data.pull_request_reviews(pr_review_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    msg_id           BIGINT NOT NULL REFERENCES aveloxis_data.messages(msg_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     platform_src_id  BIGINT DEFAULT 0,
     node_id          TEXT DEFAULT '',
     diff_hunk        TEXT DEFAULT '',
@@ -821,7 +821,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.message_analysis (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.message_analysis_summary (
     msg_summary_id   BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     worker_run_id    BIGINT,
     positive_ratio   FLOAT,
     negative_ratio   FLOAT,
@@ -849,7 +849,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.message_sentiment (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.message_sentiment_summary (
     msg_summary_id   BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     worker_run_id    BIGINT,
     positive_ratio   FLOAT,
     negative_ratio   FLOAT,
@@ -879,7 +879,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.discourse_insights (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.releases (
     release_id       TEXT NOT NULL,
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     release_name     TEXT DEFAULT '',
     release_description TEXT DEFAULT '',
     release_author   TEXT DEFAULT '',
@@ -903,7 +903,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.releases (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_info (
     repo_info_id     BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     last_updated     TIMESTAMPTZ,
     issues_enabled   TEXT DEFAULT 'true',
     prs_enabled      TEXT DEFAULT 'true',
@@ -950,7 +950,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_info_history (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_clones (
     repo_clone_id    BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     clone_timestamp  TIMESTAMPTZ NOT NULL,
     total_clones     INT DEFAULT 0,
     unique_clones    INT DEFAULT 0,
@@ -966,7 +966,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_clones (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_badging (
     badge_collection_id BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     created_at       TIMESTAMPTZ DEFAULT NOW(),
     data             JSONB,
     tool_source      TEXT DEFAULT 'aveloxis',
@@ -982,7 +982,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.dei_badging (
     id               SERIAL NOT NULL,
     badging_id       INT NOT NULL,
     level            TEXT NOT NULL DEFAULT '',
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     PRIMARY KEY (id, repo_id)
 );
 
@@ -991,7 +991,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.dei_badging (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_insights (
     ri_id            BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     ri_metric        TEXT DEFAULT '',
     ri_value         TEXT DEFAULT '',
     ri_date          TIMESTAMPTZ,
@@ -1007,7 +1007,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_insights (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_insights_records (
     ri_id            BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     ri_metric        TEXT DEFAULT '',
     ri_field         TEXT DEFAULT '',
     ri_value         TEXT DEFAULT '',
@@ -1022,7 +1022,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_insights_records (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_group_insights (
     rgi_id           BIGSERIAL PRIMARY KEY,
-    repo_group_id    BIGINT REFERENCES aveloxis_data.repo_groups(repo_group_id),
+    repo_group_id    BIGINT REFERENCES aveloxis_data.repo_groups(repo_group_id) DEFERRABLE INITIALLY DEFERRED,
     rgi_metric       TEXT DEFAULT '',
     rgi_value        TEXT DEFAULT '',
     cms_id           BIGINT,
@@ -1038,7 +1038,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_group_insights (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_dependencies (
     repo_dependencies_id BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     dep_name         TEXT DEFAULT '',
     dep_count        INT DEFAULT 0,
     dep_language     TEXT DEFAULT '',
@@ -1050,7 +1050,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_dependencies (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_libyear (
     repo_deps_libyear_id BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     name             TEXT DEFAULT '',
     requirement      TEXT DEFAULT '',
     type             TEXT DEFAULT '',
@@ -1074,7 +1074,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_libyear_history (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_scorecard (
     repo_deps_scorecard_id BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     name             TEXT DEFAULT '',
     score            TEXT DEFAULT '',
     scorecard_check_details JSONB,
@@ -1096,7 +1096,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_scorecard_history (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
     vuln_id_seq      BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     vuln_id          TEXT NOT NULL,
     cve_id           TEXT DEFAULT '',
     package_name     TEXT NOT NULL,
@@ -1127,7 +1127,7 @@ CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_cve_id
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_sbom_scans (
     rsb_id           BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     sbom_scan        JSON,
     sbom_format      TEXT DEFAULT '',
     sbom_version     TEXT DEFAULT '',
@@ -1139,7 +1139,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_sbom_scans (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.libraries (
     library_id       BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     platform         TEXT DEFAULT '',
     name             TEXT DEFAULT '',
     created_timestamp TIMESTAMPTZ,
@@ -1163,7 +1163,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.libraries (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.library_dependencies (
     lib_dependency_id BIGSERIAL PRIMARY KEY,
-    library_id       BIGINT REFERENCES aveloxis_data.libraries(library_id),
+    library_id       BIGINT REFERENCES aveloxis_data.libraries(library_id) DEFERRABLE INITIALLY DEFERRED,
     manifest_platform TEXT DEFAULT '',
     manifest_filepath TEXT DEFAULT '',
     manifest_kind    TEXT DEFAULT '',
@@ -1176,7 +1176,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.library_dependencies (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.library_version (
     library_version_id BIGSERIAL PRIMARY KEY,
-    library_id       BIGINT REFERENCES aveloxis_data.libraries(library_id),
+    library_id       BIGINT REFERENCES aveloxis_data.libraries(library_id) DEFERRABLE INITIALLY DEFERRED,
     library_platform TEXT DEFAULT '',
     version_number   TEXT DEFAULT '',
     version_release_date TIMESTAMPTZ,
@@ -1205,9 +1205,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.lstm_anomaly_models (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.lstm_anomaly_results (
     result_id        BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     repo_category    TEXT DEFAULT '',
-    model_id         BIGINT REFERENCES aveloxis_data.lstm_anomaly_models(model_id),
+    model_id         BIGINT REFERENCES aveloxis_data.lstm_anomaly_models(model_id) DEFERRABLE INITIALLY DEFERRED,
     metric           TEXT DEFAULT '',
     contamination_factor FLOAT,
     mean_absolute_error FLOAT,
@@ -1226,7 +1226,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.lstm_anomaly_results (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.topic_model_meta (
     model_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     model_method     TEXT NOT NULL DEFAULT '',
     num_topics       INT NOT NULL DEFAULT 0,
     num_words_per_topic INT NOT NULL DEFAULT 0,
@@ -1271,7 +1271,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.topic_words (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_cluster_messages (
     msg_cluster_id   BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     cluster_content  INT,
     cluster_mechanism INT,
     tool_source      TEXT DEFAULT 'aveloxis',
@@ -1282,7 +1282,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_cluster_messages (
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_topic (
     repo_topic_id    BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     topic_id         INT,
     topic_prob       FLOAT,
     tool_source      TEXT DEFAULT 'aveloxis',
@@ -1425,7 +1425,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.dm_repo_group_weekly (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor (
     repo_labor_id    BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     repo_clone_date  TIMESTAMPTZ,
     rl_analysis_date TIMESTAMPTZ,
     programming_language TEXT DEFAULT '',
@@ -1448,7 +1448,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_meta (
     rmeta_id         BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     rmeta_name       TEXT DEFAULT '',
     rmeta_value      TEXT DEFAULT '0',
     tool_source      TEXT DEFAULT 'aveloxis',
@@ -1462,7 +1462,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_meta (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_stats (
     rstat_id         BIGSERIAL PRIMARY KEY,
-    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     rstat_name       TEXT DEFAULT '',
     rstat_value      BIGINT DEFAULT 0,
     tool_source      TEXT DEFAULT 'aveloxis',
@@ -1608,8 +1608,8 @@ INSERT INTO aveloxis_ops.schema_meta (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_ops.staging (
     staging_id   BIGSERIAL PRIMARY KEY,
-    repo_id      BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id),
-    platform_id  SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id),
+    repo_id      BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
+    platform_id  SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
     entity_type  TEXT NOT NULL,
     payload      JSONB NOT NULL,
     created_at   TIMESTAMPTZ DEFAULT NOW(),
@@ -1624,7 +1624,7 @@ CREATE INDEX IF NOT EXISTS idx_staging_unprocessed
 -- Collection queue: Postgres-backed priority queue.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_queue (
-    repo_id          BIGINT PRIMARY KEY REFERENCES aveloxis_data.repos(repo_id),
+    repo_id          BIGINT PRIMARY KEY REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     priority         INT NOT NULL DEFAULT 100,
     status           TEXT NOT NULL DEFAULT 'queued',
     due_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1658,7 +1658,7 @@ CREATE INDEX IF NOT EXISTS idx_queue_due
 -- Collection status (operational tracking)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_status (
-    repo_id              BIGINT PRIMARY KEY REFERENCES aveloxis_data.repos(repo_id),
+    repo_id              BIGINT PRIMARY KEY REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     core_status          TEXT DEFAULT 'Pending',
     core_task_id         TEXT,
     core_data_last_collected TIMESTAMPTZ,
@@ -1746,7 +1746,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.users (
 
 CREATE TABLE IF NOT EXISTS aveloxis_ops.user_groups (
     group_id       BIGSERIAL PRIMARY KEY,
-    user_id        INT NOT NULL REFERENCES aveloxis_ops.users(user_id),
+    user_id        INT NOT NULL REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
     name           TEXT NOT NULL,
     favorited      BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE (user_id, name)
@@ -1754,7 +1754,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_groups (
 
 CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repos (
     repo_id        BIGINT NOT NULL,
-    group_id       BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id),
+    group_id       BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id) DEFERRABLE INITIALLY DEFERRED,
     PRIMARY KEY (group_id, repo_id)
 );
 
@@ -1762,8 +1762,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repos (
 -- so the scheduler can periodically scan for new repos and add them.
 CREATE TABLE IF NOT EXISTS aveloxis_ops.user_org_requests (
     org_request_id BIGSERIAL PRIMARY KEY,
-    user_id        INT NOT NULL REFERENCES aveloxis_ops.users(user_id),
-    group_id       BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id),
+    user_id        INT NOT NULL REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+    group_id       BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id) DEFERRABLE INITIALLY DEFERRED,
     org_url        TEXT NOT NULL,         -- e.g., "https://github.com/chaoss"
     org_name       TEXT NOT NULL DEFAULT '',
     platform       TEXT NOT NULL DEFAULT 'github', -- "github" or "gitlab"
@@ -1775,22 +1775,22 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_org_requests (
 CREATE TABLE IF NOT EXISTS aveloxis_ops.client_applications (
     id             TEXT PRIMARY KEY,
     api_key        TEXT NOT NULL DEFAULT '',
-    user_id        INT NOT NULL REFERENCES aveloxis_ops.users(user_id),
+    user_id        INT NOT NULL REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
     name           TEXT NOT NULL DEFAULT '',
     redirect_url   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS aveloxis_ops.user_session_tokens (
     token          TEXT PRIMARY KEY,
-    user_id        INT NOT NULL REFERENCES aveloxis_ops.users(user_id),
+    user_id        INT NOT NULL REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
     created_at     BIGINT,
     expiration     BIGINT,
-    application_id TEXT REFERENCES aveloxis_ops.client_applications(id)
+    application_id TEXT REFERENCES aveloxis_ops.client_applications(id) DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE TABLE IF NOT EXISTS aveloxis_ops.refresh_tokens (
     id                   TEXT PRIMARY KEY,
-    user_session_token   TEXT NOT NULL UNIQUE REFERENCES aveloxis_ops.user_session_tokens(token)
+    user_session_token   TEXT NOT NULL UNIQUE REFERENCES aveloxis_ops.user_session_tokens(token) DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE TABLE IF NOT EXISTS aveloxis_ops.subscription_types (
@@ -1799,8 +1799,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.subscription_types (
 );
 
 CREATE TABLE IF NOT EXISTS aveloxis_ops.subscriptions (
-    application_id TEXT NOT NULL REFERENCES aveloxis_ops.client_applications(id),
-    type_id        BIGINT NOT NULL REFERENCES aveloxis_ops.subscription_types(id),
+    application_id TEXT NOT NULL REFERENCES aveloxis_ops.client_applications(id) DEFERRABLE INITIALLY DEFERRED,
+    type_id        BIGINT NOT NULL REFERENCES aveloxis_ops.subscription_types(id) DEFERRABLE INITIALLY DEFERRED,
     PRIMARY KEY (application_id, type_id)
 );
 
@@ -1966,6 +1966,69 @@ CREATE INDEX IF NOT EXISTS idx_pull_request_repo_pr_cntrb_id ON aveloxis_data.pu
 CREATE INDEX IF NOT EXISTS idx_pull_request_reviewers_cntrb_id ON aveloxis_data.pull_request_reviewers (cntrb_id);
 CREATE INDEX IF NOT EXISTS idx_pull_request_reviews_cntrb_id ON aveloxis_data.pull_request_reviews (cntrb_id);
 CREATE INDEX IF NOT EXISTS idx_pull_requests_author_id ON aveloxis_data.pull_requests (author_id);
+
+-- v0.22.7: btree indexes on the 50 child FK columns identified by
+-- the 2026-05-17 audit. Companion to v0.22.7's CASCADE/RESTRICT/
+-- DEFERRABLE INITIALLY DEFERRED constraint changes on the same FKs.
+-- Indexes must exist before the constraint flip so the new
+-- RESTRICT/CASCADE behavior runs against indexed lookups.
+-- Grouped by parent table for readability.
+--
+-- pull_requests(pull_request_id) ← 11 children
+CREATE INDEX IF NOT EXISTS idx_pull_request_analysis_pull_request_id ON aveloxis_data.pull_request_analysis (pull_request_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_assignees_pull_request_id ON aveloxis_data.pull_request_assignees (pull_request_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_commits_pull_request_id ON aveloxis_data.pull_request_commits (pull_request_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_events_pull_request_id ON aveloxis_data.pull_request_events (pull_request_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_files_pull_request_id ON aveloxis_data.pull_request_files (pull_request_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_labels_pull_request_id ON aveloxis_data.pull_request_labels (pull_request_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_message_ref_pull_request_id ON aveloxis_data.pull_request_message_ref (pull_request_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_meta_pull_request_id ON aveloxis_data.pull_request_meta (pull_request_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_reviewers_pull_request_id ON aveloxis_data.pull_request_reviewers (pull_request_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_reviews_pull_request_id ON aveloxis_data.pull_request_reviews (pull_request_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_teams_pull_request_id ON aveloxis_data.pull_request_teams (pull_request_id);
+-- issues(issue_id) ← 4 children
+CREATE INDEX IF NOT EXISTS idx_issue_assignees_issue_id ON aveloxis_data.issue_assignees (issue_id);
+CREATE INDEX IF NOT EXISTS idx_issue_events_issue_id ON aveloxis_data.issue_events (issue_id);
+CREATE INDEX IF NOT EXISTS idx_issue_labels_issue_id ON aveloxis_data.issue_labels (issue_id);
+CREATE INDEX IF NOT EXISTS idx_issue_message_ref_issue_id ON aveloxis_data.issue_message_ref (issue_id);
+-- messages(msg_id) ← 3 children
+CREATE INDEX IF NOT EXISTS idx_issue_message_ref_msg_id ON aveloxis_data.issue_message_ref (msg_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_message_ref_msg_id ON aveloxis_data.pull_request_message_ref (msg_id);
+CREATE INDEX IF NOT EXISTS idx_review_comments_msg_id ON aveloxis_data.review_comments (msg_id);
+-- pull_request_reviews(pr_review_id) ← 2 children
+CREATE INDEX IF NOT EXISTS idx_pull_request_review_message_ref_pr_review_id ON aveloxis_data.pull_request_review_message_ref (pr_review_id);
+CREATE INDEX IF NOT EXISTS idx_review_comments_pr_review_id ON aveloxis_data.review_comments (pr_review_id);
+-- repos(repo_id) ← 30 children (includes issue_assignees.repo_id)
+CREATE INDEX IF NOT EXISTS idx_commit_comment_ref_repo_id ON aveloxis_data.commit_comment_ref (repo_id);
+CREATE INDEX IF NOT EXISTS idx_commit_messages_repo_id ON aveloxis_data.commit_messages (repo_id);
+CREATE INDEX IF NOT EXISTS idx_dei_badging_repo_id ON aveloxis_data.dei_badging (repo_id);
+CREATE INDEX IF NOT EXISTS idx_issue_assignees_repo_id ON aveloxis_data.issue_assignees (repo_id);
+CREATE INDEX IF NOT EXISTS idx_issue_labels_repo_id ON aveloxis_data.issue_labels (repo_id);
+CREATE INDEX IF NOT EXISTS idx_issue_message_ref_repo_id ON aveloxis_data.issue_message_ref (repo_id);
+CREATE INDEX IF NOT EXISTS idx_libraries_repo_id ON aveloxis_data.libraries (repo_id);
+CREATE INDEX IF NOT EXISTS idx_lstm_anomaly_results_repo_id ON aveloxis_data.lstm_anomaly_results (repo_id);
+CREATE INDEX IF NOT EXISTS idx_message_analysis_summary_repo_id ON aveloxis_data.message_analysis_summary (repo_id);
+CREATE INDEX IF NOT EXISTS idx_message_sentiment_summary_repo_id ON aveloxis_data.message_sentiment_summary (repo_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_assignees_repo_id ON aveloxis_data.pull_request_assignees (repo_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_commits_repo_id ON aveloxis_data.pull_request_commits (repo_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_files_repo_id ON aveloxis_data.pull_request_files (repo_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_labels_repo_id ON aveloxis_data.pull_request_labels (repo_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_message_ref_repo_id ON aveloxis_data.pull_request_message_ref (repo_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_meta_repo_id ON aveloxis_data.pull_request_meta (repo_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_review_message_ref_repo_id ON aveloxis_data.pull_request_review_message_ref (repo_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_reviewers_repo_id ON aveloxis_data.pull_request_reviewers (repo_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_reviews_repo_id ON aveloxis_data.pull_request_reviews (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_badging_repo_id ON aveloxis_data.repo_badging (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_clones_repo_id ON aveloxis_data.repo_clones (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_cluster_messages_repo_id ON aveloxis_data.repo_cluster_messages (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_insights_repo_id ON aveloxis_data.repo_insights (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_insights_records_repo_id ON aveloxis_data.repo_insights_records (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_meta_repo_id ON aveloxis_data.repo_meta (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_sbom_scans_repo_id ON aveloxis_data.repo_sbom_scans (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_stats_repo_id ON aveloxis_data.repo_stats (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_topic_repo_id ON aveloxis_data.repo_topic (repo_id);
+CREATE INDEX IF NOT EXISTS idx_review_comments_repo_id ON aveloxis_data.review_comments (repo_id);
+CREATE INDEX IF NOT EXISTS idx_topic_model_meta_repo_id ON aveloxis_data.topic_model_meta (repo_id);
 
 -- ============================================================
 -- ScanCode Toolkit tables (aveloxis_scan schema)

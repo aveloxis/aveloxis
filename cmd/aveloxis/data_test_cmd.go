@@ -375,12 +375,33 @@ func dtRunAddRepo(ctx context.Context, logger *slog.Logger, binary, cfgPath, rep
 	return cmd.Run()
 }
 
-// dtRunCollect invokes `<binary> collect <url> -c <cfg>` — a
-// one-shot collection. Streams output live. This is the long phase
-// (~30 min for a moderate repo).
+// dtRunCollect invokes `<binary> collect <url> -c <cfg> --full` — a
+// one-shot, FULL-history collection. Streams output live. This is
+// the long phase (~30 min for a moderate repo).
+//
+// --full is essential. The scratch DBs are fresh — `last_collected`
+// is NULL — but `aveloxis collect` defaults to the incremental
+// since-filter (default `days_until_recollect`, typically 21 days).
+// Without --full, the collector fetches issue/PR EVENTS whose
+// parent issue/PR was last modified outside the since window, then
+// tries to INSERT those events with a parent_id that doesn't exist
+// in the local issues/pull_requests tables → hundreds of
+// `issue_events_issue_id_fkey` and `pull_request_events_pull_request_id_fkey`
+// violations. The events get dropped, the diff sees zero events on
+// both sides, FK regressions are hidden behind partial-collection
+// noise. Empirically confirmed on 2026-05-17.
+//
+// --full forces since=zero so every parent issue/PR is fetched
+// before its child events. FK constraints are exercised against
+// fully-populated parent tables, exposing any real regression.
+//
+// Trade-off: a full collection takes longer than incremental
+// (~30-45 min on augurlabs/augur vs ~20-25 min incremental). The
+// signal quality is worth it; the whole point of the harness is to
+// surface FK / data-loss regressions.
 func dtRunCollect(ctx context.Context, logger *slog.Logger, binary, cfgPath, repoURL string) error {
-	logger.Info("running collect (this is the long phase)", "repo", repoURL)
-	cmd := exec.CommandContext(ctx, binary, "-c", cfgPath, "collect", repoURL)
+	logger.Info("running collect --full (this is the long phase)", "repo", repoURL)
+	cmd := exec.CommandContext(ctx, binary, "-c", cfgPath, "collect", repoURL, "--full")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

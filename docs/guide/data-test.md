@@ -64,9 +64,12 @@ FLAGGED table.
 - API keys already loaded into the operator's primary
   `aveloxis_ops.api_keys` table. The harness copies keys into both
   scratch DBs automatically — you don't re-paste tokens.
-- ~1 hour of wall-clock time for a moderate test repo. Most of this is
-  sequential collection passes (two of them, ~30 min each on
-  augurlabs/augur with a 73-token GitHub pool).
+- ~1.5 hours of wall-clock time for a moderate test repo. Most of
+  this is sequential **full-history** collection passes (two of them,
+  ~30–45 min each on augurlabs/augur with a 73-token GitHub pool).
+  The harness always passes `--full` to `aveloxis collect` so both
+  scratch DBs receive complete data with all parent records present.
+  This is essential — see "Why full collection" below.
 - ~5 GB of free disk space for the two scratch databases.
 
 ## Running the harness
@@ -206,12 +209,43 @@ Useful to know if a phase fails partway through.
    dropped. Cleanup failure is non-fatal — the report is already
    written.
 
+## Why full collection (`--full`)
+
+The harness always invokes `aveloxis collect URL --full`, forcing
+`since=zero` (every parent issue/PR is fetched, not just recently-
+modified ones). Without `--full`, the collector uses the default
+incremental since-filter (typically 21 days), which produces a
+specific noise pattern that **hides real regressions**:
+
+- The events API returns events for issues/PRs that may have been
+  last modified outside the since window.
+- The collector tries to INSERT those events; the FK constraint
+  rejects them because the parent issue/PR isn't in the local DB.
+- Hundreds of `issue_events_issue_id_fkey` and
+  `pull_request_events_pull_request_id_fkey` violations get logged
+  as WARN.
+- The events are silently dropped on BOTH sides.
+- The diff sees `issue_events: released=0, new=0` — a false PASS.
+
+By forcing `--full`, every parent is present before its children
+are fetched. FK constraints are exercised against fully-populated
+parent tables. Any real regression introduced by a schema change
+will surface, instead of being masked by the partial-collection
+noise. Empirically confirmed in v0.22.10 after a 2026-05-17 diagnostic
+showed this exact pattern obscuring v0.22.7's FK behavior change.
+
+The trade-off is wall-clock time: a full collection takes ~30–45
+minutes on augurlabs/augur vs ~20–25 minutes incremental. The
+signal quality is worth it; the whole point of the harness is to
+detect FK / data-loss regressions, and partial collection
+fundamentally cannot detect them.
+
 ## Design decisions worth knowing
 
 - **Sequential collection, not parallel.** Both sides share the
   operator's API key pool. Parallel runs would burn 2× the rate budget
-  and produce non-reproducible timings. ~1 hour total is the cost of
-  reliable results.
+  and produce non-reproducible timings. ~1.5 hours total (with --full)
+  is the cost of reliable results.
 - **`git worktree`, not `git clone`.** Reuses the local clone's git
   objects. Works offline. Faster.
 - **Self-discovering tables, not a per-table fixture.** Adding a new

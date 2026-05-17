@@ -152,6 +152,38 @@ func TestDataTestDropsScratchDBsByDefault(t *testing.T) {
 // missing. Both halves required: a future refactor that uses an
 // even-newer table name would still pass the first check but fail
 // the second.
+// TestDataTestForcesFullCollection pins the v0.22.10 fix: the
+// harness must invoke `<binary> collect URL --full`, not just
+// `<binary> collect URL`. Without --full the orchestrator uses
+// the default incremental since-filter, which produces hundreds
+// of spurious FK violations (issue_events / pull_request_events
+// referencing parents that weren't refetched in the since window).
+// Those violations cause silent row-loss that's symmetric across
+// both DBs — hiding any real regression behind noise.
+//
+// Confirmed empirically on 2026-05-17: a partial-collection run
+// reported 0 rows in issue_events / pull_request_events on BOTH
+// sides, which masked the question of whether v0.22.7's
+// DEFERRABLE INITIALLY DEFERRED changed behavior at all.
+//
+// If a future refactor drops --full, this test fires immediately.
+func TestDataTestForcesFullCollection(t *testing.T) {
+	src, err := os.ReadFile("data_test_cmd.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+	if !strings.Contains(code, `"--full"`) {
+		t.Error("dtRunCollect must pass --full to the collect subprocess so the " +
+			"harness exercises full-history collection (since=zero). Without it the " +
+			"FK-violation noise from incremental partial collections hides any real " +
+			"regression. See the 2026-05-17 diagnostic for the empirical evidence.")
+	}
+	if !strings.Contains(code, "dtRunCollect") {
+		t.Error("dtRunCollect must still exist as the named phase helper")
+	}
+}
+
 func TestCopyAPIKeysUsesWorkerOauthNotAPIKeys(t *testing.T) {
 	src, err := os.ReadFile("data_test_cmd.go")
 	if err != nil {

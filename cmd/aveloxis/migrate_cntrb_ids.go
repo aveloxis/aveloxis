@@ -183,7 +183,7 @@ func runMigrateCntrbIDs(cfgPath string, dryRun bool, batchSize, limit int, skipP
 		"migrated", migrated,
 		"collisions_skipped", counts.Collisions,
 		"duration", time.Since(startedAt).Round(time.Second),
-		"next_step", "run `aveloxis refresh-views` to rebuild any matviews that depend on cntrb_id joins")
+		"next_step", "run `aveloxis merge-cntrb-collisions` and then, if you think it is a good idea, `aveloxis refresh-views` to rebuild any matviews that depend on cntrb_id joins")
 
 	return nil
 }

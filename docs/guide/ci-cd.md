@@ -141,3 +141,103 @@ docker run -d --name aveloxis-api \
 ```
 
 All containers share the same `aveloxis.json` and connect to the same PostgreSQL database.
+
+## Schema change verification
+
+PRs that modify `internal/db/schema.sql` or `internal/db/migrate.go`
+go through an extra release-gate workflow: the contributor (and the
+maintainer reviewing the PR) runs `aveloxis data-test` against the
+last released tag to verify no row-loss regressions. Shipped in
+v0.22.8.
+
+### When the gate applies
+
+A change is **schema-touching** if it:
+
+- Adds, removes, or renames any column in `schema.sql`.
+- Adds, removes, or modifies any constraint (FK, CHECK, UNIQUE, NOT
+  NULL) in `schema.sql`.
+- Adds or modifies any DDL step in `migrate.go` that runs against
+  existing data.
+- Changes any index declaration that affects a constraint's lookup
+  path.
+
+A change is **NOT schema-touching** (no gate required) if it only:
+
+- Changes Go code (API layer, collector, web, scheduler).
+- Adds tests, fixtures, or documentation.
+- Modifies build / deployment infrastructure.
+- Adjusts logging or metrics.
+
+When in doubt, run the harness anyway. It's idempotent and ~1 hour
+of wall-clock; cheap insurance.
+
+### Running the gate
+
+```bash
+# From the contributor's working branch, with the schema change
+# checked out locally:
+aveloxis data-test \
+  --released-tag 0.22.6 \
+  --repo https://github.com/augurlabs/augur
+```
+
+The harness:
+
+1. Builds binaries from the released tag (via `git worktree`) and
+   the current working tree.
+2. Provisions two scratch PostgreSQL databases.
+3. Collects `augurlabs/augur` into each.
+4. Diffs row counts table-by-table.
+5. Writes a markdown report to `<work-dir>/report.md`.
+6. Exits 0 if all rows PASS or FLAG; exits 1 on any FAIL.
+
+The canonical test repo is `augurlabs/augur` — moderate size (a few
+thousand issues, a few thousand PRs, lots of commits) that exercises
+every collection path without taking hours.
+
+### Interpreting results
+
+- **PASS** — equal row counts. Ship.
+- **FLAG** — new schema captures more rows (likely new coverage).
+  Review individually but generally fine.
+- **FAIL** — released schema captured rows the new schema rejects.
+  **Do not ship.** Investigate the root cause (usually a new
+  constraint rejecting INSERTs that previously succeeded). Fix the
+  regression and re-run.
+
+Full interpretation guidance: [Schema-change verification](data-test.md).
+
+### CI integration (optional)
+
+For projects that want automated gating, the harness can drive a CI
+job:
+
+```yaml
+- name: Schema-change verification
+  if: contains(github.event.pull_request.labels.*.name, 'schema-change')
+  run: |
+    aveloxis data-test \
+      --released-tag $LAST_RELEASED \
+      --repo https://github.com/augurlabs/augur \
+      --work-dir /tmp/aveloxis-data-test-${{ github.run_id }}
+  # Exit code 1 on FAIL → fails the workflow.
+
+- name: Upload report on failure
+  if: failure()
+  uses: actions/upload-artifact@v4
+  with:
+    name: data-test-report
+    path: /tmp/aveloxis-data-test-${{ github.run_id }}/report.md
+```
+
+This requires the CI runner to have:
+
+- Access to a PostgreSQL server with CREATEDB privilege.
+- API keys pre-seeded into a primary `aveloxis_ops.api_keys` table
+  on that server.
+- Enough wall-clock budget for the ~1-hour cycle.
+
+For projects without those, the harness still works as an
+operator-invoked local check before pushing the PR. The CI job is a
+convenience, not a requirement.

@@ -1941,6 +1941,32 @@ CREATE INDEX IF NOT EXISTS idx_repo_deps_libyear_repo_id ON aveloxis_data.repo_d
 CREATE INDEX IF NOT EXISTS idx_repo_deps_scorecard_repo_id ON aveloxis_data.repo_deps_scorecard (repo_id);
 CREATE INDEX IF NOT EXISTS idx_repo_dependencies_repo_id ON aveloxis_data.repo_dependencies (repo_id);
 
+-- v0.22.6: btree indexes on every FK column pointing at
+-- aveloxis_data.contributors(cntrb_id). Cascade (v0.22.1) added
+-- the BEHAVIOR — ON UPDATE CASCADE; these indexes make the
+-- behavior tractable. Without them, an UPDATE on
+-- contributors.cntrb_id (run by `aveloxis migrate-cntrb-ids`)
+-- seq-scans every child table for every row in the batch. The
+-- aveloxis_large production DB observed a 17-hour stall on batch 1
+-- of that migration on 2026-05-17 because 15 of 16 child FKs were
+-- unindexed. idx_contributor_identities_cntrb (declared above)
+-- covers the 16th column; the 15 indexes below close the gap.
+CREATE INDEX IF NOT EXISTS idx_contributor_repo_cntrb_id ON aveloxis_data.contributor_repo (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_contributors_aliases_cntrb_id ON aveloxis_data.contributors_aliases (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_issue_assignees_cntrb_id ON aveloxis_data.issue_assignees (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_issue_events_cntrb_id ON aveloxis_data.issue_events (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_issues_closed_by_id ON aveloxis_data.issues (closed_by_id);
+CREATE INDEX IF NOT EXISTS idx_issues_reporter_id ON aveloxis_data.issues (reporter_id);
+CREATE INDEX IF NOT EXISTS idx_messages_cntrb_id ON aveloxis_data.messages (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_assignees_cntrb_id ON aveloxis_data.pull_request_assignees (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_commits_author_cntrb_id ON aveloxis_data.pull_request_commits (author_cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_events_cntrb_id ON aveloxis_data.pull_request_events (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_meta_cntrb_id ON aveloxis_data.pull_request_meta (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_repo_pr_cntrb_id ON aveloxis_data.pull_request_repo (pr_cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_reviewers_cntrb_id ON aveloxis_data.pull_request_reviewers (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_pull_request_reviews_cntrb_id ON aveloxis_data.pull_request_reviews (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_pull_requests_author_id ON aveloxis_data.pull_requests (author_id);
+
 -- ============================================================
 -- ScanCode Toolkit tables (aveloxis_scan schema)
 -- Per-file license, copyright, and package detection results.

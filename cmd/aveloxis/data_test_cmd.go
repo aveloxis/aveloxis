@@ -285,9 +285,23 @@ func runMigrate(ctx context.Context, logger *slog.Logger, binary, cfgPath string
 }
 
 // copyAPIKeys reads API keys from the operator's primary aveloxis
-// database and inserts them into the named scratch database.
-// Without this step the operator would have to re-paste keys via
-// `aveloxis add-key` 73× per scratch DB — unworkable.
+// database and inserts them into the named scratch database. Without
+// this step the operator would have to re-paste 73 tokens via
+// `aveloxis add-key` per scratch DB — unworkable.
+//
+// The source-of-truth table is aveloxis_ops.worker_oauth. There is
+// no generic-sounding "api_keys" table — assuming one exists is a
+// recurring failure mode in this codebase. An earlier v0.22.8 draft
+// hit that mistake and failed at runtime on 2026-05-17. The
+// source-contract test TestCopyAPIKeysUsesWorkerOauthNotAPIKeys pins
+// the correct table name and fires if the wrong generic name ever
+// returns to this file.
+//
+// All columns are copied (name, consumer_key, consumer_secret,
+// access_token, access_token_secret, repo_directory, platform,
+// rate_limit) so any operator customizations (rate_limit overrides,
+// repo_directory paths) follow into the scratch DBs. ON CONFLICT on
+// the natural key (access_token, platform) makes the copy idempotent.
 func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, scratchDBName string) error {
 	primaryPool, err := pgxpool.New(ctx, cfg.Database.ConnectionString())
 	if err != nil {
@@ -304,21 +318,27 @@ func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, s
 	defer scratchPool.Close()
 
 	rows, err := primaryPool.Query(ctx, `
-		SELECT api_key, platform, label
-		FROM aveloxis_ops.api_keys
+		SELECT name, consumer_key, consumer_secret, access_token,
+		       access_token_secret, repo_directory, platform, rate_limit
+		FROM aveloxis_ops.worker_oauth
 	`)
 	if err != nil {
-		return fmt.Errorf("select api_keys from primary: %w", err)
+		return fmt.Errorf("select worker_oauth from primary: %w", err)
 	}
 	defer rows.Close()
 
 	type keyRow struct {
-		key, platform, label string
+		name, consumerKey, consumerSecret, accessToken string
+		accessTokenSecret, repoDirectory, platform     string
+		rateLimit                                      int
 	}
 	var keys []keyRow
 	for rows.Next() {
 		var k keyRow
-		if err := rows.Scan(&k.key, &k.platform, &k.label); err != nil {
+		if err := rows.Scan(
+			&k.name, &k.consumerKey, &k.consumerSecret, &k.accessToken,
+			&k.accessTokenSecret, &k.repoDirectory, &k.platform, &k.rateLimit,
+		); err != nil {
 			return err
 		}
 		keys = append(keys, k)
@@ -326,15 +346,20 @@ func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, s
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	logger.Info("copying API keys", "count", len(keys), "target", scratchDBName)
+	logger.Info("copying API keys (worker_oauth)", "count", len(keys), "target", scratchDBName)
 	for _, k := range keys {
 		_, err := scratchPool.Exec(ctx, `
-			INSERT INTO aveloxis_ops.api_keys (api_key, platform, label)
-			VALUES ($1, $2, $3)
-			ON CONFLICT DO NOTHING
-		`, k.key, k.platform, k.label)
+			INSERT INTO aveloxis_ops.worker_oauth
+			    (name, consumer_key, consumer_secret, access_token,
+			     access_token_secret, repo_directory, platform, rate_limit)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (access_token, platform) DO NOTHING
+		`,
+			k.name, k.consumerKey, k.consumerSecret, k.accessToken,
+			k.accessTokenSecret, k.repoDirectory, k.platform, k.rateLimit,
+		)
 		if err != nil {
-			return fmt.Errorf("insert key into %s: %w", scratchDBName, err)
+			return fmt.Errorf("insert worker_oauth into %s: %w", scratchDBName, err)
 		}
 	}
 	return nil

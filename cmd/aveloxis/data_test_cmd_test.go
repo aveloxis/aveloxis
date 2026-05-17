@@ -139,6 +139,37 @@ func TestDataTestDropsScratchDBsByDefault(t *testing.T) {
 	}
 }
 
+// TestCopyAPIKeysUsesWorkerOauthNotAPIKeys is a recurring-drift
+// tripwire. On 2026-05-17 the operator hit a runtime error from an
+// earlier draft of copyAPIKeys that queried `aveloxis_ops.api_keys`
+// — a table that does not exist (the real one is worker_oauth).
+// The operator noted "we've had this issue before": assuming a
+// generic-sounding name for the keys table is a known recurring
+// failure mode in this codebase.
+//
+// This test fails the build if `aveloxis_ops.api_keys` ever
+// re-appears in data_test_cmd.go AND fails if worker_oauth is
+// missing. Both halves required: a future refactor that uses an
+// even-newer table name would still pass the first check but fail
+// the second.
+func TestCopyAPIKeysUsesWorkerOauthNotAPIKeys(t *testing.T) {
+	src, err := os.ReadFile("data_test_cmd.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+	if !strings.Contains(code, "aveloxis_ops.worker_oauth") {
+		t.Error("copyAPIKeys must query aveloxis_ops.worker_oauth — that's the " +
+			"real API-key table. See internal/db/keys.go for the canonical " +
+			"INSERT/SELECT shape.")
+	}
+	if strings.Contains(code, "aveloxis_ops.api_keys") {
+		t.Error("regression: aveloxis_ops.api_keys does NOT exist in the schema. " +
+			"The real table is aveloxis_ops.worker_oauth. This exact assumption " +
+			"drift broke the v0.22.8 release on 2026-05-17; do not let it recur.")
+	}
+}
+
 func TestScratchDBNamesAreConventional(t *testing.T) {
 	src, err := os.ReadFile("data_test_cmd.go")
 	if err != nil {

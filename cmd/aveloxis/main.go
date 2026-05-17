@@ -69,6 +69,7 @@ func main() {
 		installToolsCmd(),
 		sbomCmd(&cfgPath),
 		shadowDiffCmd(),
+		dataTestCmd(&cfgPath),
 		testMailCmd(&cfgPath),
 		stagingStatsCmd(&cfgPath),
 		versionCmd(),

@@ -21,6 +21,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -204,6 +205,160 @@ func (s *PostgresStore) LinkContributorToGitHubUser(ctx context.Context, cntrbID
 			ON CONFLICT (platform_id, platform_user_id) DO NOTHING`,
 			winner.cntrbID, ghUserID, login); err != nil {
 			return fmt.Errorf("backfill identity row: %w", err)
+		}
+
+		return tx.Commit(ctx)
+	})
+}
+
+// RenameContributorGhLogin applies a rename-detected update to an
+// existing contributor row. Same transaction shape as
+// LinkContributorToGitHubUser — reuses loadMergeCandidates and
+// pickMergeWinner so the v0.20.2 logical-merge contract applies
+// uniformly — but differs in one critical detail: the final UPDATE
+// sets gh_login = $3 UNCONDITIONALLY, overwriting any stale value.
+//
+// Use case (v0.22.12): the breadth worker hits HTTP 404 on
+// /users/{stored_gh_login}/events, queries /user/{stored_gh_user_id},
+// finds a different current login, and calls this function to
+// record the rename. Without unconditional overwrite, the breadth
+// worker would keep querying the stale login on every cycle.
+//
+// Critical invariants preserved (per the LinkContributorToGitHubUser
+// contract, R1-R10 in docs/architecture/contributor-resolution.md):
+//
+//   - cntrb_id is NOT modified (would orphan 16+ FK columns).
+//   - cntrb_login is NOT modified (would trip idx_contributors_login
+//     on the partial-unique index; cntrb_login is the historical
+//     identity, gh_login is "what this person is called RIGHT NOW
+//     on GitHub").
+//   - Loser rows from the merge candidate set are soft-deleted
+//     (cntrb_deleted = 1), not physically deleted.
+//   - Email aliases for losers are preserved via
+//     contributors_aliases inserts.
+//
+// Logs INFO when the stored gh_login differs from the new login so
+// operators can audit rename events from the application log.
+// (cntrb_login on the row serves as the durable record of the
+// original observation; the application log captures the
+// transition.)
+func (s *PostgresStore) RenameContributorGhLogin(ctx context.Context, cntrbID, newLogin string, ghUserID int64) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+
+		// Capture stored gh_login before update for audit log.
+		var oldGhLogin string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(gh_login, '')
+			FROM aveloxis_data.contributors
+			WHERE cntrb_id = $1::uuid`, cntrbID).Scan(&oldGhLogin); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("read stored gh_login: %w", err)
+			}
+			// Row missing — race; let candidate scan handle it.
+			oldGhLogin = ""
+		}
+
+		// Reuse the v0.20.2 merge machinery so a rename that lands
+		// on a login already claimed by another row is consolidated
+		// correctly.
+		candidates, err := loadMergeCandidates(ctx, tx, cntrbID, newLogin, ghUserID)
+		if err != nil {
+			return fmt.Errorf("load merge candidates: %w", err)
+		}
+		winner := pickMergeWinner(candidates, ghUserID)
+		if winner == nil {
+			winner = &mergeCandidate{cntrbID: cntrbID}
+		}
+
+		// Process losers — identical to LinkContributorToGitHubUser.
+		for _, c := range candidates {
+			if c.cntrbID == winner.cntrbID {
+				continue
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE aveloxis_data.contributors AS w
+				SET cntrb_email     = COALESCE(NULLIF(w.cntrb_email, ''),     l.cntrb_email),
+				    cntrb_canonical = COALESCE(NULLIF(w.cntrb_canonical, ''), l.cntrb_canonical),
+				    cntrb_company   = COALESCE(NULLIF(w.cntrb_company, ''),   l.cntrb_company),
+				    cntrb_location  = COALESCE(NULLIF(w.cntrb_location, ''),  l.cntrb_location),
+				    cntrb_full_name = COALESCE(NULLIF(w.cntrb_full_name, ''), l.cntrb_full_name)
+				FROM aveloxis_data.contributors AS l
+				WHERE w.cntrb_id = $1::uuid AND l.cntrb_id = $2::uuid`,
+				winner.cntrbID, c.cntrbID); err != nil {
+				return fmt.Errorf("merge fields from loser %s: %w", c.cntrbID, err)
+			}
+			if c.email != "" {
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO aveloxis_data.contributors_aliases
+						(cntrb_id, canonical_email, alias_email, cntrb_active,
+						 tool_source, data_source, data_collection_date)
+					VALUES (
+						$1::uuid,
+						COALESCE(
+							(SELECT cntrb_canonical FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid),
+							$2),
+						$2, 1,
+						'aveloxis-rename-merge', 'rename-merge', NOW())
+					ON CONFLICT (alias_email) DO NOTHING`,
+					winner.cntrbID, c.email); err != nil {
+					return fmt.Errorf("insert alias for loser %s: %w", c.cntrbID, err)
+				}
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE aveloxis_data.contributors
+				SET cntrb_deleted = 1, data_collection_date = NOW()
+				WHERE cntrb_id = $1::uuid`,
+				c.cntrbID); err != nil {
+				return fmt.Errorf("soft-delete loser %s: %w", c.cntrbID, err)
+			}
+			s.logger.Info("rename-merge: soft-deleted duplicate contributor",
+				"winner", winner.cntrbID, "loser", c.cntrbID,
+				"new_login", newLogin, "gh_user_id", ghUserID)
+		}
+
+		// The critical difference from LinkContributorToGitHubUser:
+		// gh_login is set UNCONDITIONALLY. The caller has just
+		// observed via /user/{id} that the current login differs
+		// from the stored one. Preserving the stored value (via
+		// COALESCE) would defeat the purpose of this function.
+		// gh_user_id retains its COALESCE because the caller has
+		// the same value the row already holds (we resolved /user/id
+		// using it).
+		if _, err = tx.Exec(ctx, `
+			UPDATE aveloxis_data.contributors
+			SET gh_login = $3,
+			    gh_user_id = COALESCE(gh_user_id, $2),
+			    data_collection_date = NOW()
+			WHERE cntrb_id = $1::uuid`,
+			winner.cntrbID, ghUserID, newLogin); err != nil {
+			return fmt.Errorf("update gh_login on rename: %w", err)
+		}
+
+		// Identity row — same shape as LinkContributorToGitHubUser.
+		// ON CONFLICT DO NOTHING because the identity row for this
+		// (platform_id, platform_user_id) likely already exists
+		// (otherwise we wouldn't have known to look up by id).
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO aveloxis_data.contributor_identities
+				(cntrb_id, platform_id, platform_user_id, login, name, email,
+				 avatar_url, profile_url, node_id, user_type, is_admin)
+			VALUES ($1::uuid, 1, $2, $3, '', '', '', '', '', '', FALSE)
+			ON CONFLICT (platform_id, platform_user_id) DO NOTHING`,
+			winner.cntrbID, ghUserID, newLogin); err != nil {
+			return fmt.Errorf("backfill identity row: %w", err)
+		}
+
+		if oldGhLogin != "" && oldGhLogin != newLogin {
+			s.logger.Info("contributor gh_login renamed",
+				"cntrb_id", winner.cntrbID,
+				"old_gh_login", oldGhLogin,
+				"new_gh_login", newLogin,
+				"gh_user_id", ghUserID)
 		}
 
 		return tx.Commit(ctx)

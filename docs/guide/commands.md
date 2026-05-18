@@ -351,6 +351,70 @@ Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`.
 
 ---
 
+## `aveloxis data-test`
+
+Operator-driven shadow-database verification harness for schema
+changes. Builds binaries from a tagged release and the local working
+tree, provisions two scratch databases (`aveloxis_released` and
+`aveloxis_new`), collects the same repo into each, and reports
+row-count differences. Catches data-loss regressions before they
+ship. Shipped in v0.22.8.
+
+See the full guide: [Schema-change verification](data-test.md).
+
+### Flags
+
+- `--released-tag TAG` — git tag of the released aveloxis version
+  to compare against (e.g., `0.22.6`). The tag must exist in the
+  local clone; `git fetch --tags` if missing. **Required.**
+- `--repo URL` — git URL of the test repo to collect into both
+  scratch DBs. `augurlabs/augur` is the canonical choice. **Required.**
+- `--keep-dbs` — retain the scratch DBs after the run. Default is
+  to drop them. Pass when you want to inspect a failing table via
+  `psql` after the report is written.
+- `--work-dir PATH` — where to put binaries, logs, and the report.
+  Default is `/tmp/aveloxis-data-test-<UTC-timestamp>`.
+
+### Behavior
+
+- Builds the released binary via `git worktree add` (reuses local
+  clone's objects — no remote fetch).
+- Builds the local binary from the current working tree.
+- Connects to the configured PostgreSQL host using the operator's
+  `aveloxis.json` credentials. The user must have **CREATEDB
+  privilege** because the harness creates and drops scratch
+  databases.
+- Copies API keys from the operator's primary `aveloxis_ops.api_keys`
+  table into both scratch DBs — operator doesn't re-paste tokens.
+- Collections run **sequentially** (~30 min each), not parallel,
+  because both sides share the API key pool.
+- Exit code 0 on PASS or FLAG-only; exit code 1 on any FAIL (row
+  loss detected) — suitable for CI gating.
+
+### Examples
+
+```bash
+# Validate the current working tree against v0.22.6 using augur
+aveloxis data-test --released-tag 0.22.6 \
+  --repo https://github.com/augurlabs/augur
+
+# Keep scratch DBs for ad-hoc inspection after a FAIL
+aveloxis data-test --released-tag 0.22.6 \
+  --repo https://github.com/augurlabs/augur \
+  --keep-dbs
+
+# Custom work directory (useful for CI artifact retention)
+aveloxis data-test --released-tag 0.22.6 \
+  --repo https://github.com/augurlabs/augur \
+  --work-dir /var/cache/aveloxis-data-test
+```
+
+The full report is written to `<work-dir>/report.md`. See
+[Schema-change verification](data-test.md) for guidance on
+interpreting PASS / FLAG / FAIL results.
+
+---
+
 ## `aveloxis version`
 
 Prints the Aveloxis version.

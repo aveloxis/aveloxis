@@ -39,6 +39,7 @@ guide/visualizations
 guide/collection-pipeline
 guide/monitoring
 guide/ci-cd
+guide/data-test
 guide/scaling
 guide/troubleshooting
 ```

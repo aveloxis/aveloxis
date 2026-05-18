@@ -217,6 +217,70 @@ The 8-byte fallback for IDs above 2³² is non-Augur-compatible by necessity (Au
 
 ---
 
+## Rename handling: which columns track renames, which don't
+
+GitHub and GitLab both allow users to rename their account. The numeric `user_id` is stable across renames, so the deterministic `cntrb_id = PlatformUUID(platform, user_id)` keeps every cross-table reference valid. But the **login** field has multiple representations in the schema, and they behave differently on a rename. This is the contract.
+
+### Three tables, three rename behaviors
+
+#### `aveloxis_data.contributors` (one row per person)
+
+| Column | Updated on rename? | Purpose |
+|---|---|---|
+| `cntrb_id` (PK) | **Never** | Stable identity. All FK references (16 columns across 15 tables — see [R10](#r10-foreign-key-integrity)) depend on this. |
+| `cntrb_login` | **Never** (R2 invariant) | Durable audit trail — the login as first observed for this contributor. Subject to `idx_contributors_login` partial unique index. Use this when asking "what was this person originally called?" |
+| `gh_login` / `gl_username` | **Yes** | The "current display name" mirror. Updated by `RenameContributorGhLogin` (v0.22.12, breadth-worker 404 path) and by `UpsertContributorBatch`'s rename-recovery branch (v0.22.13, batch-upsert pkey-collision path). Indexed by `idx_contributors_gh_login` for case-insensitive lookups. Use this when asking "what is this person called RIGHT NOW?" |
+| `gh_user_id` / `gl_id` | Never (write-once via COALESCE) | Stable platform integer ID. Drives the deterministic `cntrb_id`. |
+
+A renamed contributor ends up with `cntrb_login='oldname'` and `gh_login='newname'` on **the same row**. Two different login values, each authoritative for a different question.
+
+#### `aveloxis_data.contributor_identities` (one row per `(platform_id, platform_user_id)`)
+
+The unique key is `(platform_id, platform_user_id)`, so there is **one identity row per platform user** — not one per observation. On every observation:
+
+```sql
+INSERT INTO contributor_identities (cntrb_id, platform_id, platform_user_id, login, ...)
+VALUES (...)
+ON CONFLICT (platform_id, platform_user_id) DO UPDATE SET
+    login = EXCLUDED.login,        -- overwritten in place
+    name = EXCLUDED.name,
+    email = COALESCE(NULLIF(EXCLUDED.email,''), contributor_identities.email),
+    avatar_url = EXCLUDED.avatar_url,
+    profile_url = EXCLUDED.profile_url;
+```
+
+The previous login is **overwritten** on the existing identity row. **We do NOT create a new identity row for a rename.** The identity row is a "current state per platform user" record, not a history. After a rename, the previous login at the identity layer is lost.
+
+#### `aveloxis_data.commits` (one row per file per commit)
+
+- `cmt_author_platform_username TEXT` — a **frozen raw string** set once at commit-resolution time. No FK constraint; just text. It stays at whatever login was current when the commit was attributed. Renames after the fact do not update it.
+- `cmt_ght_author_id UUID` — the stable FK to `contributors(cntrb_id)`. **This is what keeps commit attribution correct across renames**, because the cntrb_id is deterministic from gh_user_id and the gh_user_id never changes.
+
+`BackfillCommitAuthorIDs` resolves unresolved commits via `LOWER(cmt_author_platform_username) = LOWER(cn.gh_login)` (v0.20.12 Fix H, case-insensitive). It joins against the **current** `gh_login`, not `cntrb_login`. The function only updates rows with `cmt_ght_author_id IS NULL`, so once a commit is attributed it stays attributed regardless of subsequent renames.
+
+### Operational consequences
+
+**"Show me commits by user X (where X is the current login)"** — JOIN commits ON `cmt_ght_author_id`, then filter on `contributors.gh_login = 'X'`. The FK is stable; the gh_login mirror reflects current state. Works.
+
+**"What was this commit's author at write time?"** — Read `commits.cmt_author_platform_username` directly. Frozen string. Useful for audit logs and historical accuracy.
+
+**"What was this user's first observed login on aveloxis?"** — Read `contributors.cntrb_login`. Never mutates.
+
+**"What login has this person been known by between then and now?"** — **Not stored.** Only the original observation (`cntrb_login`) and the current state (`gh_login`) survive. Intermediate renames are not tracked anywhere in the current schema. A `contributor_login_history` table is planned post-v0.22.13 to capture this; until then, the rename event itself is logged at INFO level (`"contributor gh_login renamed"` from `RenameContributorGhLogin` and `"contributor rename recovered in batch upsert"` from v0.22.13's batch path) and operators can grep the application log for retrospective audit.
+
+### Why the two write paths exist (v0.22.12 vs v0.22.13)
+
+Both paths update `gh_login` on the existing contributor row and never touch `cntrb_login`. They differ in *trigger*:
+
+| Path | Trigger | Code |
+|---|---|---|
+| `RenameContributorGhLogin` (v0.22.12) | Breadth worker hits HTTP 404 on `/users/{stored_login}/events`, falls back to `/user/{stored_id}`, finds a different login | `internal/db/contributor_search_resolve.go` |
+| `UpsertContributorBatch` rename-recovery (v0.22.13) | Enrichment ticker / staged collector calls batch upsert with new login; deterministic-UUID INSERT trips `contributors_pkey` | `internal/db/postgres.go` |
+
+The v0.22.13 path is inlined inside the batch transaction (rather than calling out to `RenameContributorGhLogin`) because the batch tx already holds the savepoint scope and a nested transaction would deadlock against itself. The shape of the UPDATE statement is identical between the two paths: `SET gh_login = $newLogin, cntrb_email = COALESCE(...)` — preserving the contract uniformly.
+
+---
+
 ## Data-quality FAQ
 
 ### Why do I see two rows for the same person?

@@ -98,7 +98,7 @@ func TestUpsertContributorBatchRecoversFromPkeyRenameCollision(t *testing.T) {
 	if pkeyIdx < 0 {
 		t.Fatal("contributors_pkey marker not found in UpsertContributorBatch body")
 	}
-	end := pkeyIdx + 1600
+	end := pkeyIdx + 2400
 	if end > len(body) {
 		end = len(body)
 	}

@@ -11,9 +11,16 @@ import (
 )
 
 // BreadthContributor is a contributor needing breadth collection.
+//
+// v0.22.12 added GHUserID to enable the 404 rename-detection
+// fallback: when /users/{Login}/events returns 404, the breadth
+// worker calls /user/{GHUserID} (GitHub's by-id endpoint) to
+// recover the current login. Without GHUserID we'd be stuck with
+// a stale login forever.
 type BreadthContributor struct {
-	ID    string // cntrb_id
-	Login string // gh_login
+	ID       string // cntrb_id
+	Login    string // gh_login
+	GHUserID int64  // numeric GitHub user ID; 0 if not yet observed
 }
 
 // ContributorRepoRow is a row to insert into contributor_repo.
@@ -54,7 +61,7 @@ func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int
 		cooldown = 7 * 24 * time.Hour
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT cntrb_id::text, gh_login
+		SELECT cntrb_id::text, gh_login, COALESCE(gh_user_id, 0)
 		FROM aveloxis_data.contributors
 		WHERE gh_login IS NOT NULL
 		  AND gh_login != ''
@@ -71,7 +78,7 @@ func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int
 	var result []BreadthContributor
 	for rows.Next() {
 		var c BreadthContributor
-		if err := rows.Scan(&c.ID, &c.Login); err != nil {
+		if err := rows.Scan(&c.ID, &c.Login, &c.GHUserID); err != nil {
 			return nil, err
 		}
 		result = append(result, c)

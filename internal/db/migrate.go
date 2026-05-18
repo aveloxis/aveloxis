@@ -618,6 +618,48 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// pull_request_commits dominate the wall clock.
 	ensureCntrbIDFKIndexes(ctx, pg, logger, &errs)
 
+	// v0.22.7: btree indexes on the 50 child FK columns identified
+	// by the 2026-05-17 schema audit. Covers all unindexed children
+	// of pull_requests, issues, messages, pull_request_reviews, and
+	// 30 unindexed children of repos. Built CONCURRENTLY so
+	// production keeps accepting writes during the build, which is
+	// hours on a fleet-scale DB (messages and pull_request_commits
+	// dominate). Must run BEFORE ensureExtraFKConstraints below so
+	// the new RESTRICT/CASCADE checks run against indexed lookups
+	// from minute one.
+	ensureExtraFKIndexes(ctx, pg, logger, &errs)
+
+	// v0.22.7: apply ON UPDATE CASCADE ON DELETE RESTRICT
+	// DEFERRABLE INITIALLY DEFERRED to the same 50 FKs. RESTRICT
+	// prevents orphaned-child rows by blocking parent DELETEs;
+	// DEFERRABLE INITIALLY DEFERRED lets transactions insert
+	// children before parents within a single TX (per-operator
+	// design choice on 2026-05-17 for insertion-order robustness).
+	// DROP+ADD NOT VALID then VALIDATE so the SHARE UPDATE
+	// EXCLUSIVE validation scan permits concurrent reads/writes.
+	ensureExtraFKConstraints(ctx, pg, logger, &errs)
+
+	// v0.22.7: bring the 16 v0.22.1 cntrb_id FKs to the same full
+	// behavior. They previously had only ON UPDATE CASCADE;
+	// v0.22.7 adds ON DELETE RESTRICT and DEFERRABLE INITIALLY
+	// DEFERRED for consistency across all v0.22.7-touched FKs.
+	// Idempotent on fresh installs where schema.sql declared the
+	// full clause inline.
+	ensureCntrbIDFKsFullBehavior(ctx, pg, logger, &errs)
+
+	// v0.22.7: catch-all DEFERRABLE flip for any aveloxis FK still
+	// non-deferrable. Covers the ~39 small-parent FKs (platforms,
+	// users, repo_groups, libraries, lstm_anomaly_models, the
+	// already-indexed "main" repos children like issues.repo_id,
+	// pull_requests.repo_id, etc.) that aren't in scope for
+	// CASCADE/RESTRICT but should still be DEFERRABLE for the
+	// consistency the operator wanted. ALTER CONSTRAINT is a
+	// metadata-only flip — no scan, no lock contention.
+	// Self-discovering via pg_constraint so future FKs added
+	// without DEFERRABLE in their declaration auto-fix on next
+	// migrate.
+	ensureAllFKsDeferrable(ctx, pg, logger, &errs)
+
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).
 	// Set collection.matview_rebuild_on_startup=true in aveloxis.json to enable,

@@ -1432,7 +1432,21 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 			}
 
 			// Upsert platform identities and backfill gh_*/gl_* columns.
+			// v0.22.13: each identity is bracketed in its own SAVEPOINT so a
+			// stale identity row (rare — would require a (platform_id,
+			// platform_user_id) collision the ON CONFLICT clause somehow
+			// missed, or any other constraint violation) doesn't poison
+			// the rest of the batch tx. Pre-v0.22.13 a single bad
+			// identity caused `break` and the gh_*/gl_* backfill UPDATE
+			// to be skipped for ALL subsequent identities of this
+			// contributor AND every later contributor in the batch.
 			for _, ident := range identMap[login] {
+				spCounter++
+				identSP := fmt.Sprintf("ident_sp_%d", spCounter)
+				if _, spErr := tx.Exec(ctx, "SAVEPOINT "+identSP); spErr != nil {
+					return spErr
+				}
+
 				_, identErr := tx.Exec(ctx, `
 					INSERT INTO aveloxis_data.contributor_identities
 						(cntrb_id, platform_id, platform_user_id, login, name, email,
@@ -1448,13 +1462,16 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 					ident.Email, ident.AvatarURL, ident.URL, ident.NodeID, ident.Type, ident.IsAdmin,
 				)
 				if identErr != nil {
+					if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+identSP); rbErr != nil {
+						return rbErr
+					}
 					captureErr("contributor_identities_insert", login, identErr)
-					// Once one Exec fails the tx is poisoned; further
-					// Execs will also fail with "current transaction is
-					// aborted." Skip the rest of this contributor's
-					// identities so we don't pile up duplicate
-					// diagnostic logs from the same root cause.
-					break
+					if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+						return relErr
+					}
+					// Try the next identity — savepoint isolation
+					// means one bad identity doesn't block the others.
+					continue
 				}
 
 				// Backfill denormalized gh_*/gl_* columns on the contributors row
@@ -1508,6 +1525,14 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 						cntrb_id, ident.UserID, ident.Login, ident.AvatarURL,
 						ident.URL, ident.Name, ident.State,
 					)
+				}
+
+				// v0.22.13: identity savepoint released after the
+				// gh_*/gl_* backfill (still under the same savepoint
+				// scope so any unforeseen failure in the backfill
+				// UPDATE is also contained).
+				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+					return relErr
 				}
 			}
 		}

@@ -481,10 +481,18 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			case <-time.After(wait):
 			}
 			continue
-		case resp.StatusCode == http.StatusBadGateway ||
+		case resp.StatusCode == http.StatusInternalServerError ||
+			resp.StatusCode == http.StatusBadGateway ||
 			resp.StatusCode == http.StatusServiceUnavailable ||
 			resp.StatusCode == http.StatusGatewayTimeout:
-			// 502/503/504 — server/gateway error. These are transient.
+			// 500/502/503/504 — server/gateway error. These are transient.
+			// 500 was added to this branch in v0.22.12 after a 2026-05-18
+			// production incident where GitHub returned 500 with empty
+			// body (upstream proxy hiccup) on ~1,400 /users/<login>/events
+			// requests. Previously 500 fell into the default arm with
+			// linear backoff and the generic "unexpected status" log line,
+			// making the incident look like an uncategorized error rather
+			// than a transient 5xx.
 			resp.Body.Close()
 			backoff := time.Duration(1<<min(attempt, 6)) * time.Second // 1s, 2s, 4s, 8s, 16s, 32s, 64s
 			jitter := time.Duration(rand.IntN(int(backoff/2) + 1))

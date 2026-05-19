@@ -1260,6 +1260,13 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 			}
 		}
 
+		// v0.22.13: monotonic counter for SAVEPOINT names. SQL
+		// identifiers can't contain quotes or arbitrary user input
+		// (login strings might contain '[', ']', '-', etc. as in
+		// "openshift-merge-bot[bot]"), so we never embed login text
+		// in the savepoint name.
+		var spCounter int
+
 		for login, contrib := range merged {
 			var cntrb_id string
 
@@ -1293,6 +1300,22 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 				}
 			}
 
+			// v0.22.13 (Fix for production WARN flood on 2026-05-18):
+			// wrap each contributor's INSERT in a SAVEPOINT so a
+			// single failure does not poison the rest of the batch
+			// transaction. Without this, the very first 23505 marks
+			// the entire tx as aborted and every subsequent statement
+			// (including OTHER contributors' INSERTs and the final
+			// Commit) fails with "current transaction is aborted."
+			// Pre-fix the operator saw "count=420" batches drop
+			// ~419 innocent contributors after a single rename
+			// collision on the head of the batch.
+			spCounter++
+			cntrbSP := fmt.Sprintf("cntrb_sp_%d", spCounter)
+			if _, spErr := tx.Exec(ctx, "SAVEPOINT "+cntrbSP); spErr != nil {
+				return spErr
+			}
+
 			err := tx.QueryRow(ctx, `
 				INSERT INTO aveloxis_data.contributors
 					(cntrb_id, cntrb_login, cntrb_email, cntrb_full_name,
@@ -1316,23 +1339,114 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 				ToolVersion,
 			).Scan(&cntrb_id)
 			if err != nil {
-				// Once any statement fails inside the tx, PostgreSQL
-				// puts the transaction in aborted state — every
-				// subsequent statement fails until ROLLBACK. Pre-Fix-G
-				// we `continue`d the for loop, which meant the
-				// remaining contributors all silently failed too, and
-				// the final Commit returned the cryptic "commit
-				// unexpectedly resulted in rollback." We still
-				// continue (changing behavior is deferred to a later
-				// fix once we have data on the SQLSTATE distribution),
-				// but we now capture enough diagnostic context to
-				// plan the real fix.
-				captureErr("contributors_insert", login, err)
-				continue
+				// v0.22.13: classify the failure to decide between
+				// rename-recovery (recoverable, this person already
+				// exists under a different login) and skip (any
+				// other 23505 or any other SQLSTATE).
+				var pgErr *pgconn.PgError
+				isRenameCollision := errors.As(err, &pgErr) &&
+					pgErr.Code == "23505" &&
+					pgErr.ConstraintName == "contributors_pkey" &&
+					desiredCntrbID != nil
+
+				// Always roll back to savepoint first to clear the
+				// aborted-tx state — required before any further
+				// statement in this tx (including the recovery
+				// UPDATE) can run.
+				if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
+					return rbErr
+				}
+
+				if isRenameCollision {
+					// v0.22.13 rename recovery: the deterministic UUID
+					// already exists on a different row — same person,
+					// renamed on GitHub (gh_user_id stable → cntrb_id
+					// stable, but cntrb_login on the existing row
+					// holds the OLDER observation). Update gh_login
+					// on the existing row (the "current display name"
+					// mirror) and backfill any empty profile fields.
+					// cntrb_login is deliberately NOT modified — R2
+					// (per docs/architecture/contributor-resolution.md):
+					// cntrb_login is the durable audit trail of the
+					// first observation. Same shape as v0.22.12's
+					// RenameContributorGhLogin, inlined here so it
+					// runs inside the batch tx.
+					existingID := desiredCntrbID.(string)
+					if _, updErr := tx.Exec(ctx, `
+						UPDATE aveloxis_data.contributors
+						SET gh_login        = $2,
+						    cntrb_email     = COALESCE(NULLIF(cntrb_email, ''),     $3),
+						    cntrb_full_name = COALESCE(NULLIF(cntrb_full_name, ''), $4),
+						    cntrb_company   = COALESCE(NULLIF(cntrb_company, ''),   $5),
+						    cntrb_location  = COALESCE(NULLIF(cntrb_location, ''),  $6),
+						    cntrb_canonical = COALESCE(NULLIF(cntrb_canonical, ''), $7),
+						    tool_version    = $8,
+						    data_collection_date = NOW()
+						WHERE cntrb_id = $1::uuid`,
+						existingID, contrib.Login, contrib.Email,
+						contrib.FullName, contrib.Company, contrib.Location,
+						contrib.Canonical, ToolVersion,
+					); updErr != nil {
+						// Recovery UPDATE itself failed (rare —
+						// would require some other constraint
+						// violation on this row). Roll back, capture
+						// diagnostic, skip this contributor.
+						if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
+							return rbErr
+						}
+						captureErr("contributors_rename_update", login, updErr)
+						if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+							return relErr
+						}
+						continue
+					}
+					cntrb_id = existingID
+					s.logger.Info("contributor rename recovered in batch upsert",
+						"cntrb_id", existingID,
+						"new_gh_login", contrib.Login,
+						"cause", "contributors_pkey collision on deterministic UUID — same gh_user_id, different login")
+					// Fall through to identity-row inserts below.
+				} else {
+					// Non-rename failure (e.g. 23505 on
+					// idx_contributors_login with cntrb_login='',
+					// which ON CONFLICT WHERE cntrb_login!='' would
+					// not catch; or any other SQLSTATE). Capture the
+					// diagnostic and skip this contributor. Tx is
+					// alive — savepoint rollback restored a clean
+					// state, so the next contributor in the for loop
+					// can still commit.
+					captureErr("contributors_insert", login, err)
+					if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+						return relErr
+					}
+					continue
+				}
+			}
+
+			// Contributor row is now either freshly inserted,
+			// upserted via ON CONFLICT (cntrb_login match), or
+			// rename-recovered via UPDATE. Release the outer
+			// savepoint before processing identities.
+			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+				return relErr
 			}
 
 			// Upsert platform identities and backfill gh_*/gl_* columns.
+			// v0.22.13: each identity is bracketed in its own SAVEPOINT so a
+			// stale identity row (rare — would require a (platform_id,
+			// platform_user_id) collision the ON CONFLICT clause somehow
+			// missed, or any other constraint violation) doesn't poison
+			// the rest of the batch tx. Pre-v0.22.13 a single bad
+			// identity caused `break` and the gh_*/gl_* backfill UPDATE
+			// to be skipped for ALL subsequent identities of this
+			// contributor AND every later contributor in the batch.
 			for _, ident := range identMap[login] {
+				spCounter++
+				identSP := fmt.Sprintf("ident_sp_%d", spCounter)
+				if _, spErr := tx.Exec(ctx, "SAVEPOINT "+identSP); spErr != nil {
+					return spErr
+				}
+
 				_, identErr := tx.Exec(ctx, `
 					INSERT INTO aveloxis_data.contributor_identities
 						(cntrb_id, platform_id, platform_user_id, login, name, email,
@@ -1348,13 +1462,16 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 					ident.Email, ident.AvatarURL, ident.URL, ident.NodeID, ident.Type, ident.IsAdmin,
 				)
 				if identErr != nil {
+					if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+identSP); rbErr != nil {
+						return rbErr
+					}
 					captureErr("contributor_identities_insert", login, identErr)
-					// Once one Exec fails the tx is poisoned; further
-					// Execs will also fail with "current transaction is
-					// aborted." Skip the rest of this contributor's
-					// identities so we don't pile up duplicate
-					// diagnostic logs from the same root cause.
-					break
+					if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+						return relErr
+					}
+					// Try the next identity — savepoint isolation
+					// means one bad identity doesn't block the others.
+					continue
 				}
 
 				// Backfill denormalized gh_*/gl_* columns on the contributors row
@@ -1408,6 +1525,14 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 						cntrb_id, ident.UserID, ident.Login, ident.AvatarURL,
 						ident.URL, ident.Name, ident.State,
 					)
+				}
+
+				// v0.22.13: identity savepoint released after the
+				// gh_*/gl_* backfill (still under the same savepoint
+				// scope so any unforeseen failure in the backfill
+				// UPDATE is also contained).
+				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+					return relErr
 				}
 			}
 		}

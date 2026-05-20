@@ -35,8 +35,37 @@ type Config struct {
 	// Web GUI settings.
 	Web WebConfig `json:"web"`
 
+	// v0.23.0: Monitor dashboard settings.
+	Monitor MonitorConfig `json:"monitor"`
+
 	// LogLevel sets the minimum log level: "debug", "info", "warn", or "error".
 	LogLevel string `json:"log_level"`
+}
+
+// MonitorConfig governs the /monitor dashboard.
+//
+// v0.23.0 — added so operators can tune the meta-refresh cadence per
+// deployment. The pre-v0.23.0 60-second hard-coded value (v0.18.30
+// raised from 10s after the per-render scans started hammering the
+// DB) is now just the default; large fleets that want even less
+// pressure can set refresh_seconds=120 or higher. Phone-pinned
+// operator dashboards that want faster feedback can set 30.
+type MonitorConfig struct {
+	// RefreshSeconds is the HTML meta-refresh interval emitted on
+	// the dashboard. Clamped to [10, 3600] at consumption time so a
+	// fat-fingered 0 doesn't produce a refresh storm and a fat-
+	// fingered 99999 doesn't make the dashboard appear frozen.
+	RefreshSeconds int `json:"refresh_seconds"`
+}
+
+// MonitorRefreshSecondsOrDefault returns the configured refresh
+// cadence, falling back to 60 (the v0.18.30 default) when the
+// configured value is zero or out of safe bounds.
+func (m MonitorConfig) MonitorRefreshSecondsOrDefault() int {
+	if m.RefreshSeconds < 10 || m.RefreshSeconds > 3600 {
+		return 60
+	}
+	return m.RefreshSeconds
 }
 
 // DatabaseConfig holds PostgreSQL connection details.

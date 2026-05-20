@@ -974,6 +974,32 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	// from the repository root via the /repository/tree endpoint.
 	community := c.fetchCommunityFiles(ctx, pp)
 
+	// v0.23.0: language breakdown via /projects/:id/languages.
+	// GitLab returns percentages as floats (e.g. {"Go": 84.5}). We
+	// normalize to integers by multiplying by 100 to preserve one
+	// decimal place of precision — so 84.5% becomes 8450. Top entry
+	// by value is mirrored in primary_language.
+	var languages map[string]int
+	primaryLang := ""
+	var langRaw map[string]float64
+	langPath := fmt.Sprintf("/projects/%s/languages", pp)
+	if err := c.http.GetJSON(ctx, langPath, &langRaw); err != nil {
+		c.logger.Info("GitLab languages endpoint failed (non-fatal)",
+			"owner", owner, "repo", repo, "error", err)
+	} else if len(langRaw) > 0 {
+		languages = make(map[string]int, len(langRaw))
+		var topName string
+		var topVal float64
+		for name, pct := range langRaw {
+			languages[name] = int(pct * 100)
+			if pct > topVal {
+				topVal = pct
+				topName = name
+			}
+		}
+		primaryLang = topName
+	}
+
 	return &model.RepoInfo{
 		LastUpdated:       raw.LastActivityAt,
 		IssuesEnabled:     raw.IssuesEnabled,
@@ -993,6 +1019,9 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		PRsOpen:           mrOpen,
 		PRsClosed:         mrClosed,
 		PRsMerged:         mrMerged,
+		Description:       raw.Description,
+		PrimaryLanguage:   primaryLang,
+		Languages:         languages,
 		ChangelogFile:     community.Changelog,
 		ContributingFile:  community.Contributing,
 		CodeOfConductFile: community.CodeOfConduct,

@@ -660,6 +660,68 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// migrate.
 	ensureAllFKsDeferrable(ctx, pg, logger, &errs)
 
+	// v0.23.0: repos.languages JSONB column for the full language
+	// breakdown (top entry by value is mirrored in primary_language).
+	// Existing rows default to '{}'::jsonb; the staged collector and
+	// the startup backfill task populate them on next FetchRepoInfo.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "languages", "JSONB DEFAULT '{}'::jsonb")
+
+	// v0.23.0: contributor_login_history table + backfill. Closes the
+	// rename-audit gap documented as a v0.22.13 limitation
+	// ("Intermediate login history is NOT stored"). The CREATE TABLE
+	// in schema.sql handles fresh installs idempotently; the backfill
+	// here populates existing installations from contributor_identities
+	// (the only place that stores (cntrb_id, platform_id, login)
+	// triples in pre-v0.23.0 data) plus the historical cntrb_login on
+	// every contributor (which differs from any current identity.login
+	// when a rename happened before v0.23.0 shipped).
+	execMigrationStep(ctx, pg, logger, &errs, "v0.23.0 create contributor_login_history table",
+		`CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_login_history (
+			history_id   BIGSERIAL PRIMARY KEY,
+			cntrb_id     UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+			platform_id  SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
+			login        TEXT NOT NULL,
+			first_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_seen    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			source       TEXT NOT NULL DEFAULT 'observation',
+			tool_source  TEXT NOT NULL DEFAULT 'aveloxis',
+			tool_version TEXT NOT NULL DEFAULT '',
+			CONSTRAINT contributor_login_history_unique UNIQUE (cntrb_id, platform_id, login)
+		)`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_clh_cntrb",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_clh_cntrb ON aveloxis_data.contributor_login_history (cntrb_id)`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_clh_login",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_clh_login ON aveloxis_data.contributor_login_history (login)`)
+
+	// v0.23.0 backfill: seed from contributor_identities (the
+	// current state) AND from contributors.cntrb_login per platform
+	// (the historical-original observation, which differs from any
+	// identity row's current login when a rename predated v0.23.0).
+	// Idempotent: ON CONFLICT DO NOTHING means re-running the
+	// migrate is a no-op once seeded.
+	// Inline ToolVersion via fmt.Sprintf — ToolVersion is a binary
+	// constant, not user input, so there's no injection vector.
+	// execMigrationStep doesn't take SQL parameters; we inline the
+	// literal directly into the SQL string.
+	execMigrationStep(ctx, pg, logger, &errs, "v0.23.0 backfill contributor_login_history from identities",
+		fmt.Sprintf(`INSERT INTO aveloxis_data.contributor_login_history
+			(cntrb_id, platform_id, login, source, tool_version)
+		 SELECT i.cntrb_id, i.platform_id, i.login, 'backfill', '%s'
+		 FROM aveloxis_data.contributor_identities i
+		 JOIN aveloxis_data.contributors c USING (cntrb_id)
+		 WHERE COALESCE(i.login, '') != ''
+		   AND COALESCE(c.cntrb_deleted, 0) = 0
+		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion))
+	execMigrationStep(ctx, pg, logger, &errs, "v0.23.0 backfill contributor_login_history from contributors.cntrb_login",
+		fmt.Sprintf(`INSERT INTO aveloxis_data.contributor_login_history
+			(cntrb_id, platform_id, login, source, tool_version)
+		 SELECT DISTINCT c.cntrb_id, i.platform_id, c.cntrb_login, 'backfill', '%s'
+		 FROM aveloxis_data.contributors c
+		 JOIN aveloxis_data.contributor_identities i USING (cntrb_id)
+		 WHERE COALESCE(c.cntrb_login, '') != ''
+		   AND COALESCE(c.cntrb_deleted, 0) = 0
+		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion))
+
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).
 	// Set collection.matview_rebuild_on_startup=true in aveloxis.json to enable,

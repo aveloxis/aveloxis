@@ -44,6 +44,11 @@ var cntrbIDChildFKs = []cntrbIDChildFK{
 	{"pull_request_reviewers", "cntrb_id", "pull_request_reviewers_cntrb_id_fkey"},
 	{"pull_request_reviews", "cntrb_id", "pull_request_reviews_cntrb_id_fkey"},
 	{"pull_requests", "author_id", "pull_requests_author_id_fkey"},
+	// v0.23.0: contributor_login_history is a new cntrb_id child;
+	// the schema declaration already carries ON UPDATE CASCADE, but
+	// adding it here ensures the v0.22.1 migration helper covers it
+	// on legacy databases where the table is created post-fact.
+	{"contributor_login_history", "cntrb_id", "contributor_login_history_cntrb_id_fkey"},
 }
 
 // ensureOnUpdateCascadeOnCntrbIDFKs is the v0.22.1 idempotent

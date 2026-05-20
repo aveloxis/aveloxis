@@ -1269,6 +1269,10 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 
 		for login, contrib := range merged {
 			var cntrb_id string
+			// v0.23.0: track whether this contributor's row was
+			// rename-recovered so the contributor_login_history rows
+			// for its identities get the correct source tag.
+			var wasRenameRecovery bool
 
 			// Idempotent upsert: INSERT with ON CONFLICT on the partial unique index.
 			// If the login already exists, backfill empty fields and update tool_version.
@@ -1401,6 +1405,7 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 						continue
 					}
 					cntrb_id = existingID
+					wasRenameRecovery = true
 					s.logger.Info("contributor rename recovered in batch upsert",
 						"cntrb_id", existingID,
 						"new_gh_login", contrib.Login,
@@ -1471,6 +1476,27 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 					}
 					// Try the next identity — savepoint isolation
 					// means one bad identity doesn't block the others.
+					continue
+				}
+
+				// v0.23.0: record the (cntrb_id, platform_id, login)
+				// observation into contributor_login_history. Source
+				// reflects whether this iteration was a rename
+				// recovery or a steady-state write — operators can
+				// SQL-filter the history table on source to audit
+				// rename events specifically.
+				historySource := LoginSourceObservation
+				if wasRenameRecovery {
+					historySource = LoginSourceRenameRecovery
+				}
+				if histErr := recordLoginObservation(ctx, tx, cntrb_id, int16(ident.Platform), ident.Login, historySource); histErr != nil {
+					if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+identSP); rbErr != nil {
+						return rbErr
+					}
+					captureErr("contributor_login_history_insert", login, histErr)
+					if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+						return relErr
+					}
 					continue
 				}
 

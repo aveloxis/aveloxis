@@ -1,0 +1,99 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+package db
+
+import (
+	"context"
+	"encoding/json"
+)
+
+// UpdateRepoMetadata writes description + primary_language + languages
+// to the repos table for a single repo. Distinct from UpsertRepo so the
+// staged collector's Phase 0 and the startup backfill task don't
+// accidentally overwrite owner/name/archived (which UpsertRepo handles
+// via the prelim path).
+//
+// languages is serialized to JSONB. nil/empty map writes '{}' so the
+// row column never holds NULL — analytics queries can rely on
+// jsonb_each over the column without NULL guards.
+//
+// COALESCE semantics:
+//   - description: written unconditionally (description CAN change as
+//     a repo's tagline evolves; staged collector runs every cycle)
+//   - primary_language: written unconditionally (same reasoning;
+//     dominant language shifts as code is added/removed)
+//   - languages: written unconditionally (full breakdown is point-in-time)
+//
+// This is intentionally NOT a "fill-empty-only" UPDATE — operators want
+// the displayed data to reflect the API's current state.
+//
+// v0.23.0.
+func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int) error {
+	langJSON := []byte("{}")
+	if len(languages) > 0 {
+		b, err := json.Marshal(languages)
+		if err != nil {
+			return err
+		}
+		langJSON = b
+	}
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE aveloxis_data.repos
+			SET repo_description = $2,
+			    primary_language = $3,
+			    languages        = $4::jsonb,
+			    data_collection_date = NOW()
+			WHERE repo_id = $1`,
+			repoID, description, primaryLanguage, langJSON)
+		return err
+	})
+}
+
+// ReposNeedingMetadataBackfill returns repo IDs whose description AND
+// primary_language are both empty. Used by the startup backfill task.
+// Capped at `limit` to avoid pulling 100K rows into memory; the caller
+// pages by repeatedly calling until len(result) < limit.
+//
+// Filters archived repos out — archived projects' descriptions rarely
+// matter and we don't want to spend API budget on them. Operators can
+// remove the filter manually if needed.
+//
+// v0.23.0.
+func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, limit int) ([]RepoMetadataBackfillTarget, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT repo_id, repo_owner, repo_name, platform_id
+		FROM aveloxis_data.repos
+		WHERE COALESCE(repo_description, '') = ''
+		  AND COALESCE(primary_language, '') = ''
+		  AND COALESCE(repo_archived, FALSE) = FALSE
+		  AND COALESCE(repo_owner, '') != ''
+		  AND COALESCE(repo_name, '') != ''
+		ORDER BY repo_id
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RepoMetadataBackfillTarget
+	for rows.Next() {
+		var t RepoMetadataBackfillTarget
+		if err := rows.Scan(&t.RepoID, &t.Owner, &t.Name, &t.PlatformID); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// RepoMetadataBackfillTarget is one row from ReposNeedingMetadataBackfill.
+type RepoMetadataBackfillTarget struct {
+	RepoID     int64
+	Owner      string
+	Name       string
+	PlatformID int16
+}

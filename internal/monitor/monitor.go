@@ -432,27 +432,67 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
   th .arrow.active { color: #2563eb; }
   /* v0.23.0: mobile layout. Applies at narrow viewports OR when
      the server detected a mobile UA and emitted body.is-mobile.
-     Tables become a list of stacked cards — each <tr> renders
-     vertically, each <td> shows the column name as a prefix. */
+     Tables become a list of stacked cards — each row renders
+     vertically with the column name prefixed via data-label.
+
+     Wide-content fixes (v0.23.0 post-fix): word-break on cells so
+     long repo URLs / error strings don't blow out the card; the
+     hidden header row uses display:none (not absolute positioning,
+     which can leak horizontal scroll); a handful of less-critical
+     columns are hidden entirely so the cards aren't 14 stanzas
+     tall per repo. The 'wide' class on the data-label suffix lets
+     us collapse Gathered/Meta pairs into single rows visually. */
+  * { box-sizing: border-box; }
+  html, body { max-width: 100vw; overflow-x: hidden; }
   @media (max-width: 768px) {
     body { margin: 0.5rem; font-size: 0.95rem; }
+    h1 { font-size: 1.3rem; }
+    .sub { font-size: 0.8rem; }
     .stats { gap: 0.5rem; }
-    .stat { padding: 0.6rem 0.8rem; flex: 1 1 45%; }
+    .stat { padding: 0.5rem 0.7rem; flex: 1 1 30%; min-width: 0; }
     .stat .value { font-size: 1.4rem; }
-    table, thead, tbody, tr, th, td { display: block; width: 100%; }
-    thead tr { position: absolute; left: -9999px; } /* hide header row visually */
+    /* Search form: drop the inline min-width:240px on the input so
+       the form fits in a 320px viewport. flex-wrap is already set
+       so the select and button wrap to a second line naturally. */
+    form input[type="text"] { min-width: 0 !important; flex: 1 1 100%; }
+    form select, form button { flex: 0 0 auto; }
+    form span { margin-left: 0 !important; flex: 1 1 100%; }
+    /* Table → stacked cards. */
+    table, tbody, tr, td { display: block; width: 100%; }
+    thead { display: none; } /* header row hidden entirely on mobile */
     tbody tr { border: 1px solid #ddd; border-radius: 8px; margin-bottom: 0.5rem; padding: 0.5rem; background: white; }
-    tbody td { border: none; padding: 0.25rem 0; font-size: 0.9rem; }
-    tbody td::before { content: attr(data-label) ": "; font-weight: 600; color: #555; }
+    tbody td { border: none; padding: 0.2rem 0; font-size: 0.88rem; text-align: left;
+               word-break: break-word; overflow-wrap: anywhere; }
+    tbody td.count-cell { text-align: left; }
+    tbody td::before { content: attr(data-label) ": "; font-weight: 600; color: #555; margin-right: 0.25rem; }
+    tbody td[data-label=""]::before { content: ""; }
+    /* Hide less-essential columns to keep the card compact.
+       # (col 1), Platform (col 3), Priority (col 5) are rarely
+       useful on a phone-sized dashboard view. */
+    tbody td:nth-child(1), tbody td:nth-child(3), tbody td:nth-child(5) { display: none; }
   }
+  /* Same overrides for the UA-detected mobile case, in case the
+     viewport is wider than the breakpoint (some phones report odd
+     widths). Mirrors the @media block above. */
   body.is-mobile { margin: 0.5rem; font-size: 0.95rem; }
-  body.is-mobile .stat { padding: 0.6rem 0.8rem; flex: 1 1 45%; }
-  body.is-mobile table, body.is-mobile thead, body.is-mobile tbody,
-  body.is-mobile tr, body.is-mobile th, body.is-mobile td { display: block; width: 100%; }
-  body.is-mobile thead tr { position: absolute; left: -9999px; }
+  body.is-mobile h1 { font-size: 1.3rem; }
+  body.is-mobile .sub { font-size: 0.8rem; }
+  body.is-mobile .stat { padding: 0.5rem 0.7rem; flex: 1 1 30%; min-width: 0; }
+  body.is-mobile form input[type="text"] { min-width: 0 !important; flex: 1 1 100%; }
+  body.is-mobile form select, body.is-mobile form button { flex: 0 0 auto; }
+  body.is-mobile form span { margin-left: 0 !important; flex: 1 1 100%; }
+  body.is-mobile table, body.is-mobile tbody,
+  body.is-mobile tr, body.is-mobile td { display: block; width: 100%; }
+  body.is-mobile thead { display: none; }
   body.is-mobile tbody tr { border: 1px solid #ddd; border-radius: 8px; margin-bottom: 0.5rem; padding: 0.5rem; background: white; }
-  body.is-mobile tbody td { border: none; padding: 0.25rem 0; font-size: 0.9rem; }
-  body.is-mobile tbody td::before { content: attr(data-label) ": "; font-weight: 600; color: #555; }
+  body.is-mobile tbody td { border: none; padding: 0.2rem 0; font-size: 0.88rem; text-align: left;
+                            word-break: break-word; overflow-wrap: anywhere; }
+  body.is-mobile tbody td.count-cell { text-align: left; }
+  body.is-mobile tbody td::before { content: attr(data-label) ": "; font-weight: 600; color: #555; margin-right: 0.25rem; }
+  body.is-mobile tbody td[data-label=""]::before { content: ""; }
+  body.is-mobile tbody td:nth-child(1),
+  body.is-mobile tbody td:nth-child(3),
+  body.is-mobile tbody td:nth-child(5) { display: none; }
 </style>
 <script>
 // Client-side table sorting. Click a column header to sort ascending, click again for descending.
@@ -586,20 +626,24 @@ function sortTable(col) {
 		escOwner := template.HTMLEscapeString(j.Owner)
 		escRepo := template.HTMLEscapeString(j.Repo)
 
-		fmt.Fprintf(w, `<tr%s><td>%d</td><td>%s/%s</td><td>%s</td><td class="%s">%s%s%s</td><td>%d</td><td>%s</td><td>%s</td>`,
+		// v0.23.0: every <td> carries a data-label="..." attribute so
+		// the mobile stacked-card layout (CSS above) can prefix the
+		// column name. Column order matches the <thead> emitted
+		// earlier so client-side JS sort still indexes correctly.
+		fmt.Fprintf(w, `<tr%s><td data-label="#">%d</td><td data-label="Repo">%s/%s</td><td data-label="Platform">%s</td><td data-label="Status" class="%s">%s%s%s</td><td data-label="Priority">%d</td><td data-label="Due">%s</td><td data-label="Last Run">%s</td>`,
 			rowClass, i+1, escOwner, escRepo, j.Plat,
 			statusClass, j.Status, worker, errInfo,
 			j.Priority, due, lastRun)
 
 		// Gathered vs Metadata columns.
-		fmt.Fprintf(w, `<td class="count-cell"><span class="gathered">%d</span></td><td class="count-cell"><span class="meta">%d</span></td>`,
+		fmt.Fprintf(w, `<td data-label="Gathered Issues" class="count-cell"><span class="gathered">%d</span></td><td data-label="Meta Issues" class="count-cell"><span class="meta">%d</span></td>`,
 			j.GatheredIssues, j.MetaIssues)
-		fmt.Fprintf(w, `<td class="count-cell"><span class="gathered">%d</span></td><td class="count-cell"><span class="meta">%d</span></td>`,
+		fmt.Fprintf(w, `<td data-label="Gathered PRs" class="count-cell"><span class="gathered">%d</span></td><td data-label="Meta PRs" class="count-cell"><span class="meta">%d</span></td>`,
 			j.GatheredPRs, j.MetaPRs)
-		fmt.Fprintf(w, `<td class="count-cell"><span class="gathered">%d</span></td><td class="count-cell"><span class="meta">%d</span></td>`,
+		fmt.Fprintf(w, `<td data-label="Gathered Commits" class="count-cell"><span class="gathered">%d</span></td><td data-label="Meta Commits" class="count-cell"><span class="meta">%d</span></td>`,
 			j.GatheredCommits, j.MetaCommits)
 
-		fmt.Fprint(w, `<td>`)
+		fmt.Fprint(w, `<td data-label="">`)
 		if j.Status == "queued" {
 			fmt.Fprintf(w, `<form method="POST" action="/api/prioritize/%d" style="display:inline"><button class="btn" type="submit">Boost</button></form>`, j.RepoID)
 		}

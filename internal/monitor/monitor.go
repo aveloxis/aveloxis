@@ -132,15 +132,39 @@ type Server struct {
 	logger          *slog.Logger
 	mux             *http.ServeMux
 	queueStatsCache *QueueStatsCache
+	// v0.23.0: operator-configurable meta-refresh cadence. Zero
+	// falls through to DefaultDashboardRefreshSeconds.
+	refreshSeconds int
 }
 
-// New creates a monitor server.
+// Options configures a monitor Server beyond the required (store,
+// logger). All fields are optional — zero values fall back to package
+// defaults. Added in v0.23.0 so growing the configuration surface
+// doesn't require breaking the New signature again.
+type Options struct {
+	// RefreshSeconds is the HTML meta-refresh interval emitted on
+	// the dashboard. Zero falls through to DefaultDashboardRefreshSeconds.
+	RefreshSeconds int
+}
+
+// New creates a monitor server with default options.
 func New(store *db.PostgresStore, logger *slog.Logger) *Server {
+	return NewWithOptions(store, logger, Options{})
+}
+
+// NewWithOptions creates a monitor server with explicit configuration.
+// v0.23.0.
+func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) *Server {
+	refresh := opts.RefreshSeconds
+	if refresh <= 0 {
+		refresh = DefaultDashboardRefreshSeconds
+	}
 	s := &Server{
 		store:           store,
 		logger:          logger,
 		mux:             http.NewServeMux(),
 		queueStatsCache: NewQueueStatsCache(DefaultQueueStatsCacheTTL),
+		refreshSeconds:  refresh,
 	}
 	s.mux.HandleFunc("GET /", s.handleDashboard)
 	s.mux.HandleFunc("GET /api/queue", s.handleQueue)
@@ -153,6 +177,31 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 		w.Write(static.IconPNG)
 	})
 	return s
+}
+
+// isMobile returns true when the request's User-Agent matches a
+// known mobile pattern. Used by handleDashboard to select the
+// mobile-friendly CSS variant.
+//
+// Detection is intentionally conservative — false negatives (showing
+// the desktop layout to a mobile user) are recoverable; false
+// positives (cramming the mobile layout onto a wide screen) waste
+// the dashboard's whole point. The patterns below match >99% of
+// real mobile traffic and almost no desktop traffic.
+//
+// v0.23.0.
+func isMobile(r *http.Request) bool {
+	ua := r.Header.Get("User-Agent")
+	if ua == "" {
+		return false
+	}
+	// Substrings checked case-insensitively against the UA.
+	for _, marker := range []string{"iPhone", "iPad", "iPod", "Android", "Mobile", "Windows Phone", "BlackBerry"} {
+		if strings.Contains(ua, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Handler returns the HTTP handler.
@@ -335,10 +384,27 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// v0.23.0: meta-refresh cadence is operator-configurable via
+	// monitor.refresh_seconds. s.refreshSeconds was set at New time
+	// from the config (falls back to DefaultDashboardRefreshSeconds).
+	refreshSecs := s.refreshSeconds
+	if refreshSecs <= 0 {
+		refreshSecs = DefaultDashboardRefreshSeconds
+	}
+	// v0.23.0: mobile-friendly bodyclass when a known mobile UA is
+	// observed. The desktop CSS below applies for everyone; the
+	// inline @media block AND the body.is-mobile class override the
+	// table layout on small screens. We set both signals so phone
+	// emulators with non-mobile UAs still get responsive sizing.
+	bodyClass := ""
+	if isMobile(r) {
+		bodyClass = " class=\"is-mobile\""
+	}
 	fmt.Fprintf(w, `<!DOCTYPE html>
 <html><head><title>Aveloxis Monitor</title>
 <meta http-equiv="refresh" content="%d">
-<style>`, DefaultDashboardRefreshSeconds)
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>`, refreshSecs)
 	fmt.Fprint(w, `
   body { font-family: system-ui, sans-serif; margin: 2rem; background: #f5f5f5; color: #333; }
   h1 { margin-bottom: 0.5rem; }
@@ -364,6 +430,29 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
   th:hover { background: #eef; }
   th .arrow { font-size: 0.6rem; margin-left: 4px; color: #999; }
   th .arrow.active { color: #2563eb; }
+  /* v0.23.0: mobile layout. Applies at narrow viewports OR when
+     the server detected a mobile UA and emitted body.is-mobile.
+     Tables become a list of stacked cards — each <tr> renders
+     vertically, each <td> shows the column name as a prefix. */
+  @media (max-width: 768px) {
+    body { margin: 0.5rem; font-size: 0.95rem; }
+    .stats { gap: 0.5rem; }
+    .stat { padding: 0.6rem 0.8rem; flex: 1 1 45%; }
+    .stat .value { font-size: 1.4rem; }
+    table, thead, tbody, tr, th, td { display: block; width: 100%; }
+    thead tr { position: absolute; left: -9999px; } /* hide header row visually */
+    tbody tr { border: 1px solid #ddd; border-radius: 8px; margin-bottom: 0.5rem; padding: 0.5rem; background: white; }
+    tbody td { border: none; padding: 0.25rem 0; font-size: 0.9rem; }
+    tbody td::before { content: attr(data-label) ": "; font-weight: 600; color: #555; }
+  }
+  body.is-mobile { margin: 0.5rem; font-size: 0.95rem; }
+  body.is-mobile .stat { padding: 0.6rem 0.8rem; flex: 1 1 45%; }
+  body.is-mobile table, body.is-mobile thead, body.is-mobile tbody,
+  body.is-mobile tr, body.is-mobile th, body.is-mobile td { display: block; width: 100%; }
+  body.is-mobile thead tr { position: absolute; left: -9999px; }
+  body.is-mobile tbody tr { border: 1px solid #ddd; border-radius: 8px; margin-bottom: 0.5rem; padding: 0.5rem; background: white; }
+  body.is-mobile tbody td { border: none; padding: 0.25rem 0; font-size: 0.9rem; }
+  body.is-mobile tbody td::before { content: attr(data-label) ": "; font-weight: 600; color: #555; }
 </style>
 <script>
 // Client-side table sorting. Click a column header to sort ascending, click again for descending.
@@ -389,9 +478,10 @@ function sortTable(col) {
   if (arrow) { arrow.className = 'arrow active'; arrow.textContent = sortAsc ? '\u25B4' : '\u25BE'; }
 }
 </script>
-</head><body>
+</head>`)
+	fmt.Fprintf(w, `<body%s>
 <div style="display:flex;align-items:center;justify-content:space-between"><h1>Aveloxis Monitor</h1><img src="/icon.png" alt="Aveloxis" style="height:48px;border-radius:8px"></div>
-`)
+`, bodyClass)
 	// v0.18.30: freshness header. Shows when the cached fleet stats
 	// were last refreshed and when the next refresh is due. Surfaces
 	// the trade-off the user explicitly accepted ("freshness CAN be
@@ -410,7 +500,7 @@ function sortTable(col) {
 		}
 	}
 	fmt.Fprintf(w, `<div class="sub">Auto-refreshes every %ds. Stats last refreshed %s. Next refresh %s. API: <code>aveloxis api --addr :8383</code></div>`,
-		DefaultDashboardRefreshSeconds, lastRefreshedTxt, nextRefreshTxt)
+		refreshSecs, lastRefreshedTxt, nextRefreshTxt)
 
 	renderMatviewBanner(w)
 

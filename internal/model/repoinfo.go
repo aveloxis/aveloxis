@@ -30,6 +30,12 @@ type RepoInfo struct {
 	PRsMerged      int
 	DefaultBranch  string
 	License        string
+	// v0.23.0 — basic repo metadata captured at first observation
+	// and refreshed each collection cycle. Written to repos.repo_description,
+	// repos.primary_language, and repos.languages (JSONB) on Phase 0.
+	Description     string
+	PrimaryLanguage string
+	Languages       map[string]int // language name → bytes (GitHub) or normalized weight (GitLab)
 	// Community profile files — these fields store the filename if present,
 	// empty string if not found.
 	IssueContributorsCount string

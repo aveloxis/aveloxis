@@ -372,6 +372,18 @@ func (s *Scheduler) Run(ctx context.Context) {
 	affiliationsTicker := time.NewTicker(s.cfg.AffiliationInterval)
 	defer affiliationsTicker.Stop()
 
+	// v0.23.0: kick off the repo-metadata backfill in the background.
+	// Per operator direction "for those repos already collected, we
+	// need to go get that information on the next restart" — this
+	// runs once at startup and exits when all repos with empty
+	// description+primary_language have been processed. Heavily
+	// rate-limited (one FetchRepoInfo per second) so it does not
+	// compete with main collection traffic for API budget.
+	// Idempotent: each restart re-targets only repos still missing
+	// the data, so a partial run from a prior restart picks up
+	// where it left off.
+	go s.runRepoMetadataBackfill(ctx)
+
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
 	// this avoids a visible delay before collection begins.

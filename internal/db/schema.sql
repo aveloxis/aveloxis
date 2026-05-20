@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     repo_path        TEXT DEFAULT '',
     repo_description TEXT DEFAULT '',
     primary_language TEXT DEFAULT '',
+    -- v0.23.0: full language breakdown (language name → bytes for
+    -- GitHub, normalized weight for GitLab). Top entry by value is
+    -- mirrored in primary_language.
+    languages        JSONB DEFAULT '{}'::jsonb,
     forked_from      TEXT DEFAULT '',
     repo_archived    BOOLEAN DEFAULT FALSE,
     platform_repo_id TEXT DEFAULT '',
@@ -180,6 +184,42 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_identities (
     user_type      TEXT DEFAULT 'User',
     is_admin       BOOLEAN DEFAULT FALSE,
     UNIQUE (platform_id, platform_user_id)
+);
+
+-- ============================================================
+-- Contributor login history (v0.23.0)
+--
+-- One row per (cntrb_id, platform_id, login) triple ever observed.
+-- Closes the rename-audit gap from v0.22.13's documented limitation
+-- ("Intermediate login history is NOT stored").
+--
+--   - first_seen: when the (cntrb_id, login) pair was first written
+--   - last_seen:  most recent observation of the same pair
+--   - source:     why the row exists. Values:
+--       'observation'     — steady-state UpsertContributorBatch /
+--                           ContributorResolver.Resolve write
+--       'rename_recovery' — v0.22.13 batch-upsert pkey-collision
+--                           recovery branch
+--       'rename_breadth'  — v0.22.12 breadth-worker 404 fallback
+--       'backfill'        — v0.23.0 initial migration from
+--                           contributor_identities + contributors
+--
+-- The UNIQUE on (cntrb_id, platform_id, login) is the natural
+-- identity-key of a login observation and the ON CONFLICT target
+-- for recordLoginObservation. first_seen is preserved on conflict;
+-- last_seen advances.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_login_history (
+    history_id   BIGSERIAL PRIMARY KEY,
+    cntrb_id     UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    platform_id  SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
+    login        TEXT NOT NULL,
+    first_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source       TEXT NOT NULL DEFAULT 'observation',
+    tool_source  TEXT NOT NULL DEFAULT 'aveloxis',
+    tool_version TEXT NOT NULL DEFAULT '',
+    UNIQUE (cntrb_id, platform_id, login)
 );
 
 -- ============================================================
@@ -1935,6 +1975,9 @@ CREATE INDEX IF NOT EXISTS idx_pr_events_repo_id ON aveloxis_data.pull_request_e
 CREATE INDEX IF NOT EXISTS idx_releases_repo_id ON aveloxis_data.releases (repo_id);
 CREATE INDEX IF NOT EXISTS idx_repo_info_repo_id ON aveloxis_data.repo_info (repo_id);
 CREATE INDEX IF NOT EXISTS idx_contributor_identities_cntrb ON aveloxis_data.contributor_identities (cntrb_id);
+-- v0.23.0: contributor_login_history lookups
+CREATE INDEX IF NOT EXISTS idx_clh_cntrb ON aveloxis_data.contributor_login_history (cntrb_id);
+CREATE INDEX IF NOT EXISTS idx_clh_login ON aveloxis_data.contributor_login_history (login);
 CREATE INDEX IF NOT EXISTS idx_commit_parents_cmt ON aveloxis_data.commit_parents (cmt_id);
 CREATE INDEX IF NOT EXISTS idx_repo_labor_repo_id ON aveloxis_data.repo_labor (repo_id);
 CREATE INDEX IF NOT EXISTS idx_repo_deps_libyear_repo_id ON aveloxis_data.repo_deps_libyear (repo_id);

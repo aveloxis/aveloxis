@@ -9,7 +9,7 @@ Common errors, their causes, and solutions.
 **Symptom** You notice that in the monitor page you have repositories without commits counted, and metadata indicating that there are commits to count. 
 
 **Cause** We have observed this in one, specific cirucmstance, where repositories are being migrated from GitHub to GitHub enterprise. The `gh gei migrate-repo` function causes the clone to fail with : 
-```
+```bash
 remote: Repository 'department-of-veterans-affairs/diffusion-marketplace' is disabled.
 remote: Please ask the owner to check their account.
 fatal: unable to access 'https://github.com/department-of-veterans-affairs/diffusion-marketplace.git/': The requested URL returned error: 403

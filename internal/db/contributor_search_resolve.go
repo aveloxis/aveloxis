@@ -348,9 +348,19 @@ func (s *PostgresStore) RenameContributorGhLogin(ctx context.Context, cntrbID, n
 				(cntrb_id, platform_id, platform_user_id, login, name, email,
 				 avatar_url, profile_url, node_id, user_type, is_admin)
 			VALUES ($1::uuid, 1, $2, $3, '', '', '', '', '', '', FALSE)
-			ON CONFLICT (platform_id, platform_user_id) DO NOTHING`,
+			ON CONFLICT (platform_id, platform_user_id) DO UPDATE SET
+				login = EXCLUDED.login`,
 			winner.cntrbID, ghUserID, newLogin); err != nil {
 			return fmt.Errorf("backfill identity row: %w", err)
+		}
+
+		// v0.23.0: record the new login in contributor_login_history
+		// so the rename chain is preserved. Same tx as the gh_login
+		// update so the history row appears iff the rename committed.
+		// Platform 1 = GitHub (RenameContributorGhLogin is the GitHub-
+		// specific breadth-worker path).
+		if err = recordLoginObservation(ctx, tx, winner.cntrbID, 1, newLogin, LoginSourceRenameBreadth); err != nil {
+			return fmt.Errorf("record login history: %w", err)
 		}
 
 		if oldGhLogin != "" && oldGhLogin != newLogin {

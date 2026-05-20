@@ -61,5 +61,8 @@
     "gitlab_base_url": "https://gitlab.com",
     "api_internal_url": "http://127.0.0.1:8383"
   },
+  "monitor": {
+    "refresh_seconds": 60
+  },
   "log_level": "info"
 }

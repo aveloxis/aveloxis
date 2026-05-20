@@ -220,6 +220,8 @@ type ghRepoInfo struct {
 	HasPages        bool   `json:"has_pages"`
 	Archived        bool   `json:"archived"`
 	Fork            bool   `json:"fork"`
+	Description     string `json:"description"` // v0.23.0
+	Language        string `json:"language"`    // v0.23.0 — top-1; REST does not expose breakdown
 	Parent          *struct {
 		FullName string `json:"full_name"`
 	} `json:"parent"`

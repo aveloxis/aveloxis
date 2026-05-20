@@ -878,6 +878,21 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		codeOfConduct = r.CodeOfConduct.Name
 	}
 
+	// v0.23.0: description + primary language + language breakdown.
+	primaryLang := ""
+	if r.PrimaryLanguage != nil {
+		primaryLang = r.PrimaryLanguage.Name
+	}
+	var languages map[string]int
+	if r.Languages != nil && len(r.Languages.Edges) > 0 {
+		languages = make(map[string]int, len(r.Languages.Edges))
+		for _, e := range r.Languages.Edges {
+			if e.Node.Name != "" {
+				languages[e.Node.Name] = e.Size
+			}
+		}
+	}
+
 	return &model.RepoInfo{
 		LastUpdated:       r.UpdatedAt,
 		IssuesEnabled:     r.HasIssuesEnabled,
@@ -897,6 +912,9 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		PRsMerged:         r.MergedPRs.TotalCount,
 		DefaultBranch:     defaultBranch,
 		License:           license,
+		Description:       r.Description,
+		PrimaryLanguage:   primaryLang,
+		Languages:         languages,
 		ChangelogFile:     filePresent(r.Changelog),
 		ContributingFile:  filePresent(r.Contributing),
 		LicenseFile:       license,
@@ -921,18 +939,31 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 	if raw.License != nil {
 		license = raw.License.Name
 	}
+	// v0.23.0: GitHub REST does not return a language breakdown on
+	// /repos/{o}/{r}; the dedicated /repos/{o}/{r}/languages endpoint
+	// does, but spending another rate-limit unit on the fallback path
+	// is not worth it when GraphQL is the steady-state route. Operators
+	// who hit GraphQL outages get top-1 only; full breakdown returns
+	// when GraphQL recovers.
+	languages := map[string]int{}
+	if raw.Language != "" {
+		languages[raw.Language] = 1 // sentinel — real bytes via GraphQL
+	}
 	return &model.RepoInfo{
-		LastUpdated:   raw.UpdatedAt,
-		IssuesEnabled: raw.HasIssues,
-		WikiEnabled:   raw.HasWiki,
-		PagesEnabled:  raw.HasPages,
-		PRsEnabled:    true,
-		ForkCount:     raw.ForksCount,
-		StarCount:     raw.StargazersCount,
-		WatcherCount:  raw.WatchersCount,
-		OpenIssues:    raw.OpenIssuesCount,
-		DefaultBranch: raw.DefaultBranch,
-		License:       license,
+		LastUpdated:     raw.UpdatedAt,
+		IssuesEnabled:   raw.HasIssues,
+		WikiEnabled:     raw.HasWiki,
+		PagesEnabled:    raw.HasPages,
+		PRsEnabled:      true,
+		ForkCount:       raw.ForksCount,
+		StarCount:       raw.StargazersCount,
+		WatcherCount:    raw.WatchersCount,
+		OpenIssues:      raw.OpenIssuesCount,
+		DefaultBranch:   raw.DefaultBranch,
+		License:         license,
+		Description:     raw.Description,
+		PrimaryLanguage: raw.Language,
+		Languages:       languages,
 		Origin: model.DataOrigin{
 			ToolSource: "aveloxis",
 			DataSource: "GitHub REST",
@@ -941,10 +972,14 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 }
 
 // repoInfoGraphQL builds the GraphQL query for complete repo metadata.
+// v0.23.0: extended to select description + primaryLanguage + top-10
+// languages by SIZE so repos.repo_description, repos.primary_language,
+// and repos.languages get populated on every Phase 0 cycle.
 func repoInfoGraphQL(owner, repo string) string {
 	return fmt.Sprintf(`{
   repository(owner: "%s", name: "%s") {
     updatedAt
+    description
     hasIssuesEnabled
     hasWikiEnabled
     isArchived
@@ -968,6 +1003,13 @@ func repoInfoGraphQL(owner, repo string) string {
       }
     }
     licenseInfo { name spdxId }
+    primaryLanguage { name }
+    languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {
+      edges {
+        size
+        node { name }
+      }
+    }
     codeOfConduct { name }
     contributing: object(expression: "HEAD:CONTRIBUTING.md") { ... on Blob { text } }
     changelog: object(expression: "HEAD:CHANGELOG.md") { ... on Blob { text } }
@@ -1065,6 +1107,19 @@ type graphQLRepo struct {
 	SecurityPolicy *struct {
 		Text string `json:"text"`
 	} `json:"securityPolicy"`
+	// v0.23.0: description + language breakdown.
+	Description     string `json:"description"`
+	PrimaryLanguage *struct {
+		Name string `json:"name"`
+	} `json:"primaryLanguage"`
+	Languages *struct {
+		Edges []struct {
+			Size int `json:"size"`
+			Node struct {
+				Name string `json:"name"`
+			} `json:"node"`
+		} `json:"edges"`
+	} `json:"languages"`
 }
 
 func filePresent(obj *struct {

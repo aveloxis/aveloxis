@@ -223,6 +223,16 @@ The `web` block configures the `aveloxis web` server. Optional — if you only r
 | `web.gitlab_base_url` | string | `"https://gitlab.com"` | GitLab base URL for OAuth (the HTML site, NOT the API URL). Override for self-hosted GitLab. |
 | `web.api_internal_url` | string | `"http://127.0.0.1:8383"` | Server-to-server URL where the web process reaches `aveloxis api`. The web server reverse-proxies `/api/*` requests to this URL so the browser only talks to the web origin. Set this to a remote URL if running the API on a different host. |
 
+### Monitor (dashboard, v0.23.0)
+
+The `monitor` block tunes the `/monitor` dashboard served by `aveloxis serve` on port `:5555`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `monitor.refresh_seconds` | int | `60` | Meta-refresh interval emitted in the dashboard HTML (`<meta http-equiv="refresh" content="N">`). Clamped to `[10, 3600]` at consumption — values outside that range fall back to the default. Lower values give snappier updates at the cost of more frequent server-side scans; higher values reduce DB pressure on large fleets. The pre-v0.23.0 hard-coded `60` is the same default. |
+
+Mobile detection (also v0.23.0) is automatic and not configurable: when the dashboard handler observes a known mobile User-Agent (`iPhone`, `iPad`, `Android`, `Mobile`, `Windows Phone`, `BlackBerry`), it emits a `body.is-mobile` class that stacks the queue table into vertical cards. Desktop users at narrow window widths also pick up the same layout via a `@media (max-width: 768px)` block — UA detection is just an extra signal for phones with non-standard viewports.
+
 ### Mail (Gmail SMTP, optional)
 
 See the [Email section below](#email-gmail-smtp-optional) for setup details. The `mail` block fields:

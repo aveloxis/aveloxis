@@ -236,6 +236,18 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 			result.Errors = append(result.Errors, fmt.Errorf("stage repo info: %w", err))
 		}
 		result.CommitCount = info.CommitCount
+
+		// v0.23.0: mirror description + primary_language + full
+		// language breakdown to the repos row. The repos table is
+		// the canonical "what is this repo" reference; repo_info
+		// holds per-cycle metrics, but description/language are
+		// slow-changing reference data so they live on repos.
+		// Non-fatal — if the UPDATE fails we log and continue;
+		// the next cycle will retry.
+		if updateErr := sc.store.UpdateRepoMetadata(ctx, repoID, info.Description, info.PrimaryLanguage, info.Languages); updateErr != nil {
+			sc.logger.Warn("failed to update repos.repo_description/primary_language/languages",
+				"owner", owner, "repo", repo, "error", updateErr)
+		}
 	}
 
 	for rel, relErr := range sc.client.ListReleases(ctx, owner, repo) {

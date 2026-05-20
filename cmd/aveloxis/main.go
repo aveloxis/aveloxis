@@ -198,7 +198,12 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	go sched.Run(ctx)
 
 	// Start monitor.
-	mon := monitor.New(store, logger)
+	// v0.23.0: refresh cadence is operator-configurable via
+	// monitor.refresh_seconds in aveloxis.json. Falls back to the
+	// package default (60s) when unset / out of bounds.
+	mon := monitor.NewWithOptions(store, logger, monitor.Options{
+		RefreshSeconds: cfg.Monitor.MonitorRefreshSecondsOrDefault(),
+	})
 	srv := &http.Server{Addr: monitorAddr, Handler: mon.Handler()}
 	go func() {
 		logger.Info("monitor listening", "addr", monitorAddr)

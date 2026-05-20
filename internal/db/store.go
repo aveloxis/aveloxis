@@ -22,6 +22,11 @@ type Store interface {
 
 	// Repos
 	UpsertRepo(ctx context.Context, r *model.Repo) (repoID int64, err error)
+	// v0.23.0: write description + primary_language + languages to
+	// the repos row without touching owner/name/archived (those flow
+	// through UpsertRepo / UpdateRepoURL). Called by staged collector
+	// Phase 0 after FetchRepoInfo and by the startup metadata backfill.
+	UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int) error
 
 	// Issues
 	UpsertIssue(ctx context.Context, issue *model.Issue) (issueID int64, err error)

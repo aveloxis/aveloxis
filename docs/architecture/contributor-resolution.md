@@ -266,7 +266,65 @@ The previous login is **overwritten** on the existing identity row. **We do NOT 
 
 **"What was this user's first observed login on aveloxis?"** — Read `contributors.cntrb_login`. Never mutates.
 
-**"What login has this person been known by between then and now?"** — **Not stored.** Only the original observation (`cntrb_login`) and the current state (`gh_login`) survive. Intermediate renames are not tracked anywhere in the current schema. A `contributor_login_history` table is planned post-v0.22.13 to capture this; until then, the rename event itself is logged at INFO level (`"contributor gh_login renamed"` from `RenameContributorGhLogin` and `"contributor rename recovered in batch upsert"` from v0.22.13's batch path) and operators can grep the application log for retrospective audit.
+**"What login has this person been known by between then and now?"** — **Stored as of v0.23.0** in `aveloxis_data.contributor_login_history`. Every observed `(cntrb_id, platform_id, login)` triple gets a row, with `first_seen` preserved across re-observations and `last_seen` advancing. The `source` column tags the row with WHY it was created (`observation`, `rename_recovery`, `rename_breadth`, `backfill`). Pre-v0.23.0 only `cntrb_login` (first observation) and `gh_login` (current state) survived; intermediate renames between those two were lost. See the "Login history table (v0.23.0)" section below for query patterns.
+
+### Login history table (v0.23.0)
+
+`aveloxis_data.contributor_login_history` is the append-only audit trail of every login a contributor has been observed under. Schema:
+
+```sql
+CREATE TABLE aveloxis_data.contributor_login_history (
+    history_id   BIGSERIAL PRIMARY KEY,
+    cntrb_id     UUID NOT NULL REFERENCES contributors(cntrb_id)
+                 ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    platform_id  SMALLINT NOT NULL REFERENCES platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
+    login        TEXT NOT NULL,
+    first_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source       TEXT NOT NULL DEFAULT 'observation',
+    tool_source  TEXT NOT NULL DEFAULT 'aveloxis',
+    tool_version TEXT NOT NULL DEFAULT '',
+    UNIQUE (cntrb_id, platform_id, login)
+);
+```
+
+`source` values:
+
+| Value | Written by | Trigger |
+|---|---|---|
+| `observation` | `UpsertContributorBatch` per-identity loop | Steady-state per-cycle write — most rows have this source. |
+| `rename_recovery` | `UpsertContributorBatch` rename-recovery branch (v0.22.13) | Pkey collision recovery: same gh_user_id, new login arrived in a batch. |
+| `rename_breadth` | `RenameContributorGhLogin` (v0.22.12) | Breadth worker hit 404, looked up by id, found a different current login. |
+| `backfill` | One-shot migration step at v0.23.0 install | Seeded from existing `contributor_identities` + `contributors.cntrb_login` so the history table starts populated. |
+
+Common queries:
+
+```sql
+-- Every login this person has ever used, oldest first
+SELECT login, first_seen, last_seen, source
+FROM aveloxis_data.contributor_login_history
+WHERE cntrb_id = $1::uuid
+ORDER BY first_seen ASC;
+
+-- Find all rename events (any contributor whose history has more than
+-- one login on the same platform)
+SELECT cntrb_id, platform_id, count(*) AS login_count,
+       array_agg(login ORDER BY first_seen ASC) AS chronological
+FROM aveloxis_data.contributor_login_history
+GROUP BY cntrb_id, platform_id
+HAVING count(*) > 1;
+
+-- Resolve a historical login to a current contributor (e.g. when
+-- joining against an external dataset that captured a now-stale login)
+SELECT c.cntrb_id, c.gh_login AS current_login
+FROM aveloxis_data.contributor_login_history h
+JOIN aveloxis_data.contributors c USING (cntrb_id)
+WHERE h.login = $1 AND h.platform_id = 1
+ORDER BY h.last_seen DESC
+LIMIT 1;
+```
+
+The Go store method `PostgresStore.GetContributorLoginHistory(ctx, cntrbID)` returns the rows ordered chronologically — useful for the contributor detail page in the web GUI (display planned for a follow-up release).
 
 ### Why the two write paths exist (v0.22.12 vs v0.22.13)
 

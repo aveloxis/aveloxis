@@ -126,3 +126,106 @@ func TestDashboardEmitsMobileCSSOnMobileUA(t *testing.T) {
 			"dashboard remains unusable on phones.")
 	}
 }
+
+// TestMobileCSSPreventsOverflow pins the v0.23.0 post-fix overflow
+// protections. The initial v0.23.0 release converted tables to
+// display:block but left long content (repo URLs, error strings)
+// to overflow horizontally; this test prevents regression on those
+// fixes. Operator-reported on 2026-05-19: "It's still too wide on
+// mobile."
+func TestMobileCSSPreventsOverflow(t *testing.T) {
+	src, err := os.ReadFile("monitor.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+
+	// word-break / overflow-wrap on td so long unbreakable strings
+	// (repo URLs, error messages) wrap inside the card instead of
+	// pushing the page wider than the viewport.
+	if !strings.Contains(code, "word-break") && !strings.Contains(code, "overflow-wrap") {
+		t.Error("mobile CSS must include word-break or overflow-wrap on td cells. " +
+			"Without one of these, long repo URLs and error tooltips overflow " +
+			"the card and force horizontal scroll on phones.")
+	}
+
+	// overflow-x:hidden on body is the last-resort safety net for
+	// any element we didn't manage to constrain. Combined with
+	// max-width:100vw this guarantees no horizontal scroll.
+	if !strings.Contains(code, "overflow-x") {
+		t.Error("mobile CSS must include overflow-x:hidden on the body or html " +
+			"as a last-resort safety net against any element we didn't manage to " +
+			"constrain (third-party content, future template changes).")
+	}
+
+	// box-sizing:border-box so padding doesn't push child widths
+	// past their parent's width.
+	if !strings.Contains(code, "box-sizing") {
+		t.Error("mobile CSS must declare box-sizing:border-box so padding doesn't " +
+			"push child widths past the viewport.")
+	}
+
+	// The inline min-width:240px on the search input must be
+	// overridden on mobile so the form fits a 320px viewport.
+	if !strings.Contains(code, `min-width: 0 !important`) && !strings.Contains(code, `min-width:0!important`) {
+		t.Error("mobile CSS must override the inline min-width:240px on the search " +
+			"input with `min-width: 0 !important`. Inline styles have higher " +
+			"specificity than CSS rules without !important, so without this the " +
+			"input keeps its 240px floor on a 320px phone.")
+	}
+}
+
+// TestQueueRowsCarryDataLabels pins the per-td data-label attributes
+// that the mobile stacked-card layout consumes via
+// td::before { content: attr(data-label) }. Without these, the
+// mobile cards show unlabeled values which is unreadable.
+func TestQueueRowsCarryDataLabels(t *testing.T) {
+	src, err := os.ReadFile("monitor.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+
+	// Every meaningful column must emit a data-label. Action column
+	// uses data-label="" deliberately (its value IS the label —
+	// "Boost" button speaks for itself).
+	for _, label := range []string{
+		`data-label="Repo"`,
+		`data-label="Status"`,
+		`data-label="Due"`,
+		`data-label="Last Run"`,
+		`data-label="Gathered Issues"`,
+		`data-label="Meta Issues"`,
+		`data-label="Gathered PRs"`,
+		`data-label="Meta PRs"`,
+		`data-label="Gathered Commits"`,
+		`data-label="Meta Commits"`,
+	} {
+		if !strings.Contains(code, label) {
+			t.Errorf("queue row td must emit %s so the mobile card layout shows "+
+				"the column name. Without this, mobile cards are unreadable lists "+
+				"of bare values.", label)
+		}
+	}
+}
+
+// TestMobileHidesNonEssentialColumns pins that at least a few of
+// the 14 columns are hidden on mobile. Stacking all 14 fields per
+// repo makes each card too tall; hiding # / Platform / Priority
+// (which the operator rarely needs on a phone) keeps the cards
+// compact.
+func TestMobileHidesNonEssentialColumns(t *testing.T) {
+	src, err := os.ReadFile("monitor.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+	// CSS must include at least one td:nth-child(N) { display: none }
+	// rule in a mobile context.
+	if !strings.Contains(code, "td:nth-child(1)") && !strings.Contains(code, "td:nth-child(3)") && !strings.Contains(code, "td:nth-child(5)") {
+		t.Error("mobile CSS must hide at least one non-essential column via " +
+			"td:nth-child(N) { display: none }. Stacking all 14 columns vertically " +
+			"makes each repo card unusably tall; # / Platform / Priority are the " +
+			"natural candidates to drop on phone-sized viewports.")
+	}
+}

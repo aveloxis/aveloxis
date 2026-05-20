@@ -4,6 +4,24 @@ Common errors, their causes, and solutions.
 
 ---
 
+## Commits not collected, but Issues and Pull Requests are collected
+
+**Symptom** You notice that in the monitor page you have repositories without commits counted, and metadata indicating that there are commits to count. 
+
+**Cause** We have observed this in one, specific cirucmstance, where repositories are being migrated from GitHub to GitHub enterprise. The `gh gei migrate-repo` function causes the clone to fail with : 
+```
+remote: Repository 'department-of-veterans-affairs/diffusion-marketplace' is disabled.
+remote: Please ask the owner to check their account.
+fatal: unable to access 'https://github.com/department-of-veterans-affairs/diffusion-marketplace.git/': The requested URL returned error: 403
+```
+For a repository. When you navigate to the repository's homepage, you see this: 
+
+![alt text](repo-disabled.png)
+
+This is a relatively new phenomena not experienced in our ten years building Augur and Aveloxis.  
+
+**At this time there is not a known solution**
+
 ## Monitor dashboard renders slowly on a large fleet
 
 **Symptom:** On a fleet approaching 100K repos, the monitor dashboard takes seconds to render each page, multiple browser tabs make it worse, and `aveloxis serve` collection workers become starved for DB connections.

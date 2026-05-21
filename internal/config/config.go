@@ -410,6 +410,38 @@ type CollectionConfig struct {
 	// the main scheduler's stop).
 	ScancodeShutdownGraceMinutes int `json:"scancode_shutdown_grace_minutes"`
 
+	// ScancodeRunTimeoutHours is the BASE wall-clock timeout for a
+	// single scancode subprocess invocation. Default 2 hours
+	// (matches the pre-v0.23.8 hardcoded constant).
+	//
+	// v0.23.8 also adds per-repo adaptive scaling: when a scan exits
+	// with `signal: killed` (the cmd.Cancel signature when scanCtx
+	// times out), the row's scancode_timeout_attempts counter
+	// increments, and the next attempt uses
+	// `min(base * 2^attempts, cap_hours)`. Kernel-class repos
+	// (~80K files, ~3h scan minimum) discover their natural runtime
+	// over a few cycles without operator intervention.
+	//
+	// Operators with a fleet skewed toward big repos can raise this
+	// directly (e.g., 8 hours) instead of waiting for adaptive
+	// scaling to converge.
+	ScancodeRunTimeoutHours int `json:"scancode_run_timeout_hours"`
+
+	// ScancodeRunTimeoutCapHours bounds the adaptive timeout's
+	// upper limit. Default 24 hours. Even kernel-class repos
+	// shouldn't need a single scan slot for more than a day; a row
+	// that genuinely takes longer than this is more likely broken
+	// than legitimately big.
+	//
+	// Together with the v0.21.4 ScancodeMaxFailures (10-strike
+	// sideline on the SEPARATE scancode_failed_attempts counter),
+	// the cap ensures no single repo monopolizes worker capacity
+	// indefinitely. Note that timeout-class failures do NOT
+	// increment scancode_failed_attempts — kernel-class repos
+	// hitting the cap repeatedly stay in the active queue, they
+	// just won't get any bigger timeout.
+	ScancodeRunTimeoutCapHours int `json:"scancode_run_timeout_cap_hours"`
+
 	// PhaseWatchdogMinutes controls the v0.22.4 observation watchdog's
 	// stall threshold. If staging row count for a repo does not grow
 	// for this many minutes, the watchdog appends an event to
@@ -579,6 +611,28 @@ func (c *CollectionConfig) ScancodeShutdownGrace() time.Duration {
 	return time.Duration(c.ScancodeShutdownGraceMinutes) * time.Minute
 }
 
+// ScancodeRunTimeout returns the BASE wall-clock timeout for a
+// single scancode subprocess. v0.23.8. Defaults to 2 hours when
+// unset (matching the pre-v0.23.8 hardcoded constant). The
+// effective per-job timeout is computed by runOne as
+// `min(base * 2^attempts, cap)` where attempts is the row's
+// scancode_timeout_attempts counter.
+func (c *CollectionConfig) ScancodeRunTimeout() time.Duration {
+	if c.ScancodeRunTimeoutHours <= 0 {
+		return 2 * time.Hour
+	}
+	return time.Duration(c.ScancodeRunTimeoutHours) * time.Hour
+}
+
+// ScancodeRunTimeoutCap returns the upper bound on the per-job
+// adaptive scancode timeout. v0.23.8. Defaults to 24 hours.
+func (c *CollectionConfig) ScancodeRunTimeoutCap() time.Duration {
+	if c.ScancodeRunTimeoutCapHours <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.ScancodeRunTimeoutCapHours) * time.Hour
+}
+
 // MailConfig configures the Gmail-backed transactional mailer
 // (v0.19.0). When GmailUser is empty the mailer is a no-op — the rest
 // of the application works without email enabled.
@@ -689,7 +743,9 @@ func DefaultConfig() *Config {
 			ScancodeStartIntervalSec:     90,
 			ScancodeCadenceDays:          180,
 			ScancodeCloneDir:             defaultScancodeCloneDir(),
-			ScancodeShutdownGraceMinutes: 0, // v0.23.7: immediate kill on stop
+			ScancodeShutdownGraceMinutes: 0,  // v0.23.7: immediate kill on stop
+			ScancodeRunTimeoutHours:      2,  // v0.23.8: base wall-clock per scan
+			ScancodeRunTimeoutCapHours:   24, // v0.23.8: upper bound on adaptive timeout
 		},
 		LogLevel: "info",
 	}

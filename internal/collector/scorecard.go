@@ -31,6 +31,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"syscall"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 )
@@ -106,6 +108,23 @@ func RunScorecard(ctx context.Context, store *db.PostgresStore, repoID int64, re
 	cmd.Stderr = &stderr
 	// Scorecard needs GITHUB_TOKEN for API-dependent checks.
 	cmd.Env = append(cmd.Environ(), "GITHUB_TOKEN="+githubToken)
+
+	// v0.23.3: process-group cleanup. Same shape as scancode runOne.
+	// scorecard spawns its own git subprocess (in remote mode) plus
+	// various check probes that survive as orphans when only the
+	// immediate child is killed via ctx cancel. Setpgid puts the
+	// whole subprocess tree into its own pgid; cmd.Cancel kills the
+	// group on ctx cancel; WaitDelay bounds the post-cancel block.
+	// Operator-reported on 2026-05-21: scorecard ghosts consume CPU
+	// and memory after aveloxis stop.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	cmd.WaitDelay = 10 * time.Second
 
 	runErr := cmd.Run()
 

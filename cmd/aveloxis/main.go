@@ -186,11 +186,13 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		ShutdownGrace:         cfg.Collection.ShutdownGraceDuration(),
 		// v0.21.0 ScancodeWorker knobs. See
 		// docs/architecture/scancode.md.
-		ScancodeWorkers:       cfg.Collection.ScancodeWorkersOrDefault(),
-		ScancodeStartInterval: cfg.Collection.ScancodeStartInterval(),
-		ScancodeCadence:       cfg.Collection.ScancodeCadence(),
-		ScancodeCloneDir:      cfg.Collection.ScancodeCloneDirOrDefault(),
-		ScancodeShutdownGrace: cfg.Collection.ScancodeShutdownGrace(),
+		ScancodeWorkers:        cfg.Collection.ScancodeWorkersOrDefault(),
+		ScancodeStartInterval:  cfg.Collection.ScancodeStartInterval(),
+		ScancodeCadence:        cfg.Collection.ScancodeCadence(),
+		ScancodeCloneDir:       cfg.Collection.ScancodeCloneDirOrDefault(),
+		ScancodeShutdownGrace:  cfg.Collection.ScancodeShutdownGrace(),
+		ScancodeRunTimeoutBase: cfg.Collection.ScancodeRunTimeout(),    // v0.23.8
+		ScancodeRunTimeoutCap:  cfg.Collection.ScancodeRunTimeoutCap(), // v0.23.8
 		// v0.22.4 — staging-row cleanup retention. Default 1h.
 		StagingRetention: cfg.Collection.StagingRetentionDuration(),
 		// v0.22.4 — observation-only long-jobs watchdog. Default 75m.

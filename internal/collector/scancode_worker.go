@@ -74,8 +74,11 @@ const scancodeStderrTailBytes = 4096
 // goroutine wakes on this cadence to clear NULL-PID lock states
 // (the v0.21.0 inconsistency window).
 const (
-	scancodeCloneTimeout  = 30 * time.Minute
-	scancodeRunTimeout    = 2 * time.Hour
+	scancodeCloneTimeout = 30 * time.Minute
+	// scancodeRunTimeout removed in v0.23.8 — wall-clock timeout
+	// now lives on the ScancodeWorker as runTimeoutBase +
+	// runTimeoutCap, configurable via collection.scancode_run_timeout_*
+	// in aveloxis.json. See NewScancodeWorker.
 	stalePidCheckInterval = 5 * time.Minute
 	stalePidLockMaxAge    = 5 * time.Minute
 )
@@ -664,6 +667,27 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		// SIGKILL'd subprocess before the output completed).
 		salvagedFilesCount, salvagedHeaderErrors, salvaged := salvageScancodeOutput(outputPath)
 		if !salvaged {
+			// v0.23.8: distinguish wall-clock-timeout failures from
+			// genuine scancode failures. cmd.Cancel from scanCtx
+			// timeout fires `syscall.Kill(-pid, SIGKILL)`, and
+			// cmd.Wait() then returns an *exec.ExitError whose
+			// Error() string is exactly "signal: killed". For that
+			// case route to RecordScancodeTimeout (increments
+			// scancode_timeout_attempts so the next attempt gets a
+			// bigger timeout) rather than RecordScancodeFailure
+			// (which would advance the 10-strike sideline counter
+			// against a kernel-class repo that just needs more time).
+			if err.Error() == "signal: killed" {
+				w.logger.Info("scancode runOne: wall-clock timeout fired; row's next attempt will use a stretched timeout",
+					"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+					"prior_timeout_attempts", job.TimeoutAttempts,
+					"timeout_used", effectiveTimeout.String())
+				if recErr := w.store.RecordScancodeTimeout(ctx, job.RepoID); recErr != nil {
+					w.logger.Warn("scancode runOne: RecordScancodeTimeout failed",
+						"repo_id", job.RepoID, "error", recErr)
+				}
+				return
+			}
 			w.recordFailureBestEffort(ctx, job.RepoID)
 			return
 		}

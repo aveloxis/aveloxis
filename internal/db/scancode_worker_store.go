@@ -52,6 +52,13 @@ type ScancodeJob struct {
 	RepoOwner string
 	RepoName  string
 	RepoGit   string
+	// TimeoutAttempts (v0.23.8) is the row's scancode_timeout_attempts
+	// counter at the moment of claim. The runner uses it to compute
+	// the effective wall-clock timeout for this job as
+	// `min(base * 2^TimeoutAttempts, cap)`. Kernel-class repos that
+	// have timed out before get progressively longer timeouts until
+	// the scan completes (resetting the counter) or hits the cap.
+	TimeoutAttempts int
 }
 
 // ScancodeLockedRow is a row observed by the recovery pass during
@@ -139,11 +146,12 @@ func (s *PostgresStore) ClaimNextScancodeRepo(ctx context.Context, cadence time.
 		UPDATE aveloxis_data.repos
 		SET scancode_locked_at = NOW()
 		WHERE repo_id IN (SELECT repo_id FROM candidate)
-		RETURNING repo_id, repo_owner, repo_name, repo_git`,
+		RETURNING repo_id, repo_owner, repo_name, repo_git,
+		          COALESCE(scancode_timeout_attempts, 0)`,
 		cadence.String(), ScancodeStaleLockWindow.String())
 
 	var job ScancodeJob
-	if err := row.Scan(&job.RepoID, &job.RepoOwner, &job.RepoName, &job.RepoGit); err != nil {
+	if err := row.Scan(&job.RepoID, &job.RepoOwner, &job.RepoName, &job.RepoGit, &job.TimeoutAttempts); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
@@ -185,6 +193,10 @@ func (s *PostgresStore) RecordScancodeLockState(ctx context.Context, repoID int6
 // failed several times then succeeds doesn't carry the old attempt
 // count into the next failure cycle.
 func (s *PostgresStore) MarkScancodeComplete(ctx context.Context, repoID int64, version string) error {
+	// v0.23.8 also resets scancode_timeout_attempts so a previously
+	// stretched repo that successfully completes starts fresh on the
+	// next cycle with the base timeout. If it ever times out again,
+	// the counter rebuilds from 0.
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.repos
 		SET scancode_last_run = NOW(),
@@ -194,7 +206,8 @@ func (s *PostgresStore) MarkScancodeComplete(ctx context.Context, repoID int64, 
 		    scancode_locked_boot_id = NULL,
 		    scancode_output_path = NULL,
 		    scancode_failed_attempts = 0,
-		    scancode_last_failed_at = NULL
+		    scancode_last_failed_at = NULL,
+		    scancode_timeout_attempts = 0
 		WHERE repo_id = $1`, repoID, version)
 	return err
 }
@@ -215,6 +228,46 @@ func (s *PostgresStore) MarkScancodeComplete(ctx context.Context, repoID int64, 
 // in scancode_worker.runOne. ClearScancodeLock still exists for the
 // dispatcher's ctx-canceled-after-claim cleanup (which is a clean
 // release, not a failure).
+// RecordScancodeTimeout (v0.23.8) is the failure-path counterpart to
+// RecordScancodeFailure for the SPECIFIC case of a wall-clock-timeout
+// SIGKILL (subprocess error string contains "signal: killed"). It:
+//
+//   - clears the four lock columns (so the row is re-claimable),
+//   - increments scancode_timeout_attempts (drives the adaptive
+//     timeout formula in runOne: `min(base * 2^attempts, cap)`),
+//   - stamps scancode_last_failed_at = NOW() (so the v0.21.4
+//     quadratic backoff gate still applies — a kernel-class repo
+//     doesn't immediately re-claim a worker slot after timing out),
+//   - does NOT increment scancode_failed_attempts.
+//
+// The last point is the critical distinction. v0.21.4's
+// RecordScancodeFailure increments scancode_failed_attempts; on
+// reaching ScancodeMaxFailures (10), it also stamps
+// scancode_last_run so the cadence gate sidelines the row for 180
+// days. That's correct for repos that fail because of broken
+// content (PDF crashes, etc.). It is WRONG for repos that simply
+// take longer than the wall-clock timeout — those are legitimately
+// big, not broken. v0.23.8 separates the failure classes so
+// kernel-class repos can stretch their timeout indefinitely
+// (capped at scancode_run_timeout_cap_hours) without ever being
+// sidelined by the 10-strike rule.
+//
+// A repo that hits both classes alternately (some timeouts, some
+// real failures) increments both counters independently. The
+// 10-strike rule fires on the failure counter only.
+func (s *PostgresStore) RecordScancodeTimeout(ctx context.Context, repoID int64) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.repos
+		SET scancode_locked_at = NULL,
+		    scancode_locked_pid = NULL,
+		    scancode_locked_boot_id = NULL,
+		    scancode_output_path = NULL,
+		    scancode_timeout_attempts = COALESCE(scancode_timeout_attempts, 0) + 1,
+		    scancode_last_failed_at = NOW()
+		WHERE repo_id = $1`, repoID)
+	return err
+}
+
 func (s *PostgresStore) RecordScancodeFailure(ctx context.Context, repoID int64) error {
 	// One UPDATE that:
 	//   - clears the four lock columns,

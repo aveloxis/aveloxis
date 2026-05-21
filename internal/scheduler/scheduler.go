@@ -59,11 +59,13 @@ type Config struct {
 	// 7+ hours; the decoupled pool fixes the bottleneck and adds
 	// operator-tunable cadence. See internal/collector/
 	// scancode_worker.go and docs/architecture/scancode.md.
-	ScancodeWorkers       int           // max concurrent scancode subprocesses (default 2)
-	ScancodeStartInterval time.Duration // minimum interval between claim attempts (default 90s)
-	ScancodeCadence       time.Duration // minimum interval between scans on the same repo (default 180d)
-	ScancodeCloneDir      string        // parent directory for per-run shallow clones (default /tmp/aveloxis-scancode)
-	ScancodeShutdownGrace time.Duration // wait budget for in-flight scancode runs on aveloxis stop (default 30m)
+	ScancodeWorkers        int           // max concurrent scancode subprocesses (default 2)
+	ScancodeStartInterval  time.Duration // minimum interval between claim attempts (default 90s)
+	ScancodeCadence        time.Duration // minimum interval between scans on the same repo (default 180d)
+	ScancodeCloneDir       string        // parent directory for per-run shallow clones (default /tmp/aveloxis-scancode)
+	ScancodeShutdownGrace  time.Duration // wait budget for in-flight scancode runs on aveloxis stop (v0.23.7 default 0 = immediate kill)
+	ScancodeRunTimeoutBase time.Duration // v0.23.8 base per-job timeout (default 2h)
+	ScancodeRunTimeoutCap  time.Duration // v0.23.8 upper bound on adaptive per-job timeout (default 24h)
 
 	// PhaseWatchdog is the no-staging-growth threshold the v0.22.4
 	// observation watchdog uses to emit a long-jobs event. Default
@@ -322,6 +324,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.cfg.ScancodeCadence,
 		s.cfg.ScancodeCloneDir,
 		s.cfg.ScancodeShutdownGrace,
+		s.cfg.ScancodeRunTimeoutBase,
+		s.cfg.ScancodeRunTimeoutCap,
 	)
 	go scancodeWorker.Run(ctx)
 

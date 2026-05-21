@@ -126,7 +126,20 @@ func RunScorecard(ctx context.Context, store *db.PostgresStore, repoID int64, re
 	}
 	cmd.WaitDelay = 10 * time.Second
 
-	runErr := cmd.Run()
+	// v0.23.7: split cmd.Run into Start + Wait so we have a PID for
+	// the deferred straggler kill. The v0.23.3 cmd.Cancel only fires
+	// on ctx-cancel while Wait is blocked; if scorecard exits
+	// normally before ctx cancels, its leftover children (git
+	// subprocess in remote mode, git-lfs, check-probe spawns)
+	// survive. defer syscall.Kill(-pid, SIGKILL) catches them on
+	// function exit. Idempotent — ESRCH on an already-dead pgid is
+	// harmless.
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting scorecard: %w", err)
+	}
+	pid := cmd.Process.Pid
+	defer syscall.Kill(-pid, syscall.SIGKILL)
+	runErr := cmd.Wait()
 
 	// Parse the JSON output regardless of exit code. Scorecard exits with
 	// status 1 when individual checks fail (e.g., invalid YAML in workflow

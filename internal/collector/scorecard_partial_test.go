@@ -25,9 +25,18 @@ func TestScorecardParsesPartialResults(t *testing.T) {
 	if idx < 0 {
 		t.Fatal("cannot find RunScorecard function")
 	}
+	// Scan only RunScorecard's body, bounded by the next top-level
+	// `func ` definition after it. The pre-v0.23.7 version capped
+	// at a fixed byte offset (3000), which was fragile — adding
+	// v0.23.7 cleanup comments pushed the `runErr` token past the
+	// cap and broke the pin even though the contract was still
+	// satisfied. The fix-attempt of bumping to 6000 then caught
+	// the `cmd.Run()` in the `setRemoteOrigin` helper just below,
+	// a false-positive. Bounding by the next `func ` keyword is
+	// resilient to both.
 	fnBody := code[idx:]
-	if len(fnBody) > 3000 {
-		fnBody = fnBody[:3000]
+	if nextFn := strings.Index(fnBody[len("func RunScorecard("):], "\nfunc "); nextFn > 0 {
+		fnBody = fnBody[:len("func RunScorecard(")+nextFn]
 	}
 
 	// The old pattern was:

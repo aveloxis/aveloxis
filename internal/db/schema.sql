@@ -87,7 +87,17 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- queue for the full cadence window. See
     -- internal/db/scancode_worker_store.go for the policy.
     scancode_failed_attempts INTEGER DEFAULT 0,
-    scancode_last_failed_at  TIMESTAMPTZ
+    scancode_last_failed_at  TIMESTAMPTZ,
+    -- v0.23.8: SEPARATE counter for timeout-class failures
+    -- (subprocess exited with `signal: killed` = wall-clock
+    -- timeout fired). Used to compute per-repo adaptive
+    -- timeout `min(base * 2^attempts, cap)`. Distinct from
+    -- scancode_failed_attempts so timeout-class failures on
+    -- kernel-class repos don't trigger the v0.21.4 10-strike
+    -- sideline — a repo that takes 16h to scan isn't broken.
+    -- Reset to 0 on successful scan (alongside the failure
+    -- counter).
+    scancode_timeout_attempts INTEGER DEFAULT 0
 );
 
 -- ============================================================

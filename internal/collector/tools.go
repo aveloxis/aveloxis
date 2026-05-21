@@ -284,6 +284,18 @@ func installScancode() error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err == nil {
+			// v0.23.6: inject typecode-libmagic into the freshly-built
+			// venv. Without this, every scancode run emits the
+			// libmagic UserWarning that dominated the 2026-05-21
+			// stderr noise. Non-fatal: if injection fails (custom pipx
+			// configuration, network blocked, etc.) the install still
+			// succeeds — the warning continues to print but scancode
+			// still works.
+			if err := injectTypecodeLibmagic(pipxPath, pkg); err != nil {
+				fmt.Printf("warning: typecode-libmagic injection failed: %v\n", err)
+				fmt.Println("  scancode still works; the libmagic UserWarning will continue to print.")
+				fmt.Println("  to retry: pipx inject scancode-toolkit-mini typecode-libmagic")
+			}
 			return nil
 		}
 		// pipx failed — fall through to pip.
@@ -311,6 +323,46 @@ func installScancode() error {
 	}
 
 	return fmt.Errorf("scancode install failed: neither pipx nor pip found. Install Python 3.10+ and run: pipx install %s", pkg)
+}
+
+// injectTypecodeLibmagic (v0.23.6) runs `pipx inject scancode-toolkit-mini
+// typecode-libmagic` to add the Python libmagic binding to scancode's venv.
+//
+// Without this injection, scancode's typecode subsystem falls back to the
+// system libmagic shared library, which emits this UserWarning on every
+// scan invocation:
+//
+//	/home/.../typecode/magic2.py:197: UserWarning: System libmagic found
+//	in typical location is used. Install instead a typecode-libmagic
+//	plugin for best support.
+//
+// The warning is harmless but it dominated the v0.23.3 stderr-capture
+// output (the entire 252-byte buffer was just this one line), making it
+// impossible to see real scancode errors. v0.23.4 introduced the
+// salvage-on-exit-1 path; v0.23.6 eliminates the warning at install time.
+//
+// Idempotent: `pipx inject` is a no-op when the package is already
+// injected into the target venv. Safe to call multiple times.
+//
+// Returns nil on success, an error otherwise. Callers should treat
+// injection failure as a warning, NOT a fatal install error — operators
+// with custom pipx configurations or air-gapped networks may legitimately
+// fail this step, and the scancode install itself remains functional.
+//
+// Exported as InjectTypecodeLibmagic for the v0.23.6 `aveloxis
+// upgrade-tools` command in cmd/aveloxis/upgrade_tools_cmd.go.
+func injectTypecodeLibmagic(pipxPath, scancodePkg string) error {
+	fmt.Printf("Injecting typecode-libmagic into %s venv...\n", scancodePkg)
+	cmd := exec.Command(pipxPath, "inject", scancodePkg, "typecode-libmagic")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// InjectTypecodeLibmagic is the public alias for injectTypecodeLibmagic.
+// Used by cmd/aveloxis/upgrade_tools_cmd.go's RunE handler.
+func InjectTypecodeLibmagic(pipxPath, scancodePkg string) error {
+	return injectTypecodeLibmagic(pipxPath, scancodePkg)
 }
 
 // installLibmagicIfNeeded installs the libmagic native library if it's not

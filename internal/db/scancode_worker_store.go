@@ -255,6 +255,36 @@ func (s *PostgresStore) ClearScancodeLock(ctx context.Context, repoID int64) err
 	return err
 }
 
+// ClearStaleNullPidLocks clears scancode locks that have
+// scancode_locked_at SET but scancode_locked_pid NULL — the
+// inconsistent state produced when v0.21.0's runOne hit a
+// RecordScancodeLockState failure and proceeded anyway. v0.23.3
+// aborts the scan in that path so new occurrences shouldn't
+// happen, but existing rows from pre-v0.23.3 runs need cleanup.
+//
+// olderThan filters to locks older than the threshold so we don't
+// race a legitimate in-flight runner whose PID write is delayed
+// by tens-of-ms DB latency. 5 minutes is comfortable.
+//
+// Returns the number of rows cleared. Called from the worker's
+// in-flight cleanup goroutine every 5 minutes.
+func (s *PostgresStore) ClearStaleNullPidLocks(ctx context.Context, olderThan time.Duration) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.repos
+		SET scancode_locked_at = NULL,
+		    scancode_locked_pid = NULL,
+		    scancode_locked_boot_id = NULL,
+		    scancode_output_path = NULL
+		WHERE scancode_locked_at IS NOT NULL
+		  AND scancode_locked_pid IS NULL
+		  AND scancode_locked_at < NOW() - make_interval(secs => $1)`,
+		olderThan.Seconds())
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ListLockedScancodeRows returns every row with a non-null
 // scancode_locked_at. The recovery pass calls this once at worker
 // startup, before the dispatcher begins claiming new rows.

@@ -119,15 +119,32 @@ type ScancodeWorker struct {
 	cadence       time.Duration
 	cloneDir      string
 	shutdownGrace time.Duration
+	// v0.23.8: per-job wall-clock timeout. The runner computes
+	// `min(runTimeoutBase * 2^job.TimeoutAttempts, runTimeoutCap)`
+	// per job. Pre-v0.23.8 this was a package-level constant
+	// (`scancodeRunTimeout = 2 * time.Hour`); now configurable +
+	// adaptive so kernel-class repos can stretch up to the cap
+	// without operator intervention.
+	runTimeoutBase time.Duration
+	runTimeoutCap  time.Duration
 }
 
-// NewScancodeWorker constructs a worker. All time-based fields fall
-// back to documented defaults when zero is passed, so the caller
-// can do `NewScancodeWorker(store, logger, 0, 0, 0, "", 0)` to get
-// an entirely default-configured worker.
+// NewScancodeWorker constructs a worker. Most time-based fields fall
+// back to documented defaults when zero is passed.
+//
+// v0.23.8: runTimeoutBase + runTimeoutCap configure the adaptive
+// per-job wall-clock timeout. Pre-v0.23.8 these were the hardcoded
+// constant scancodeRunTimeout = 2*time.Hour; now caller-supplied.
+// Defaults: base 2h, cap 24h.
+//
+// v0.23.7-fix: shutdownGrace now defaults to 0 (immediate kill) when
+// the caller passes 0, matching the v0.23.7 contract that
+// subprocesses outliving aveloxis can't deliver output anyway.
+// Pre-v0.23.7 the zero-input fallback was 30 min — that masked the
+// v0.23.7 config-default flip from 30 to 0.
 func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger,
 	workerCount int, startInterval, cadence time.Duration,
-	cloneDir string, shutdownGrace time.Duration) *ScancodeWorker {
+	cloneDir string, shutdownGrace, runTimeoutBase, runTimeoutCap time.Duration) *ScancodeWorker {
 	if workerCount <= 0 {
 		workerCount = 2
 	}
@@ -140,17 +157,24 @@ func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger,
 	if cloneDir == "" {
 		cloneDir = "/tmp/aveloxis-scancode"
 	}
-	if shutdownGrace <= 0 {
-		shutdownGrace = 30 * time.Minute
+	// v0.23.7: shutdownGrace = 0 means immediate kill on stop.
+	// Don't override.
+	if runTimeoutBase <= 0 {
+		runTimeoutBase = 2 * time.Hour
+	}
+	if runTimeoutCap <= 0 {
+		runTimeoutCap = 24 * time.Hour
 	}
 	return &ScancodeWorker{
-		store:         store,
-		logger:        logger,
-		workerCount:   workerCount,
-		startInterval: startInterval,
-		cadence:       cadence,
-		cloneDir:      cloneDir,
-		shutdownGrace: shutdownGrace,
+		store:          store,
+		logger:         logger,
+		workerCount:    workerCount,
+		startInterval:  startInterval,
+		cadence:        cadence,
+		cloneDir:       cloneDir,
+		shutdownGrace:  shutdownGrace,
+		runTimeoutBase: runTimeoutBase,
+		runTimeoutCap:  runTimeoutCap,
 	}
 }
 

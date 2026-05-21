@@ -61,6 +61,21 @@ architecture/db-package
 
 ```{toctree}
 :maxdepth: 2
+:caption: Contributing
+
+contributing/README
+contributing/development-setup
+contributing/code-conventions
+contributing/testing
+contributing/schema-migrations
+contributing/adding-a-platform
+contributing/adding-a-rest-endpoint
+contributing/adding-a-collection-phase
+contributing/adding-a-visualization
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: Reference
 
 schema

@@ -387,21 +387,60 @@ type CollectionConfig struct {
 
 	// ScancodeShutdownGraceMinutes caps how long the ScancodeWorker
 	// waits for in-flight scans to finish on aveloxis stop. Default
-	// 30 minutes when unset.
+	// 0 (immediate kill) as of v0.23.7.
 	//
-	// Within the grace window: runners complete their scans naturally
-	// (parsing scancode JSON output, writing results to the DB,
-	// clearing lock columns). At grace expiry: the worker calls
-	// cmd.Process.Kill() on the still-running scancode subprocess,
-	// which causes cmd.Wait() to return with an error, which triggers
-	// the runner's lock-clear path. No orphaned scans from graceful
-	// shutdown.
+	// Why 0 by default: a scancode subprocess that outlives aveloxis
+	// can't deliver its output back — the JSON file is read by Go
+	// code inside aveloxis. A scan finishing after `aveloxis stop`
+	// produces a file no one will ever ingest. The v0.21.0
+	// recoverOrphans path on next startup notices the orphaned lock
+	// row, attempts to ingest from disk if a usable file exists,
+	// otherwise clears the lock and the row goes back to the active
+	// queue. Either way, lingering past stop buys nothing — it just
+	// delays shutdown AND increases ghost-process risk.
+	//
+	// Operators who genuinely want the old behavior (let in-flight
+	// scans finish if they're close) set this explicitly to a
+	// positive minute count. Within the grace window: runners
+	// complete their scans naturally and ingest results. At grace
+	// expiry: the worker's ctx.Done() fires cmd.Cancel which kills
+	// the process group.
 	//
 	// Separate from collection.shutdown_grace_seconds (which paces
-	// the main scheduler's stop). 30 min is much longer than 10s
-	// because scancode runs are intrinsically long-running on big
-	// repos and you usually want them to finish if they're close.
+	// the main scheduler's stop).
 	ScancodeShutdownGraceMinutes int `json:"scancode_shutdown_grace_minutes"`
+
+	// ScancodeRunTimeoutHours is the BASE wall-clock timeout for a
+	// single scancode subprocess invocation. Default 2 hours
+	// (matches the pre-v0.23.8 hardcoded constant).
+	//
+	// v0.23.8 also adds per-repo adaptive scaling: when a scan exits
+	// with `signal: killed` (the cmd.Cancel signature when scanCtx
+	// times out), the row's scancode_timeout_attempts counter
+	// increments, and the next attempt uses
+	// `min(base * 2^attempts, cap_hours)`. Kernel-class repos
+	// (~80K files, ~3h scan minimum) discover their natural runtime
+	// over a few cycles without operator intervention.
+	//
+	// Operators with a fleet skewed toward big repos can raise this
+	// directly (e.g., 8 hours) instead of waiting for adaptive
+	// scaling to converge.
+	ScancodeRunTimeoutHours int `json:"scancode_run_timeout_hours"`
+
+	// ScancodeRunTimeoutCapHours bounds the adaptive timeout's
+	// upper limit. Default 24 hours. Even kernel-class repos
+	// shouldn't need a single scan slot for more than a day; a row
+	// that genuinely takes longer than this is more likely broken
+	// than legitimately big.
+	//
+	// Together with the v0.21.4 ScancodeMaxFailures (10-strike
+	// sideline on the SEPARATE scancode_failed_attempts counter),
+	// the cap ensures no single repo monopolizes worker capacity
+	// indefinitely. Note that timeout-class failures do NOT
+	// increment scancode_failed_attempts — kernel-class repos
+	// hitting the cap repeatedly stay in the active queue, they
+	// just won't get any bigger timeout.
+	ScancodeRunTimeoutCapHours int `json:"scancode_run_timeout_cap_hours"`
 
 	// PhaseWatchdogMinutes controls the v0.22.4 observation watchdog's
 	// stall threshold. If staging row count for a repo does not grow
@@ -555,12 +594,43 @@ func (c *CollectionConfig) ScancodeCloneDirOrDefault() string {
 }
 
 // ScancodeShutdownGrace converts ScancodeShutdownGraceMinutes to a
-// time.Duration. Falls back to 30 minutes when unset.
+// time.Duration.
+//
+// v0.23.7: zero (the default) maps to zero — immediate kill on stop.
+// Pre-v0.23.7 the accessor returned 30 min on a zero input. The
+// behavior change was driven by the operator observation that
+// subprocesses surviving `aveloxis stop` can't deliver their output
+// anyway. See the field docstring above for the full rationale.
+//
+// Operators who set a positive value explicitly in aveloxis.json
+// keep getting the old "let in-flight scans finish" behavior.
 func (c *CollectionConfig) ScancodeShutdownGrace() time.Duration {
 	if c.ScancodeShutdownGraceMinutes <= 0 {
-		return 30 * time.Minute
+		return 0
 	}
 	return time.Duration(c.ScancodeShutdownGraceMinutes) * time.Minute
+}
+
+// ScancodeRunTimeout returns the BASE wall-clock timeout for a
+// single scancode subprocess. v0.23.8. Defaults to 2 hours when
+// unset (matching the pre-v0.23.8 hardcoded constant). The
+// effective per-job timeout is computed by runOne as
+// `min(base * 2^attempts, cap)` where attempts is the row's
+// scancode_timeout_attempts counter.
+func (c *CollectionConfig) ScancodeRunTimeout() time.Duration {
+	if c.ScancodeRunTimeoutHours <= 0 {
+		return 2 * time.Hour
+	}
+	return time.Duration(c.ScancodeRunTimeoutHours) * time.Hour
+}
+
+// ScancodeRunTimeoutCap returns the upper bound on the per-job
+// adaptive scancode timeout. v0.23.8. Defaults to 24 hours.
+func (c *CollectionConfig) ScancodeRunTimeoutCap() time.Duration {
+	if c.ScancodeRunTimeoutCapHours <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.ScancodeRunTimeoutCapHours) * time.Hour
 }
 
 // MailConfig configures the Gmail-backed transactional mailer
@@ -673,7 +743,9 @@ func DefaultConfig() *Config {
 			ScancodeStartIntervalSec:     90,
 			ScancodeCadenceDays:          180,
 			ScancodeCloneDir:             defaultScancodeCloneDir(),
-			ScancodeShutdownGraceMinutes: 30,
+			ScancodeShutdownGraceMinutes: 0,  // v0.23.7: immediate kill on stop
+			ScancodeRunTimeoutHours:      2,  // v0.23.8: base wall-clock per scan
+			ScancodeRunTimeoutCapHours:   24, // v0.23.8: upper bound on adaptive timeout
 		},
 		LogLevel: "info",
 	}

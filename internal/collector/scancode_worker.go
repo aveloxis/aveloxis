@@ -74,8 +74,11 @@ const scancodeStderrTailBytes = 4096
 // goroutine wakes on this cadence to clear NULL-PID lock states
 // (the v0.21.0 inconsistency window).
 const (
-	scancodeCloneTimeout  = 30 * time.Minute
-	scancodeRunTimeout    = 2 * time.Hour
+	scancodeCloneTimeout = 30 * time.Minute
+	// scancodeRunTimeout removed in v0.23.8 — wall-clock timeout
+	// now lives on the ScancodeWorker as runTimeoutBase +
+	// runTimeoutCap, configurable via collection.scancode_run_timeout_*
+	// in aveloxis.json. See NewScancodeWorker.
 	stalePidCheckInterval = 5 * time.Minute
 	stalePidLockMaxAge    = 5 * time.Minute
 )
@@ -119,15 +122,32 @@ type ScancodeWorker struct {
 	cadence       time.Duration
 	cloneDir      string
 	shutdownGrace time.Duration
+	// v0.23.8: per-job wall-clock timeout. The runner computes
+	// `min(runTimeoutBase * 2^job.TimeoutAttempts, runTimeoutCap)`
+	// per job. Pre-v0.23.8 this was a package-level constant
+	// (`scancodeRunTimeout = 2 * time.Hour`); now configurable +
+	// adaptive so kernel-class repos can stretch up to the cap
+	// without operator intervention.
+	runTimeoutBase time.Duration
+	runTimeoutCap  time.Duration
 }
 
-// NewScancodeWorker constructs a worker. All time-based fields fall
-// back to documented defaults when zero is passed, so the caller
-// can do `NewScancodeWorker(store, logger, 0, 0, 0, "", 0)` to get
-// an entirely default-configured worker.
+// NewScancodeWorker constructs a worker. Most time-based fields fall
+// back to documented defaults when zero is passed.
+//
+// v0.23.8: runTimeoutBase + runTimeoutCap configure the adaptive
+// per-job wall-clock timeout. Pre-v0.23.8 these were the hardcoded
+// constant scancodeRunTimeout = 2*time.Hour; now caller-supplied.
+// Defaults: base 2h, cap 24h.
+//
+// v0.23.7-fix: shutdownGrace now defaults to 0 (immediate kill) when
+// the caller passes 0, matching the v0.23.7 contract that
+// subprocesses outliving aveloxis can't deliver output anyway.
+// Pre-v0.23.7 the zero-input fallback was 30 min — that masked the
+// v0.23.7 config-default flip from 30 to 0.
 func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger,
 	workerCount int, startInterval, cadence time.Duration,
-	cloneDir string, shutdownGrace time.Duration) *ScancodeWorker {
+	cloneDir string, shutdownGrace, runTimeoutBase, runTimeoutCap time.Duration) *ScancodeWorker {
 	if workerCount <= 0 {
 		workerCount = 2
 	}
@@ -140,17 +160,24 @@ func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger,
 	if cloneDir == "" {
 		cloneDir = "/tmp/aveloxis-scancode"
 	}
-	if shutdownGrace <= 0 {
-		shutdownGrace = 30 * time.Minute
+	// v0.23.7: shutdownGrace = 0 means immediate kill on stop.
+	// Don't override.
+	if runTimeoutBase <= 0 {
+		runTimeoutBase = 2 * time.Hour
+	}
+	if runTimeoutCap <= 0 {
+		runTimeoutCap = 24 * time.Hour
 	}
 	return &ScancodeWorker{
-		store:         store,
-		logger:        logger,
-		workerCount:   workerCount,
-		startInterval: startInterval,
-		cadence:       cadence,
-		cloneDir:      cloneDir,
-		shutdownGrace: shutdownGrace,
+		store:          store,
+		logger:         logger,
+		workerCount:    workerCount,
+		startInterval:  startInterval,
+		cadence:        cadence,
+		cloneDir:       cloneDir,
+		shutdownGrace:  shutdownGrace,
+		runTimeoutBase: runTimeoutBase,
+		runTimeoutCap:  runTimeoutCap,
 	}
 }
 
@@ -451,15 +478,46 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	// Build the subprocess. Mirrors the legacy RunScanCode flag set
 	// so the JSON output format is identical and the existing
 	// parser + ingest path (reused below) keeps working.
-	// v0.23.3: wall-clock timeout on the scancode subprocess. The
-	// scancode binary takes --timeout 300 (per-FILE seconds), but
-	// nothing bounds total wall-clock. A repo with 10k files × 5
-	// minutes each is theoretically 833 hours. The 2026-05-21
-	// wedge showed both worker slots stuck for 6+ hours on
-	// subprocesses that simply didn't return. 2 hours is generous
-	// for any realistic repo and short enough that an aveloxis
-	// restart isn't required to unstick a wedged slot.
-	scanCtx, scanCancel := context.WithTimeout(ctx, scancodeRunTimeout)
+	//
+	// v0.23.3: wall-clock timeout on the scancode subprocess (was
+	// hardcoded scancodeRunTimeout = 2h). The scancode binary takes
+	// --timeout 300 (per-FILE seconds), but nothing bounds total
+	// wall-clock. A repo with 10k files × 5 min each is
+	// theoretically 833 hours.
+	//
+	// v0.23.8: the timeout is now adaptive. The runner computes
+	// `min(base * 2^job.TimeoutAttempts, cap)` from the row's
+	// scancode_timeout_attempts counter at claim time. Kernel-class
+	// repos that have timed out before get progressively longer
+	// timeouts (2h → 4h → 8h → 16h → 24h-capped) until the scan
+	// completes (counter resets) or hits the cap. Repos that have
+	// never timed out use the base (typically 2h, matches the
+	// pre-v0.23.8 constant). Operator-tuned via
+	// collection.scancode_run_timeout_hours +
+	// scancode_run_timeout_cap_hours.
+	effectiveTimeout := w.runTimeoutBase
+	if job.TimeoutAttempts > 0 {
+		// 1 << job.TimeoutAttempts overflows around attempt 62 on
+		// int64; clamp at a safe range. With base 2h and cap 24h,
+		// attempts >= 4 always hit the cap, so we never compute
+		// large multipliers in practice.
+		shift := job.TimeoutAttempts
+		if shift > 30 {
+			shift = 30
+		}
+		effectiveTimeout = time.Duration(int64(w.runTimeoutBase) * (1 << shift))
+	}
+	if effectiveTimeout > w.runTimeoutCap {
+		effectiveTimeout = w.runTimeoutCap
+	}
+	if effectiveTimeout != w.runTimeoutBase {
+		w.logger.Info("scancode runOne: using stretched timeout for repeat-timeout repo",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+			"timeout_attempts", job.TimeoutAttempts,
+			"effective_timeout", effectiveTimeout.String(),
+			"base", w.runTimeoutBase.String(), "cap", w.runTimeoutCap.String())
+	}
+	scanCtx, scanCancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer scanCancel()
 	cmd := exec.CommandContext(scanCtx, scancodePath,
 		"-clpi",
@@ -520,6 +578,28 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	}
 
 	pid := cmd.Process.Pid
+
+	// v0.23.7: deferred best-effort straggler kill. The v0.23.3
+	// cmd.Cancel path kills the process group only when ctx cancels
+	// while cmd.Wait() is blocked. If the lead scancode python
+	// process exits normally before ctx cancels, cmd.Wait() returns
+	// and cmd.Cancel never runs — leaving any straggler children
+	// (multiprocessing pool workers from scancode --processes, the
+	// git-lfs subprocess from the earlier clone phase) as orphans
+	// (PPID=1).
+	//
+	// The defer covers exactly that gap: when runOne returns
+	// (whether via early-return error path or normal completion),
+	// syscall.Kill with NEGATIVE pid targets the entire process
+	// group, picking up any survivors. Idempotent — syscall.Kill
+	// returns ESRCH on an already-dead group, which we ignore.
+	//
+	// Composes with v0.23.3: cmd.Cancel still fires on ctx cancel
+	// (the original case); the defer fires unconditionally at
+	// function exit (the new case). The pgid being signaled twice
+	// is harmless.
+	defer syscall.Kill(-pid, syscall.SIGKILL)
+
 	bootID := readBootID()
 	if err := w.store.RecordScancodeLockState(ctx, job.RepoID, pid, bootID, outputPath); err != nil {
 		// v0.23.3: abort on lock-state failure. The pre-v0.23.3
@@ -587,6 +667,27 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		// SIGKILL'd subprocess before the output completed).
 		salvagedFilesCount, salvagedHeaderErrors, salvaged := salvageScancodeOutput(outputPath)
 		if !salvaged {
+			// v0.23.8: distinguish wall-clock-timeout failures from
+			// genuine scancode failures. cmd.Cancel from scanCtx
+			// timeout fires `syscall.Kill(-pid, SIGKILL)`, and
+			// cmd.Wait() then returns an *exec.ExitError whose
+			// Error() string is exactly "signal: killed". For that
+			// case route to RecordScancodeTimeout (increments
+			// scancode_timeout_attempts so the next attempt gets a
+			// bigger timeout) rather than RecordScancodeFailure
+			// (which would advance the 10-strike sideline counter
+			// against a kernel-class repo that just needs more time).
+			if err.Error() == "signal: killed" {
+				w.logger.Info("scancode runOne: wall-clock timeout fired; row's next attempt will use a stretched timeout",
+					"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+					"prior_timeout_attempts", job.TimeoutAttempts,
+					"timeout_used", effectiveTimeout.String())
+				if recErr := w.store.RecordScancodeTimeout(ctx, job.RepoID); recErr != nil {
+					w.logger.Warn("scancode runOne: RecordScancodeTimeout failed",
+						"repo_id", job.RepoID, "error", recErr)
+				}
+				return
+			}
 			w.recordFailureBestEffort(ctx, job.RepoID)
 			return
 		}

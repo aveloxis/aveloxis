@@ -709,6 +709,155 @@ curl http://localhost:5555/api/stats
 
 ---
 
+## Checking status of jobs when you think things are stuck
+
+**Symptom:** Repos you expect to be collecting aren't visible at the top of the monitor — or are visible there but don't appear to be making progress. Common follow-up questions: "Why aren't all my queued repos actively collecting? Where did my priority-100 repos go?"
+
+The monitor and the scheduler use different orderings, and the semantics of `priority` are not what most operators initially expect. Run through the checks below in order.
+
+### Step 1 — count what's actually claimable right now
+
+The scheduler's claim query (`internal/db/queue.go`) filters `WHERE status = 'queued' AND due_at <= NOW()`. A queued row with a future `due_at` is NOT eligible until that timestamp arrives. This is the single most common reason "queued" repos sit idle.
+
+```sql
+SELECT status, COUNT(*) AS n,
+       COUNT(*) FILTER (WHERE due_at <= NOW()) AS due_now,
+       COUNT(*) FILTER (WHERE due_at > NOW()) AS due_future
+FROM aveloxis_ops.collection_queue
+GROUP BY status ORDER BY n DESC;
+```
+
+If `due_now` is tiny relative to `n` (e.g., 3 due-now / 51,728 due-future), the scheduler has almost nothing to claim — workers will appear idle even when the queue is huge. That's working as designed; collection cadence is gated by `days_until_recollect` (default 21 days). Operators who want immediate recollection of specific repos should `UPDATE ... SET due_at = NOW()` on those rows.
+
+### Step 2 — understand the priority direction
+
+**`priority` is ASCending in this codebase. Lower number = higher priority.** Same convention as Unix `nice`:
+
+- `priority = 0` → top of queue (highest priority).
+- `priority = 100` → bottom of queue (lowest priority).
+
+This is true in both the scheduler's claim query AND the monitor's display ORDER BY (`internal/db/queue.go`'s `ListQueuePage`). Operators who set `priority = 100` expecting "high priority" actually demote their repos. If you want a repo at the top, set `priority = 0`.
+
+### Step 3 — understand the monitor's display order
+
+The monitor's ORDER BY is:
+
+```sql
+CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+q.priority,    -- ASC: priority 0 comes before priority 100
+q.due_at,      -- ASC: past due_at comes before future due_at
+q.repo_id      -- tiebreaker
+```
+
+A repo with `priority = 100, due_at = 3-weeks-future` sorts to the *very bottom* of the queued section. If you can't find it on the first dashboard page, search by name or use `--page-size` to widen the view.
+
+### Step 4 — find the rows you're worried about
+
+If you have repos with NULL `last_collected` (never successfully collected) and want to know where they are:
+
+```sql
+SELECT q.repo_id, r.repo_owner||'/'||r.repo_name AS slug,
+       q.status, q.priority, q.due_at,
+       q.locked_by, q.last_error IS NOT NULL AS has_err,
+       q.force_full_collect
+FROM aveloxis_ops.collection_queue q
+JOIN aveloxis_data.repos r USING (repo_id)
+WHERE q.last_collected IS NULL
+ORDER BY q.status, q.priority, q.due_at;
+```
+
+The output groups by `collecting` first, then `queued`. Within each group, the rows you see first are the ones that would be claimed (or displayed) first.
+
+### Step 5 — check whether `locked_by` points at a dead worker
+
+If rows are stuck in `status = 'collecting'` and not making progress, the worker that locked them may have died.
+
+Worker IDs are generated at scheduler startup as `<hostname>-<HHMMSS>` (`internal/scheduler/scheduler.go`). So `kate-200608` means a scheduler started at 20:06:08 on host `kate`.
+
+#### Compare to the currently-running scheduler
+
+```bash
+grep -a "worker_id\|scheduler started" ~/.aveloxis/aveloxis.log | tail -3
+```
+
+If the current `serve` process has a different worker ID than the one on the stuck row, that row's worker is dead.
+
+#### Check `locked_at` freshness
+
+Workers heartbeat every 30 seconds (`HeartbeatJob` in `queue.go`). Anything older than ~1 minute isn't heartbeating:
+
+```sql
+SELECT repo_id, locked_by, locked_at, NOW() - locked_at AS lock_age
+FROM aveloxis_ops.collection_queue
+WHERE status = 'collecting'
+ORDER BY locked_at;
+```
+
+`lock_age > 1 minute` → worker isn't heartbeating, probably dead.
+
+#### Check `pg_stat_activity` for live aveloxis backends
+
+```sql
+SELECT pid, application_name, state,
+       NOW() - query_start AS query_age,
+       LEFT(query, 80) AS query
+FROM pg_stat_activity
+WHERE application_name LIKE 'aveloxis-%'
+ORDER BY application_name, query_start;
+```
+
+If you see zero `aveloxis-serve` rows, no scheduler is running and ALL `collecting`-status rows are orphaned. If you see one, that's your active scheduler — compare its PID against your `ps` output to confirm.
+
+### Step 6 — recover stuck locks
+
+If `locked_by` points at a dead worker:
+
+**Option A — wait for `RecoverStaleLocks`** (runs on scheduler startup AND every 5 minutes). The stale threshold is `scheduler.Config.StaleLockTimeout` (default 1 hour):
+
+```sql
+-- Time until auto-recovery for each stuck row:
+SELECT repo_id, locked_at,
+       locked_at + INTERVAL '1 hour' AS will_recover_at,
+       (locked_at + INTERVAL '1 hour') - NOW() AS time_until_recovery
+FROM aveloxis_ops.collection_queue
+WHERE status = 'collecting'
+  AND locked_by = '<dead-worker-id>';
+```
+
+**Option B — manually release** (only after confirming the worker is actually dead via Step 5):
+
+```sql
+UPDATE aveloxis_ops.collection_queue
+SET status = 'queued',
+    locked_by = NULL,
+    locked_at = NULL,
+    due_at = NOW(),
+    priority = 0,
+    updated_at = NOW()
+WHERE status = 'collecting'
+  AND locked_by = '<dead-worker-id>';
+```
+
+**Caveat:** if the worker is actually still alive and writing, manually releasing its rows causes double-collection (the live worker writes after a new worker picks the row up). Always confirm with the Step 5 queries first.
+
+### Step 7 — make specific repos top-of-queue
+
+To force any set of queued repos to the front of the line for the next dequeue tick:
+
+```sql
+UPDATE aveloxis_ops.collection_queue
+SET priority = 0,
+    due_at = NOW(),
+    last_error = NULL,
+    force_full_collect = TRUE,        -- optional; forces since=0 next cycle
+    updated_at = NOW()
+WHERE repo_id IN (...);
+```
+
+This makes them claimable immediately and ranks them above any non-zero-priority rows.
+
+---
+
 ## Changed `days_until_recollect` is being ignored
 
 **Symptom:** You edited `collection.days_until_recollect` in `aveloxis.json` (e.g., `1` → `7`), restarted `aveloxis serve`, and repos are still being re-collected on the old schedule.

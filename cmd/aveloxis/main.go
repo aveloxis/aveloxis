@@ -67,6 +67,7 @@ func main() {
 		mergeCntrbCollisionsCmd(&cfgPath),
 		refreshViewsCmd(&cfgPath),
 		installToolsCmd(),
+		upgradeToolsCmd(),
 		sbomCmd(&cfgPath),
 		shadowDiffCmd(),
 		dataTestCmd(&cfgPath),

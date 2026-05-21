@@ -137,9 +137,10 @@ type scancodeOutput struct {
 }
 
 type scancodeHeader struct {
-	ToolName    string  `json:"tool_name"`
-	ToolVersion string  `json:"tool_version"`
-	Duration    float64 `json:"duration"`
+	ToolName    string   `json:"tool_name"`
+	ToolVersion string   `json:"tool_version"`
+	Duration    float64  `json:"duration"`
+	Errors      []string `json:"errors"`
 	ExtraData   struct {
 		FilesCount int `json:"files_count"`
 	} `json:"extra_data"`

@@ -35,6 +35,7 @@ package collector
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -570,8 +571,33 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 			logArgs = append(logArgs, "stderr_file_write_error", stderrWriteErr)
 		}
 		w.logger.Warn("scancode runOne: scancode subprocess failed", logArgs...)
-		w.recordFailureBestEffort(ctx, job.RepoID)
-		return
+
+		// v0.23.4: scancode-toolkit-mini with `--quiet` returns exit 1
+		// when any individual file fails to scan (e.g., a malformed
+		// PDF that pdfminer crashes on), but the JSON output is fully
+		// written with the successful scans intact. Pre-v0.23.4 this
+		// path called recordFailureBestEffort unconditionally,
+		// discarding usable scan data and advancing the
+		// scancode_failed_attempts counter toward the v0.21.4 10-strike
+		// sideline. Now: try to salvage the JSON; if it parses with
+		// files_count > 0, log a WARN with the per-file errors and
+		// fall through to the success path (ingest + MarkScancodeComplete).
+		// Only treat as a real failure if the JSON is missing or
+		// invalid (genuine scancode crash, or wall-clock-timeout
+		// SIGKILL'd subprocess before the output completed).
+		salvagedFilesCount, salvagedHeaderErrors, salvaged := salvageScancodeOutput(outputPath)
+		if !salvaged {
+			w.recordFailureBestEffort(ctx, job.RepoID)
+			return
+		}
+		w.logger.Warn("scancode runOne: salvaged scan output despite subprocess exit 1",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+			"files_count", salvagedFilesCount,
+			"header_errors", salvagedHeaderErrors,
+			"pid", pid)
+		// Fall through to the ingest + MarkScancodeComplete path
+		// below. The unconditional `return` that ended this block
+		// pre-v0.23.4 is gone.
 	}
 
 	// Parse + ingest. The legacy parser in scancode.go takes a
@@ -884,4 +910,60 @@ func fileExistsAndNonEmpty(path string) bool {
 		return false
 	}
 	return !info.IsDir() && info.Size() > 0
+}
+
+// salvageScancodeOutput (v0.23.4) parses just the headers of a
+// scancode JSON output file and returns (filesCount, perFileErrors,
+// ok) where ok=true means the JSON is valid and the scan produced
+// useful data (files_count > 0). The caller uses this from runOne's
+// cmd.Wait() error branch to distinguish:
+//
+//   - Per-file scancode errors with valid output: scancode-toolkit-mini
+//     with `--quiet` exits status 1 when ANY file fails to scan (e.g.,
+//     a malformed PDF that pdfminer crashes on), but the JSON output
+//     is fully written with the successful scans intact and the
+//     per-file failures recorded in headers[0].errors. The 2026-05-21
+//     post-v0.23.3 diagnostic showed 27 of 37 runs over 17 hours
+//     hitting this pattern; aveloxis was throwing away usable scan
+//     data and incrementing scancode_failed_attempts toward the
+//     v0.21.4 10-strike sideline.
+//
+//   - Genuine scancode crash: JSON missing, truncated, or empty.
+//     ok=false; caller falls through to recordFailureBestEffort.
+//
+//   - Wall-clock timeout SIGKILL: scancode killed mid-write. Either
+//     JSON file is missing or it's truncated and json.Unmarshal
+//     fails. ok=false.
+//
+// Uses a minimal struct (just headers — files[] not parsed) so this
+// is cheap even on a 100 MB output file. The full ingest path in
+// ingestScancodeOutput does the deep parse separately.
+func salvageScancodeOutput(outputPath string) (filesCount int, headerErrors []string, ok bool) {
+	if !fileExistsAndNonEmpty(outputPath) {
+		return 0, nil, false
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		return 0, nil, false
+	}
+	var raw struct {
+		Headers []struct {
+			Errors    []string `json:"errors"`
+			ExtraData struct {
+				FilesCount int `json:"files_count"`
+			} `json:"extra_data"`
+		} `json:"headers"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return 0, nil, false
+	}
+	if len(raw.Headers) == 0 {
+		return 0, nil, false
+	}
+	filesCount = raw.Headers[0].ExtraData.FilesCount
+	headerErrors = raw.Headers[0].Errors
+	if filesCount <= 0 {
+		return filesCount, headerErrors, false
+	}
+	return filesCount, headerErrors, true
 }

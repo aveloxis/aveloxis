@@ -230,6 +230,13 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// queue.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_failed_attempts", "INTEGER DEFAULT 0")
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_last_failed_at", "TIMESTAMPTZ")
+	// v0.23.8: separate counter for wall-clock-timeout failures
+	// (subprocess SIGKILL'd by cmd.Cancel). Drives the per-repo
+	// adaptive timeout `min(base * 2^attempts, cap)`. Distinct
+	// from scancode_failed_attempts so timeout-class failures
+	// don't trigger the v0.21.4 10-strike sideline on kernel-class
+	// repos.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_timeout_attempts", "INTEGER DEFAULT 0")
 
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection

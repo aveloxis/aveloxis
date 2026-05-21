@@ -112,6 +112,17 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	// "aveloxis-web" / "aveloxis-api" — pg_stat_activity then filters
 	// cleanly per process. v0.20.0 stop-verification depends on this.
 
+	// v0.23.5: install the utf8ScrubTracer on every pooled conn. The
+	// tracer mutates string and *string parameters in place inside
+	// TraceQueryStart / TraceBatchStart, before pgx encodes them
+	// onto the wire. Net effect: PostgreSQL's SQLSTATE 22021
+	// ("invalid byte sequence for encoding UTF8") can no longer kill
+	// an INSERT/UPDATE because some upstream source handed us a
+	// Latin-1 author name or a contributor bio with a PNG signature.
+	// See utf8_tracer.go for the full rationale + production-
+	// incident history.
+	cfg.ConnConfig.Tracer = utf8ScrubTracer{}
+
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to database: %w", err)

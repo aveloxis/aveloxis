@@ -666,6 +666,20 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// the startup backfill task populate them on next FetchRepoInfo.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "languages", "JSONB DEFAULT '{}'::jsonb")
 
+	// v0.23.2: idx_staging_repo_id supports the v0.22.4 long-jobs
+	// watchdog's per-repo staging COUNT(*) query. Without this index
+	// the watchdog falls through to a parallel sequential scan of
+	// the entire staging table (~9M rows / 112 GB on production),
+	// burning ~4.5s and 64 GB of buffer reads per 30-second poll —
+	// 4,754 such scans were cancelled in 5 days of production log.
+	// The index is non-partial because the watchdog query has no
+	// `WHERE processed` predicate the planner could match against a
+	// partial index. CONCURRENTLY because the staging table can be
+	// large enough that a blocking CREATE INDEX would lock writes
+	// for multi-hour windows on existing fleets.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_ops", "idx_staging_repo_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_staging_repo_id ON aveloxis_ops.staging (repo_id)`)
+
 	// v0.23.0: contributor_login_history table + backfill. Closes the
 	// rename-audit gap documented as a v0.22.13 limitation
 	// ("Intermediate login history is NOT stored"). The CREATE TABLE

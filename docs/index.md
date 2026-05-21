@@ -53,6 +53,7 @@ architecture/staged-pipeline
 architecture/contributor-resolution
 architecture/facade-commits
 architecture/analysis
+architecture/scancode
 architecture/materialized-views
 architecture/column-mapping
 architecture/platform-layer

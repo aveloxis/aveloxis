@@ -475,15 +475,46 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	// Build the subprocess. Mirrors the legacy RunScanCode flag set
 	// so the JSON output format is identical and the existing
 	// parser + ingest path (reused below) keeps working.
-	// v0.23.3: wall-clock timeout on the scancode subprocess. The
-	// scancode binary takes --timeout 300 (per-FILE seconds), but
-	// nothing bounds total wall-clock. A repo with 10k files × 5
-	// minutes each is theoretically 833 hours. The 2026-05-21
-	// wedge showed both worker slots stuck for 6+ hours on
-	// subprocesses that simply didn't return. 2 hours is generous
-	// for any realistic repo and short enough that an aveloxis
-	// restart isn't required to unstick a wedged slot.
-	scanCtx, scanCancel := context.WithTimeout(ctx, scancodeRunTimeout)
+	//
+	// v0.23.3: wall-clock timeout on the scancode subprocess (was
+	// hardcoded scancodeRunTimeout = 2h). The scancode binary takes
+	// --timeout 300 (per-FILE seconds), but nothing bounds total
+	// wall-clock. A repo with 10k files × 5 min each is
+	// theoretically 833 hours.
+	//
+	// v0.23.8: the timeout is now adaptive. The runner computes
+	// `min(base * 2^job.TimeoutAttempts, cap)` from the row's
+	// scancode_timeout_attempts counter at claim time. Kernel-class
+	// repos that have timed out before get progressively longer
+	// timeouts (2h → 4h → 8h → 16h → 24h-capped) until the scan
+	// completes (counter resets) or hits the cap. Repos that have
+	// never timed out use the base (typically 2h, matches the
+	// pre-v0.23.8 constant). Operator-tuned via
+	// collection.scancode_run_timeout_hours +
+	// scancode_run_timeout_cap_hours.
+	effectiveTimeout := w.runTimeoutBase
+	if job.TimeoutAttempts > 0 {
+		// 1 << job.TimeoutAttempts overflows around attempt 62 on
+		// int64; clamp at a safe range. With base 2h and cap 24h,
+		// attempts >= 4 always hit the cap, so we never compute
+		// large multipliers in practice.
+		shift := job.TimeoutAttempts
+		if shift > 30 {
+			shift = 30
+		}
+		effectiveTimeout = time.Duration(int64(w.runTimeoutBase) * (1 << shift))
+	}
+	if effectiveTimeout > w.runTimeoutCap {
+		effectiveTimeout = w.runTimeoutCap
+	}
+	if effectiveTimeout != w.runTimeoutBase {
+		w.logger.Info("scancode runOne: using stretched timeout for repeat-timeout repo",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+			"timeout_attempts", job.TimeoutAttempts,
+			"effective_timeout", effectiveTimeout.String(),
+			"base", w.runTimeoutBase.String(), "cap", w.runTimeoutCap.String())
+	}
+	scanCtx, scanCancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer scanCancel()
 	cmd := exec.CommandContext(scanCtx, scancodePath,
 		"-clpi",

@@ -33,8 +33,10 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -52,6 +54,30 @@ import (
 // meaningful traceback or error message, small enough that 100+
 // concurrent failures don't pressure the heap.
 const scancodeStderrTailBytes = 4096
+
+// v0.23.3: wall-clock timeouts on subprocess execution. These
+// bound how long a single worker slot can be consumed by one
+// repo's scan before ctx-cancel + cmd.Cancel reclaim the slot.
+//
+// scancodeCloneTimeout: 30 minutes. A `--depth 1` clone normally
+// finishes in seconds-to-minutes. 30 min handles slow links and
+// large repos (Linux kernel mirrors ~500 MB shallow) without
+// allowing a wedged clone to consume a slot indefinitely.
+//
+// scancodeRunTimeout: 2 hours. The scancode binary's own
+// `--timeout 300` is per-file. Total wall-clock has no upstream
+// bound. 2 hours is generous for any realistic repo and prevents
+// the 2026-05-21 wedge (both worker slots stuck for 6+ hours).
+//
+// stalePidCheckInterval: 5 minutes. The in-flight cleanup
+// goroutine wakes on this cadence to clear NULL-PID lock states
+// (the v0.21.0 inconsistency window).
+const (
+	scancodeCloneTimeout  = 30 * time.Minute
+	scancodeRunTimeout    = 2 * time.Hour
+	stalePidCheckInterval = 5 * time.Minute
+	stalePidLockMaxAge    = 5 * time.Minute
+)
 
 // bootIDPath is the kernel-generated UUID that changes on every
 // boot. Reading this file at lock-record time (paired with the
@@ -160,6 +186,15 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	// either adopted (monitor goroutine spawned) or its lock
 	// cleared, so the dispatcher's claim query sees a clean state.
 	w.recoverOrphans(ctx)
+
+	// v0.23.3: in-flight orphan recovery — periodic cleanup of
+	// stale NULL-PID lock rows (the v0.21.0 inconsistency state).
+	// Distinct from recoverOrphans (startup-only): this fires every
+	// stalePidCheckInterval while the worker is running, so an
+	// inconsistent lock acquired during this serve's runtime gets
+	// cleared without waiting for the next aveloxis restart.
+	// See checkOwnLocks for the specific patterns it handles.
+	go w.checkOwnLocks(ctx)
 
 	jobs := make(chan db.ScancodeJob)
 	var wg sync.WaitGroup
@@ -368,8 +403,30 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	// checkout, which fails the whole clone. Skipping smudge bypasses
 	// the entire chain. Also speeds up clones on every LFS-using
 	// repo (no payload fetch).
-	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--", job.RepoGit, tempDir)
+	// v0.23.3: wall-clock timeout on the git clone. A shallow clone
+	// of any normal repo finishes in under 5 minutes; 30 minutes is
+	// a comfortable cap that lets pathological cases (1 GB repos
+	// over slow links) succeed while preventing the mid-run wedge
+	// pattern from 2026-05-21 where one worker slot stayed locked
+	// for 6+ hours on a clone that never returned.
+	cloneCtx, cloneCancel := context.WithTimeout(ctx, scancodeCloneTimeout)
+	defer cloneCancel()
+	cloneCmd := exec.CommandContext(cloneCtx, "git", "clone", "--depth", "1", "--", job.RepoGit, tempDir)
 	cloneCmd.Env = append(os.Environ(), "GIT_LFS_SKIP_SMUDGE=1")
+	// v0.23.3: process-group cleanup. Setpgid puts the git subprocess
+	// (and any grandchildren — git-lfs, git-remote-https, the smudge-
+	// filter pre-check) into its own pgid. cmd.Cancel signals the
+	// whole group on ctx cancel; WaitDelay bounds how long Wait()
+	// blocks if anything refuses to exit. Without this, the operator's
+	// `aveloxis stop` leaves git+lfs subprocesses running as orphans.
+	cloneCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cloneCmd.Cancel = func() error {
+		if cloneCmd.Process != nil {
+			return syscall.Kill(-cloneCmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	cloneCmd.WaitDelay = 10 * time.Second
 	if out, err := cloneCmd.CombinedOutput(); err != nil {
 		w.logger.Warn("scancode runOne git clone failed",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
@@ -393,7 +450,17 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	// Build the subprocess. Mirrors the legacy RunScanCode flag set
 	// so the JSON output format is identical and the existing
 	// parser + ingest path (reused below) keeps working.
-	cmd := exec.CommandContext(ctx, scancodePath,
+	// v0.23.3: wall-clock timeout on the scancode subprocess. The
+	// scancode binary takes --timeout 300 (per-FILE seconds), but
+	// nothing bounds total wall-clock. A repo with 10k files × 5
+	// minutes each is theoretically 833 hours. The 2026-05-21
+	// wedge showed both worker slots stuck for 6+ hours on
+	// subprocesses that simply didn't return. 2 hours is generous
+	// for any realistic repo and short enough that an aveloxis
+	// restart isn't required to unstick a wedged slot.
+	scanCtx, scanCancel := context.WithTimeout(ctx, scancodeRunTimeout)
+	defer scanCancel()
+	cmd := exec.CommandContext(scanCtx, scancodePath,
 		"-clpi",
 		"--only-findings",
 		"--json", outputPath,
@@ -404,20 +471,39 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		tempDir,
 	)
 
-	// Capture stdout + stderr to bounded ring buffers so we can
-	// log the tail on failure. Pre-v0.21.4, both streams were nil
-	// and Go's exec default discarded the subprocess output —
-	// producing log lines that said only "exit status 1" with no
-	// diagnostic information whatsoever. The 2026-05-14 production
-	// log had 87 such failures across 8 repos and we had no idea
-	// why scancode was crashing. The buffers are capped via
-	// tailBuffer so concurrent large failures can't pressure the
-	// heap (worst case: workerCount × 2 × scancodeStderrTailBytes
-	// ≈ a few hundred KB on a 7-worker pool).
-	stderrBuf := &tailBuffer{cap: scancodeStderrTailBytes}
-	stdoutBuf := &tailBuffer{cap: scancodeStderrTailBytes}
-	cmd.Stderr = stderrBuf
-	cmd.Stdout = stdoutBuf
+	// Capture stdout + stderr. v0.23.3: we now keep BOTH a bounded
+	// ring buffer (the tail, for quick triage in the log line) AND
+	// a full bytes.Buffer (for the per-repo stderr file written on
+	// failure). io.MultiWriter fans the stream into both. Pre-fix
+	// the tail-only approach was almost always dominated by 10+
+	// repetitions of the libmagic warning, hiding the actual error
+	// message that scrolled out of the 4 KB window. The operator
+	// had to grep the log every time to ask "what actually went
+	// wrong"; with the per-repo file the answer is right there at
+	// /tmp/aveloxis-scancode/repo_<id>_stderr.log.
+	stderrTail := &tailBuffer{cap: scancodeStderrTailBytes}
+	stdoutTail := &tailBuffer{cap: scancodeStderrTailBytes}
+	stderrFull := &bytes.Buffer{}
+	stdoutFull := &bytes.Buffer{}
+	cmd.Stderr = io.MultiWriter(stderrTail, stderrFull)
+	cmd.Stdout = io.MultiWriter(stdoutTail, stdoutFull)
+
+	// v0.23.3: process group cleanup for the scancode subprocess.
+	// Same shape as the git clone above. Critical here because
+	// `scancode --processes 2` spawns a Python multiprocessing pool
+	// whose worker processes inherit our stderr/stdout fds. Without
+	// pgid kill, cmd.Wait() can block forever waiting for those
+	// inherited fds to close even when the lead scancode process
+	// has died — the 2026-05-21 wedge pattern. WaitDelay caps the
+	// blocking at 10 s as a safety net.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	cmd.WaitDelay = 10 * time.Second
 
 	// cmd.Start() is the key change from the legacy synchronous
 	// invocation: we need the OS PID BEFORE the subprocess
@@ -435,12 +521,22 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	pid := cmd.Process.Pid
 	bootID := readBootID()
 	if err := w.store.RecordScancodeLockState(ctx, job.RepoID, pid, bootID, outputPath); err != nil {
-		w.logger.Warn("scancode runOne: failed to record lock state — proceeding anyway",
+		// v0.23.3: abort on lock-state failure. The pre-v0.23.3
+		// "proceed anyway" path left rows with scancode_locked_at
+		// SET and scancode_locked_pid NULL — indistinguishable from
+		// a legitimate in-flight scan with delayed PID write. The
+		// 2026-05-21 diagnostic showed one production row stuck in
+		// this state (ropensci/neotoma), holding a worker slot
+		// indefinitely. Better to kill the subprocess and surface
+		// the DB-write error than to leave an unrecoverable lock.
+		w.logger.Warn("scancode runOne: failed to record lock state — killing subprocess and aborting",
 			"repo_id", job.RepoID, "pid", pid, "error", err)
-		// Don't abort the scan — the recovery path can still
-		// handle a lost lock state (it'll treat the row as
-		// "locked_at present, pid 0" which falls into the
-		// "lost run" bucket on next startup).
+		// Signal the process group so the scancode subprocess and
+		// its Python worker pool all die. WaitDelay caps the wait.
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = cmd.Wait() // reap; we don't care about its exit status
+		w.recordFailureBestEffort(ctx, job.RepoID)
+		return
 	}
 
 	w.logger.Info("running ScanCode",
@@ -448,11 +544,32 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		"path", tempDir, "pid", pid)
 
 	if err := cmd.Wait(); err != nil {
-		w.logger.Warn("scancode runOne: scancode subprocess failed",
+		// v0.23.3: write the FULL stderr to a per-repo file. Operator
+		// can `less /tmp/aveloxis-scancode/repo_<id>_stderr.log` to
+		// see the entire output, not just the 4 KB tail dominated by
+		// libmagic preamble. Best-effort: if the file write fails,
+		// the log line's stderr_tail is the fallback.
+		stderrPath := filepath.Join(w.cloneDir, fmt.Sprintf("repo_%d_stderr.log", job.RepoID))
+		stderrWriteErr := os.WriteFile(stderrPath, stderrFull.Bytes(), 0o644)
+		stdoutPath := ""
+		if stdoutFull.Len() > 0 {
+			stdoutPath = filepath.Join(w.cloneDir, fmt.Sprintf("repo_%d_stdout.log", job.RepoID))
+			_ = os.WriteFile(stdoutPath, stdoutFull.Bytes(), 0o644)
+		}
+		logArgs := []any{
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
 			"error", err, "pid", pid,
-			"stderr_tail", stderrBuf.String(),
-			"stdout_tail", stdoutBuf.String())
+			"full_stderr_at", stderrPath,
+			"stderr_bytes", stderrFull.Len(),
+			"stderr_tail", stderrTail.String(),
+		}
+		if stdoutPath != "" {
+			logArgs = append(logArgs, "full_stdout_at", stdoutPath)
+		}
+		if stderrWriteErr != nil {
+			logArgs = append(logArgs, "stderr_file_write_error", stderrWriteErr)
+		}
+		w.logger.Warn("scancode runOne: scancode subprocess failed", logArgs...)
 		w.recordFailureBestEffort(ctx, job.RepoID)
 		return
 	}
@@ -551,6 +668,56 @@ func (w *ScancodeWorker) recordFailureBestEffort(ctx context.Context, repoID int
 // returns. Live orphans (case 2) get a monitor goroutine that
 // outlives recoverOrphans, but those goroutines hold their lock
 // rows so the dispatcher's claim query naturally skips them.
+// checkOwnLocks is the v0.23.3 in-flight orphan recovery loop.
+// Wakes every stalePidCheckInterval to clear NULL-PID locks that
+// have aged past stalePidLockMaxAge.
+//
+// Why this matters: v0.21.0's runOne had a "RecordScancodeLockState
+// failed — proceeding anyway" path that left rows with
+// scancode_locked_at SET but scancode_locked_pid NULL. The startup
+// recoverOrphans pass handles those (4-state decision falls into
+// "lost run") but only at startup. If the inconsistency happens
+// during a live serve, the row stays locked until next restart —
+// the exact pattern observed in production 2026-05-21
+// (ropensci/neotoma, locked for 6+ hours, NULL PID).
+//
+// v0.23.3 also changes runOne to ABORT the scan on
+// RecordScancodeLockState failure (see scancode_worker.go runOne)
+// so new occurrences shouldn't happen. But existing inconsistent
+// rows from pre-v0.23.3 runs need cleanup, and this loop is a
+// defense in depth for any failure path that might still produce
+// the state.
+//
+// Does NOT recover wedged workers (cmd.Wait() blocked indefinitely
+// on a live subprocess). That's prevented at the source by the
+// scancodeCloneTimeout and scancodeRunTimeout context-with-timeout
+// wraps around the cmd.CommandContext calls — runOne's
+// subprocesses now have a hard wall-clock cap of 30m / 2h
+// respectively, so worker slots can't stay consumed beyond that.
+func (w *ScancodeWorker) checkOwnLocks(ctx context.Context) {
+	ticker := time.NewTicker(stalePidCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleared, err := w.store.ClearStaleNullPidLocks(ctx, stalePidLockMaxAge)
+			if err != nil {
+				w.logger.Warn("scancode in-flight orphan recovery: ClearStaleNullPidLocks failed",
+					"error", err)
+				continue
+			}
+			if cleared > 0 {
+				w.logger.Info("scancode in-flight orphan recovery: cleared stale NULL-PID locks",
+					"count", cleared,
+					"older_than", stalePidLockMaxAge.String())
+			}
+		}
+	}
+}
+
 func (w *ScancodeWorker) recoverOrphans(ctx context.Context) {
 	rows, err := w.store.ListLockedScancodeRows(ctx)
 	if err != nil {

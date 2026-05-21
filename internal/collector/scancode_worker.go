@@ -520,6 +520,28 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	}
 
 	pid := cmd.Process.Pid
+
+	// v0.23.7: deferred best-effort straggler kill. The v0.23.3
+	// cmd.Cancel path kills the process group only when ctx cancels
+	// while cmd.Wait() is blocked. If the lead scancode python
+	// process exits normally before ctx cancels, cmd.Wait() returns
+	// and cmd.Cancel never runs — leaving any straggler children
+	// (multiprocessing pool workers from scancode --processes, the
+	// git-lfs subprocess from the earlier clone phase) as orphans
+	// (PPID=1).
+	//
+	// The defer covers exactly that gap: when runOne returns
+	// (whether via early-return error path or normal completion),
+	// syscall.Kill with NEGATIVE pid targets the entire process
+	// group, picking up any survivors. Idempotent — syscall.Kill
+	// returns ESRCH on an already-dead group, which we ignore.
+	//
+	// Composes with v0.23.3: cmd.Cancel still fires on ctx cancel
+	// (the original case); the defer fires unconditionally at
+	// function exit (the new case). The pgid being signaled twice
+	// is harmless.
+	defer syscall.Kill(-pid, syscall.SIGKILL)
+
 	bootID := readBootID()
 	if err := w.store.RecordScancodeLockState(ctx, job.RepoID, pid, bootID, outputPath); err != nil {
 		// v0.23.3: abort on lock-state failure. The pre-v0.23.3

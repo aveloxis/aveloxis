@@ -87,13 +87,25 @@ func TestScancodeCloneDirDefault(t *testing.T) {
 }
 
 func TestScancodeShutdownGraceDefault(t *testing.T) {
+	// v0.23.7: default flipped from 30 min to 0 (immediate kill).
+	// Rationale: a subprocess that outlives `aveloxis stop` cannot
+	// deliver its output back — aveloxis Go code is what reads the
+	// scancode JSON file and writes to the DB. A scan that finishes
+	// after aveloxis is gone produces a file no one ingests. The
+	// v0.21.0 recoverOrphans path on next startup notices the
+	// orphaned lock row, attempts to ingest from disk if a file
+	// exists, otherwise clears the lock. So the grace period was
+	// buying nothing in practice — the scan either finished AND was
+	// ingested (success) or didn't AND was discarded (fail). Letting
+	// the subprocess linger past stop just delayed the inevitable
+	// while adding ghost-process risk.
 	cfg := DefaultConfig()
-	if cfg.Collection.ScancodeShutdownGraceMinutes != 30 {
-		t.Errorf("DefaultConfig().Collection.ScancodeShutdownGraceMinutes = %d; want 30. 30 min lets most scancode runs finish naturally on aveloxis stop; longer scans (Linux-kernel-sized) get killed at the grace boundary so operators don't wait hours for a clean shutdown.", cfg.Collection.ScancodeShutdownGraceMinutes)
+	if cfg.Collection.ScancodeShutdownGraceMinutes != 0 {
+		t.Errorf("DefaultConfig().Collection.ScancodeShutdownGraceMinutes = %d; want 0. v0.23.7 flipped the default to 0 (immediate kill on stop) because subprocesses that outlive aveloxis can't deliver their output and just become ghosts. Operators who genuinely want the old behavior set the value explicitly in aveloxis.json.", cfg.Collection.ScancodeShutdownGraceMinutes)
 	}
 	d := cfg.Collection.ScancodeShutdownGrace()
-	if d != 30*time.Minute {
-		t.Errorf("ScancodeShutdownGrace() = %v; want 30m", d)
+	if d != 0 {
+		t.Errorf("ScancodeShutdownGrace() = %v; want 0 (immediate kill)", d)
 	}
 }
 
@@ -111,8 +123,13 @@ func TestScancodeAccessorsFallBackToDefaults(t *testing.T) {
 	if c.ScancodeCadence() != 180*24*time.Hour {
 		t.Errorf("ScancodeCadence() with zero = %v; want 180d", c.ScancodeCadence())
 	}
-	if c.ScancodeShutdownGrace() != 30*time.Minute {
-		t.Errorf("ScancodeShutdownGrace() with zero = %v; want 30m", c.ScancodeShutdownGrace())
+	// v0.23.7: zero now maps to zero (immediate kill), not a 30-min
+	// fallback. Pre-v0.23.7 the accessor returned 30 min on a zero
+	// input field to provide a sane default for operators who hadn't
+	// set the knob; v0.23.7 makes the default itself "kill immediately
+	// on stop" since lingering subprocesses can't deliver output anyway.
+	if c.ScancodeShutdownGrace() != 0 {
+		t.Errorf("ScancodeShutdownGrace() with zero = %v; want 0 (immediate kill, v0.23.7)", c.ScancodeShutdownGrace())
 	}
 	if c.ScancodeCloneDirOrDefault() == "" {
 		t.Error("ScancodeCloneDirOrDefault() with zero must return a non-empty default path")

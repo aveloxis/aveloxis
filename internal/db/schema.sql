@@ -1660,6 +1660,19 @@ CREATE INDEX IF NOT EXISTS idx_staging_unprocessed
     ON aveloxis_ops.staging (repo_id, entity_type)
     WHERE NOT processed;
 
+-- v0.23.2: idx_staging_repo_id supports the v0.22.4 long-jobs
+-- watchdog query `SELECT COUNT(*) FROM staging WHERE repo_id = $1`.
+-- The existing idx_staging_unprocessed is partial (WHERE NOT processed)
+-- so it doesn't apply to the watchdog's unfiltered query. Pre-v0.23.2
+-- the planner fell back to a parallel sequential scan of the 112 GB /
+-- ~9M-row production staging table — 4.5s wall time, 64 GB of buffer
+-- reads, and 5 backends per poll. 4,754 of these scans were cancelled
+-- in 5 days of production log (watchdog cleanup on each job
+-- completion). The non-partial index turns the COUNT into an indexed
+-- aggregate that completes in ~10ms.
+CREATE INDEX IF NOT EXISTS idx_staging_repo_id
+    ON aveloxis_ops.staging (repo_id);
+
 -- ============================================================
 -- Collection queue: Postgres-backed priority queue.
 -- ============================================================

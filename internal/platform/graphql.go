@@ -162,6 +162,21 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 		case resp.StatusCode == http.StatusOK:
 			respBody, readErr := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
+			// v0.23.9: GitHub's GraphQL gateway has been observed
+			// returning HTTP 200 with a zero-byte body when the
+			// upstream resolver times out AFTER headers have been
+			// committed (production: apache/felix, 2026-05-21). The
+			// TCP stream closes cleanly so io.ReadAll returns
+			// (nil, nil) — no transport error to drive Fix C's
+			// retry. Synthesize io.ErrUnexpectedEOF here so the
+			// existing retry-on-fresh-stream path handles it the
+			// same way it handles mid-body RST_STREAM aborts. An
+			// empty body on a JSON endpoint is never a valid
+			// success: even GraphQL's null-data response is
+			// `{"data":null}` (15 bytes), not zero.
+			if readErr == nil && len(respBody) == 0 {
+				readErr = io.ErrUnexpectedEOF
+			}
 			if readErr != nil {
 				// Fix C (v0.18.23): an HTTP/2 RST_STREAM or a connection
 				// abort during body read used to be terminal here. In

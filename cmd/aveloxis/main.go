@@ -73,6 +73,7 @@ func main() {
 		dataTestCmd(&cfgPath),
 		testMailCmd(&cfgPath),
 		stagingStatsCmd(&cfgPath),
+		distributionStatsCmd(&cfgPath),
 		versionCmd(),
 	)
 
@@ -197,6 +198,15 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		StagingRetention: cfg.Collection.StagingRetentionDuration(),
 		// v0.22.4 — observation-only long-jobs watchdog. Default 75m.
 		PhaseWatchdog: cfg.Collection.PhaseWatchdogDuration(),
+		// v0.24.0 — DistributionWorker config. Off by default; the
+		// boolean gate prevents the worker from spawning at all when
+		// the operator hasn't opted in.
+		DistributionTrackingEnabled:       cfg.Collection.DistributionTrackingEnabled,
+		DistributionTrackingInterval:      cfg.Collection.DistributionTrackingInterval(),
+		DistributionTrackingWorkers:       cfg.Collection.DistributionTrackingWorkersOrDefault(),
+		DistributionTrackingStartInterval: cfg.Collection.DistributionTrackingStartInterval(),
+		DistributionTrackingPoliteEmail:   cfg.Collection.DistributionTrackingPoliteEmail,
+		DistributionTrackingUserAgent:     cfg.Collection.DistributionTrackingUserAgent,
 	})
 	go sched.Run(ctx)
 

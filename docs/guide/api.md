@@ -231,17 +231,92 @@ The derivation priority is deliberate: the curated domain map is updated by a ba
 - **Hide the `(unknown)` bucket**: filter on the client. The server returns it so the math reconciles with `/contributions/identities`.
 - **Different windows**: `?since=YYYY-MM-DD` and `?until=YYYY-MM-DD` are both accepted independently. Omit `until` for "everything since `since`".
 
+### Knowing whether your coverage is complete
+
+```
+GET /api/v1/repos/{repoID}/contributions/coverage
+GET /api/v1/repos/{repoID}/contributions/coverage?since=2024-01-01&until=2024-12-31
+```
+
+Returns the enrichment-state snapshot for the same cohort as `/contributions/identities` and `/contributions/affiliations`. Operators call this **before drawing conclusions** from the affiliation breakdown to tell whether an `(unknown)` bucket represents truly unaffiliated contributors or just people the v0.18.29 enrichment ticker hasn't reached yet.
+
+Same `since` / `until` parameters as the other two endpoints; same behavior on malformed input and `since >= until`.
+
+Response shape:
+
+```json
+{
+  "window_since": "2024-05-21T00:00:00Z",
+  "window_until": "2026-05-21T00:00:00Z",
+  "total_contributors":       412,
+  "enriched":                  389,
+  "canonical_email":           356,
+  "gh_user_id_resolved":       401,
+  "search_resolve_attempted":   47,
+  "breadth_attempted":         378,
+  "affiliation_resolved":      318,
+  "affiliation_unknown":        94,
+  "enrichment_oldest_pending": "2026-05-12T18:31:04Z",
+  "enrichment_stalest":        "2024-08-15T03:22:11Z"
+}
+```
+
+The two timestamp fields are omitted entirely when the cohort has no rows in the relevant state (no pointer → field absent in JSON rather than emitting zero-time, which is operator-confusing).
+
+**Reading the response.** A response with `total=412, enriched=389, affiliation_resolved=318, affiliation_unknown=94` reads as:
+
+> 412 people contributed in the window. 389 of them have been successfully enriched via `/users/{login}` and 23 haven't yet — the enrichment ticker is still working through them. 318 have a resolvable affiliation (either via the curated email-domain map or via their profile company field). 94 are bucketed as `(unknown)` — but 23 of those might be the unenriched cohort that will pick up an affiliation once the ticker reaches them. So the **true** unaffiliated count for this window is somewhere between **71** (if all 23 unenriched contributors turn out to be unaffiliated) and **94** (if none of them do).
+
+Operators surface this floor-and-ceiling on dashboards rather than reporting `(unknown)` alone — the latter conflates "no affiliation" with "we haven't asked yet."
+
+**Field-by-field reference**:
+
+| Field | Source signal | What it tells you |
+|---|---|---|
+| `total_contributors` | The cohort | Denominator for everything else |
+| `enriched` | `contributors.cntrb_last_enriched_at IS NOT NULL` | `/users/{login}` successfully ran via v0.18.29 enrichment ticker (30-day cooldown) |
+| `canonical_email` | `contributors.cntrb_canonical != ''` | Verified email known — drives domain → affiliation lookup |
+| `gh_user_id_resolved` | `contributors.gh_user_id IS NOT NULL` | Person matched to numeric GitHub user (stable identity across renames) |
+| `search_resolve_attempted` | `contributors.cntrb_last_search_attempted_at IS NOT NULL` | v0.19.2 search-resolve ticker has tried to look this person up by email (60-min cooldown, 30-day re-attempt) |
+| `breadth_attempted` | `contributors.cntrb_last_breadth_at IS NOT NULL` | v0.20.17 breadth worker has tried `/users/{login}/events` (7-day cooldown) |
+| `affiliation_resolved` | Domain-mapped via `contributor_affiliations` OR `cntrb_company != ''` | Will show up under a non-`(unknown)` affiliation in `/contributions/affiliations` |
+| `affiliation_unknown` | `total_contributors − affiliation_resolved` | The `(unknown)` bucket in the affiliations breakdown |
+| `enrichment_oldest_pending` | `MIN(data_collection_date)` among rows with NULL `cntrb_last_enriched_at` | How long the most-delayed unenriched contributor has been waiting — compare against your configured `enrich_interval_minutes` cadence |
+| `enrichment_stalest` | `MIN(cntrb_last_enriched_at)` among enriched rows | Oldest "last refreshed" timestamp — surfaces the long tail of "enriched 18 months ago and never refreshed" |
+
+**Spotting a stuck enrichment ticker.** If `enrichment_oldest_pending` is more than ~2× your configured `enrich_interval_minutes` behind `NOW()`, the ticker may be stuck. Investigation:
+
+```bash
+# What does the enrich interval look like?
+grep enrich_interval_minutes ~/.aveloxis/aveloxis.json
+
+# Has the enrichment ticker been ticking?
+grep -E "EnrichThinContributors|enrichment" ~/.aveloxis/aveloxis.log | tail -20
+
+# Are we burning API budget?
+grep -E "all API keys rate-limited|rate limit" ~/.aveloxis/aveloxis.log | tail -10
+```
+
+If the ticker is running but enrichment is still falling behind, it's almost always API-key budget exhaustion (the v0.18.29 `EnrichBatchSize = 14000` per tick is sized for a 73-key fleet; smaller key pools can't keep up).
+
+**What this endpoint doesn't tell you**:
+
+- **Per-affiliation coverage drill-down**: the response is global to the cohort. If you need "what % of Acme Corp contributors have canonical emails" specifically, that's a derived query — call `/identities` and group client-side, or open an issue for a per-affiliation coverage endpoint.
+- **Whether `PopulateAffiliations` is current**: the domain-mapped affiliations come from the `contributor_affiliations` table, which is rebuilt hourly by the v0.19.7 ticker. The table state at any given moment reflects the most recent successful rebuild, not a continuous live view. If you've just added new contributors with novel company strings, give it an hour for `PopulateAffiliations` to surface them in the map.
+- **Fleet-wide coverage**: this endpoint is per-repo. For a fleet-wide rollup, call it per repo and aggregate (or, if there's operator demand, request a `/api/v1/contributions/coverage` global endpoint as a follow-up).
+
 ### When to use which endpoint
 
 | Need | Use |
 |---|---|
 | "Who contributed to this repo in the last two years?" | `/contributions/identities` |
 | "How many people from each company contributed?" | `/contributions/affiliations` |
+| "Is the affiliation data trustworthy yet, or is enrichment still catching up?" | `/contributions/coverage` |
 | "How many *new* contributors per month did this repo gain?" (Augur metric) | `/contributors-new` (the Augur-compatible aggregate endpoint) |
 | "Total contributor count, no window" | `/contributors` (the Augur-compatible monthly aggregate) |
 | "How many commits per week?" | `/timeseries` |
 
-The Augur-compatible endpoints (`/contributors`, `/contributors-new`, etc.) follow Augur's swagger spec with `begin_date` / `end_date` / `period` query params and return aggregated counts. The v0.23.10 `/contributions/*` endpoints follow the aveloxis convention (`since` / `until`) and return per-contributor identity rows and a single aggregated affiliation roll-up. The two groups serve different questions and don't overlap.
+The Augur-compatible endpoints (`/contributors`, `/contributors-new`, etc.) follow Augur's swagger spec with `begin_date` / `end_date` / `period` query params and return aggregated counts. The `/contributions/*` endpoints follow the aveloxis convention (`since` / `until`) and return per-contributor identity rows, an aggregated affiliation roll-up, and a coverage snapshot respectively. The two groups serve different questions and don't overlap.
 
 ## CORS
 

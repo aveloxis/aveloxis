@@ -463,6 +463,57 @@ type CollectionConfig struct {
 	// shadow-diff debugging) can raise this to a value of their choice;
 	// 24 (one day) is a reasonable middle ground.
 	StagingRetentionHours int `json:"staging_retention_hours"`
+
+	// v0.24.0 — DistributionWorker (package-distribution evidence).
+	//
+	// A periodic worker pool that examines each repo against deps.dev,
+	// ecosyste.ms, GitHub Packages, GitHub release assets, and the
+	// GitHub Contents API to determine whether/where the repo is
+	// distributed via package managers. Captures intent signals
+	// (manifests in the repo) alongside registry-side facts so
+	// operators can answer "which repos declare packaging intent but
+	// were never published?".
+	//
+	// OFF BY DEFAULT. Operators opt in by setting
+	// distribution_tracking_enabled = true and restarting serve.
+	DistributionTrackingEnabled bool `json:"distribution_tracking_enabled"`
+
+	// DistributionTrackingIntervalDays is the per-repo cadence between
+	// successive scans. Default 180 (6 months) when unset. Package-
+	// distribution mappings are stable on this timescale; re-scanning
+	// more frequently buys little signal at the cost of registry API
+	// load.
+	DistributionTrackingIntervalDays int `json:"distribution_tracking_interval_days"`
+
+	// DistributionTrackingWorkers is the number of concurrent runners
+	// fetching against the external HTTP services. Default 4 when
+	// unset. Each runner performs a sequence of ~5 cheap HTTP calls per
+	// claimed repo; concurrency is bounded primarily to keep total
+	// outbound traffic predictable, not because any individual call is
+	// expensive.
+	DistributionTrackingWorkers int `json:"distribution_tracking_workers"`
+
+	// DistributionTrackingStartIntervalSec is the minimum time between
+	// consecutive CLAIM operations. Default 30 seconds when unset. With
+	// the default 4 workers and 30s ticker, steady-state throughput is
+	// ~120 repos/hour — comfortably under any known external rate
+	// limit and well below the GitHub key pool's budget.
+	DistributionTrackingStartIntervalSec int `json:"distribution_tracking_start_interval_s"`
+
+	// DistributionTrackingPoliteEmail is the value passed in the
+	// `From:` HTTP request header to ecosyste.ms so the operator's
+	// traffic lands in their "polite pool" priority queue. Optional;
+	// missing values fall back to the lower-priority "common pool".
+	// ecosyste.ms documents the polite-pool contract at
+	// https://ecosyste.ms/.
+	DistributionTrackingPoliteEmail string `json:"distribution_tracking_polite_email"`
+
+	// DistributionTrackingUserAgent overrides the User-Agent header
+	// sent to deps.dev / ecosyste.ms / GitHub. When empty the client
+	// uses `aveloxis/<tool_version>`. Operators behind shared egress
+	// IPs may want a more identifying string so registry operators
+	// can route diagnostics to the right person.
+	DistributionTrackingUserAgent string `json:"distribution_tracking_user_agent"`
 }
 
 // PhaseWatchdogDuration returns the v0.22.4 long-jobs watchdog
@@ -546,6 +597,35 @@ func (c *CollectionConfig) BreadthCooldownDuration() time.Duration {
 		return 7 * 24 * time.Hour
 	}
 	return time.Duration(c.BreadthCooldownDays) * 24 * time.Hour
+}
+
+// DistributionTrackingInterval converts DistributionTrackingIntervalDays
+// to a time.Duration. Falls back to 180 days (6 months) when unset —
+// the v0.24.0 design default.
+func (c *CollectionConfig) DistributionTrackingInterval() time.Duration {
+	if c.DistributionTrackingIntervalDays <= 0 {
+		return 180 * 24 * time.Hour
+	}
+	return time.Duration(c.DistributionTrackingIntervalDays) * 24 * time.Hour
+}
+
+// DistributionTrackingWorkersOrDefault returns
+// DistributionTrackingWorkers or 4 when unset.
+func (c *CollectionConfig) DistributionTrackingWorkersOrDefault() int {
+	if c.DistributionTrackingWorkers <= 0 {
+		return 4
+	}
+	return c.DistributionTrackingWorkers
+}
+
+// DistributionTrackingStartInterval converts
+// DistributionTrackingStartIntervalSec to a time.Duration. Falls back
+// to 30 seconds when unset.
+func (c *CollectionConfig) DistributionTrackingStartInterval() time.Duration {
+	if c.DistributionTrackingStartIntervalSec <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(c.DistributionTrackingStartIntervalSec) * time.Second
 }
 
 // defaultScancodeCloneDir returns the default scancode clone parent
@@ -746,6 +826,13 @@ func DefaultConfig() *Config {
 			ScancodeShutdownGraceMinutes: 0,  // v0.23.7: immediate kill on stop
 			ScancodeRunTimeoutHours:      2,  // v0.23.8: base wall-clock per scan
 			ScancodeRunTimeoutCapHours:   24, // v0.23.8: upper bound on adaptive timeout
+			// v0.24.0 DistributionWorker defaults. Off by default;
+			// 6-month cadence; modest concurrency. See CollectionConfig
+			// field docs for the full rationale.
+			DistributionTrackingEnabled:          false,
+			DistributionTrackingIntervalDays:     180,
+			DistributionTrackingWorkers:          4,
+			DistributionTrackingStartIntervalSec: 30,
 		},
 		LogLevel: "info",
 	}

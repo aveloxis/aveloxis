@@ -49,7 +49,13 @@
     "scancode_run_timeout_hours": 2,
     "scancode_run_timeout_cap_hours": 24,
     "staging_retention_hours": 1,
-    "phase_watchdog_minutes": 75
+    "phase_watchdog_minutes": 75,
+    "distribution_tracking_enabled": false,
+    "distribution_tracking_interval_days": 180,
+    "distribution_tracking_workers": 4,
+    "distribution_tracking_start_interval_s": 30,
+    "distribution_tracking_polite_email": "",
+    "distribution_tracking_user_agent": ""
   },
   "web": {
     "addr": ":8082",

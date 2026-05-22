@@ -238,6 +238,15 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// repos.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_timeout_attempts", "INTEGER DEFAULT 0")
 
+	// v0.24.0 — DistributionWorker columns. Mirror the v0.21.0
+	// scancode_* triple but for the new package-distribution-evidence
+	// subsystem. Off by default (distribution_tracking_enabled in
+	// aveloxis.json) but the columns exist on every install so the
+	// claim query doesn't fail on a fresh-from-config opt-in.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "distribution_last_run", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "distribution_failed_attempts", "INTEGER DEFAULT 0")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "distribution_last_failed_at", "TIMESTAMPTZ")
+
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection
 	// created duplicate rows. Clean up first, then create the unique index.
@@ -315,6 +324,20 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		"aveloxis_data", "idx_repos_scancode_due",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_scancode_due
 		ON aveloxis_data.repos (scancode_last_run NULLS FIRST)
+		WHERE COALESCE(repo_archived, FALSE) = FALSE`)
+
+	// v0.24.0 — DistributionWorker claim-query index.
+	//
+	// Same shape as idx_repos_scancode_due. The DistributionWorker's
+	// claim query orders by distribution_last_run NULLS FIRST so
+	// never-scanned repos move to the front; the partial filter
+	// excludes archived repos which we never scan. Without the index
+	// the dispatcher's tick scans the entire repos table on every
+	// claim attempt.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs,
+		"aveloxis_data", "idx_repos_distribution_due",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_distribution_due
+		ON aveloxis_data.repos (distribution_last_run NULLS FIRST)
 		WHERE COALESCE(repo_archived, FALSE) = FALSE`)
 
 	// collection_queue.last_commits backfill (v0.19.11). Pre-v0.19.11

@@ -76,6 +76,37 @@ func (s *Server) handleRepoContributors(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(contribs)
 }
 
+// handleRepoContributionsCoverage returns the enrichment-state
+// snapshot for the same cohort as /identities and /affiliations: how
+// many contributors have been enriched / have a canonical email / have
+// a resolved gh_user_id / have an affiliation. The "are my numbers
+// trustworthy?" endpoint — operators read this before drawing
+// conclusions from /affiliations. See store-side
+// GetRepoContributionsCoverage and docs/guide/api.md for the full
+// semantics of each field.
+func (s *Server) handleRepoContributionsCoverage(w http.ResponseWriter, r *http.Request) {
+	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	since, until, ok := parseWindow(r)
+	if !ok {
+		http.Error(w, "since must be before until", http.StatusBadRequest)
+		return
+	}
+
+	cov, err := s.store.GetRepoContributionsCoverage(r.Context(), repoID, since, until)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	setCORSIfLocalhost(r, w)
+	_ = json.NewEncoder(w).Encode(cov)
+}
+
 // handleRepoAffiliations returns the per-affiliation contributor count
 // for the same window. The "(unknown)" bucket is included in the
 // response so the caller can decide whether to surface or hide it.

@@ -15,10 +15,11 @@ import (
 // Source-contract: routes are registered + handlers exist
 // ============================================================
 
-// TestContributionsRoutesRegistered pins that the two v0.23.10 routes
-// flow through the same mux as the existing endpoints. If a future
-// refactor moves them to a different package or drops the registration,
-// this test catches it.
+// TestContributionsRoutesRegistered pins that the three contributions
+// routes (v0.23.10 identities + affiliations, v0.23.11 coverage) flow
+// through the same mux as the existing endpoints. If a future refactor
+// moves them to a different package or drops the registration, this
+// test catches it.
 func TestContributionsRoutesRegistered(t *testing.T) {
 	body, err := os.ReadFile("server.go")
 	if err != nil {
@@ -28,12 +29,39 @@ func TestContributionsRoutesRegistered(t *testing.T) {
 	for _, needle := range []string{
 		`/api/v1/repos/{repoID}/contributions/identities`,
 		`/api/v1/repos/{repoID}/contributions/affiliations`,
+		`/api/v1/repos/{repoID}/contributions/coverage`,
 		`s.handleRepoContributors`,
 		`s.handleRepoAffiliations`,
+		`s.handleRepoContributionsCoverage`,
 	} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("server.go missing route registration token %q", needle)
 		}
+	}
+}
+
+// TestRepoContributionsCoverage_InvalidID pins the 400-on-bad-repo_id
+// contract for the coverage endpoint.
+func TestRepoContributionsCoverage_InvalidID(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/api/v1/repos/abc/contributions/coverage", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for invalid repo_id", w.Code)
+	}
+}
+
+// TestRepoContributionsCoverage_SinceAfterUntil pins the same
+// window-validation contract as the other two endpoints.
+func TestRepoContributionsCoverage_SinceAfterUntil(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET",
+		"/api/v1/repos/1/contributions/coverage?since=2026-01-01&until=2025-01-01", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for since >= until", w.Code)
 	}
 }
 

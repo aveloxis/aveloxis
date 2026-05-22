@@ -173,6 +173,131 @@ ORDER BY login NULLS LAST, full_name NULLS LAST`
 	return out, nil
 }
 
+// ContributionsCoverage answers "is the data I'm about to render
+// complete?" for a given (repo, window) pair. The other two
+// contributions endpoints expose the cohort and its affiliation
+// breakdown; this one exposes what the cohort's enrichment STATE looks
+// like so the operator can tell whether an "(unknown)" bucket
+// represents true unaffiliated contributors vs. people the v0.18.29
+// enrichment ticker simply hasn't reached yet.
+//
+// All count fields are integers; the two timestamp fields are nullable
+// (encoded as the Go zero time when the cohort has no matching rows
+// — JSON-serialized as the omitempty default to keep the response
+// shape stable).
+type ContributionsCoverage struct {
+	WindowSince            time.Time `json:"window_since"`
+	WindowUntil            time.Time `json:"window_until"`
+	TotalContributors      int       `json:"total_contributors"`
+	Enriched               int       `json:"enriched"`
+	CanonicalEmail         int       `json:"canonical_email"`
+	GHUserIDResolved       int       `json:"gh_user_id_resolved"`
+	SearchResolveAttempted int       `json:"search_resolve_attempted"`
+	BreadthAttempted       int       `json:"breadth_attempted"`
+	AffiliationResolved    int       `json:"affiliation_resolved"`
+	AffiliationUnknown     int       `json:"affiliation_unknown"`
+	// Nullable: pointer + omitempty so JSON omits the field entirely
+	// when the cohort has no rows in the relevant state (rather than
+	// emitting the zero time, which is operator-confusing).
+	EnrichmentOldestPending *time.Time `json:"enrichment_oldest_pending,omitempty"`
+	EnrichmentStalest       *time.Time `json:"enrichment_stalest,omitempty"`
+}
+
+// GetRepoContributionsCoverage returns the data-completeness state for
+// the cohort that contributed to repoID in [since, until). Same window
+// CTE as the other two contributions endpoints, so the cohort is
+// identical and operators can correlate counts across all three.
+//
+// The query uses FILTER (WHERE ...) aggregates rather than separate
+// COUNT(column) calls where the predicate isn't simple "column IS NOT
+// NULL" — empty-string and JOIN-derived conditions need explicit
+// predicates. COUNT(column) alone counts non-NULL values and is fine
+// for the timestamp / nullable-int columns.
+//
+// EnrichmentOldestPending is the oldest data_collection_date among
+// contributors with NULL cntrb_last_enriched_at — translates to "this
+// person has been waiting N days for enrichment." Operators compare
+// against their enrich_interval_minutes cadence to spot a stuck ticker.
+//
+// EnrichmentStalest is the oldest cntrb_last_enriched_at among
+// contributors that HAVE been enriched at least once — surfaces the
+// long tail of "enriched 18 months ago and never refreshed." The
+// 30-day re-enrichment cooldown in v0.18.29 caps how stale this can
+// get in steady state.
+//
+// AffiliationUnknown is derived in Go as Total − AffiliationResolved
+// rather than re-counted in SQL — avoids a redundant FILTER scan.
+func (s *PostgresStore) GetRepoContributionsCoverage(ctx context.Context, repoID int64, since, until time.Time) (*ContributionsCoverage, error) {
+	lower, upper := resolveWindow(since, until)
+
+	sql := `
+WITH ` + contributorsInWindowCTE + `,
+enriched_state AS (
+    SELECT
+        c.cntrb_id,
+        c.cntrb_last_enriched_at,
+        c.cntrb_canonical,
+        c.gh_user_id,
+        c.cntrb_last_search_attempted_at,
+        c.cntrb_last_breadth_at,
+        c.cntrb_company,
+        c.data_collection_date,
+        ca.ca_affiliation
+    FROM contributors_in_window ciw
+    JOIN aveloxis_data.contributors c USING (cntrb_id)
+    LEFT JOIN aveloxis_data.contributor_affiliations ca
+        ON LOWER(SPLIT_PART(c.cntrb_canonical, '@', 2)) = LOWER(ca.ca_domain)
+        AND COALESCE(ca.ca_active, 1) = 1
+    WHERE COALESCE(c.cntrb_deleted, 0) = 0
+)
+SELECT
+    COUNT(*)::int                                                        AS total_contributors,
+    COUNT(cntrb_last_enriched_at)::int                                   AS enriched,
+    COUNT(*) FILTER (WHERE cntrb_canonical != '')::int                   AS canonical_email,
+    COUNT(gh_user_id)::int                                               AS gh_user_id_resolved,
+    COUNT(cntrb_last_search_attempted_at)::int                           AS search_resolve_attempted,
+    COUNT(cntrb_last_breadth_at)::int                                    AS breadth_attempted,
+    COUNT(*) FILTER (WHERE
+        COALESCE(
+            NULLIF(ca_affiliation, ''),
+            NULLIF(REGEXP_REPLACE(cntrb_company, '^@', ''), '')
+        ) IS NOT NULL
+    )::int                                                               AS affiliation_resolved,
+    MIN(data_collection_date) FILTER (WHERE cntrb_last_enriched_at IS NULL)
+                                                                         AS enrichment_oldest_pending,
+    MIN(cntrb_last_enriched_at)                                          AS enrichment_stalest
+FROM enriched_state`
+
+	out := &ContributionsCoverage{
+		WindowSince: lower,
+		WindowUntil: upper,
+	}
+
+	// Use pointer destinations for the nullable timestamp columns —
+	// COUNT can never be NULL but MIN over a filtered empty set
+	// returns NULL, which pgx rejects scanning into time.Time directly.
+	var pending, stalest *time.Time
+
+	err := s.pool.QueryRow(ctx, sql, repoID, lower, upper).Scan(
+		&out.TotalContributors,
+		&out.Enriched,
+		&out.CanonicalEmail,
+		&out.GHUserIDResolved,
+		&out.SearchResolveAttempted,
+		&out.BreadthAttempted,
+		&out.AffiliationResolved,
+		&pending,
+		&stalest,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("GetRepoContributionsCoverage query: %w", err)
+	}
+	out.EnrichmentOldestPending = pending
+	out.EnrichmentStalest = stalest
+	out.AffiliationUnknown = out.TotalContributors - out.AffiliationResolved
+	return out, nil
+}
+
 // GetRepoAffiliationCounts returns the number of DISTINCT contributors
 // per affiliation in the same window as GetRepoContributors.
 //

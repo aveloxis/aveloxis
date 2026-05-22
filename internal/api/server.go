@@ -53,6 +53,7 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 	// so they can never drift on the definition of "contribution."
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/identities", s.handleRepoContributors)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/affiliations", s.handleRepoAffiliations)
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/coverage", s.handleRepoContributionsCoverage)
 	s.mux.HandleFunc("GET /api/v1/repos/search", s.handleRepoSearch)
 	s.registerMetricRoutes()
 	return s

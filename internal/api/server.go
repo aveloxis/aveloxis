@@ -44,6 +44,16 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/licenses", s.handleLicenses)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-licenses", s.handleScancodeLicenses)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-files", s.handleScancodeFiles)
+	// v0.23.10 — list-of-identities + affiliation-breakdown over an
+	// operator-supplied time window. Nested under contributions/ so the
+	// paths don't collide with the Augur-compatible
+	// /api/v1/repos/{repoID}/contributors metric (which returns
+	// aggregated counts per Augur's swagger spec). The two endpoints
+	// share a single SQL CTE on the store side (contributorsInWindowCTE)
+	// so they can never drift on the definition of "contribution."
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/identities", s.handleRepoContributors)
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/affiliations", s.handleRepoAffiliations)
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/coverage", s.handleRepoContributionsCoverage)
 	s.mux.HandleFunc("GET /api/v1/repos/search", s.handleRepoSearch)
 	s.registerMetricRoutes()
 	return s

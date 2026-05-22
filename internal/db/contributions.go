@@ -1,0 +1,235 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+package db
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+// RepoContributor is a single contributor returned by GetRepoContributors.
+// All "may be empty" string fields are passed through NULLIF/COALESCE in
+// SQL so the Go-side value is either the meaningful text or "" — callers
+// can render it directly without per-field null checks.
+type RepoContributor struct {
+	CntrbID        string `json:"cntrb_id"`
+	Login          string `json:"login"`
+	FullName       string `json:"full_name"`
+	Email          string `json:"email"`
+	ProfileCompany string `json:"profile_company"`
+	Location       string `json:"location"`
+}
+
+// AffiliationCount is a single row in the affiliation breakdown returned
+// by GetRepoAffiliationCounts. ContributorCount is the number of DISTINCT
+// contributors (not the number of contributions) tagged with the
+// affiliation in the requested window.
+type AffiliationCount struct {
+	Affiliation      string `json:"affiliation"`
+	ContributorCount int    `json:"contributor_count"`
+}
+
+// contributorsInWindowCTE is the shared SQL fragment that enumerates every
+// distinct cntrb_id that produced any kind of contribution to repoID
+// between since and until. Defined once here and embedded into both
+// GetRepoContributors and GetRepoAffiliationCounts so the two endpoints
+// can never drift on which actions count as "contribution."
+//
+// The contribution kinds covered are documented in docs/guide/api.md
+// under "Contributors in a window" / "Affiliation breakdown." Adding a
+// new kind means adding a UNION arm here AND updating that doc — both
+// pinned by source-contract tests.
+//
+// All arms reference the same three positional parameters: $1=repoID,
+// $2=since, $3=until.
+const contributorsInWindowCTE = `
+contributors_in_window AS (
+    -- Commit authorship: cmt_author_timestamp is the TIMESTAMPTZ field
+    -- (cmt_author_date is TEXT and not safe to range-filter).
+    SELECT DISTINCT c.cmt_ght_author_id AS cntrb_id
+    FROM aveloxis_data.commits c
+    WHERE c.repo_id = $1
+      AND c.cmt_ght_author_id IS NOT NULL
+      AND c.cmt_author_timestamp >= $2
+      AND c.cmt_author_timestamp <  $3
+
+    UNION
+    SELECT DISTINCT i.reporter_id
+    FROM aveloxis_data.issues i
+    WHERE i.repo_id = $1 AND i.reporter_id IS NOT NULL
+      AND i.created_at >= $2 AND i.created_at < $3
+
+    UNION
+    SELECT DISTINCT i.closed_by_id
+    FROM aveloxis_data.issues i
+    WHERE i.repo_id = $1 AND i.closed_by_id IS NOT NULL
+      AND i.closed_at >= $2 AND i.closed_at < $3
+
+    UNION
+    SELECT DISTINCT e.cntrb_id
+    FROM aveloxis_data.issue_events e
+    WHERE e.repo_id = $1 AND e.cntrb_id IS NOT NULL
+      AND e.created_at >= $2 AND e.created_at < $3
+
+    UNION
+    SELECT DISTINCT pr.author_id
+    FROM aveloxis_data.pull_requests pr
+    WHERE pr.repo_id = $1 AND pr.author_id IS NOT NULL
+      AND pr.created_at >= $2 AND pr.created_at < $3
+
+    UNION
+    SELECT DISTINCT prr.cntrb_id
+    FROM aveloxis_data.pull_request_reviews prr
+    WHERE prr.repo_id = $1 AND prr.cntrb_id IS NOT NULL
+      AND prr.submitted_at >= $2 AND prr.submitted_at < $3
+
+    UNION
+    SELECT DISTINCT pe.cntrb_id
+    FROM aveloxis_data.pull_request_events pe
+    WHERE pe.repo_id = $1 AND pe.cntrb_id IS NOT NULL
+      AND pe.created_at >= $2 AND pe.created_at < $3
+
+    UNION
+    -- Unified messages: issue comments + PR conversation comments +
+    -- inline review comment bodies all live here. cntrb_id is the
+    -- author across all three message kinds.
+    SELECT DISTINCT m.cntrb_id
+    FROM aveloxis_data.messages m
+    WHERE m.repo_id = $1 AND m.cntrb_id IS NOT NULL
+      AND m.msg_timestamp >= $2 AND m.msg_timestamp < $3
+)`
+
+// resolveWindow normalizes a (since, until) pair the same way
+// GetRepoTimeSeries does: a zero until is treated as "no upper bound"
+// by substituting a far-future timestamp so the SQL stays parameterized.
+// A zero since is treated as "since the beginning of time" (1970-01-01).
+// since must be strictly less than until; the caller validates this and
+// surfaces a 400 if violated.
+func resolveWindow(since, until time.Time) (time.Time, time.Time) {
+	lower := since
+	if lower.IsZero() {
+		lower = time.Unix(0, 0)
+	}
+	upper := until
+	if upper.IsZero() {
+		upper = time.Now().AddDate(100, 0, 0)
+	}
+	return lower, upper
+}
+
+// GetRepoContributors returns every distinct contributor who made any
+// kind of contribution to repoID between since and until.
+//
+// "Contribution" covers: commit authorship, opening or closing an issue,
+// opening a PR, submitting a PR review, any issue or PR event (label /
+// assignment / reference), and any message (issue comment, PR
+// conversation comment, inline review comment body — all unified in
+// aveloxis_data.messages per the architecture doc).
+//
+// Soft-deleted contributors (cntrb_deleted != 0, set by the v0.20.2
+// rename-merge path) are excluded; the operator wants active identities,
+// not merge tombstones.
+//
+// Commits whose cmt_ght_author_id is NULL — author email never matched
+// a known contributor — are excluded. Those people don't have a cntrb_id
+// to return; surfacing them would require a separate "unresolved commit
+// authors" endpoint that returns name+email tuples instead.
+func (s *PostgresStore) GetRepoContributors(ctx context.Context, repoID int64, since, until time.Time) ([]RepoContributor, error) {
+	lower, upper := resolveWindow(since, until)
+
+	sql := `
+WITH ` + contributorsInWindowCTE + `
+SELECT
+    c.cntrb_id::text,
+    COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '') AS login,
+    COALESCE(NULLIF(c.cntrb_full_name, ''), '')                        AS full_name,
+    COALESCE(NULLIF(c.cntrb_email, ''), '')                            AS email,
+    COALESCE(NULLIF(c.cntrb_company, ''), '')                          AS profile_company,
+    COALESCE(NULLIF(c.cntrb_location, ''), '')                         AS location
+FROM contributors_in_window ciw
+JOIN aveloxis_data.contributors c USING (cntrb_id)
+WHERE COALESCE(c.cntrb_deleted, 0) = 0
+ORDER BY login NULLS LAST, full_name NULLS LAST`
+
+	rows, err := s.pool.Query(ctx, sql, repoID, lower, upper)
+	if err != nil {
+		return nil, fmt.Errorf("GetRepoContributors query: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]RepoContributor, 0, 128)
+	for rows.Next() {
+		var rc RepoContributor
+		if err := rows.Scan(&rc.CntrbID, &rc.Login, &rc.FullName, &rc.Email, &rc.ProfileCompany, &rc.Location); err != nil {
+			return nil, fmt.Errorf("GetRepoContributors scan: %w", err)
+		}
+		out = append(out, rc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetRepoContributors rows: %w", err)
+	}
+	return out, nil
+}
+
+// GetRepoAffiliationCounts returns the number of DISTINCT contributors
+// per affiliation in the same window as GetRepoContributors.
+//
+// Affiliation derivation priority (per-contributor):
+//  1. contributor_affiliations[domain_of(cntrb_canonical)] — the curated
+//     email-domain → org map populated by PopulateAffiliations from
+//     observed company strings. Most reliable signal because it covers
+//     people whose profile is blank but whose email domain is well-known.
+//  2. cntrb_company (with leading "@" stripped to handle the GitHub
+//     "@org" reference style) — what the user typed into their profile.
+//     Freeform and often empty.
+//  3. "(unknown)" — fallback bucket for contributors with neither a
+//     canonical-email match nor a company string.
+//
+// The "(unknown)" row is included in the result so the count is
+// honest about coverage; callers can hide or surface it as desired.
+func (s *PostgresStore) GetRepoAffiliationCounts(ctx context.Context, repoID int64, since, until time.Time) ([]AffiliationCount, error) {
+	lower, upper := resolveWindow(since, until)
+
+	sql := `
+WITH ` + contributorsInWindowCTE + `,
+with_affiliation AS (
+    SELECT
+        c.cntrb_id,
+        COALESCE(
+            NULLIF(ca.ca_affiliation, ''),
+            NULLIF(REGEXP_REPLACE(c.cntrb_company, '^@', ''), ''),
+            '(unknown)'
+        ) AS affiliation
+    FROM contributors_in_window ciw
+    JOIN aveloxis_data.contributors c USING (cntrb_id)
+    LEFT JOIN aveloxis_data.contributor_affiliations ca
+        ON LOWER(SPLIT_PART(c.cntrb_canonical, '@', 2)) = LOWER(ca.ca_domain)
+        AND COALESCE(ca.ca_active, 1) = 1
+    WHERE COALESCE(c.cntrb_deleted, 0) = 0
+)
+SELECT affiliation, COUNT(*)::int AS contributor_count
+FROM with_affiliation
+GROUP BY affiliation
+ORDER BY contributor_count DESC, affiliation`
+
+	rows, err := s.pool.Query(ctx, sql, repoID, lower, upper)
+	if err != nil {
+		return nil, fmt.Errorf("GetRepoAffiliationCounts query: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]AffiliationCount, 0, 32)
+	for rows.Next() {
+		var ac AffiliationCount
+		if err := rows.Scan(&ac.Affiliation, &ac.ContributorCount); err != nil {
+			return nil, fmt.Errorf("GetRepoAffiliationCounts scan: %w", err)
+		}
+		out = append(out, ac)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetRepoAffiliationCounts rows: %w", err)
+	}
+	return out, nil
+}

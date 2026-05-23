@@ -53,6 +53,18 @@ func ParseManifestName(filename, content string) string {
 		return parsePomXMLName(content)
 	case "go.mod":
 		return parseGoModName(content)
+	case "project.toml", "juliaproject.toml":
+		// Julia: top-level `name = "..."` outside any [section].
+		return parseJuliaProjectName(content)
+	case "description":
+		// R/CRAN: `Package: <name>` as the first or near-first
+		// header in a Debian-control-style file.
+		return parseRDescriptionName(content)
+	case "meta.yaml", "recipe.yaml":
+		// conda: `package:\n  name: <value>` near the top of the
+		// recipe. YAML proper, but we hand-roll a minimal scanner
+		// to avoid pulling a YAML dependency.
+		return parseCondaRecipeName(content)
 	}
 
 	// Suffix-based matching for *.gemspec / *.csproj / *.podspec etc.
@@ -207,6 +219,120 @@ func parseGoModName(content string) string {
 			// Strip optional quotes
 			rest = strings.Trim(rest, `"`)
 			return rest
+		}
+	}
+	return ""
+}
+
+// ---- Project.toml (Julia) --------------------------------------------
+
+// parseJuliaProjectName extracts the top-level `name = "..."` line
+// from a Julia Project.toml. Julia's Pkg.jl writes `name` and `uuid`
+// at the FILE TOP outside any [section] header (unlike Cargo or
+// pyproject which scope name inside [package] / [project]). Our
+// TOML scanner needs a "top-level" mode where inSection==true
+// initially and flips to false when the first [...] header is seen.
+//
+// Example shape:
+//
+//	name = "Drifters"
+//	uuid = "..."
+//	authors = ["..."]
+//	version = "0.5.0"
+//	[deps]
+//	...
+func parseJuliaProjectName(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Stop at the first section header; `name` past that is
+		// scoped to a different table (e.g. [deps].name would be a
+		// dependency name, not the package name).
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			return ""
+		}
+		if name := extractKVString(trimmed, "name"); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// ---- DESCRIPTION (R / CRAN / Bioconductor) ---------------------------
+
+// parseRDescriptionName extracts the `Package: <name>` header from
+// an R DESCRIPTION file. DESCRIPTION uses RFC 822 / Debian-control
+// style: case-sensitive header keys, colon-separated, optional
+// folded continuations on indented lines. We only need `Package:`
+// which by convention appears as the first field.
+//
+// Conservative scan: the header is matched at line start (after
+// trimming leading whitespace) with the exact key `Package:` (R
+// is case-sensitive on this field). Values are trimmed; continuation
+// lines (rare for the Package field) are not followed.
+func parseRDescriptionName(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		// DESCRIPTION lines are NOT trimmed of leading whitespace
+		// for header matching — folded continuations are indented,
+		// new headers are not.
+		if strings.HasPrefix(line, "Package:") {
+			val := strings.TrimSpace(strings.TrimPrefix(line, "Package:"))
+			// Strip any trailing comment (R DESCRIPTION doesn't
+			// formally allow comments but some files include #-prefixed
+			// notes; be defensive).
+			if idx := strings.Index(val, "#"); idx >= 0 {
+				val = strings.TrimSpace(val[:idx])
+			}
+			return val
+		}
+	}
+	return ""
+}
+
+// ---- meta.yaml / recipe.yaml (conda) ---------------------------------
+
+// parseCondaRecipeName extracts `package:\n  name: <value>` from a
+// conda-build meta.yaml or rattler-build recipe.yaml. We avoid
+// pulling a YAML dependency for this single field — the structure
+// is shallow and the key positions are predictable.
+//
+// Example meta.yaml shape:
+//
+//	package:
+//	  name: numpy
+//	  version: 1.26.0
+//	source:
+//	  url: ...
+//
+// Templating ({{ name|lower }}) is left as-is — we return the raw
+// string. Operator workflow that wants resolved names should
+// snapshot the rendered recipe instead.
+func parseCondaRecipeName(content string) string {
+	inPackage := false
+	for _, line := range strings.Split(content, "\n") {
+		// A top-level key (no leading indent) ends the package: block.
+		if len(line) > 0 && (line[0] != ' ' && line[0] != '\t') {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "package:") {
+				inPackage = true
+				continue
+			}
+			// Any other top-level key exits the package: block.
+			inPackage = false
+			continue
+		}
+		if !inPackage {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "name:") {
+			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
+			// Strip surrounding quotes if present.
+			val = strings.Trim(val, `"'`)
+			// Strip trailing YAML comment.
+			if idx := strings.Index(val, "#"); idx >= 0 {
+				val = strings.TrimSpace(val[:idx])
+			}
+			return val
 		}
 	}
 	return ""

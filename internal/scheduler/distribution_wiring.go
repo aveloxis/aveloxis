@@ -71,6 +71,11 @@ func (s *Scheduler) spawnDistributionWorker(ctx context.Context) {
 	}
 
 	scanner := distribution.NewCompositeScanner(depsDevClient, ecoClient, ghClient, s.logger)
+	// v0.25.0: honor the operator's cross-check setting.
+	// NewCompositeScanner defaults to true; we only override when
+	// the operator explicitly set it (the cfg field is plumbed
+	// through from CollectionConfig.DistributionTrackingCrossCheckSourcesValue()).
+	scanner.CrossCheckSources = s.cfg.DistributionTrackingCrossCheckSources
 
 	worker := distribution.NewWorker(distribution.WorkerOptions{
 		Store:         s.store,

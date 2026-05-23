@@ -514,6 +514,31 @@ type CollectionConfig struct {
 	// IPs may want a more identifying string so registry operators
 	// can route diagnostics to the right person.
 	DistributionTrackingUserAgent string `json:"distribution_tracking_user_agent"`
+
+	// DistributionTrackingCrossCheckSources, when true (the default
+	// in v0.25.0), guarantees BOTH deps.dev AND ecosyste.ms are
+	// queried for every repo even when one returns non-empty data.
+	// Each source persists its own rows into repo_distribution; the
+	// UNIQUE constraint includes the source column so two-source
+	// rows for the same package coexist.
+	//
+	// Rationale (operator direction, 2026-05-23): operators want
+	// explicit lock-in that we don't optimize one external registry
+	// away. The trade-off is roughly 2× external-registry API calls
+	// per scan; at 180-day cadence the absolute budget is tiny
+	// (~5K calls/hour fleet-wide on a 100K-repo cohort), and the
+	// signal value of cross-checking — being able to see when
+	// deps.dev and ecosyste.ms disagree about which packages are
+	// indexed for a repo — is worth it.
+	//
+	// Set to false only when an operator needs to halve registry
+	// traffic at the cost of single-source-of-truth dependence.
+	// Pointer-to-bool (not bare bool) so the JSON decoder can
+	// distinguish "absent" (use v0.25.0 default = true) from
+	// "explicitly false." A bare bool would default to false on
+	// missing-key, silently breaking the lock-in guarantee for
+	// every aveloxis.json that pre-dates v0.25.0.
+	DistributionTrackingCrossCheckSources *bool `json:"distribution_tracking_cross_check_sources,omitempty"`
 }
 
 // PhaseWatchdogDuration returns the v0.22.4 long-jobs watchdog
@@ -626,6 +651,17 @@ func (c *CollectionConfig) DistributionTrackingStartInterval() time.Duration {
 		return 30 * time.Second
 	}
 	return time.Duration(c.DistributionTrackingStartIntervalSec) * time.Second
+}
+
+// DistributionTrackingCrossCheckSourcesValue returns the effective
+// cross-check setting, defaulting to true when the JSON field is
+// absent. v0.25.0 default. See the field doc on
+// DistributionTrackingCrossCheckSources for the rationale.
+func (c *CollectionConfig) DistributionTrackingCrossCheckSourcesValue() bool {
+	if c.DistributionTrackingCrossCheckSources == nil {
+		return true
+	}
+	return *c.DistributionTrackingCrossCheckSources
 }
 
 // defaultScancodeCloneDir returns the default scancode clone parent

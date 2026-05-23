@@ -51,12 +51,29 @@ const cannedResponse = `{
 }`
 
 func TestGetPackageVersionsParsesResponse(t *testing.T) {
+	// v0.24.1: the client now follows up the reverse-lookup with one
+	// per-package call to /v3/systems/{system}/packages/{name} to
+	// enrich each row with publishedAt. The mock has to serve both
+	// endpoints. The reverse-lookup URL contains "packageversions";
+	// the package-detail URL contains "/packages/" and does NOT
+	// contain "packageversions".
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "packageversions") {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.EscapedPath(), "packageversions"):
+			_, _ = w.Write([]byte(cannedResponse))
+		case strings.Contains(r.URL.EscapedPath(), "/packages/"):
+			// Mirror the cannedResponse versions back as a
+			// packageDetailResponse so timestamp enrichment finds the
+			// publishedAt values that already exist in the canned data.
+			// Real deps.dev returns the package detail with a
+			// different shape but the only field this code reads is
+			// versions[].versionKey.version and versions[].publishedAt,
+			// which the cannedResponse already provides.
+			_, _ = w.Write([]byte(cannedResponse))
+		default:
 			t.Errorf("unexpected URL path: %s", r.URL.Path)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(cannedResponse))
 	}))
 	defer srv.Close()
 

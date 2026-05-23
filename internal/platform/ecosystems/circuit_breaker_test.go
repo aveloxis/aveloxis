@@ -5,6 +5,7 @@ package ecosystems
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -62,10 +63,15 @@ func TestCircuitBreakerTripsAfterThresholdConsecutive5xx(t *testing.T) {
 		t.Fatalf("expected %d hits before trip, got %d", CircuitBreakerThreshold, hitsAtTrip)
 	}
 
-	// Next call: breaker must short-circuit (no upstream hit, no error).
+	// Next call: breaker must short-circuit (no upstream hit) and
+	// return the typed ErrCircuitOpen sentinel. Classifies as
+	// ClassSkip via the ClassifiedError interface so callers in
+	// legacy error-handling paths treat it like a 404; the
+	// CompositeScanner (the only caller that cares) identifies it
+	// specifically via errors.Is to mark the scan incomplete.
 	dists, err := c.LookupPackages(context.Background(), "https://github.com/x/y")
-	if err != nil {
-		t.Errorf("post-trip call must return nil err (treated by scanner as no-data), got %v", err)
+	if !errors.Is(err, ErrCircuitOpen) {
+		t.Errorf("post-trip call must return ErrCircuitOpen sentinel so the scanner can mark the scan incomplete (distribution_scan_complete=FALSE) and re-collect when the breaker closes — without the sentinel, the partial-scan cohort would be stamped with the full 180-day cadence. Got: %v", err)
 	}
 	if len(dists) != 0 {
 		t.Errorf("post-trip call must return zero distributions, got %d", len(dists))

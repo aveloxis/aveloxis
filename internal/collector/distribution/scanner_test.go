@@ -142,7 +142,8 @@ func TestScannerSucceedsWhenLegitimateNoDataAcrossWorkingSources(t *testing.T) {
 
 	scanner := buildTestScanner(t, depsServer.URL, ecoServer.URL, ghServer.URL, true /*crossCheck*/)
 
-	dists, manifests, err := scanner.Scan(context.Background(), 999, "julialang", "Project.jl", "https://github.com/julialang/Project.jl")
+	dists, manifests, complete, err := scanner.Scan(context.Background(), 999, "julialang", "Project.jl", "https://github.com/julialang/Project.jl")
+	_ = complete // v0.25.0 signature; this test focuses on the err+data check, see TestScannerMarksScanIncompleteOnTransientExternalError for the complete-flag-specific test.
 
 	// Empty-but-clean from working sources = success in the v0.25.0 contract.
 	if err != nil {
@@ -189,7 +190,7 @@ func TestScannerFailsOnlyWhenEveryEnabledSourceErrored(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, _, err := scanner.Scan(ctx, 1, "x", "y", "https://github.com/x/y")
+	_, _, _, err := scanner.Scan(ctx, 1, "x", "y", "https://github.com/x/y")
 	if err == nil {
 		t.Fatal("when EVERY source errors, scan must return non-nil error so RecordDistributionFailure runs and backoff applies")
 	}
@@ -225,7 +226,7 @@ func TestScannerEmitsErrorLogOnDoubleExternalFailure(t *testing.T) {
 	scanner := buildTestScanner(t, depsServer.URL, ecoServer.URL, ghServer.URL, true)
 	scanner.Logger = logger
 
-	_, _, _ = scanner.Scan(context.Background(), 42, "owner", "repo", "https://github.com/owner/repo")
+	_, _, _, _ = scanner.Scan(context.Background(), 42, "owner", "repo", "https://github.com/owner/repo")
 
 	logs := buf.String()
 	if !strings.Contains(logs, "BOTH external registries failed") {
@@ -277,7 +278,7 @@ func TestScannerCrossCheckTrueQueriesBothExternalSources(t *testing.T) {
 	t.Cleanup(ghServer.Close)
 
 	scanner := buildTestScanner(t, depsServer.URL, ecoServer.URL, ghServer.URL, true /*crossCheck*/)
-	_, _, _ = scanner.Scan(context.Background(), 1, "x", "y", "https://github.com/x/y")
+	_, _, _, _ = scanner.Scan(context.Background(), 1, "x", "y", "https://github.com/x/y")
 
 	if depsHits.Load() == 0 {
 		t.Error("deps.dev must be queried when CrossCheckSources=true")
@@ -314,7 +315,7 @@ func TestScannerCrossCheckFalseSkipsEcosystemsAfterDepsSuccess(t *testing.T) {
 	t.Cleanup(ghServer.Close)
 
 	scanner := buildTestScanner(t, depsServer.URL, ecoServer.URL, ghServer.URL, false /*crossCheck off*/)
-	_, _, _ = scanner.Scan(context.Background(), 1, "x", "y", "https://github.com/x/y")
+	_, _, _, _ = scanner.Scan(context.Background(), 1, "x", "y", "https://github.com/x/y")
 
 	if ecoHits.Load() != 0 {
 		t.Errorf("with CrossCheckSources=false, ecosyste.ms must NOT be queried after deps.dev returned data — got %d hits", ecoHits.Load())

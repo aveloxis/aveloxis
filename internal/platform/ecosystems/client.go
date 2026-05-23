@@ -37,6 +37,38 @@ import (
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
+// circuitOpenError is the concrete type behind ErrCircuitOpen. It
+// implements platform.ClassifiedError so ClassifyError routes it to
+// ClassSkip without the platform package needing to know about the
+// ecosystems sentinel (avoiding a circular import).
+type circuitOpenError struct{}
+
+func (circuitOpenError) Error() string {
+	return "ecosyste.ms circuit breaker is open"
+}
+
+// Class implements platform.ClassifiedError. ClassSkip semantics
+// mean the scanner treats this as "source unavailable" (analogous
+// to a 404 from the upstream) — does NOT route to the failure-
+// counter path. The distinguishing signal that this is a circuit-
+// open skip rather than a real 404 is the sentinel-identity match
+// via errors.Is(err, ErrCircuitOpen), which the CompositeScanner
+// uses to mark the scan as incomplete.
+func (circuitOpenError) Class() platform.ErrorClass {
+	return platform.ClassSkip
+}
+
+// ErrCircuitOpen is returned by LookupPackages when the source-level
+// circuit breaker is currently open. Classifies as ClassSkip via
+// the ClassifiedError interface so existing error paths treat it
+// like a 404, but the CompositeScanner identifies it specifically
+// (via errors.Is) to mark the scan as incomplete
+// (distribution_scan_complete = FALSE) so the affected repo
+// becomes immediately re-eligible once the breaker closes.
+//
+// v0.25.0.
+var ErrCircuitOpen error = circuitOpenError{}
+
 const (
 	defaultBaseURL = "https://packages.ecosyste.ms"
 	defaultTimeout = 30 * time.Second
@@ -156,6 +188,24 @@ func (c *Client) circuitOpen() bool {
 	return false
 }
 
+// IsCircuitOpen reports whether the source-level circuit breaker is
+// currently tripped. Read-only: does NOT have the side effect of
+// resetting state when the pause has elapsed (use circuitOpen
+// internally for that). Callers (typically the CompositeScanner's
+// Healthy() check from the DistributionWorker dispatcher) want a
+// pure read so the dispatcher can sleep without inadvertently
+// closing the breaker on a stale post-deadline read.
+//
+// v0.25.0.
+func (c *Client) IsCircuitOpen() bool {
+	c.cbMu.Lock()
+	defer c.cbMu.Unlock()
+	if c.cbOpenUntil.IsZero() {
+		return false
+	}
+	return time.Now().Before(c.cbOpenUntil)
+}
+
 // noteTransientFailure increments the consecutive-failure counter
 // and trips the breaker when threshold is reached.
 func (c *Client) noteTransientFailure() {
@@ -218,14 +268,17 @@ type registryRef struct {
 // elapses, the breaker reopens and the next call probes the
 // upstream.
 func (c *Client) LookupPackages(ctx context.Context, repositoryURL string) ([]model.PackageDistribution, error) {
-	// Circuit-breaker probe: when open, treat ecosyste.ms as
-	// "source absent for this scan" — no error, no data. Operator
-	// sees the source-level pause once (at trip time) in a single
-	// WARN log; per-call DEBUG keeps the steady-state quiet.
+	// Circuit-breaker probe: when open, short-circuit with a typed
+	// sentinel error (ErrCircuitOpen) that classifies as ClassSkip.
+	// The scanner uses this to mark the scan as incomplete
+	// (distribution_scan_complete = FALSE) so the affected repo
+	// becomes immediately re-eligible once the breaker closes.
+	// Operator sees the source-level pause once (at trip time) in a
+	// single WARN log; per-call DEBUG keeps the steady-state quiet.
 	if c.circuitOpen() {
 		c.logger.Debug("ecosyste.ms LookupPackages: circuit open, skipping",
 			"repository_url", repositoryURL)
-		return nil, nil
+		return nil, ErrCircuitOpen
 	}
 
 	u, err := url.Parse(c.baseURL + "/api/v1/packages/lookup")

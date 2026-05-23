@@ -247,6 +247,21 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "distribution_failed_attempts", "INTEGER DEFAULT 0")
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "distribution_last_failed_at", "TIMESTAMPTZ")
 
+	// v0.25.0: distribution_scan_complete tracks whether the most-
+	// recent distribution scan was complete (all external sources
+	// consulted successfully) or partial (some external source had
+	// a transient error or was skipped due to an open circuit
+	// breaker). The claim query treats scan_complete=FALSE as
+	// immediately re-eligible (bypassing the cadence gate) so the
+	// ~10 repos that trip the ecosyste.ms breaker get fully
+	// re-collected on the next dispatch cycle after the breaker
+	// closes — rotating their partial-scan rows to history.
+	//
+	// Default TRUE so existing rows (pre-v0.25.0 installs that have
+	// already scanned) are not treated as incomplete on first
+	// startup. Only NEW scans under v0.25.0+ can mark this false.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "distribution_scan_complete", "BOOLEAN DEFAULT TRUE")
+
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection
 	// created duplicate rows. Clean up first, then create the unique index.

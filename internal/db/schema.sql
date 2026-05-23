@@ -107,7 +107,16 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- distribution_last_failed_at for the backoff window math.
     distribution_last_run        TIMESTAMPTZ,
     distribution_failed_attempts INTEGER DEFAULT 0,
-    distribution_last_failed_at  TIMESTAMPTZ
+    distribution_last_failed_at  TIMESTAMPTZ,
+    -- v0.25.0: distribution_scan_complete tracks whether the most-
+    -- recent scan saw any transient external-source errors or had
+    -- ecosyste.ms skipped due to an open circuit breaker. The claim
+    -- query treats FALSE as immediately re-eligible (bypassing the
+    -- cadence gate) so partial-scan repos get re-collected as soon
+    -- as the source recovers — rotating partial rows to history.
+    -- Default TRUE so pre-v0.25.0 scans aren't retroactively marked
+    -- incomplete.
+    distribution_scan_complete   BOOLEAN DEFAULT TRUE
 );
 
 -- ============================================================

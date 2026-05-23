@@ -430,6 +430,38 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		    distribution_last_failed_at = NULL
 		WHERE distribution_failed_attempts > 0`)
 
+	// v0.25.1 — drop the inherited natural-key UNIQUE constraints
+	// on the two distribution history tables. The pre-v0.25.1 schema
+	// declared them via `LIKE parent INCLUDING ALL`, which carried the
+	// parent's UNIQUE constraints into history. History tables are
+	// supposed to hold many snapshots over time per logical key, but
+	// the inherited UNIQUE prevented that — the second rotation of any
+	// repo tripped 23505 in MarkDistributionComplete and rolled back.
+	//
+	// In v0.24.0 the bug was rare (cadence = 180 days). In v0.25.0
+	// distribution_scan_complete=FALSE makes partial-scan repos
+	// immediately re-eligible, so the failure mode became a tight
+	// dispatcher loop: 1 ERROR + 1 burned distribution scan every ~30s
+	// per stuck repo. Operators saw this on 2026-05-23 with repo_id=70:
+	//
+	//   level=ERROR msg="distribution: mark complete failed" repo_id=70
+	//   error="rotate repo_distribution_manifest to history: ERROR:
+	//   duplicate key value violates unique constraint
+	//   \"repo_distribution_manifest_history_repo_id_manifest_path_key\""
+	//
+	// PRIMARY KEY on distribution_id / manifest_id is NOT dropped —
+	// the schema still declares LIKE INCLUDING ALL so the PK survives;
+	// only the natural-key UNIQUE constraints by their auto-generated
+	// names are dropped. IF EXISTS makes the step idempotent for
+	// fresh-install DBs (where schema.sql's own DROP already fired
+	// during the base DDL exec) and for re-runs after the constraints
+	// are gone.
+	execMigrationStep(ctx, pg, logger, &errs, "v0.25.1 drop inherited natural-key UNIQUEs on distribution history tables",
+		`ALTER TABLE aveloxis_data.repo_distribution_history
+		    DROP CONSTRAINT IF EXISTS repo_distribution_history_repo_id_ecosystem_package_name_so_key;
+		ALTER TABLE aveloxis_data.repo_distribution_manifest_history
+		    DROP CONSTRAINT IF EXISTS repo_distribution_manifest_history_repo_id_manifest_path_key;`)
+
 	// collection_queue.last_commits backfill (v0.19.11). Pre-v0.19.11
 	// the FacadeCollector incremented result.Commits once per inserted
 	// ROW rather than once per distinct commit. Since the commits table

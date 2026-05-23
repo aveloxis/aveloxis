@@ -2222,6 +2222,15 @@ CREATE INDEX IF NOT EXISTS idx_repo_distribution_ecosystem
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_distribution_history (
     LIKE aveloxis_data.repo_distribution INCLUDING ALL
 );
+-- v0.25.1: the parent's UNIQUE (repo_id, ecosystem, package_name,
+-- source) constraint is inherited into the history table by the
+-- preceding LIKE clause, which is wrong: history holds many
+-- snapshots over time per logical key. The PRIMARY KEY on
+-- distribution_id is kept; only the natural-key UNIQUE is dropped.
+-- IF EXISTS makes both fresh installs and v0.24.x→v0.25.1 upgrades
+-- idempotent.
+ALTER TABLE aveloxis_data.repo_distribution_history
+    DROP CONSTRAINT IF EXISTS repo_distribution_history_repo_id_ecosystem_package_name_so_key;
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_distribution_manifest (
     manifest_id           BIGSERIAL PRIMARY KEY,
@@ -2245,6 +2254,12 @@ CREATE INDEX IF NOT EXISTS idx_repo_distribution_manifest_type
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_distribution_manifest_history (
     LIKE aveloxis_data.repo_distribution_manifest INCLUDING ALL
 );
+-- v0.25.1: same rationale as repo_distribution_history above — drop
+-- the inherited UNIQUE (repo_id, manifest_path) so a re-scan can
+-- rotate the same manifest path into history multiple times without
+-- tripping 23505. The PRIMARY KEY on manifest_id survives.
+ALTER TABLE aveloxis_data.repo_distribution_manifest_history
+    DROP CONSTRAINT IF EXISTS repo_distribution_manifest_history_repo_id_manifest_path_key;
 
 
 -- ============================================================

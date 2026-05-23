@@ -183,6 +183,9 @@ type ghRelease struct {
 	PublishedAt *time.Time `json:"published_at"`
 	HTMLURL     string     `json:"html_url"`
 	Author      ghUser     `json:"author"`
+	// v0.24.0: assets are fetched by ListReleaseAssetExtensions for
+	// distribution-tracking. Unused by the main release collector.
+	Assets []ghReleaseAsset `json:"assets"`
 }
 
 type ghCommit struct {

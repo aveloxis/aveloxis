@@ -85,12 +85,13 @@ type Config struct {
 	// ecosyste.ms, GitHub Packages, GitHub release assets) plus
 	// in-repo manifest evidence. Off by default; opt-in via
 	// collection.distribution_tracking_enabled.
-	DistributionTrackingEnabled       bool          // master switch (off by default)
-	DistributionTrackingInterval      time.Duration // per-repo cadence (default 180d)
-	DistributionTrackingWorkers       int           // concurrent runners (default 4)
-	DistributionTrackingStartInterval time.Duration // minimum gap between successful claims (default 30s)
-	DistributionTrackingPoliteEmail   string        // ecosyste.ms polite-pool From: header
-	DistributionTrackingUserAgent     string        // overrides "aveloxis/<version>" UA
+	DistributionTrackingEnabled           bool          // master switch (off by default)
+	DistributionTrackingInterval          time.Duration // per-repo cadence (default 180d)
+	DistributionTrackingWorkers           int           // concurrent runners (default 4)
+	DistributionTrackingStartInterval     time.Duration // minimum gap between successful claims (default 30s)
+	DistributionTrackingPoliteEmail       string        // ecosyste.ms polite-pool From: header
+	DistributionTrackingUserAgent         string        // overrides "aveloxis/<version>" UA
+	DistributionTrackingCrossCheckSources bool          // v0.25.0: always query both deps.dev AND ecosyste.ms (default true)
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.

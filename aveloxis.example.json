@@ -55,7 +55,8 @@
     "distribution_tracking_workers": 4,
     "distribution_tracking_start_interval_s": 30,
     "distribution_tracking_polite_email": "",
-    "distribution_tracking_user_agent": ""
+    "distribution_tracking_user_agent": "",
+    "distribution_tracking_cross_check_sources": true
   },
   "web": {
     "addr": ":8082",

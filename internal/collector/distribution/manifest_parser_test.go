@@ -229,9 +229,161 @@ func TestParseManifestNameEmptyContentReturnsEmpty(t *testing.T) {
 		"package.json", "Cargo.toml", "pyproject.toml",
 		"setup.py", "setup.cfg", "pom.xml", "go.mod",
 		"my.gemspec", "composer.json",
+		// v0.25.0 additions:
+		"Project.toml", "JuliaProject.toml", "DESCRIPTION",
+		"meta.yaml", "recipe.yaml",
 	} {
 		if got := ParseManifestName(filename, ""); got != "" {
 			t.Errorf("%s empty content = %q, want empty", filename, got)
 		}
+	}
+}
+
+// ---- v0.25.0 — Julia / R / conda manifest tests ----------------------
+
+func TestParseManifestNameJuliaProjectToml(t *testing.T) {
+	// Real-world Julia Project.toml shape (from JuliaClimate/Drifters.jl):
+	content := `name = "Drifters"
+uuid = "82e88c0e-f6cf-11e8-23e1-3bdc60a1f37c"
+authors = ["JuliaClimate contributors"]
+version = "0.5.6"
+
+[deps]
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+
+[compat]
+julia = "1.6"
+`
+	if got := ParseManifestName("Project.toml", content); got != "Drifters" {
+		t.Errorf("Project.toml name = %q, want %q", got, "Drifters")
+	}
+	// JuliaProject.toml is an alias — same parser, same result.
+	if got := ParseManifestName("JuliaProject.toml", content); got != "Drifters" {
+		t.Errorf("JuliaProject.toml name = %q, want %q", got, "Drifters")
+	}
+}
+
+func TestParseManifestNameJuliaProjectTomlIgnoresSectionedName(t *testing.T) {
+	// If `name` only appears AFTER a [section] header, it's NOT the
+	// package name (it's a dep name or compat key). Conservative: return "".
+	content := `[deps]
+name = "this-is-a-dep-key-not-the-package"
+`
+	if got := ParseManifestName("Project.toml", content); got != "" {
+		t.Errorf("sectioned-only name = %q, want empty", got)
+	}
+}
+
+func TestParseManifestNameJuliaProjectTomlNoName(t *testing.T) {
+	// Some Julia repos (notably apps not registered with General)
+	// omit the name field. Parser must return "" not panic.
+	content := `uuid = "82e88c0e-f6cf-11e8-23e1-3bdc60a1f37c"
+version = "0.1.0"
+[deps]
+`
+	if got := ParseManifestName("Project.toml", content); got != "" {
+		t.Errorf("no-name Project.toml = %q, want empty", got)
+	}
+}
+
+func TestParseManifestNameRDescription(t *testing.T) {
+	// Real-world R DESCRIPTION shape (from a typical CRAN/Bioconductor package).
+	// DESCRIPTION uses RFC 822 / Debian-control style: case-sensitive
+	// keys, colon-separated values, optional folded continuations.
+	content := `Package: genefilter
+Title: genefilter: methods for filtering genes from high-throughput experiments
+Version: 1.84.0
+Author: R. Gentleman, V. Carey, W. Huber, F. Hahne
+Description: Some basic functions for filtering genes.
+License: Artistic-2.0
+Depends: R (>= 4.0.0), methods
+`
+	if got := ParseManifestName("DESCRIPTION", content); got != "genefilter" {
+		t.Errorf("DESCRIPTION name = %q, want %q", got, "genefilter")
+	}
+}
+
+func TestParseManifestNameRDescriptionCaseSensitive(t *testing.T) {
+	// R is case-sensitive on the `Package:` key. A lower-cased
+	// `package:` is NOT a valid R DESCRIPTION header.
+	content := `package: not-the-right-key
+`
+	if got := ParseManifestName("DESCRIPTION", content); got != "" {
+		t.Errorf("lowercase 'package:' = %q, want empty (R is case-sensitive)", got)
+	}
+}
+
+func TestParseManifestNameRDescriptionNoPackageField(t *testing.T) {
+	// Malformed DESCRIPTION with no Package: header — return "".
+	content := `Title: Just a title
+Version: 1.0.0
+`
+	if got := ParseManifestName("DESCRIPTION", content); got != "" {
+		t.Errorf("no Package: header = %q, want empty", got)
+	}
+}
+
+func TestParseManifestNameCondaRecipeMetaYaml(t *testing.T) {
+	// Real conda-build meta.yaml shape.
+	content := `package:
+  name: numpy
+  version: 1.26.0
+
+source:
+  url: https://github.com/numpy/numpy/archive/v1.26.0.tar.gz
+
+build:
+  number: 0
+`
+	if got := ParseManifestName("meta.yaml", content); got != "numpy" {
+		t.Errorf("meta.yaml name = %q, want %q", got, "numpy")
+	}
+}
+
+func TestParseManifestNameCondaRecipeYaml(t *testing.T) {
+	// rattler-build recipe.yaml shape (newer conda variant).
+	content := `package:
+  name: scipy
+  version: 1.11.4
+`
+	if got := ParseManifestName("recipe.yaml", content); got != "scipy" {
+		t.Errorf("recipe.yaml name = %q, want %q", got, "scipy")
+	}
+}
+
+func TestParseManifestNameCondaIgnoresNameOutsidePackageBlock(t *testing.T) {
+	// `name:` keys can appear in OTHER top-level YAML blocks
+	// (source.name, build.name, etc.). Only the package: block's
+	// name is the package name. The parser must scope correctly.
+	content := `source:
+  name: should-be-ignored
+  url: https://example.com
+
+package:
+  name: realname
+`
+	if got := ParseManifestName("meta.yaml", content); got != "realname" {
+		t.Errorf("scoped-name = %q, want %q", got, "realname")
+	}
+}
+
+func TestParseManifestNameCondaStripsQuotes(t *testing.T) {
+	// YAML lets you quote scalar values; the parser must strip
+	// double or single quotes.
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"double quotes", "package:\n  name: \"pyqt\"\n", "pyqt"},
+		{"single quotes", "package:\n  name: 'matplotlib'\n", "matplotlib"},
+		{"no quotes", "package:\n  name: pandas\n", "pandas"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseManifestName("meta.yaml", tt.content); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

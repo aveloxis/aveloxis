@@ -5,9 +5,13 @@ package github
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // v0.24.0 — GitHub-side fetchers for the DistributionWorker.
@@ -299,6 +303,107 @@ func TestListRootManifests(t *testing.T) {
 		if got := gotTypes[typ]; got != path {
 			t.Errorf("expected manifest type %s at %s, got %q", typ, path, got)
 		}
+	}
+}
+
+// TestListRootManifestsRecognizesJuliaRCondaManifests pins the v0.25.0
+// additions to wellKnownManifests. Pre-v0.25.0 chaoss.tv operator
+// diagnostic showed every distribution-scan failure was a Julia or R
+// repo whose manifest existed in the GitHub Contents listing but was
+// dropped on the floor because classifyManifestFilename returned ""
+// for it. Without recognizing these manifests, the only viable
+// distribution source for Julia/CRAN/Bioconductor was ecosyste.ms,
+// so any ecosyste.ms outage stranded the entire cohort.
+func TestListRootManifestsRecognizesJuliaRCondaManifests(t *testing.T) {
+	contentsResp := `[
+        {"name": "Project.toml", "path": "Project.toml", "type": "file"},
+        {"name": "DESCRIPTION", "path": "DESCRIPTION", "type": "file"},
+        {"name": "meta.yaml", "path": "meta.yaml", "type": "file"},
+        {"name": "recipe.yaml", "path": "recipe.yaml", "type": "file"},
+        {"name": "JuliaProject.toml", "path": "JuliaProject.toml", "type": "file"},
+        {"name": "README.md", "path": "README.md", "type": "file"}
+    ]`
+	client := testGHClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/repos/x/y/contents/" || r.URL.Path == "/repos/x/y/contents" {
+			_, _ = w.Write([]byte(contentsResp))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+
+	manifests, err := client.ListRootManifests(context.Background(), "x", "y")
+	if err != nil {
+		t.Fatalf("ListRootManifests: %v", err)
+	}
+
+	gotTypes := make(map[string][]string) // type -> paths
+	for _, m := range manifests {
+		gotTypes[m.ManifestType] = append(gotTypes[m.ManifestType], m.ManifestPath)
+	}
+
+	// Both Project.toml and JuliaProject.toml map to "julia"
+	if len(gotTypes["julia"]) != 2 {
+		t.Errorf("expected 2 julia manifests (Project.toml + JuliaProject.toml), got %v", gotTypes["julia"])
+	}
+	if len(gotTypes["cran"]) != 1 || gotTypes["cran"][0] != "DESCRIPTION" {
+		t.Errorf("expected DESCRIPTION → cran, got %v", gotTypes["cran"])
+	}
+	// Both meta.yaml and recipe.yaml map to "conda"
+	if len(gotTypes["conda"]) != 2 {
+		t.Errorf("expected 2 conda manifests (meta.yaml + recipe.yaml), got %v", gotTypes["conda"])
+	}
+}
+
+// TestDistributionCallsBypassETagConditionals pins the v0.25.0
+// silent-data-loss fix. The four distribution-related GitHub
+// functions must call platform.WithoutETag(ctx) at entry so the
+// HTTPClient does NOT send If-None-Match — a 304 response under
+// snapshot-replace semantics would otherwise delete prior rows
+// without ever reinserting them.
+//
+// Behavioral test: drive each function twice through the same test
+// server. If ETag were active, the second call would carry If-None-
+// Match. Assert that no request EVER carries that header.
+func TestDistributionCallsBypassETagConditionals(t *testing.T) {
+	var sawIfNoneMatch int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != "" {
+			sawIfNoneMatch++
+		}
+		// Always return a stable ETag so the HTTPClient would cache it
+		// (if ETag were active) and send If-None-Match on the next call.
+		w.Header().Set("ETag", `"stable-etag-v1"`)
+		w.Header().Set("Content-Type", "application/json")
+		// Choose a response shape that satisfies every endpoint we
+		// test against. An empty JSON array works for releases,
+		// packages, and contents listings; an empty object works for
+		// FetchManifestContent.
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/contents/foo"):
+			_, _ = w.Write([]byte(`{"content":"","encoding":"base64"}`))
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	logger := slog.Default()
+	keys := platform.NewKeyPool([]string{"test-token"}, logger)
+	httpClient := platform.NewHTTPClient(server.URL, keys, logger, platform.AuthGitHub)
+	client := &Client{http: httpClient, logger: logger}
+
+	ctx := context.Background()
+	// Each function called twice so a leaking ETag would surface.
+	for i := 0; i < 2; i++ {
+		_, _ = client.ListReleaseAssetExtensions(ctx, "x", "y")
+		_, _ = client.ListRepoPackages(ctx, "x", "y")
+		_, _ = client.ListRootManifests(ctx, "x", "y")
+		_, _ = client.FetchManifestContent(ctx, "x", "y", "foo")
+	}
+
+	if sawIfNoneMatch != 0 {
+		t.Errorf("distribution calls leaked %d If-None-Match headers; ETag MUST be bypassed for these paths to avoid the v0.24.0 snapshot-replace silent-data-loss bug", sawIfNoneMatch)
 	}
 }
 

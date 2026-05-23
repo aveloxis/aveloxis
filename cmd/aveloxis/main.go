@@ -192,8 +192,9 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		ScancodeCadence:        cfg.Collection.ScancodeCadence(),
 		ScancodeCloneDir:       cfg.Collection.ScancodeCloneDirOrDefault(),
 		ScancodeShutdownGrace:  cfg.Collection.ScancodeShutdownGrace(),
-		ScancodeRunTimeoutBase: cfg.Collection.ScancodeRunTimeout(),    // v0.23.8
-		ScancodeRunTimeoutCap:  cfg.Collection.ScancodeRunTimeoutCap(), // v0.23.8
+		ScancodeRunTimeoutBase: cfg.Collection.ScancodeRunTimeout(),           // v0.23.8
+		ScancodeRunTimeoutCap:  cfg.Collection.ScancodeRunTimeoutCap(),        // v0.23.8
+		ScancodeMaxInMemory:    cfg.Collection.ScancodeMaxInMemoryOrDefault(), // v0.25.2
 		// v0.22.4 — staging-row cleanup retention. Default 1h.
 		StagingRetention: cfg.Collection.StagingRetentionDuration(),
 		// v0.22.4 — observation-only long-jobs watchdog. Default 75m.

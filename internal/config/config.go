@@ -442,6 +442,21 @@ type CollectionConfig struct {
 	// just won't get any bigger timeout.
 	ScancodeRunTimeoutCapHours int `json:"scancode_run_timeout_cap_hours"`
 
+	// ScancodeMaxInMemory caps how many file scan results scancode
+	// keeps in RAM before spilling intermediate state to a tempfile
+	// on disk. Default 5000 — matches the pre-v0.25.2 hardcoded
+	// constant so legacy aveloxis.json files keep working unchanged.
+	//
+	// The default is conservative for low-memory dev machines. On
+	// production hosts with hundreds of GB of RAM, raising this
+	// reduces tempfile I/O on monorepos (linux kernel, chromium,
+	// etc.) where the default forces spill early in the scan.
+	// scancode passes the value through to its
+	// `--max-in-memory N` flag verbatim. Set 0 or negative to
+	// fall back to the default; the accessor clamps so a bogus
+	// value can't reach the scancode subprocess.
+	ScancodeMaxInMemory int `json:"scancode_max_in_memory"`
+
 	// PhaseWatchdogMinutes controls the v0.22.4 observation watchdog's
 	// stall threshold. If staging row count for a repo does not grow
 	// for this many minutes, the watchdog appends an event to
@@ -749,6 +764,19 @@ func (c *CollectionConfig) ScancodeRunTimeoutCap() time.Duration {
 	return time.Duration(c.ScancodeRunTimeoutCapHours) * time.Hour
 }
 
+// ScancodeMaxInMemoryOrDefault returns the scancode --max-in-memory
+// cap (v0.25.2). Defaults to 5000, matching the pre-v0.25.2
+// hardcoded constant so legacy configs are unaffected. Negative or
+// zero inputs collapse to the default — the value flows directly to
+// a scancode CLI argument so a bogus number must never reach the
+// subprocess.
+func (c *CollectionConfig) ScancodeMaxInMemoryOrDefault() int {
+	if c.ScancodeMaxInMemory <= 0 {
+		return 5000
+	}
+	return c.ScancodeMaxInMemory
+}
+
 // MailConfig configures the Gmail-backed transactional mailer
 // (v0.19.0). When GmailUser is empty the mailer is a no-op — the rest
 // of the application works without email enabled.
@@ -859,9 +887,10 @@ func DefaultConfig() *Config {
 			ScancodeStartIntervalSec:     90,
 			ScancodeCadenceDays:          180,
 			ScancodeCloneDir:             defaultScancodeCloneDir(),
-			ScancodeShutdownGraceMinutes: 0,  // v0.23.7: immediate kill on stop
-			ScancodeRunTimeoutHours:      2,  // v0.23.8: base wall-clock per scan
-			ScancodeRunTimeoutCapHours:   24, // v0.23.8: upper bound on adaptive timeout
+			ScancodeShutdownGraceMinutes: 0,    // v0.23.7: immediate kill on stop
+			ScancodeRunTimeoutHours:      2,    // v0.23.8: base wall-clock per scan
+			ScancodeRunTimeoutCapHours:   24,   // v0.23.8: upper bound on adaptive timeout
+			ScancodeMaxInMemory:          5000, // v0.25.2: matches pre-v0.25.2 hardcoded value; bump on RAM-rich production hosts
 			// v0.24.0 DistributionWorker defaults. Off by default;
 			// 6-month cadence; modest concurrency. See CollectionConfig
 			// field docs for the full rationale.

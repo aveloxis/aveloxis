@@ -66,6 +66,7 @@ type Config struct {
 	ScancodeShutdownGrace  time.Duration // wait budget for in-flight scancode runs on aveloxis stop (v0.23.7 default 0 = immediate kill)
 	ScancodeRunTimeoutBase time.Duration // v0.23.8 base per-job timeout (default 2h)
 	ScancodeRunTimeoutCap  time.Duration // v0.23.8 upper bound on adaptive per-job timeout (default 24h)
+	ScancodeMaxInMemory    int           // v0.25.2 scancode --max-in-memory file-result cap (default 5000)
 
 	// PhaseWatchdog is the no-staging-growth threshold the v0.22.4
 	// observation watchdog uses to emit a long-jobs event. Default
@@ -339,6 +340,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.cfg.ScancodeShutdownGrace,
 		s.cfg.ScancodeRunTimeoutBase,
 		s.cfg.ScancodeRunTimeoutCap,
+		s.cfg.ScancodeMaxInMemory,
 	)
 	go scancodeWorker.Run(ctx)
 

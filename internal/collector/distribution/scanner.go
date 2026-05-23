@@ -100,14 +100,17 @@ func NewCompositeScanner(
 // error (the operator's design decision recorded in CLAUDE.md).
 // Future work could add a GitLab path here without changing the
 // outer Worker contract.
-func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, repoGit string) ([]model.PackageDistribution, []model.DistributionManifest, error) {
+func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, repoGit string) ([]model.PackageDistribution, []model.DistributionManifest, bool, error) {
 	// Platform gate: deps.dev expects github.com URLs; ecosyste.ms
 	// can lookup gitlab.com too but the GitHub Contents API doesn't
 	// work for GitLab. Easiest to opt in only for github.com hosts.
+	//
+	// A non-GitHub repo is a "complete scan with no evidence" —
+	// stamp it complete=true so the cadence gate applies normally.
 	if !strings.Contains(strings.ToLower(repoGit), "github.com") {
 		s.Logger.Debug("distribution scanner: non-GitHub repo, skipping",
 			"repo_id", repoID, "repo_git", repoGit)
-		return nil, nil, nil
+		return nil, nil, true, nil
 	}
 
 	var (
@@ -124,6 +127,22 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		githubErrs     []error // ListReleaseAssetExtensions, ListRepoPackages, ListRootManifests
 		enabledSources int     // total number of sources actually attempted
 		erroredSources int     // count of sources that returned non-nil err
+
+		// scanIncomplete tracks whether ANY enabled external source
+		// (deps.dev or ecosyste.ms) had a transient error or was
+		// skipped due to an open circuit breaker. When true, the
+		// store stamps distribution_scan_complete=FALSE on this
+		// row, which makes the claim query treat it as immediately
+		// re-eligible (bypassing the cadence gate). The 10 repos
+		// that trip the ecosyste.ms breaker get full re-scans this
+		// way; their partial-scan rows rotate to history on the
+		// next snapshot replace.
+		//
+		// GitHub source errors do NOT set scanIncomplete — 403/404/
+		// 304 from those endpoints are routinely benign (private
+		// repos, missing OAuth scope, archived/empty repos) and
+		// shouldn't force a re-scan.
+		scanIncomplete bool
 	)
 
 	// Source 1: deps.dev (external package registry, primary)
@@ -134,6 +153,12 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 			erroredSources++
 			depsDevErr = err
 			class := platform.ClassifyError(err)
+			// Transient/rate-limit class from an external registry
+			// marks the scan incomplete so the row gets re-collected
+			// once the source recovers (v0.25.0).
+			if class == platform.ClassTransient || class == platform.ClassRateLimit {
+				scanIncomplete = true
+			}
 			s.Logger.Warn("distribution: deps.dev fetch failed",
 				"repo_id", repoID, "owner", owner, "repo", repo,
 				"class", class.String(), "error", err)
@@ -155,12 +180,31 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		enabledSources++
 		em, err := s.Ecosystems.LookupPackages(ctx, repoGit)
 		if err != nil {
-			erroredSources++
-			ecosystemsErr = err
-			class := platform.ClassifyError(err)
-			s.Logger.Warn("distribution: ecosyste.ms fetch failed",
-				"repo_id", repoID, "owner", owner, "repo", repo,
-				"class", class.String(), "error", err)
+			// v0.25.0: ErrCircuitOpen is a typed sentinel from the
+			// ecosystems client indicating the source-level circuit
+			// breaker is currently tripped and the call short-
+			// circuited without consulting upstream. Treat it as a
+			// "source unavailable" skip (NOT an error) — but mark
+			// the scan incomplete so the row gets re-collected once
+			// the breaker closes. The 10 repos that trip the breaker
+			// in the first place ALSO go through this path on their
+			// second attempt (the partial-scan rows get rotated to
+			// history on the re-collection).
+			if errors.Is(err, ecosystems.ErrCircuitOpen) {
+				scanIncomplete = true
+				s.Logger.Debug("distribution: ecosyste.ms skipped — circuit open, scan marked incomplete",
+					"repo_id", repoID, "owner", owner, "repo", repo)
+			} else {
+				erroredSources++
+				ecosystemsErr = err
+				class := platform.ClassifyError(err)
+				if class == platform.ClassTransient || class == platform.ClassRateLimit {
+					scanIncomplete = true
+				}
+				s.Logger.Warn("distribution: ecosyste.ms fetch failed",
+					"repo_id", repoID, "owner", owner, "repo", repo,
+					"class", class.String(), "error", err)
+			}
 		} else {
 			distributions = append(distributions, em...)
 		}
@@ -256,8 +300,33 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 			allErrs = append(allErrs, ecosystemsErr)
 		}
 		allErrs = append(allErrs, githubErrs...)
-		return nil, nil, errors.Join(allErrs...)
+		// Failed scan: complete is moot — the worker routes to
+		// RecordDistributionFailure and doesn't touch
+		// distribution_scan_complete. Return false defensively.
+		return nil, nil, false, errors.Join(allErrs...)
 	}
 
-	return distributions, manifests, nil
+	// Success path. complete = !scanIncomplete. The store stamps
+	// distribution_scan_complete with this value; the claim query
+	// treats scan_complete=FALSE as immediately re-eligible.
+	return distributions, manifests, !scanIncomplete, nil
+}
+
+// Healthy reports whether the CompositeScanner's external sources
+// are currently in a healthy state. Returns false when ecosyste.ms
+// is enabled AND its source-level circuit breaker is currently open
+// — the DistributionWorker's dispatcher consults this before each
+// claim and pauses while unhealthy, so we don't dispatch new repos
+// into a known-bad upstream and end up stamping their cadence with
+// partial-scan data.
+//
+// deps.dev does not (yet) have a source-level circuit breaker; if
+// one is added in the future, OR its IsCircuitOpen() in here.
+//
+// v0.25.0.
+func (s *CompositeScanner) Healthy() bool {
+	if s.Ecosystems != nil && s.Ecosystems.IsCircuitOpen() {
+		return false
+	}
+	return true
 }

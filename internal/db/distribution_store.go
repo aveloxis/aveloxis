@@ -96,6 +96,12 @@ func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence t
 	// Backoff base is sourced from the named constant so the schedule
 	// stays documented in one place. Plain Sprintf is safe here: the
 	// only substitution is an integer constant, not user input.
+	// v0.25.0: distribution_scan_complete=FALSE bypasses the cadence
+	// gate. A partial scan (an external source had a transient error
+	// or was skipped due to an open circuit breaker) becomes
+	// immediately re-eligible on the next dispatch cycle, so once
+	// the source recovers the row gets a full re-collection that
+	// rotates the partial-scan rows to history.
 	claimSQL := fmt.Sprintf(`
 		WITH candidate AS (
 		    SELECT r.repo_id
@@ -104,12 +110,18 @@ func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence t
 		    WHERE q.last_collected IS NOT NULL
 		      AND COALESCE(r.repo_archived, FALSE) = FALSE
 		      AND (r.distribution_last_run IS NULL
+		           OR COALESCE(r.distribution_scan_complete, TRUE) = FALSE
 		           OR r.distribution_last_run < NOW() - $1::interval)
 		      AND (r.distribution_last_failed_at IS NULL
 		           OR r.distribution_last_failed_at < NOW() - make_interval(
 		               secs => %d * GREATEST(COALESCE(r.distribution_failed_attempts, 0), 1)
 		                          * GREATEST(COALESCE(r.distribution_failed_attempts, 0), 1)))
-		    ORDER BY r.distribution_last_run NULLS FIRST, r.repo_id
+		    ORDER BY
+		        -- Partial scans get priority (after NULLs) so they
+		        -- re-collect ahead of routine cadence-elapsed rows.
+		        COALESCE(r.distribution_scan_complete, TRUE) ASC,
+		        r.distribution_last_run NULLS FIRST,
+		        r.repo_id
 		    LIMIT 1
 		    FOR UPDATE SKIP LOCKED
 		)
@@ -140,8 +152,18 @@ func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence t
 // observation ("we scanned this repo and found no packaging
 // evidence"). The empty result is still a successful scan; the
 // cadence gate prevents re-scanning for the full interval.
+//
+// v0.25.0: scanComplete distinguishes a complete scan (every
+// external source consulted successfully) from a partial scan (an
+// external source had a transient error or was skipped due to an
+// open circuit breaker). Partial scans still rotate rows to history
+// + insert fresh observations, but stamp
+// distribution_scan_complete = FALSE so the claim query treats the
+// row as immediately re-eligible (bypassing the cadence gate). On
+// the next dispatch cycle after the source recovers, the row gets
+// a full re-collection; its partial-scan rows rotate to history.
 func (s *PostgresStore) MarkDistributionComplete(ctx context.Context, job *DistributionJob,
-	distributions []model.PackageDistribution, manifests []model.DistributionManifest) (retErr error) {
+	distributions []model.PackageDistribution, manifests []model.DistributionManifest, scanComplete bool) (retErr error) {
 	if job == nil || job.tx == nil {
 		return fmt.Errorf("MarkDistributionComplete: nil job or tx")
 	}
@@ -222,12 +244,17 @@ func (s *PostgresStore) MarkDistributionComplete(ctx context.Context, job *Distr
 	}
 
 	// Stamp success on repos row + reset failure counters.
+	// v0.25.0: also stamp distribution_scan_complete with the
+	// caller's signal. FALSE makes the row immediately re-eligible
+	// on the next dispatch cycle (the claim query treats it like
+	// distribution_last_run IS NULL).
 	if _, err := tx.Exec(ctx, `
 		UPDATE aveloxis_data.repos
 		SET distribution_last_run = NOW(),
 		    distribution_failed_attempts = 0,
-		    distribution_last_failed_at = NULL
-		WHERE repo_id = $1`, job.RepoID); err != nil {
+		    distribution_last_failed_at = NULL,
+		    distribution_scan_complete = $2
+		WHERE repo_id = $1`, job.RepoID, scanComplete); err != nil {
 		return fmt.Errorf("stamp distribution_last_run: %w", err)
 	}
 

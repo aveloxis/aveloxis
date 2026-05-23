@@ -247,6 +247,21 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "distribution_failed_attempts", "INTEGER DEFAULT 0")
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "distribution_last_failed_at", "TIMESTAMPTZ")
 
+	// v0.25.0: distribution_scan_complete tracks whether the most-
+	// recent distribution scan was complete (all external sources
+	// consulted successfully) or partial (some external source had
+	// a transient error or was skipped due to an open circuit
+	// breaker). The claim query treats scan_complete=FALSE as
+	// immediately re-eligible (bypassing the cadence gate) so the
+	// ~10 repos that trip the ecosyste.ms breaker get fully
+	// re-collected on the next dispatch cycle after the breaker
+	// closes — rotating their partial-scan rows to history.
+	//
+	// Default TRUE so existing rows (pre-v0.25.0 installs that have
+	// already scanned) are not treated as incomplete on first
+	// startup. Only NEW scans under v0.25.0+ can mark this false.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "distribution_scan_complete", "BOOLEAN DEFAULT TRUE")
+
 	// Commits: deduplicate and add unique index (added in v0.7.5).
 	// Previous versions had no ON CONFLICT on commits INSERT, so re-collection
 	// created duplicate rows. Clean up first, then create the unique index.
@@ -374,6 +389,46 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		      SELECT 1 FROM aveloxis_data.repo_distribution
 		      WHERE source = 'deps.dev'
 		  )`)
+
+	// v0.25.0 — one-shot reset for the Julia/R/conda cohort and any
+	// repo sidelined by the pre-v0.25.0 strict scanner contract.
+	//
+	// Two compounding issues drove this on chaoss.tv 2026-05-22/23:
+	//
+	//   1. The pre-v0.25.0 GitHub manifest classifier didn't recognize
+	//      Project.toml (Julia), DESCRIPTION (R/CRAN/Bioconductor),
+	//      meta.yaml / recipe.yaml (conda). For these ecosystems the
+	//      ONLY working distribution source was ecosyste.ms; when it
+	//      went into a 500-storm, every Julia/R/conda repo accumulated
+	//      failures under the strict-contract "any error + zero data
+	//      = failure" rule, eventually hitting the 10-strike sideline
+	//      that stamps distribution_last_run = NOW() to lock the row
+	//      out for 180 days.
+	//
+	//   2. The v0.25.0 loosened scanner contract treats empty-but-
+	//      clean responses as success (not failure). Without resetting
+	//      the sidelined cohort, those repos stay out of rotation
+	//      until their artificial last_run elapses ~6 months later.
+	//
+	// Reset criterion: distribution_failed_attempts > 0. Specific
+	// (only touches repos with failure history), idempotent (a
+	// successful subsequent scan zeros the counter; re-running the
+	// migration finds nothing to reset), and fresh-install-safe (no
+	// repos have failures yet on a clean install).
+	//
+	// Operators who want to also re-scan repos that scanned to "zero
+	// evidence" under the old contract — common for Julia/R repos
+	// where ecosyste.ms was the only viable source AND they got NO
+	// failure record because the scan technically succeeded — use the
+	// documented manual workflow:
+	//   UPDATE aveloxis_data.repos SET distribution_last_run = NULL
+	//   WHERE repo_id IN (...);
+	execMigrationStep(ctx, pg, logger, &errs, "v0.25.0 reset distribution state for cohort sidelined under pre-v0.25.0 strict scanner contract",
+		`UPDATE aveloxis_data.repos
+		SET distribution_last_run = NULL,
+		    distribution_failed_attempts = 0,
+		    distribution_last_failed_at = NULL
+		WHERE distribution_failed_attempts > 0`)
 
 	// collection_queue.last_commits backfill (v0.19.11). Pre-v0.19.11
 	// the FacadeCollector incremented result.Commits once per inserted

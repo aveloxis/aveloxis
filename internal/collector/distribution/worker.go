@@ -35,7 +35,7 @@ import (
 type Store interface {
 	ClaimNextDistributionRepo(ctx context.Context, cadence time.Duration) (*db.DistributionJob, error)
 	MarkDistributionComplete(ctx context.Context, job *db.DistributionJob,
-		distributions []model.PackageDistribution, manifests []model.DistributionManifest) error
+		distributions []model.PackageDistribution, manifests []model.DistributionManifest, scanComplete bool) error
 	RecordDistributionFailure(ctx context.Context, job *db.DistributionJob) error
 }
 
@@ -51,8 +51,23 @@ type Store interface {
 // individual fetcher failures inside the scan are aggregated
 // best-effort by the implementation, not bubbled here. The worker
 // does not interpret the error beyond "success vs. failure".
+//
+// v0.25.0: the third return value `complete bool` indicates
+// whether all enabled external sources were consulted successfully.
+// FALSE means at least one external source had a transient error
+// (or was skipped due to an open circuit breaker) so the scan
+// data is partial — the store records this in
+// distribution_scan_complete so the claim query treats the row as
+// immediately re-eligible (bypassing the cadence gate).
+//
+// v0.25.0: Healthy() returns false when a critical external source
+// is unavailable (currently: ecosyste.ms circuit breaker is open).
+// The Worker dispatcher checks this before each claim and pauses
+// when unhealthy, so we don't dispatch new repos into a known-bad
+// upstream and end up stamping their cadence with partial scans.
 type Scanner interface {
-	Scan(ctx context.Context, repoID int64, owner, repo, repoGit string) ([]model.PackageDistribution, []model.DistributionManifest, error)
+	Scan(ctx context.Context, repoID int64, owner, repo, repoGit string) (distributions []model.PackageDistribution, manifests []model.DistributionManifest, complete bool, err error)
+	Healthy() bool
 }
 
 // WorkerOptions configures NewWorker.
@@ -128,12 +143,26 @@ func (w *Worker) Run(ctx context.Context) {
 	w.logger.Info("distribution worker stopped")
 }
 
+// healthCheckInterval is the dispatcher's sleep between unhealthy
+// re-checks. 60 seconds is small enough to resume promptly when the
+// breaker (1-hour pause) closes, large enough to avoid spinning the
+// CPU. v0.25.0.
+const healthCheckInterval = 60 * time.Second
+
 // dispatcher polls the store for new claims and forwards them to
 // the runners via the jobs channel. Minimum-gap pacing means
 // nextStartAllowed is stamped AFTER each successful start, so the
 // dispatcher loops as fast as the runtime allows when jobs are
 // available; the gate only fires to prevent claim bursts on
 // fresh startup.
+//
+// v0.25.0: also checks scanner.Healthy() before each claim and
+// pauses entirely when the scanner reports unhealthy (currently:
+// ecosyste.ms circuit breaker open). This prevents dispatching new
+// repos into a known-bad upstream — without this, every repo
+// dispatched during the breaker's 1-hour pause would get a
+// "complete" scan stamped with no ecosyste.ms data, losing
+// ecosyste.ms coverage for 180 days.
 //
 // Three exit conditions:
 //   - ctx canceled (graceful shutdown)
@@ -145,12 +174,37 @@ func (w *Worker) dispatcher(ctx context.Context, jobs chan<- *db.DistributionJob
 	// starts. Initialized to time.Now() so the first claim fires
 	// immediately.
 	nextStartAllowed := time.Now()
+	// unhealthyLogged ensures we emit the "scanner unhealthy" WARN
+	// once per outage rather than once per check (1-hour outage at
+	// 60s checks would otherwise produce 60 identical log lines).
+	unhealthyLogged := false
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
+		}
+
+		// v0.25.0 health gate. Re-checked on every loop iteration so
+		// recovery is observed within healthCheckInterval of the
+		// breaker reopening.
+		if !w.scanner.Healthy() {
+			if !unhealthyLogged {
+				w.logger.Warn("distribution dispatcher: scanner unhealthy — pausing dispatch until source recovers",
+					"check_interval", healthCheckInterval)
+				unhealthyLogged = true
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(healthCheckInterval):
+			}
+			continue
+		}
+		if unhealthyLogged {
+			w.logger.Info("distribution dispatcher: scanner healthy again — resuming dispatch")
+			unhealthyLogged = false
 		}
 
 		// Wait until we're past nextStartAllowed.
@@ -221,7 +275,7 @@ func (w *Worker) runner(ctx context.Context, jobs <-chan *db.DistributionJob, do
 // completion call so we still persist results even if the parent
 // ctx was canceled mid-scan.
 func (w *Worker) processJob(ctx context.Context, job *db.DistributionJob) {
-	distributions, manifests, scanErr := w.scanner.Scan(ctx, job.RepoID, job.RepoOwner, job.RepoName, job.RepoGit)
+	distributions, manifests, scanComplete, scanErr := w.scanner.Scan(ctx, job.RepoID, job.RepoOwner, job.RepoName, job.RepoGit)
 
 	// completionCtx: short window for the DB write to finish even
 	// if the parent ctx is canceling. Without this, a shutdown
@@ -240,7 +294,17 @@ func (w *Worker) processJob(ctx context.Context, job *db.DistributionJob) {
 		return
 	}
 
-	if err := w.store.MarkDistributionComplete(completionCtx, job, distributions, manifests); err != nil {
+	// v0.25.0: scanComplete is stamped into distribution_scan_complete
+	// so the claim query can treat partial scans as immediately
+	// re-eligible. Partial-scan rows still rotate to history on the
+	// next full re-scan via the snapshot-replace path.
+	if !scanComplete {
+		w.logger.Info("distribution scan partial — will be re-collected once source recovers",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+			"distributions", len(distributions), "manifests", len(manifests))
+	}
+
+	if err := w.store.MarkDistributionComplete(completionCtx, job, distributions, manifests, scanComplete); err != nil {
 		w.logger.Error("distribution: mark complete failed",
 			"repo_id", job.RepoID, "error", err)
 		return

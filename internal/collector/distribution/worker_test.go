@@ -42,6 +42,7 @@ type markCall struct {
 	repoID        int64
 	distributions []model.PackageDistribution
 	manifests     []model.DistributionManifest
+	scanComplete  bool
 }
 
 func (f *fakeStore) ClaimNextDistributionRepo(ctx context.Context, cadence time.Duration) (*db.DistributionJob, error) {
@@ -59,10 +60,10 @@ func (f *fakeStore) ClaimNextDistributionRepo(ctx context.Context, cadence time.
 }
 
 func (f *fakeStore) MarkDistributionComplete(ctx context.Context, job *db.DistributionJob,
-	distributions []model.PackageDistribution, manifests []model.DistributionManifest) error {
+	distributions []model.PackageDistribution, manifests []model.DistributionManifest, scanComplete bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.marks = append(f.marks, markCall{job.RepoID, distributions, manifests})
+	f.marks = append(f.marks, markCall{job.RepoID, distributions, manifests, scanComplete})
 	f.releasedJobIDs = append(f.releasedJobIDs, job.RepoID)
 	return nil
 }
@@ -83,34 +84,53 @@ func (f *fakeStore) snapshot() (marks []markCall, failures []int64) {
 
 // fakeScanner returns canned data and/or canned errors.
 type fakeScanner struct {
-	mu       sync.Mutex
-	calls    int32
-	results  map[int64]scanResult
-	scanErr  error
-	scanWait time.Duration
+	mu        sync.Mutex
+	calls     int32
+	results   map[int64]scanResult
+	scanErr   error
+	scanWait  time.Duration
+	unhealthy atomic.Bool // v0.25.0: when true, Healthy() returns false
 }
 
 type scanResult struct {
 	distributions []model.PackageDistribution
 	manifests     []model.DistributionManifest
+	// partial=true → Scan returns complete=false (the v0.25.0
+	// partial-scan path). Default false preserves pre-v0.25.0
+	// "scan returns complete=true" semantics for legacy tests.
+	partial bool
 }
 
-func (f *fakeScanner) Scan(ctx context.Context, repoID int64, owner, repo, repoGit string) ([]model.PackageDistribution, []model.DistributionManifest, error) {
+func (f *fakeScanner) Scan(ctx context.Context, repoID int64, owner, repo, repoGit string) ([]model.PackageDistribution, []model.DistributionManifest, bool, error) {
 	atomic.AddInt32(&f.calls, 1)
 	if f.scanWait > 0 {
 		select {
 		case <-time.After(f.scanWait):
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, nil, false, ctx.Err()
 		}
 	}
 	if f.scanErr != nil {
-		return nil, nil, f.scanErr
+		return nil, nil, false, f.scanErr
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	r := f.results[repoID]
-	return r.distributions, r.manifests, nil
+	r, ok := f.results[repoID]
+	if !ok {
+		// No canned result → empty-but-complete success.
+		return nil, nil, true, nil
+	}
+	// scanResult.complete defaults to false (zero value of bool).
+	// Pre-v0.25.0 tests didn't set this field; flip the default so
+	// they continue to assert "complete success" without churn.
+	// Tests that want to exercise partial-scan behavior set
+	// complete:false explicitly when constructing scanResult.
+	return r.distributions, r.manifests, !r.partial, nil
+}
+
+// Healthy implements distribution.Scanner.
+func (f *fakeScanner) Healthy() bool {
+	return !f.unhealthy.Load()
 }
 
 func testLogger() *slog.Logger {

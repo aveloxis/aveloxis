@@ -78,11 +78,23 @@ type ghReleaseAsset struct {
 // even if PyPI itself doesn't carry the package.
 //
 // Optional endpoint: 404 / 403 / 410 → empty result, not error.
+//
+// v0.25.0: routes through platform.WithoutETag(ctx) to suppress the
+// HTTPClient's If-None-Match conditional layer. A 304 response from
+// the distribution path would otherwise silently delete prior rows
+// via the v0.24.0 snapshot-replace semantics in
+// MarkDistributionComplete — see WithoutETag's docstring for the
+// silent-data-loss rationale.
 func (c *Client) ListReleaseAssetExtensions(ctx context.Context, owner, repo string) ([]model.PackageDistribution, error) {
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/releases?per_page=100", owner, repo)
 	var releases []ghRelease
 	if err := c.http.GetJSON(ctx, path, &releases); err != nil {
-		if platform.ClassifyError(err) == platform.ClassSkip {
+		// ClassNotModified treated like ClassSkip as defense-in-depth.
+		// With WithoutETag we should never receive 304, but if some
+		// future refactor leaks an ETag into the cache for this path,
+		// the defensive branch keeps us out of the failure loop.
+		if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list releases for %s/%s: %w", owner, repo, err)
@@ -170,6 +182,9 @@ func gitHubPackageTypeToEcosystem(pt string) string {
 // GitHub does not support a repository-name query parameter on these
 // endpoints.
 func (c *Client) ListRepoPackages(ctx context.Context, owner, repo string) ([]model.PackageDistribution, error) {
+	// v0.25.0: bypass ETag so 304 cannot trigger the silent-data-loss
+	// path under snapshot-replace. See WithoutETag docstring.
+	ctx = platform.WithoutETag(ctx)
 	var out []model.PackageDistribution
 
 	for _, pt := range supportedPackageTypes {
@@ -180,20 +195,21 @@ func (c *Client) ListRepoPackages(ctx context.Context, owner, repo string) ([]mo
 		err := c.http.GetJSON(ctx, userPath, &pkgs)
 		if err != nil {
 			class := platform.ClassifyError(err)
-			if class == platform.ClassSkip {
+			// ClassNotModified treated like ClassSkip (defense in depth).
+			if class == platform.ClassSkip || class == platform.ClassNotModified {
 				// 404 on user endpoint: try org endpoint.
 				if errors.Is(err, platform.ErrNotFound) {
 					orgPath := fmt.Sprintf("/orgs/%s/packages?package_type=%s&per_page=100",
 						url.PathEscape(owner), url.QueryEscape(pt))
 					if err := c.http.GetJSON(ctx, orgPath, &pkgs); err != nil {
-						// org endpoint also skipped: nothing to do for this package_type
-						if platform.ClassifyError(err) == platform.ClassSkip {
+						orgClass := platform.ClassifyError(err)
+						if orgClass == platform.ClassSkip || orgClass == platform.ClassNotModified {
 							continue
 						}
 						return nil, fmt.Errorf("list org packages for %s (type=%s): %w", owner, pt, err)
 					}
 				} else {
-					// 403/410 — likely scope or visibility issue. Skip.
+					// 403/410/304 — scope, visibility, or cached-empty. Skip.
 					continue
 				}
 			} else {
@@ -228,23 +244,38 @@ type ghContentsEntry struct {
 // wellKnownManifests maps the basename (or extension) of a manifest
 // file to its normalized manifest_type. Used by ListRootManifests
 // to identify which files in a contents listing are package manifests.
+//
+// v0.25.0 added Julia (Project.toml, JuliaProject.toml), R/CRAN
+// (DESCRIPTION), and conda (meta.yaml) recognition after a
+// 2026-05-23 production diagnostic showed every distribution-scan
+// failure on the chaoss.tv aveloxis fleet was a Julia or R repo —
+// repos whose manifests existed in the GitHub Contents listing but
+// were dropped on the floor because classifyManifestFilename
+// returned "" for them. Pre-v0.25.0 these ecosystems had no working
+// source whenever ecosyste.ms had an outage (deps.dev doesn't index
+// Julia or CRAN/Bioconductor).
 var wellKnownManifests = map[string]string{
-	"package.json":     "npm",
-	"setup.py":         "pypi",
-	"setup.cfg":        "pypi",
-	"pyproject.toml":   "pypi",
-	"cargo.toml":       "cargo",
-	"go.mod":           "go",
-	"pom.xml":          "maven",
-	"build.gradle":     "maven",
-	"build.gradle.kts": "maven",
-	"gemfile":          "rubygems",
-	"composer.json":    "composer",
-	"mix.exs":          "elixir",
-	"package.swift":    "swift",
-	"pubspec.yaml":     "dart",
-	"conanfile.txt":    "cpp",
-	"conanfile.py":     "cpp",
+	"package.json":      "npm",
+	"setup.py":          "pypi",
+	"setup.cfg":         "pypi",
+	"pyproject.toml":    "pypi",
+	"cargo.toml":        "cargo",
+	"go.mod":            "go",
+	"pom.xml":           "maven",
+	"build.gradle":      "maven",
+	"build.gradle.kts":  "maven",
+	"gemfile":           "rubygems",
+	"composer.json":     "composer",
+	"mix.exs":           "elixir",
+	"package.swift":     "swift",
+	"pubspec.yaml":      "dart",
+	"conanfile.txt":     "cpp",
+	"conanfile.py":      "cpp",
+	"project.toml":      "julia", // Julia primary manifest
+	"juliaproject.toml": "julia", // Julia secondary (used in some monorepos)
+	"description":       "cran",  // R/CRAN/Bioconductor — no extension by convention
+	"meta.yaml":         "conda", // conda-build recipe
+	"recipe.yaml":       "conda", // rattler-build recipe (newer conda variant)
 }
 
 // suffixManifests lists file SUFFIXES (case-insensitive) that map to a
@@ -287,10 +318,16 @@ func classifyManifestFilename(name string) string {
 //
 // Optional endpoint: 404 on contents (empty repo, archived
 // generic-git) → empty result + nil error.
+//
+// v0.25.0: ctx wrapped in platform.WithoutETag so 304 responses
+// (which would otherwise propagate as a fatal error in the
+// pre-v0.25.0 code and trigger the silent-data-loss path via
+// snapshot-replace in MarkDistributionComplete) can't fire.
 func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]model.DistributionManifest, error) {
+	ctx = platform.WithoutETag(ctx)
 	rootEntries, err := c.fetchContentsDir(ctx, owner, repo, "")
 	if err != nil {
-		if platform.ClassifyError(err) == platform.ClassSkip {
+		if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list root contents for %s/%s: %w", owner, repo, err)
@@ -327,7 +364,7 @@ func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]m
 	for _, dir := range firstLevelDirs {
 		entries, err := c.fetchContentsDir(ctx, owner, repo, dir)
 		if err != nil {
-			if platform.ClassifyError(err) == platform.ClassSkip {
+			if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
 				continue
 			}
 			// One bad dir doesn't sink the whole list; log via the
@@ -370,13 +407,15 @@ func (c *Client) fetchContentsDir(ctx context.Context, owner, repo, dirPath stri
 // under 1MB and absent for larger files — we treat both cases as
 // "no content available" rather than retrying with the blobs API).
 func (c *Client) FetchManifestContent(ctx context.Context, owner, repo, filePath string) (string, error) {
+	// v0.25.0: bypass ETag — same rationale as ListRootManifests.
+	ctx = platform.WithoutETag(ctx)
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path.Clean(filePath))
 	var entry struct {
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 	}
 	if err := c.http.GetJSON(ctx, apiPath, &entry); err != nil {
-		if platform.ClassifyError(err) == platform.ClassSkip {
+		if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
 			return "", nil
 		}
 		return "", fmt.Errorf("fetch manifest %s: %w", filePath, err)

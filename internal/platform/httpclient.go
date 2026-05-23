@@ -56,23 +56,40 @@ var ErrGone = errors.New("gone")
 // unique repos = ~5.3h of wasted wall-clock per cycle.
 var ErrNoContent = errors.New("no content (204)")
 
-// ErrTransient marks the "exhausted N retries" errors that
-// HTTPClient.Get and HTTPClient.GraphQL emit after their inner
-// retry loops give up. Added v0.20.19 (Fix J). Pre-fix these
-// errors were plain fmt.Errorf strings with no sentinel, so
-// platform.ClassifyError fell through to ClassFatal — making
-// the v0.20.8 sub-batch retry path (fetchPRBatchWithSubdivide
-// in internal/platform/github/graphql_pr_batch.go) bypass
-// subdivision entirely on the dominant production failure
-// mode. Production diagnostic on 2026-05-13: 6 of 7 stuck
-// repos had last_error starting with "graphql PR batch:
-// graphql: exhausted 10 retries for https://api.github.com/
-// graphql" and were looping indefinitely via v0.20.5's
-// force_full_collect path. With the sentinel, ClassifyError
-// returns ClassTransient and Fix C's subdivision actually
-// fires — halving the batch until it's small enough to fit
-// inside what GitHub will serve.
-var ErrTransient = errors.New("transient (retries exhausted)")
+// ErrTransient marks transient-class errors that should route
+// to ClassTransient via platform.ClassifyError. Originally added
+// v0.20.19 (Fix J) for "exhausted N retries" wrappers in
+// HTTPClient.Get and HTTPClient.GraphQL; v0.25.0 also wraps it
+// around single-attempt 5xx responses from the ecosyste.ms /
+// deps.dev clients (which do NOT have an inner retry loop).
+//
+// Message rationale (v0.25.0): the sentinel text is intentionally
+// generic ("transient") rather than the pre-v0.25.0
+// "transient (retries exhausted)" so single-attempt wrappers
+// don't claim retries that never happened. Retry-loop callers
+// (httpclient.go:exhausted-N-retries wrapper, graphql.go's
+// exhausted-N-retries wrapper) already prepend an explicit
+// "exhausted N retries for URL: " prefix, so they continue to
+// communicate the retry-loop semantics in their error string.
+// Source-contract pin in transient_retry_test.go protects the
+// %w-wrapping contract that callers depend on.
+//
+// Production diagnostic on 2026-05-13: 6 of 7 stuck repos had
+// last_error starting with "graphql PR batch: graphql:
+// exhausted 10 retries for https://api.github.com/graphql" and
+// were looping indefinitely via v0.20.5's force_full_collect
+// path. With the sentinel, ClassifyError returns ClassTransient
+// and Fix C's subdivision actually fires — halving the batch
+// until it's small enough to fit inside what GitHub will serve.
+//
+// Subsequent diagnostic on 2026-05-23: the v0.24.0 ecosyste.ms
+// client wrapped 5xx into ErrTransient on a SINGLE call (no
+// retry budget). With the pre-v0.25.0 sentinel text, every
+// production log line read "transient (retries exhausted)" and
+// operators reasonably concluded we were over-retrying — when
+// in fact the ecosyste.ms client doesn't retry at all. The
+// message change makes the log line accurate.
+var ErrTransient = errors.New("transient")
 
 // ErrPaginationLimitExceeded marks GitHub's hard cap on
 // certain endpoints' result count (notably /releases). Past
@@ -205,6 +222,34 @@ func (c *HTTPClient) OnPermanentRedirect(hook func(from, to string)) {
 
 const maxRetries = 10
 
+// ctxKeyBypassETag is a context value key used by WithoutETag to
+// suppress the ETag conditional layer on a single Get call. Distinct
+// type per Go context-key convention so other packages can't collide
+// on the key.
+type ctxKeyBypassETag struct{}
+
+// WithoutETag returns a derived context that suppresses both the
+// If-None-Match send and the ETag cache write for any Get/GetJSON
+// call made with it. Use this for endpoints where 304 responses
+// would silently destroy data via snapshot-replace semantics — the
+// v0.24.0 DistributionWorker is the canonical case: on 304 the
+// scanner gets back empty data, MarkDistributionComplete rotates
+// the prior rows to history and never reinserts them, so the
+// repo's distribution evidence quietly disappears even though
+// GitHub politely told us "you already have this."
+//
+// At 180-day distribution cadence the wasted GitHub API budget
+// from disabling ETag is ~1.6% of the pool — well worth the
+// silent-data-loss avoidance.
+func WithoutETag(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyBypassETag{}, true)
+}
+
+func bypassETag(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyBypassETag{}).(bool)
+	return v
+}
+
 // Get performs a single authenticated GET request with retries and rate-limit handling.
 func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, error) {
 	url := c.baseURL + path
@@ -212,6 +257,7 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 	// attempts so a rename-then-rate-limited chain doesn't prematurely
 	// exhaust the retry budget, and a loop doesn't run forever.
 	redirectHops := 0
+	skipETag := bypassETag(ctx)
 
 	for attempt := range maxRetries {
 		key, err := c.keys.GetKey(ctx)
@@ -236,11 +282,15 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 
 		// Conditional request: send If-None-Match when we have a cached ETag.
 		// GitHub does not count 304 responses against the rate limit.
-		c.etagMu.RLock()
-		if etag, ok := c.etagCache[path]; ok {
-			req.Header.Set("If-None-Match", etag)
+		// Skipped when the caller used WithoutETag(ctx) — see v0.25.0
+		// docstring on WithoutETag for the silent-data-loss rationale.
+		if !skipETag {
+			c.etagMu.RLock()
+			if etag, ok := c.etagCache[path]; ok {
+				req.Header.Set("If-None-Match", etag)
+			}
+			c.etagMu.RUnlock()
 		}
-		c.etagMu.RUnlock()
 
 		resp, err := c.inner.Do(req)
 		if err != nil {
@@ -272,10 +322,15 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		}
 
 		// Cache ETag from successful responses for future conditional requests.
-		if etag := resp.Header.Get("ETag"); etag != "" && resp.StatusCode == http.StatusOK {
-			c.etagMu.Lock()
-			c.etagCache[path] = etag
-			c.etagMu.Unlock()
+		// Skipped when the caller opted into WithoutETag — we don't want to
+		// poison the cache for OTHER callers that might use the same path
+		// without the bypass.
+		if !skipETag {
+			if etag := resp.Header.Get("ETag"); etag != "" && resp.StatusCode == http.StatusOK {
+				c.etagMu.Lock()
+				c.etagCache[path] = etag
+				c.etagMu.Unlock()
+			}
 		}
 
 		switch {

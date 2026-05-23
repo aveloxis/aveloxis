@@ -201,12 +201,13 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		// v0.24.0 — DistributionWorker config. Off by default; the
 		// boolean gate prevents the worker from spawning at all when
 		// the operator hasn't opted in.
-		DistributionTrackingEnabled:       cfg.Collection.DistributionTrackingEnabled,
-		DistributionTrackingInterval:      cfg.Collection.DistributionTrackingInterval(),
-		DistributionTrackingWorkers:       cfg.Collection.DistributionTrackingWorkersOrDefault(),
-		DistributionTrackingStartInterval: cfg.Collection.DistributionTrackingStartInterval(),
-		DistributionTrackingPoliteEmail:   cfg.Collection.DistributionTrackingPoliteEmail,
-		DistributionTrackingUserAgent:     cfg.Collection.DistributionTrackingUserAgent,
+		DistributionTrackingEnabled:           cfg.Collection.DistributionTrackingEnabled,
+		DistributionTrackingInterval:          cfg.Collection.DistributionTrackingInterval(),
+		DistributionTrackingWorkers:           cfg.Collection.DistributionTrackingWorkersOrDefault(),
+		DistributionTrackingStartInterval:     cfg.Collection.DistributionTrackingStartInterval(),
+		DistributionTrackingPoliteEmail:       cfg.Collection.DistributionTrackingPoliteEmail,
+		DistributionTrackingUserAgent:         cfg.Collection.DistributionTrackingUserAgent,
+		DistributionTrackingCrossCheckSources: cfg.Collection.DistributionTrackingCrossCheckSourcesValue(),
 	})
 	go sched.Run(ctx)
 

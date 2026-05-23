@@ -87,7 +87,8 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "distribution_tracking_workers": 4,
     "distribution_tracking_start_interval_s": 30,
     "distribution_tracking_polite_email": "",
-    "distribution_tracking_user_agent": ""
+    "distribution_tracking_user_agent": "",
+    "distribution_tracking_cross_check_sources": true
   },
   "web": {
     "addr": ":8082",
@@ -209,6 +210,7 @@ The scancode per-file license + copyright + package scan is run by a dedicated `
 | `collection.distribution_tracking_start_interval_s` | integer | `30` | v0.24.0. Minimum seconds between successful CLAIM operations. With default 4 workers and a 30s ticker, steady-state throughput is ~120 repos/hour — comfortably under any known external rate limit. Same minimum-gap pacing primitive as scancode (post-v0.21.3); not a throughput cap. |
 | `collection.distribution_tracking_polite_email` | string | `""` | v0.24.0. Value sent in the `From:` HTTP request header to ecosyste.ms so the operator's traffic lands in their "polite pool" priority queue. Optional but recommended: ecosyste.ms documents the polite-pool contract at https://ecosyste.ms — provide a real email address so they can contact you should rate-limit discussions be needed. Missing value falls back to the lower-priority "common pool". |
 | `collection.distribution_tracking_user_agent` | string | `""` | v0.24.0. Overrides the User-Agent header sent to deps.dev / ecosyste.ms / GitHub. When empty the client uses `aveloxis/<tool_version>`. Operators behind shared egress IPs may want a more identifying string so registry operators can route diagnostics. |
+| `collection.distribution_tracking_cross_check_sources` | bool | `true` | v0.25.0. When true (the default), guarantees BOTH deps.dev AND ecosyste.ms are queried for every repo even when one returns non-empty data. Each source persists its own rows into `repo_distribution` (UNIQUE constraint includes the `source` column so two rows for the same package coexist). The trade-off is ~2× external-registry API calls per scan, but at 180-day cadence the absolute budget is tiny (~5K calls/hour on a 100K-repo fleet). Operator-mandated lock-in for v0.25.0 — set to false only when you explicitly want to halve registry traffic at the cost of single-source-of-truth dependence. The field is a JSON boolean; when omitted from `aveloxis.json`, the v0.25.0 default of `true` applies (pointer-to-bool internally so the decoder distinguishes "absent" from "explicit false"). |
 
 **Force-rerun cookbook** — to invalidate the cadence gate and trigger a fresh scan on the next worker tick, set `scancode_last_run` back to NULL:
 

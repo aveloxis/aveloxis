@@ -79,6 +79,18 @@ type Config struct {
 	// after 2026-05-16 production diagnostics showed JSONB tombstones
 	// stacking 3–5× on frequently-re-collected repos.
 	StagingRetention time.Duration
+
+	// v0.24.0 — DistributionWorker config. Captures evidence of where
+	// each repo is *published* via package managers (deps.dev,
+	// ecosyste.ms, GitHub Packages, GitHub release assets) plus
+	// in-repo manifest evidence. Off by default; opt-in via
+	// collection.distribution_tracking_enabled.
+	DistributionTrackingEnabled       bool          // master switch (off by default)
+	DistributionTrackingInterval      time.Duration // per-repo cadence (default 180d)
+	DistributionTrackingWorkers       int           // concurrent runners (default 4)
+	DistributionTrackingStartInterval time.Duration // minimum gap between successful claims (default 30s)
+	DistributionTrackingPoliteEmail   string        // ecosyste.ms polite-pool From: header
+	DistributionTrackingUserAgent     string        // overrides "aveloxis/<version>" UA
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -328,6 +340,17 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.cfg.ScancodeRunTimeoutCap,
 	)
 	go scancodeWorker.Run(ctx)
+
+	// v0.24.0 — DistributionWorker goroutine. Off by default; only
+	// spawned when collection.distribution_tracking_enabled = true.
+	// Records evidence of where each repo is published via package
+	// managers (deps.dev, ecosyste.ms, GitHub Packages, release
+	// assets) plus in-repo manifest evidence. Independent of every
+	// other collection workload; failures here cannot affect main
+	// collection.
+	if s.cfg.DistributionTrackingEnabled {
+		s.spawnDistributionWorker(ctx)
+	}
 
 	// Materialized view rebuild: check hourly, run on Saturdays.
 	// Collection is suspended during the rebuild.

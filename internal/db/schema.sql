@@ -97,7 +97,17 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- sideline — a repo that takes 16h to scan isn't broken.
     -- Reset to 0 on successful scan (alongside the failure
     -- counter).
-    scancode_timeout_attempts INTEGER DEFAULT 0
+    scancode_timeout_attempts INTEGER DEFAULT 0,
+    -- v0.24.0: DistributionWorker state. Separate from scancode
+    -- columns because the two subsystems run independently with
+    -- different cadences and failure profiles. The DistributionWorker
+    -- claim query consults distribution_last_run for cadence,
+    -- distribution_failed_attempts for per-row backoff (v0.21.4
+    -- quadratic, base 2 minutes, 10-strike sideline), and
+    -- distribution_last_failed_at for the backoff window math.
+    distribution_last_run        TIMESTAMPTZ,
+    distribution_failed_attempts INTEGER DEFAULT 0,
+    distribution_last_failed_at  TIMESTAMPTZ
 );
 
 -- ============================================================
@@ -2147,6 +2157,84 @@ CREATE TABLE IF NOT EXISTS aveloxis_scan.scancode_scans_history (
 
 CREATE TABLE IF NOT EXISTS aveloxis_scan.scancode_file_results_history (
     LIKE aveloxis_scan.scancode_file_results INCLUDING ALL
+);
+
+
+-- ============================================================
+-- Distribution tracking (v0.24.0): evidence that a repo is
+-- published via package managers. Two complementary tables:
+--
+--   repo_distribution           — facts from registries:
+--                                 deps.dev, ecosyste.ms,
+--                                 GitHub Packages, GitHub
+--                                 release assets.
+--   repo_distribution_manifest  — intent from the repo:
+--                                 well-known manifest files
+--                                 (package.json, setup.py, ...)
+--                                 with declared package name
+--                                 parsed out when possible.
+--
+-- Both tables are replace-on-rescan with prior snapshots
+-- rotated into _history. The headline analysis query is
+-- "manifest without registry evidence":
+--
+--   SELECT r.repo_owner||'/'||r.repo_name,
+--          m.manifest_type, m.package_name_declared
+--   FROM repos r
+--   JOIN repo_distribution_manifest m USING (repo_id)
+--   LEFT JOIN repo_distribution d
+--     ON d.repo_id = r.repo_id AND d.ecosystem = m.manifest_type
+--   WHERE d.distribution_id IS NULL;
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_distribution (
+    distribution_id     BIGSERIAL PRIMARY KEY,
+    repo_id             INTEGER NOT NULL REFERENCES aveloxis_data.repos(repo_id)
+                          ON UPDATE CASCADE ON DELETE RESTRICT
+                          DEFERRABLE INITIALLY DEFERRED,
+    ecosystem           TEXT NOT NULL,
+    package_name        TEXT NOT NULL,
+    version_count       INTEGER DEFAULT 0,
+    first_published_at  TIMESTAMPTZ,
+    latest_published_at TIMESTAMPTZ,
+    source              TEXT NOT NULL,
+    extra               JSONB DEFAULT '{}'::jsonb,
+    tool_source         TEXT DEFAULT 'aveloxis',
+    tool_version        TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, ecosystem, package_name, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_distribution_repo_id
+    ON aveloxis_data.repo_distribution (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_distribution_ecosystem
+    ON aveloxis_data.repo_distribution (ecosystem);
+
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_distribution_history (
+    LIKE aveloxis_data.repo_distribution INCLUDING ALL
+);
+
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_distribution_manifest (
+    manifest_id           BIGSERIAL PRIMARY KEY,
+    repo_id               INTEGER NOT NULL REFERENCES aveloxis_data.repos(repo_id)
+                            ON UPDATE CASCADE ON DELETE RESTRICT
+                            DEFERRABLE INITIALLY DEFERRED,
+    manifest_path         TEXT NOT NULL,
+    manifest_type         TEXT NOT NULL,
+    package_name_declared TEXT DEFAULT '',
+    tool_source           TEXT DEFAULT 'aveloxis',
+    tool_version          TEXT DEFAULT '',
+    data_collection_date  TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, manifest_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_distribution_manifest_repo_id
+    ON aveloxis_data.repo_distribution_manifest (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_distribution_manifest_type
+    ON aveloxis_data.repo_distribution_manifest (manifest_type);
+
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_distribution_manifest_history (
+    LIKE aveloxis_data.repo_distribution_manifest INCLUDING ALL
 );
 
 

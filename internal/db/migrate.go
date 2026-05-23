@@ -340,6 +340,41 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		ON aveloxis_data.repos (distribution_last_run NULLS FIRST)
 		WHERE COALESCE(repo_archived, FALSE) = FALSE`)
 
+	// v0.24.1 — one-shot reset of distribution_last_run for fleets
+	// affected by the v0.24.0 deps.dev URL-encoding bug.
+	//
+	// v0.24.0 built the deps.dev project_id path parameter by URL-
+	// encoding owner and repo separately and joining with raw slashes:
+	//   /v3/projects/github.com/owner/repo:packageversions   ← 404
+	// deps.dev v3 is gRPC-transcoded REST, so the project_id is a
+	// single path segment whose internal slashes must be percent-
+	// encoded:
+	//   /v3/projects/github.com%2Fowner%2Frepo:packageversions ← 200
+	// Every v0.24.0 deps.dev call hit 404, the 404 branch returned
+	// (nil, nil) silently, and the worker fleet produced zero
+	// deps.dev rows fleet-wide while ecosyste.ms / github-* sources
+	// kept working — masking the bug behind a partial-success scan.
+	//
+	// The cadence gate (default 180 days) means an affected repo
+	// would not be re-scanned until its last_run elapsed, so we
+	// override the gate once here by clearing the timestamp for
+	// every scanned repo IFF the fleet has zero deps.dev rows.
+	// Self-disabling: once any deps.dev row exists, the NOT EXISTS
+	// guard short-circuits and subsequent migrate runs are no-ops.
+	// Fresh installs with no scanned repos yet are unaffected
+	// because the WHERE clause filters on distribution_last_run IS
+	// NOT NULL. Operators who want to force re-scan after this
+	// point use the documented manual workflow:
+	//   UPDATE aveloxis_data.repos SET distribution_last_run = NULL ...
+	execMigrationStep(ctx, pg, logger, &errs, "v0.24.1 reset distribution_last_run for fleets affected by v0.24.0 deps.dev URL bug",
+		`UPDATE aveloxis_data.repos
+		SET distribution_last_run = NULL
+		WHERE distribution_last_run IS NOT NULL
+		  AND NOT EXISTS (
+		      SELECT 1 FROM aveloxis_data.repo_distribution
+		      WHERE source = 'deps.dev'
+		  )`)
+
 	// collection_queue.last_commits backfill (v0.19.11). Pre-v0.19.11
 	// the FacadeCollector incremented result.Commits once per inserted
 	// ROW rather than once per distinct commit. Since the commits table

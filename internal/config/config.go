@@ -554,6 +554,37 @@ type CollectionConfig struct {
 	// missing-key, silently breaking the lock-in guarantee for
 	// every aveloxis.json that pre-dates v0.25.0.
 	DistributionTrackingCrossCheckSources *bool `json:"distribution_tracking_cross_check_sources,omitempty"`
+
+	// DistributionTrackingImmediatePartialReclaim, when true (the
+	// default in v0.25.3), keeps the v0.25.0 behavior: a repo whose
+	// last scan was partial (distribution_scan_complete = FALSE) is
+	// immediately re-eligible on the next dispatcher cycle,
+	// bypassing the cadence gate. The ClaimNextDistributionRepo
+	// WHERE clause includes `OR COALESCE(scan_complete, TRUE) = FALSE`.
+	//
+	// Set to false to suppress that re-claim behavior. Partial-scan
+	// repos then wait for normal cadence like everything else — the
+	// claim WHERE drops the scan_complete branch. The ORDER BY's
+	// `scan_complete ASC` tiebreaker stays in both modes, so among
+	// cadence-elapsed rows, partial scans still get priority.
+	//
+	// Operator framing (2026-05-24): the v0.25.0 immediate-reclaim
+	// design is correct *during* a v0.24.x → v0.25.x transition
+	// when partial-scan repos legitimately need urgent re-collection.
+	// Once a fleet is through that cohort and steady-state cadence
+	// resumes, the immediate-reclaim mechanism becomes operational
+	// churn rather than a recovery tool. This knob is the explicit
+	// off-switch.
+	//
+	// v0.25.x-era escape hatch. See docs/architecture/distribution.md
+	// §12 for the planned deprecation horizon when v0.24.x support
+	// ends in 2027.
+	//
+	// Pointer-to-bool (not bare bool) so the JSON decoder distinguishes
+	// "absent" (use v0.25.3 default = true, preserving v0.25.0
+	// behavior on aveloxis.json files that pre-date v0.25.3) from
+	// "explicitly false." Same pattern as DistributionTrackingCrossCheckSources.
+	DistributionTrackingImmediatePartialReclaim *bool `json:"distribution_tracking_immediate_partial_reclaim,omitempty"`
 }
 
 // PhaseWatchdogDuration returns the v0.22.4 long-jobs watchdog
@@ -677,6 +708,20 @@ func (c *CollectionConfig) DistributionTrackingCrossCheckSourcesValue() bool {
 		return true
 	}
 	return *c.DistributionTrackingCrossCheckSources
+}
+
+// DistributionTrackingImmediatePartialReclaimValue returns the
+// effective immediate-reclaim setting (v0.25.3). Default true
+// preserves v0.25.0/v0.25.1 behavior when the JSON field is
+// absent — pointer-to-bool so we can tell "absent" from
+// "explicitly false." See the field comment on
+// CollectionConfig.DistributionTrackingImmediatePartialReclaim
+// for the operator-framing rationale.
+func (c *CollectionConfig) DistributionTrackingImmediatePartialReclaimValue() bool {
+	if c.DistributionTrackingImmediatePartialReclaim == nil {
+		return true
+	}
+	return *c.DistributionTrackingImmediatePartialReclaim
 }
 
 // defaultScancodeCloneDir returns the default scancode clone parent

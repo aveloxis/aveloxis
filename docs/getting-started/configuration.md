@@ -89,7 +89,8 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "distribution_tracking_start_interval_s": 30,
     "distribution_tracking_polite_email": "",
     "distribution_tracking_user_agent": "",
-    "distribution_tracking_cross_check_sources": true
+    "distribution_tracking_cross_check_sources": true,
+    "distribution_tracking_immediate_partial_reclaim": true
   },
   "web": {
     "addr": ":8082",
@@ -212,7 +213,8 @@ The scancode per-file license + copyright + package scan is run by a dedicated `
 | `collection.distribution_tracking_start_interval_s` | integer | `30` | v0.24.0. Minimum seconds between successful CLAIM operations. With default 4 workers and a 30s ticker, steady-state throughput is ~120 repos/hour — comfortably under any known external rate limit. Same minimum-gap pacing primitive as scancode (post-v0.21.3); not a throughput cap. |
 | `collection.distribution_tracking_polite_email` | string | `""` | v0.24.0. Value sent in the `From:` HTTP request header to ecosyste.ms so the operator's traffic lands in their "polite pool" priority queue. Optional but recommended: ecosyste.ms documents the polite-pool contract at https://ecosyste.ms — provide a real email address so they can contact you should rate-limit discussions be needed. Missing value falls back to the lower-priority "common pool". |
 | `collection.distribution_tracking_user_agent` | string | `""` | v0.24.0. Overrides the User-Agent header sent to deps.dev / ecosyste.ms / GitHub. When empty the client uses `aveloxis/<tool_version>`. Operators behind shared egress IPs may want a more identifying string so registry operators can route diagnostics. |
-| `collection.distribution_tracking_cross_check_sources` | bool | `true` | v0.25.0. When true (the default), guarantees BOTH deps.dev AND ecosyste.ms are queried for every repo even when one returns non-empty data. Each source persists its own rows into `repo_distribution` (UNIQUE constraint includes the `source` column so two rows for the same package coexist). The trade-off is ~2× external-registry API calls per scan, but at 180-day cadence the absolute budget is tiny (~5K calls/hour on a 100K-repo fleet). Operator-mandated lock-in for v0.25.0 — set to false only when you explicitly want to halve registry traffic at the cost of single-source-of-truth dependence. The field is a JSON boolean; when omitted from `aveloxis.json`, the v0.25.0 default of `true` applies (pointer-to-bool internally so the decoder distinguishes "absent" from "explicit false"). |
+| `collection.distribution_tracking_cross_check_sources` | bool | `true` | v0.25.0. When true (the default), guarantees BOTH deps.dev AND ecosyste.ms are queried for every repo even when one returns non-empty data. Each source persists its own rows into `repo_distribution` (UNIQUE constraint includes the `source` column so two rows for the same package coexist). The trade-off is ~2× external-registry API calls per scan, but at 180-day cadence the absolute budget is tiny (~5K calls/hour on a 100K-repo fleet). Operator-mandated lock-in for v0.25.0 — set to false only when you explicitly want to halve registry traffic at the cost of single-source-of-truth dependence. The field is a JSON boolean; when omitted from `aveloxis.json`, the v0.25.0 default of `true` applies (pointer-to-bool internally so the decoder distinguishes "absent" from "explicit false"). **v0.25.x-era escape hatch** — see [v0.25.x distribution-tracking knobs](#v025x-distribution-tracking-knobs) for the planned deprecation horizon. |
+| `collection.distribution_tracking_immediate_partial_reclaim` | bool | `true` | v0.25.3. When true (the default), keeps the v0.25.0 behavior: a repo whose last scan was partial (`distribution_scan_complete = FALSE` — typically because the ecosyste.ms circuit breaker was open during the scan) is immediately re-eligible on the next dispatcher cycle, bypassing the cadence gate. The `ClaimNextDistributionRepo` WHERE clause includes `OR COALESCE(scan_complete, TRUE) = FALSE` in this mode. **Set to `false`** to suppress that behavior: partial-scan rows then wait for normal cadence like everything else. The `ORDER BY scan_complete ASC` tiebreaker stays in both modes — among cadence-elapsed rows, partial scans still get priority, just don't bypass the gate. Operator framing: the immediate-reclaim design is correct *during* a v0.24.x → v0.25.x transition when partial-scan repos legitimately need urgent re-collection; once a fleet is through that cohort and steady-state cadence resumes, the mechanism becomes operational churn rather than a recovery tool. This knob is the explicit off-switch. Pointer-to-bool internally — when omitted from `aveloxis.json`, the v0.25.3 default of `true` applies, preserving v0.25.0/v0.25.1 behavior on existing fleets. **v0.25.x-era escape hatch** — see [v0.25.x distribution-tracking knobs](#v025x-distribution-tracking-knobs) for the planned deprecation horizon. |
 
 **Force-rerun cookbook** — to invalidate the cadence gate and trigger a fresh scan on the next worker tick, set `scancode_last_run` back to NULL:
 
@@ -404,6 +406,65 @@ The mailer uses Go's stdlib `net/smtp` against `smtp.gmail.com:587` with STARTTL
 ### Disabling
 
 Remove or empty BOTH `gmail_user` AND `gmail_app_password`. Setting only one without the other is treated as a misconfiguration. With both empty, the mailer is a silent no-op and the rest of the application continues to work.
+
+---
+
+## v0.25.x distribution-tracking knobs
+
+Several settings in the `collection` block exist specifically to give operators control over edge-case behavior introduced during the v0.24.0 → v0.25.x transition of the DistributionWorker subsystem. They are documented here as a coherent group because they share the same lifecycle: useful now during the transition cohort, scheduled for removal once v0.24.x support ends.
+
+### The settings in this group
+
+| JSON key | Introduced | Purpose |
+|---|---|---|
+| `collection.distribution_tracking_cross_check_sources` | v0.25.0 | When `true` (default), always queries BOTH deps.dev AND ecosyste.ms even when one returns data. Locks in cross-source verification. Operator-mandated lock-in flag. |
+| `collection.distribution_tracking_immediate_partial_reclaim` | v0.25.3 | When `true` (default), partial-scan repos (`distribution_scan_complete = FALSE`) bypass the cadence gate and re-collect on the next dispatcher tick. When `false`, they wait for normal cadence. |
+
+In addition, three one-shot migrations run on every `aveloxis migrate` (all self-disabling via WHERE clauses, so re-runs are no-ops once the cohort they target has been processed):
+
+- **v0.24.1 reset** — `distribution_last_run = NULL` for fleets with zero deps.dev rows, fixing the v0.24.0 URL-encoding bug's silent-data-loss cohort.
+- **v0.25.0 reset** — clears the failure-tracking columns for repos that hit the 10-strike sideline under the pre-v0.25.0 strict scanner contract.
+- **v0.25.3 repair** — stamps `distribution_last_run = MAX(data_collection_date)` for repos whose v0.25.0/v0.25.1-window scans were thrown away by the 23505 rotation bug fixed in v0.25.1, so the post-v0.25.1 worker doesn't redo their work.
+
+### Why they exist
+
+Each one corresponds to a specific operational incident from the v0.24.0–v0.25.x evolution of the DistributionWorker:
+
+- The DistributionWorker shipped in v0.24.0 had a deps.dev URL-encoding bug and a strict scanner contract that surfaced as silent data loss on Julia/R/conda repos.
+- v0.25.0 loosened the contract, added cross-source lock-in, added a per-source circuit breaker, added a `distribution_scan_complete` column, and added immediate-reclaim for partial scans.
+- v0.25.1 fixed a downstream history-table UNIQUE constraint bug that v0.25.0's immediate-reclaim exposed as a tight dispatcher loop.
+- v0.25.3 added the explicit off-switch for immediate-reclaim (this section) plus the repair migration for the cohort whose work v0.25.1 indirectly rescued.
+
+The knobs and migrations represent operator control over a *transitional* problem. Fleets that started on v0.25.1+ never experienced the underlying bugs and don't need the migrations to fire (the WHERE clauses make them no-ops automatically). Fleets that crossed the transition lean on these knobs to recover gracefully.
+
+### Lifecycle and deprecation horizon
+
+These settings are **explicitly ephemeral**:
+
+- They have no value for new deployments started on v0.25.1 or later. The defaults preserve the intended v0.25.x behavior; operators don't need to set or change them.
+- They have transient value for operators who upgraded *through* the v0.24.x → v0.25.x transition. The `_reclaim` knob lets them turn off the urgent-re-collection mechanism once their transition cohort is processed; the migrations heal the residual data state from the bug window.
+- They will be **removed when v0.24.x support officially ends (target: 2027)**. By then, no operator should still be running a fleet that was first collected under v0.24.0–v0.25.0, and the only purpose of these knobs and migrations will have been served.
+
+The removal will be staged:
+
+1. **v0.26.x or v0.27.x (when v0.24.x ends mainstream support):** the knobs are marked deprecated in `aveloxis.json` schema validation. Aveloxis logs a WARN at startup if either knob is present in `aveloxis.json`. The defaults stay the same; behavior is unchanged.
+2. **Two minor versions later:** the JSON fields are removed from the config struct. Operators with the keys still in their `aveloxis.json` get a fatal "unknown config key" startup error. The reset/repair migrations stay (they're idempotent and cost nothing to keep) but their docs get pruned.
+3. **Reset and repair migrations stay indefinitely** as cheap historical scaffolding — they don't fire on healthy data and document the v0.25.x-era recovery story for any operator who finds an extremely old DB.
+
+The intent is operator clarity: when you read `aveloxis.json` and see these keys, you know they're not part of the stable long-term surface. When you stop seeing them in the example config (post-deprecation), they've fully aged out.
+
+### What operators on fresh installs should do
+
+Nothing. Leave both knobs absent from `aveloxis.json` and the defaults handle the rest. The migrations are no-ops on a fresh DB because there are no rows matching the WHERE clauses.
+
+### What operators upgrading through v0.25.x should do
+
+1. Deploy v0.25.1 to fix the rotation bug.
+2. Deploy v0.25.3 — the v0.25.3 repair migration runs on next `aveloxis migrate`, stamping `distribution_last_run` for the lost-completion cohort.
+3. Watch the worker for a cycle to confirm new partial scans are still re-claimable (the v0.25.0 immediate-reclaim is still on by default).
+4. Once the fleet is steady-state and the urgent-re-collection cohort is empty, optionally set `"distribution_tracking_immediate_partial_reclaim": false` in `aveloxis.json` to switch to cadence-only operation. This is the steady-state stable mode.
+
+See `docs/architecture/distribution.md` §12 for the full design rationale.
 
 ---
 

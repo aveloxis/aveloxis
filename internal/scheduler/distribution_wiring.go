@@ -78,12 +78,13 @@ func (s *Scheduler) spawnDistributionWorker(ctx context.Context) {
 	scanner.CrossCheckSources = s.cfg.DistributionTrackingCrossCheckSources
 
 	worker := distribution.NewWorker(distribution.WorkerOptions{
-		Store:         s.store,
-		Scanner:       scanner,
-		Workers:       workers,
-		StartInterval: startInterval,
-		Cadence:       cadence,
-		Logger:        s.logger,
+		Store:                   s.store,
+		Scanner:                 scanner,
+		Workers:                 workers,
+		StartInterval:           startInterval,
+		Cadence:                 cadence,
+		Logger:                  s.logger,
+		ImmediatePartialReclaim: s.cfg.DistributionTrackingImmediatePartialReclaim, // v0.25.3
 	})
 
 	s.logger.Info("distribution worker starting",

@@ -462,6 +462,64 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		ALTER TABLE aveloxis_data.repo_distribution_manifest_history
 		    DROP CONSTRAINT IF EXISTS repo_distribution_manifest_history_repo_id_manifest_path_key;`)
 
+	// v0.25.3 — repair distribution_last_run for repos whose
+	// v0.25.0/v0.25.1-window scans hit the 23505 rotation bug.
+	// Every MarkDistributionComplete rolled back, so the function's
+	// final `distribution_last_run = NOW()` stamp never landed. The
+	// work was done (data was gathered, rows are in
+	// repo_distribution / repo_distribution_manifest from earlier
+	// successful v0.24.x scans), but the most-recent attempt's
+	// commit was discarded.
+	//
+	// Post-v0.25.1 deploy without this repair, the worker treats
+	// these repos as "never scanned" (NULL distribution_last_run
+	// is the first WHERE-clause branch of the claim query) and
+	// re-runs all the scans — burning API budget on work whose
+	// results are already in the DB.
+	//
+	// The repair: stamp distribution_last_run to MAX(data_collection_date)
+	// across the existing rows in both distribution tables.
+	// Reflects when the data was *actually* gathered (typically
+	// the v0.24.x scan months ago, before the rotation bug),
+	// NOT NOW() which would falsely promise "fresh as of today"
+	// for stale data and prevent natural re-scan when cadence
+	// genuinely elapses.
+	//
+	// Repos with zero rows in either table (genuinely never had a
+	// successful scan) stay NULL and get scanned on first dispatch
+	// after deploy. The `WHERE distribution_last_run IS NULL`
+	// guard makes the step self-disabling: once stamped, the row
+	// no longer matches the WHERE and subsequent migrate runs are
+	// no-ops.
+	//
+	// Inner UNION ALL + outer GROUP BY repo_id: each table
+	// contributes its own MAX, then the outer aggregate picks the
+	// later of the two. The shape matters — a flat MAX across the
+	// union would still pick the correct max but loses the
+	// per-table-per-repo grouping intermediate.
+	//
+	// v0.25.x-era escape hatch. Documented for deprecation when
+	// v0.24.x support ends (target 2027). See
+	// docs/architecture/distribution.md §12.
+	execMigrationStep(ctx, pg, logger, &errs, "v0.25.3 repair distribution_last_run for cohort whose v0.25.0/v0.25.1 rotations rolled back",
+		`UPDATE aveloxis_data.repos r
+		SET distribution_last_run = sub.last_observed
+		FROM (
+		    SELECT repo_id, MAX(observed) AS last_observed
+		    FROM (
+		        SELECT repo_id, MAX(data_collection_date) AS observed
+		        FROM aveloxis_data.repo_distribution
+		        GROUP BY repo_id
+		        UNION ALL
+		        SELECT repo_id, MAX(data_collection_date) AS observed
+		        FROM aveloxis_data.repo_distribution_manifest
+		        GROUP BY repo_id
+		    ) inner_sub
+		    GROUP BY repo_id
+		) sub
+		WHERE r.repo_id = sub.repo_id
+		  AND r.distribution_last_run IS NULL`)
+
 	// collection_queue.last_commits backfill (v0.19.11). Pre-v0.19.11
 	// the FacadeCollector incremented result.Commits once per inserted
 	// ROW rather than once per distinct commit. Since the commits table

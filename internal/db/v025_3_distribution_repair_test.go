@@ -130,8 +130,16 @@ func TestV0253RepairExecutesMaxAcrossBothTables(t *testing.T) {
 
 	// Two rows at different dates. Manifest row is the newer one;
 	// the repair must pick its date, not the older distribution row.
-	older := time.Now().Add(-90 * 24 * time.Hour).UTC()
-	newer := time.Now().Add(-30 * 24 * time.Hour).UTC()
+	//
+	// Truncate to microseconds: Go's time.Now() has nanosecond
+	// precision but Postgres TIMESTAMPTZ stores microseconds. Without
+	// truncation, the in-memory `newer` carries trailing nanoseconds
+	// that the DB drops on INSERT, so the post-SELECT comparison
+	// `got.Equal(newer)` would fail on identical-instants. CI
+	// surfaced this on 2026-05-24; local runs got lucky when
+	// time.Now() happened to land on a microsecond boundary.
+	older := time.Now().Add(-90 * 24 * time.Hour).UTC().Truncate(time.Microsecond)
+	newer := time.Now().Add(-30 * 24 * time.Hour).UTC().Truncate(time.Microsecond)
 
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO aveloxis_data.repo_distribution
@@ -235,7 +243,12 @@ func TestV0253RepairIsIdempotentAfterFirstRun(t *testing.T) {
 		t.Fatalf("seed repo: %v", err)
 	}
 	_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_distribution WHERE repo_id = $1`, repoID)
-	stamp := time.Now().Add(-60 * 24 * time.Hour).UTC()
+	// Microsecond truncation — same reason as
+	// TestV0253RepairExecutesMaxAcrossBothTables; the
+	// idempotency-check compares two DB-roundtripped values so
+	// precision matters less there, but truncating the seed keeps
+	// the test self-consistent across all v0.25.3 integration tests.
+	stamp := time.Now().Add(-60 * 24 * time.Hour).UTC().Truncate(time.Microsecond)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO aveloxis_data.repo_distribution
 		    (repo_id, ecosystem, package_name, version_count, source, tool_version, data_collection_date)

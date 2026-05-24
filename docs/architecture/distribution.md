@@ -325,3 +325,61 @@ See [`docs/getting-started/configuration.md`](../getting-started/configuration.m
   - `internal/db/distribution_store.go` — claim / mark-complete / record-failure
   - `internal/db/schema.sql` lines defining the four tables
   - `cmd/aveloxis/distribution_stats_cmd.go` — operator CLI
+
+## 12. v0.25.x escape hatches (ephemeral)
+
+The DistributionWorker subsystem accumulated several operator-facing controls during the v0.24.0 → v0.25.x evolution that exist specifically to manage the transition pain. They are documented here as a coherent group because they share the same lifecycle: useful now, scheduled for removal when v0.24.x support ends.
+
+### What's in the group
+
+**Two `aveloxis.json` keys** under `collection`:
+
+- `distribution_tracking_cross_check_sources` (v0.25.0, default `true`) — operator-mandated lock-in that both deps.dev AND ecosyste.ms are queried for every repo. Trades ~2× external-registry API budget for cross-source verification.
+- `distribution_tracking_immediate_partial_reclaim` (v0.25.3, default `true`) — controls whether the v0.25.0 partial-scan immediate-reclaim semantic is active. When `false`, partial scans wait for normal cadence; the ORDER BY tiebreaker still prioritizes them among cadence-elapsed rows.
+
+**Three one-shot migrations** that run on every `aveloxis migrate`, all self-disabling via WHERE-clause filters once their target cohort is processed:
+
+- **v0.24.1 reset** — fixes the silent-data-loss cohort from the v0.24.0 deps.dev URL-encoding bug. Predicate: `distribution_last_run IS NOT NULL AND NOT EXISTS (any deps.dev row in repo_distribution)`.
+- **v0.25.0 reset** — clears failure-tracking columns for repos sidelined under the pre-v0.25.0 strict scanner contract. Predicate: `distribution_failed_attempts > 0`.
+- **v0.25.3 repair** — stamps `distribution_last_run = MAX(data_collection_date)` for the v0.25.0/v0.25.1 transition cohort whose scans rolled back on the 23505 rotation bug. Predicate: `distribution_last_run IS NULL AND EXISTS (row in either distribution table)`.
+
+### Why they exist
+
+Each artifact corresponds to a specific incident from the v0.24.0–v0.25.3 evolution:
+
+| Version | Incident | Lasting artifact |
+|---|---|---|
+| v0.24.0 ships | deps.dev URL-encoded each `/` separately, producing 404s. Silent data loss across the deps.dev source. | v0.24.1 reset migration |
+| v0.24.0 ships | Strict scanner contract: any error + zero data = failure. Julia/R/conda repos (where the GitHub-side classifier didn't recognize their manifests) got sidelined after ecosyste.ms transient outages. | v0.25.0 reset migration; loosened contract; ecosyste.ms breaker; Julia/R/conda manifest recognition |
+| v0.25.0 ships | Per-call breaker alone leaks data — the partial-scan cohort gets `last_run = NOW()` stamped during outages and disappears for 180 days. | `distribution_scan_complete` column; immediate-reclaim WHERE branch; dispatcher pause on `Healthy() = false`; `cross_check_sources` lock-in flag |
+| v0.25.0 deploy | Immediate-reclaim exposes a latent v0.24.0 schema bug: history tables inherited UNIQUE constraints via `LIKE … INCLUDING ALL`. Every second rotation tripped 23505. Dispatcher loops every 30s. | v0.25.1 schema fix (selective UNIQUE drop, keep PK) |
+| v0.25.0/v0.25.1 transition | ~1,700+ repos under v0.25.0 had their `MarkDistributionComplete` transactions rolled back by the rotation bug — work done, work discarded, `distribution_last_run` never stamped. | v0.25.3 repair migration; immediate-reclaim disable knob |
+
+The knobs and migrations represent operator control over a **transitional problem**. Fleets that started on v0.25.1+ never experienced the underlying bugs and don't need the migrations to fire — the WHERE clauses make them no-ops automatically. Fleets that crossed the transition lean on this group to recover gracefully.
+
+### Lifecycle and planned deprecation (target: 2027)
+
+These settings are **explicitly ephemeral**, scheduled for removal as v0.24.x support ages out:
+
+| Stage | Aveloxis version | Behavior |
+|---|---|---|
+| **Current (v0.25.3+)** | Knobs default to `true` (preserve v0.25.0 behavior). Migrations run idempotently. Documented as transitional. |
+| **Mainstream v0.24.x EOL** | v0.26.x or v0.27.x | Both knobs emit a startup WARN if present in `aveloxis.json`. Defaults unchanged. Operators on fresh installs see no warning. |
+| **Full removal** | Two minor versions after EOL warn | JSON fields removed from `CollectionConfig`. Operators with the keys still in their `aveloxis.json` get a fatal "unknown config key" startup error. Migrations stay (they're cheap idempotent no-ops on healthy data) but their docs get pruned. |
+
+Target year for "v0.24.x support officially ends": **2027**. By then, no operator should still be running a fleet whose first collection was under v0.24.0–v0.25.0, and the only purpose the knobs and migrations served — managing the v0.25.x transition — will be historical.
+
+The intent is operator clarity. When you read `aveloxis.json` and see these keys, you know they're not part of the stable long-term surface. When you stop seeing them in the example config (post-deprecation), they've fully aged out.
+
+### What operators on fresh installs should do
+
+Nothing. Leave both knobs absent from `aveloxis.json` and the defaults handle the rest. The migrations are no-ops on a fresh DB because there are no rows matching the WHERE clauses.
+
+### What operators upgrading through v0.25.x should do
+
+1. Deploy **v0.25.1** to fix the rotation bug.
+2. Deploy **v0.25.3** — the v0.25.3 repair migration runs on next `aveloxis migrate`, stamping `distribution_last_run` for the lost-completion cohort.
+3. Watch the worker for a cycle to confirm new partial scans are still re-claimable (the v0.25.0 immediate-reclaim is still on by default).
+4. Once the fleet is steady-state and the urgent-re-collection cohort is empty, optionally set `"distribution_tracking_immediate_partial_reclaim": false` in `aveloxis.json` to switch to cadence-only operation. This is the stable steady-state mode.
+
+This sequence — fix the bug, repair the residue, optionally tighten operational controls — is the v0.25.x recovery path in three steps.

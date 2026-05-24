@@ -45,7 +45,12 @@ type markCall struct {
 	scanComplete  bool
 }
 
-func (f *fakeStore) ClaimNextDistributionRepo(ctx context.Context, cadence time.Duration) (*db.DistributionJob, error) {
+// ClaimNextDistributionRepo satisfies the v0.25.3 Store interface
+// signature. The fake ignores the immediatePartialReclaim flag —
+// behavioral verification of the flag's SQL effect lives in
+// internal/db/v025_3_distribution_repair_test.go's integration
+// test against a live Postgres.
+func (f *fakeStore) ClaimNextDistributionRepo(ctx context.Context, cadence time.Duration, immediatePartialReclaim bool) (*db.DistributionJob, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.claimErr != nil {

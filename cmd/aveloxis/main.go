@@ -59,6 +59,8 @@ func main() {
 		stopCmd(&cfgPath),
 		addRepoCmd(&cfgPath),
 		importFoundationsCmd(&cfgPath),
+		loadNumfocusProjectsCmd(&cfgPath),
+		loadNumfocusOrgsCmd(&cfgPath),
 		addKeyCmd(&cfgPath),
 		prioritizeCmd(&cfgPath),
 		recollectCmd(&cfgPath),

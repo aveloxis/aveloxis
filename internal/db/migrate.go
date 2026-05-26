@@ -946,6 +946,47 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		   AND COALESCE(c.cntrb_deleted, 0) = 0
 		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion))
 
+	// v0.25.5 — four indexes accelerating the rewritten matviews:
+	//
+	//   idx_contributors_cntrb_canonical
+	//     Used by 4 of the 6 branches of explorer_new_contributors
+	//     for the contributors LEFT JOIN on cntrb_canonical. Without
+	//     this index those JOINs sequential-scan 1.7M contributor rows
+	//     each. Partial WHERE cntrb_canonical != '' — empty canonical
+	//     never matches.
+	//
+	//   idx_contributors_canonical_eq_email
+	//     Lets the canonical_full_names CTE in explorer_new_contributors
+	//     skip the full-table scan + filter step. 180K rows satisfy
+	//     the WHERE; the partial index is ~12MB.
+	//
+	//   idx_commits_author_timestamp_recent
+	//     Partial since 2024-01-01. Lets the 13-month time filter in
+	//     explorer_contributor_recent_actions short-circuit the commit
+	//     scan to an index-range-scan rather than a full 474M-row
+	//     sequential scan. Refresh the predicate every 2 years
+	//     (create new index, drop old) to keep it aligned.
+	//
+	//   idx_repo_labor_repo_id_analysis_date
+	//     Serves both explorer_repo_files and explorer_repo_languages
+	//     "latest scan per repo" lookups. Lets the DISTINCT ON walk
+	//     the index in O(repos) instead of sorting 56M rows.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_contributors_cntrb_canonical",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_cntrb_canonical
+		    ON aveloxis_data.contributors (cntrb_canonical)
+		    WHERE cntrb_canonical != ''`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_contributors_canonical_eq_email",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_canonical_eq_email
+		    ON aveloxis_data.contributors (cntrb_canonical)
+		    WHERE cntrb_canonical = cntrb_email`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_commits_author_timestamp_recent",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_commits_author_timestamp_recent
+		    ON aveloxis_data.commits (cmt_author_timestamp)
+		    WHERE cmt_author_timestamp >= '2024-01-01'`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_repo_labor_repo_id_analysis_date",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_labor_repo_id_analysis_date
+		    ON aveloxis_data.repo_labor (repo_id, rl_analysis_date DESC)`)
+
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).
 	// Set collection.matview_rebuild_on_startup=true in aveloxis.json to enable,

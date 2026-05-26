@@ -146,19 +146,44 @@ func TestExplorerNewContributorsDropsCommitCommentBranch(t *testing.T) {
 	}
 }
 
-// TestExplorerNewContributorsUsesRealTimestamp pins the v0.25.5 switch
-// from `to_timestamp(cmt_author_date::text, 'YYYY-MM-DD')` (per-row
-// function call against 474M commits) to `cmt_author_timestamp` (real
-// TIMESTAMPTZ column).
-func TestExplorerNewContributorsUsesRealTimestamp(t *testing.T) {
+// TestExplorerNewContributorsPreservesDayLevelCollapse pins the v0.25.5
+// commit-branch correction: an earlier v0.25.5 draft switched the
+// commit branch from `to_timestamp(cmt_author_date::text, 'YYYY-MM-DD')`
+// (day-precision text parse) to `cmt_author_timestamp` (real
+// TIMESTAMPTZ) AND dropped the GROUP BY. That combination produced
+// one row per (commit, file) instead of pre-v0.25.5's one row per
+// (canonical_id, repo, day) — N×-multiplying the rows that fed the
+// rank pushdown AND changing output semantics. The revert restores
+// the day-collapsing GROUP BY (still wrapped inside a subquery so
+// the per-branch rank pushdown still applies); created_at remains
+// `to_timestamp(cmt_author_date, 'YYYY-MM-DD')` to match pre-v0.25.5
+// output exactly.
+func TestExplorerNewContributorsPreservesDayLevelCollapse(t *testing.T) {
 	src := readMatviewsSQLForV0255(t)
 	region := extractMatviewBlock(t, src, "explorer_new_contributors")
 
-	if strings.Contains(region, "to_timestamp((commits.cmt_author_date)") {
-		t.Error("explorer_new_contributors must NOT use to_timestamp(cmt_author_date) — switched to cmt_author_timestamp (real TIMESTAMPTZ column) in v0.25.5. The text-parse was per-row over 474M commits.")
+	// Positive pin: to_timestamp(cmt_author_date) is preserved — same
+	// expression pre-v0.25.5 used.
+	if !strings.Contains(region, "to_timestamp(co.cmt_author_date") {
+		t.Error("explorer_new_contributors commit branch must use to_timestamp(co.cmt_author_date, 'YYYY-MM-DD') to preserve pre-v0.25.5 day-collapse semantics. Switching to cmt_author_timestamp without restoring the GROUP BY would N×-multiply commit rows.")
 	}
-	if !strings.Contains(region, "cmt_author_timestamp") {
-		t.Error("explorer_new_contributors commit branch must reference cmt_author_timestamp (the real timestamp column).")
+	// Positive pin: GROUP BY day-level collapse is present.
+	if !strings.Contains(region, "GROUP BY cfn.canonical_id, co.repo_id, co.cmt_author_date") {
+		t.Error("explorer_new_contributors commit branch must GROUP BY (canonical_id, repo_id, cmt_author_date, ...) to collapse files-of-same-commit AND multiple-commits-same-day, matching pre-v0.25.5 semantic.")
+	}
+}
+
+// TestRecentActionsCommitBranchPreservesPerCommitCollapse pins the
+// v0.25.5 commit-branch correction in explorer_contributor_recent_actions.
+// An earlier draft dropped the GROUP BY → one row per (commit, file)
+// instead of pre-v0.25.5's one row per commit. The revert restores
+// the GROUP BY (cmt_commit_hash, ...) inside a subquery.
+func TestRecentActionsCommitBranchPreservesPerCommitCollapse(t *testing.T) {
+	src := readMatviewsSQLForV0255(t)
+	region := extractMatviewBlock(t, src, "explorer_contributor_recent_actions")
+
+	if !strings.Contains(region, "GROUP BY co.cmt_commit_hash") {
+		t.Error("explorer_contributor_recent_actions commit branch must GROUP BY (cmt_commit_hash, ...) to collapse files-of-same-commit, matching pre-v0.25.5. Without this the matview balloons N× per commit (one row per file).")
 	}
 }
 
@@ -184,17 +209,29 @@ func TestRecentActionsTimeFilterInWhere(t *testing.T) {
 	}
 }
 
-// TestCntrbPerFilePreAggregatesReviews pins the v0.25.5 fix to the
-// LEFT-JOIN fan-out. The new SQL collapses reviews to one row per PR
-// via a CTE before joining to pull_request_files; the old version
-// LEFT-JOINed pull_request_reviews directly, multiplying each (PR,
-// file) row by reviews-per-PR (~500M intermediate rows at scale).
-func TestCntrbPerFilePreAggregatesReviews(t *testing.T) {
+// TestCntrbPerFileMatchesPreV0255 pins that explorer_cntrb_per_file
+// preserves its pre-v0.25.5 SQL shape. v0.25.5 originally rewrote
+// this with a `WITH pr_reviewers AS` CTE to pre-aggregate reviewers
+// per PR, but that produced incorrect reviewer_ids output:
+// `string_agg(DISTINCT prv.reviewer_ids, ',')` dedupes whole-strings
+// (`"alice,bob"`) rather than individual cntrb_ids (`alice`, `bob`),
+// so the column became a list of per-PR comma-strings rather than
+// a flat list of unique reviewers.
+//
+// The revert is documented in the matviews.sql comment block. This
+// test pins the revert so a future refactor doesn't reintroduce the
+// broken CTE without writing a correct equivalent.
+func TestCntrbPerFileMatchesPreV0255(t *testing.T) {
 	src := readMatviewsSQLForV0255(t)
 	region := extractMatviewBlock(t, src, "explorer_cntrb_per_file")
 
-	if !strings.Contains(region, "WITH pr_reviewers AS") {
-		t.Error("explorer_cntrb_per_file must declare `WITH pr_reviewers AS` (a CTE that aggregates reviews per PR before joining to pull_request_files). Pre-v0.25.5 LEFT-JOINed reviews directly, multiplying each (PR, file) row by reviews-per-PR — ~500M intermediate rows on aveloxis_large.")
+	// Negative pin: the broken CTE pattern must NOT come back.
+	if strings.Contains(region, "WITH pr_reviewers AS") {
+		t.Error("explorer_cntrb_per_file must NOT use a `WITH pr_reviewers AS` CTE — that pattern (v0.25.5 attempt, reverted) produces incorrect reviewer_ids output. The pre-v0.25.5 SQL is correct; only the performance optimization was reverted.")
+	}
+	// Positive pin: the LEFT OUTER JOIN to pull_request_reviews is present.
+	if !strings.Contains(region, "LEFT OUTER JOIN") {
+		t.Error("explorer_cntrb_per_file must keep the LEFT OUTER JOIN to pull_request_reviews (the pre-v0.25.5 shape).")
 	}
 }
 

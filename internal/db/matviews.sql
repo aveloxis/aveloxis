@@ -381,18 +381,30 @@ branched AS (
 
     UNION ALL
 
-    -- commits  (uses real TIMESTAMPTZ column, no per-row text parsing)
+    -- commits
+    --
+    -- Pre-v0.25.5 collapsed by (canonical_id, repo, cmt_author_date,
+    -- full_name, login) — day-level dedupe via `cmt_author_date` (text,
+    -- day precision). v0.25.5 preserves that semantic via a GROUP BY
+    -- inside the per-commit subquery BEFORE the rank pushdown.
+    -- Without the GROUP BY the commits table (one row per file per
+    -- commit, 474M rows at fleet scale) would push tens of millions
+    -- of rows through the rank, vs pre's day-collapsed millions.
     SELECT * FROM (
-        SELECT cfn.canonical_id AS id,
-               co.cmt_author_timestamp AS created_at,
-               co.repo_id,
-               'commit'::text AS action,
-               c.cntrb_full_name AS full_name,
-               c.cntrb_login AS login,
-               row_number() OVER (PARTITION BY cfn.canonical_id, co.repo_id ORDER BY co.cmt_author_timestamp DESC) AS br
-          FROM aveloxis_data.commits co
-          JOIN aveloxis_data.contributors c ON (c.cntrb_canonical)::text = (co.cmt_author_email)::text
-          JOIN canonical_full_names cfn ON (cfn.canonical_email)::text = (c.cntrb_canonical)::text
+        SELECT id, created_at, repo_id, 'commit'::text AS action, full_name, login,
+               row_number() OVER (PARTITION BY id, repo_id ORDER BY created_at DESC) AS br
+          FROM (
+            SELECT cfn.canonical_id AS id,
+                   to_timestamp(co.cmt_author_date::text, 'YYYY-MM-DD'::text) AS created_at,
+                   co.repo_id,
+                   c.cntrb_full_name AS full_name,
+                   c.cntrb_login AS login
+              FROM aveloxis_data.commits co
+              JOIN aveloxis_data.contributors c ON (c.cntrb_canonical)::text = (co.cmt_author_email)::text
+              JOIN canonical_full_names cfn ON (cfn.canonical_email)::text = (c.cntrb_canonical)::text
+             GROUP BY cfn.canonical_id, co.repo_id, co.cmt_author_date,
+                      c.cntrb_full_name, c.cntrb_login
+          ) day_collapsed
     ) z WHERE br <= 7
 
     UNION ALL
@@ -838,15 +850,31 @@ SELECT a.id AS cntrb_id,
        row_number() OVER (PARTITION BY a.id, a.repo_id ORDER BY a.created_at DESC) AS rank
   FROM (
         -- commits (recent 13 months)
-        SELECT co.cmt_ght_author_id AS id,
-               co.cmt_author_timestamp AS created_at,
-               co.repo_id,
+        --
+        -- Pre-v0.25.5 had GROUP BY (cmt_commit_hash, cmt_ght_author_id,
+        -- repo_id, cmt_author_timestamp, ..., cntrb_login) collapsing
+        -- the N rows commits has per file per commit to ONE row per
+        -- commit. v0.25.5 preserves that semantic — without the
+        -- GROUP BY, the matview would balloon N× (one row per file
+        -- instead of per commit).
+        SELECT cmt_ght_author_id AS id,
+               cmt_author_timestamp AS created_at,
+               repo_id,
                'commit'::text AS action,
-               c.cntrb_login AS login
-          FROM aveloxis_data.commits co
-          LEFT JOIN aveloxis_data.contributors c
-            ON c.cntrb_id::text = co.cmt_ght_author_id::text
-         WHERE co.cmt_author_timestamp >= now() - interval '13 months'
+               cntrb_login AS login
+          FROM (
+            SELECT co.cmt_commit_hash,
+                   co.cmt_ght_author_id,
+                   co.cmt_author_timestamp,
+                   co.repo_id,
+                   c.cntrb_login
+              FROM aveloxis_data.commits co
+              LEFT JOIN aveloxis_data.contributors c
+                ON c.cntrb_id::text = co.cmt_ght_author_id::text
+             WHERE co.cmt_author_timestamp >= now() - interval '13 months'
+             GROUP BY co.cmt_commit_hash, co.cmt_ght_author_id,
+                      co.cmt_author_timestamp, co.repo_id, c.cntrb_login
+          ) commit_collapsed
 
         UNION ALL
 
@@ -988,29 +1016,34 @@ ON aveloxis_data.explorer_pr_files (file_path, pull_request_id, repo_id);
 -- =============================================================================
 DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_cntrb_per_file CASCADE;
 
--- v0.25.5: pre-aggregate reviews per PR before joining to files. Pre-v0.25.5
--- the LEFT JOIN to pull_request_reviews multiplied each (PR, file) row by
--- the number of reviews on that PR — on aveloxis_large that's ~500M
--- intermediate rows before GROUP BY (117M PR-files × ~3 reviews avg).
--- The CTE collapses reviews to one row per PR (~8M rows max), so the
--- subsequent JOIN to pr_files produces no row multiplication: ~117M
--- intermediate rows total.
+-- v0.25.5: an earlier draft attempted to pre-aggregate reviewers per PR
+-- via a CTE to cut the LEFT-JOIN fan-out (~500M intermediate rows on
+-- aveloxis_large). It produced INCORRECT output — `string_agg(DISTINCT
+-- prv.reviewer_ids, ',')` dedupes whole per-PR comma-strings rather than
+-- individual reviewer IDs, so the result column became a list of
+-- per-PR strings (`"alice,bob","alice,charlie"`) instead of the
+-- intended flat list of unique reviewers (`"alice,bob,charlie"`).
+-- Reverted to the pre-v0.25.5 SQL. The performance optimization needs
+-- a different structural approach (e.g. unnest + re-aggregate, or
+-- LATERAL with explicit set semantics); deferred until a verifiable
+-- equivalent can be written.
 CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_cntrb_per_file AS
-WITH pr_reviewers AS (
-    SELECT pull_request_id,
-           string_agg(DISTINCT CAST(cntrb_id AS varchar(36)), ',') AS reviewer_ids
-      FROM aveloxis_data.pull_request_reviews
-     WHERE cntrb_id IS NOT NULL
-     GROUP BY pull_request_id
-)
-SELECT pr.repo_id,
-       COALESCE(prf.pr_file_path, '') AS file_path,
-       COALESCE(string_agg(DISTINCT CAST(pr.author_id AS varchar(36)), ','), '') AS cntrb_ids,
-       COALESCE(string_agg(DISTINCT prv.reviewer_ids, ','), '') AS reviewer_ids
-  FROM aveloxis_data.pull_requests pr
-  JOIN aveloxis_data.pull_request_files prf ON pr.pull_request_id = prf.pull_request_id
-  LEFT JOIN pr_reviewers prv ON prv.pull_request_id = pr.pull_request_id
- GROUP BY prf.pr_file_path, pr.repo_id;
+SELECT
+    pr.repo_id AS repo_id,
+    COALESCE(prf.pr_file_path, '') AS file_path,
+    COALESCE(string_agg(DISTINCT CAST(pr.author_id AS varchar(36)), ','), '') AS cntrb_ids,
+    COALESCE(string_agg(DISTINCT CAST(prr.cntrb_id AS varchar(36)), ','), '') AS reviewer_ids
+FROM
+    aveloxis_data.pull_requests pr
+INNER JOIN
+    aveloxis_data.pull_request_files prf
+ON
+    pr.pull_request_id = prf.pull_request_id
+LEFT OUTER JOIN
+    aveloxis_data.pull_request_reviews prr
+ON
+    pr.pull_request_id = prr.pull_request_id
+GROUP BY prf.pr_file_path, pr.repo_id;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_explorer_cntrb_per_file
 ON aveloxis_data.explorer_cntrb_per_file (repo_id, file_path);

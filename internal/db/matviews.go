@@ -53,7 +53,8 @@ var matviewNames = []string{
 	"aveloxis_data.explorer_entry_list",
 	"aveloxis_data.explorer_commits_and_committers_daily_count",
 	"aveloxis_data.explorer_contributor_actions",
-	"aveloxis_data.augur_new_contributors",
+	// augur_new_contributors removed in v0.25.5 — was byte-for-byte
+	// identical to explorer_contributor_actions, dropped as redundant.
 	"aveloxis_data.explorer_new_contributors",
 	"aveloxis_data.explorer_user_repos",
 	"aveloxis_data.explorer_pr_response_times",
@@ -61,7 +62,9 @@ var matviewNames = []string{
 	"aveloxis_data.explorer_issue_assignments",
 	"aveloxis_data.explorer_pr_response",
 	"aveloxis_data.explorer_repo_languages",
-	"aveloxis_data.explorer_libyear_all",
+	// explorer_libyear_all converted to a regular VIEW alias in v0.25.5
+	// (was byte-for-byte identical SQL to _summary). The alias name stays
+	// queryable for downstream tooling but doesn't need a refresh pass.
 	"aveloxis_data.explorer_libyear_summary",
 	"aveloxis_data.explorer_libyear_detail",
 	"aveloxis_data.issue_reporter_created_at",

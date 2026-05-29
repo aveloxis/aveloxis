@@ -442,6 +442,21 @@ type CollectionConfig struct {
 	// just won't get any bigger timeout.
 	ScancodeRunTimeoutCapHours int `json:"scancode_run_timeout_cap_hours"`
 
+	// ScancodeMaxInMemory caps how many file scan results scancode
+	// keeps in RAM before spilling intermediate state to a tempfile
+	// on disk. Default 5000 — matches the pre-v0.25.2 hardcoded
+	// constant so legacy aveloxis.json files keep working unchanged.
+	//
+	// The default is conservative for low-memory dev machines. On
+	// production hosts with hundreds of GB of RAM, raising this
+	// reduces tempfile I/O on monorepos (linux kernel, chromium,
+	// etc.) where the default forces spill early in the scan.
+	// scancode passes the value through to its
+	// `--max-in-memory N` flag verbatim. Set 0 or negative to
+	// fall back to the default; the accessor clamps so a bogus
+	// value can't reach the scancode subprocess.
+	ScancodeMaxInMemory int `json:"scancode_max_in_memory"`
+
 	// PhaseWatchdogMinutes controls the v0.22.4 observation watchdog's
 	// stall threshold. If staging row count for a repo does not grow
 	// for this many minutes, the watchdog appends an event to
@@ -539,6 +554,37 @@ type CollectionConfig struct {
 	// missing-key, silently breaking the lock-in guarantee for
 	// every aveloxis.json that pre-dates v0.25.0.
 	DistributionTrackingCrossCheckSources *bool `json:"distribution_tracking_cross_check_sources,omitempty"`
+
+	// DistributionTrackingImmediatePartialReclaim, when true (the
+	// default in v0.25.3), keeps the v0.25.0 behavior: a repo whose
+	// last scan was partial (distribution_scan_complete = FALSE) is
+	// immediately re-eligible on the next dispatcher cycle,
+	// bypassing the cadence gate. The ClaimNextDistributionRepo
+	// WHERE clause includes `OR COALESCE(scan_complete, TRUE) = FALSE`.
+	//
+	// Set to false to suppress that re-claim behavior. Partial-scan
+	// repos then wait for normal cadence like everything else — the
+	// claim WHERE drops the scan_complete branch. The ORDER BY's
+	// `scan_complete ASC` tiebreaker stays in both modes, so among
+	// cadence-elapsed rows, partial scans still get priority.
+	//
+	// Operator framing (2026-05-24): the v0.25.0 immediate-reclaim
+	// design is correct *during* a v0.24.x → v0.25.x transition
+	// when partial-scan repos legitimately need urgent re-collection.
+	// Once a fleet is through that cohort and steady-state cadence
+	// resumes, the immediate-reclaim mechanism becomes operational
+	// churn rather than a recovery tool. This knob is the explicit
+	// off-switch.
+	//
+	// v0.25.x-era escape hatch. See docs/architecture/distribution.md
+	// §12 for the planned deprecation horizon when v0.24.x support
+	// ends in 2027.
+	//
+	// Pointer-to-bool (not bare bool) so the JSON decoder distinguishes
+	// "absent" (use v0.25.3 default = true, preserving v0.25.0
+	// behavior on aveloxis.json files that pre-date v0.25.3) from
+	// "explicitly false." Same pattern as DistributionTrackingCrossCheckSources.
+	DistributionTrackingImmediatePartialReclaim *bool `json:"distribution_tracking_immediate_partial_reclaim,omitempty"`
 }
 
 // PhaseWatchdogDuration returns the v0.22.4 long-jobs watchdog
@@ -664,6 +710,20 @@ func (c *CollectionConfig) DistributionTrackingCrossCheckSourcesValue() bool {
 	return *c.DistributionTrackingCrossCheckSources
 }
 
+// DistributionTrackingImmediatePartialReclaimValue returns the
+// effective immediate-reclaim setting (v0.25.3). Default true
+// preserves v0.25.0/v0.25.1 behavior when the JSON field is
+// absent — pointer-to-bool so we can tell "absent" from
+// "explicitly false." See the field comment on
+// CollectionConfig.DistributionTrackingImmediatePartialReclaim
+// for the operator-framing rationale.
+func (c *CollectionConfig) DistributionTrackingImmediatePartialReclaimValue() bool {
+	if c.DistributionTrackingImmediatePartialReclaim == nil {
+		return true
+	}
+	return *c.DistributionTrackingImmediatePartialReclaim
+}
+
 // defaultScancodeCloneDir returns the default scancode clone parent
 // directory. Kept as a function (not a constant) so unit tests can
 // adjust on OSes where /tmp is unconventional. Mirrors the pattern in
@@ -747,6 +807,19 @@ func (c *CollectionConfig) ScancodeRunTimeoutCap() time.Duration {
 		return 24 * time.Hour
 	}
 	return time.Duration(c.ScancodeRunTimeoutCapHours) * time.Hour
+}
+
+// ScancodeMaxInMemoryOrDefault returns the scancode --max-in-memory
+// cap (v0.25.2). Defaults to 5000, matching the pre-v0.25.2
+// hardcoded constant so legacy configs are unaffected. Negative or
+// zero inputs collapse to the default — the value flows directly to
+// a scancode CLI argument so a bogus number must never reach the
+// subprocess.
+func (c *CollectionConfig) ScancodeMaxInMemoryOrDefault() int {
+	if c.ScancodeMaxInMemory <= 0 {
+		return 5000
+	}
+	return c.ScancodeMaxInMemory
 }
 
 // MailConfig configures the Gmail-backed transactional mailer
@@ -859,9 +932,10 @@ func DefaultConfig() *Config {
 			ScancodeStartIntervalSec:     90,
 			ScancodeCadenceDays:          180,
 			ScancodeCloneDir:             defaultScancodeCloneDir(),
-			ScancodeShutdownGraceMinutes: 0,  // v0.23.7: immediate kill on stop
-			ScancodeRunTimeoutHours:      2,  // v0.23.8: base wall-clock per scan
-			ScancodeRunTimeoutCapHours:   24, // v0.23.8: upper bound on adaptive timeout
+			ScancodeShutdownGraceMinutes: 0,    // v0.23.7: immediate kill on stop
+			ScancodeRunTimeoutHours:      2,    // v0.23.8: base wall-clock per scan
+			ScancodeRunTimeoutCapHours:   24,   // v0.23.8: upper bound on adaptive timeout
+			ScancodeMaxInMemory:          5000, // v0.25.2: matches pre-v0.25.2 hardcoded value; bump on RAM-rich production hosts
 			// v0.24.0 DistributionWorker defaults. Off by default;
 			// 6-month cadence; modest concurrency. See CollectionConfig
 			// field docs for the full rationale.

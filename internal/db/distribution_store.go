@@ -83,7 +83,21 @@ type DistributionJob struct {
 //  3. Cadence window has elapsed (distribution_last_run NULL OR
 //     past cadence). Operator config: distribution_tracking_interval_days.
 //  4. Per-row failure backoff window has elapsed (quadratic).
-func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence time.Duration) (*DistributionJob, error) {
+//
+// v0.25.3: the immediatePartialReclaim parameter (default true via
+// the operator config accessor) controls whether
+// `distribution_scan_complete = FALSE` rows are also immediately
+// eligible regardless of cadence. When true, the WHERE clause
+// includes `OR COALESCE(scan_complete, TRUE) = FALSE` — the
+// v0.25.0 behavior, useful during a v0.24.x → v0.25.x transition
+// when partial-scan repos need urgent re-collection. When false,
+// partial scans wait for normal cadence; the ORDER BY tiebreaker
+// still prioritizes them among cadence-elapsed rows. Operators on
+// stable fleets typically flip this off once the v0.25.0 transition
+// cohort is processed. See the docstring on
+// CollectionConfig.DistributionTrackingImmediatePartialReclaim
+// for the operator-framing rationale.
+func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence time.Duration, immediatePartialReclaim bool) (*DistributionJob, error) {
 	if cadence <= 0 {
 		cadence = 180 * 24 * time.Hour
 	}
@@ -93,15 +107,25 @@ func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence t
 		return nil, fmt.Errorf("begin claim tx: %w", err)
 	}
 
+	// v0.25.3: branch the WHERE clause on the immediatePartialReclaim
+	// flag. Pre-v0.25.3 the OR scan_complete=FALSE clause was always
+	// present; now an operator can disable it once their fleet is
+	// through the v0.25.0 transition cohort.
+	//
+	// The ORDER BY's `scan_complete ASC` stays in both modes — among
+	// rows the WHERE allows through, partial scans still sort to the
+	// front. So when the knob is off and a partial repo eventually
+	// becomes cadence-eligible naturally, it still gets priority over
+	// a cleanly-complete repo whose cadence also just elapsed.
+	partialReclaimClause := ""
+	if immediatePartialReclaim {
+		partialReclaimClause = "OR COALESCE(r.distribution_scan_complete, TRUE) = FALSE\n			           "
+	}
+
 	// Backoff base is sourced from the named constant so the schedule
 	// stays documented in one place. Plain Sprintf is safe here: the
-	// only substitution is an integer constant, not user input.
-	// v0.25.0: distribution_scan_complete=FALSE bypasses the cadence
-	// gate. A partial scan (an external source had a transient error
-	// or was skipped due to an open circuit breaker) becomes
-	// immediately re-eligible on the next dispatch cycle, so once
-	// the source recovers the row gets a full re-collection that
-	// rotates the partial-scan rows to history.
+	// only substitutions are an integer constant and the literal
+	// SQL fragment above, neither user input.
 	claimSQL := fmt.Sprintf(`
 		WITH candidate AS (
 		    SELECT r.repo_id
@@ -110,7 +134,7 @@ func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence t
 		    WHERE q.last_collected IS NOT NULL
 		      AND COALESCE(r.repo_archived, FALSE) = FALSE
 		      AND (r.distribution_last_run IS NULL
-		           OR COALESCE(r.distribution_scan_complete, TRUE) = FALSE
+		           %s
 		           OR r.distribution_last_run < NOW() - $1::interval)
 		      AND (r.distribution_last_failed_at IS NULL
 		           OR r.distribution_last_failed_at < NOW() - make_interval(
@@ -119,6 +143,8 @@ func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence t
 		    ORDER BY
 		        -- Partial scans get priority (after NULLs) so they
 		        -- re-collect ahead of routine cadence-elapsed rows.
+		        -- v0.25.3: this ORDER BY clause stays in both modes;
+		        -- only the WHERE-clause immediate-reclaim branch toggles.
 		        COALESCE(r.distribution_scan_complete, TRUE) ASC,
 		        r.distribution_last_run NULLS FIRST,
 		        r.repo_id
@@ -127,7 +153,7 @@ func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence t
 		)
 		SELECT r.repo_id, r.repo_owner, r.repo_name, r.repo_git
 		FROM aveloxis_data.repos r
-		WHERE r.repo_id IN (SELECT repo_id FROM candidate)`, distributionBackoffBaseSeconds)
+		WHERE r.repo_id IN (SELECT repo_id FROM candidate)`, partialReclaimClause, distributionBackoffBaseSeconds)
 	row := tx.QueryRow(ctx, claimSQL, cadence.String())
 
 	var job DistributionJob

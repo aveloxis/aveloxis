@@ -33,7 +33,12 @@ import (
 // Interface (not a *db.PostgresStore directly) so tests can
 // substitute a fake without standing up postgres.
 type Store interface {
-	ClaimNextDistributionRepo(ctx context.Context, cadence time.Duration) (*db.DistributionJob, error)
+	// v0.25.3: immediatePartialReclaim flag controls whether
+	// distribution_scan_complete = FALSE rows bypass the cadence
+	// gate. Plumbed through from
+	// CollectionConfig.DistributionTrackingImmediatePartialReclaim
+	// (default true preserves v0.25.0 behavior).
+	ClaimNextDistributionRepo(ctx context.Context, cadence time.Duration, immediatePartialReclaim bool) (*db.DistributionJob, error)
 	MarkDistributionComplete(ctx context.Context, job *db.DistributionJob,
 		distributions []model.PackageDistribution, manifests []model.DistributionManifest, scanComplete bool) error
 	RecordDistributionFailure(ctx context.Context, job *db.DistributionJob) error
@@ -78,27 +83,38 @@ type WorkerOptions struct {
 	StartInterval time.Duration // minimum gap between successful starts (default 0 in tests)
 	Cadence       time.Duration // per-repo cooldown (default 180 days)
 	Logger        *slog.Logger
+	// ImmediatePartialReclaim, when true (the default), preserves
+	// the v0.25.0 behavior: partial-scan repos (distribution_scan_complete
+	// = FALSE) bypass the cadence gate and re-collect on the next
+	// dispatcher tick. When false, partial scans wait for normal
+	// cadence — operator-level escape hatch for post-transition
+	// fleets where the immediate-reclaim becomes operational churn.
+	// Threaded through to ClaimNextDistributionRepo's WHERE-clause
+	// branching. v0.25.3.
+	ImmediatePartialReclaim bool
 }
 
 // Worker is a goroutine-based DistributionWorker pool.
 type Worker struct {
-	store         Store
-	scanner       Scanner
-	workers       int
-	startInterval time.Duration
-	cadence       time.Duration
-	logger        *slog.Logger
+	store                   Store
+	scanner                 Scanner
+	workers                 int
+	startInterval           time.Duration
+	cadence                 time.Duration
+	logger                  *slog.Logger
+	immediatePartialReclaim bool // v0.25.3
 }
 
 // NewWorker constructs a Worker. Workers <= 0 falls back to 1.
 func NewWorker(opts WorkerOptions) *Worker {
 	w := &Worker{
-		store:         opts.Store,
-		scanner:       opts.Scanner,
-		workers:       opts.Workers,
-		startInterval: opts.StartInterval,
-		cadence:       opts.Cadence,
-		logger:        opts.Logger,
+		store:                   opts.Store,
+		scanner:                 opts.Scanner,
+		workers:                 opts.Workers,
+		startInterval:           opts.StartInterval,
+		cadence:                 opts.Cadence,
+		logger:                  opts.Logger,
+		immediatePartialReclaim: opts.ImmediatePartialReclaim,
 	}
 	if w.workers <= 0 {
 		w.workers = 1
@@ -218,7 +234,7 @@ func (w *Worker) dispatcher(ctx context.Context, jobs chan<- *db.DistributionJob
 			}
 		}
 
-		job, err := w.store.ClaimNextDistributionRepo(ctx, w.cadence)
+		job, err := w.store.ClaimNextDistributionRepo(ctx, w.cadence, w.immediatePartialReclaim)
 		if err != nil {
 			w.logger.Warn("distribution dispatcher: claim failed", "error", err)
 			// Back off briefly to avoid spinning on a broken DB.

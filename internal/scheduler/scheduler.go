@@ -66,6 +66,7 @@ type Config struct {
 	ScancodeShutdownGrace  time.Duration // wait budget for in-flight scancode runs on aveloxis stop (v0.23.7 default 0 = immediate kill)
 	ScancodeRunTimeoutBase time.Duration // v0.23.8 base per-job timeout (default 2h)
 	ScancodeRunTimeoutCap  time.Duration // v0.23.8 upper bound on adaptive per-job timeout (default 24h)
+	ScancodeMaxInMemory    int           // v0.25.2 scancode --max-in-memory file-result cap (default 5000)
 
 	// PhaseWatchdog is the no-staging-growth threshold the v0.22.4
 	// observation watchdog uses to emit a long-jobs event. Default
@@ -85,13 +86,14 @@ type Config struct {
 	// ecosyste.ms, GitHub Packages, GitHub release assets) plus
 	// in-repo manifest evidence. Off by default; opt-in via
 	// collection.distribution_tracking_enabled.
-	DistributionTrackingEnabled           bool          // master switch (off by default)
-	DistributionTrackingInterval          time.Duration // per-repo cadence (default 180d)
-	DistributionTrackingWorkers           int           // concurrent runners (default 4)
-	DistributionTrackingStartInterval     time.Duration // minimum gap between successful claims (default 30s)
-	DistributionTrackingPoliteEmail       string        // ecosyste.ms polite-pool From: header
-	DistributionTrackingUserAgent         string        // overrides "aveloxis/<version>" UA
-	DistributionTrackingCrossCheckSources bool          // v0.25.0: always query both deps.dev AND ecosyste.ms (default true)
+	DistributionTrackingEnabled                 bool          // master switch (off by default)
+	DistributionTrackingInterval                time.Duration // per-repo cadence (default 180d)
+	DistributionTrackingWorkers                 int           // concurrent runners (default 4)
+	DistributionTrackingStartInterval           time.Duration // minimum gap between successful claims (default 30s)
+	DistributionTrackingPoliteEmail             string        // ecosyste.ms polite-pool From: header
+	DistributionTrackingUserAgent               string        // overrides "aveloxis/<version>" UA
+	DistributionTrackingCrossCheckSources       bool          // v0.25.0: always query both deps.dev AND ecosyste.ms (default true)
+	DistributionTrackingImmediatePartialReclaim bool          // v0.25.3: partial-scan repos bypass cadence (default true)
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -339,6 +341,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.cfg.ScancodeShutdownGrace,
 		s.cfg.ScancodeRunTimeoutBase,
 		s.cfg.ScancodeRunTimeoutCap,
+		s.cfg.ScancodeMaxInMemory,
 	)
 	go scancodeWorker.Run(ctx)
 

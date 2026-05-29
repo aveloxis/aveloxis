@@ -946,19 +946,13 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		   AND COALESCE(c.cntrb_deleted, 0) = 0
 		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion))
 
-	// v0.25.5 — four indexes accelerating the rewritten matviews:
+	// v0.25.5 — index pair (idx_contributors_cntrb_canonical,
+	// idx_contributors_canonical_eq_email) was added here to accelerate
+	// the canonical_full_names CTE in the pre-v0.25.6 matview. Both
+	// indexes are dropped in the v0.25.6 block below — the matview no
+	// longer uses cntrb_canonical for any JOIN.
 	//
-	//   idx_contributors_cntrb_canonical
-	//     Used by 4 of the 6 branches of explorer_new_contributors
-	//     for the contributors LEFT JOIN on cntrb_canonical. Without
-	//     this index those JOINs sequential-scan 1.7M contributor rows
-	//     each. Partial WHERE cntrb_canonical != '' — empty canonical
-	//     never matches.
-	//
-	//   idx_contributors_canonical_eq_email
-	//     Lets the canonical_full_names CTE in explorer_new_contributors
-	//     skip the full-table scan + filter step. 180K rows satisfy
-	//     the WHERE; the partial index is ~12MB.
+	// The other two v0.25.5 indexes stay (still serve other matviews):
 	//
 	//   idx_commits_author_timestamp_recent
 	//     Partial since 2024-01-01. Lets the 13-month time filter in
@@ -971,14 +965,6 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	//     Serves both explorer_repo_files and explorer_repo_languages
 	//     "latest scan per repo" lookups. Lets the DISTINCT ON walk
 	//     the index in O(repos) instead of sorting 56M rows.
-	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_contributors_cntrb_canonical",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_cntrb_canonical
-		    ON aveloxis_data.contributors (cntrb_canonical)
-		    WHERE cntrb_canonical != ''`)
-	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_contributors_canonical_eq_email",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_canonical_eq_email
-		    ON aveloxis_data.contributors (cntrb_canonical)
-		    WHERE cntrb_canonical = cntrb_email`)
 	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_commits_author_timestamp_recent",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_commits_author_timestamp_recent
 		    ON aveloxis_data.commits (cmt_author_timestamp)
@@ -986,6 +972,69 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_repo_labor_repo_id_analysis_date",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_labor_repo_id_analysis_date
 		    ON aveloxis_data.repo_labor (repo_id, rl_analysis_date DESC)`)
+
+	// v0.25.6 — three one-shot operations that pair with the
+	// explorer_new_contributors structural rewrite:
+	//
+	//   1. Backfill cntrb_canonical from contributors_aliases. The
+	//      v0.25.6 commit_resolver.ensureAlias fix populates canonical
+	//      on every NEW alias insert going forward, but historical
+	//      rows with an alias but no canonical (created via
+	//      resolution strategies 2 + 4 pre-v0.25.6) stay empty
+	//      without this. Picks MIN(alias_email) per cntrb_id for
+	//      determinism. COALESCE on cntrb_canonical = '' so we
+	//      never overwrite an existing real canonical. Soft-deleted
+	//      contributors are skipped per the v0.20.2 contract.
+	//
+	//   2. Backfill cmt_author_platform_username from
+	//      cmt_ght_author_id where the UUID is populated but the
+	//      login text isn't. 91.95% of commits have cmt_ght_author_id
+	//      but only 77.58% have the login text — the asymmetry comes
+	//      from API paths that stamp the UUID without updating the
+	//      login on every matching commit row (noreply email parsing,
+	//      Commits API resolution, email-based backfill). This step
+	//      brings login coverage up to ~92% as well, which makes
+	//      legacy queries that JOIN on platform_username work
+	//      correctly without code changes.
+	//
+	//   3. Drop idx_contributors_cntrb_canonical and
+	//      idx_contributors_canonical_eq_email. Added in v0.25.5 to
+	//      accelerate the canonical_full_names CTE in
+	//      explorer_new_contributors; obsolete in v0.25.6 because
+	//      the CTE is gone. Keeping them would cost write
+	//      amplification on every contributors INSERT/UPDATE with
+	//      zero read-side benefit.
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.25.6 backfill cntrb_canonical from contributors_aliases",
+		`UPDATE aveloxis_data.contributors c
+		    SET cntrb_canonical = sub.alias_email
+		   FROM (
+		       SELECT cntrb_id, MIN(alias_email) AS alias_email
+		         FROM aveloxis_data.contributors_aliases
+		        WHERE COALESCE(alias_email, '') != ''
+		        GROUP BY cntrb_id
+		   ) sub
+		  WHERE c.cntrb_id = sub.cntrb_id
+		    AND COALESCE(c.cntrb_canonical, '') = ''
+		    AND COALESCE(c.cntrb_deleted, 0) = 0`)
+
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.25.6 backfill cmt_author_platform_username from cmt_ght_author_id",
+		`UPDATE aveloxis_data.commits co
+		    SET cmt_author_platform_username = c.gh_login
+		   FROM aveloxis_data.contributors c
+		  WHERE c.cntrb_id = co.cmt_ght_author_id
+		    AND COALESCE(co.cmt_author_platform_username, '') = ''
+		    AND COALESCE(c.gh_login, '') != ''
+		    AND COALESCE(c.cntrb_deleted, 0) = 0`)
+
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.25.6 drop idx_contributors_cntrb_canonical (obsoleted by matview rewrite)",
+		`DROP INDEX IF EXISTS aveloxis_data.idx_contributors_cntrb_canonical`)
+
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.25.6 drop idx_contributors_canonical_eq_email (obsoleted by matview rewrite)",
+		`DROP INDEX IF EXISTS aveloxis_data.idx_contributors_canonical_eq_email`)
 
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).

@@ -309,100 +309,83 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_explorer_contributor_actions
 -- ---------------------------------------------------------------------------
 -- 10. explorer_new_contributors  --  top-7 most-recent actions per (cntrb, repo)
 --
--- v0.25.5: comprehensive rewrite. Original pre-v0.25.5 definition took
--- 16+ hours to rebuild on a 100K-repo / 474M-commit / 1.7M-contributor
--- production database (chaoss.tv aveloxis_large, observed 2026-05-25).
--- Four anti-patterns fixed:
+-- v0.25.6: structural rewrite using cmt_ght_author_id (deterministic
+-- UUID stamped by the commit resolver) for the commit branch, and
+-- direct c.cntrb_id joins for the other five branches. The
+-- canonical_full_names CTE is gone — it was a 180K-row DISTINCT ON
+-- recomputed 6× per refresh whose only purpose was to deduplicate
+-- contributors by canonical email, an Augur-era pattern from before
+-- deterministic cntrb_id existed.
 --
---   1. canonical_full_names DISTINCT ON subquery was recomputed in
---      each of 7 UNION branches → 7× redundant ~1.7M-row scans + sort.
---      Hoisted to a single CTE. Single materialization, reused.
+-- The v0.25.5 attempt to dodge the empty-string Cartesian product
+-- (5.6M empty-email commits × 1.06M empty-canonical contributors)
+-- via additional WHERE filters was the wrong instinct. The right
+-- fix is to use the column that's been there for the purpose all
+-- along: cmt_ght_author_id has 91.95% coverage on the production
+-- 474M-row commits table (vs ~27% coverage via the email-canonical
+-- chain), and is index-backed by the contributors PK.
 --
---   2. The commit_comment branch joined empty `commit_comment_ref`
---      (Aveloxis doesn't write to that table — only Augur's
---      compatibility schema would have populated it). Branch dropped
---      outright; observed output unchanged because the empty table
---      always produced zero rows.
+-- Coverage delta operators should expect:
+--   • commit branch: ~27% → ~92% of commit rows included
+--   • output size: roughly 3-4× larger (still bounded by top-7 rank)
 --
---   3. ROW_NUMBER was computed over the full UNION ALL output, then
---      filtered to rank<=7. For prolific contributors (Linus →
---      linux/linux) that meant ranking tens of thousands of commits
---      just to throw away all but 7. Now each branch ranks its own
---      contribution and pre-filters to top-7-per-(cntrb, repo); the
---      outer rank operates on at most 7 × 6 branches = 42 rows per
---      (cntrb, repo). Semantically equivalent — the global top-7 is
---      a subset of {top-7 per branch}.
+-- Soft-deleted rows from the v0.20.2 logical-merge path are
+-- excluded via COALESCE(c.cntrb_deleted, 0) = 0 on every branch.
+-- The commit branch preserves day-level collapse via inner-subquery
+-- GROUP BY before the rank pushdown — otherwise the per-file
+-- commit rows (474M at fleet scale) would push too many rows
+-- through the window function.
 --
---   4. The commit branch parsed `to_timestamp(cmt_author_date::text,
---      'YYYY-MM-DD')` per row — a function call per scan of 474M
---      commits. Switched to `cmt_author_timestamp` (real TIMESTAMPTZ
---      column already in commits) — faster AND higher-precision.
---
--- Each branch's outer GROUP BY (which was just a no-op SELECT DISTINCT
--- on every selected column) was dropped — no aggregates in the
--- branch, the joins don't multiply rows via the canonical_full_names
--- INNER JOIN, so the GROUP BYs were doing extra HashAggregate work
--- for no semantic effect. The outer `WHERE a.id IS NOT NULL` is
--- replaced by INNER JOIN to canonical_full_names per branch.
---
--- Expected rebuild on aveloxis_large after this rewrite + the v0.25.5
--- indexes (idx_contributors_cntrb_canonical, idx_contributors_canonical_eq_email):
--- 1-3 hours instead of 16+.
+-- The other four pre-v0.25.5 anti-patterns from the earlier
+-- v0.25.5 changelog entry stay fixed:
+--   • per-branch rank-7 pushdown before UNION (vs ranking full union)
+--   • commit_comment branch (empty ref table) removed
+--   • issue_comment branch's `pull_request_id = NULL` (impossible)
+--     bug restored to `pull_request IS NULL`
+--   • no redundant outer GROUP BY (was no-op DISTINCT)
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_new_contributors CASCADE;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_new_contributors AS
-WITH canonical_full_names AS (
-    -- Hoisted once, reused 6× below. ~180K rows on aveloxis_large.
-    SELECT DISTINCT ON (cntrb_canonical)
-           cntrb_full_name,
-           cntrb_canonical AS canonical_email,
-           data_collection_date,
-           cntrb_id AS canonical_id
-      FROM aveloxis_data.contributors
-     WHERE (cntrb_canonical)::text = (cntrb_email)::text
-     ORDER BY cntrb_canonical
-),
-branched AS (
+WITH branched AS (
     -- issues opened
     SELECT * FROM (
-        SELECT cfn.canonical_id AS id,
+        SELECT c.cntrb_id AS id,
                i.created_at,
                i.repo_id,
                'issue_opened'::text AS action,
                c.cntrb_full_name AS full_name,
                c.cntrb_login AS login,
-               row_number() OVER (PARTITION BY cfn.canonical_id, i.repo_id ORDER BY i.created_at DESC) AS br
+               row_number() OVER (PARTITION BY c.cntrb_id, i.repo_id ORDER BY i.created_at DESC) AS br
           FROM aveloxis_data.issues i
           JOIN aveloxis_data.contributors c ON c.cntrb_id = i.reporter_id
-          JOIN canonical_full_names cfn ON (cfn.canonical_email)::text = (c.cntrb_canonical)::text
          WHERE i.pull_request IS NULL
+           AND COALESCE(c.cntrb_deleted, 0) = 0
     ) z WHERE br <= 7
 
     UNION ALL
 
     -- commits
     --
-    -- Pre-v0.25.5 collapsed by (canonical_id, repo, cmt_author_date,
-    -- full_name, login) — day-level dedupe via `cmt_author_date` (text,
-    -- day precision). v0.25.5 preserves that semantic via a GROUP BY
-    -- inside the per-commit subquery BEFORE the rank pushdown.
-    -- Without the GROUP BY the commits table (one row per file per
-    -- commit, 474M rows at fleet scale) would push tens of millions
-    -- of rows through the rank, vs pre's day-collapsed millions.
+    -- Direct cmt_ght_author_id → cntrb_id join. ~92% coverage on the
+    -- production commits table; rows without a resolved author_id
+    -- are filtered out (they have no contributor to attribute to).
+    -- Day-level collapse via GROUP BY in the inner subquery so we
+    -- don't push 474M per-file rows through the window function.
     SELECT * FROM (
         SELECT id, created_at, repo_id, 'commit'::text AS action, full_name, login,
                row_number() OVER (PARTITION BY id, repo_id ORDER BY created_at DESC) AS br
           FROM (
-            SELECT cfn.canonical_id AS id,
+            SELECT co.cmt_ght_author_id AS id,
                    to_timestamp(co.cmt_author_date::text, 'YYYY-MM-DD'::text) AS created_at,
                    co.repo_id,
                    c.cntrb_full_name AS full_name,
                    c.cntrb_login AS login
               FROM aveloxis_data.commits co
-              JOIN aveloxis_data.contributors c ON (c.cntrb_canonical)::text = (co.cmt_author_email)::text
-              JOIN canonical_full_names cfn ON (cfn.canonical_email)::text = (c.cntrb_canonical)::text
-             GROUP BY cfn.canonical_id, co.repo_id, co.cmt_author_date,
+              JOIN aveloxis_data.contributors c ON c.cntrb_id = co.cmt_ght_author_id
+             WHERE co.cmt_ght_author_id IS NOT NULL
+               AND COALESCE(c.cntrb_deleted, 0) = 0
+             GROUP BY co.cmt_ght_author_id, co.repo_id, co.cmt_author_date,
                       c.cntrb_full_name, c.cntrb_login
           ) day_collapsed
     ) z WHERE br <= 7
@@ -414,78 +397,78 @@ branched AS (
 
     -- issues closed
     SELECT * FROM (
-        SELECT cfn.canonical_id AS id,
+        SELECT c.cntrb_id AS id,
                ie.created_at,
                i.repo_id,
                'issue_closed'::text AS action,
                c.cntrb_full_name AS full_name,
                c.cntrb_login AS login,
-               row_number() OVER (PARTITION BY cfn.canonical_id, i.repo_id ORDER BY ie.created_at DESC) AS br
+               row_number() OVER (PARTITION BY c.cntrb_id, i.repo_id ORDER BY ie.created_at DESC) AS br
           FROM aveloxis_data.issues i
           JOIN aveloxis_data.issue_events ie ON ie.issue_id = i.issue_id
           JOIN aveloxis_data.contributors c ON c.cntrb_id = ie.cntrb_id
-          JOIN canonical_full_names cfn ON (cfn.canonical_email)::text = (c.cntrb_canonical)::text
          WHERE i.pull_request IS NULL
            AND ie.cntrb_id IS NOT NULL
            AND (ie.action)::text = 'closed'::text
+           AND COALESCE(c.cntrb_deleted, 0) = 0
     ) z WHERE br <= 7
 
     UNION ALL
 
     -- pull requests opened
     SELECT * FROM (
-        SELECT cfn.canonical_id AS id,
+        SELECT c.cntrb_id AS id,
                pr.created_at,
                pr.repo_id,
                'open_pull_request'::text AS action,
                c.cntrb_full_name AS full_name,
                c.cntrb_login AS login,
-               row_number() OVER (PARTITION BY cfn.canonical_id, pr.repo_id ORDER BY pr.created_at DESC) AS br
+               row_number() OVER (PARTITION BY c.cntrb_id, pr.repo_id ORDER BY pr.created_at DESC) AS br
           FROM aveloxis_data.pull_requests pr
           JOIN aveloxis_data.contributors c ON pr.author_id = c.cntrb_id
-          JOIN canonical_full_names cfn ON (cfn.canonical_email)::text = (c.cntrb_canonical)::text
+         WHERE COALESCE(c.cntrb_deleted, 0) = 0
     ) z WHERE br <= 7
 
     UNION ALL
 
     -- pull request comments
     SELECT * FROM (
-        SELECT cfn.canonical_id AS id,
+        SELECT c.cntrb_id AS id,
                m.msg_timestamp AS created_at,
                pr.repo_id,
                'pull_request_comment'::text AS action,
                c.cntrb_full_name AS full_name,
                c.cntrb_login AS login,
-               row_number() OVER (PARTITION BY cfn.canonical_id, pr.repo_id ORDER BY m.msg_timestamp DESC) AS br
+               row_number() OVER (PARTITION BY c.cntrb_id, pr.repo_id ORDER BY m.msg_timestamp DESC) AS br
           FROM aveloxis_data.pull_requests pr
           JOIN aveloxis_data.pull_request_message_ref prmr ON prmr.pull_request_id = pr.pull_request_id
           JOIN aveloxis_data.messages m ON m.msg_id = prmr.msg_id
           JOIN aveloxis_data.contributors c ON c.cntrb_id = m.cntrb_id
-          JOIN canonical_full_names cfn ON (cfn.canonical_email)::text = (c.cntrb_canonical)::text
+         WHERE COALESCE(c.cntrb_deleted, 0) = 0
     ) z WHERE br <= 7
 
     UNION ALL
 
     -- issue comments
     SELECT * FROM (
-        SELECT cfn.canonical_id AS id,
+        SELECT c.cntrb_id AS id,
                m.msg_timestamp AS created_at,
                i.repo_id,
                'issue_comment'::text AS action,
                c.cntrb_full_name AS full_name,
                c.cntrb_login AS login,
-               row_number() OVER (PARTITION BY cfn.canonical_id, i.repo_id ORDER BY m.msg_timestamp DESC) AS br
+               row_number() OVER (PARTITION BY c.cntrb_id, i.repo_id ORDER BY m.msg_timestamp DESC) AS br
           FROM aveloxis_data.issues i
           JOIN aveloxis_data.issue_message_ref imr ON imr.issue_id = i.issue_id
           JOIN aveloxis_data.messages m ON m.msg_id = imr.msg_id
           JOIN aveloxis_data.contributors c ON c.cntrb_id = m.cntrb_id
-          JOIN canonical_full_names cfn ON (cfn.canonical_email)::text = (c.cntrb_canonical)::text
          -- Pre-v0.25.5 original had `issues.pull_request_id = NULL::bigint`
          -- which is always FALSE (NULL comparison) — so the issue_comment
          -- branch was unintentionally producing ZERO rows. The intended
          -- predicate is `issues.pull_request IS NULL` (filter out PRs that
          -- GitHub's API conflates with issues). Restored here.
-         AND i.pull_request IS NULL
+         WHERE i.pull_request IS NULL
+           AND COALESCE(c.cntrb_deleted, 0) = 0
     ) z WHERE br <= 7
 )
 SELECT b.id AS cntrb_id,
@@ -509,16 +492,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_explorer_new_contributors
     ON aveloxis_data.explorer_new_contributors (cntrb_id, created_at, month, year, repo_id, full_name, repo_name, login, rank);
 
 -- ---------------------------------------------------------------------------
--- 11. augur_new_contributors  --  DROPPED in v0.25.5
+-- 11. augur_new_contributors  --  VIEW alias for explorer_contributor_actions
 --
 -- Pre-v0.25.5 this was a MATERIALIZED VIEW with SQL byte-for-byte
--- identical to explorer_contributor_actions. Operator decision
--- 2026-05-26: drop the duplicate outright. 8Knot tooling that
--- references this name needs to be updated to query
--- explorer_contributor_actions directly; the two views always
--- produced identical content, so the data is unchanged.
+-- identical to explorer_contributor_actions. v0.25.5 dropped it
+-- outright; v0.25.6 restores it as a VIEW alias because operators
+-- query it to identify new contributors (the matview is referenced
+-- by external tooling that doesn't necessarily know about
+-- explorer_contributor_actions).
+--
+-- A plain VIEW (not MATERIALIZED VIEW) is the correct shape: it adds
+-- zero refresh cost — every query against augur_new_contributors
+-- transparently reads from the already-materialized
+-- explorer_contributor_actions. Same shape as the explorer_libyear_all
+-- alias for augur_libyear_all.
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.augur_new_contributors CASCADE;
+DROP VIEW IF EXISTS aveloxis_data.augur_new_contributors CASCADE;
+
+CREATE OR REPLACE VIEW aveloxis_data.augur_new_contributors AS
+SELECT * FROM aveloxis_data.explorer_contributor_actions;
 
 -- ---------------------------------------------------------------------------
 -- 12. explorer_pr_assignments  --  PR assignment/unassignment events

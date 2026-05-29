@@ -60,56 +60,46 @@ func TestExplorerLibyearAllIsAViewAlias(t *testing.T) {
 	}
 }
 
-// TestAugurNewContributorsDropped pins that augur_new_contributors is
-// dropped (not just aliased). Per operator decision 2026-05-26: drop
-// the byte-for-byte duplicate of explorer_contributor_actions outright.
-// 8Knot tooling that referenced augur_new_contributors needs to update
-// to explorer_contributor_actions.
-func TestAugurNewContributorsDropped(t *testing.T) {
-	src := readMatviewsSQLForV0255(t)
-
-	// Must NOT contain a CREATE for augur_new_contributors (matview or view).
-	if strings.Contains(src, "CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.augur_new_contributors") ||
-		strings.Contains(src, "CREATE OR REPLACE VIEW aveloxis_data.augur_new_contributors") {
-		t.Error("augur_new_contributors must NOT be created (matview or view) post-v0.25.5 — operator dropped it as redundant with explorer_contributor_actions.")
-	}
-
-	// Must contain the DROP statement so existing deployments lose it.
-	if !strings.Contains(src, "DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.augur_new_contributors") {
-		t.Error("matviews.sql must DROP augur_new_contributors so existing v0.25.4 deployments lose the stale matview after running aveloxis refresh-views.")
-	}
-}
-
 // TestRefreshListNoLongerIncludesDroppedViews pins that matviewNames
-// in matviews.go has been updated to remove augur_new_contributors AND
-// explorer_libyear_all (the latter is now a regular view, not a matview).
+// in matviews.go does NOT include the entries that are now plain VIEWs
+// (the refresh loop would error every cycle if it tried).
+//
+// As of v0.25.6:
+//   - augur_new_contributors is a VIEW alias for explorer_contributor_actions
+//     (was dropped in v0.25.5; restored as a VIEW in v0.25.6 because
+//     operators query it to identify new contributors). VIEWs don't
+//     need refresh; matviewNames must not list it.
+//   - explorer_libyear_all is a VIEW alias for explorer_libyear_summary
+//     (v0.25.5 conversion). Same reasoning.
 func TestRefreshListNoLongerIncludesDroppedViews(t *testing.T) {
 	src := readSourceFile(t, "matviews.go")
 
-	// matviewNames slice must NOT reference the dropped/aliased views
-	// (the refresh loop would error every cycle if it tried).
 	for _, dropped := range []string{
 		`"aveloxis_data.augur_new_contributors"`,
 		`"aveloxis_data.explorer_libyear_all"`,
 	} {
 		if strings.Contains(src, dropped) {
-			t.Errorf("matviews.go matviewNames must NOT include %s (dropped/aliased in v0.25.5). Refreshing it would fail every cycle.", dropped)
+			t.Errorf("matviews.go matviewNames must NOT include %s (now a regular VIEW alias). Refreshing it would fail every cycle.", dropped)
 		}
 	}
 }
 
-// TestExplorerNewContributorsHasCanonicalCTE pins the v0.25.5 CTE hoist.
-// Pre-v0.25.5 the canonical_full_names DISTINCT ON subquery was inlined
-// in each of 7 UNION branches → 7× redundant ~1.7M-row scans. The CTE
-// makes the planner materialize once and reuse.
-func TestExplorerNewContributorsHasCanonicalCTE(t *testing.T) {
+// TestExplorerNewContributorsHasBranchedCTE pins that the `branched`
+// CTE wrapping the UNION ALL is preserved. Pre-v0.25.5 there was no
+// such wrapping CTE; the global ROW_NUMBER ranked the entire UNION
+// ALL output. The branched CTE is what enables the per-branch rank
+// pushdown (top-7-per-(cntrb, repo) PER BRANCH), turning Linus's
+// tens of thousands of commits from a global-rank input into a
+// 7-row branch contribution.
+//
+// v0.25.6 removes the canonical_full_names CTE entirely (the matview
+// no longer joins on cntrb_canonical for any branch — see the v0.25.6
+// changelog for the structural reason) so this test no longer pins
+// that CTE; the v0.25.6-specific test file pins its ABSENCE.
+func TestExplorerNewContributorsHasBranchedCTE(t *testing.T) {
 	src := readMatviewsSQLForV0255(t)
 	region := extractMatviewBlock(t, src, "explorer_new_contributors")
 
-	if !strings.Contains(region, "WITH canonical_full_names AS") {
-		t.Error("explorer_new_contributors must declare canonical_full_names as a CTE (WITH ... AS) so it's materialized once and reused. Pre-v0.25.5 inlined it 7 times → 7× redundant 1.7M-row scans on aveloxis_large.")
-	}
-	// Pin the branched CTE that holds the per-branch rank pushdown.
 	if !strings.Contains(region, "branched AS (") {
 		t.Error("explorer_new_contributors must have a `branched` CTE that holds per-branch-ranked rows before the global rank. Without it, ROW_NUMBER runs over the full UNION ALL — Linus's tens of thousands of commits get ranked just to throw away all but 7.")
 	}
@@ -146,18 +136,17 @@ func TestExplorerNewContributorsDropsCommitCommentBranch(t *testing.T) {
 	}
 }
 
-// TestExplorerNewContributorsPreservesDayLevelCollapse pins the v0.25.5
-// commit-branch correction: an earlier v0.25.5 draft switched the
-// commit branch from `to_timestamp(cmt_author_date::text, 'YYYY-MM-DD')`
-// (day-precision text parse) to `cmt_author_timestamp` (real
-// TIMESTAMPTZ) AND dropped the GROUP BY. That combination produced
-// one row per (commit, file) instead of pre-v0.25.5's one row per
-// (canonical_id, repo, day) — N×-multiplying the rows that fed the
-// rank pushdown AND changing output semantics. The revert restores
-// the day-collapsing GROUP BY (still wrapped inside a subquery so
-// the per-branch rank pushdown still applies); created_at remains
-// `to_timestamp(cmt_author_date, 'YYYY-MM-DD')` to match pre-v0.25.5
-// output exactly.
+// TestExplorerNewContributorsPreservesDayLevelCollapse pins the
+// commit-branch day-level collapse contract. The GROUP BY (inside an
+// inner subquery, before the rank pushdown) collapses files-of-same-
+// commit AND multiple-commits-same-day into one row per (contributor,
+// repo, day), matching pre-v0.25.5 semantic.
+//
+// v0.25.6 switched the GROUP BY key from cfn.canonical_id to
+// co.cmt_ght_author_id (the deterministic UUID stamped by the commit
+// resolver — 91.95% coverage on aveloxis_large, vs ~27% via the
+// pre-v0.25.6 email-canonical chain). Same day-collapse semantic;
+// different (better) source of contributor identity.
 func TestExplorerNewContributorsPreservesDayLevelCollapse(t *testing.T) {
 	src := readMatviewsSQLForV0255(t)
 	region := extractMatviewBlock(t, src, "explorer_new_contributors")
@@ -167,9 +156,10 @@ func TestExplorerNewContributorsPreservesDayLevelCollapse(t *testing.T) {
 	if !strings.Contains(region, "to_timestamp(co.cmt_author_date") {
 		t.Error("explorer_new_contributors commit branch must use to_timestamp(co.cmt_author_date, 'YYYY-MM-DD') to preserve pre-v0.25.5 day-collapse semantics. Switching to cmt_author_timestamp without restoring the GROUP BY would N×-multiply commit rows.")
 	}
-	// Positive pin: GROUP BY day-level collapse is present.
-	if !strings.Contains(region, "GROUP BY cfn.canonical_id, co.repo_id, co.cmt_author_date") {
-		t.Error("explorer_new_contributors commit branch must GROUP BY (canonical_id, repo_id, cmt_author_date, ...) to collapse files-of-same-commit AND multiple-commits-same-day, matching pre-v0.25.5 semantic.")
+	// Positive pin: GROUP BY day-level collapse is present using the
+	// v0.25.6 join key (cmt_ght_author_id).
+	if !strings.Contains(region, "GROUP BY co.cmt_ght_author_id, co.repo_id, co.cmt_author_date") {
+		t.Error("explorer_new_contributors commit branch must GROUP BY (cmt_ght_author_id, repo_id, cmt_author_date, ...) to collapse files-of-same-commit AND multiple-commits-same-day, matching the v0.25.6 contract (UUID-based join instead of canonical-email chain).")
 	}
 }
 
@@ -235,14 +225,20 @@ func TestCntrbPerFileMatchesPreV0255(t *testing.T) {
 	}
 }
 
-// TestV025_5_IndexesRegistered pins the four CONCURRENTLY index
-// migrations.
+// TestV025_5_IndexesRegistered pins the two surviving v0.25.5
+// CONCURRENTLY index migrations.
+//
+// The original v0.25.5 release added four indexes; two of them
+// (idx_contributors_cntrb_canonical, idx_contributors_canonical_eq_email)
+// were obsoleted by v0.25.6's matview rewrite and removed from
+// migrate.go. The v0.25.6 changelog documents the rationale —
+// briefly: explorer_new_contributors no longer JOINs on cntrb_canonical
+// for any branch, so the canonical-email indexes serve no reader and
+// only cost write amplification.
 func TestV025_5_IndexesRegistered(t *testing.T) {
 	src := readSourceFile(t, "migrate.go")
 
 	for _, idx := range []string{
-		"idx_contributors_cntrb_canonical",
-		"idx_contributors_canonical_eq_email",
 		"idx_commits_author_timestamp_recent",
 		"idx_repo_labor_repo_id_analysis_date",
 	} {
@@ -254,8 +250,6 @@ func TestV025_5_IndexesRegistered(t *testing.T) {
 	// Pin the partial-index predicates so a future refactor doesn't
 	// "helpfully" make them full indexes (3-5× larger, slower writes).
 	for _, predicate := range []string{
-		"WHERE cntrb_canonical != ''",
-		"WHERE cntrb_canonical = cntrb_email",
 		"WHERE cmt_author_timestamp >= '2024-01-01'",
 	} {
 		if !strings.Contains(src, predicate) {

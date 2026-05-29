@@ -53,8 +53,12 @@ var matviewNames = []string{
 	"aveloxis_data.explorer_entry_list",
 	"aveloxis_data.explorer_commits_and_committers_daily_count",
 	"aveloxis_data.explorer_contributor_actions",
-	// augur_new_contributors removed in v0.25.5 — was byte-for-byte
-	// identical to explorer_contributor_actions, dropped as redundant.
+	// augur_new_contributors is a VIEW alias for
+	// explorer_contributor_actions as of v0.25.6 (was a MATERIALIZED
+	// VIEW pre-v0.25.5, dropped outright in v0.25.5, restored as a
+	// plain VIEW in v0.25.6 because operators query it to identify
+	// new contributors). VIEWs don't need refresh — they read from
+	// the underlying matview live.
 	"aveloxis_data.explorer_new_contributors",
 	"aveloxis_data.explorer_user_repos",
 	"aveloxis_data.explorer_pr_response_times",

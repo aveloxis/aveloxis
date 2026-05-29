@@ -40,6 +40,19 @@ The scheduler also runs these background tasks:
 | Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes all 19 matviews, resumes |
 | Stale lock recovery | Every 5 minutes | Re-queues jobs locked for more than 1 hour |
 
+### Scancode worker tuning
+
+`aveloxis serve` also runs a decoupled `ScancodeWorker` pool (v0.21.0+) for per-file license + copyright scanning. The pool's behavior is tuned via the `collection` block of `aveloxis.json` — no CLI flag. The most operationally relevant knobs:
+
+| `aveloxis.json` field | Default | What to change it for |
+|---|---|---|
+| `scancode_workers` | `2` | More concurrent scancode invocations (cap by CPU cores). |
+| `scancode_max_in_memory` | `5000` | **Raise on RAM-rich hosts** (e.g. `50000` on a host with hundreds of GB) so scancode keeps more per-file scan state in memory instead of spilling to a tempfile. Linux-kernel / chromium-class monorepos benefit most. Memory cost is roughly `scancode_workers × --processes × scancode_max_in_memory × per-file working set`, so account for the multiplier when sizing. v0.25.2+. |
+| `scancode_run_timeout_hours` | `2` | Raise on fleets skewed toward big repos so the per-job timeout starts higher (default is adaptive — every wall-clock timeout doubles the next attempt's budget up to `scancode_run_timeout_cap_hours`). |
+| `scancode_cadence_days` | `180` | Lower for testing or when source-license churn is unusually high. |
+
+See [`configuration.md` -> scancode worker](../getting-started/configuration.md) for the full per-field reference and the v0.21.x → v0.25.x context.
+
 ### Examples
 
 ```bash

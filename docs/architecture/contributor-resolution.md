@@ -258,6 +258,8 @@ The previous login is **overwritten** on the existing identity row. **We do NOT 
 
 `BackfillCommitAuthorIDs` resolves unresolved commits via `LOWER(cmt_author_platform_username) = LOWER(cn.gh_login)` (v0.20.12 Fix H, case-insensitive). It joins against the **current** `gh_login`, not `cntrb_login`. The function only updates rows with `cmt_ght_author_id IS NULL`, so once a commit is attributed it stays attributed regardless of subsequent renames.
 
+**v0.25.6 coverage asymmetry closure.** Production audit on 2026-05-29 of `aveloxis_large` (474M commit rows) found `cmt_ght_author_id` populated on 91.95% of rows but `cmt_author_platform_username` populated on only 77.58%. The asymmetry comes from API paths that stamp the UUID without updating the login text on every matching commit row (noreply email parsing, Commits API resolution, email-based backfill). v0.25.6 ships a one-shot migration `backfill cmt_author_platform_username from cmt_ght_author_id` that UPDATEs commits SET platform_username = c.gh_login wherever the UUID is populated but the login text isn't. After deploy, login-based queries against commits match the UUID-based queries' coverage. Soft-deleted contributors (R10 / v0.20.2 merge losers) are skipped per `COALESCE(c.cntrb_deleted, 0) = 0`.
+
 ### Operational consequences
 
 **"Show me commits by user X (where X is the current login)"** — JOIN commits ON `cmt_ght_author_id`, then filter on `contributors.gh_login = 'X'`. The FK is stable; the gh_login mirror reflects current state. Works.
@@ -368,11 +370,13 @@ A future release will add a logical merge via `cntrb_deleted = 1` (Phase D of th
 
 ### Why is `cntrb_canonical` empty?
 
-Three legal reasons:
+Three legal reasons (post-v0.25.6):
 
 1. The user has set their email to private on GitHub. `EnrichContributor` returns no email; `ResolveEmailsToCanonical` cannot help. After the 30-day cooldown the row is retried in case the user changed their setting, but typically stays empty.
 2. The contributor is `email-only` (no `gh_user_id`, no `gl_id`) — created from a commit author with a non-noreply email but no resolvable platform account. `cntrb_canonical` may be set to the commit email itself, or empty if `UpsertContributorFull` was called with `commitEmail = ''`.
 3. The contributor was created very recently and the enrichment ticker has not yet reached them. They appear in the next enrichment cycle.
+
+**Pre-v0.25.6 there was a fourth cause**: the commit resolver's `ensureAlias` (strategies 2 — DB lookup — and 4 — Search API) populated the `contributors_aliases` table but did NOT update `cntrb_canonical` on the parent contributor row. The forward fix in v0.25.6 calls `SetContributorCanonical` on every alias insert, and the one-shot v0.25.6 migration `backfill cntrb_canonical from contributors_aliases` reads `MIN(alias_email)` per cntrb_id and fills empty canonicals from the alias table. After running `aveloxis migrate` on v0.25.6, this fourth cause is closed; rows that remain empty fall into one of the three reasons above.
 
 ### What does `gh_user_id IS NULL` mean?
 

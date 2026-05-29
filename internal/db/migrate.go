@@ -462,6 +462,64 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		ALTER TABLE aveloxis_data.repo_distribution_manifest_history
 		    DROP CONSTRAINT IF EXISTS repo_distribution_manifest_history_repo_id_manifest_path_key;`)
 
+	// v0.25.3 — repair distribution_last_run for repos whose
+	// v0.25.0/v0.25.1-window scans hit the 23505 rotation bug.
+	// Every MarkDistributionComplete rolled back, so the function's
+	// final `distribution_last_run = NOW()` stamp never landed. The
+	// work was done (data was gathered, rows are in
+	// repo_distribution / repo_distribution_manifest from earlier
+	// successful v0.24.x scans), but the most-recent attempt's
+	// commit was discarded.
+	//
+	// Post-v0.25.1 deploy without this repair, the worker treats
+	// these repos as "never scanned" (NULL distribution_last_run
+	// is the first WHERE-clause branch of the claim query) and
+	// re-runs all the scans — burning API budget on work whose
+	// results are already in the DB.
+	//
+	// The repair: stamp distribution_last_run to MAX(data_collection_date)
+	// across the existing rows in both distribution tables.
+	// Reflects when the data was *actually* gathered (typically
+	// the v0.24.x scan months ago, before the rotation bug),
+	// NOT NOW() which would falsely promise "fresh as of today"
+	// for stale data and prevent natural re-scan when cadence
+	// genuinely elapses.
+	//
+	// Repos with zero rows in either table (genuinely never had a
+	// successful scan) stay NULL and get scanned on first dispatch
+	// after deploy. The `WHERE distribution_last_run IS NULL`
+	// guard makes the step self-disabling: once stamped, the row
+	// no longer matches the WHERE and subsequent migrate runs are
+	// no-ops.
+	//
+	// Inner UNION ALL + outer GROUP BY repo_id: each table
+	// contributes its own MAX, then the outer aggregate picks the
+	// later of the two. The shape matters — a flat MAX across the
+	// union would still pick the correct max but loses the
+	// per-table-per-repo grouping intermediate.
+	//
+	// v0.25.x-era escape hatch. Documented for deprecation when
+	// v0.24.x support ends (target 2027). See
+	// docs/architecture/distribution.md §12.
+	execMigrationStep(ctx, pg, logger, &errs, "v0.25.3 repair distribution_last_run for cohort whose v0.25.0/v0.25.1 rotations rolled back",
+		`UPDATE aveloxis_data.repos r
+		SET distribution_last_run = sub.last_observed
+		FROM (
+		    SELECT repo_id, MAX(observed) AS last_observed
+		    FROM (
+		        SELECT repo_id, MAX(data_collection_date) AS observed
+		        FROM aveloxis_data.repo_distribution
+		        GROUP BY repo_id
+		        UNION ALL
+		        SELECT repo_id, MAX(data_collection_date) AS observed
+		        FROM aveloxis_data.repo_distribution_manifest
+		        GROUP BY repo_id
+		    ) inner_sub
+		    GROUP BY repo_id
+		) sub
+		WHERE r.repo_id = sub.repo_id
+		  AND r.distribution_last_run IS NULL`)
+
 	// collection_queue.last_commits backfill (v0.19.11). Pre-v0.19.11
 	// the FacadeCollector incremented result.Commits once per inserted
 	// ROW rather than once per distinct commit. Since the commits table
@@ -887,6 +945,96 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		 WHERE COALESCE(c.cntrb_login, '') != ''
 		   AND COALESCE(c.cntrb_deleted, 0) = 0
 		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion))
+
+	// v0.25.5 — index pair (idx_contributors_cntrb_canonical,
+	// idx_contributors_canonical_eq_email) was added here to accelerate
+	// the canonical_full_names CTE in the pre-v0.25.6 matview. Both
+	// indexes are dropped in the v0.25.6 block below — the matview no
+	// longer uses cntrb_canonical for any JOIN.
+	//
+	// The other two v0.25.5 indexes stay (still serve other matviews):
+	//
+	//   idx_commits_author_timestamp_recent
+	//     Partial since 2024-01-01. Lets the 13-month time filter in
+	//     explorer_contributor_recent_actions short-circuit the commit
+	//     scan to an index-range-scan rather than a full 474M-row
+	//     sequential scan. Refresh the predicate every 2 years
+	//     (create new index, drop old) to keep it aligned.
+	//
+	//   idx_repo_labor_repo_id_analysis_date
+	//     Serves both explorer_repo_files and explorer_repo_languages
+	//     "latest scan per repo" lookups. Lets the DISTINCT ON walk
+	//     the index in O(repos) instead of sorting 56M rows.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_commits_author_timestamp_recent",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_commits_author_timestamp_recent
+		    ON aveloxis_data.commits (cmt_author_timestamp)
+		    WHERE cmt_author_timestamp >= '2024-01-01'`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_repo_labor_repo_id_analysis_date",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_labor_repo_id_analysis_date
+		    ON aveloxis_data.repo_labor (repo_id, rl_analysis_date DESC)`)
+
+	// v0.25.6 — three one-shot operations that pair with the
+	// explorer_new_contributors structural rewrite:
+	//
+	//   1. Backfill cntrb_canonical from contributors_aliases. The
+	//      v0.25.6 commit_resolver.ensureAlias fix populates canonical
+	//      on every NEW alias insert going forward, but historical
+	//      rows with an alias but no canonical (created via
+	//      resolution strategies 2 + 4 pre-v0.25.6) stay empty
+	//      without this. Picks MIN(alias_email) per cntrb_id for
+	//      determinism. COALESCE on cntrb_canonical = '' so we
+	//      never overwrite an existing real canonical. Soft-deleted
+	//      contributors are skipped per the v0.20.2 contract.
+	//
+	//   2. Backfill cmt_author_platform_username from
+	//      cmt_ght_author_id where the UUID is populated but the
+	//      login text isn't. 91.95% of commits have cmt_ght_author_id
+	//      but only 77.58% have the login text — the asymmetry comes
+	//      from API paths that stamp the UUID without updating the
+	//      login on every matching commit row (noreply email parsing,
+	//      Commits API resolution, email-based backfill). This step
+	//      brings login coverage up to ~92% as well, which makes
+	//      legacy queries that JOIN on platform_username work
+	//      correctly without code changes.
+	//
+	//   3. Drop idx_contributors_cntrb_canonical and
+	//      idx_contributors_canonical_eq_email. Added in v0.25.5 to
+	//      accelerate the canonical_full_names CTE in
+	//      explorer_new_contributors; obsolete in v0.25.6 because
+	//      the CTE is gone. Keeping them would cost write
+	//      amplification on every contributors INSERT/UPDATE with
+	//      zero read-side benefit.
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.25.6 backfill cntrb_canonical from contributors_aliases",
+		`UPDATE aveloxis_data.contributors c
+		    SET cntrb_canonical = sub.alias_email
+		   FROM (
+		       SELECT cntrb_id, MIN(alias_email) AS alias_email
+		         FROM aveloxis_data.contributors_aliases
+		        WHERE COALESCE(alias_email, '') != ''
+		        GROUP BY cntrb_id
+		   ) sub
+		  WHERE c.cntrb_id = sub.cntrb_id
+		    AND COALESCE(c.cntrb_canonical, '') = ''
+		    AND COALESCE(c.cntrb_deleted, 0) = 0`)
+
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.25.6 backfill cmt_author_platform_username from cmt_ght_author_id",
+		`UPDATE aveloxis_data.commits co
+		    SET cmt_author_platform_username = c.gh_login
+		   FROM aveloxis_data.contributors c
+		  WHERE c.cntrb_id = co.cmt_ght_author_id
+		    AND COALESCE(co.cmt_author_platform_username, '') = ''
+		    AND COALESCE(c.gh_login, '') != ''
+		    AND COALESCE(c.cntrb_deleted, 0) = 0`)
+
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.25.6 drop idx_contributors_cntrb_canonical (obsoleted by matview rewrite)",
+		`DROP INDEX IF EXISTS aveloxis_data.idx_contributors_cntrb_canonical`)
+
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.25.6 drop idx_contributors_canonical_eq_email (obsoleted by matview rewrite)",
+		`DROP INDEX IF EXISTS aveloxis_data.idx_contributors_canonical_eq_email`)
 
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).

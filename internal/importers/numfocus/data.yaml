@@ -1,0 +1,209 @@
+# NumFocus project catalog.
+# Sources:
+#   - numfocus.org/sponsored-projects (63 projects, HTML fixture in testdata/)
+#   - numfocus.org/sponsored-projects/affiliated-projects (103 projects, HTML fixture in testdata/)
+#   - operator's Augur DB group_id=28 curation (102 distinct orgs, ~4 years old)
+#     used as a cross-validation signal for the org field; not authoritative
+#     for every entry (some Augur orgs are name-collision noise, e.g. `arviz`
+#     is a personal account, not the actual ArviZ project which is `arviz-devs`).
+#
+# To refresh:
+#   1. `aveloxis load-numfocus-projects --detect-new` (or --detect-new with
+#      load-numfocus-orgs) scrapes the numfocus.org listing pages and reports
+#      any new entries not in this YAML.
+#   2. Edit this file to add the new entries with org + primary_repo coords.
+#     Run gh search repos to verify ambiguous mappings.
+#   3. Commit + redeploy.
+#
+# Schema per entry:
+#   slug:         numfocus.org URL slug or normalized name. Stable identifier.
+#   name:         Display name as shown on numfocus.org.
+#   platform:     github | gitlab | savannah | other
+#   org:          Owner namespace on the platform (e.g. "numpy", "scikit-learn").
+#                 Empty if needs_review.
+#   primary_repo: Flagship repository within the org (e.g. "numpy", "pandas").
+#                 Empty if needs_review. Combined with `org`, this is the
+#                 full slug "{org}/{primary_repo}" that load-numfocus-projects
+#                 inserts.
+#   confidence:   high | medium | low | needs_review
+#                 - high: verified against Augur DB AND/OR is a household-name
+#                   project with an unambiguous canonical repo.
+#                 - medium: confident but not Augur-confirmed.
+#                 - low: best guess, no Augur match, name has ambiguity.
+#                 - needs_review: I could not resolve; operator action needed.
+#   note:         Optional. Free-form context for low/needs_review entries.
+
+sponsored:
+  - {slug: arviz,                 name: "ArviZ",                    platform: github,    org: arviz-devs,                  primary_repo: arviz,                                                       confidence: high, note: "Augur has org `arviz` but that's a personal account; real project is arviz-devs."}
+  - {slug: astropy,               name: "Astropy",                  platform: github,    org: astropy,                     primary_repo: astropy,                                                     confidence: high}
+  - {slug: bioconductor,          name: "Bioconductor",             platform: github,    org: Bioconductor,                primary_repo: BiocManager,                                                 confidence: medium, note: "Bioconductor packages live across many orgs (Bioconductor, Bioconductor-mirror, etc.). Primary org-level tracking is more useful than a flagship repo."}
+  - {slug: blosc,                 name: "Blosc",                    platform: github,    org: Blosc,                       primary_repo: c-blosc,                                                     confidence: high}
+  - {slug: bokeh,                 name: "Bokeh",                    platform: github,    org: bokeh,                       primary_repo: bokeh,                                                       confidence: high}
+  - {slug: cantera,               name: "Cantera",                  platform: github,    org: Cantera,                     primary_repo: cantera,                                                     confidence: high}
+  - {slug: conda,                 name: "conda",                    platform: github,    org: conda,                       primary_repo: conda,                                                       confidence: high}
+  - {slug: conda-forge,           name: "conda-forge",              platform: github,    org: conda-forge,                 primary_repo: conda-forge.github.io,                                       confidence: high, note: "conda-forge has 21K+ feedstock repos; the .github.io repo is the documented entry point."}
+  - {slug: cupy,                  name: "CuPy",                     platform: github,    org: cupy,                        primary_repo: cupy,                                                        confidence: high}
+  - {slug: dask,                  name: "Dask",                     platform: github,    org: dask,                        primary_repo: dask,                                                        confidence: high}
+  - {slug: data-table,            name: "data.table",               platform: github,    org: Rdatatable,                  primary_repo: data.table,                                                  confidence: high}
+  - {slug: dynare,                name: "Dynare",                   platform: other,     org: "",                          primary_repo: "",                                                          confidence: needs_review, note: "Dynare primary VCS at git.dynare.org (self-hosted gitlab); no canonical GitHub org. Aveloxis can ingest via PlatformGenericGit if operator wants. Augur DB has no `dynare` entries."}
+  - {slug: econ-ark,              name: "Econ-ARK",                 platform: github,    org: econ-ark,                    primary_repo: HARK,                                                        confidence: high}
+  - {slug: fenics-project,        name: "FEniCS Project",           platform: github,    org: FEniCS,                      primary_repo: dolfinx,                                                     confidence: high}
+  - {slug: fortran-lang,          name: "Fortran-lang",             platform: github,    org: fortran-lang,                primary_repo: stdlib,                                                      confidence: high}
+  - {slug: gammapy,               name: "Gammapy",                  platform: github,    org: gammapy,                     primary_repo: gammapy,                                                     confidence: high}
+  - {slug: gdal,                  name: "GDAL",                     platform: github,    org: OSGeo,                       primary_repo: gdal,                                                        confidence: high}
+  - {slug: geopandas,             name: "GeoPandas",                platform: github,    org: geopandas,                   primary_repo: geopandas,                                                   confidence: high}
+  - {slug: gnu-octave,            name: "GNU Octave",               platform: github,    org: gnu-octave,                  primary_repo: octave,                                                      confidence: medium, note: "Octave primary VCS is savannah/hg; the gnu-octave/octave GitHub repo is a mirror."}
+  - {slug: grass,                 name: "GRASS",                    platform: github,    org: OSGeo,                       primary_repo: grass,                                                       confidence: high}
+  - {slug: holoviz,               name: "HoloViz",                  platform: github,    org: holoviz,                     primary_repo: holoviz,                                                     confidence: high}
+  - {slug: itk,                   name: "ITK",                      platform: github,    org: InsightSoftwareConsortium,   primary_repo: ITK,                                                         confidence: high}
+  - {slug: julia,                 name: "Julia",                    platform: github,    org: JuliaLang,                   primary_repo: julia,                                                       confidence: high}
+  - {slug: jump,                  name: "JuMP",                     platform: github,    org: jump-dev,                    primary_repo: JuMP.jl,                                                     confidence: high}
+  - {slug: lfortran,              name: "LFortran",                 platform: github,    org: lfortran,                    primary_repo: lfortran,                                                    confidence: high}
+  - {slug: matplotlib,            name: "Matplotlib",               platform: github,    org: matplotlib,                  primary_repo: matplotlib,                                                  confidence: high}
+  - {slug: mdanalysis,            name: "MDAnalysis",               platform: github,    org: MDAnalysis,                  primary_repo: mdanalysis,                                                  confidence: high}
+  - {slug: mlpack,                name: "mlpack",                   platform: github,    org: mlpack,                      primary_repo: mlpack,                                                      confidence: high}
+  - {slug: napari,                name: "napari",                   platform: github,    org: napari,                      primary_repo: napari,                                                      confidence: high}
+  - {slug: networkx,              name: "NetworkX",                 platform: github,    org: networkx,                    primary_repo: networkx,                                                    confidence: high}
+  - {slug: nibabel,               name: "NiBabel",                  platform: github,    org: nipy,                        primary_repo: nibabel,                                                     confidence: high}
+  - {slug: nteract,               name: "nteract",                  platform: github,    org: nteract,                     primary_repo: nteract,                                                     confidence: high}
+  - {slug: numpy,                 name: "NumPy",                    platform: github,    org: numpy,                       primary_repo: numpy,                                                       confidence: high}
+  - {slug: open-journals,         name: "Open Journals",            platform: github,    org: openjournals,                primary_repo: joss,                                                        confidence: high}
+  - {slug: openfhe,               name: "OpenFHE",                  platform: github,    org: openfheorg,                  primary_repo: openfhe-development,                                         confidence: high}
+  - {slug: openmbee,              name: "OpenMBEE",                 platform: github,    org: Open-MBEE,                   primary_repo: open-mbee.github.io,                                         confidence: medium}
+  - {slug: openproblemsbio,       name: "OpenProblems.bio",         platform: github,    org: openproblems-bio,            primary_repo: openproblems,                                                confidence: high}
+  - {slug: pandas,                name: "pandas",                   platform: github,    org: pandas-dev,                  primary_repo: pandas,                                                      confidence: high}
+  - {slug: pangeo,                name: "Pangeo",                   platform: github,    org: pangeo-data,                 primary_repo: pangeo,                                                      confidence: high}
+  - {slug: parsl,                 name: "Parsl",                    platform: github,    org: Parsl,                       primary_repo: parsl,                                                       confidence: high}
+  - {slug: petsc,                 name: "PETSc",                    platform: gitlab,    org: petsc,                       primary_repo: petsc,                                                       confidence: high, note: "PETSc primary on gitlab.com (moved from bitbucket years ago); GitHub has only mirrors."}
+  - {slug: pybamm,                name: "PyBaMM",                   platform: github,    org: pybamm-team,                 primary_repo: PyBaMM,                                                      confidence: high}
+  - {slug: pymc,                  name: "PyMC",                     platform: github,    org: pymc-devs,                   primary_repo: pymc,                                                        confidence: high}
+  - {slug: pytables,              name: "PyTables",                 platform: github,    org: PyTables,                    primary_repo: PyTables,                                                    confidence: high}
+  - {slug: quantecon,             name: "QuantEcon",                platform: github,    org: QuantEcon,                   primary_repo: QuantEcon.py,                                                confidence: high}
+  - {slug: ropensci,              name: "rOpenSci",                 platform: github,    org: ropensci,                    primary_repo: ropensci-docs,                                               confidence: medium, note: "rOpenSci is a package collection across many repos; ropensci-docs is the meta-repo. Most coverage comes from org-level tracking."}
+  - {slug: scientific-python,     name: "Scientific Python",        platform: github,    org: scientific-python,           primary_repo: scientific-python.github.io,                                 confidence: high}
+  - {slug: scikit-image,          name: "scikit-image",             platform: github,    org: scikit-image,                primary_repo: scikit-image,                                                confidence: high}
+  - {slug: scikit-learn,          name: "scikit-learn",             platform: github,    org: scikit-learn,                primary_repo: scikit-learn,                                                confidence: high}
+  - {slug: sciml,                 name: "SciML",                    platform: github,    org: SciML,                       primary_repo: DifferentialEquations.jl,                                    confidence: high}
+  - {slug: scipy,                 name: "SciPy",                    platform: github,    org: scipy,                       primary_repo: scipy,                                                       confidence: high}
+  - {slug: scverse,               name: "scverse",                  platform: github,    org: scverse,                     primary_repo: scanpy,                                                      confidence: high, note: "scverse is an umbrella org; scanpy is the most-cited flagship. anndata and spatialdata are sister projects, picked up by org-level tracking."}
+  - {slug: sgkit,                 name: "sgkit",                    platform: github,    org: sgkit-dev,                   primary_repo: sgkit,                                                       confidence: high}
+  - {slug: spyder,                name: "Spyder",                   platform: github,    org: spyder-ide,                  primary_repo: spyder,                                                      confidence: high}
+  - {slug: stan,                  name: "Stan",                     platform: github,    org: stan-dev,                    primary_repo: stan,                                                        confidence: high}
+  - {slug: sunpy,                 name: "SunPy",                    platform: github,    org: sunpy,                       primary_repo: sunpy,                                                       confidence: high}
+  - {slug: sympy,                 name: "SymPy",                    platform: github,    org: sympy,                       primary_repo: sympy,                                                       confidence: high}
+  - {slug: tardis,                name: "TARDIS",                   platform: github,    org: tardis-sn,                   primary_repo: tardis,                                                      confidence: high}
+  - {slug: vega,                  name: "Vega",                     platform: github,    org: vega,                        primary_repo: vega,                                                        confidence: high}
+  - {slug: worldwide-telescope,   name: "WorldWide Telescope",      platform: github,    org: WorldWideTelescope,          primary_repo: wwt-website,                                                 confidence: medium}
+  - {slug: xarray,                name: "xarray",                   platform: github,    org: pydata,                      primary_repo: xarray,                                                      confidence: high}
+  - {slug: yt,                    name: "yt",                       platform: github,    org: yt-project,                  primary_repo: yt,                                                          confidence: high}
+  - {slug: zarr,                  name: "Zarr",                     platform: github,    org: zarr-developers,             primary_repo: zarr-python,                                                 confidence: high}
+
+affiliated:
+  - {slug: aesara,                name: "Aesara",                   platform: github,    org: aesara-devs,                 primary_repo: aesara,                                                      confidence: high}
+  - {slug: aiida,                 name: "AiiDA",                    platform: github,    org: aiidateam,                   primary_repo: aiida-core,                                                  confidence: high}
+  - {slug: asteroid,              name: "Asteroid",                 platform: github,    org: asteroid-team,               primary_repo: asteroid,                                                    confidence: high}
+  - {slug: awkward-array,         name: "Awkward Array",            platform: github,    org: scikit-hep,                  primary_repo: awkward,                                                     confidence: high}
+  - {slug: bqplot,                name: "bqplot",                   platform: github,    org: bqplot,                      primary_repo: bqplot,                                                      confidence: high}
+  - {slug: cb-geo-mpm,            name: "CB-Geo MPM",               platform: github,    org: cb-geo,                      primary_repo: mpm,                                                         confidence: high}
+  - {slug: catalyst,              name: "Catalyst",                 platform: github,    org: catalyst-team,               primary_repo: catalyst,                                                    confidence: high}
+  - {slug: clawpack,              name: "Clawpack",                 platform: github,    org: clawpack,                    primary_repo: clawpack,                                                    confidence: high}
+  - {slug: colour,                name: "Colour",                   platform: github,    org: colour-science,              primary_repo: colour,                                                      confidence: high}
+  - {slug: crystal,               name: "Crystal",                  platform: github,    org: crystal-lang,                primary_repo: crystal,                                                     confidence: high}
+  - {slug: cvxpy,                 name: "CVXPY",                    platform: github,    org: cvxpy,                       primary_repo: cvxpy,                                                       confidence: high}
+  - {slug: cython,                name: "Cython",                   platform: github,    org: cython,                      primary_repo: cython,                                                      confidence: high}
+  - {slug: dash,                  name: "Dash",                     platform: github,    org: plotly,                      primary_repo: dash,                                                        confidence: high}
+  - {slug: data-retriever,        name: "Data Retriever",           platform: github,    org: weecology,                   primary_repo: retriever,                                                   confidence: high}
+  - {slug: devito,                name: "Devito",                   platform: github,    org: devitocodes,                 primary_repo: devito,                                                      confidence: high}
+  - {slug: dynd,                  name: "DyND",                     platform: github,    org: libdynd,                     primary_repo: libdynd,                                                     confidence: high}
+  - {slug: effective-quadratures, name: "Effective Quadratures",    platform: github,    org: Effective-Quadratures,       primary_repo: equadratures,                                                confidence: high}
+  - {slug: optimagic,             name: "optimagic",                platform: github,    org: optimagic-dev,               primary_repo: optimagic,                                                   confidence: high, note: "Formerly known as estimagic; renamed 2024."}
+  - {slug: fluxml,                name: "FluxML",                   platform: github,    org: FluxML,                      primary_repo: Flux.jl,                                                     confidence: high}
+  - {slug: freemocap,             name: "FreeMoCap Project",        platform: github,    org: freemocap,                   primary_repo: freemocap,                                                   confidence: high}
+  - {slug: gensim,                name: "Gensim",                   platform: github,    org: RaRe-Technologies,           primary_repo: gensim,                                                      confidence: high}
+  - {slug: geomscale,             name: "GeomScale",                platform: github,    org: GeomScale,                   primary_repo: volesti,                                                     confidence: high}
+  - {slug: geomstats,             name: "GeomStats",                platform: github,    org: geomstats,                   primary_repo: geomstats,                                                   confidence: high}
+  - {slug: gnu-radio,             name: "GNU Radio",                platform: github,    org: gnuradio,                    primary_repo: gnuradio,                                                    confidence: high}
+  - {slug: gonum,                 name: "Gonum",                    platform: github,    org: gonum,                       primary_repo: gonum,                                                       confidence: high}
+  - {slug: gridap,                name: "Gridap",                   platform: github,    org: gridap,                      primary_repo: Gridap.jl,                                                   confidence: high}
+  - {slug: hpx,                   name: "HPX",                      platform: github,    org: STEllAR-GROUP,               primary_repo: hpx,                                                         confidence: high}
+  - {slug: igraph,                name: "igraph",                   platform: github,    org: igraph,                      primary_repo: igraph,                                                      confidence: high}
+  - {slug: ipyvizzu,              name: "ipyvizzu",                 platform: github,    org: vizzuhq,                     primary_repo: ipyvizzu,                                                    confidence: high}
+  - {slug: magpylib,              name: "Magpylib",                 platform: github,    org: magpylib,                    primary_repo: magpylib,                                                    confidence: high}
+  - {slug: manim,                 name: "Manim",                    platform: github,    org: ManimCommunity,              primary_repo: manim,                                                       confidence: high}
+  - {slug: micro-manager,         name: "Micro-Manager",            platform: github,    org: micro-manager,               primary_repo: micro-manager,                                               confidence: high}
+  - {slug: mesa,                  name: "Mesa: Agent-Based Modeling In Python", platform: github, org: projectmesa,         primary_repo: mesa,                                                        confidence: high}
+  - {slug: mfem,                  name: "MFEM",                     platform: github,    org: mfem,                        primary_repo: mfem,                                                        confidence: high}
+  - {slug: neo,                   name: "Neo",                      platform: github,    org: NeuralEnsemble,              primary_repo: python-neo,                                                  confidence: high}
+  - {slug: netket,                name: "NetKet",                   platform: github,    org: netket,                      primary_repo: netket,                                                      confidence: high}
+  - {slug: numba,                 name: "Numba",                    platform: github,    org: numba,                       primary_repo: numba,                                                       confidence: high}
+  - {slug: obspy,                 name: "ObsPy",                    platform: github,    org: obspy,                       primary_repo: obspy,                                                       confidence: high}
+  - {slug: orange,                name: "Orange",                   platform: github,    org: biolab,                      primary_repo: orange3,                                                     confidence: high}
+  - {slug: polars,                name: "Polars",                   platform: github,    org: pola-rs,                     primary_repo: polars,                                                      confidence: high}
+  - {slug: poliastro,             name: "poliastro",                platform: github,    org: poliastro,                   primary_repo: poliastro,                                                   confidence: high}
+  - {slug: pomegranate,           name: "pomegranate",              platform: github,    org: jmschrei,                    primary_repo: pomegranate,                                                 confidence: medium, note: "Pomegranate is a personal-account-hosted project under jmschrei. The Augur DB has org `pomegranate` with 44 repos but those are noise; the real project lives at jmschrei/pomegranate."}
+  - {slug: optuna,                name: "Project Optuna",           platform: github,    org: optuna,                      primary_repo: optuna,                                                      confidence: high}
+  - {slug: psl,                   name: "PSL",                      platform: github,    org: PSLmodels,                   primary_repo: Tax-Calculator,                                              confidence: high, note: "Policy Simulation Library — collection of models under PSLmodels org. Tax-Calculator is the flagship model; org-level tracking via load-numfocus-orgs catches the rest."}
+  - {slug: pvlib,                 name: "pvlib",                    platform: github,    org: pvlib,                       primary_repo: pvlib-python,                                                confidence: high}
+  - {slug: pyhf,                  name: "pyhf",                     platform: github,    org: scikit-hep,                  primary_repo: pyhf,                                                        confidence: high}
+  - {slug: pyiron,                name: "pyiron",                   platform: github,    org: pyiron,                      primary_repo: pyiron,                                                      confidence: high}
+  - {slug: pylops,                name: "PyLops",                   platform: github,    org: PyLops,                      primary_repo: pylops,                                                      confidence: high}
+  - {slug: pymor,                 name: "pyMOR",                    platform: github,    org: pymor,                       primary_repo: pymor,                                                       confidence: high}
+  - {slug: pysal,                 name: "PySAL",                    platform: github,    org: pysal,                       primary_repo: pysal,                                                       confidence: high}
+  - {slug: python-graphblas,      name: "Python-graphblas",         platform: github,    org: python-graphblas,            primary_repo: python-graphblas,                                            confidence: high}
+  - {slug: python-xy,             name: "Python(X,Y)",              platform: github,    org: python-xy,                   primary_repo: python-xy.github.io,                                         confidence: medium, note: "Python(X,Y) is largely dormant; sourceforge is the historical home. python-xy.github.io is the docs site."}
+  - {slug: pysat,                 name: "Python Satellite Data Analysis Toolkit (pysat)", platform: github, org: pysat,    primary_repo: pysat,                                                       confidence: high}
+  - {slug: pytorch-ignite,        name: "PyTorch-Ignite",           platform: github,    org: pytorch,                     primary_repo: ignite,                                                      confidence: high}
+  - {slug: pyvista,               name: "PyVista",                  platform: github,    org: pyvista,                     primary_repo: pyvista,                                                     confidence: high}
+  - {slug: qutip,                 name: "QuTiP",                    platform: github,    org: qutip,                       primary_repo: qutip,                                                       confidence: high}
+  - {slug: radis,                 name: "Radis",                    platform: github,    org: radis,                       primary_repo: radis,                                                       confidence: high}
+  - {slug: scikit-bio,            name: "scikit-bio",               platform: github,    org: scikit-bio,                  primary_repo: scikit-bio,                                                  confidence: high}
+  - {slug: signac,                name: "signac",                   platform: github,    org: glotzerlab,                  primary_repo: signac,                                                      confidence: high}
+  - {slug: skypy,                 name: "SkyPy",                    platform: github,    org: skypyproject,                primary_repo: skypy,                                                       confidence: high}
+  - {slug: solcore,               name: "Solcore",                  platform: github,    org: qpv-research-group,          primary_repo: solcore5,                                                    confidence: medium}
+  - {slug: spack,                 name: "Spack",                    platform: github,    org: spack,                       primary_repo: spack,                                                       confidence: high}
+  - {slug: statsmodels,           name: "Statsmodels",              platform: github,    org: statsmodels,                 primary_repo: statsmodels,                                                 confidence: high}
+  - {slug: taskflow,              name: "Taskflow",                 platform: github,    org: taskflow,                    primary_repo: taskflow,                                                    confidence: high}
+  - {slug: tnl,                   name: "TNL - Template Numerical Library", platform: github, org: tnl-project,            primary_repo: tnl,                                                         confidence: high}
+  - {slug: ibis,                  name: "The Ibis Project",         platform: github,    org: ibis-project,                primary_repo: ibis,                                                        confidence: high}
+  - {slug: trixi,                 name: "Trixi.jl",                 platform: github,    org: trixi-framework,             primary_repo: Trixi.jl,                                                    confidence: high}
+  - {slug: westpa,                name: "WESTPA",                   platform: github,    org: westpa,                      primary_repo: westpa,                                                      confidence: high}
+  - {slug: aeon,                  name: "aeon",                     platform: github,    org: aeon-toolkit,                primary_repo: aeon,                                                        confidence: high}
+  - {slug: yellowbrick,           name: "Yellowbrick",              platform: github,    org: DistrictDataLabs,            primary_repo: yellowbrick,                                                 confidence: high}
+  - {slug: xgi,                   name: "XGI",                      platform: github,    org: xgi-org,                     primary_repo: xgi,                                                         confidence: high}
+  - {slug: bigbang,               name: "BigBang",                  platform: github,    org: datactive,                   primary_repo: bigbang,                                                     confidence: medium, note: "numfocus.org listing erroneously links BigBang to github.com/Xiangyu-Hu/SPHinXsys (which is a different project). The real BigBang is at datactive/bigbang."}
+  - {slug: pydmd,                 name: "PyDMD",                    platform: github,    org: PyDMD,                       primary_repo: PyDMD,                                                       confidence: high}
+  - {slug: stumpy,                name: "STUMPY",                   platform: github,    org: TDAmeritrade,                primary_repo: stumpy,                                                      confidence: high}
+  - {slug: skforecast,            name: "skforecast",               platform: github,    org: skforecast,                  primary_repo: skforecast,                                                  confidence: high}
+  - {slug: pism,                  name: "Parallel Ice Sheet Model (PISM)", platform: github, org: pism,                    primary_repo: pism,                                                        confidence: high}
+  - {slug: festim,                name: "FESTIM",                   platform: github,    org: festim-dev,                  primary_repo: FESTIM,                                                      confidence: high}
+  - {slug: open-ondemand,         name: "Open OnDemand",            platform: github,    org: OSC,                         primary_repo: ondemand,                                                    confidence: high}
+  - {slug: visual-python,         name: "Visual Python",            platform: github,    org: visualpython,                primary_repo: visualpython,                                                confidence: medium}
+  - {slug: gp-jax,                name: "GP Jax",                   platform: github,    org: JaxGaussianProcesses,        primary_repo: GPJax,                                                       confidence: high}
+  - {slug: toqito,                name: "toqito",                   platform: github,    org: vprusso,                     primary_repo: toqito,                                                      confidence: high}
+  - {slug: folium,                name: "Folium",                   platform: github,    org: python-visualization,        primary_repo: folium,                                                      confidence: high}
+  - {slug: snakemake,             name: "Snakemake",                platform: github,    org: snakemake,                   primary_repo: snakemake,                                                   confidence: high}
+  - {slug: sunpeek,               name: "SunPeek",                  platform: other,     org: "",                          primary_repo: "",                                                          confidence: needs_review, note: "No canonical GitHub or gitlab.com repo found. Project website docs.sunpeek.org references a private/self-hosted repo. Operator follow-up needed."}
+  - {slug: bambi,                 name: "Bambi",                    platform: github,    org: bambinos,                    primary_repo: bambi,                                                       confidence: high}
+  - {slug: open2c,                name: "Open2C",                   platform: github,    org: open2c,                      primary_repo: cooltools,                                                   confidence: medium, note: "Open2C is a federation; cooltools is a flagship repo. Org-level tracking is more useful."}
+  - {slug: poly,                  name: "Poly",                     platform: github,    org: bebop,                       primary_repo: poly,                                                        confidence: high}
+  - {slug: prql,                  name: "PRQL",                     platform: github,    org: PRQL,                        primary_repo: prql,                                                        confidence: high}
+  - {slug: pudl,                  name: "PUDL",                     platform: github,    org: catalyst-cooperative,        primary_repo: pudl,                                                        confidence: high}
+  - {slug: pydata-sparse,         name: "PyData Sparse",            platform: github,    org: pydata,                      primary_repo: sparse,                                                      confidence: high}
+  - {slug: sphinxsys,             name: "SPHinXsys",                platform: github,    org: Xiangyu-Hu,                  primary_repo: SPHinXsys,                                                   confidence: high}
+  - {slug: sagemath,              name: "SageMath",                 platform: github,    org: sagemath,                    primary_repo: sage,                                                        confidence: high}
+  - {slug: bayesflow,             name: "BayesFlow",                platform: github,    org: bayesflow-org,               primary_repo: bayesflow,                                                   confidence: high}
+  - {slug: highs,                 name: "HiGHS",                    platform: github,    org: ERGO-Code,                   primary_repo: HiGHS,                                                       confidence: high}
+  - {slug: rxinfer,               name: "RxInfer",                  platform: github,    org: ReactiveBayes,               primary_repo: RxInfer.jl,                                                  confidence: high}
+  - {slug: sbi,                   name: "sbi",                      platform: github,    org: sbi-dev,                     primary_repo: sbi,                                                         confidence: high}
+  - {slug: narwhals,              name: "Narwhals",                 platform: github,    org: narwhals-dev,                primary_repo: narwhals,                                                    confidence: high}
+  - {slug: marimo,                name: "marimo",                   platform: github,    org: marimo-team,                 primary_repo: marimo,                                                      confidence: high}
+  - {slug: albumentations,        name: "Albumentations",           platform: github,    org: albumentations-team,         primary_repo: albumentations,                                              confidence: high}
+  - {slug: materials-project,     name: "Materials Project Software Foundation", platform: github, org: materialsproject,  primary_repo: pymatgen,                                                    confidence: high}
+  - {slug: uxarray,               name: "UXarray",                  platform: github,    org: UXARRAY,                     primary_repo: uxarray,                                                     confidence: high}
+  - {slug: brainglobe,            name: "BrainGlobe",               platform: github,    org: brainglobe,                  primary_repo: brainglobe-atlasapi,                                         confidence: high}
+  - {slug: project-pythia,        name: "Project Pythia",           platform: github,    org: ProjectPythia,               primary_repo: projectpythia.github.io,                                     confidence: high}
+
+# Operator-review section. Entries here have either no confidently-resolvable
+# primary GitHub repo, or known conflicts in the numfocus.org listing.
+# Operator should verify and move to sponsored/affiliated above when resolved.
+needs_review: []

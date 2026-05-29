@@ -86,27 +86,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_explorer_commits_committers_daily
     ON aveloxis_data.explorer_commits_and_committers_daily_count (repo_id, cmt_committer_date);
 
 -- ---------------------------------------------------------------------------
--- 6. explorer_libyear_all  --  average libyear by repo/month/year
--- ---------------------------------------------------------------------------
-DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_libyear_all CASCADE;
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_libyear_all AS
-SELECT a.repo_id,
-       a.repo_name,
-       avg(b.libyear) AS avg_libyear,
-       date_part('month'::text, (a.data_collection_date)::date) AS month,
-       date_part('year'::text, (a.data_collection_date)::date) AS year
-  FROM aveloxis_data.repos a,
-       aveloxis_data.repo_deps_libyear b
- GROUP BY a.repo_id, a.repo_name,
-          date_part('month'::text, (a.data_collection_date)::date),
-          date_part('year'::text, (a.data_collection_date)::date)
- ORDER BY date_part('year'::text, (a.data_collection_date)::date) DESC,
-          date_part('month'::text, (a.data_collection_date)::date) DESC,
-          avg(b.libyear) DESC;
-
--- ---------------------------------------------------------------------------
--- 7. explorer_libyear_summary  --  same as above (kept for 8Knot compat)
+-- 7. explorer_libyear_summary  --  average libyear by repo/month/year
+--
+-- v0.25.5: rewritten to fix a pre-existing CROSS JOIN bug. The previous
+-- definition used `FROM repos a, repo_deps_libyear b` with no join
+-- condition; on aveloxis_large that produces a 52K × 636K = 33-billion-row
+-- intermediate that's computationally infeasible AND semantically wrong
+-- (every repo's "avg_libyear" was the fleet-wide average, not the repo's
+-- own). The fix adds `USING (repo_id)` and switches the group/order keys
+-- from `a.data_collection_date` (when the repo catalog row was last
+-- touched) to `b.data_collection_date` (when libyear was actually
+-- gathered) — the latter is the field analysts care about for staleness
+-- trend analysis.
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_libyear_summary CASCADE;
 
@@ -114,19 +105,34 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_libyear_summary AS
 SELECT a.repo_id,
        a.repo_name,
        avg(b.libyear) AS avg_libyear,
-       date_part('month'::text, (a.data_collection_date)::date) AS month,
-       date_part('year'::text, (a.data_collection_date)::date) AS year
-  FROM aveloxis_data.repos a,
-       aveloxis_data.repo_deps_libyear b
+       date_part('month'::text, (b.data_collection_date)::date) AS month,
+       date_part('year'::text, (b.data_collection_date)::date) AS year
+  FROM aveloxis_data.repos a
+  JOIN aveloxis_data.repo_deps_libyear b USING (repo_id)
  GROUP BY a.repo_id, a.repo_name,
-          date_part('month'::text, (a.data_collection_date)::date),
-          date_part('year'::text, (a.data_collection_date)::date)
- ORDER BY date_part('year'::text, (a.data_collection_date)::date) DESC,
-          date_part('month'::text, (a.data_collection_date)::date) DESC,
+          date_part('month'::text, (b.data_collection_date)::date),
+          date_part('year'::text, (b.data_collection_date)::date)
+ ORDER BY date_part('year'::text, (b.data_collection_date)::date) DESC,
+          date_part('month'::text, (b.data_collection_date)::date) DESC,
           avg(b.libyear) DESC;
 
 -- ---------------------------------------------------------------------------
+-- 6. explorer_libyear_all  --  regular VIEW alias for _summary (v0.25.5)
+--
+-- Pre-v0.25.5 this was a MATERIALIZED VIEW with SQL byte-for-byte
+-- identical to explorer_libyear_summary. Converted to a regular VIEW so
+-- the alias survives for any 8Knot or downstream tooling that
+-- references it by name, but the storage + rebuild cost is zero.
+-- ---------------------------------------------------------------------------
+DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_libyear_all CASCADE;
+
+CREATE OR REPLACE VIEW aveloxis_data.explorer_libyear_all AS
+SELECT * FROM aveloxis_data.explorer_libyear_summary;
+
+-- ---------------------------------------------------------------------------
 -- 8. explorer_libyear_detail  --  per-dependency libyear detail
+--
+-- v0.25.5: same cross-join fix as _summary. Adds `USING (repo_id)`.
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_libyear_detail CASCADE;
 
@@ -140,8 +146,8 @@ SELECT a.repo_id,
        b.current_release_date,
        b.libyear,
        max(b.data_collection_date) AS max
-  FROM aveloxis_data.repos a,
-       aveloxis_data.repo_deps_libyear b
+  FROM aveloxis_data.repos a
+  JOIN aveloxis_data.repo_deps_libyear b USING (repo_id)
  GROUP BY a.repo_id, a.repo_name, b.name, b.requirement,
           b.current_version, b.latest_version, b.current_release_date, b.libyear
  ORDER BY a.repo_id, b.requirement;
@@ -301,412 +307,211 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_explorer_contributor_actions
     ON aveloxis_data.explorer_contributor_actions (cntrb_id, created_at, repo_id, action, repo_name, login, rank);
 
 -- ---------------------------------------------------------------------------
--- 10. explorer_new_contributors  --  first-time contributor actions
---     Definitive version from Augur migration 25 (row_number, partitioned by id+repo)
+-- 10. explorer_new_contributors  --  top-7 most-recent actions per (cntrb, repo)
+--
+-- v0.25.6: structural rewrite using cmt_ght_author_id (deterministic
+-- UUID stamped by the commit resolver) for the commit branch, and
+-- direct c.cntrb_id joins for the other five branches. The
+-- canonical_full_names CTE is gone — it was a 180K-row DISTINCT ON
+-- recomputed 6× per refresh whose only purpose was to deduplicate
+-- contributors by canonical email, an Augur-era pattern from before
+-- deterministic cntrb_id existed.
+--
+-- The v0.25.5 attempt to dodge the empty-string Cartesian product
+-- (5.6M empty-email commits × 1.06M empty-canonical contributors)
+-- via additional WHERE filters was the wrong instinct. The right
+-- fix is to use the column that's been there for the purpose all
+-- along: cmt_ght_author_id has 91.95% coverage on the production
+-- 474M-row commits table (vs ~27% coverage via the email-canonical
+-- chain), and is index-backed by the contributors PK.
+--
+-- Coverage delta operators should expect:
+--   • commit branch: ~27% → ~92% of commit rows included
+--   • output size: roughly 3-4× larger (still bounded by top-7 rank)
+--
+-- Soft-deleted rows from the v0.20.2 logical-merge path are
+-- excluded via COALESCE(c.cntrb_deleted, 0) = 0 on every branch.
+-- The commit branch preserves day-level collapse via inner-subquery
+-- GROUP BY before the rank pushdown — otherwise the per-file
+-- commit rows (474M at fleet scale) would push too many rows
+-- through the window function.
+--
+-- The other four pre-v0.25.5 anti-patterns from the earlier
+-- v0.25.5 changelog entry stay fixed:
+--   • per-branch rank-7 pushdown before UNION (vs ranking full union)
+--   • commit_comment branch (empty ref table) removed
+--   • issue_comment branch's `pull_request_id = NULL` (impossible)
+--     bug restored to `pull_request IS NULL`
+--   • no redundant outer GROUP BY (was no-op DISTINCT)
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_new_contributors CASCADE;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_new_contributors AS
-SELECT x.cntrb_id,
-       x.created_at,
-       x.month,
-       x.year,
-       x.repo_id,
-       x.repo_name,
-       x.full_name,
-       x.login,
-       x.rank
-  FROM (
-    SELECT b.cntrb_id,
-           b.created_at,
-           b.month,
-           b.year,
-           b.repo_id,
-           b.repo_name,
-           b.full_name,
-           b.login,
-           b.action,
-           b.rank
-      FROM (
-        SELECT a.id AS cntrb_id,
-               a.created_at,
-               date_part('month'::text, (a.created_at)::date) AS month,
-               date_part('year'::text, (a.created_at)::date) AS year,
-               a.repo_id,
-               repos.repo_name,
-               a.full_name,
-               a.login,
-               a.action,
-               row_number() OVER (PARTITION BY a.id, a.repo_id ORDER BY a.created_at DESC) AS rank
+WITH branched AS (
+    -- issues opened
+    SELECT * FROM (
+        SELECT c.cntrb_id AS id,
+               i.created_at,
+               i.repo_id,
+               'issue_opened'::text AS action,
+               c.cntrb_full_name AS full_name,
+               c.cntrb_login AS login,
+               row_number() OVER (PARTITION BY c.cntrb_id, i.repo_id ORDER BY i.created_at DESC) AS br
+          FROM aveloxis_data.issues i
+          JOIN aveloxis_data.contributors c ON c.cntrb_id = i.reporter_id
+         WHERE i.pull_request IS NULL
+           AND COALESCE(c.cntrb_deleted, 0) = 0
+    ) z WHERE br <= 7
+
+    UNION ALL
+
+    -- commits
+    --
+    -- Direct cmt_ght_author_id → cntrb_id join. ~92% coverage on the
+    -- production commits table; rows without a resolved author_id
+    -- are filtered out (they have no contributor to attribute to).
+    -- Day-level collapse via GROUP BY in the inner subquery so we
+    -- don't push 474M per-file rows through the window function.
+    SELECT * FROM (
+        SELECT id, created_at, repo_id, 'commit'::text AS action, full_name, login,
+               row_number() OVER (PARTITION BY id, repo_id ORDER BY created_at DESC) AS br
           FROM (
-                -- issues opened
-                SELECT canonical_full_names.canonical_id AS id,
-                       issues.created_at,
-                       issues.repo_id,
-                       'issue_opened'::text AS action,
-                       contributors.cntrb_full_name AS full_name,
-                       contributors.cntrb_login AS login
-                  FROM ((aveloxis_data.issues
-                        LEFT JOIN aveloxis_data.contributors
-                          ON contributors.cntrb_id = issues.reporter_id)
-                        LEFT JOIN (
-                          SELECT DISTINCT ON (contributors_1.cntrb_canonical)
-                                 contributors_1.cntrb_full_name,
-                                 contributors_1.cntrb_canonical AS canonical_email,
-                                 contributors_1.data_collection_date,
-                                 contributors_1.cntrb_id AS canonical_id
-                            FROM aveloxis_data.contributors contributors_1
-                           WHERE (contributors_1.cntrb_canonical)::text = (contributors_1.cntrb_email)::text
-                           ORDER BY contributors_1.cntrb_canonical
-                        ) canonical_full_names
-                          ON (canonical_full_names.canonical_email)::text = (contributors.cntrb_canonical)::text)
-                 WHERE issues.pull_request IS NULL
-                 GROUP BY canonical_full_names.canonical_id, issues.repo_id, issues.created_at,
-                          contributors.cntrb_full_name, contributors.cntrb_login
+            SELECT co.cmt_ght_author_id AS id,
+                   to_timestamp(co.cmt_author_date::text, 'YYYY-MM-DD'::text) AS created_at,
+                   co.repo_id,
+                   c.cntrb_full_name AS full_name,
+                   c.cntrb_login AS login
+              FROM aveloxis_data.commits co
+              JOIN aveloxis_data.contributors c ON c.cntrb_id = co.cmt_ght_author_id
+             WHERE co.cmt_ght_author_id IS NOT NULL
+               AND COALESCE(c.cntrb_deleted, 0) = 0
+             GROUP BY co.cmt_ght_author_id, co.repo_id, co.cmt_author_date,
+                      c.cntrb_full_name, c.cntrb_login
+          ) day_collapsed
+    ) z WHERE br <= 7
 
-                UNION ALL
+    UNION ALL
 
-                -- commits
-                SELECT canonical_full_names.canonical_id AS id,
-                       to_timestamp((commits.cmt_author_date)::text, 'YYYY-MM-DD'::text) AS created_at,
-                       commits.repo_id,
-                       'commit'::text AS action,
-                       contributors.cntrb_full_name AS full_name,
-                       contributors.cntrb_login AS login
-                  FROM ((aveloxis_data.commits
-                        LEFT JOIN aveloxis_data.contributors
-                          ON (contributors.cntrb_canonical)::text = (commits.cmt_author_email)::text)
-                        LEFT JOIN (
-                          SELECT DISTINCT ON (contributors_1.cntrb_canonical)
-                                 contributors_1.cntrb_full_name,
-                                 contributors_1.cntrb_canonical AS canonical_email,
-                                 contributors_1.data_collection_date,
-                                 contributors_1.cntrb_id AS canonical_id
-                            FROM aveloxis_data.contributors contributors_1
-                           WHERE (contributors_1.cntrb_canonical)::text = (contributors_1.cntrb_email)::text
-                           ORDER BY contributors_1.cntrb_canonical
-                        ) canonical_full_names
-                          ON (canonical_full_names.canonical_email)::text = (contributors.cntrb_canonical)::text)
-                 GROUP BY commits.repo_id, canonical_full_names.canonical_email,
-                          canonical_full_names.canonical_id, commits.cmt_author_date,
-                          contributors.cntrb_full_name, contributors.cntrb_login
+    -- (commit_comment branch removed in v0.25.5 — the underlying ref
+    --  table is permanently empty; see CLAUDE.md v0.25.5 entry)
 
-                UNION ALL
+    -- issues closed
+    SELECT * FROM (
+        SELECT c.cntrb_id AS id,
+               ie.created_at,
+               i.repo_id,
+               'issue_closed'::text AS action,
+               c.cntrb_full_name AS full_name,
+               c.cntrb_login AS login,
+               row_number() OVER (PARTITION BY c.cntrb_id, i.repo_id ORDER BY ie.created_at DESC) AS br
+          FROM aveloxis_data.issues i
+          JOIN aveloxis_data.issue_events ie ON ie.issue_id = i.issue_id
+          JOIN aveloxis_data.contributors c ON c.cntrb_id = ie.cntrb_id
+         WHERE i.pull_request IS NULL
+           AND ie.cntrb_id IS NOT NULL
+           AND (ie.action)::text = 'closed'::text
+           AND COALESCE(c.cntrb_deleted, 0) = 0
+    ) z WHERE br <= 7
 
-                -- commit comments
-                SELECT messages.cntrb_id AS id,
-                       commit_comment_ref.created_at,
-                       commits.repo_id,
-                       'commit_comment'::text AS action,
-                       contributors.cntrb_full_name AS full_name,
-                       contributors.cntrb_login AS login
-                  FROM aveloxis_data.commit_comment_ref,
-                       aveloxis_data.commits,
-                       ((aveloxis_data.messages
-                         LEFT JOIN aveloxis_data.contributors
-                           ON contributors.cntrb_id = messages.cntrb_id)
-                        LEFT JOIN (
-                          SELECT DISTINCT ON (contributors_1.cntrb_canonical)
-                                 contributors_1.cntrb_full_name,
-                                 contributors_1.cntrb_canonical AS canonical_email,
-                                 contributors_1.data_collection_date,
-                                 contributors_1.cntrb_id AS canonical_id
-                            FROM aveloxis_data.contributors contributors_1
-                           WHERE (contributors_1.cntrb_canonical)::text = (contributors_1.cntrb_email)::text
-                           ORDER BY contributors_1.cntrb_canonical
-                        ) canonical_full_names
-                          ON (canonical_full_names.canonical_email)::text = (contributors.cntrb_canonical)::text)
-                 WHERE commits.cmt_id = commit_comment_ref.cmt_id
-                   AND commit_comment_ref.msg_id = messages.msg_id
-                 GROUP BY messages.cntrb_id, commits.repo_id, commit_comment_ref.created_at,
-                          contributors.cntrb_full_name, contributors.cntrb_login
+    UNION ALL
 
-                UNION ALL
+    -- pull requests opened
+    SELECT * FROM (
+        SELECT c.cntrb_id AS id,
+               pr.created_at,
+               pr.repo_id,
+               'open_pull_request'::text AS action,
+               c.cntrb_full_name AS full_name,
+               c.cntrb_login AS login,
+               row_number() OVER (PARTITION BY c.cntrb_id, pr.repo_id ORDER BY pr.created_at DESC) AS br
+          FROM aveloxis_data.pull_requests pr
+          JOIN aveloxis_data.contributors c ON pr.author_id = c.cntrb_id
+         WHERE COALESCE(c.cntrb_deleted, 0) = 0
+    ) z WHERE br <= 7
 
-                -- issues closed
-                SELECT issue_events.cntrb_id AS id,
-                       issue_events.created_at,
-                       issues.repo_id,
-                       'issue_closed'::text AS action,
-                       contributors.cntrb_full_name AS full_name,
-                       contributors.cntrb_login AS login
-                  FROM aveloxis_data.issues,
-                       ((aveloxis_data.issue_events
-                         LEFT JOIN aveloxis_data.contributors
-                           ON contributors.cntrb_id = issue_events.cntrb_id)
-                        LEFT JOIN (
-                          SELECT DISTINCT ON (contributors_1.cntrb_canonical)
-                                 contributors_1.cntrb_full_name,
-                                 contributors_1.cntrb_canonical AS canonical_email,
-                                 contributors_1.data_collection_date,
-                                 contributors_1.cntrb_id AS canonical_id
-                            FROM aveloxis_data.contributors contributors_1
-                           WHERE (contributors_1.cntrb_canonical)::text = (contributors_1.cntrb_email)::text
-                           ORDER BY contributors_1.cntrb_canonical
-                        ) canonical_full_names
-                          ON (canonical_full_names.canonical_email)::text = (contributors.cntrb_canonical)::text)
-                 WHERE issues.issue_id = issue_events.issue_id
-                   AND issues.pull_request IS NULL
-                   AND issue_events.cntrb_id IS NOT NULL
-                   AND (issue_events.action)::text = 'closed'::text
-                 GROUP BY issue_events.cntrb_id, issues.repo_id, issue_events.created_at,
-                          contributors.cntrb_full_name, contributors.cntrb_login
+    UNION ALL
 
-                UNION ALL
+    -- pull request comments
+    SELECT * FROM (
+        SELECT c.cntrb_id AS id,
+               m.msg_timestamp AS created_at,
+               pr.repo_id,
+               'pull_request_comment'::text AS action,
+               c.cntrb_full_name AS full_name,
+               c.cntrb_login AS login,
+               row_number() OVER (PARTITION BY c.cntrb_id, pr.repo_id ORDER BY m.msg_timestamp DESC) AS br
+          FROM aveloxis_data.pull_requests pr
+          JOIN aveloxis_data.pull_request_message_ref prmr ON prmr.pull_request_id = pr.pull_request_id
+          JOIN aveloxis_data.messages m ON m.msg_id = prmr.msg_id
+          JOIN aveloxis_data.contributors c ON c.cntrb_id = m.cntrb_id
+         WHERE COALESCE(c.cntrb_deleted, 0) = 0
+    ) z WHERE br <= 7
 
-                -- pull requests opened
-                SELECT pull_requests.author_id AS id,
-                       pull_requests.created_at AS created_at,
-                       pull_requests.repo_id,
-                       'open_pull_request'::text AS action,
-                       contributors.cntrb_full_name AS full_name,
-                       contributors.cntrb_login AS login
-                  FROM ((aveloxis_data.pull_requests
-                        LEFT JOIN aveloxis_data.contributors
-                          ON pull_requests.author_id = contributors.cntrb_id)
-                        LEFT JOIN (
-                          SELECT DISTINCT ON (contributors_1.cntrb_canonical)
-                                 contributors_1.cntrb_full_name,
-                                 contributors_1.cntrb_canonical AS canonical_email,
-                                 contributors_1.data_collection_date,
-                                 contributors_1.cntrb_id AS canonical_id
-                            FROM aveloxis_data.contributors contributors_1
-                           WHERE (contributors_1.cntrb_canonical)::text = (contributors_1.cntrb_email)::text
-                           ORDER BY contributors_1.cntrb_canonical
-                        ) canonical_full_names
-                          ON (canonical_full_names.canonical_email)::text = (contributors.cntrb_canonical)::text)
-                 GROUP BY pull_requests.author_id, pull_requests.repo_id,
-                          pull_requests.created_at, contributors.cntrb_full_name,
-                          contributors.cntrb_login
+    UNION ALL
 
-                UNION ALL
-
-                -- pull request comments
-                SELECT messages.cntrb_id AS id,
-                       messages.msg_timestamp AS created_at,
-                       pull_requests.repo_id,
-                       'pull_request_comment'::text AS action,
-                       contributors.cntrb_full_name AS full_name,
-                       contributors.cntrb_login AS login
-                  FROM aveloxis_data.pull_requests,
-                       aveloxis_data.pull_request_message_ref,
-                       ((aveloxis_data.messages
-                         LEFT JOIN aveloxis_data.contributors
-                           ON contributors.cntrb_id = messages.cntrb_id)
-                        LEFT JOIN (
-                          SELECT DISTINCT ON (contributors_1.cntrb_canonical)
-                                 contributors_1.cntrb_full_name,
-                                 contributors_1.cntrb_canonical AS canonical_email,
-                                 contributors_1.data_collection_date,
-                                 contributors_1.cntrb_id AS canonical_id
-                            FROM aveloxis_data.contributors contributors_1
-                           WHERE (contributors_1.cntrb_canonical)::text = (contributors_1.cntrb_email)::text
-                           ORDER BY contributors_1.cntrb_canonical
-                        ) canonical_full_names
-                          ON (canonical_full_names.canonical_email)::text = (contributors.cntrb_canonical)::text)
-                 WHERE pull_request_message_ref.pull_request_id = pull_requests.pull_request_id
-                   AND pull_request_message_ref.msg_id = messages.msg_id
-                 GROUP BY messages.cntrb_id, pull_requests.repo_id, messages.msg_timestamp,
-                          contributors.cntrb_full_name, contributors.cntrb_login
-
-                UNION ALL
-
-                -- issue comments
-                SELECT issues.reporter_id AS id,
-                       messages.msg_timestamp AS created_at,
-                       issues.repo_id,
-                       'issue_comment'::text AS action,
-                       contributors.cntrb_full_name AS full_name,
-                       contributors.cntrb_login AS login
-                  FROM aveloxis_data.issues,
-                       aveloxis_data.issue_message_ref,
-                       ((aveloxis_data.messages
-                         LEFT JOIN aveloxis_data.contributors
-                           ON contributors.cntrb_id = messages.cntrb_id)
-                        LEFT JOIN (
-                          SELECT DISTINCT ON (contributors_1.cntrb_canonical)
-                                 contributors_1.cntrb_full_name,
-                                 contributors_1.cntrb_canonical AS canonical_email,
-                                 contributors_1.data_collection_date,
-                                 contributors_1.cntrb_id AS canonical_id
-                            FROM aveloxis_data.contributors contributors_1
-                           WHERE (contributors_1.cntrb_canonical)::text = (contributors_1.cntrb_email)::text
-                           ORDER BY contributors_1.cntrb_canonical
-                        ) canonical_full_names
-                          ON (canonical_full_names.canonical_email)::text = (contributors.cntrb_canonical)::text)
-                 WHERE issue_message_ref.msg_id = messages.msg_id
-                   AND issues.issue_id = issue_message_ref.issue_id
-                   AND issues.pull_request_id = NULL::bigint
-                 GROUP BY issues.reporter_id, issues.repo_id, messages.msg_timestamp,
-                          contributors.cntrb_full_name, contributors.cntrb_login
-               ) a,
-               aveloxis_data.repos
-         WHERE a.id IS NOT NULL
-           AND a.repo_id = repos.repo_id
-         GROUP BY a.id, a.repo_id, a.action, a.created_at, repos.repo_name,
-                  a.full_name, a.login
-         ORDER BY a.id
-      ) b
-     WHERE b.rank = ANY (ARRAY[1::bigint, 2::bigint, 3::bigint, 4::bigint,
-                                5::bigint, 6::bigint, 7::bigint])
-  ) x;
+    -- issue comments
+    SELECT * FROM (
+        SELECT c.cntrb_id AS id,
+               m.msg_timestamp AS created_at,
+               i.repo_id,
+               'issue_comment'::text AS action,
+               c.cntrb_full_name AS full_name,
+               c.cntrb_login AS login,
+               row_number() OVER (PARTITION BY c.cntrb_id, i.repo_id ORDER BY m.msg_timestamp DESC) AS br
+          FROM aveloxis_data.issues i
+          JOIN aveloxis_data.issue_message_ref imr ON imr.issue_id = i.issue_id
+          JOIN aveloxis_data.messages m ON m.msg_id = imr.msg_id
+          JOIN aveloxis_data.contributors c ON c.cntrb_id = m.cntrb_id
+         -- Pre-v0.25.5 original had `issues.pull_request_id = NULL::bigint`
+         -- which is always FALSE (NULL comparison) — so the issue_comment
+         -- branch was unintentionally producing ZERO rows. The intended
+         -- predicate is `issues.pull_request IS NULL` (filter out PRs that
+         -- GitHub's API conflates with issues). Restored here.
+         WHERE i.pull_request IS NULL
+           AND COALESCE(c.cntrb_deleted, 0) = 0
+    ) z WHERE br <= 7
+)
+SELECT b.id AS cntrb_id,
+       b.created_at,
+       date_part('month'::text, (b.created_at)::date) AS month,
+       date_part('year'::text, (b.created_at)::date) AS year,
+       b.repo_id,
+       r.repo_name,
+       b.full_name,
+       b.login,
+       rank
+  FROM (
+    SELECT *,
+           row_number() OVER (PARTITION BY id, repo_id ORDER BY created_at DESC) AS rank
+      FROM branched
+  ) b
+  JOIN aveloxis_data.repos r ON r.repo_id = b.repo_id
+ WHERE rank <= 7;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_explorer_new_contributors
     ON aveloxis_data.explorer_new_contributors (cntrb_id, created_at, month, year, repo_id, full_name, repo_name, login, rank);
 
 -- ---------------------------------------------------------------------------
--- 11. augur_new_contributors  --  similar to explorer_new_contributors (8Knot compat)
---     Definitive version from Augur migration 25
+-- 11. augur_new_contributors  --  VIEW alias for explorer_contributor_actions
+--
+-- Pre-v0.25.5 this was a MATERIALIZED VIEW with SQL byte-for-byte
+-- identical to explorer_contributor_actions. v0.25.5 dropped it
+-- outright; v0.25.6 restores it as a VIEW alias because operators
+-- query it to identify new contributors (the matview is referenced
+-- by external tooling that doesn't necessarily know about
+-- explorer_contributor_actions).
+--
+-- A plain VIEW (not MATERIALIZED VIEW) is the correct shape: it adds
+-- zero refresh cost — every query against augur_new_contributors
+-- transparently reads from the already-materialized
+-- explorer_contributor_actions. Same shape as the explorer_libyear_all
+-- alias for augur_libyear_all.
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.augur_new_contributors CASCADE;
+DROP VIEW IF EXISTS aveloxis_data.augur_new_contributors CASCADE;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.augur_new_contributors AS
-SELECT a.id AS cntrb_id,
-       a.created_at,
-       a.repo_id,
-       a.action,
-       repos.repo_name,
-       a.login,
-       row_number() OVER (PARTITION BY a.id, a.repo_id ORDER BY a.created_at DESC) AS rank
-  FROM (
-        -- commits
-        SELECT commits.cmt_ght_author_id AS id,
-               commits.cmt_author_timestamp AS created_at,
-               commits.repo_id,
-               'commit'::text AS action,
-               contributors.cntrb_login AS login
-          FROM (aveloxis_data.commits
-                LEFT JOIN aveloxis_data.contributors
-                  ON (contributors.cntrb_id)::text = (commits.cmt_ght_author_id)::text)
-         GROUP BY commits.cmt_commit_hash, commits.cmt_ght_author_id,
-                  commits.repo_id, commits.cmt_author_timestamp,
-                  'commit'::text, contributors.cntrb_login
-
-        UNION ALL
-
-        -- issues opened
-        SELECT issues.reporter_id AS id,
-               issues.created_at,
-               issues.repo_id,
-               'issue_opened'::text AS action,
-               contributors.cntrb_login AS login
-          FROM (aveloxis_data.issues
-                LEFT JOIN aveloxis_data.contributors
-                  ON contributors.cntrb_id = issues.reporter_id)
-         WHERE issues.pull_request IS NULL
-
-        UNION ALL
-
-        -- pull requests closed (not merged)
-        SELECT pull_request_events.cntrb_id AS id,
-               pull_request_events.created_at,
-               pull_requests.repo_id,
-               'pull_request_closed'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.pull_requests,
-               (aveloxis_data.pull_request_events
-                LEFT JOIN aveloxis_data.contributors
-                  ON contributors.cntrb_id = pull_request_events.cntrb_id)
-         WHERE pull_requests.pull_request_id = pull_request_events.pull_request_id
-           AND pull_requests.merged_at IS NULL
-           AND (pull_request_events.action)::text = 'closed'::text
-
-        UNION ALL
-
-        -- pull requests merged
-        SELECT pull_request_events.cntrb_id AS id,
-               pull_request_events.created_at,
-               pull_requests.repo_id,
-               'pull_request_merged'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.pull_requests,
-               (aveloxis_data.pull_request_events
-                LEFT JOIN aveloxis_data.contributors
-                  ON contributors.cntrb_id = pull_request_events.cntrb_id)
-         WHERE pull_requests.pull_request_id = pull_request_events.pull_request_id
-           AND (pull_request_events.action)::text = 'merged'::text
-
-        UNION ALL
-
-        -- issues closed
-        SELECT issue_events.cntrb_id AS id,
-               issue_events.created_at,
-               issues.repo_id,
-               'issue_closed'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.issues,
-               (aveloxis_data.issue_events
-                LEFT JOIN aveloxis_data.contributors
-                  ON contributors.cntrb_id = issue_events.cntrb_id)
-         WHERE issues.issue_id = issue_events.issue_id
-           AND issues.pull_request IS NULL
-           AND (issue_events.action)::text = 'closed'::text
-
-        UNION ALL
-
-        -- pull request reviews
-        SELECT pull_request_reviews.cntrb_id AS id,
-               pull_request_reviews.submitted_at AS created_at,
-               pull_requests.repo_id,
-               ('pull_request_review_'::text || (pull_request_reviews.review_state)::text) AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.pull_requests,
-               (aveloxis_data.pull_request_reviews
-                LEFT JOIN aveloxis_data.contributors
-                  ON contributors.cntrb_id = pull_request_reviews.cntrb_id)
-         WHERE pull_requests.pull_request_id = pull_request_reviews.pull_request_id
-
-        UNION ALL
-
-        -- pull requests opened
-        SELECT pull_requests.author_id AS id,
-               pull_requests.created_at AS created_at,
-               pull_requests.repo_id,
-               'pull_request_open'::text AS action,
-               contributors.cntrb_login AS login
-          FROM (aveloxis_data.pull_requests
-                LEFT JOIN aveloxis_data.contributors
-                  ON pull_requests.author_id = contributors.cntrb_id)
-
-        UNION ALL
-
-        -- pull request comments
-        SELECT messages.cntrb_id AS id,
-               messages.msg_timestamp AS created_at,
-               pull_requests.repo_id,
-               'pull_request_comment'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.pull_requests,
-               aveloxis_data.pull_request_message_ref,
-               (aveloxis_data.messages
-                LEFT JOIN aveloxis_data.contributors
-                  ON contributors.cntrb_id = messages.cntrb_id)
-         WHERE pull_request_message_ref.pull_request_id = pull_requests.pull_request_id
-           AND pull_request_message_ref.msg_id = messages.msg_id
-
-        UNION ALL
-
-        -- issue comments
-        SELECT issues.reporter_id AS id,
-               messages.msg_timestamp AS created_at,
-               issues.repo_id,
-               'issue_comment'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.issues,
-               aveloxis_data.issue_message_ref,
-               (aveloxis_data.messages
-                LEFT JOIN aveloxis_data.contributors
-                  ON contributors.cntrb_id = messages.cntrb_id)
-         WHERE issue_message_ref.msg_id = messages.msg_id
-           AND issues.issue_id = issue_message_ref.issue_id
-           AND issues.closed_at <> messages.msg_timestamp
-       ) a,
-       aveloxis_data.repos
- WHERE a.repo_id = repos.repo_id
- ORDER BY a.created_at DESC;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_augur_new_contributors
-    ON aveloxis_data.augur_new_contributors (cntrb_id, created_at, repo_id, repo_name, login, rank);
+CREATE OR REPLACE VIEW aveloxis_data.augur_new_contributors AS
+SELECT * FROM aveloxis_data.explorer_contributor_actions;
 
 -- ---------------------------------------------------------------------------
 -- 12. explorer_pr_assignments  --  PR assignment/unassignment events
@@ -949,36 +754,42 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_explorer_issue_assignments
 
 -- ---------------------------------------------------------------------------
 -- 17. explorer_repo_languages  --  programming language breakdown per repo
+--
+-- v0.25.5: switched the "latest scan" filter from `data_collection_date`
+-- to `rl_analysis_date` so the same index that serves explorer_repo_files
+-- (idx_repo_labor_repo_id_analysis_date — `(repo_id, rl_analysis_date
+-- DESC)`) also serves this view. The two columns are highly correlated
+-- (both stamped at the same scancode run), so the analytical output is
+-- effectively identical; the change is a planner-friendliness move.
+--
+-- Also rewrote the inner subqueries as proper JOINs and consolidated
+-- the "most recent scan per repo" lookup via DISTINCT ON, which the
+-- new index supports as an index-walk instead of a full sort.
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_repo_languages CASCADE;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_repo_languages AS
-SELECT e.repo_id,
-       repos.repo_git,
-       repos.repo_name,
-       e.programming_language,
-       e.code_lines,
-       e.files
-  FROM aveloxis_data.repos,
-       (SELECT d.repo_id,
-               d.programming_language,
-               sum(d.code_lines) AS code_lines,
-               (count(*))::integer AS files
-          FROM (SELECT repo_labor.repo_id,
-                       repo_labor.programming_language,
-                       repo_labor.code_lines
-                  FROM aveloxis_data.repo_labor,
-                       (SELECT repo_labor_1.repo_id,
-                               max(repo_labor_1.data_collection_date) AS last_collected
-                          FROM aveloxis_data.repo_labor repo_labor_1
-                         GROUP BY repo_labor_1.repo_id) recent
-                 WHERE repo_labor.repo_id = recent.repo_id
-                   AND repo_labor.data_collection_date > (recent.last_collected - ((5)::double precision * '00:01:00'::interval))
-               ) d
-         GROUP BY d.repo_id, d.programming_language
-       ) e
- WHERE repos.repo_id = e.repo_id
- ORDER BY e.repo_id;
+WITH latest_scan AS (
+    -- One row per repo: (repo_id, latest rl_analysis_date). With the
+    -- v0.25.5 index on (repo_id, rl_analysis_date DESC) this becomes
+    -- an index-walk rather than a full sort + dedup.
+    SELECT DISTINCT ON (repo_id)
+           repo_id, rl_analysis_date
+      FROM aveloxis_data.repo_labor
+     ORDER BY repo_id, rl_analysis_date DESC
+)
+SELECT rl.repo_id,
+       r.repo_git,
+       r.repo_name,
+       rl.programming_language,
+       SUM(rl.code_lines) AS code_lines,
+       COUNT(*)::integer AS files
+  FROM aveloxis_data.repo_labor rl
+  JOIN latest_scan ls ON ls.repo_id = rl.repo_id
+                     AND rl.rl_analysis_date = ls.rl_analysis_date
+  JOIN aveloxis_data.repos r ON r.repo_id = rl.repo_id
+ GROUP BY rl.repo_id, r.repo_git, r.repo_name, rl.programming_language
+ ORDER BY rl.repo_id;
 
 -- ---------------------------------------------------------------------------
 -- 18. issue_reporter_created_at  --  issue reporter with created_at
@@ -994,7 +805,31 @@ SELECT i.reporter_id,
 
 -- ---------------------------------------------------------------------------
 -- 19. explorer_contributor_recent_actions  --  recent contributor actions (13 months)
---     From Augur scripts/install/explorer_contributor_recent_actions.sql
+--
+-- v0.25.5: rewritten. Pre-v0.25.5 the 13-month time filter sat in each
+-- branch's LEFT JOIN ON clause (filtering contributor matches, not the
+-- source-table scan) AND in the outer WHERE. The planner couldn't push
+-- the filter back into the source-table scans, so the commit branch
+-- sequential-scanned all 474M `commits` rows even though only the last
+-- year was wanted. Same issue on issue_events / pull_request_events /
+-- messages.
+--
+-- The rewrite moves the time filter into each branch's FROM/WHERE
+-- directly, so the underlying scans can use the appropriate indexes:
+--   - commits: paired with v0.25.5's partial index
+--     idx_commits_author_timestamp_recent (predicate
+--     `cmt_author_timestamp >= '2024-01-01'`); allows index-range-scan
+--     for the 13-month window.
+--   - All other branches: existing indexes on the join columns
+--     (issue_events.cntrb_id, pr_events.cntrb_id, etc.) suffice.
+--
+-- Also drops the no-op outer GROUP BY in the commit branch (all
+-- columns selected; no aggregates) which was doing extra HashAggregate
+-- work for no semantic effect.
+--
+-- The view keeps its "every action, ranked by recency" semantic
+-- including the rank column; rank is NOT filtered (matches pre-v0.25.5
+-- behavior).
 -- ---------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_contributor_recent_actions CASCADE;
 
@@ -1008,149 +843,144 @@ SELECT a.id AS cntrb_id,
        row_number() OVER (PARTITION BY a.id, a.repo_id ORDER BY a.created_at DESC) AS rank
   FROM (
         -- commits (recent 13 months)
-        SELECT commits.cmt_ght_author_id AS id,
-               commits.cmt_author_timestamp AS created_at,
-               commits.repo_id,
+        --
+        -- Pre-v0.25.5 had GROUP BY (cmt_commit_hash, cmt_ght_author_id,
+        -- repo_id, cmt_author_timestamp, ..., cntrb_login) collapsing
+        -- the N rows commits has per file per commit to ONE row per
+        -- commit. v0.25.5 preserves that semantic — without the
+        -- GROUP BY, the matview would balloon N× (one row per file
+        -- instead of per commit).
+        SELECT cmt_ght_author_id AS id,
+               cmt_author_timestamp AS created_at,
+               repo_id,
                'commit'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.commits
-          LEFT JOIN aveloxis_data.contributors
-            ON contributors.cntrb_id::text = commits.cmt_ght_author_id::text
-           AND commits.cmt_author_timestamp >= now() - interval '13 months'
-         GROUP BY commits.cmt_commit_hash, commits.cmt_ght_author_id,
-                  commits.repo_id, commits.cmt_author_timestamp,
-                  'commit'::text, contributors.cntrb_login
+               cntrb_login AS login
+          FROM (
+            SELECT co.cmt_commit_hash,
+                   co.cmt_ght_author_id,
+                   co.cmt_author_timestamp,
+                   co.repo_id,
+                   c.cntrb_login
+              FROM aveloxis_data.commits co
+              LEFT JOIN aveloxis_data.contributors c
+                ON c.cntrb_id::text = co.cmt_ght_author_id::text
+             WHERE co.cmt_author_timestamp >= now() - interval '13 months'
+             GROUP BY co.cmt_commit_hash, co.cmt_ght_author_id,
+                      co.cmt_author_timestamp, co.repo_id, c.cntrb_login
+          ) commit_collapsed
 
         UNION ALL
 
         -- issues opened (recent 13 months)
-        SELECT issues.reporter_id AS id,
-               issues.created_at,
-               issues.repo_id,
+        SELECT i.reporter_id AS id,
+               i.created_at,
+               i.repo_id,
                'issue_opened'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.issues
-          LEFT JOIN aveloxis_data.contributors
-            ON contributors.cntrb_id = issues.reporter_id
-           AND issues.created_at >= now() - interval '13 months'
-         WHERE issues.pull_request IS NULL
+               c.cntrb_login AS login
+          FROM aveloxis_data.issues i
+          LEFT JOIN aveloxis_data.contributors c ON c.cntrb_id = i.reporter_id
+         WHERE i.pull_request IS NULL
+           AND i.created_at >= now() - interval '13 months'
 
         UNION ALL
 
         -- pull requests closed (not merged, recent 13 months)
-        SELECT pull_request_events.cntrb_id AS id,
-               pull_request_events.created_at,
-               pull_requests.repo_id,
+        SELECT pre.cntrb_id AS id,
+               pre.created_at,
+               pr.repo_id,
                'pull_request_closed'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.pull_requests,
-               aveloxis_data.pull_request_events
-          LEFT JOIN aveloxis_data.contributors
-            ON contributors.cntrb_id = pull_request_events.cntrb_id
-           AND pull_request_events.created_at >= now() - interval '13 months'
-         WHERE pull_requests.pull_request_id = pull_request_events.pull_request_id
-           AND pull_requests.merged_at IS NULL
-           AND pull_request_events.action::text = 'closed'::text
+               c.cntrb_login AS login
+          FROM aveloxis_data.pull_requests pr
+          JOIN aveloxis_data.pull_request_events pre ON pre.pull_request_id = pr.pull_request_id
+          LEFT JOIN aveloxis_data.contributors c ON c.cntrb_id = pre.cntrb_id
+         WHERE pr.merged_at IS NULL
+           AND pre.action::text = 'closed'::text
+           AND pre.created_at >= now() - interval '13 months'
 
         UNION ALL
 
         -- pull requests merged (recent 13 months)
-        SELECT pull_request_events.cntrb_id AS id,
-               pull_request_events.created_at,
-               pull_requests.repo_id,
+        SELECT pre.cntrb_id AS id,
+               pre.created_at,
+               pr.repo_id,
                'pull_request_merged'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.pull_requests,
-               aveloxis_data.pull_request_events
-          LEFT JOIN aveloxis_data.contributors
-            ON contributors.cntrb_id = pull_request_events.cntrb_id
-           AND pull_request_events.created_at >= now() - interval '13 months'
-         WHERE pull_requests.pull_request_id = pull_request_events.pull_request_id
-           AND pull_request_events.action::text = 'merged'::text
+               c.cntrb_login AS login
+          FROM aveloxis_data.pull_requests pr
+          JOIN aveloxis_data.pull_request_events pre ON pre.pull_request_id = pr.pull_request_id
+          LEFT JOIN aveloxis_data.contributors c ON c.cntrb_id = pre.cntrb_id
+         WHERE pre.action::text = 'merged'::text
+           AND pre.created_at >= now() - interval '13 months'
 
         UNION ALL
 
         -- issues closed (recent 13 months)
-        SELECT issue_events.cntrb_id AS id,
-               issue_events.created_at,
-               issues.repo_id,
+        SELECT ie.cntrb_id AS id,
+               ie.created_at,
+               i.repo_id,
                'issue_closed'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.issues,
-               aveloxis_data.issue_events
-          LEFT JOIN aveloxis_data.contributors
-            ON contributors.cntrb_id = issue_events.cntrb_id
-           AND issue_events.created_at >= now() - interval '13 months'
-         WHERE issues.issue_id = issue_events.issue_id
-           AND issues.pull_request IS NULL
-           AND issue_events.action::text = 'closed'::text
+               c.cntrb_login AS login
+          FROM aveloxis_data.issues i
+          JOIN aveloxis_data.issue_events ie ON ie.issue_id = i.issue_id
+          LEFT JOIN aveloxis_data.contributors c ON c.cntrb_id = ie.cntrb_id
+         WHERE i.pull_request IS NULL
+           AND ie.action::text = 'closed'::text
+           AND ie.created_at >= now() - interval '13 months'
 
         UNION ALL
 
         -- pull request reviews (recent 13 months)
-        SELECT pull_request_reviews.cntrb_id AS id,
-               pull_request_reviews.submitted_at AS created_at,
-               pull_requests.repo_id,
-               'pull_request_review_'::text || pull_request_reviews.review_state::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.pull_requests,
-               aveloxis_data.pull_request_reviews
-          LEFT JOIN aveloxis_data.contributors
-            ON contributors.cntrb_id = pull_request_reviews.cntrb_id
-           AND pull_request_reviews.submitted_at >= now() - interval '13 months'
-         WHERE pull_requests.pull_request_id = pull_request_reviews.pull_request_id
+        SELECT prr.cntrb_id AS id,
+               prr.submitted_at AS created_at,
+               pr.repo_id,
+               'pull_request_review_'::text || prr.review_state::text AS action,
+               c.cntrb_login AS login
+          FROM aveloxis_data.pull_requests pr
+          JOIN aveloxis_data.pull_request_reviews prr ON prr.pull_request_id = pr.pull_request_id
+          LEFT JOIN aveloxis_data.contributors c ON c.cntrb_id = prr.cntrb_id
+         WHERE prr.submitted_at >= now() - interval '13 months'
 
         UNION ALL
 
         -- pull requests opened (recent 13 months)
-        SELECT pull_requests.author_id AS id,
-               pull_requests.created_at AS created_at,
-               pull_requests.repo_id,
+        SELECT pr.author_id AS id,
+               pr.created_at AS created_at,
+               pr.repo_id,
                'pull_request_open'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.pull_requests
-          LEFT JOIN aveloxis_data.contributors
-            ON pull_requests.author_id = contributors.cntrb_id
-           AND pull_requests.created_at >= now() - interval '13 months'
+               c.cntrb_login AS login
+          FROM aveloxis_data.pull_requests pr
+          LEFT JOIN aveloxis_data.contributors c ON pr.author_id = c.cntrb_id
+         WHERE pr.created_at >= now() - interval '13 months'
 
         UNION ALL
 
         -- pull request comments (recent 13 months)
-        SELECT messages.cntrb_id AS id,
-               messages.msg_timestamp AS created_at,
-               pull_requests.repo_id,
+        SELECT m.cntrb_id AS id,
+               m.msg_timestamp AS created_at,
+               pr.repo_id,
                'pull_request_comment'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.pull_requests,
-               aveloxis_data.pull_request_message_ref,
-               aveloxis_data.messages
-          LEFT JOIN aveloxis_data.contributors
-            ON contributors.cntrb_id = messages.cntrb_id
-         WHERE pull_request_message_ref.pull_request_id = pull_requests.pull_request_id
-           AND pull_request_message_ref.msg_id = messages.msg_id
-           AND pull_requests.created_at >= now() - interval '13 months'
+               c.cntrb_login AS login
+          FROM aveloxis_data.pull_requests pr
+          JOIN aveloxis_data.pull_request_message_ref prmr ON prmr.pull_request_id = pr.pull_request_id
+          JOIN aveloxis_data.messages m ON m.msg_id = prmr.msg_id
+          LEFT JOIN aveloxis_data.contributors c ON c.cntrb_id = m.cntrb_id
+         WHERE m.msg_timestamp >= now() - interval '13 months'
 
         UNION ALL
 
         -- issue comments (recent 13 months)
-        SELECT issues.reporter_id AS id,
-               messages.msg_timestamp AS created_at,
-               issues.repo_id,
+        SELECT i.reporter_id AS id,
+               m.msg_timestamp AS created_at,
+               i.repo_id,
                'issue_comment'::text AS action,
-               contributors.cntrb_login AS login
-          FROM aveloxis_data.issues,
-               aveloxis_data.issue_message_ref,
-               aveloxis_data.messages
-          LEFT JOIN aveloxis_data.contributors
-            ON contributors.cntrb_id = messages.cntrb_id
-           AND messages.msg_timestamp >= now() - interval '13 months'
-         WHERE issue_message_ref.msg_id = messages.msg_id
-           AND issues.issue_id = issue_message_ref.issue_id
-           AND issues.closed_at <> messages.msg_timestamp
-       ) a,
-       aveloxis_data.repos
- WHERE a.repo_id = repos.repo_id
-   AND a.created_at >= now() - interval '13 months'
+               c.cntrb_login AS login
+          FROM aveloxis_data.issues i
+          JOIN aveloxis_data.issue_message_ref imr ON imr.issue_id = i.issue_id
+          JOIN aveloxis_data.messages m ON m.msg_id = imr.msg_id
+          LEFT JOIN aveloxis_data.contributors c ON c.cntrb_id = m.cntrb_id
+         WHERE i.closed_at <> m.msg_timestamp
+           AND m.msg_timestamp >= now() - interval '13 months'
+       ) a
+  JOIN aveloxis_data.repos ON repos.repo_id = a.repo_id
  ORDER BY a.created_at DESC;
 
 
@@ -1179,6 +1009,17 @@ ON aveloxis_data.explorer_pr_files (file_path, pull_request_id, repo_id);
 -- =============================================================================
 DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_cntrb_per_file CASCADE;
 
+-- v0.25.5: an earlier draft attempted to pre-aggregate reviewers per PR
+-- via a CTE to cut the LEFT-JOIN fan-out (~500M intermediate rows on
+-- aveloxis_large). It produced INCORRECT output — `string_agg(DISTINCT
+-- prv.reviewer_ids, ',')` dedupes whole per-PR comma-strings rather than
+-- individual reviewer IDs, so the result column became a list of
+-- per-PR strings (`"alice,bob","alice,charlie"`) instead of the
+-- intended flat list of unique reviewers (`"alice,bob,charlie"`).
+-- Reverted to the pre-v0.25.5 SQL. The performance optimization needs
+-- a different structural approach (e.g. unnest + re-aggregate, or
+-- LATERAL with explicit set semantics); deferred until a verifiable
+-- equivalent can be written.
 CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_cntrb_per_file AS
 SELECT
     pr.repo_id AS repo_id,

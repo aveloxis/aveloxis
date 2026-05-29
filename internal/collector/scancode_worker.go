@@ -130,6 +130,11 @@ type ScancodeWorker struct {
 	// without operator intervention.
 	runTimeoutBase time.Duration
 	runTimeoutCap  time.Duration
+	// v0.25.2: --max-in-memory cap. Default 5000 matches the
+	// pre-v0.25.2 hardcoded value. Production hosts with >100 GB of
+	// RAM raise this for faster monorepo scans (kernel-class repos
+	// hit the default's spill threshold within seconds).
+	maxInMemory int
 }
 
 // NewScancodeWorker constructs a worker. Most time-based fields fall
@@ -147,7 +152,8 @@ type ScancodeWorker struct {
 // v0.23.7 config-default flip from 30 to 0.
 func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger,
 	workerCount int, startInterval, cadence time.Duration,
-	cloneDir string, shutdownGrace, runTimeoutBase, runTimeoutCap time.Duration) *ScancodeWorker {
+	cloneDir string, shutdownGrace, runTimeoutBase, runTimeoutCap time.Duration,
+	maxInMemory int) *ScancodeWorker {
 	if workerCount <= 0 {
 		workerCount = 2
 	}
@@ -168,6 +174,13 @@ func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger,
 	if runTimeoutCap <= 0 {
 		runTimeoutCap = 24 * time.Hour
 	}
+	// v0.25.2: clamp non-positive maxInMemory to the safe default
+	// even though the config accessor does the same — defense in
+	// depth so a direct call from tests or future code can't slip a
+	// bogus value through to the subprocess CLI argument.
+	if maxInMemory <= 0 {
+		maxInMemory = 5000
+	}
 	return &ScancodeWorker{
 		store:          store,
 		logger:         logger,
@@ -178,6 +191,7 @@ func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger,
 		shutdownGrace:  shutdownGrace,
 		runTimeoutBase: runTimeoutBase,
 		runTimeoutCap:  runTimeoutCap,
+		maxInMemory:    maxInMemory,
 	}
 }
 
@@ -526,7 +540,11 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		"--quiet",
 		"--timeout", "300",
 		"--processes", strconv.Itoa(procs),
-		"--max-in-memory", "5000",
+		// v0.25.2: --max-in-memory now sourced from
+		// CollectionConfig.ScancodeMaxInMemory (default 5000 matches
+		// pre-v0.25.2 behavior). NewScancodeWorker clamps non-positive
+		// inputs to the default so this can't pass a bogus value.
+		"--max-in-memory", strconv.Itoa(w.maxInMemory),
 		tempDir,
 	)
 

@@ -59,6 +59,8 @@ func main() {
 		stopCmd(&cfgPath),
 		addRepoCmd(&cfgPath),
 		importFoundationsCmd(&cfgPath),
+		loadNumfocusProjectsCmd(&cfgPath),
+		loadNumfocusOrgsCmd(&cfgPath),
 		addKeyCmd(&cfgPath),
 		prioritizeCmd(&cfgPath),
 		recollectCmd(&cfgPath),
@@ -192,8 +194,9 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		ScancodeCadence:        cfg.Collection.ScancodeCadence(),
 		ScancodeCloneDir:       cfg.Collection.ScancodeCloneDirOrDefault(),
 		ScancodeShutdownGrace:  cfg.Collection.ScancodeShutdownGrace(),
-		ScancodeRunTimeoutBase: cfg.Collection.ScancodeRunTimeout(),    // v0.23.8
-		ScancodeRunTimeoutCap:  cfg.Collection.ScancodeRunTimeoutCap(), // v0.23.8
+		ScancodeRunTimeoutBase: cfg.Collection.ScancodeRunTimeout(),           // v0.23.8
+		ScancodeRunTimeoutCap:  cfg.Collection.ScancodeRunTimeoutCap(),        // v0.23.8
+		ScancodeMaxInMemory:    cfg.Collection.ScancodeMaxInMemoryOrDefault(), // v0.25.2
 		// v0.22.4 — staging-row cleanup retention. Default 1h.
 		StagingRetention: cfg.Collection.StagingRetentionDuration(),
 		// v0.22.4 — observation-only long-jobs watchdog. Default 75m.
@@ -201,13 +204,14 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		// v0.24.0 — DistributionWorker config. Off by default; the
 		// boolean gate prevents the worker from spawning at all when
 		// the operator hasn't opted in.
-		DistributionTrackingEnabled:           cfg.Collection.DistributionTrackingEnabled,
-		DistributionTrackingInterval:          cfg.Collection.DistributionTrackingInterval(),
-		DistributionTrackingWorkers:           cfg.Collection.DistributionTrackingWorkersOrDefault(),
-		DistributionTrackingStartInterval:     cfg.Collection.DistributionTrackingStartInterval(),
-		DistributionTrackingPoliteEmail:       cfg.Collection.DistributionTrackingPoliteEmail,
-		DistributionTrackingUserAgent:         cfg.Collection.DistributionTrackingUserAgent,
-		DistributionTrackingCrossCheckSources: cfg.Collection.DistributionTrackingCrossCheckSourcesValue(),
+		DistributionTrackingEnabled:                 cfg.Collection.DistributionTrackingEnabled,
+		DistributionTrackingInterval:                cfg.Collection.DistributionTrackingInterval(),
+		DistributionTrackingWorkers:                 cfg.Collection.DistributionTrackingWorkersOrDefault(),
+		DistributionTrackingStartInterval:           cfg.Collection.DistributionTrackingStartInterval(),
+		DistributionTrackingPoliteEmail:             cfg.Collection.DistributionTrackingPoliteEmail,
+		DistributionTrackingUserAgent:               cfg.Collection.DistributionTrackingUserAgent,
+		DistributionTrackingCrossCheckSources:       cfg.Collection.DistributionTrackingCrossCheckSourcesValue(),
+		DistributionTrackingImmediatePartialReclaim: cfg.Collection.DistributionTrackingImmediatePartialReclaimValue(), // v0.25.3
 	})
 	go sched.Run(ctx)
 

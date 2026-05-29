@@ -501,6 +501,17 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 	} else {
 		result.AliasesCreated++
 	}
+	// v0.25.6: also backfill cntrb_canonical from the commit email when
+	// the contributor row doesn't have one yet. SetContributorCanonical
+	// uses COALESCE(NULLIF(cntrb_canonical, ''), $2) so an existing
+	// non-empty value is preserved — we never overwrite a real canonical
+	// with a commit author email. Closes a long-standing gap where
+	// strategies 2 (DB lookup) and 4 (Search API) populated the alias
+	// table but left cntrb_canonical empty on the parent contributor
+	// row, suppressing the email-canonical join path downstream.
+	if err := r.store.SetContributorCanonical(ctx, cntrbID, commitEmail); err != nil {
+		r.logger.Warn("failed to backfill canonical", "cntrb_id", cntrbID, "email", commitEmail, "error", err)
+	}
 }
 
 // ResolveEmailsToCanonical enriches contributors that have gh_login but

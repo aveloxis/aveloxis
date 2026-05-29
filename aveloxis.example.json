@@ -48,6 +48,7 @@
     "scancode_shutdown_grace_minutes": 30,
     "scancode_run_timeout_hours": 2,
     "scancode_run_timeout_cap_hours": 24,
+    "scancode_max_in_memory": 5000,
     "staging_retention_hours": 1,
     "phase_watchdog_minutes": 75,
     "distribution_tracking_enabled": false,
@@ -55,6 +56,7 @@
     "distribution_tracking_workers": 4,
     "distribution_tracking_start_interval_s": 30,
     "distribution_tracking_polite_email": "",
+    "distribution_tracking_immediate_partial_reclaim": true,
     "distribution_tracking_user_agent": "",
     "distribution_tracking_cross_check_sources": true
   },

@@ -1,6 +1,6 @@
 # Materialized Views
 
-Aveloxis creates **20 materialized views + 1 alias view** under the `aveloxis_data` schema (down from 22 in v0.25.4 — the v0.25.5 cleanup dropped the duplicate `augur_new_contributors` and converted `explorer_libyear_all` from a redundant matview to a regular VIEW alias). They pre-compute analytical queries that are too expensive to run live every time an analyst (or a tool like [8Knot](https://github.com/oss-aspen/8Knot)) opens a dashboard. The views are rebuilt on a weekly cadence (default Saturday — configurable via `collection.matview_rebuild_day`) and on demand via `aveloxis refresh-views`.
+Aveloxis creates **20 materialized views + 2 alias views** under the `aveloxis_data` schema. v0.25.5 first reduced the count from 22 by dropping the byte-for-byte duplicate `augur_new_contributors` matview and converting `explorer_libyear_all` to an alias VIEW. v0.25.6 then restored `augur_new_contributors` as a plain VIEW alias (operators query it to identify new contributors), so today's count is 20 matviews + 2 alias views. The matviews pre-compute analytical queries that are too expensive to run live every time an analyst (or a tool like [8Knot](https://github.com/oss-aspen/8Knot)) opens a dashboard. They are rebuilt on a weekly cadence (default Saturday — configurable via `collection.matview_rebuild_day`) and on demand via `aveloxis refresh-views`. Alias views read live from their underlying matview and need no separate refresh.
 
 This page explains, for each view, **what a row means**, **what the complete table tells you**, and **how an open source health and sustainability analyst would actually use it**. The audience is operators and analysts, not SQL authors — the goal is to make the catalog useful without requiring a read of the underlying query.
 
@@ -117,9 +117,9 @@ The `rank` column numbers the actions for each (contributor, repo) pair from mos
 - **Activity decay**. For a given contributor's repo, the spread between rank=1 and the rank at their first action is their tenure; how far back is the most-recent action tells you whether they're still active.
 - **Cross-repo profiles**. Aggregate by `cntrb_id` across `repo_id` to see contributors who span multiple projects in your scope.
 
-### `augur_new_contributors` (dropped in v0.25.5)
+### `augur_new_contributors` (VIEW alias for `explorer_contributor_actions` as of v0.25.6)
 
-Pre-v0.25.5 this was a MATERIALIZED VIEW with SQL byte-for-byte identical to `explorer_contributor_actions`. The two views always produced identical content; v0.25.5 dropped `augur_new_contributors` outright. **8Knot tooling that previously referenced the `augur_` name needs to be updated to query `explorer_contributor_actions` instead** — the data is unchanged.
+Pre-v0.25.5 this was a MATERIALIZED VIEW with SQL byte-for-byte identical to `explorer_contributor_actions`. v0.25.5 dropped it outright; v0.25.6 restored it as a plain VIEW alias (`CREATE OR REPLACE VIEW aveloxis_data.augur_new_contributors AS SELECT * FROM aveloxis_data.explorer_contributor_actions`) because operators query it to identify new contributors. The alias adds zero refresh cost — every query against `augur_new_contributors` transparently reads from the already-materialized `explorer_contributor_actions`. Same shape as the `explorer_libyear_all` alias for `explorer_libyear_summary`.
 
 ### `explorer_contributor_recent_actions`
 
@@ -334,6 +334,47 @@ FROM pg_matviews
 WHERE schemaname = 'aveloxis_data'
 ORDER BY matviewname;
 ```
+
+---
+
+## Column stability across releases
+
+Tooling that queries these matviews — most prominently [8Knot](https://github.com/oss-aspen/8Knot), but also operator dashboards and ad-hoc analyst scripts — needs to know which columns are stable across Aveloxis releases. Internal join-key choices change as we improve resolution coverage; the *output column shape* should not change without operator notice.
+
+### The contract
+
+For each matview the **output column list** (names, types, order) is treated as a stable contract within a Aveloxis minor-version line. Breaking changes (renames, removals, type changes, semantic redefinition of a column) trigger a major version bump and are called out explicitly in the CLAUDE.md changelog.
+
+Internal-only details — how a column gets *computed*, which underlying table is joined to derive it, what join key links contributors to events — are NOT part of the contract. They change as data quality improves. Operators querying the matviews don't depend on these details and shouldn't notice the changes except via better coverage.
+
+### Example: v0.25.6 commit-branch rewrite of `explorer_new_contributors`
+
+The columns (`cntrb_id`, `created_at`, `month`, `year`, `repo_id`, `repo_name`, `full_name`, `login`, `rank`) are byte-for-byte identical to v0.25.5.
+
+What changed internally:
+- Pre-v0.25.6: commit branch joined `contributors.cntrb_canonical = commits.cmt_author_email` (email-canonical chain, ~27% coverage on the production fleet).
+- v0.25.6: commit branch joins `contributors.cntrb_id = commits.cmt_ght_author_id` (deterministic UUID stamped by the commit resolver, ~92% coverage).
+
+The matview's `cntrb_id` column now contains 3-4× more rows of commit activity per (contributor, repo), but the column itself is still a contributor UUID with the same semantic ("the contributor who performed the action") and the same type (UUID). Downstream queries don't need to change.
+
+### Example: v0.25.6 `augur_new_contributors` restoration
+
+v0.25.5 dropped the matview outright. v0.25.6 restored it as a plain VIEW alias — same columns, same content (it's now a transparent SELECT from `explorer_contributor_actions`), no refresh cost. Queries against `augur_new_contributors` work the same as before; the only operator-visible difference is that the alias is queryable live (no rebuild window) and adds zero storage.
+
+### Verifying column stability
+
+To audit a matview's column list:
+
+```sql
+SELECT attname, format_type(atttypid, atttypmod) AS coltype, attnum
+FROM   pg_attribute
+WHERE  attrelid = 'aveloxis_data.explorer_new_contributors'::regclass
+  AND  attnum > 0
+  AND  NOT attisdropped
+ORDER  BY attnum;
+```
+
+Run this once per Aveloxis upgrade and diff against the previous run. Any non-additive change should match a changelog entry; if it doesn't, that's a release-process bug worth filing.
 
 ---
 

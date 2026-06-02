@@ -95,7 +95,7 @@ func TestWorkerRoutesMirrorVsBody(t *testing.T) {
 	w := NewMailingListWorker(store, apache, backend,
 		mailinglist.NewPacer(time.Nanosecond, time.Millisecond),
 		mailinglist.NewBreaker(10, time.Hour),
-		90*24*time.Hour, 1 /*backfillMonths*/, 1, "boot", slog.New(slog.NewTextHandler(io.Discard, nil)))
+		90*24*time.Hour, 1 /*backfillMonths*/, "metadata_only", 1, "boot", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	w.now = func() time.Time { return now }
 
 	if err := w.ProcessList(context.Background(), &db.ListJob{RglsID: 7, RepoGroupID: 3, ListAddress: "dev@arrow.apache.org", System: "apache_ponymail"}); err != nil {
@@ -140,7 +140,7 @@ func TestWorkerFailsWhenGroupHasNoRepo(t *testing.T) {
 	store := &fakeMLStoreNoRepo{}
 	w := NewMailingListWorker(store, systems["apache_ponymail"], &fakeBackend{},
 		mailinglist.NewPacer(time.Nanosecond, time.Millisecond), mailinglist.NewBreaker(10, time.Hour),
-		time.Hour, 1, 1, "boot", slog.New(slog.NewTextHandler(io.Discard, nil)))
+		time.Hour, 1, "metadata_only", 1, "boot", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	err := w.ProcessList(context.Background(), &db.ListJob{RglsID: 1, RepoGroupID: 9, ListAddress: "dev@x.apache.org"})
 	if err == nil {
 		t.Error("ProcessList must fail when the repo_group has no repo (messages.repo_id is NOT NULL)")

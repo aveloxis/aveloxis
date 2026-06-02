@@ -70,6 +70,37 @@ func TestMainPlumbsMailingListConfig(t *testing.T) {
 	}
 }
 
+// TestSignaledRepoResolutionWiredIntoOrgScan — §5c repo-side: a newly
+// discovered repo must trigger signaled_repo_id backfill.
+func TestSignaledRepoResolutionWiredIntoOrgScan(t *testing.T) {
+	src := readFile(t, "scheduler.go")
+	if c := strings.Count(src, "ResolveSignaledRepoForURL("); c < 2 {
+		t.Errorf("both refreshGitHubOrg and refreshGitLabGroup must call ResolveSignaledRepoForURL on new repos (found %d call sites)", c)
+	}
+}
+
+// TestSenderBackfillTickerScheduled — §5d: the sender-identity backfill must
+// run on a periodic ticker so coverage improves over time.
+func TestSenderBackfillTickerScheduled(t *testing.T) {
+	src := readFile(t, "mailinglist_wiring.go")
+	if !strings.Contains(src, "runMailingListSenderBackfill") ||
+		!strings.Contains(src, "BackfillMailingListSenderIDs(") {
+		t.Error("spawnMailingListWorker must start a periodic runMailingListSenderBackfill calling BackfillMailingListSenderIDs")
+	}
+}
+
+// TestMultiSystemBackendWiring — Phase 3: the spawn must support both the
+// Pony Mail and public-inbox backends, spawning a pool per system.
+func TestMultiSystemBackendWiring(t *testing.T) {
+	src := readFile(t, "mailinglist_wiring.go")
+	if !strings.Contains(src, "mailinglist.NewPonyMail(") || !strings.Contains(src, "mailinglist.NewPublicInbox(") {
+		t.Error("mailingListBackendFor must build both apache_ponymail (PonyMail) and lore_public_inbox (PublicInbox) backends")
+	}
+	if !strings.Contains(src, "for _, sys := range systems") {
+		t.Error("spawnMailingListWorker must iterate system definitions (one pool per system), not hardcode apache")
+	}
+}
+
 func readFile(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(name)

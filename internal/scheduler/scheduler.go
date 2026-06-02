@@ -1450,6 +1450,12 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				}
 				s.logger.Info("new repo discovered", "org", g.Name, "repo", item.HTMLURL)
 				newCount++
+				// §5c repo-side resolution: a mailing-list message may have
+				// signaled this repo before it was in the catalog. Backfill
+				// any waiting email_message.signaled_repo_id now.
+				if n, rerr := s.store.ResolveSignaledRepoForURL(ctx, repoID, item.HTMLURL); rerr == nil && n > 0 {
+					s.logger.Info("resolved signaled_repo for new repo", "repo", item.HTMLURL, "messages", n)
+				}
 			}
 			for _, gid := range userGroupIDs {
 				if err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
@@ -1531,6 +1537,9 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				}
 				s.logger.Info("new repo discovered", "group", g.Name, "repo", item.WebURL)
 				newCount++
+				if n, rerr := s.store.ResolveSignaledRepoForURL(ctx, repoID, item.WebURL); rerr == nil && n > 0 {
+					s.logger.Info("resolved signaled_repo for new repo", "repo", item.WebURL, "messages", n)
+				}
 			}
 			for _, gid := range userGroupIDs {
 				if err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,8 @@ type mlStore interface {
 	UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string) (int64, error)
 	InsertEmailMessageRef(ctx context.Context, emailMessageID, msgID int64, repoGroupID *int64) error
 	ResolveContributorIDByEmail(ctx context.Context, email string) (string, bool, error)
+	ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int) (issueID, prID *int64, err error)
+	FindRepoByURL(ctx context.Context, gitURL string) (int64, error)
 }
 
 // MailingListWorker scans one mailing-list system's registered lists,
@@ -110,7 +113,7 @@ func (w *MailingListWorker) ProcessList(ctx context.Context, job *db.ListJob) er
 			job.ListAddress, job.RepoGroupID)
 	}
 
-	for _, month := range w.monthsToScan(job.LastMonth) {
+	for _, month := range w.monthsToScan(ctx, job) {
 		if d := w.pacer.Delay(); d > 0 {
 			if !sleepCtx(ctx, d) {
 				return ctx.Err()
@@ -174,6 +177,29 @@ func (w *MailingListWorker) routeMessage(ctx context.Context, job *db.ListJob, r
 		cntrbPtr = &id
 	}
 
+	// §5b: a github_mirror with a resolvable body URL links to the existing
+	// issue/PR we already collected (instead of duplicating it).
+	var linkedIssueID, linkedPRID *int64
+	if cls.Class == mailinglist.ClassGitHubMirror {
+		if n, err := strconv.Atoi(cls.Captures["number"]); err == nil && cls.Captures["repo"] != "" {
+			owner := cls.Captures["owner"]
+			if owner == "" {
+				owner = "apache"
+			}
+			linkedIssueID, linkedPRID, _ = w.store.ResolveMirrorLink(ctx, owner, cls.Captures["repo"], cls.Captures["kind"], n)
+		}
+	}
+
+	// §5c mail-side resolution: if the signaled repo is already in the
+	// catalog, resolve signaled_repo_id now (the repo-side org-scan backfill
+	// handles mail that predates the repo).
+	var signaledRepoID *int64
+	if signaledURL != "" {
+		if rid, err := w.store.FindRepoByURL(ctx, signaledURL); err == nil && rid > 0 {
+			signaledRepoID = &rid
+		}
+	}
+
 	rgID := job.RepoGroupID
 	rgls := job.RglsID
 	mirrorsURL := ""
@@ -201,6 +227,9 @@ func (w *MailingListWorker) routeMessage(ctx context.Context, job *db.ListJob, r
 		IsMirror:             isMirror,
 		MirrorsURL:           mirrorsURL,
 		SignaledRepoURL:      signaledURL,
+		SignaledRepoID:       signaledRepoID,
+		LinkedIssueID:        linkedIssueID,
+		LinkedPullRequestID:  linkedPRID,
 		LinkedExternalKey:    cls.Captures["external_key"],
 		DataSource:           am.ListAddress,
 	}
@@ -223,18 +252,35 @@ func (w *MailingListWorker) routeMessage(ctx context.Context, job *db.ListJob, r
 	return w.store.InsertEmailMessageRef(ctx, emID, msgID, &rgID)
 }
 
-// monthsToScan returns the yyyy-mm windows to fetch: starting just after the
-// checkpoint (or `backfill` months back when there's no checkpoint), through
-// the current month inclusive.
-func (w *MailingListWorker) monthsToScan(lastMonth string) []string {
+// monthsToScan returns the yyyy-mm windows to fetch, through the current
+// month inclusive. The start is, in order of precedence:
+//   - the month after the checkpoint (resume), if checkpointed;
+//   - `backfill` months back, when backfill > 0 (bounded window, the default);
+//   - the list's actual FIRST month (full history), when backfill <= 0 — the
+//     #5 full-history mode. Falls back to a 30-year floor if FirstMonth is
+//     unavailable.
+func (w *MailingListWorker) monthsToScan(ctx context.Context, job *db.ListJob) []string {
 	now := w.now().UTC()
 	cur := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 	var start time.Time
-	if t, err := time.Parse("2006-01", lastMonth); err == nil {
-		start = t.AddDate(0, 1, 0) // month after the checkpoint
-	} else {
-		start = cur.AddDate(0, -w.backfill+1, 0) // backfill window ending this month
+	switch {
+	case job.LastMonth != "":
+		if t, err := time.Parse("2006-01", job.LastMonth); err == nil {
+			start = t.AddDate(0, 1, 0) // month after the checkpoint
+		} else {
+			start = cur.AddDate(0, -w.backfill+1, 0)
+		}
+	case w.backfill > 0:
+		start = cur.AddDate(0, -w.backfill+1, 0) // bounded backfill window
+	default:
+		// Full-history mode: start at the list's first month.
+		start = cur.AddDate(0, -360, 0) // 30-year floor fallback
+		if fm, err := w.backend.FirstMonth(ctx, job.ListAddress); err == nil && fm != "" {
+			if t, perr := time.Parse("2006-01", fm); perr == nil {
+				start = t
+			}
+		}
 	}
 	if start.After(cur) {
 		return nil // already current

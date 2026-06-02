@@ -113,6 +113,44 @@ func TestClaimNextListLifecycle(t *testing.T) {
 	}
 }
 
+func TestRecoverStaleListLocks(t *testing.T) {
+	store, ctx := emConnect(t)
+	defer store.Close()
+
+	rglsID := seedList(t, store, ctx, "mltest_stale", "dev@mltest-stale.example.org")
+	defer store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id=$1`, rglsID)
+
+	// Simulate a dead worker: lock stamped 3h ago (> 2h stale threshold).
+	if _, err := store.pool.Exec(ctx,
+		`UPDATE aveloxis_data.repo_groups_list_serve SET mlls_locked_at = NOW() - interval '3 hours', mlls_locked_pid = 999 WHERE rgls_id=$1`,
+		rglsID); err != nil {
+		t.Fatal(err)
+	}
+	n, err := store.RecoverStaleListLocks(ctx)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if n < 1 {
+		t.Fatalf("expected to recover at least 1 stale lock, got %d", n)
+	}
+	var locked *time.Time
+	if err := store.pool.QueryRow(ctx,
+		`SELECT mlls_locked_at FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id=$1`, rglsID).Scan(&locked); err != nil {
+		t.Fatal(err)
+	}
+	if locked != nil {
+		t.Error("stale lock should be cleared")
+	}
+}
+
+func TestMailingListStatsSmoke(t *testing.T) {
+	store, ctx := emConnect(t)
+	defer store.Close()
+	if _, err := store.MailingListStats(ctx); err != nil {
+		t.Errorf("MailingListStats should not error: %v", err)
+	}
+}
+
 func TestRecordListFailureBacksOff(t *testing.T) {
 	store, ctx := emConnect(t)
 	defer store.Close()

@@ -31,9 +31,25 @@ List-Id: <dev.kafka.apache.org>
 Body of message two.
 `
 
+// prefsHits counts preferences.lua fetches so the caching test can assert
+// the catalog is fetched at most once across multiple EnumerateLists calls.
+var prefsHits int
+
 func ponyTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	prefsHits = 0
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/preferences.lua", func(w http.ResponseWriter, r *http.Request) {
+		prefsHits++
+		_, _ = w.Write([]byte(`{"lists":{"kafka.apache.org":{"dev":100,"users":50,"commits":999}}}`))
+	})
+	mux.HandleFunc("/api/stats.lua", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("list") == "ghost" {
+			_, _ = w.Write([]byte(`{"firstYear":1970,"firstMonth":0}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"firstYear":2011,"firstMonth":7}`))
+	})
 	mux.HandleFunc("/api/mbox.lua", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("date") {
 		case "2026-01":
@@ -128,6 +144,53 @@ func TestSplitListAddress(t *testing.T) {
 	}
 	if l, d := splitListAddress("bogus"); l != "" || d != "" {
 		t.Errorf("invalid address must yield empties, got (%q,%q)", l, d)
+	}
+}
+
+func TestPonyMailEnumerateListsAndCache(t *testing.T) {
+	srv := ponyTestServer(t)
+	defer srv.Close()
+	pm := NewPonyMail(srv.URL, "")
+
+	infos, err := pm.EnumerateLists(context.Background(), "kafka.apache.org")
+	if err != nil {
+		t.Fatalf("EnumerateLists: %v", err)
+	}
+	if len(infos) != 3 {
+		t.Fatalf("expected 3 lists, got %d", len(infos))
+	}
+	byName := map[string]ListInfo{}
+	for _, li := range infos {
+		byName[li.Name] = li
+	}
+	if byName["dev"].Address != "dev@kafka.apache.org" || byName["dev"].Count != 100 {
+		t.Errorf("dev list = %+v", byName["dev"])
+	}
+	// Second call must hit the cache (preferences.lua fetched once total).
+	if _, err := pm.EnumerateLists(context.Background(), "kafka.apache.org"); err != nil {
+		t.Fatal(err)
+	}
+	if prefsHits != 1 {
+		t.Errorf("preferences.lua fetched %d times, want 1 (should be cached)", prefsHits)
+	}
+}
+
+func TestPonyMailFirstMonth(t *testing.T) {
+	srv := ponyTestServer(t)
+	defer srv.Close()
+	pm := NewPonyMail(srv.URL, "")
+
+	fm, err := pm.FirstMonth(context.Background(), "dev@kafka.apache.org")
+	if err != nil {
+		t.Fatalf("FirstMonth: %v", err)
+	}
+	if fm != "2011-07" {
+		t.Errorf("FirstMonth = %q, want 2011-07", fm)
+	}
+	// A nonexistent list (firstYear=1970) yields "".
+	ghost, err := pm.FirstMonth(context.Background(), "ghost@kafka.apache.org")
+	if err != nil || ghost != "" {
+		t.Errorf("ghost FirstMonth = (%q, %v), want (\"\", nil)", ghost, err)
 	}
 }
 

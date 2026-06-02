@@ -479,6 +479,9 @@ CREATE INDEX IF NOT EXISTS idx_commits_committer_raw_email
     ON aveloxis_data.commits (cmt_committer_raw_email);
 CREATE INDEX IF NOT EXISTS idx_commits_author_affiliation
     ON aveloxis_data.commits (cmt_author_affiliation);
+CREATE INDEX IF NOT EXISTS idx_commits_cmt_ght_author_id
+    ON aveloxis_data.commits (cmt_ght_author_id)
+    WHERE cmt_ght_author_id IS NOT NULL;
 
 -- ============================================================
 -- Commit parents

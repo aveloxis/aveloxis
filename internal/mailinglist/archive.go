@@ -7,10 +7,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net/mail"
+	"net/textproto"
 	"strings"
 	"time"
 )
@@ -39,12 +43,26 @@ type ArchiveMessage struct {
 	HasPatch    bool
 }
 
+// ListInfo describes one list discovered by enumeration.
+type ListInfo struct {
+	Name    string // the list local-part, e.g. "dev" or "common-dev"
+	Address string // full address, e.g. "dev@kafka.apache.org"
+	Count   int    // archived message count (best-effort)
+}
+
 // ArchiveSource reads a mailing-list archive. Implementations are pure
 // fetch+parse: the worker applies the Pacer/Breaker defensive logic around
 // these calls based on the returned error (ErrRateLimited vs ErrTransient).
 type ArchiveSource interface {
 	// Name is the system definition name (e.g. "apache_ponymail").
 	Name() string
+	// EnumerateLists returns the lists that actually exist under a domain
+	// (e.g. "kafka.apache.org"). Replaces hardcoded list-name guessing and
+	// surfaces naming-drift lists (cvs@, common-dev@) automatically.
+	EnumerateLists(ctx context.Context, domain string) ([]ListInfo, error)
+	// FirstMonth returns the earliest yyyy-mm with traffic on a list ("" if
+	// the list doesn't exist / has none). Used for full-history backfill.
+	FirstMonth(ctx context.Context, listAddress string) (string, error)
 	// FetchMonth returns every message on listAddress in the yyyy-mm window.
 	// retryAfter is the server's Retry-After (0 if absent), meaningful when
 	// err wraps ErrRateLimited.
@@ -108,8 +126,9 @@ func parseRFC822(raw []byte, listAddress string) (ArchiveMessage, bool) {
 	if err != nil {
 		return ArchiveMessage{}, false
 	}
-	body, _ := io.ReadAll(m.Body)
+	rawBody, _ := io.ReadAll(m.Body)
 	h := m.Header
+	body, hasPatch := extractBody(textproto.MIMEHeader(h), rawBody)
 
 	from := h.Get("From")
 	senderEmail := ""
@@ -131,15 +150,86 @@ func parseRFC822(raw []byte, listAddress string) (ArchiveMessage, bool) {
 		SentAt:      sentAt,
 		InReplyTo:   strings.Trim(h.Get("In-Reply-To"), "<> "),
 		References:  h.Get("References"),
-		Body:        string(body),
-	}
-	// .patch / .diff attachment is the kernel PR-equivalent signal.
-	if ct := h.Get("Content-Type"); strings.Contains(ct, "multipart") &&
-		(strings.Contains(string(body), "Content-Disposition: attachment") &&
-			(strings.Contains(string(body), ".patch") || strings.Contains(string(body), ".diff"))) {
-		am.HasPatch = true
+		Body:        body,
+		HasPatch:    hasPatch,
 	}
 	return am, am.MessageID != ""
+}
+
+// extractBody returns the human-readable body text and a has-patch flag.
+// It decodes Content-Transfer-Encoding (quoted-printable / base64) and, for
+// multipart messages, extracts the first text/plain part — so body-based
+// classification (github-mirror URLs, Reviewed-by trailers) and stored
+// msg_text see clean text rather than MIME/encoded noise. has_patch is set
+// when a part is a .patch/.diff attachment OR the text contains inline diff
+// markers (the kernel emails patches inline, not as attachments).
+func extractBody(h textproto.MIMEHeader, rawBody []byte) (string, bool) {
+	mediaType, params, err := mime.ParseMediaType(h.Get("Content-Type"))
+	if err == nil && strings.HasPrefix(mediaType, "multipart/") && params["boundary"] != "" {
+		text, patch := extractMultipart(rawBody, params["boundary"])
+		return text, patch
+	}
+	decoded := decodeTransfer(rawBody, h.Get("Content-Transfer-Encoding"))
+	return string(decoded), looksLikePatch(string(decoded))
+}
+
+// extractMultipart walks a multipart body: first text/plain part becomes the
+// body; a .patch/.diff attachment (or text/x-patch part) sets has_patch.
+func extractMultipart(rawBody []byte, boundary string) (string, bool) {
+	mr := multipart.NewReader(bytes.NewReader(rawBody), boundary)
+	var text string
+	hasPatch := false
+	for {
+		part, err := mr.NextPart()
+		if err != nil {
+			break
+		}
+		partBytes, _ := io.ReadAll(part)
+		decoded := decodeTransfer(partBytes, part.Header.Get("Content-Transfer-Encoding"))
+		pmt, _, _ := mime.ParseMediaType(part.Header.Get("Content-Type"))
+		disp := part.Header.Get("Content-Disposition")
+		fn := part.FileName()
+		if strings.HasSuffix(fn, ".patch") || strings.HasSuffix(fn, ".diff") ||
+			pmt == "text/x-patch" || pmt == "text/x-diff" {
+			hasPatch = true
+		}
+		if text == "" && (pmt == "text/plain" || (pmt == "" && !strings.Contains(disp, "attachment"))) {
+			text = string(decoded)
+		}
+		if looksLikePatch(string(decoded)) {
+			hasPatch = true
+		}
+	}
+	return text, hasPatch
+}
+
+// decodeTransfer reverses quoted-printable / base64 Content-Transfer-Encoding.
+func decodeTransfer(b []byte, enc string) []byte {
+	switch strings.ToLower(strings.TrimSpace(enc)) {
+	case "quoted-printable":
+		if out, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(b))); err == nil {
+			return out
+		}
+	case "base64":
+		clean := strings.Map(func(r rune) rune {
+			if r == '\n' || r == '\r' || r == ' ' || r == '\t' {
+				return -1
+			}
+			return r
+		}, string(b))
+		if out, err := base64.StdEncoding.DecodeString(clean); err == nil {
+			return out
+		}
+	}
+	return b
+}
+
+// looksLikePatch detects an inline unified diff (git or plain).
+func looksLikePatch(s string) bool {
+	if strings.Contains(s, "diff --git ") {
+		return true
+	}
+	return strings.Contains(s, "\n--- ") && strings.Contains(s, "\n+++ ")
 }
 
 // decodeHeader decodes an RFC 2047 encoded-word header (e.g. =?UTF-8?...?=),

@@ -131,6 +131,83 @@ func (s *PostgresStore) RecordListFailure(ctx context.Context, rglsID int64) err
 	return nil
 }
 
+// RecoverStaleListLocks clears the lock on any list whose worker died
+// mid-scan (lock older than MailingListStaleLock), making it immediately
+// reclaimable rather than waiting out the claim-query's stale gate. Called
+// once at worker startup. mlls_last_month is preserved so the reclaim
+// resumes from the checkpoint. Returns rows recovered.
+func (s *PostgresStore) RecoverStaleListLocks(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.repo_groups_list_serve
+		SET mlls_locked_at = NULL, mlls_locked_pid = NULL, mlls_locked_boot_id = ''
+		WHERE mlls_locked_at IS NOT NULL
+		  AND mlls_locked_at < NOW() - $1::interval`, MailingListStaleLock.String())
+	if err != nil {
+		return 0, fmt.Errorf("recover stale list locks: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// MailingListStats is the read-only coverage rollup surfaced by
+// `aveloxis mailing-list-stats` and the REST API.
+type MailingListStats struct {
+	Lists            int
+	ScanComplete     int
+	EmailMessages    int64
+	Mirrors          int64
+	SignaledCaptured int64 // signaled_repo_url populated
+	SignaledResolved int64 // signaled_repo_id resolved
+	SenderTotal      int64 // platform_id=6 message bodies
+	SenderResolved   int64 // ... with cntrb_id resolved
+	ByClass          map[string]int64
+}
+
+// MailingListStats returns the coverage rollup across all mailing-list rows.
+func (s *PostgresStore) MailingListStats(ctx context.Context) (MailingListStats, error) {
+	var st MailingListStats
+	st.ByClass = map[string]int64{}
+
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE COALESCE(mlls_scan_complete, FALSE))
+		FROM aveloxis_data.repo_groups_list_serve WHERE COALESCE(mlls_system,'') <> ''`).
+		Scan(&st.Lists, &st.ScanComplete); err != nil {
+		return st, fmt.Errorf("mailing-list stats (lists): %w", err)
+	}
+
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*),
+		       count(*) FILTER (WHERE is_mirror),
+		       count(*) FILTER (WHERE signaled_repo_url <> ''),
+		       count(*) FILTER (WHERE signaled_repo_id IS NOT NULL)
+		FROM aveloxis_data.email_message`).
+		Scan(&st.EmailMessages, &st.Mirrors, &st.SignaledCaptured, &st.SignaledResolved); err != nil {
+		return st, fmt.Errorf("mailing-list stats (email_message): %w", err)
+	}
+
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE cntrb_id IS NOT NULL)
+		FROM aveloxis_data.messages WHERE platform_id = 6`).
+		Scan(&st.SenderTotal, &st.SenderResolved); err != nil {
+		return st, fmt.Errorf("mailing-list stats (senders): %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT msg_class, count(*) FROM aveloxis_data.email_message GROUP BY msg_class ORDER BY 2 DESC`)
+	if err != nil {
+		return st, fmt.Errorf("mailing-list stats (by class): %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cls string
+		var n int64
+		if err := rows.Scan(&cls, &n); err != nil {
+			return st, err
+		}
+		st.ByClass[cls] = n
+	}
+	return st, rows.Err()
+}
+
 // ListsForSystem returns the registered lists for a system (diagnostic).
 func (s *PostgresStore) ListsForSystem(ctx context.Context, system string) ([]ListJob, error) {
 	rows, err := s.pool.Query(ctx, `

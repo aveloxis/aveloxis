@@ -162,6 +162,55 @@ func (s *PostgresStore) GetPrimaryRepoForGroup(ctx context.Context, repoGroupID 
 	return id, true, nil
 }
 
+// ResolveMirrorLink resolves a GitHub-mirror email's body URL
+// (owner/repo/kind/number) to the existing issue or pull_request row we
+// already collected, so a mirror message links to its parent instead of
+// duplicating it (§5b). kind is "pull" or "issues". Returns (nil, nil, nil)
+// when the repo or the issue/PR isn't in the catalog yet.
+func (s *PostgresStore) ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int) (issueID, prID *int64, err error) {
+	var repoID int64
+	e := s.pool.QueryRow(ctx, `
+		SELECT repo_id FROM aveloxis_data.repos
+		WHERE lower(repo_owner) = lower($1) AND lower(repo_name) = lower($2)
+		LIMIT 1`, owner, repo).Scan(&repoID)
+	if e != nil {
+		return nil, nil, nil // repo not collected — clean miss
+	}
+	switch kind {
+	case "pull":
+		var id int64
+		if e := s.pool.QueryRow(ctx,
+			`SELECT pull_request_id FROM aveloxis_data.pull_requests WHERE repo_id = $1 AND pr_number = $2 LIMIT 1`,
+			repoID, number).Scan(&id); e == nil {
+			return nil, &id, nil
+		}
+	case "issues":
+		var id int64
+		if e := s.pool.QueryRow(ctx,
+			`SELECT issue_id FROM aveloxis_data.issues WHERE repo_id = $1 AND issue_number = $2 LIMIT 1`,
+			repoID, number).Scan(&id); e == nil {
+			return &id, nil, nil
+		}
+	}
+	return nil, nil, nil
+}
+
+// BackfillIssueExternalKeys populates issues.external_key from issue titles
+// carrying a bracketed tracker key (e.g. "... [LUCENE-1]") — the §6
+// Pattern-A signal where Apache bulk-imported Jira history into GitHub
+// issues. Idempotent (only fills empty keys). Returns rows updated.
+func (s *PostgresStore) BackfillIssueExternalKeys(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.issues
+		SET external_key = substring(issue_title from '\[([A-Z][A-Z0-9]+-[0-9]+)\]')
+		WHERE COALESCE(external_key, '') = ''
+		  AND issue_title ~ '\[[A-Z][A-Z0-9]+-[0-9]+\]'`)
+	if err != nil {
+		return 0, fmt.Errorf("backfill issue external keys: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ResolveContributorIDByEmail resolves a sender email to an existing
 // contributor cntrb_id via the SAME chain commit-author resolution uses —
 // contributors.cntrb_email / cntrb_canonical first, then

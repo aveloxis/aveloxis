@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/importers/apache"
+	"github.com/aveloxis/aveloxis/internal/mailinglist"
 	"github.com/spf13/cobra"
 )
 
@@ -21,18 +23,18 @@ import (
 //   - ensures a per-PMC legacy repo_group (the list-registry FK target, §11),
 //   - links the PMC's already-collected primary repo to that group so
 //     mailing-list bodies have a NOT-NULL repo_id (GetPrimaryRepoForGroup),
-//   - registers the PMC's dev@ and users@ lists in repo_groups_list_serve
-//     tagged mlls_system='apache_ponymail'.
+//   - enumerates the PMC's lists (Phase 2.6, via preferences.lua) and
+//     registers the ones the §5 policy keeps (dev@/users@ + drift lists like
+//     common-dev@; issue-tracker lists for Jira/Bugzilla-primary projects;
+//     skip commit/PR mirror lists) in repo_groups_list_serve tagged
+//     mlls_system='apache_ponymail'.
 //
 // Prerequisite: run `load-foundation-core-repos` first so the primary repos
 // exist in the catalog. PMCs whose repo isn't found are skipped (reported).
 //
-// v0.25.7 scope note: list addresses use the Apache naming convention
-// (dev@<slug>.apache.org, users@<slug>.apache.org). Registering a list that
-// doesn't exist is harmless — the worker's mbox fetch returns 404 (a clean
-// zero-result). Full per-domain enumeration (preferences.lua) + the §4
-// naming-drift cases (httpd cvs@, hadoop common-dev@) are a documented
-// follow-up; the convention covers the common case.
+// Enumeration (Phase 2.6) surfaces the §4 naming-drift lists automatically;
+// if it's unavailable (offline / preferences.lua error) the command falls
+// back to the dev@/users@ convention.
 func loadApacheListsCmd(cfgPath *string) *cobra.Command {
 	var (
 		dryRun        bool
@@ -77,7 +79,7 @@ func runLoadApacheLists(cfgPath string, dryRun bool, projURL, podURL string) err
 	defer store.Close()
 
 	const system = "apache_ponymail"
-	lists := []string{"dev", "users"}
+	backend := mailinglist.NewPonyMail("", "") // lists.apache.org, default UA
 
 	var registered, skippedNoRepo, listsAdded int
 	for _, pmc := range pmcs {
@@ -89,9 +91,16 @@ func runLoadApacheLists(cfgPath string, dryRun bool, projURL, podURL string) err
 			skippedNoRepo++
 			continue
 		}
+
+		// Phase 2.6: enumerate the lists that actually exist for this PMC's
+		// domain (surfaces drift lists like common-dev@ automatically) and
+		// apply the §5 collect/skip policy. Fall back to the dev@/users@
+		// convention if enumeration is unavailable.
+		addrs := collectableLists(ctx, backend, pmc.ListDomain(), pmc.BugDatabase, logger)
+
 		if dryRun {
-			for _, l := range lists {
-				fmt.Printf("  [%s] %s@%s  →  repo_id=%d\n", pmc.Slug, l, pmc.ListDomain(), repoID)
+			for _, a := range addrs {
+				fmt.Printf("  [%s] %s  →  repo_id=%d\n", pmc.Slug, a, repoID)
 			}
 			registered++
 			continue
@@ -106,9 +115,9 @@ func runLoadApacheLists(cfgPath string, dryRun bool, projURL, podURL string) err
 			logger.Warn("failed to link repo to per-PMC group", "slug", pmc.Slug, "error", err)
 			continue
 		}
-		for _, l := range lists {
-			if err := store.RegisterMailingList(ctx, groupID, l+"@"+pmc.ListDomain(), system); err != nil {
-				logger.Warn("failed to register list", "slug", pmc.Slug, "list", l, "error", err)
+		for _, a := range addrs {
+			if err := store.RegisterMailingList(ctx, groupID, a, system); err != nil {
+				logger.Warn("failed to register list", "slug", pmc.Slug, "list", a, "error", err)
 				continue
 			}
 			listsAdded++
@@ -122,4 +131,43 @@ func runLoadApacheLists(cfgPath string, dryRun bool, projURL, podURL string) err
 		fmt.Println("(dry-run — nothing written)")
 	}
 	return nil
+}
+
+// collectableLists enumerates the lists for a PMC domain and applies the §5
+// collect/skip policy. Falls back to the dev@/users@ convention when
+// enumeration is unavailable (offline, preferences.lua error, or empty).
+func collectableLists(ctx context.Context, backend *mailinglist.PonyMail, domain, bugDatabase string, logger *slog.Logger) []string {
+	infos, err := backend.EnumerateLists(ctx, domain)
+	if err != nil || len(infos) == 0 {
+		if err != nil {
+			logger.Warn("list enumeration failed; falling back to dev@/users@ convention", "domain", domain, "error", err)
+		}
+		return []string{"dev@" + domain, "users@" + domain}
+	}
+	var out []string
+	for _, li := range infos {
+		if shouldCollectList(li.Name, bugDatabase) {
+			out = append(out, li.Address)
+		}
+	}
+	return out
+}
+
+// shouldCollectList implements the §5 policy: always collect human lists
+// (dev/user, incl. drift like common-dev); collect the issue-tracker event
+// lists for Jira/Bugzilla-primary projects; skip commit/PR mirror lists
+// (we already collect those from GitHub/facade).
+func shouldCollectList(name, bugDatabase string) bool {
+	n := strings.ToLower(name)
+	if strings.Contains(n, "dev") || strings.Contains(n, "user") {
+		return true // dev@, users@, common-dev@, dev-*, ...
+	}
+	bd := strings.ToLower(bugDatabase)
+	if strings.Contains(bd, "jira") && (n == "jira" || n == "issues") {
+		return true
+	}
+	if (strings.Contains(bd, "bugzilla") || strings.Contains(bd, "bz.apache")) && strings.Contains(n, "bug") {
+		return true
+	}
+	return false // commits@, notifications@, cvs@, announce@, ...
 }

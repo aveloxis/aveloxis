@@ -17,13 +17,15 @@ import (
 
 // fakeMLStore records the routing decisions.
 type fakeMLStore struct {
-	emails     []*model.EmailMessage
-	bodies     int
-	refs       int
-	checkpts   []string
-	completed  bool
-	resolvable map[string]string // email → cntrb_id
-	nextMsgID  int64
+	emails        []*model.EmailMessage
+	bodies        int
+	refs          int
+	checkpts      []string
+	completed     bool
+	resolvable    map[string]string // email → cntrb_id
+	nextMsgID     int64
+	mirrorIssueID *int64
+	mirrorPRID    *int64
 }
 
 func (f *fakeMLStore) ClaimNextList(context.Context, string, time.Duration, int, string) (*db.ListJob, error) {
@@ -60,6 +62,10 @@ func (f *fakeMLStore) ResolveContributorIDByEmail(_ context.Context, email strin
 	}
 	return "", false, nil
 }
+func (f *fakeMLStore) ResolveMirrorLink(context.Context, string, string, string, int) (*int64, *int64, error) {
+	return f.mirrorIssueID, f.mirrorPRID, nil
+}
+func (f *fakeMLStore) FindRepoByURL(context.Context, string) (int64, error) { return 0, nil }
 
 // fakeBackend returns canned messages for one month, empty thereafter.
 type fakeBackend struct {
@@ -70,6 +76,10 @@ func (b *fakeBackend) Name() string { return "apache_ponymail" }
 func (b *fakeBackend) FetchMonth(_ context.Context, _ string, yyyymm string) ([]mailinglist.ArchiveMessage, time.Duration, error) {
 	return b.msgs[yyyymm], 0, nil
 }
+func (b *fakeBackend) EnumerateLists(context.Context, string) ([]mailinglist.ListInfo, error) {
+	return nil, nil
+}
+func (b *fakeBackend) FirstMonth(context.Context, string) (string, error) { return "", nil }
 
 func TestWorkerRoutesMirrorVsBody(t *testing.T) {
 	systems, err := mailinglist.LoadSystems()
@@ -80,7 +90,8 @@ func TestWorkerRoutesMirrorVsBody(t *testing.T) {
 
 	now := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
 	month := "2026-03"
-	store := &fakeMLStore{resolvable: map[string]string{"alice@example.org": "cntrb-alice"}}
+	mirrorPR := int64(555)
+	store := &fakeMLStore{resolvable: map[string]string{"alice@example.org": "cntrb-alice"}, mirrorPRID: &mirrorPR}
 	backend := &fakeBackend{msgs: map[string][]mailinglist.ArchiveMessage{
 		month: {
 			// github mirror → metadata-only, NO body
@@ -126,6 +137,11 @@ func TestWorkerRoutesMirrorVsBody(t *testing.T) {
 	}
 	if m := byID["m-mirror@x"]; m != nil && m.SignaledRepoURL != "https://github.com/apache/arrow-rs" {
 		t.Errorf("mirror signaled_repo_url = %q", m.SignaledRepoURL)
+	}
+	// §5b: the mirror links to the existing PR (resolved via body URL) rather
+	// than duplicating it.
+	if m := byID["m-mirror@x"]; m == nil || m.LinkedPullRequestID == nil || *m.LinkedPullRequestID != 555 {
+		t.Errorf("mirror must link to the existing PR (linked_pull_request_id=555), got %+v", m)
 	}
 	if m := byID["m-jira@x"]; m == nil || m.IsMirror || m.MsgClass != mailinglist.ClassIssueEvent || m.LinkedExternalKey != "ARROW-99" {
 		t.Errorf("jira message: %+v", m)

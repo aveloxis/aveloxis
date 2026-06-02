@@ -35,7 +35,7 @@ func messageIDToPlatformMsgID(messageID string) int64 {
 // UpsertEmailMessage writes (or refreshes) an email_message entity row,
 // keyed on the RFC-822 Message-ID. Re-collecting the same message is a
 // no-op-equivalent UPSERT — the dedup key makes retry-after-a-wait safe
-// (v0.26.0 defensive-collection contract). A previously-resolved
+// (v0.25.7 defensive-collection contract). A previously-resolved
 // signaled_repo_id is preserved across re-collection.
 func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailMessage) (int64, error) {
 	var id int64
@@ -118,6 +118,34 @@ func (s *PostgresStore) UpsertMailingListMessageBody(ctx context.Context, repoID
 	return id, nil
 }
 
+// SetRepoGroup assigns a repo to a legacy repo_group (repos.group_id) — the
+// per-PMC bridge (§11). This is what makes GetPrimaryRepoForGroup resolve a
+// list's repo_group to a concrete repo so mailing-list bodies have a
+// (NOT NULL) repo_id. Used by load-apache-lists / DOAP-enrichment.
+func (s *PostgresStore) SetRepoGroup(ctx context.Context, repoID, repoGroupID int64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE aveloxis_data.repos SET group_id = $2 WHERE repo_id = $1`, repoID, repoGroupID)
+	if err != nil {
+		return fmt.Errorf("set repo %d group %d: %w", repoID, repoGroupID, err)
+	}
+	return nil
+}
+
+// RegisterMailingList records a list in repo_groups_list_serve and tags it
+// with the mailing-list system definition so the MailingListWorker can claim
+// it. Idempotent on (repo_group_id, rgls_email).
+func (s *PostgresStore) RegisterMailingList(ctx context.Context, repoGroupID int64, listEmail, system string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.repo_groups_list_serve (repo_group_id, rgls_email, rgls_name, mlls_system)
+		VALUES ($1, $2, $2, $3)
+		ON CONFLICT (repo_group_id, rgls_email) DO UPDATE SET mlls_system = EXCLUDED.mlls_system`,
+		repoGroupID, listEmail, system)
+	if err != nil {
+		return fmt.Errorf("register mailing list %q in group %d: %w", listEmail, repoGroupID, err)
+	}
+	return nil
+}
+
 // GetPrimaryRepoForGroup returns the default repo a list's discussion links
 // to — the lowest repo_id in the list's repo_group (per §5c, discussion
 // default-links to the PMC's primary repo). Returns (0, false, nil) when the
@@ -139,7 +167,7 @@ func (s *PostgresStore) GetPrimaryRepoForGroup(ctx context.Context, repoGroupID 
 // contributors.cntrb_email / cntrb_canonical first, then
 // contributors_aliases.alias_email — filtering soft-deleted (v0.20.2)
 // rows. Returns ("", false, nil) on a clean miss. This is the read half of
-// mailing-list sender identity resolution (v0.26.0): a list sender who is
+// mailing-list sender identity resolution (v0.25.7): a list sender who is
 // also a committer to the project already has their commit-email alias in
 // the DB, so coverage rises as the contributors table fills over time. On
 // a miss the worker keeps cntrb_id NULL and retains sender_email; a periodic

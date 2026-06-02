@@ -5,7 +5,7 @@ package model
 
 import "time"
 
-// EmailMessage is a first-class mailing-list message entity (v0.26.0), peer
+// EmailMessage is a first-class mailing-list message entity (v0.25.7), peer
 // to Issue / PullRequest / PullRequestReview. Its primary metadata lives in
 // aveloxis_data.email_message; the body text lives in aveloxis_data.messages
 // and is linked by email_message_ref. platform_id is always 6 (Mailing List);

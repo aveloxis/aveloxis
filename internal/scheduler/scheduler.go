@@ -95,7 +95,7 @@ type Config struct {
 	DistributionTrackingCrossCheckSources       bool          // v0.25.0: always query both deps.dev AND ecosyste.ms (default true)
 	DistributionTrackingImmediatePartialReclaim bool          // v0.25.3: partial-scan repos bypass cadence (default true)
 
-	// v0.26.0 MailingListWorker. collection.mailing_list_*.
+	// v0.25.7 MailingListWorker. collection.mailing_list_*.
 	MailingListEnabled        bool          // master switch (off by default)
 	MailingListWorkers        int           // concurrent list runners (default 2)
 	MailingListCadence        time.Duration // per-list tail-refresh cadence (default 30d)
@@ -364,7 +364,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.spawnDistributionWorker(ctx)
 	}
 
-	// v0.26.0 MailingListWorker: ingests mailing-list archives (Apache
+	// v0.25.7 MailingListWorker: ingests mailing-list archives (Apache
 	// Pony Mail) into email_message + messages. Off by default; depends on
 	// a populated per-PMC repo_group (load-foundation-orgs). Independent
 	// of the per-repo collection pipeline.

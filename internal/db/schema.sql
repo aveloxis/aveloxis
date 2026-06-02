@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_groups_list_serve (
     rgls_description TEXT,
     rgls_sponsor     TEXT,
     rgls_email       TEXT,
-    -- v0.26.0 MailingListWorker claim/checkpoint state (the claim unit is a list).
+    -- v0.25.7 MailingListWorker claim/checkpoint state (the claim unit is a list).
     mlls_system          TEXT DEFAULT '',          -- which system definition applies (apache_ponymail, lore_public_inbox, ...)
     mlls_last_month      TEXT DEFAULT '',          -- yyyy-mm backfill checkpoint (resume point)
     mlls_scan_complete   BOOLEAN DEFAULT FALSE,    -- partial-scan flag; FALSE → re-eligible immediately when source recovers
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_groups_list_serve (
 );
 
 -- ============================================================
--- Mailing-list messages (v0.26.0). email_message is a first-class
+-- Mailing-list messages (v0.25.7). email_message is a first-class
 -- entity (peer to issues / pull_requests / pull_request_reviews); the
 -- body lives in aveloxis_data.messages, linked by email_message_ref.
 -- platform_id = 6 (Mailing List); data_source = the specific list

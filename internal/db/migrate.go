@@ -177,7 +177,7 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// the worker kept reselecting the same dead-end users.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "cntrb_last_breadth_at", "TIMESTAMPTZ")
 
-	// v0.26.0 — mailing-list ingestion. New email_message + email_message_ref
+	// v0.25.7 — mailing-list ingestion. New email_message + email_message_ref
 	// tables are created by schema.sql's CREATE TABLE IF NOT EXISTS on every
 	// migrate. These add the columns that land on EXISTING tables, plus the
 	// idempotency / dedup indexes (the v0.20.1 CONCURRENTLY convention).

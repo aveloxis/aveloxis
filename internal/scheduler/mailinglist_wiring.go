@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
 // SPDX-License-Identifier: MIT
 
-// scheduler/mailinglist_wiring.go bridges the v0.26.0 MailingListWorker
+// scheduler/mailinglist_wiring.go bridges the v0.25.7 MailingListWorker
 // into the scheduler's lifetime. Kept separate so scheduler.go stays
 // focused on the core polling loop.
 

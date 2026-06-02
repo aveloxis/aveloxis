@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Package mailinglist implements pluggable mailing-list collection
-// (v0.26.0). A System pairs an archive backend (how to read the archive)
+// (v0.25.7). A System pairs an archive backend (how to read the archive)
 // with an ordered classification ruleset (which addresses/subjects map to
 // which message class). Both are configuration so a new mailing-list
 // system — Apache Pony Mail, lore.kernel.org public-inbox, future

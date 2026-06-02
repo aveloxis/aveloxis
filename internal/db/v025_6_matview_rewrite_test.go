@@ -194,10 +194,10 @@ func TestV025_6_ObsoleteIndexCreatesRemoved(t *testing.T) {
 
 // TestVersionStampedV0256 pins the version bump.
 func TestVersionStampedV0256(t *testing.T) {
-	// v0.26.0 (mailing-list ingestion) supersedes the v0.25.6 stamp.
+	// v0.25.7 (mailing-list ingestion) supersedes the v0.25.6 stamp.
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.26.0"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.26.0\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.7"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.7\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

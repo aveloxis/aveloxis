@@ -27,7 +27,7 @@ type PonyMail struct {
 // DefaultUserAgent identifies the collector politely so archive admins can
 // reach us instead of blocking (design §8). Operators override the contact
 // via config.
-const DefaultUserAgent = "Aveloxis/0.26.0 (+https://github.com/aveloxis/aveloxis)"
+const DefaultUserAgent = "Aveloxis/0.25.7 (+https://github.com/aveloxis/aveloxis)"
 
 // NewPonyMail builds the backend. baseURL defaults to the public host.
 func NewPonyMail(baseURL, userAgent string) *PonyMail {

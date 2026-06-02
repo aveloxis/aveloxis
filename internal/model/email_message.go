@@ -46,6 +46,8 @@ type EmailMessage struct {
 	LinkedExternalKey   string // 'KAFKA-20167' (hard for jira_event, soft when merely mentioned)
 	LinkedCommitHash    string
 
+	DataSource string // the specific list address, e.g. "dev@kafka.apache.org"
+
 	// Body is the message body. It is written to aveloxis_data.messages
 	// (not a column on email_message) and linked via email_message_ref.
 	Body string

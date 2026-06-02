@@ -214,7 +214,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		DistributionTrackingCrossCheckSources:       cfg.Collection.DistributionTrackingCrossCheckSourcesValue(),
 		DistributionTrackingImmediatePartialReclaim: cfg.Collection.DistributionTrackingImmediatePartialReclaimValue(), // v0.25.3
 
-		// v0.26.0 MailingListWorker.
+		// v0.25.7 MailingListWorker.
 		MailingListEnabled:        cfg.Collection.MailingListEnabled,
 		MailingListWorkers:        cfg.Collection.MailingListWorkersOrDefault(),
 		MailingListCadence:        cfg.Collection.MailingListCadenceDuration(),

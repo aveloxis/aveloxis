@@ -11,7 +11,7 @@ import (
 
 // TestLoadFoundationCoreReposCmdRegistered — source-contract: the foundation
 // core-repo importer must be wired up in main.go so it's discoverable via
-// `aveloxis --help`. (v0.26.0: renamed from import-foundations to
+// `aveloxis --help`. (v0.25.7: renamed from import-foundations to
 // load-foundation-core-repos to say what it does — one core/primary repo per
 // project — alongside the new load-foundation-orgs command.)
 func TestLoadFoundationCoreReposCmdRegistered(t *testing.T) {
@@ -29,7 +29,7 @@ func TestLoadFoundationCoreReposCmdRegistered(t *testing.T) {
 // TestLoadFoundationCoreReposUseAndAlias — the user-facing slug is now
 // "load-foundation-core-repos", but "import-foundations" MUST remain as a
 // cobra alias so shipped operator scripts and docs don't break. This is the
-// v0.26.0 deprecation-not-removal contract.
+// v0.25.7 deprecation-not-removal contract.
 func TestLoadFoundationCoreReposUseAndAlias(t *testing.T) {
 	data, err := os.ReadFile("import_foundations.go")
 	if err != nil {

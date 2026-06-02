@@ -586,7 +586,7 @@ type CollectionConfig struct {
 	// "explicitly false." Same pattern as DistributionTrackingCrossCheckSources.
 	DistributionTrackingImmediatePartialReclaim *bool `json:"distribution_tracking_immediate_partial_reclaim,omitempty"`
 
-	// v0.26.0 — MailingListWorker (Apache Pony Mail + lore public-inbox).
+	// v0.25.7 — MailingListWorker (Apache Pony Mail + lore public-inbox).
 	// Off by default. Collects dev@/users@ discussion + governance into
 	// email_message + messages; jira@/commits@ are mirror-aware.
 	MailingListEnabled        bool   `json:"mailing_list_enabled"`
@@ -988,7 +988,7 @@ func DefaultConfig() *Config {
 			DistributionTrackingIntervalDays:     180,
 			DistributionTrackingWorkers:          4,
 			DistributionTrackingStartIntervalSec: 30,
-			// v0.26.0 MailingListWorker. Off by default.
+			// v0.25.7 MailingListWorker. Off by default.
 			MailingListEnabled:        false,
 			MailingListWorkers:        2,
 			MailingListCadenceDays:    30,

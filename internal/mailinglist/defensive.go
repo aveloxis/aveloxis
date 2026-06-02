@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Defensive collection primitives (v0.26.0, design §8). Apache + lore
+// Defensive collection primitives (v0.25.7, design §8). Apache + lore
 // publish no documented rate limits and actively gate scrapers (Bugzilla
 // 401, lore Anubis), so the collector self-throttles and pauses on strain.
 // These two types are pure state machines (clock injectable) so the

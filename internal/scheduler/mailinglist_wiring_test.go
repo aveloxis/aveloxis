@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TestSchedulerConfigHasMailingListFields — Config must carry the v0.26.0
+// TestSchedulerConfigHasMailingListFields — Config must carry the v0.25.7
 // mailing-list knobs so main.go can plumb them through.
 func TestSchedulerConfigHasMailingListFields(t *testing.T) {
 	src := readFile(t, "scheduler.go")

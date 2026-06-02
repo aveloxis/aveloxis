@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// v0.26.0 — mailing-list ingestion. email_message is a first-class entity
+// v0.25.7 — mailing-list ingestion. email_message is a first-class entity
 // (peer to issues / pull_requests / pull_request_reviews); its body lives in
 // messages, linked by email_message_ref. These source-contract tests pin the
 // schema so a refactor can't silently drop a load-bearing column or the
@@ -96,7 +96,7 @@ func TestMigrateAddsMailingListColumnsAndIndexes(t *testing.T) {
 		"idx_rgls_group_email",
 	} {
 		if !strings.Contains(src, needle) {
-			t.Errorf("migrate.go must contain %q so existing DBs get the v0.26.0 columns/indexes", needle)
+			t.Errorf("migrate.go must contain %q so existing DBs get the v0.25.7 columns/indexes", needle)
 		}
 	}
 	// The external_key unique index must be partial (empty key excluded).

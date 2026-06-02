@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// MailingListWorker claim/checkpoint store (v0.26.0). The claim unit is a
+// MailingListWorker claim/checkpoint store (v0.25.7). The claim unit is a
 // list (repo_groups_list_serve row). Unlike the distribution worker (which
 // holds a tx open for the whole scan), a per-list backfill iterates many
 // months and can run long, so we use explicit lock columns (mlls_locked_*)

@@ -60,6 +60,7 @@ func main() {
 		addRepoCmd(&cfgPath),
 		loadFoundationCoreReposCmd(&cfgPath),
 		loadFoundationOrgsCmd(&cfgPath),
+		loadApacheListsCmd(&cfgPath),
 		loadNumfocusProjectsCmd(&cfgPath),
 		loadNumfocusOrgsCmd(&cfgPath),
 		addKeyCmd(&cfgPath),

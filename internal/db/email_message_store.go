@@ -6,9 +6,31 @@ package db
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
+	"math"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 )
+
+// MailingListPlatformID is the platforms row for mailing-list-sourced rows.
+const MailingListPlatformID = 6
+
+// MailingListToolSource is the tool_source stamped on mailing-list message
+// bodies + email_message rows (operator-mandated convention, §0).
+const MailingListToolSource = "Aveloxis Mailing List Collector"
+
+// messageIDToPlatformMsgID derives a stable, collision-resistant
+// platform_msg_id from an RFC-822 Message-ID. The messages table dedups on
+// (platform_msg_id, platform_id); mailing-list messages have no numeric ID,
+// so without this every platform-6 body would collide on (0, 6). FNV-1a
+// folded into a positive 63-bit int is deterministic (idempotent
+// re-collection) and astronomically unlikely to collide.
+func messageIDToPlatformMsgID(messageID string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(messageID))
+	return int64(h.Sum64() & math.MaxInt64)
+}
 
 // UpsertEmailMessage writes (or refreshes) an email_message entity row,
 // keyed on the RFC-822 Message-ID. Re-collecting the same message is a
@@ -25,7 +47,7 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 			msg_class, classification_source, is_mirror, mirrors_url,
 			signaled_repo_url, signaled_repo_id,
 			linked_issue_id, linked_pull_request_id, linked_external_key, linked_commit_hash,
-			tool_version
+			data_source, tool_version
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10,
@@ -33,7 +55,7 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 			$16, $17, $18, $19,
 			$20, $21,
 			$22, $23, $24, $25,
-			$26
+			$26, $27
 		)
 		ON CONFLICT (message_id_header) DO UPDATE SET
 			repo_id            = COALESCE(aveloxis_data.email_message.repo_id, EXCLUDED.repo_id),
@@ -51,6 +73,7 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 			linked_pull_request_id = COALESCE(EXCLUDED.linked_pull_request_id, aveloxis_data.email_message.linked_pull_request_id),
 			linked_external_key    = EXCLUDED.linked_external_key,
 			linked_commit_hash     = EXCLUDED.linked_commit_hash,
+			data_source        = EXCLUDED.data_source,
 			tool_version       = EXCLUDED.tool_version
 		RETURNING email_message_id`,
 		em.RepoID, em.RepoGroupID, em.RglsID, int16(em.PlatformID), em.MLSystem,
@@ -59,12 +82,56 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 		em.MsgClass, em.ClassificationSource, em.IsMirror, em.MirrorsURL,
 		em.SignaledRepoURL, em.SignaledRepoID,
 		em.LinkedIssueID, em.LinkedPullRequestID, em.LinkedExternalKey, em.LinkedCommitHash,
-		ToolVersion,
+		em.DataSource, ToolVersion,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert email_message %q: %w", em.MessageIDHeader, err)
 	}
 	return id, nil
+}
+
+// UpsertMailingListMessageBody writes a mailing-list message body to the
+// shared messages table with the operator-mandated metadata convention
+// (platform_id=6, data_source=the specific list, tool_source="Aveloxis
+// Mailing List Collector", tool_version=release). Dedup key is the
+// Message-ID-derived synthetic platform_msg_id, so re-collecting a month is
+// idempotent. cntrbID may be nil (unresolved sender — sender_email is
+// retained for the §5d backfill). Returns the msg_id.
+func (s *PostgresStore) UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_data.messages
+			(repo_id, platform_msg_id, platform_id, node_id, cntrb_id,
+			 msg_text, msg_timestamp, msg_sender_email, tool_source, tool_version, data_source)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (platform_msg_id, platform_id) DO UPDATE SET
+			msg_text = EXCLUDED.msg_text,
+			cntrb_id = COALESCE(EXCLUDED.cntrb_id, aveloxis_data.messages.cntrb_id),
+			data_collection_date = NOW()
+		RETURNING msg_id`,
+		repoID, messageIDToPlatformMsgID(messageID), MailingListPlatformID, messageID, cntrbID,
+		body, NullTime(sentAt), senderEmail, MailingListToolSource, ToolVersion, listAddress,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("upsert mailing-list message body %q: %w", messageID, err)
+	}
+	return id, nil
+}
+
+// GetPrimaryRepoForGroup returns the default repo a list's discussion links
+// to — the lowest repo_id in the list's repo_group (per §5c, discussion
+// default-links to the PMC's primary repo). Returns (0, false, nil) when the
+// group has no repos yet (DOAP-enrichment / load-foundation-orgs must run
+// first to populate the per-PMC group).
+func (s *PostgresStore) GetPrimaryRepoForGroup(ctx context.Context, repoGroupID int64) (int64, bool, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT repo_id FROM aveloxis_data.repos WHERE group_id = $1 ORDER BY repo_id LIMIT 1`,
+		repoGroupID).Scan(&id)
+	if err != nil {
+		return 0, false, nil //nolint:nilerr // no-repo is a clean "not yet populated", not an error
+	}
+	return id, true, nil
 }
 
 // ResolveContributorIDByEmail resolves a sender email to an existing

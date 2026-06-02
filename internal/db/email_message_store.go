@@ -124,7 +124,7 @@ func (s *PostgresStore) UpsertMailingListMessageBody(ctx context.Context, repoID
 // (NOT NULL) repo_id. Used by load-apache-lists / DOAP-enrichment.
 func (s *PostgresStore) SetRepoGroup(ctx context.Context, repoID, repoGroupID int64) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE aveloxis_data.repos SET group_id = $2 WHERE repo_id = $1`, repoID, repoGroupID)
+		`UPDATE aveloxis_data.repos SET repo_group_id = $2 WHERE repo_id = $1`, repoID, repoGroupID)
 	if err != nil {
 		return fmt.Errorf("set repo %d group %d: %w", repoID, repoGroupID, err)
 	}
@@ -154,7 +154,7 @@ func (s *PostgresStore) RegisterMailingList(ctx context.Context, repoGroupID int
 func (s *PostgresStore) GetPrimaryRepoForGroup(ctx context.Context, repoGroupID int64) (int64, bool, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx,
-		`SELECT repo_id FROM aveloxis_data.repos WHERE group_id = $1 ORDER BY repo_id LIMIT 1`,
+		`SELECT repo_id FROM aveloxis_data.repos WHERE repo_group_id = $1 ORDER BY repo_id LIMIT 1`,
 		repoGroupID).Scan(&id)
 	if err != nil {
 		return 0, false, nil //nolint:nilerr // no-repo is a clean "not yet populated", not an error

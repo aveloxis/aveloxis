@@ -37,32 +37,36 @@ type mlStore interface {
 // (§5, no body re-copy — we already collect that data). The Pacer/Breaker
 // (§8) wrap each fetch.
 type MailingListWorker struct {
-	store    mlStore
-	sys      *mailinglist.System
-	backend  mailinglist.ArchiveSource
-	pacer    *mailinglist.Pacer
-	breaker  *mailinglist.Breaker
-	cadence  time.Duration
-	backfill int // months of history to scan when a list has no checkpoint
-	pid      int
-	bootID   string
-	logger   *slog.Logger
-	now      func() time.Time
+	store          mlStore
+	sys            *mailinglist.System
+	backend        mailinglist.ArchiveSource
+	pacer          *mailinglist.Pacer
+	breaker        *mailinglist.Breaker
+	cadence        time.Duration
+	backfill       int    // months of history to scan when a list has no checkpoint
+	mirrorHandling string // skip | metadata_only | full (§5b)
+	pid            int
+	bootID         string
+	logger         *slog.Logger
+	now            func() time.Time
 }
 
 // NewMailingListWorker builds a worker for one system + backend.
 func NewMailingListWorker(store mlStore, sys *mailinglist.System, backend mailinglist.ArchiveSource,
-	pacer *mailinglist.Pacer, breaker *mailinglist.Breaker, cadence time.Duration, backfillMonths, pid int, bootID string, logger *slog.Logger) *MailingListWorker {
+	pacer *mailinglist.Pacer, breaker *mailinglist.Breaker, cadence time.Duration, backfillMonths int, mirrorHandling string, pid int, bootID string, logger *slog.Logger) *MailingListWorker {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if backfillMonths <= 0 {
 		backfillMonths = 6
 	}
+	if mirrorHandling != "skip" && mirrorHandling != "full" {
+		mirrorHandling = "metadata_only"
+	}
 	return &MailingListWorker{
 		store: store, sys: sys, backend: backend, pacer: pacer, breaker: breaker,
-		cadence: cadence, backfill: backfillMonths, pid: pid, bootID: bootID,
-		logger: logger, now: time.Now,
+		cadence: cadence, backfill: backfillMonths, mirrorHandling: mirrorHandling,
+		pid: pid, bootID: bootID, logger: logger, now: time.Now,
 	}
 }
 
@@ -160,6 +164,11 @@ func (w *MailingListWorker) routeMessage(ctx context.Context, job *db.ListJob, r
 	isMirror := cls.Class == mailinglist.ClassGitHubMirror || cls.Class == mailinglist.ClassCommitNotify
 	signaledURL := w.sys.RepoURLFromCaptures(cls)
 
+	// §5b mirror handling: "skip" drops mirrors entirely (no provenance row).
+	if isMirror && w.mirrorHandling == "skip" {
+		return nil
+	}
+
 	var cntrbPtr *string
 	if id, ok, _ := w.store.ResolveContributorIDByEmail(ctx, am.SenderEmail); ok {
 		cntrbPtr = &id
@@ -200,9 +209,10 @@ func (w *MailingListWorker) routeMessage(ctx context.Context, job *db.ListJob, r
 		return err
 	}
 
-	// Mirror classes: provenance + link only, no body re-copy (§5 default
-	// mirror_handling = metadata_only — we already collect that data).
-	if isMirror {
+	// Mirror classes: by default (metadata_only) record provenance + link
+	// only, no body re-copy (§5 — we already collect that data via GitHub).
+	// "full" keeps the body too (belt-and-suspenders completeness).
+	if isMirror && w.mirrorHandling != "full" {
 		return nil
 	}
 

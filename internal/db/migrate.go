@@ -177,6 +177,35 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// the worker kept reselecting the same dead-end users.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "cntrb_last_breadth_at", "TIMESTAMPTZ")
 
+	// v0.26.0 — mailing-list ingestion. New email_message + email_message_ref
+	// tables are created by schema.sql's CREATE TABLE IF NOT EXISTS on every
+	// migrate. These add the columns that land on EXISTING tables, plus the
+	// idempotency / dedup indexes (the v0.20.1 CONCURRENTLY convention).
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.issues", "external_key", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_system", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_last_month", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_scan_complete", "BOOLEAN DEFAULT FALSE")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_failed_attempts", "INTEGER DEFAULT 0")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_last_failed_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_last_run", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_locked_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_locked_pid", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_locked_boot_id", "TEXT DEFAULT ''")
+	// Partial unique on (repo_id, external_key): one issue per external key
+	// per repo. (issues has no platform_id column — issues are scoped by
+	// repo_id, which carries the platform.) Empty external_key (native
+	// GitHub/GitLab rows) excluded so they never collide. Mirrors
+	// idx_contributors_login's partial shape. external_key holds 'LUCENE-1'
+	// parsed from Pattern-A imported titles, giving mail cross-references a
+	// stable key to join on.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_issues_external_key",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_external_key
+		 ON aveloxis_data.issues (repo_id, external_key) WHERE external_key <> ''`)
+	// Idempotent list registration: one row per (repo_group, list address).
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_rgls_group_email",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_rgls_group_email
+		 ON aveloxis_data.repo_groups_list_serve (repo_group_id, rgls_email)`)
+
 	// v0.21.0 — ScancodeWorker state on aveloxis_data.repos.
 	//
 	// Decouples the scancode per-file license + copyright + package

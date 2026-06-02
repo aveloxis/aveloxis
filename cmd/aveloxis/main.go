@@ -213,6 +213,14 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		DistributionTrackingUserAgent:               cfg.Collection.DistributionTrackingUserAgent,
 		DistributionTrackingCrossCheckSources:       cfg.Collection.DistributionTrackingCrossCheckSourcesValue(),
 		DistributionTrackingImmediatePartialReclaim: cfg.Collection.DistributionTrackingImmediatePartialReclaimValue(), // v0.25.3
+
+		// v0.26.0 MailingListWorker.
+		MailingListEnabled:        cfg.Collection.MailingListEnabled,
+		MailingListWorkers:        cfg.Collection.MailingListWorkersOrDefault(),
+		MailingListCadence:        cfg.Collection.MailingListCadenceDuration(),
+		MailingListBackfillMonths: cfg.Collection.MailingListBackfillMonthsOrDefault(),
+		MailingListPoliteEmail:    cfg.Collection.MailingListPoliteEmail,
+		MailingListMirrorHandling: cfg.Collection.MailingListMirrorHandlingOrDefault(),
 	})
 	go sched.Run(ctx)
 

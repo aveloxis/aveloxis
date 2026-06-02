@@ -94,6 +94,14 @@ type Config struct {
 	DistributionTrackingUserAgent               string        // overrides "aveloxis/<version>" UA
 	DistributionTrackingCrossCheckSources       bool          // v0.25.0: always query both deps.dev AND ecosyste.ms (default true)
 	DistributionTrackingImmediatePartialReclaim bool          // v0.25.3: partial-scan repos bypass cadence (default true)
+
+	// v0.26.0 MailingListWorker. collection.mailing_list_*.
+	MailingListEnabled        bool          // master switch (off by default)
+	MailingListWorkers        int           // concurrent list runners (default 2)
+	MailingListCadence        time.Duration // per-list tail-refresh cadence (default 30d)
+	MailingListBackfillMonths int           // history window for un-checkpointed lists (default 6)
+	MailingListPoliteEmail    string        // contact embedded in the archive User-Agent
+	MailingListMirrorHandling string        // skip | metadata_only | full
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -354,6 +362,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// collection.
 	if s.cfg.DistributionTrackingEnabled {
 		s.spawnDistributionWorker(ctx)
+	}
+
+	// v0.26.0 MailingListWorker: ingests mailing-list archives (Apache
+	// Pony Mail) into email_message + messages. Off by default; depends on
+	// a populated per-PMC repo_group (load-foundation-orgs). Independent
+	// of the per-repo collection pipeline.
+	if s.cfg.MailingListEnabled {
+		s.spawnMailingListWorker(ctx)
 	}
 
 	// Materialized view rebuild: check hourly, run on Saturdays.

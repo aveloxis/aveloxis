@@ -585,6 +585,51 @@ type CollectionConfig struct {
 	// behavior on aveloxis.json files that pre-date v0.25.3) from
 	// "explicitly false." Same pattern as DistributionTrackingCrossCheckSources.
 	DistributionTrackingImmediatePartialReclaim *bool `json:"distribution_tracking_immediate_partial_reclaim,omitempty"`
+
+	// v0.25.7 — MailingListWorker (Apache Pony Mail + lore public-inbox).
+	// Off by default. Collects dev@/users@ discussion + governance into
+	// email_message + messages; jira@/commits@ are mirror-aware.
+	MailingListEnabled        bool   `json:"mailing_list_enabled"`
+	MailingListWorkers        int    `json:"mailing_list_workers"`         // concurrent list runners (default 2)
+	MailingListCadenceDays    int    `json:"mailing_list_cadence_days"`    // tail-refresh cadence (default 30)
+	MailingListBackfillMonths int    `json:"mailing_list_backfill_months"` // history window when a list has no checkpoint (default 6)
+	MailingListPoliteEmail    string `json:"mailing_list_polite_email"`    // contact in the User-Agent so archive admins can reach us
+	MailingListMirrorHandling string `json:"mailing_list_mirror_handling"` // skip | metadata_only (default) | full
+}
+
+// MailingListCadenceDuration returns the per-list tail-refresh cadence.
+// Falls back to 30 days when unset.
+func (c *CollectionConfig) MailingListCadenceDuration() time.Duration {
+	if c.MailingListCadenceDays <= 0 {
+		return 30 * 24 * time.Hour
+	}
+	return time.Duration(c.MailingListCadenceDays) * 24 * time.Hour
+}
+
+// MailingListWorkersOrDefault falls back to 2 concurrent runners.
+func (c *CollectionConfig) MailingListWorkersOrDefault() int {
+	if c.MailingListWorkers <= 0 {
+		return 2
+	}
+	return c.MailingListWorkers
+}
+
+// MailingListBackfillMonthsOrDefault falls back to a 6-month window.
+func (c *CollectionConfig) MailingListBackfillMonthsOrDefault() int {
+	if c.MailingListBackfillMonths <= 0 {
+		return 6
+	}
+	return c.MailingListBackfillMonths
+}
+
+// MailingListMirrorHandlingOrDefault falls back to "metadata_only".
+func (c *CollectionConfig) MailingListMirrorHandlingOrDefault() string {
+	switch c.MailingListMirrorHandling {
+	case "skip", "metadata_only", "full":
+		return c.MailingListMirrorHandling
+	default:
+		return "metadata_only"
+	}
 }
 
 // PhaseWatchdogDuration returns the v0.22.4 long-jobs watchdog
@@ -943,6 +988,12 @@ func DefaultConfig() *Config {
 			DistributionTrackingIntervalDays:     180,
 			DistributionTrackingWorkers:          4,
 			DistributionTrackingStartIntervalSec: 30,
+			// v0.25.7 MailingListWorker. Off by default.
+			MailingListEnabled:        false,
+			MailingListWorkers:        2,
+			MailingListCadenceDays:    30,
+			MailingListBackfillMonths: 6,
+			MailingListMirrorHandling: "metadata_only",
 		},
 		LogLevel: "info",
 	}

@@ -177,6 +177,35 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// the worker kept reselecting the same dead-end users.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "cntrb_last_breadth_at", "TIMESTAMPTZ")
 
+	// v0.25.7 — mailing-list ingestion. New email_message + email_message_ref
+	// tables are created by schema.sql's CREATE TABLE IF NOT EXISTS on every
+	// migrate. These add the columns that land on EXISTING tables, plus the
+	// idempotency / dedup indexes (the v0.20.1 CONCURRENTLY convention).
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.issues", "external_key", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_system", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_last_month", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_scan_complete", "BOOLEAN DEFAULT FALSE")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_failed_attempts", "INTEGER DEFAULT 0")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_last_failed_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_last_run", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_locked_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_locked_pid", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_locked_boot_id", "TEXT DEFAULT ''")
+	// Partial unique on (repo_id, external_key): one issue per external key
+	// per repo. (issues has no platform_id column — issues are scoped by
+	// repo_id, which carries the platform.) Empty external_key (native
+	// GitHub/GitLab rows) excluded so they never collide. Mirrors
+	// idx_contributors_login's partial shape. external_key holds 'LUCENE-1'
+	// parsed from Pattern-A imported titles, giving mail cross-references a
+	// stable key to join on.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_issues_external_key",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_external_key
+		 ON aveloxis_data.issues (repo_id, external_key) WHERE external_key <> ''`)
+	// Idempotent list registration: one row per (repo_group, list address).
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_rgls_group_email",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_rgls_group_email
+		 ON aveloxis_data.repo_groups_list_serve (repo_group_id, rgls_email)`)
+
 	// v0.21.0 — ScancodeWorker state on aveloxis_data.repos.
 	//
 	// Decouples the scancode per-file license + copyright + package
@@ -1036,6 +1065,28 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		"v0.25.6 drop idx_contributors_canonical_eq_email (obsoleted by matview rewrite)",
 		`DROP INDEX IF EXISTS aveloxis_data.idx_contributors_canonical_eq_email`)
 
+	// v0.25.8 — index on commits.cmt_ght_author_id.
+	//
+	// cmt_ght_author_id is a plain UUID column with no REFERENCES clause
+	// in schema.sql, so it was invisible to the v0.22.6 FK-index audit
+	// which queried pg_constraint for formal FK child columns. Every
+	// index-building pass since v0.22.6 built on that list, leaving
+	// this column unindexed on the 474M-row commits table.
+	//
+	// v0.25.6 switched the explorer_new_contributors commit branch to
+	// join contributors ON c.cntrb_id = co.cmt_ght_author_id. Without
+	// an index on the commits side, the planner seqscans 381 GB and
+	// hash-aggregates ~434M rows before touching contributors — observed
+	// as a 2+ day stalled rebuild on aveloxis_large (2026-06-02).
+	//
+	// Partial predicate mirrors the WHERE clause in the matview's commit
+	// branch: only the ~92% of commit rows with a resolved author UUID
+	// are included, keeping the index ~8% smaller than a full index.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_commits_cmt_ght_author_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_commits_cmt_ght_author_id
+		 ON aveloxis_data.commits (cmt_ght_author_id)
+		 WHERE cmt_ght_author_id IS NOT NULL`)
+
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).
 	// Set collection.matview_rebuild_on_startup=true in aveloxis.json to enable,
@@ -1065,19 +1116,31 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		}
 	}
 
-	// Stamp schema version so non-migrating commands (web, api) can detect
-	// when the schema is behind the binary and warn the operator.
-	stampSchemaVersion(ctx, pg, logger)
-
 	if len(errs) > 0 {
 		// Fail closed: surface every collected error so the operator
 		// sees the FULL list and can fix them all before retrying.
 		// errors.Join produces a multi-line error string by default,
 		// which prints cleanly to stderr from cobra.
+		//
+		// stampSchemaVersion is intentionally NOT called here. A partial
+		// migration must not stamp the schema as up-to-date — that would
+		// cause CheckSchemaVersion (used by `aveloxis web` and `aveloxis
+		// api` at startup) to suppress its "schema behind binary" warning,
+		// hiding the incomplete migration from the operator. Pre-v0.25.8
+		// stampSchemaVersion was called unconditionally before this check,
+		// which is how a lock-blocked addColumnIfMissing could result in a
+		// partial schema stamped as complete (observed 2026-06-02 on
+		// aveloxis_large when the ALTER TABLE on contributors waited 1+
+		// day for a lock held by the running matview refresh).
 		logger.Error("schema migrations completed with errors — aveloxis serve will refuse to start until these are resolved",
 			"count", len(errs))
 		return fmt.Errorf("schema migration had %d error(s):\n%w", len(errs), errors.Join(errs...))
 	}
+
+	// Stamp schema version so non-migrating commands (web, api) can detect
+	// when the schema is behind the binary and warn the operator.
+	// Only reached when ALL migration steps succeeded — see comment above.
+	stampSchemaVersion(ctx, pg, logger)
 
 	logger.Info("schema migrations complete", "schema_version", ToolVersion)
 	return nil

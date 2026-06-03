@@ -318,6 +318,45 @@ If the ticker is running but enrichment is still falling behind, it's almost alw
 
 The Augur-compatible endpoints (`/contributors`, `/contributors-new`, etc.) follow Augur's swagger spec with `begin_date` / `end_date` / `period` query params and return aggregated counts. The `/contributions/*` endpoints follow the aveloxis convention (`since` / `until`) and return per-contributor identity rows, an aggregated affiliation roll-up, and a coverage snapshot respectively. The two groups serve different questions and don't overlap.
 
+### Mailing-list collection coverage
+
+```
+GET /api/v1/mailing-list/stats
+```
+
+Fleet-wide rollup of the mailing-list ingestion subsystem ([architecture](../architecture/mailing-list.md)) — the same data as `aveloxis mailing-list-stats`. No parameters. Returns 500 if the query fails.
+
+Response (note: keys are PascalCase — the rollup struct carries no JSON tags):
+
+```json
+{
+  "Lists": 16,
+  "ScanComplete": 14,
+  "EmailMessages": 68514,
+  "Mirrors": 41841,
+  "SignaledCaptured": 40044,
+  "SignaledResolved": 25591,
+  "SenderTotal": 26673,
+  "SenderResolved": 17012,
+  "ByClass": {
+    "github_mirror": 40044,
+    "issue_event": 5251,
+    "patch_submission": 4568,
+    "discuss": 1161,
+    "review": 953
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `Lists` / `ScanComplete` | registered lists, and how many have finished their current scan |
+| `EmailMessages` | total `email_message` rows |
+| `Mirrors` | rows classified as mirror mail (`is_mirror`) |
+| `SignaledCaptured` / `SignaledResolved` | messages that named a repo (Axis B) / those resolved to a repo we hold. The ratio is catalog-coverage, not quality — unresolved signals point at sibling repos not yet tracked. |
+| `SenderTotal` / `SenderResolved` | mailing-list message bodies / those whose sender resolved to a contributor (improves over time via the hourly backfill) |
+| `ByClass` | per-`msg_class` message counts |
+
 ## CORS
 
 All API endpoints return `Access-Control-Allow-Origin: *` to allow cross-origin requests from the web GUI (which runs on a different port).

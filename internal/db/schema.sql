@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.platforms (
     platform_name TEXT NOT NULL UNIQUE
 );
 INSERT INTO aveloxis_data.platforms (platform_id, platform_name)
-VALUES (1, 'GitHub'), (2, 'GitLab'), (3, 'Git')
+VALUES (1, 'GitHub'), (2, 'GitLab'), (3, 'Git'), (6, 'Mailing List')
 ON CONFLICT DO NOTHING;
 
 -- ============================================================
@@ -129,6 +129,16 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_groups_list_serve (
     rgls_description TEXT,
     rgls_sponsor     TEXT,
     rgls_email       TEXT,
+    -- v0.25.7 MailingListWorker claim/checkpoint state (the claim unit is a list).
+    mlls_system          TEXT DEFAULT '',          -- which system definition applies (apache_ponymail, lore_public_inbox, ...)
+    mlls_last_month      TEXT DEFAULT '',          -- yyyy-mm backfill checkpoint (resume point)
+    mlls_scan_complete   BOOLEAN DEFAULT FALSE,    -- partial-scan flag; FALSE → re-eligible immediately when source recovers
+    mlls_failed_attempts INTEGER DEFAULT 0,        -- consecutive failure counter (quadratic backoff)
+    mlls_last_failed_at  TIMESTAMPTZ,
+    mlls_last_run        TIMESTAMPTZ,              -- last successful tail-refresh
+    mlls_locked_at       TIMESTAMPTZ,              -- (pid, boot_id) crash-recovery lock
+    mlls_locked_pid      INTEGER,
+    mlls_locked_boot_id  TEXT DEFAULT '',
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
@@ -416,6 +426,9 @@ CREATE INDEX IF NOT EXISTS idx_commits_committer_raw_email
     ON aveloxis_data.commits (cmt_committer_raw_email);
 CREATE INDEX IF NOT EXISTS idx_commits_author_affiliation
     ON aveloxis_data.commits (cmt_author_affiliation);
+CREATE INDEX IF NOT EXISTS idx_commits_cmt_ght_author_id
+    ON aveloxis_data.commits (cmt_ght_author_id)
+    WHERE cmt_ght_author_id IS NOT NULL;
 
 -- ============================================================
 -- Commit parents
@@ -489,6 +502,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.issues (
     closed_at        TIMESTAMPTZ,
     due_on           TIMESTAMPTZ,
     comment_count    INT DEFAULT 0,
+    external_key     TEXT DEFAULT '',
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
@@ -817,6 +831,60 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.messages (
     data_collection_date TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (platform_msg_id, platform_id)
 );
+
+-- ============================================================
+-- Mailing-list messages (v0.25.7). email_message is a first-class
+-- entity (peer to issues / pull_requests / pull_request_reviews); the
+-- body lives in aveloxis_data.messages, linked by email_message_ref.
+-- platform_id = 6 (Mailing List); data_source = the specific list
+-- address (e.g. dev@kafka.apache.org).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS aveloxis_data.email_message (
+    email_message_id  BIGSERIAL PRIMARY KEY,
+    repo_id           BIGINT REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
+    repo_group_id     BIGINT REFERENCES aveloxis_data.repo_groups(repo_group_id) DEFERRABLE INITIALLY DEFERRED,
+    rgls_id           BIGINT REFERENCES aveloxis_data.repo_groups_list_serve(rgls_id) DEFERRABLE INITIALLY DEFERRED,
+    platform_id       SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
+    ml_system         TEXT NOT NULL DEFAULT '',
+    message_id_header TEXT NOT NULL,
+    list_address      TEXT NOT NULL DEFAULT '',
+    list_id_header    TEXT DEFAULT '',
+    subject           TEXT DEFAULT '',
+    sender_email      TEXT DEFAULT '',
+    sent_at           TIMESTAMPTZ,
+    in_reply_to       TEXT DEFAULT '',
+    references_chain  TEXT DEFAULT '',
+    thread_root_id    TEXT DEFAULT '',
+    has_patch         BOOLEAN DEFAULT FALSE,
+    msg_class         TEXT NOT NULL DEFAULT '',
+    classification_source TEXT DEFAULT '',
+    is_mirror         BOOLEAN DEFAULT FALSE,
+    mirrors_url       TEXT DEFAULT '',
+    signaled_repo_url TEXT DEFAULT '',
+    signaled_repo_id  BIGINT REFERENCES aveloxis_data.repos(repo_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED,
+    linked_issue_id        BIGINT REFERENCES aveloxis_data.issues(issue_id) DEFERRABLE INITIALLY DEFERRED,
+    linked_pull_request_id BIGINT REFERENCES aveloxis_data.pull_requests(pull_request_id) DEFERRABLE INITIALLY DEFERRED,
+    linked_external_key    TEXT DEFAULT '',
+    linked_commit_hash     TEXT DEFAULT '',
+    tool_source       TEXT DEFAULT 'Aveloxis Mailing List Collector',
+    tool_version      TEXT DEFAULT '',
+    data_source       TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (message_id_header)
+);
+
+CREATE TABLE IF NOT EXISTS aveloxis_data.email_message_ref (
+    email_msg_ref_id  BIGSERIAL PRIMARY KEY,
+    email_message_id  BIGINT NOT NULL REFERENCES aveloxis_data.email_message(email_message_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    msg_id            BIGINT NOT NULL REFERENCES aveloxis_data.messages(msg_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    repo_group_id     BIGINT REFERENCES aveloxis_data.repo_groups(repo_group_id) DEFERRABLE INITIALLY DEFERRED,
+    tool_source       TEXT DEFAULT 'Aveloxis Mailing List Collector',
+    tool_version      TEXT DEFAULT '',
+    data_source       TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (email_message_id, msg_id)
+);
+
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.issue_message_ref (
     issue_msg_ref_id BIGSERIAL PRIMARY KEY,

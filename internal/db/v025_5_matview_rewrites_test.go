@@ -143,23 +143,25 @@ func TestExplorerNewContributorsDropsCommitCommentBranch(t *testing.T) {
 // repo, day), matching pre-v0.25.5 semantic.
 //
 // v0.25.6 switched the GROUP BY key from cfn.canonical_id to
-// co.cmt_ght_author_id (the deterministic UUID stamped by the commit
-// resolver — 91.95% coverage on aveloxis_large, vs ~27% via the
-// pre-v0.25.6 email-canonical chain). Same day-collapse semantic;
-// different (better) source of contributor identity.
+// co.cmt_ght_author_id. v0.25.7 moved the contributors JOIN to after
+// the GROUP BY (two-phase structure), so the to_timestamp expression
+// now references the subquery alias rather than "co." directly.
 func TestExplorerNewContributorsPreservesDayLevelCollapse(t *testing.T) {
 	src := readMatviewsSQLForV0255(t)
 	region := extractMatviewBlock(t, src, "explorer_new_contributors")
 
-	// Positive pin: to_timestamp(cmt_author_date) is preserved — same
-	// expression pre-v0.25.5 used.
+	// Positive pin: to_timestamp(co.cmt_author_date) is preserved. In the
+	// v0.25.7 two-phase structure, co is the alias for the phase-1
+	// subquery — the same alias the inner commits scan uses — so the
+	// expression is identical to pre-v0.25.7.
 	if !strings.Contains(region, "to_timestamp(co.cmt_author_date") {
-		t.Error("explorer_new_contributors commit branch must use to_timestamp(co.cmt_author_date, 'YYYY-MM-DD') to preserve pre-v0.25.5 day-collapse semantics. Switching to cmt_author_timestamp without restoring the GROUP BY would N×-multiply commit rows.")
+		t.Error("explorer_new_contributors commit branch must use to_timestamp(co.cmt_author_date, 'YYYY-MM-DD') to preserve day-collapse semantics. Switching to cmt_author_timestamp without the GROUP BY would N×-multiply commit rows.")
 	}
 	// Positive pin: GROUP BY day-level collapse is present using the
-	// v0.25.6 join key (cmt_ght_author_id).
+	// v0.25.6/v0.25.7 join key (cmt_ght_author_id). In v0.25.7 this
+	// GROUP BY lives inside the inner phase-1 subquery.
 	if !strings.Contains(region, "GROUP BY co.cmt_ght_author_id, co.repo_id, co.cmt_author_date") {
-		t.Error("explorer_new_contributors commit branch must GROUP BY (cmt_ght_author_id, repo_id, cmt_author_date, ...) to collapse files-of-same-commit AND multiple-commits-same-day, matching the v0.25.6 contract (UUID-based join instead of canonical-email chain).")
+		t.Error("explorer_new_contributors commit branch must GROUP BY (cmt_ght_author_id, repo_id, cmt_author_date) to collapse files-of-same-commit AND multiple-commits-same-day. The v0.25.7 two-phase structure preserves this GROUP BY inside the phase-1 subquery.")
 	}
 }
 

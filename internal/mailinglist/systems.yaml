@@ -1,0 +1,56 @@
+# Mailing-list system definitions (v0.26.0).
+#
+# Each system pairs an archive backend with an ORDERED classification
+# ruleset. The routing from class → canonical table (issues / pull_requests
+# / pull_request_reviews / mailing_list_only) is universal Go code; only the
+# rules that ASSIGN the class are per-system. First matching rule wins.
+#
+# A rule matches when EVERY non-empty matcher field matches its input.
+# `match: {}` is a catch-all (always matches) — put it last as the default.
+# Capture group indices refer to the regex in whichever matcher field
+# carries the capture groups (priority: subject > body > sender > list_id).
+
+systems:
+  - name: apache_ponymail
+    archive_backend: apache_ponymail
+    base_url: https://lists.apache.org
+    repo_url_template: https://github.com/apache/{repo}
+    rules:
+      # Atlassian Jira bot: "[jira] [Created] (KAFKA-20652) summary"
+      - match: {subject: '^\[jira\] \[(\w+)\] \(([A-Z][A-Z0-9]+-\d+)\)'}
+        class: issue_event
+        capture: {action: 1, external_key: 2}
+      # GitBox mirror with a canonical body URL (owner/repo/kind/number).
+      - match: {sender: '\(via GitHub\)', body: 'github\.com/([^/\s]+)/([^/\s]+)/(pull|issues)/(\d+)'}
+        class: github_mirror
+        capture: {owner: 1, repo: 2, kind: 3, number: 4}
+      # GitBox mirror by subject suffix: "[PR] title [arrow-rs]" / "Re: [PR] ... [kafka]"
+      - match: {subject: '^(Re: )?\[(PR|I)\].*\[([a-z0-9._-]+)\]\s*$'}
+        class: github_mirror
+        capture: {repo: 3}
+      - match: {list_id: '^<commits\.'}
+        class: commit_notify
+      - match: {subject: '^(Re: )?\[VOTE\]'}
+        class: vote
+      - match: {subject: '^(Re: )?\[ANNOUNCE\]'}
+        class: announce
+      - match: {subject: '^(Re: )?\[RESULTS?\]'}
+        class: result
+      - match: {list_id: '^<users?\.'}
+        class: support
+      - match: {}
+        class: discuss
+
+  - name: lore_public_inbox
+    archive_backend: public_inbox
+    base_url: https://lore.kernel.org
+    rules:
+      # Patch-by-email: the PR-equivalent. "[PATCH]", "[PATCH v2 1/3]", "[GIT PULL]".
+      # NOT "Re: [PATCH ...]" — a reply is a review/discussion, handled below.
+      - match: {subject: '^\[(GIT PULL|PATCH[^\]]*)\]'}
+        class: patch_submission
+      # Review-equivalent: a reply carrying a Reviewed-by/Acked-by/Tested-by trailer.
+      - match: {subject: '^Re:.*\[PATCH', body: '(?m)^(Reviewed|Acked|Tested|Nacked)-by:'}
+        class: review
+      - match: {}
+        class: discuss

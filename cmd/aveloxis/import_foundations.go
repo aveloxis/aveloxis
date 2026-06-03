@@ -18,7 +18,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// importFoundationsCmd registers `aveloxis import-foundations`.
+// loadFoundationCoreReposCmd registers `aveloxis load-foundation-core-repos`
+// (legacy alias: `import-foundations`).
+//
+// It loads one CORE/primary repo per foundation project. For org-wide
+// tracking that picks up every repo (and future additions) in a foundation's
+// GitHub org, use the companion `load-foundation-orgs` command.
 //
 // Behavior:
 //   - Fetches CNCF landscape.yml (graduated / incubating / sandbox).
@@ -27,7 +32,7 @@ import (
 //   - Records foundation membership in aveloxis_ops.foundation_membership.
 //   - If --dashboard-user is set, adds each repo to per-status user groups
 //     on that operator's dashboard (e.g., "CNCF Graduated", "Apache Incubating").
-func importFoundationsCmd(cfgPath *string) *cobra.Command {
+func loadFoundationCoreReposCmd(cfgPath *string) *cobra.Command {
 	var (
 		priority      int
 		dryRun        bool
@@ -40,8 +45,9 @@ func importFoundationsCmd(cfgPath *string) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "import-foundations",
-		Short: "Import CNCF and Apache foundation projects into the collection queue",
+		Use:     "load-foundation-core-repos",
+		Aliases: []string{"import-foundations"},
+		Short:   "Load one core/primary repo per CNCF and Apache foundation project into the collection queue",
 		Long: `Fetches the canonical project lists from the CNCF landscape
 (cncf/landscape/landscape.yml) and Apache projects.json + podlings.json,
 then enqueues every member repo for collection.

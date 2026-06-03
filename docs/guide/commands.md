@@ -428,6 +428,125 @@ interpreting PASS / FLAG / FAIL results.
 
 ---
 
+## Mailing-list commands
+
+These commands register and verify the mailing-list ingestion subsystem
+(off by default; set `collection.mailing_list_enabled = true` to collect).
+See [Mailing-list ingestion](../architecture/mailing-list.md) for how the
+subsystem works.
+
+### `aveloxis load-foundation-core-repos`
+
+Loads one core/primary repository per project across the tracked open-source
+foundations (Apache TLPs + podlings). Idempotently registers each project's
+flagship repo into a foundation group. Renamed from `import-foundations`
+(kept as a hidden alias so existing scripts keep working).
+
+```bash
+aveloxis load-foundation-core-repos
+aveloxis load-foundation-core-repos --dry-run
+```
+
+### `aveloxis load-foundation-orgs`
+
+Registers each foundation's GitHub org(s) as **tracked orgs** under your
+user, so the periodic org-refresh ticker continuously discovers new repos.
+Tracking the `apache` org pulls all ~3,000 `apache/*` repos (a large
+collection-budget commitment — surfaced in the output) so sibling repos
+like `arrow-rs` get collected and mailing-list repo signals resolve.
+
+```bash
+aveloxis load-foundation-orgs --dry-run
+aveloxis load-foundation-orgs --yes
+```
+
+| Flag | Description |
+|---|---|
+| `--user-id` | owning user (default 1) |
+| `--dry-run` | print planned registrations without writing |
+| `--yes` | proceed without the interactive confirmation |
+
+### `aveloxis load-apache-lists`
+
+For each Apache PMC, ensures a per-PMC `repo_group`, links the PMC's primary
+repo, and registers the `dev@` and `users@` lists for collection. Run
+`load-foundation-core-repos` first so the primary repos exist; PMCs whose
+repo isn't in the catalog are skipped.
+
+```bash
+aveloxis load-apache-lists --dry-run
+aveloxis load-apache-lists
+```
+
+### `aveloxis register-mailing-list`
+
+Registers a single mailing list for collection under any archive system —
+used for curated, non-catalog lists like the kernel's lore public-inbox.
+The list is attached to the repo's `repo_group` (named after the repo, so
+multiple lists for one repo share a group).
+
+```bash
+aveloxis register-mailing-list \
+    --system lore_public_inbox \
+    --list linux-pci@vger.kernel.org \
+    --repo https://github.com/torvalds/linux
+```
+
+| Flag | Description |
+|---|---|
+| `--system` | archive system (`apache_ponymail`, `lore_public_inbox`) |
+| `--list` | list address |
+| `--repo` | repo URL to attach the list's discussion to (must already exist in the catalog) |
+
+### `aveloxis backfill-issue-external-keys`
+
+Populates `issues.external_key` from bracketed `[KEY-N]` title prefixes
+(Apache Jira → GitHub issue imports). This is what lets `issue_event`
+mailing-list mail bridge to the imported issue by its Jira key.
+
+```bash
+aveloxis backfill-issue-external-keys
+```
+
+### `aveloxis mailing-list-stats`
+
+Read-only coverage rollup: registered lists, `email_message` counts, mirror
+rate, signaled-repo resolution, sender-identity resolution, and the
+per-class distribution. Safe to run alongside an active `serve`.
+
+```bash
+aveloxis mailing-list-stats
+```
+
+The same data is available over HTTP at `GET /api/v1/mailing-list/stats`
+(see [REST API](api.md)).
+
+### `aveloxis verify-mailing-list`
+
+The Phase 4 branch-coverage harness. Reads the collected data and prints a
+PASS / EMPTY / DEFER table for every logic branch (each `msg_class`, both
+backends, each routing outcome, threading, signaled/sender resolution,
+`external_key` backfill), plus the contributor-resolution assessment.
+
+```bash
+aveloxis verify-mailing-list            # report only (exit 0)
+aveloxis verify-mailing-list --strict   # exit non-zero if a required branch is empty
+```
+
+| Flag | Description |
+|---|---|
+| `--strict` | exit non-zero when a *required* (mailing-list-native) branch produced zero rows |
+
+`--strict` gates only the mailing-list-native branches. Cross-subsystem
+branches (bridged-to-issue/PR, mirror-linked, sender-resolved,
+`external_key`) report as **DEFER** and never gate — they fill in
+steady-state operation once the linked repos' GitHub data is collected and
+the periodic backfills run. See
+[Mailing-list ingestion §12](../architecture/mailing-list.md) for the
+collection-ordering caveat.
+
+---
+
 ## `aveloxis version`
 
 Prints the Aveloxis version.

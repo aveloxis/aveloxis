@@ -1133,6 +1133,7 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 | Non-GitHub/GitLab repos | Not supported | Git-only mode: facade, analysis, scorecard, SBOM — email resolution against both platforms |
 | User org tracking | Static — orgs added once, never rescanned | Dynamic — `user_org_requests` tracked, new repos auto-discovered every 4h |
 | Error recovery | Manual restart | Automatic stale lock recovery + deadlock retry |
+| Mailing-list ingestion | Separate insight worker, GitHub-archive only | Decoupled `MailingListWorker`: Apache Pony Mail + lore.kernel.org public-inbox, email as a first-class `email_message` entity routed onto issues/PRs/reviews/`mailing_list_only`, Jira/Bugzilla `external_key` correlation. Platform `6` = Mailing List. Off by default; see [docs](docs/architecture/mailing-list.md) |
 
 ## Project Structure
 

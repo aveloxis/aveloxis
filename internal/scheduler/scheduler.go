@@ -94,6 +94,14 @@ type Config struct {
 	DistributionTrackingUserAgent               string        // overrides "aveloxis/<version>" UA
 	DistributionTrackingCrossCheckSources       bool          // v0.25.0: always query both deps.dev AND ecosyste.ms (default true)
 	DistributionTrackingImmediatePartialReclaim bool          // v0.25.3: partial-scan repos bypass cadence (default true)
+
+	// v0.25.7 MailingListWorker. collection.mailing_list_*.
+	MailingListEnabled        bool          // master switch (off by default)
+	MailingListWorkers        int           // concurrent list runners (default 2)
+	MailingListCadence        time.Duration // per-list tail-refresh cadence (default 30d)
+	MailingListBackfillMonths int           // history window for un-checkpointed lists (default 6)
+	MailingListPoliteEmail    string        // contact embedded in the archive User-Agent
+	MailingListMirrorHandling string        // skip | metadata_only | full
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -354,6 +362,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// collection.
 	if s.cfg.DistributionTrackingEnabled {
 		s.spawnDistributionWorker(ctx)
+	}
+
+	// v0.25.7 MailingListWorker: ingests mailing-list archives (Apache
+	// Pony Mail) into email_message + messages. Off by default; depends on
+	// a populated per-PMC repo_group (load-foundation-orgs). Independent
+	// of the per-repo collection pipeline.
+	if s.cfg.MailingListEnabled {
+		s.spawnMailingListWorker(ctx)
 	}
 
 	// Materialized view rebuild: check hourly, run on Saturdays.
@@ -1434,6 +1450,12 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				}
 				s.logger.Info("new repo discovered", "org", g.Name, "repo", item.HTMLURL)
 				newCount++
+				// §5c repo-side resolution: a mailing-list message may have
+				// signaled this repo before it was in the catalog. Backfill
+				// any waiting email_message.signaled_repo_id now.
+				if n, rerr := s.store.ResolveSignaledRepoForURL(ctx, repoID, item.HTMLURL); rerr == nil && n > 0 {
+					s.logger.Info("resolved signaled_repo for new repo", "repo", item.HTMLURL, "messages", n)
+				}
 			}
 			for _, gid := range userGroupIDs {
 				if err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
@@ -1515,6 +1537,9 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				}
 				s.logger.Info("new repo discovered", "group", g.Name, "repo", item.WebURL)
 				newCount++
+				if n, rerr := s.store.ResolveSignaledRepoForURL(ctx, repoID, item.WebURL); rerr == nil && n > 0 {
+					s.logger.Info("resolved signaled_repo for new repo", "repo", item.WebURL, "messages", n)
+				}
 			}
 			for _, gid := range userGroupIDs {
 				if err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {

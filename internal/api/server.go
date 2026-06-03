@@ -37,6 +37,7 @@ type Server struct {
 func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	s.mux.HandleFunc("GET /api/v1/mailing-list/stats", s.handleMailingListStats)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/stats", s.handleRepoStats)
 	s.mux.HandleFunc("GET /api/v1/repos/stats", s.handleRepoStatsBatch)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/sbom", s.handleSBOMDownload)
@@ -67,6 +68,18 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": db.ToolVersion})
+}
+
+// handleMailingListStats (v0.25.7, #11) surfaces the mailing-list collection
+// coverage rollup over the REST API.
+func (s *Server) handleMailingListStats(w http.ResponseWriter, r *http.Request) {
+	st, err := s.store.MailingListStats(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(st)
 }
 
 func (s *Server) handleRepoStats(w http.ResponseWriter, r *http.Request) {

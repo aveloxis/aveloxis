@@ -367,26 +367,47 @@ WITH branched AS (
 
     -- commits
     --
-    -- Direct cmt_ght_author_id → cntrb_id join. ~92% coverage on the
-    -- production commits table; rows without a resolved author_id
-    -- are filtered out (they have no contributor to attribute to).
-    -- Day-level collapse via GROUP BY in the inner subquery so we
-    -- don't push 474M per-file rows through the window function.
+    -- v0.25.8: two-phase structure — GROUP BY on commit-side columns
+    -- only (cmt_ght_author_id, repo_id, cmt_author_date), then JOIN
+    -- contributor text fields onto the smaller grouped result.
+    --
+    -- Pre-v0.25.8 the JOIN happened before the GROUP BY, requiring
+    -- PostgreSQL to join all ~434M attributed commit rows with 1.7M
+    -- contributors before collapsing them. Without an index on
+    -- cmt_ght_author_id (a plain UUID column, never declared as a FK
+    -- so missed by the v0.22.6 FK-index audit), the planner seqscanned
+    -- 381 GB and then hash-aggregated the full join result — observed
+    -- as a 2+ day rebuild on aveloxis_large.
+    --
+    -- The two-phase approach reduces the join input from ~434M rows to
+    -- the number of distinct (author_id, repo_id, date) groups before
+    -- touching contributors. idx_commits_cmt_ght_author_id (added in
+    -- v0.25.8 migrate.go) makes the inner GROUP BY index-backed.
     SELECT * FROM (
         SELECT id, created_at, repo_id, 'commit'::text AS action, full_name, login,
                row_number() OVER (PARTITION BY id, repo_id ORDER BY created_at DESC) AS br
           FROM (
             SELECT co.cmt_ght_author_id AS id,
-                   to_timestamp(co.cmt_author_date::text, 'YYYY-MM-DD'::text) AS created_at,
+                   to_timestamp(co.cmt_author_date, 'YYYY-MM-DD'::text) AS created_at,
                    co.repo_id,
                    c.cntrb_full_name AS full_name,
                    c.cntrb_login AS login
-              FROM aveloxis_data.commits co
+              FROM (
+                -- Phase 1: collapse 474M commit rows to distinct
+                -- (author_id, repo_id, date) groups using only
+                -- commit-side columns. The GROUP BY key is fully
+                -- indexable by idx_commits_cmt_ght_author_id.
+                SELECT co.cmt_ght_author_id,
+                       co.repo_id,
+                       co.cmt_author_date
+                  FROM aveloxis_data.commits co
+                 WHERE co.cmt_ght_author_id IS NOT NULL
+                 GROUP BY co.cmt_ght_author_id, co.repo_id, co.cmt_author_date
+              ) co
+              -- Phase 2: join the smaller grouped result with
+              -- contributors to retrieve the text display fields.
               JOIN aveloxis_data.contributors c ON c.cntrb_id = co.cmt_ght_author_id
-             WHERE co.cmt_ght_author_id IS NOT NULL
-               AND COALESCE(c.cntrb_deleted, 0) = 0
-             GROUP BY co.cmt_ght_author_id, co.repo_id, co.cmt_author_date,
-                      c.cntrb_full_name, c.cntrb_login
+             WHERE COALESCE(c.cntrb_deleted, 0) = 0
           ) day_collapsed
     ) z WHERE br <= 7
 

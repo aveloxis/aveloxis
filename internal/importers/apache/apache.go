@@ -117,6 +117,81 @@ func deriveRepoURL(slug, bugDB string) string {
 	return "https://github.com/apache/" + slug
 }
 
+// PMC carries an Apache project's PMC slug (the projects.json / podlings.json
+// map key) alongside its derived repo URL. The slug is what mailing-list
+// domains are built from: dev@<slug>.apache.org, users@<slug>.apache.org.
+// ParseProjects discards the slug (it only needs it to derive the repo URL),
+// so the mailing-list path uses this richer view instead.
+type PMC struct {
+	Slug        string
+	Name        string
+	Homepage    string
+	BugDatabase string
+	RepoURL     string
+	Incubating  bool
+}
+
+// ListDomain returns the Apache mailing-list domain for the PMC, e.g.
+// "kafka.apache.org". Current podlings live under <slug>.apache.org too
+// (verified for Amoro, 2026-06-02), and graduation preserves the same
+// domain, so the slug-based form is correct for both.
+func (p PMC) ListDomain() string { return p.Slug + ".apache.org" }
+
+// ParsePMCs extracts PMCs (with slugs) from projects.json bytes.
+func ParsePMCs(data []byte) ([]PMC, error) {
+	var raw map[string]tlpEntry
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("unmarshaling projects.json: %w", err)
+	}
+	out := make([]PMC, 0, len(raw))
+	for slug, e := range raw {
+		out = append(out, PMC{
+			Slug: slug, Name: e.Name, Homepage: e.Homepage,
+			BugDatabase: e.BugDatabase, RepoURL: deriveRepoURL(slug, e.BugDatabase),
+		})
+	}
+	return out, nil
+}
+
+// ParsePodlingPMCs extracts incubating podlings (with slugs) from
+// podlings.json bytes.
+func ParsePodlingPMCs(data []byte) ([]PMC, error) {
+	var raw map[string]podlingEntry
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("unmarshaling podlings.json: %w", err)
+	}
+	out := make([]PMC, 0, len(raw))
+	for slug, e := range raw {
+		out = append(out, PMC{
+			Slug: slug, Name: e.Name, Homepage: e.Homepage,
+			RepoURL: "https://github.com/apache/" + slug, Incubating: true,
+		})
+	}
+	return out, nil
+}
+
+// FetchPMCs downloads both catalogues and returns the combined PMC list.
+func FetchPMCs(ctx context.Context, projectsURL, podlingsURL string) ([]PMC, error) {
+	client := &http.Client{Timeout: 60 * time.Second}
+	tlpData, err := fetchJSON(ctx, client, projectsURL)
+	if err != nil {
+		return nil, err
+	}
+	tlps, err := ParsePMCs(tlpData)
+	if err != nil {
+		return nil, err
+	}
+	podData, err := fetchJSON(ctx, client, podlingsURL)
+	if err != nil {
+		return tlps, err
+	}
+	pods, err := ParsePodlingPMCs(podData)
+	if err != nil {
+		return tlps, err
+	}
+	return append(tlps, pods...), nil
+}
+
 // Fetch downloads projects.json and podlings.json from the given URLs,
 // parses both, and returns the combined list.
 func Fetch(ctx context.Context, projectsURL, podlingsURL string) ([]Project, error) {

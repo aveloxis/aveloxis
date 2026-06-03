@@ -70,8 +70,7 @@ func TestReportCoverageStrictPassesWhenAllRequiredFired(t *testing.T) {
 
 func TestReportCoverageStrictFailsOnEmptyRequiredBranch(t *testing.T) {
 	cov := fullCoverage()
-	cov.BridgedToIssue = 0 // a required branch goes empty
-	delete(cov.ByClass, "issue_event")
+	delete(cov.ByClass, "issue_event") // a mailing-list-native REQUIRED branch goes empty
 
 	var buf bytes.Buffer
 	err := reportMailingListCoverage(&buf, cov, true)
@@ -80,6 +79,26 @@ func TestReportCoverageStrictFailsOnEmptyRequiredBranch(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "EMPTY*") {
 		t.Error("report must flag the empty required branch with EMPTY*")
+	}
+}
+
+// Cross-subsystem branches (bridged-to-issue, sender-resolved, external_key)
+// depend on GitHub data + collection ordering / backfills. Their emptiness
+// must NOT fail --strict (Phase 4 run #1 finding) — they report as DEFER.
+func TestReportCoverageStrictPassesWhenOnlyDeferredEmpty(t *testing.T) {
+	cov := fullCoverage()
+	cov.BridgedToIssue = 0
+	cov.BridgedToPR = 0
+	cov.MirrorLinked = 0
+	cov.SenderResolved = 0
+	cov.ExternalKeyIssues = 0
+
+	var buf bytes.Buffer
+	if err := reportMailingListCoverage(&buf, cov, true); err != nil {
+		t.Fatalf("strict must pass when only cross-subsystem deferred branches are empty, got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "DEFER") {
+		t.Error("empty cross-subsystem branches must render as DEFER")
 	}
 }
 

@@ -105,6 +105,40 @@ func TestMigrateAddsMailingListColumnsAndIndexes(t *testing.T) {
 	}
 }
 
+// TestEmailMessageDeclaredAfterItsForeignKeys guards the latent ordering
+// bug found during the Phase 4 run (2026-06-02): schema.sql executes as one
+// transaction, so email_message — which has FKs to issues, pull_requests,
+// and messages — must be CREATEd *after* all three, or a from-scratch
+// `aveloxis migrate` aborts ("relation aveloxis_data.issues does not exist")
+// and rolls back the entire schema. It went unnoticed because CREATE TABLE
+// IF NOT EXISTS is a no-op on the already-populated DBs the tests/prod ran
+// against; only a genuinely empty database hits it.
+func TestEmailMessageDeclaredAfterItsForeignKeys(t *testing.T) {
+	src := readSchema(t)
+	emPos := strings.Index(src, "CREATE TABLE IF NOT EXISTS aveloxis_data.email_message (")
+	emrPos := strings.Index(src, "CREATE TABLE IF NOT EXISTS aveloxis_data.email_message_ref (")
+	if emPos < 0 || emrPos < 0 {
+		t.Fatal("schema.sql must declare email_message and email_message_ref")
+	}
+	for _, dep := range []string{
+		"CREATE TABLE IF NOT EXISTS aveloxis_data.issues (",
+		"CREATE TABLE IF NOT EXISTS aveloxis_data.pull_requests (",
+		"CREATE TABLE IF NOT EXISTS aveloxis_data.messages (",
+	} {
+		depPos := strings.Index(src, dep)
+		if depPos < 0 {
+			t.Fatalf("schema.sql missing dependency table: %q", dep)
+		}
+		if emPos < depPos {
+			t.Errorf("email_message is declared before its FK target %q; "+
+				"on a fresh DB the schema transaction aborts. Move email_message after it.", dep)
+		}
+	}
+	if emrPos < emPos {
+		t.Error("email_message_ref must be declared after email_message (it FK-references it)")
+	}
+}
+
 func readSchema(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile("schema.sql")

@@ -54,6 +54,8 @@ architecture/contributor-resolution
 architecture/facade-commits
 architecture/analysis
 architecture/scancode
+architecture/distribution
+architecture/mailing-list
 architecture/materialized-views
 architecture/column-mapping
 architecture/platform-layer

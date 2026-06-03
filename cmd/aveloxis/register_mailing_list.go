@@ -49,7 +49,14 @@ func registerMailingListCmd(cfgPath *string) *cobra.Command {
 			if err != nil || repoID == 0 {
 				return fmt.Errorf("repo %q not found in catalog — add it first (add-repo / load-foundation-core-repos)", repoURL)
 			}
-			groupID, err := store.UpsertRepoGroup(ctx, "ML: "+list, "mailing_list", repoURL)
+			// Group is named after the REPO, not the list, so registering
+			// several lists for the same repo reuses one repo_group
+			// (UpsertRepoGroup dedupes by name+type). A per-list name would
+			// create a new group each call, and since repos.repo_group_id
+			// holds only the last one, every earlier list would orphan in a
+			// group with no repo ("no repo in repo_group N") — the bug found
+			// during the Phase 4 run (2026-06-02).
+			groupID, err := store.UpsertRepoGroup(ctx, "ML: "+repoURL, "mailing_list", repoURL)
 			if err != nil {
 				return fmt.Errorf("ensure repo_group: %w", err)
 			}

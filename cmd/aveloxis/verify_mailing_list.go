@@ -53,13 +53,21 @@ func verifyMailingListCmd(cfgPath *string) *cobra.Command {
 	return cmd
 }
 
-// branchCheck is one verifiable logic branch. required=true means an empty
-// count fails --strict; optional branches (e.g. the lore/public-inbox
-// backend, which can't enumerate under Anubis) are reported but never gate.
+// branchCheck is one verifiable logic branch.
+//   - required=true: an empty count fails --strict (a mailing-list-NATIVE
+//     branch the subsystem must produce from its own collection).
+//   - deferred=true: cross-subsystem (depends on GitHub issue/PR/contributor
+//     data + write-time ordering or a periodic backfill/ticker). Reported as
+//     DEFER and never gates --strict, because an empty value reflects
+//     collection scope/ordering, not a mailing-list defect. (Phase 4 run #1,
+//     2026-06-02, established this distinction.)
+//   - neither: optional (e.g. the lore backend, which can't enumerate under
+//     Anubis); reported but never gates.
 type branchCheck struct {
 	name     string
 	count    int64
 	required bool
+	deferred bool
 }
 
 // reportMailingListCoverage renders the coverage table and, when strict,
@@ -78,22 +86,25 @@ func reportMailingListCoverage(out interface {
 	}
 
 	checks := []branchCheck{
-		{"lists registered", int64(cov.Lists), true},
-		{"backend: apache_ponymail", apacheMsgs, true},
-		{"backend: lore_public_inbox", loreMsgs, false},
-		{"class: issue_event", cov.ByClass["issue_event"], true},
-		{"class: patch_submission", cov.ByClass["patch_submission"], true},
-		{"class: review", cov.ByClass["review"], true},
-		{"class: github_mirror", cov.ByClass["github_mirror"], false},
-		{"class: commit_notify", cov.ByClass["commit_notify"], false},
-		{"route: bridged to issue", cov.BridgedToIssue, true},
-		{"route: bridged to PR", cov.BridgedToPR, false},
-		{"route: mirror linked to local issue/PR", cov.MirrorLinked, false},
-		{"route: mailing_list_only", listOnly, true},
-		{"threading: thread root resolved", cov.ThreadRooted, true},
-		{"signaled-repo resolved", cov.SignaledResolved, false},
-		{"sender identity resolved", cov.SenderResolved, true},
-		{"issues with external_key (Jira/Bugzilla)", cov.ExternalKeyIssues, false},
+		// Mailing-list-native (gate --strict).
+		{name: "lists registered", count: int64(cov.Lists), required: true},
+		{name: "backend: apache_ponymail", count: apacheMsgs, required: true},
+		{name: "class: issue_event", count: cov.ByClass["issue_event"], required: true},
+		{name: "class: patch_submission", count: cov.ByClass["patch_submission"], required: true},
+		{name: "class: review", count: cov.ByClass["review"], required: true},
+		{name: "route: mailing_list_only", count: listOnly, required: true},
+		{name: "threading: thread root resolved", count: cov.ThreadRooted, required: true},
+		// Optional (legitimately absent from some test sets).
+		{name: "backend: lore_public_inbox", count: loreMsgs},
+		{name: "class: github_mirror", count: cov.ByClass["github_mirror"]},
+		{name: "class: commit_notify", count: cov.ByClass["commit_notify"]},
+		{name: "signaled-repo resolved", count: cov.SignaledResolved},
+		// Cross-subsystem deferred (need GitHub data + ordering/backfill; DEFER, never gate).
+		{name: "route: bridged to issue", count: cov.BridgedToIssue, deferred: true},
+		{name: "route: bridged to PR", count: cov.BridgedToPR, deferred: true},
+		{name: "route: mirror linked to local issue/PR", count: cov.MirrorLinked, deferred: true},
+		{name: "sender identity resolved", count: cov.SenderResolved, deferred: true},
+		{name: "issues with external_key (Jira/Bugzilla)", count: cov.ExternalKeyIssues, deferred: true},
 	}
 
 	fmt.Fprintln(out, "Mailing-list branch coverage (Phase 4):")
@@ -101,10 +112,13 @@ func reportMailingListCoverage(out interface {
 	for _, c := range checks {
 		status := "PASS"
 		if c.count == 0 {
-			if c.required {
+			switch {
+			case c.required:
 				status = "EMPTY*"
 				emptyRequired = append(emptyRequired, c.name)
-			} else {
+			case c.deferred:
+				status = "DEFER"
+			default:
 				status = "empty"
 			}
 		}
@@ -134,12 +148,16 @@ func reportMailingListCoverage(out interface {
 		}
 	}
 
+	fmt.Fprintln(out, "\nDEFER = cross-subsystem branch (needs GitHub issue/PR/contributor data +")
+	fmt.Fprintln(out, "collection ordering or the periodic sender/external-key backfill); fills in")
+	fmt.Fprintln(out, "steady-state operation and does not gate --strict.")
+
 	if len(emptyRequired) > 0 {
 		fmt.Fprintf(out, "\n%d required branch(es) produced zero rows:\n", len(emptyRequired))
 		for _, n := range emptyRequired {
 			fmt.Fprintf(out, "  - %s\n", n)
 		}
-		fmt.Fprintln(out, "(* required branch; collect the Phase 4 verification repo set to exercise it)")
+		fmt.Fprintln(out, "(* required = mailing-list-native; collect the Phase 4 verification repo set to exercise it)")
 		if strict {
 			return fmt.Errorf("verify-mailing-list --strict: %d required branch(es) empty", len(emptyRequired))
 		}

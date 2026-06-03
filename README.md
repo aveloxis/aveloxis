@@ -1298,7 +1298,7 @@ aveloxis load-foundation-orgs --yes        # optional: track the whole apache or
 aveloxis load-apache-lists                 # --dry-run first to preview
 ```
 
-4. Turn the worker on in aveloxis.json, then restart serve:
+###### 4. Turn the worker on in aveloxis.json, then restart serve:
 ```json
 "collection": {
   "mailing_list_enabled": true,

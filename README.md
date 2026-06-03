@@ -1279,7 +1279,7 @@ Or if you prefer a one-liner from the repo root:
 pip install sphinx sphinx-rtd-theme myst-parser && sphinx-build -b html docs docs/_build/html && open docs/_build/html/index.html
 ```
 
-##### Turning on Apache Mailing List Collection
+# Turning on Apache Mailing List Collection
 Starting Apache mailing-list collection
 
 ###### 1. Schema must be at v0.25.9+ (the mailing-list tables + platform 6):
@@ -1305,7 +1305,10 @@ aveloxis load-apache-lists                 # --dry-run first to preview
   "mailing_list_polite_email": "you@example.org"   // sets the contact header
 }
 ```
+
+```bash
 aveloxis stop serve && aveloxis start serve        # the MailingListWorker spawns inside serve
+```
 
 ###### 5. Watch it:
 ```bash

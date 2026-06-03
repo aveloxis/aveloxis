@@ -35,11 +35,11 @@ Most tables in `aveloxis_data` include four provenance columns. They are documen
 
 #### platforms
 
-Lookup table for supported forge platforms. Seeded on schema creation with GitHub (1) and GitLab (2).
+Lookup table for supported forge platforms. Seeded on schema creation with GitHub (1), GitLab (2), and Mailing List (6 — the transport platform for mailing-list-sourced rows; see [Mailing-list ingestion](architecture/mailing-list.md)).
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
-| `platform_id` | SMALLINT (PK) | Seeded | Primary key. `1` = GitHub, `2` = GitLab. |
+| `platform_id` | SMALLINT (PK) | Seeded | Primary key. `1` = GitHub, `2` = GitLab, `6` = Mailing List. |
 | `platform_name` | TEXT NOT NULL UNIQUE | Seeded | Human-readable platform name. |
 
 ---
@@ -89,7 +89,7 @@ Central repository table. Every collected repository has exactly one row here. A
 
 #### repo_groups_list_serve
 
-Mailing list metadata associated with a repo group. Used for projects that track mailing list activity alongside code.
+Mailing list registry + per-list collection state. Each row is a list the MailingListWorker collects; the `mlls_*` columns (v0.25.7) carry the claim/checkpoint/lock state. See [Mailing-list ingestion](architecture/mailing-list.md).
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
@@ -98,8 +98,59 @@ Mailing list metadata associated with a repo group. Used for projects that track
 | `rgls_name` | TEXT | User input | Mailing list name. |
 | `rgls_description` | TEXT | User input | Description of the mailing list. |
 | `rgls_sponsor` | TEXT | User input | Organization sponsoring the list. |
-| `rgls_email` | TEXT | User input | Contact email for the list. |
+| `rgls_email` | TEXT | User input | List address (e.g. `dev@kafka.apache.org`). |
+| `mlls_system` | TEXT | Registration | Archive system definition that applies (`apache_ponymail`, `lore_public_inbox`). Non-empty = collectable by the worker. |
+| `mlls_last_month` | TEXT | Worker | `yyyy-mm` backfill checkpoint (resume point). |
+| `mlls_scan_complete` | BOOLEAN | Worker | Partial-scan flag; FALSE → re-eligible immediately. |
+| `mlls_failed_attempts` | INTEGER | Worker | Consecutive failure counter (quadratic backoff; sideline at 10). |
+| `mlls_last_failed_at` | TIMESTAMPTZ | Worker | Backoff gate input. |
+| `mlls_last_run` | TIMESTAMPTZ | Worker | Last successful tail-refresh. |
+| `mlls_locked_at` / `mlls_locked_pid` / `mlls_locked_boot_id` | TIMESTAMPTZ / INTEGER / TEXT | Worker | `(pid, boot_id)` crash-recovery lock; a lock older than 2h is presumed dead. |
 | | | | *Standard metadata columns* |
+
+**Unique constraint:** `(repo_group_id, rgls_email)`
+
+---
+
+#### email_message
+
+A mailing-list email as a first-class entity (v0.25.7) — peer to `issues` / `pull_requests` / `pull_request_reviews`. The body lives in `messages` (linked via `email_message_ref`); this table carries the classification (Axis A) and repo association (Axis B). Declared after `issues`/`pull_requests`/`messages` in `schema.sql` because it FK-references all three. See [Mailing-list ingestion](architecture/mailing-list.md).
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `email_message_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
+| `repo_id` / `repo_group_id` / `rgls_id` | BIGINT (FKs) | Worker | The repo / group / list this message came from. |
+| `platform_id` | SMALLINT NOT NULL (FK -> platforms) | Worker | Always `6` (Mailing List). |
+| `ml_system` | TEXT | Worker | Archive system (`apache_ponymail`, `lore_public_inbox`). |
+| `message_id_header` | TEXT NOT NULL UNIQUE | Email | RFC-822 Message-ID (idempotency key). |
+| `list_address` / `list_id_header` | TEXT | Email | List the message came from. |
+| `subject` / `sender_email` / `sent_at` | TEXT / TEXT / TIMESTAMPTZ | Email | Parsed header fields. |
+| `in_reply_to` / `references_chain` / `thread_root_id` | TEXT | Email | Threading: In-Reply-To, References, resolved thread root. |
+| `has_patch` | BOOLEAN | Classifier | Body contains a patch. |
+| `msg_class` | TEXT | Classifier | Axis A: `issue_event`, `patch_submission`, `review`, `github_mirror`, `commit_notify`, `vote`, `announce`, `result`, `discuss`, `support`, `unclassified`. |
+| `classification_source` | TEXT | Classifier | Which rule fired (subject_regex / body_url / sender / list_id / list_address). |
+| `is_mirror` / `mirrors_url` | BOOLEAN / TEXT | Classifier | Mirror-list mail that echoes GitHub activity. |
+| `signaled_repo_url` | TEXT | Classifier | Axis B: canonical repo URL the message signals (captured even if not in catalog). |
+| `signaled_repo_id` | BIGINT (FK -> repos, ON DELETE SET NULL) | Resolver | Resolved repo FK (NULL until the URL matches a loaded repo). |
+| `linked_issue_id` / `linked_pull_request_id` | BIGINT (FKs) | Router | Routed target when the message is an issue/PR event. |
+| `linked_external_key` / `linked_commit_hash` | TEXT | Router | Jira/Bugzilla key / commit the message references. |
+| | | | *Standard metadata columns* (`tool_source` defaults to `Aveloxis Mailing List Collector`) |
+
+---
+
+#### email_message_ref
+
+Bridge from `email_message` to the shared `messages` table (the body), mirroring `issue_message_ref` / `pull_request_message_ref`.
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `email_msg_ref_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
+| `email_message_id` | BIGINT NOT NULL (FK -> email_message) | Worker | The email entity. |
+| `msg_id` | BIGINT NOT NULL (FK -> messages) | Worker | The body row in `messages`. |
+| `repo_group_id` | BIGINT (FK -> repo_groups) | Worker | Group context. |
+| | | | *Standard metadata columns* |
+
+**Unique constraint:** `(email_message_id, msg_id)`
 
 ---
 
@@ -324,6 +375,7 @@ Issue tracker records from GitHub Issues or GitLab Issues. Each row represents o
 | `closed_at` | TIMESTAMPTZ | GitHub REST: `/repos/{o}/{r}/issues`, GitLab: `/projects/{id}/issues` | When the issue was closed (null if open). |
 | `due_on` | TIMESTAMPTZ | GitHub REST: `/repos/{o}/{r}/issues`, GitLab: `/projects/{id}/issues` | Due date from milestone. |
 | `comment_count` | INT | GitHub REST: `/repos/{o}/{r}/issues`, GitLab: `/projects/{id}/issues` | Number of comments on the issue. |
+| `external_key` | TEXT | `backfill-issue-external-keys` | Bracketed `[KEY-N]` Jira/Bugzilla key from the title (Apache Jira → GitHub imports). Lets mailing-list `issue_event` mail bridge to the imported issue. Partial unique `(repo_id, external_key) WHERE external_key <> ''`. v0.25.7. |
 | | | | *Standard metadata columns* |
 
 **Unique constraint:** `(repo_id, platform_issue_id)`

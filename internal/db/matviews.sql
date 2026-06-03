@@ -402,6 +402,14 @@ WITH branched AS (
                        co.cmt_author_date
                   FROM aveloxis_data.commits co
                  WHERE co.cmt_ght_author_id IS NOT NULL
+                   -- Only well-formed ISO dates reach to_timestamp() above.
+                   -- Commits collected by a git < 2.2.0 (which doesn't expand
+                   -- the %aI placeholder) store the literal text '%aI' in
+                   -- cmt_author_date; a single such row would abort the whole
+                   -- matview build with SQLSTATE 22007. Exclude any value that
+                   -- doesn't start with YYYY-MM-DD — those commits have no
+                   -- usable date and contribute nothing to this view anyway.
+                   AND co.cmt_author_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
                  GROUP BY co.cmt_ght_author_id, co.repo_id, co.cmt_author_date
               ) co
               -- Phase 2: join the smaller grouped result with

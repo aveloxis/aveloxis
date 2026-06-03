@@ -1283,26 +1283,35 @@ pip install sphinx sphinx-rtd-theme myst-parser && sphinx-build -b html docs doc
 Starting Apache mailing-list collection
 
 ###### 1. Schema must be at v0.25.9+ (the mailing-list tables + platform 6):
+```bash
 aveloxis stop all && aveloxis migrate --skip-views && aveloxis start all
+```
 
 ###### 2. Make sure the repos exist (lists attach to a repo's group):
+```bash
 aveloxis load-foundation-core-repos        # one primary repo per Apache project
 aveloxis load-foundation-orgs --yes        # optional: track the whole apache org so sibling repos resolve
+```
 
 ###### 3. Register the per-PMC dev@/users@ lists:
+```bash
 aveloxis load-apache-lists                 # --dry-run first to preview
+```
 
-// 4. Turn the worker on in aveloxis.json, then restart serve:
+4. Turn the worker on in aveloxis.json, then restart serve:
+```json
 "collection": {
   "mailing_list_enabled": true,
   "mailing_list_polite_email": "you@example.org"   // sets the contact header
 }
-
+```
 aveloxis stop serve && aveloxis start serve        # the MailingListWorker spawns inside serve
 
 ###### 5. Watch it:
+```bash
 aveloxis mailing-list-stats                        # coverage rollup
 aveloxis verify-mailing-list                       # PASS/EMPTY/DEFER branch table
+```
 
 The single thing that actually turns it on is mailing_list_enabled: true + a serve restart — the worker is a decoupled pool inside serve and claims its own list queue. It's off by default.
 Full reference: docs/architecture/mailing-list.md.

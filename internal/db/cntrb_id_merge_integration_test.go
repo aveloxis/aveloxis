@@ -83,6 +83,13 @@ func TestMergeCntrbIDCollisionsBatchEndToEnd(t *testing.T) {
 		cleanup(`DELETE FROM aveloxis_data.contributor_identities WHERE cntrb_id IN (
 			SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login = $1
 		)`, login)
+		// v0.23.0 contributor_login_history has an ON DELETE RESTRICT FK to
+		// contributors; clear it before deleting the contributor, or this
+		// cleanup fails against a reused scratch DB (CI uses a fresh DB and
+		// never hit it; production never hard-deletes contributors).
+		cleanup(`DELETE FROM aveloxis_data.contributor_login_history WHERE cntrb_id IN (
+			SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login = $1
+		)`, login)
 		cleanup(`DELETE FROM aveloxis_data.contributors WHERE cntrb_login = $1`, login)
 	}
 	cleanup(`DELETE FROM aveloxis_data.repos WHERE repo_owner = '_av_merge' AND repo_name = 'test'`)

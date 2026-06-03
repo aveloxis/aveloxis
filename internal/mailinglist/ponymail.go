@@ -95,7 +95,14 @@ func (p *PonyMail) FirstMonth(ctx context.Context, listAddress string) (string, 
 	if list == "" || domain == "" {
 		return "", fmt.Errorf("invalid list address %q", listAddress)
 	}
-	u := fmt.Sprintf("%s/api/stats.lua?list=%s&domain=%s&d=lte=30y",
+	// firstYear/firstMonth are list-level metadata in the stats.lua response,
+	// independent of the date window — even an empty window returns them
+	// (verified against the live API on the busy dev@kafka.apache.org and the
+	// quiet announce@apache.org). Use the cheapest possible window (last day):
+	// d=lte=30y forced Pony Mail to aggregate the list's entire history and
+	// stream back every message (~18 MB / ~35 s on a busy list) just to read
+	// two integers, which timed out the worker. d=lte=1d is ~1 s / ~50 KB.
+	u := fmt.Sprintf("%s/api/stats.lua?list=%s&domain=%s&d=lte=1d",
 		p.baseURL, url.QueryEscape(list), url.QueryEscape(domain))
 	body, err := p.get(ctx, u)
 	if err != nil {

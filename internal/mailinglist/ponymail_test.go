@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -191,6 +192,32 @@ func TestPonyMailFirstMonth(t *testing.T) {
 	ghost, err := pm.FirstMonth(context.Background(), "ghost@kafka.apache.org")
 	if err != nil || ghost != "" {
 		t.Errorf("ghost FirstMonth = (%q, %v), want (\"\", nil)", ghost, err)
+	}
+}
+
+// TestPonyMailFirstMonthUsesCheapWindow is the regression tripwire for the
+// Phase 4 live-canary finding: FirstMonth must NOT ask stats.lua to
+// aggregate the list's entire history (d=lte=30y streamed ~18 MB and took
+// ~35 s on a busy list, timing out the worker — firstYear/firstMonth are
+// list metadata that come back regardless of the window).
+func TestPonyMailFirstMonthUsesCheapWindow(t *testing.T) {
+	var gotD string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotD = r.URL.Query().Get("d")
+		_, _ = w.Write([]byte(`{"firstYear":2011,"firstMonth":7}`))
+	}))
+	defer srv.Close()
+
+	pm := NewPonyMail(srv.URL, "test")
+	if _, err := pm.FirstMonth(context.Background(), "dev@kafka.apache.org"); err != nil {
+		t.Fatalf("FirstMonth: %v", err)
+	}
+	if gotD == "" {
+		t.Fatal("FirstMonth sent no d= window to stats.lua")
+	}
+	if strings.Contains(gotD, "30y") {
+		t.Errorf("FirstMonth used the expensive whole-history window d=%q; "+
+			"use a bounded window (firstYear/firstMonth are range-independent metadata)", gotD)
 	}
 }
 

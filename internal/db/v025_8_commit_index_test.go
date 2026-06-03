@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// v0.25.7 — source-contract tests for:
+// v0.25.8 — source-contract tests for:
 //   1. idx_commits_cmt_ght_author_id — the missing index that caused a
 //      2+ day stalled rebuild of explorer_new_contributors on aveloxis_large
 //      (2026-06-02 incident). cmt_ght_author_id is a plain UUID column with
@@ -17,7 +17,7 @@ import (
 //   2. Two-phase commit branch in explorer_new_contributors — GROUP BY on
 //      commit-side columns only, then JOIN contributors. Eliminates the
 //      381 GB seqscan + hash-aggregation of 434M joined rows that the
-//      pre-v0.25.7 single-phase structure required.
+//      pre-v0.25.8 single-phase structure required.
 //   3. stampSchemaVersion moved after the error check — prevents a partial
 //      migration from falsely reporting schema_version as up-to-date when
 //      a lock-blocked DDL step failed silently.
@@ -29,7 +29,7 @@ func TestCommitIndexDeclaredInSchema(t *testing.T) {
 	src := readSchemaSQLForV0257(t)
 
 	if !strings.Contains(src, "idx_commits_cmt_ght_author_id") {
-		t.Error("schema.sql must declare idx_commits_cmt_ght_author_id — the index on commits.cmt_ght_author_id that was missing in pre-v0.25.7 and caused a 2+ day matview rebuild on aveloxis_large")
+		t.Error("schema.sql must declare idx_commits_cmt_ght_author_id — the index on commits.cmt_ght_author_id that was missing in pre-v0.25.8 and caused a 2+ day matview rebuild on aveloxis_large")
 	}
 	if !strings.Contains(src, "WHERE cmt_ght_author_id IS NOT NULL") {
 		t.Error("idx_commits_cmt_ght_author_id must be a partial index (WHERE cmt_ght_author_id IS NOT NULL) to mirror the matview commit branch's filter and keep the index ~8% smaller than a full index")
@@ -69,14 +69,14 @@ func TestCommitBranchGroupsByCommitColumnsOnly(t *testing.T) {
 
 // TestCommitBranchDoesNotGroupByContributorText is the negative pin.
 // If cntrb_full_name or cntrb_login appear in the GROUP BY, the JOIN
-// must happen before the aggregation, which was the pre-v0.25.7 root
+// must happen before the aggregation, which was the pre-v0.25.8 root
 // cause of the 381 GB seqscan and 2+ day rebuild.
 func TestCommitBranchDoesNotGroupByContributorText(t *testing.T) {
 	src := readMatviewsSQLForV0255(t)
 	region := extractMatviewBlock(t, src, "explorer_new_contributors")
 
 	if strings.Contains(region, "GROUP BY co.cmt_ght_author_id, co.repo_id, co.cmt_author_date,\n                      c.cntrb_full_name") {
-		t.Error("explorer_new_contributors commit branch must NOT include c.cntrb_full_name in the GROUP BY — that forces the contributors JOIN before aggregation, requiring PostgreSQL to hash-aggregate 434M joined rows (pre-v0.25.7 root cause of the 2+ day rebuild)")
+		t.Error("explorer_new_contributors commit branch must NOT include c.cntrb_full_name in the GROUP BY — that forces the contributors JOIN before aggregation, requiring PostgreSQL to hash-aggregate 434M joined rows (pre-v0.25.8 root cause of the 2+ day rebuild)")
 	}
 	if strings.Contains(region, "GROUP BY co.cmt_ght_author_id, co.repo_id, co.cmt_author_date,\n                      c.cntrb_login") {
 		t.Error("explorer_new_contributors commit branch must NOT include c.cntrb_login in the GROUP BY — same root cause as cntrb_full_name")
@@ -123,7 +123,7 @@ func TestStampSchemaVersionAfterErrorCheck(t *testing.T) {
 	if stampPos < errorCheckPos {
 		t.Errorf("stampSchemaVersion (pos %d) must appear AFTER the error check (pos %d) — "+
 			"calling it before means a partial migration stamps the schema as complete, "+
-			"suppressing CheckSchemaVersion warnings in web/api (v0.25.7 fix for the "+
+			"suppressing CheckSchemaVersion warnings in web/api (v0.25.8 fix for the "+
 			"2026-06-02 incident where a lock-blocked ALTER TABLE produced a false schema_version stamp)",
 			stampPos, errorCheckPos)
 	}

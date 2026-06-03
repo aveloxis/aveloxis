@@ -1065,7 +1065,7 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		"v0.25.6 drop idx_contributors_canonical_eq_email (obsoleted by matview rewrite)",
 		`DROP INDEX IF EXISTS aveloxis_data.idx_contributors_canonical_eq_email`)
 
-	// v0.25.7 — index on commits.cmt_ght_author_id.
+	// v0.25.8 — index on commits.cmt_ght_author_id.
 	//
 	// cmt_ght_author_id is a plain UUID column with no REFERENCES clause
 	// in schema.sql, so it was invisible to the v0.22.6 FK-index audit
@@ -1126,7 +1126,7 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		// migration must not stamp the schema as up-to-date — that would
 		// cause CheckSchemaVersion (used by `aveloxis web` and `aveloxis
 		// api` at startup) to suppress its "schema behind binary" warning,
-		// hiding the incomplete migration from the operator. Pre-v0.25.7
+		// hiding the incomplete migration from the operator. Pre-v0.25.8
 		// stampSchemaVersion was called unconditionally before this check,
 		// which is how a lock-blocked addColumnIfMissing could result in a
 		// partial schema stamped as complete (observed 2026-06-02 on

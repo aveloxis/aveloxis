@@ -367,11 +367,11 @@ WITH branched AS (
 
     -- commits
     --
-    -- v0.25.7: two-phase structure — GROUP BY on commit-side columns
+    -- v0.25.8: two-phase structure — GROUP BY on commit-side columns
     -- only (cmt_ght_author_id, repo_id, cmt_author_date), then JOIN
     -- contributor text fields onto the smaller grouped result.
     --
-    -- Pre-v0.25.7 the JOIN happened before the GROUP BY, requiring
+    -- Pre-v0.25.8 the JOIN happened before the GROUP BY, requiring
     -- PostgreSQL to join all ~434M attributed commit rows with 1.7M
     -- contributors before collapsing them. Without an index on
     -- cmt_ght_author_id (a plain UUID column, never declared as a FK
@@ -382,7 +382,7 @@ WITH branched AS (
     -- The two-phase approach reduces the join input from ~434M rows to
     -- the number of distinct (author_id, repo_id, date) groups before
     -- touching contributors. idx_commits_cmt_ght_author_id (added in
-    -- v0.25.7 migrate.go) makes the inner GROUP BY index-backed.
+    -- v0.25.8 migrate.go) makes the inner GROUP BY index-backed.
     SELECT * FROM (
         SELECT id, created_at, repo_id, 'commit'::text AS action, full_name, login,
                row_number() OVER (PARTITION BY id, repo_id ORDER BY created_at DESC) AS br

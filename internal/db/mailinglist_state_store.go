@@ -208,6 +208,66 @@ func (s *PostgresStore) MailingListStats(ctx context.Context) (MailingListStats,
 	return st, rows.Err()
 }
 
+// MailingListCoverage extends MailingListStats with the per-branch signals
+// the Phase 4 `verify-mailing-list` harness gates on: which archive
+// backends fired, how messages routed (bridged to issue / PR / mirror vs
+// list-only), and whether threading + external-key + sender resolution
+// produced output. Every field is a count; the harness reads a non-zero
+// count as "this logic branch fired at least once."
+type MailingListCoverage struct {
+	MailingListStats
+	BySystem          map[string]int64 // email_message grouped by ml_system (proves both backends ran)
+	BridgedToIssue    int64            // email_message.linked_issue_id IS NOT NULL
+	BridgedToPR       int64            // email_message.linked_pull_request_id IS NOT NULL
+	MirrorLinked      int64            // is_mirror AND linked to a local issue/PR
+	ThreadRooted      int64            // thread_root_id IS NOT NULL (threading resolved a root)
+	ExternalKeyIssues int64            // issues.external_key <> '' (Jira/Bugzilla key backfill)
+}
+
+// MailingListCoverage returns the extended branch-coverage rollup.
+func (s *PostgresStore) MailingListCoverage(ctx context.Context) (MailingListCoverage, error) {
+	var cov MailingListCoverage
+	cov.BySystem = map[string]int64{}
+
+	base, err := s.MailingListStats(ctx)
+	if err != nil {
+		return cov, err
+	}
+	cov.MailingListStats = base
+
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE linked_issue_id IS NOT NULL),
+		       count(*) FILTER (WHERE linked_pull_request_id IS NOT NULL),
+		       count(*) FILTER (WHERE is_mirror AND (linked_issue_id IS NOT NULL OR linked_pull_request_id IS NOT NULL)),
+		       count(*) FILTER (WHERE thread_root_id IS NOT NULL)
+		FROM aveloxis_data.email_message`).
+		Scan(&cov.BridgedToIssue, &cov.BridgedToPR, &cov.MirrorLinked, &cov.ThreadRooted); err != nil {
+		return cov, fmt.Errorf("mailing-list coverage (routing): %w", err)
+	}
+
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM aveloxis_data.issues WHERE external_key <> ''`).
+		Scan(&cov.ExternalKeyIssues); err != nil {
+		return cov, fmt.Errorf("mailing-list coverage (external_key): %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT COALESCE(ml_system,''), count(*) FROM aveloxis_data.email_message GROUP BY ml_system ORDER BY 2 DESC`)
+	if err != nil {
+		return cov, fmt.Errorf("mailing-list coverage (by system): %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sys string
+		var n int64
+		if err := rows.Scan(&sys, &n); err != nil {
+			return cov, err
+		}
+		cov.BySystem[sys] = n
+	}
+	return cov, rows.Err()
+}
+
 // ListsForSystem returns the registered lists for a system (diagnostic).
 func (s *PostgresStore) ListsForSystem(ctx context.Context, system string) ([]ListJob, error) {
 	rows, err := s.pool.Query(ctx, `

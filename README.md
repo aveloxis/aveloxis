@@ -1279,5 +1279,35 @@ Or if you prefer a one-liner from the repo root:
 pip install sphinx sphinx-rtd-theme myst-parser && sphinx-build -b html docs docs/_build/html && open docs/_build/html/index.html
 ```
 
+##### Turning on Apache Mailing List Collection
+Starting Apache mailing-list collection
+
+###### 1. Schema must be at v0.25.9+ (the mailing-list tables + platform 6):
+aveloxis stop all && aveloxis migrate --skip-views && aveloxis start all
+
+###### 2. Make sure the repos exist (lists attach to a repo's group):
+aveloxis load-foundation-core-repos        # one primary repo per Apache project
+aveloxis load-foundation-orgs --yes        # optional: track the whole apache org so sibling repos resolve
+
+###### 3. Register the per-PMC dev@/users@ lists:
+aveloxis load-apache-lists                 # --dry-run first to preview
+
+// 4. Turn the worker on in aveloxis.json, then restart serve:
+"collection": {
+  "mailing_list_enabled": true,
+  "mailing_list_polite_email": "you@example.org"   // sets the contact header
+}
+
+aveloxis stop serve && aveloxis start serve        # the MailingListWorker spawns inside serve
+
+###### 5. Watch it:
+aveloxis mailing-list-stats                        # coverage rollup
+aveloxis verify-mailing-list                       # PASS/EMPTY/DEFER branch table
+
+The single thing that actually turns it on is mailing_list_enabled: true + a serve restart — the worker is a decoupled pool inside serve and claims its own list queue. It's off by default.
+Full reference: docs/architecture/mailing-list.md.
+
+One reminder from this run: the cross-subsystem branches (bridge-to-issue, sender resolution, external_key) fill in best when a list's linked repo has its GitHub data collected first — otherwise they backfill over time rather than resolving inline.
+
 # Detailed LCF
 Aveloxis is free software: you can redistribute it and/or modify it under the terms of the MIT License as published by the Open Source Initiative. See the [LICENSE](LICENSE) file for more details. This work has been funded almost entirely through the Alfred P. Sloan Foundation. Mozilla, The Reynolds Journalism Institute, VMWare, Red Hat Software, Grace Hopper's Open Source Day, GitHub, Microsoft, Twitter, Adobe, the Gluster Project, Open Source Summit (NA/Europe), and the Linux Foundation Compliance Summit have made contributions to the code and in some cases financially supported the development of Aveloxis's predecessoar, Augur, from 2017 to 2026.  Aveloxis collects open source community health data from GitHub and GitLab with equal completeness, storing it in a shared PostgreSQL schema for cross-platform analysis. It is designed as an upgrade to the [Augur](https://github.com/chaoss/augur) collection pipeline. A feature and robustness comparison is available in the [Comparison with Augur section of this readme.](#comparison-with-augur)

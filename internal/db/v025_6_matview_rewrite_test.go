@@ -198,10 +198,11 @@ func TestVersionStampedV0256(t *testing.T) {
 	// (matview commit-index fix) → 0.25.9 (Phase 4 verify-mailing-list
 	// harness + PonyMail FirstMonth cheap-window fix) → 0.25.10
 	// (explorer_new_contributors malformed-author-date guard) → 0.25.11
-	// (refresh tool_version on every data_collection_date upsert).
+	// (refresh tool_version on every data_collection_date upsert) → 0.25.12
+	// (mailing_list_backfill_months 0 = full history reachable again).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.11"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.11\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.12"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.12\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

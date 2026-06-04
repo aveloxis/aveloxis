@@ -590,11 +590,11 @@ type CollectionConfig struct {
 	// Off by default. Collects dev@/users@ discussion + governance into
 	// email_message + messages; jira@/commits@ are mirror-aware.
 	MailingListEnabled        bool   `json:"mailing_list_enabled"`
-	MailingListWorkers        int    `json:"mailing_list_workers"`         // concurrent list runners (default 2)
-	MailingListCadenceDays    int    `json:"mailing_list_cadence_days"`    // tail-refresh cadence (default 30)
-	MailingListBackfillMonths int    `json:"mailing_list_backfill_months"` // history window when a list has no checkpoint (default 6)
-	MailingListPoliteEmail    string `json:"mailing_list_polite_email"`    // contact in the User-Agent so archive admins can reach us
-	MailingListMirrorHandling string `json:"mailing_list_mirror_handling"` // skip | metadata_only (default) | full
+	MailingListWorkers        int    `json:"mailing_list_workers"`                   // concurrent list runners (default 2)
+	MailingListCadenceDays    int    `json:"mailing_list_cadence_days"`              // tail-refresh cadence (default 30)
+	MailingListBackfillMonths *int   `json:"mailing_list_backfill_months,omitempty"` // history window when a list has no checkpoint (absent → 6; explicit 0 or negative → full history from the list's first month)
+	MailingListPoliteEmail    string `json:"mailing_list_polite_email"`              // contact in the User-Agent so archive admins can reach us
+	MailingListMirrorHandling string `json:"mailing_list_mirror_handling"`           // skip | metadata_only (default) | full
 }
 
 // MailingListCadenceDuration returns the per-list tail-refresh cadence.
@@ -614,12 +614,17 @@ func (c *CollectionConfig) MailingListWorkersOrDefault() int {
 	return c.MailingListWorkers
 }
 
-// MailingListBackfillMonthsOrDefault falls back to a 6-month window.
+// MailingListBackfillMonthsOrDefault returns the history window for a list
+// with no checkpoint. A nil field (absent from aveloxis.json) → the bounded
+// default of 6 months. An explicit value is passed through unchanged,
+// INCLUDING 0 or negative, which the worker interprets as "full history from
+// the list's first month". Coercing <= 0 to 6 (the pre-v0.25.12 bug) made
+// full-history mode unreachable, so lists only collected the recent ~6 months.
 func (c *CollectionConfig) MailingListBackfillMonthsOrDefault() int {
-	if c.MailingListBackfillMonths <= 0 {
+	if c.MailingListBackfillMonths == nil {
 		return 6
 	}
-	return c.MailingListBackfillMonths
+	return *c.MailingListBackfillMonths
 }
 
 // MailingListMirrorHandlingOrDefault falls back to "metadata_only".
@@ -989,10 +994,12 @@ func DefaultConfig() *Config {
 			DistributionTrackingWorkers:          4,
 			DistributionTrackingStartIntervalSec: 30,
 			// v0.25.7 MailingListWorker. Off by default.
-			MailingListEnabled:        false,
-			MailingListWorkers:        2,
-			MailingListCadenceDays:    30,
-			MailingListBackfillMonths: 6,
+			MailingListEnabled:     false,
+			MailingListWorkers:     2,
+			MailingListCadenceDays: 30,
+			// MailingListBackfillMonths left nil → MailingListBackfillMonthsOrDefault()
+			// returns 6. Set it explicitly to 0 (or negative) in aveloxis.json for
+			// full-history collection from each list's first month.
 			MailingListMirrorHandling: "metadata_only",
 		},
 		LogLevel: "info",

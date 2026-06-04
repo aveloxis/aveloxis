@@ -199,6 +199,23 @@ All under `collection` in `aveloxis.json`:
 }
 ```
 
+## 11c. Layer 2 projection — mailing-list → canonical entities (Phase 3)
+
+Layer 1 (every email → `email_message` + body + classification + threading) is universal and lossless. **Layer 2** *additionally* projects a message onto a canonical entity (`issues` / `pull_requests` / `pull_request_reviews`) **only where the mail maps cleanly to how that community operates** — gated by the per-system `projection_policy` in `systems.yaml` (`clean_fit` for Apache; `none` for the forge-less kernel). The processor reads the policy via `System.ProjectionClean()`.
+
+**Analytical purpose:** before this subsystem, Apache projects' issue data was *absent* (Apache tracks issues in Jira/Bugzilla, not GitHub Issues). Projected issues land under the **PMC's GitHub `repo_id`** — `issues` has no `platform_id` column, the repo carries the platform — so they appear in that repo's standard per-repo issue analytics exactly like native issues. Provenance lives in `external_key` + `data_source` (`'JIRA'`) + `tool_source`.
+
+**Phase A (shipped) — `issue_event → issues` link-or-create** (`MailingListProcessor`, drain-time):
+
+1. An `issue_event` message with a parsed `external_key` (e.g. `KAFKA-123`): if an issue with that key already exists in the repo → **LINK** (`email_message.linked_issue_id` + `issue_message_ref`). Else → **CREATE** a synthetic issue (negative, deterministic `platform_issue_id` from the key, idempotent on `(repo_id, platform_issue_id)`).
+2. Every projected email is bridged as a comment (`issue_message_ref`), and `issues.comment_count` is recomputed so threads show in analytics.
+3. `reporter_id` is the resolved sender **only when it is not the `jira@`/bot sender** (attribution integrity); real-actor-from-body parsing is a follow-up.
+4. `email_message.projected_kind` records the outcome (`issue`/`pr`/`review`/`mailing_list_only`) so "what did this become" is queryable without joins.
+
+**Phase B (verified, NOT built) — PR/review synthesis** from `github_mirror` mail. Verification (2026-06-04, summary/12 §3) settled it: `pull_requests.platform_pr_id` stores the GitHub PR **`databaseId`**, but mirror mail carries only the PR **number** — a synthesized PR keyed on the number would *duplicate* the API collector's row rather than merge. Decision: **don't synthesize**; the lever for full Apache PR data is **org collection** (`load-foundation-orgs`) + the existing `github_mirror` **LINK** path (which already covers collected PRs correctly). `linked_pr_review_id` remains in the schema should a future uncollectable-sibling case justify a number→databaseId resolution step.
+
+For `projection_policy: none` (kernel): none of the above runs — a `[PATCH]` is not a PR; Layer 1 is the faithful record.
+
 ## 12. Verification (Phase 4) and the collection-ordering caveat
 
 `aveloxis verify-mailing-list` is the branch-coverage harness: it reports, per logic branch, whether the subsystem produced any rows — every `msg_class`, both backends, each routing outcome, threading, signaled-repo resolution, sender resolution, and `external_key` backfill — each marked **PASS / EMPTY / DEFER**. `--strict` exits non-zero if a *required* (mailing-list-native) branch is empty, so it can gate a verification collection.
@@ -219,8 +236,10 @@ All under `collection` in `aveloxis.json`:
 - **Adding a backend**: [`docs/contributing/adding-a-platform.md`](../contributing/adding-a-platform.md) (the `ArchiveSource` interface follows the platform-extension shape).
 - **Source-of-truth files**:
   - `internal/mailinglist/` — `systems.yaml` + classifier, `defensive.go` (Pacer/Breaker), `archive.go` (interface + mbox/RFC822 parse), `ponymail.go`, `publicinbox.go`
-  - `internal/collector/mailinglist_worker.go` — claim→fetch→classify→resolve→route→checkpoint
+  - `internal/collector/mailinglist_worker.go` — fetch→classify→STAGE→checkpoint (the fetch half)
+  - `internal/collector/mailinglist_processor.go` — drain staging → resolve sender/mirror/repo → project (Layer 2) → write `email_message`/`messages`/bridges (the resolve+write half)
+  - `internal/db/mailinglist_staging_store.go`, `internal/db/mailinglist_projection_store.go`, `internal/db/mailinglist_sender_resolve_store.go`
   - `internal/db/email_message_store.go`, `internal/db/mailinglist_state_store.go`
   - `cmd/aveloxis/{load_foundation_orgs,load_apache_lists,register_mailing_list,backfill_external_keys,mailing_list_stats,verify_mailing_list}.go`
   - `internal/api/server.go` — `handleMailingListStats`
-- **Design archive**: `summary/10-apache-history-ingestion.md`, `summary/11-apache-mailing-list-implementation-plan.md`.
+- **Design archive**: `summary/10-apache-history-ingestion.md`, `summary/11-apache-mailing-list-implementation-plan.md`, `summary/12-mailing-list-projection.md`.

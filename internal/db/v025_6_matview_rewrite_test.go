@@ -207,10 +207,14 @@ func TestVersionStampedV0256(t *testing.T) {
 	// direct-upsert path that reproduced Augur's contention) → 0.25.15
 	// (Phase 2: runMailingListSenderResolve ticker resolves mailing-list
 	// senders the DB can't, via the shared email→identity chain — Search +
-	// global commit-search — and links/creates the contributor).
+	// global commit-search — and links/creates the contributor) → 0.25.16
+	// (Phase 3/Phase A: issue_event → issues link-or-create projection for
+	// clean_fit systems + projection_policy gate + email_message
+	// linked_pr_review_id/projected_kind columns. Apache issue data, formerly
+	// absent, lands under the PMC repo for standard per-repo analytics).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.15"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.15\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.16"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.16\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

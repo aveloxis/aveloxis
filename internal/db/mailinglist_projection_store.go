@@ -73,30 +73,42 @@ func (s *PostgresStore) LinkOrCreateIssueFromEmail(ctx context.Context, repoID i
 		return 0, false, fmt.Errorf("link-or-create issue: empty external_key")
 	}
 
-	// LINK: an existing issue for this key. Two ways it can present:
-	//  1. external_key column already set (backfill-issue-external-keys ran, or
-	//     a prior synthetic) — the exact-match case.
-	//  2. a native GitHub issue whose external_key is still EMPTY but whose
-	//     title carries the bracketed key (e.g. "lock files [LUCENE-1]") — the
-	//     Apache Jira→GitHub import shape. Matching this PREVENTS the
-	//     missed-LINK duplicate (#2): without it, projection-before-backfill
-	//     would mint a synthetic that squats the key (the UNIQUE index then
-	//     blocks the native issue from ever getting it). Exact-key matches sort
-	//     first so a real key always wins over a title heuristic.
+	// LINK: an existing issue for this key. Done as TWO queries so the common
+	// case is an indexed point-lookup, not a sequential scan:
+	//
+	//  1. EXACT external_key match (idx_issues_external_key) — fast. Covers
+	//     issues that already carry the key (backfill-issue-external-keys ran,
+	//     or a prior synthetic).
+	//  2. FALLBACK title match — a native GitHub issue whose external_key is
+	//     still EMPTY but whose title carries the bracketed key (e.g.
+	//     "lock files [LUCENE-1]"). This is a leading-wildcard LIKE the btree
+	//     can't serve, so it runs ONLY when the exact match misses (and is
+	//     index-assisted by idx_issues_title_trgm). It PREVENTS the missed-LINK
+	//     duplicate (#2): without it, projecting before the key backfill would
+	//     mint a synthetic that squats the key.
 	var existing int64
 	lerr := s.pool.QueryRow(ctx,
 		`SELECT issue_id FROM aveloxis_data.issues
-		 WHERE repo_id = $1
-		   AND ( (external_key = $2 AND external_key <> '')
-		         OR issue_title LIKE '%[' || $2 || ']%' )
-		 ORDER BY (external_key = $2) DESC
-		 LIMIT 1`,
+		 WHERE repo_id = $1 AND external_key = $2 AND external_key <> '' LIMIT 1`,
 		repoID, externalKey).Scan(&existing)
 	if lerr == nil && existing > 0 {
 		return existing, false, nil
 	}
 	if lerr != nil && !errors.Is(lerr, pgx.ErrNoRows) {
 		return 0, false, fmt.Errorf("link-or-create issue: lookup by external_key: %w", lerr)
+	}
+	// Fallback: native issue carrying the key only in its title.
+	ferr := s.pool.QueryRow(ctx,
+		`SELECT issue_id FROM aveloxis_data.issues
+		 WHERE repo_id = $1 AND COALESCE(external_key, '') = ''
+		   AND issue_title LIKE '%[' || $2 || ']%'
+		 ORDER BY issue_id LIMIT 1`,
+		repoID, externalKey).Scan(&existing)
+	if ferr == nil && existing > 0 {
+		return existing, false, nil
+	}
+	if ferr != nil && !errors.Is(ferr, pgx.ErrNoRows) {
+		return 0, false, fmt.Errorf("link-or-create issue: lookup by title: %w", ferr)
 	}
 
 	// CREATE: synthetic issue, idempotent on (repo_id, platform_issue_id).

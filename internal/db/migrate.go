@@ -212,6 +212,18 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_rgls_group_email",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_rgls_group_email
 		 ON aveloxis_data.repo_groups_list_serve (repo_group_id, rgls_email)`)
+	// v0.25.20 — indexes for the mailing-list projection backfill's per-row
+	// lookups. Without these, backfill-mailing-list-projection (and the live
+	// projection path) sequential-scan messages / email_message per row — the
+	// cause of the ~500-rows-per-30-min crawl observed 2026-06-04. node_id is
+	// the body-row join key (UpsertMailingListMessageBody sets node_id =
+	// Message-ID); thread_root_id is FindIssueForThread's lookup key.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_messages_node_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_node_id
+		 ON aveloxis_data.messages (node_id) WHERE node_id <> ''`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_email_message_thread_root",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_thread_root
+		 ON aveloxis_data.email_message (thread_root_id) WHERE thread_root_id <> ''`)
 
 	// v0.21.0 — ScancodeWorker state on aveloxis_data.repos.
 	//
@@ -334,6 +346,11 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 				ON aveloxis_data.repos
 				USING GIN ((repo_owner || '/' || repo_name) gin_trgm_ops)`)
 	}
+	// NOTE: the mailing-list projection's LINK-by-title fallback
+	// (`issue_title LIKE '%[KEY-N]%'`) does NOT need a trigram index — the query
+	// filters `repo_id` first (idx_issues_repo_id), so the LIKE only scans one
+	// repo's issues, not the whole table. The exact external_key match is tried
+	// first (idx_issues_external_key) and the fallback runs only on a miss.
 
 	// pull_request_repo: add unique constraint for ON CONFLICT support (v0.12.0).
 	execCreateIndexConcurrently(ctx, pg, logger, &errs,

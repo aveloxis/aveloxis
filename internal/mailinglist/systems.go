@@ -61,10 +61,21 @@ type System struct {
 	ArchiveBackend  string `yaml:"archive_backend"`
 	BaseURL         string `yaml:"base_url"`
 	RepoURLTemplate string `yaml:"repo_url_template"` // e.g. https://github.com/apache/{repo}
-	Rules           []Rule `yaml:"rules"`
+	// ProjectionPolicy gates Layer 2 entity projection (summary/12 §2):
+	//   "clean_fit" — project issue_event→issues etc. where the community
+	//                 genuinely uses that entity (Apache: GitHub + Jira/Bugzilla).
+	//   "none"      — Layer-1 only; never synthesize a forge entity (kernel:
+	//                 forge-less, a [PATCH] is NOT a PR).
+	// Empty → treated as "none" (conservative default).
+	ProjectionPolicy string `yaml:"projection_policy"`
+	Rules            []Rule `yaml:"rules"`
 
 	compiled []compiledRule // built by compile()
 }
+
+// ProjectionClean reports whether this system projects mail onto canonical
+// entities (issues/PRs/reviews) per §2. Only "clean_fit" does.
+func (s *System) ProjectionClean() bool { return s.ProjectionPolicy == "clean_fit" }
 
 type compiledRule struct {
 	rule                                    Rule

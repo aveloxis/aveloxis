@@ -6,6 +6,7 @@ package collector
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +38,11 @@ type mlProcessorStore interface {
 	UpsertEmailMessage(ctx context.Context, em *model.EmailMessage) (int64, error)
 	UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string) (int64, error)
 	InsertEmailMessageRef(ctx context.Context, emailMessageID, msgID int64, repoGroupID *int64) error
+
+	// Phase A projection (§3): LINK an existing issue by external_key, else
+	// CREATE a synthetic one; bridge the email as a comment.
+	LinkOrCreateIssueFromEmail(ctx context.Context, repoID int64, externalKey, title, body, dataSource string, reporterID *string, createdAt time.Time) (int64, bool, error)
+	BridgeEmailToIssue(ctx context.Context, issueID, repoID, msgID int64) error
 }
 
 // MailingListProcessor drains aveloxis_ops.mailing_list_staging one list at a
@@ -45,10 +51,11 @@ type mlProcessorStore interface {
 // half of the v0.25.x staging split (summary/12 §11); the MailingListWorker is
 // the fetch+classify+stage half.
 type MailingListProcessor struct {
-	store          mlProcessorStore
-	system         string // ML system definition name (apache_ponymail | lore_public_inbox)
-	mirrorHandling string // skip | metadata_only | full (§5b)
-	logger         *slog.Logger
+	store           mlProcessorStore
+	system          string // ML system definition name (apache_ponymail | lore_public_inbox)
+	mirrorHandling  string // skip | metadata_only | full (§5b)
+	projectionClean bool   // §2: project issue_event→issues etc. (clean_fit systems only)
+	logger          *slog.Logger
 
 	// inflight guards single-threaded-per-list draining when more than one
 	// drain goroutine shares this Processor: a list being drained by one
@@ -58,15 +65,20 @@ type MailingListProcessor struct {
 	inflight map[int64]bool
 }
 
-// NewMailingListProcessor builds a processor for one ML system.
-func NewMailingListProcessor(store mlProcessorStore, system, mirrorHandling string, logger *slog.Logger) *MailingListProcessor {
+// NewMailingListProcessor builds a processor for one ML system. projectionClean
+// gates Layer-2 entity projection (§2): true for clean_fit systems (Apache),
+// false for forge-less systems (kernel) where mail stays Layer-1 only.
+func NewMailingListProcessor(store mlProcessorStore, system, mirrorHandling string, projectionClean bool, logger *slog.Logger) *MailingListProcessor {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if mirrorHandling != "skip" && mirrorHandling != "full" {
 		mirrorHandling = "metadata_only"
 	}
-	return &MailingListProcessor{store: store, system: system, mirrorHandling: mirrorHandling, logger: logger, inflight: map[int64]bool{}}
+	return &MailingListProcessor{
+		store: store, system: system, mirrorHandling: mirrorHandling,
+		projectionClean: projectionClean, logger: logger, inflight: map[int64]bool{},
+	}
 }
 
 // tryClaim marks a list as being drained; returns false if another goroutine
@@ -210,6 +222,29 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		linkedIssueID, linkedPRID, _ = p.store.ResolveMirrorLink(ctx, owner, m.MirrorRepo, m.MirrorKind, m.MirrorNumber)
 	}
 
+	// Phase A projection (§3): an issue_event with a parsed external_key →
+	// LINK an existing issue carrying that key, else CREATE a synthetic one.
+	// Only for clean_fit systems (Apache); forge-less systems stay Layer-1.
+	var projectedIssueID int64
+	if p.projectionClean && m.MsgClass == mailinglist.ClassIssueEvent && m.ExternalKey != "" {
+		// Reporter = the resolved sender, but NEVER the jira@/bot sender
+		// (attribution integrity; real-actor-from-body parsing is a follow-up).
+		var reporterID *string
+		if cntrbPtr != nil && !IsBotEmail(m.SenderEmail) {
+			reporterID = cntrbPtr
+		}
+		title := mailingListIssueTitle(m.Subject, m.ExternalKey)
+		// data_source = 'JIRA' for the Apache issue_event case (the only
+		// projected tracker today; Bugzilla support is a follow-up).
+		if id, _, perr := p.store.LinkOrCreateIssueFromEmail(ctx, repoID, m.ExternalKey, title, m.Body, "JIRA", reporterID, m.SentAt); perr != nil {
+			p.logger.Warn("mailing-list processor: issue projection failed",
+				"rgls_id", rglsID, "external_key", m.ExternalKey, "error", perr)
+		} else if id > 0 {
+			projectedIssueID = id
+			linkedIssueID = &id
+		}
+	}
+
 	// §5c mail-side resolution: if the signaled repo is already in the
 	// catalog, resolve signaled_repo_id now (the repo-side org-scan backfill
 	// handles mail that predates the repo).
@@ -250,6 +285,7 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		LinkedIssueID:        linkedIssueID,
 		LinkedPullRequestID:  linkedPRID,
 		LinkedExternalKey:    m.ExternalKey,
+		ProjectedKind:        projectedKind(linkedIssueID, linkedPRID, nil),
 		DataSource:           m.ListAddress,
 	}
 	emID, err := p.store.UpsertEmailMessage(ctx, em)
@@ -268,7 +304,45 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	if err != nil {
 		return err
 	}
-	return p.store.InsertEmailMessageRef(ctx, emID, msgID, row.RepoGroupID)
+	if err := p.store.InsertEmailMessageRef(ctx, emID, msgID, row.RepoGroupID); err != nil {
+		return err
+	}
+	// Bridge the email body as a comment on the projected issue so the thread
+	// shows up in per-repo issue analytics.
+	if projectedIssueID > 0 {
+		return p.store.BridgeEmailToIssue(ctx, projectedIssueID, repoID, msgID)
+	}
+	return nil
+}
+
+// projectedKind maps the resolved link fields to the §10a queryable kind.
+func projectedKind(issueID, prID, reviewID *int64) string {
+	switch {
+	case prID != nil:
+		return "pr"
+	case reviewID != nil:
+		return "review"
+	case issueID != nil:
+		return "issue"
+	default:
+		return "mailing_list_only"
+	}
+}
+
+// mailingListIssueTitle strips the tracker decoration from a subject so the
+// projected issue carries a clean title. Handles the Jira shape
+// "[jira] [Created] (KAFKA-123) summary" → "summary" (take the text after the
+// "(KEY)"), falling back to a leading "[KEY] " strip, else the trimmed subject.
+func mailingListIssueTitle(subject, externalKey string) string {
+	if externalKey != "" {
+		if i := strings.Index(subject, "("+externalKey+")"); i >= 0 {
+			return strings.TrimSpace(subject[i+len(externalKey)+2:])
+		}
+		if i := strings.Index(subject, "["+externalKey+"]"); i >= 0 {
+			return strings.TrimSpace(subject[i+len(externalKey)+2:])
+		}
+	}
+	return strings.TrimSpace(subject)
 }
 
 func derefInt64(p *int64) int64 {

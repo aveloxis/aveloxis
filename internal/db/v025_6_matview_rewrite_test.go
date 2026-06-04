@@ -204,10 +204,13 @@ func TestVersionStampedV0256(t *testing.T) {
 	// still defeated full history) → 0.25.14 (mailing-list staging refactor:
 	// MailingListWorker stages classified messages, a per-list single-threaded
 	// MailingListProcessor drains them — keeps the pipeline off the hot-table
-	// direct-upsert path that reproduced Augur's contention).
+	// direct-upsert path that reproduced Augur's contention) → 0.25.15
+	// (Phase 2: runMailingListSenderResolve ticker resolves mailing-list
+	// senders the DB can't, via the shared email→identity chain — Search +
+	// global commit-search — and links/creates the contributor).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.14"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.14\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.15"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.15\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

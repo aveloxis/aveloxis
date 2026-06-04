@@ -43,8 +43,14 @@ type EmailMessage struct {
 
 	LinkedIssueID       *int64
 	LinkedPullRequestID *int64
+	LinkedReviewID      *int64 // §10a: set when linked/synthesized to a PR review (Phase B)
 	LinkedExternalKey   string // 'KAFKA-20167' (hard for jira_event, soft when merely mentioned)
 	LinkedCommitHash    string
+
+	// ProjectedKind records what Layer 2 projected this email onto, so
+	// "what did this become" is queryable without joins (§10a):
+	// issue | pr | review | mailing_list_only.
+	ProjectedKind string
 
 	DataSource string // the specific list address, e.g. "dev@kafka.apache.org"
 

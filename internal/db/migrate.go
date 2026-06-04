@@ -191,6 +191,13 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_locked_at", "TIMESTAMPTZ")
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_locked_pid", "INTEGER")
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_groups_list_serve", "mlls_locked_boot_id", "TEXT DEFAULT ''")
+	// Phase 3 (summary/12 §10a): projection columns on email_message. NEW since
+	// v0.25.7. linked_pr_review_id completes the link triad (issue/pr/review);
+	// projected_kind records what the email was projected onto so it's queryable
+	// without joins.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.email_message", "linked_pr_review_id",
+		"BIGINT REFERENCES aveloxis_data.pull_request_reviews(pr_review_id) DEFERRABLE INITIALLY DEFERRED")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.email_message", "projected_kind", "TEXT DEFAULT ''")
 	// Partial unique on (repo_id, external_key): one issue per external key
 	// per repo. (issues has no platform_id column — issues are scoped by
 	// repo_id, which carries the platform.) Empty external_key (native

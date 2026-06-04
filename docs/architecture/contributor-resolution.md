@@ -1,6 +1,12 @@
 # Contributor Resolution
 
-Contributor resolution is the process of mapping platform user references — login names, numeric platform user IDs, commit author emails — to canonical contributor records in the database. It is one of the most heavily-exercised paths in aveloxis: every issue reporter, PR author, review author, message author, event actor, and commit author triggers it.
+Contributor resolution is the process of mapping platform user references — login names, numeric platform user IDs, commit-author emails, mailing-list sender emails — to canonical contributor records in the database. It is one of the most heavily-exercised paths in aveloxis: every issue reporter, PR author, review author, message author, event actor, commit author, and mailing-list sender triggers it.
+
+The whole subsystem has three layers worth keeping distinct in your head:
+
+1. **Data origins** — *where* a contributor reference enters the system (API actors, git commit authors, mailing-list senders). Each origin hands off a `login`, a `platform_user_id`, an email, or some subset.
+2. **Shared processing** — the resolution logic the origins funnel through. Login/ID references go through `ContributorResolver.Resolve`; **bare emails** (commit authors, mailing-list senders) go through one shared chain, [`ResolveEmailToIdentity`](#shared-emailidentity-resolution).
+3. **Identity** — the canonical `contributors` row (`cntrb_id`) every origin ultimately maps to, and the guarantees about it.
 
 This document is the **public contract** for contributor data in aveloxis. The contract has thirteen rules covering identity-key determinism, immutability, deduplication, enrichment, and FK integrity. Operators rely on these guarantees when writing analytics queries against `aveloxis_data.contributors` and its child tables.
 
@@ -19,6 +25,20 @@ The schema separates three concerns:
 - **`aveloxis_data.contributors_aliases`** — one row per distinct commit-author email; maps alternate emails back to the canonical contributor.
 
 A contributor with both a GitHub and a GitLab identity has one `contributors` row and two `contributor_identities` rows. A contributor with three different commit emails has one `contributors` row and three `contributors_aliases` rows.
+
+---
+
+## Where contributor data comes from
+
+Three independent origins feed contributor data. They differ in *what identifier they carry* and *which resolution path they take*, but all converge on a single `contributors` row.
+
+| Origin | Entry point | Identifier it carries | Resolution path |
+|---|---|---|---|
+| **Platform API actors** (issue/PR/review/comment authors, event actors) | Staged collector → `ContributorResolver.Resolve` | `login` + `platform_user_id` (+ name, email) | Login/ID lookup → deterministic-UUID INSERT ([Layer 1](#layer-1-api-phase-resolution-during-collection)) |
+| **Git commit authors** | Facade → `CommitResolver.ResolveCommits` | a bare commit-author **email** (rarely a noreply login) | Commit-specific SHA lookup, then the [shared email→identity chain](#shared-emailidentity-resolution) ([Layer 2](#layer-2-git-phase-resolution-after-facade)) |
+| **Mailing-list senders** | `MailingListProcessor` (drains staged email) + the sender-resolve ticker | a bare sender **email** (+ display name) | The [shared email→identity chain](#shared-emailidentity-resolution) ([Layer 3](#layer-3-background-tasks)) |
+
+The key structural point: **the two email-bearing origins (commits, mailing-list senders) share one resolution chain.** A commit author and a mailing-list sender with the same email resolve to the same `contributors` row, and an email that resolves to a platform identity *later* (as the DB fills) is reconciled by the same background machinery for both. This is deliberate — see [Shared email→identity resolution](#shared-emailidentity-resolution).
 
 ---
 
@@ -115,10 +135,10 @@ The `runSearchResolve` background task and its `LinkContributorToGitHubUser` wor
 3. `ParseNoreplyEmail` — extracts login + user_id from `12345+username@users.noreply.github.com` (free, no API call)
 4. Bot/junk email skip
 5. `FindLoginByEmail` — DB lookup against existing `cntrb_email` / `cntrb_canonical` / `contributors_aliases`
-6. GitHub Commits API (`/repos/{o}/{r}/commits/{sha}`) — 1 token call
-7. GitHub Search API (`/search/users?q={email}+in:email`) — 1 search-budget call
+6. GitHub Commits API (`/repos/{o}/{r}/commits/{sha}`) — 1 token call (commit-specific; uses the SHA, not the email)
+7. The **shared API tail** `ResolveEmailViaAPI` (Search API by email → global commit-search by author-email) — 1–2 search-budget calls
 
-Strategies 1–5 are free. Strategies 6–7 cost API quota and fire only on first observation.
+Strategies 1–5 are free. Strategies 6–7 cost API quota and fire only on first observation. Step 7 is NOT commit-specific — it is the same chain the mailing-list sender resolver uses (see [Shared email→identity resolution](#shared-emailidentity-resolution)). The commit resolver keeps its SHA lookup (step 6) ahead of it because the SHA is a stronger signal than an email for a commit.
 
 ### R13: Documentation as a first-class deliverable
 
@@ -163,7 +183,7 @@ For each unresolved commit:
         v
   resolveOne(hash, email)
         |
-        ├── hash cache → email cache → noreply parse → bot skip → DB lookup → Commits API → Search API
+        ├── hash cache → email cache → noreply parse → bot skip → DB lookup → Commits API → shared API tail (Search → global commit-search)
         |
         v
   on hit:
@@ -187,9 +207,32 @@ Three periodic tickers run inside `aveloxis serve`. Each is rate-limited and coo
 |---|---|---|---|
 | `runEnrichment` | 30 min | ≤14000 thin contributors → `client.EnrichContributor(login)` → `UpsertContributorBatch` | `cntrb_last_enriched_at` |
 | `runSearchResolve` | 1 hour | ≤100 contributors with email + no `gh_user_id` → `SearchUserByEmail` → `LinkContributorToGitHubUser` on hit | `cntrb_last_search_attempted_at` |
+| `runMailingListSenderResolve` | 1 hour | ≤N mailing-list senders (≥ message threshold) with no resolved `cntrb_id` → [shared email→identity chain](#shared-emailidentity-resolution) → link/create on hit | `sender_last_resolve_attempt` |
 | `runBreadth` | configurable | Discovers cross-repo contributor activity via Events API; writes `contributor_repo` only | n/a (per-contributor priority) |
 
-In addition to the tickers, every per-job collection runs the commit resolver (Layer 2) and a `ResolveEmailsToCanonical` pass that fills `cntrb_canonical` for ≤500 contributors per call.
+The two email-resolve tickers (`runSearchResolve` for contributor rows, `runMailingListSenderResolve` for mailing-list senders) are the **convergence machinery**: an email observed before its owner's platform identity is known gets re-attempted as the DB fills, so email-only rows acquire a `gh_user_id` over days without re-collection. In addition to the tickers, every per-job collection runs the commit resolver (Layer 2) and a `ResolveEmailsToCanonical` pass that fills `cntrb_canonical` for ≤500 contributors per call.
+
+### Shared email→identity resolution
+
+Two origins carry a bare email rather than a platform login: **git commit authors** and **mailing-list senders**. Both resolve that email through ONE shared function so the two paths can never drift on what "resolve an email" means (operator directive, 2026-06-04: *"one shared piece of code for these two distinct but highly similar use cases"*). It lives in `internal/collector/email_identity_resolver.go`:
+
+```
+ResolveEmailToIdentity(store, client, email)
+        |
+        ├── 1. ParseNoreplyEmail        — free; login+id from a GitHub noreply address
+        ├── 2. bot/junk/non-email skip  — free
+        ├── 3. FindLoginByEmail (DB)    — existing cntrb_email / canonical / aliases
+        └── 4. ResolveEmailViaAPI:
+                 ├── SearchUserByEmail            — /search/users?q={email}+in:email   (public-profile email only, ~8–11%)
+                 └── SearchCommitByAuthorEmail    — /search/commits?q=author-email:{email}  (GLOBAL; ~35%, the load-bearing step for private-profile emails)
+```
+
+- **`ResolveEmailToIdentity`** is the full chain (noreply → bot → DB → API tail). The mailing-list sender resolver and the batch `MailingListProcessor` call this.
+- **`ResolveEmailViaAPI`** is just the API tail (Search → global commit-search). The `CommitResolver` calls this directly as its step 7, keeping its commit-specific SHA lookup (step 6) ahead of it — see [R12](#r12-commit-author-resolution-chain-order).
+- A no-resolution outcome is `("", 0, "", nil)` — **not** an error. Errors are returned only on transport/5xx failures the caller should retry. This matches the platform search-method contract.
+- The returned `source` (`noreply` / `db` / `search` / `commit-search`) is telemetry: it tells operators *how* an email was resolved, which is the signal for tuning the API budget.
+
+Global commit-search is the reason mailing-list senders resolve at all for the common case (a participant who keeps their profile email private but has authored a public commit somewhere on GitHub). It is the single highest-yield step and is why the chain is shared rather than duplicated per origin.
 
 ---
 
@@ -587,9 +630,11 @@ These are documented for transparency, not blocking issues. Closing them would r
 | `UpsertContributorBatch` | `internal/db/postgres.go` | Layer 1: bulk path with in-memory dedup; mandated by R8. |
 | `UpsertContributorFull` | `internal/db/commit_resolver_store.go` | Layer 2: commit-resolver path with 23505 fallback. |
 | `LinkContributorToGitHubUser` | `internal/db/contributor_search_resolve.go` | Layer 3: search-resolve link path; pinned by R11 not to modify identity. |
+| `ResolveEmailToIdentity` / `ResolveEmailViaAPI` | `internal/collector/email_identity_resolver.go` | The shared email→identity chain used by commit + mailing-list resolution. |
 | `EnrichThinContributors` | `internal/collector/enrich.go` | Layer 3: periodic enrichment ticker handler. |
-| `CommitResolver.ResolveCommits` | `internal/collector/commit_resolver.go` | Layer 2: per-job commit-author chain. |
-| `ParseNoreplyEmail` | `internal/collector/noreply.go` | R12 strategy 3. |
+| `CommitResolver.ResolveCommits` | `internal/collector/commit_resolver.go` | Layer 2: per-job commit-author chain (calls `ResolveEmailViaAPI` as step 7). |
+| `MailingListProcessor` | `internal/collector/mailinglist_processor.go` | Drains staged mailing-list messages; resolves senders via `ResolveEmailToIdentity`. |
+| `ParseNoreplyEmail` | `internal/collector/noreply.go` | R12 strategy 3 / shared-chain strategy 1. |
 | `PlatformUUID` / `GithubUUID` / `GitLabUUID` | `internal/db/github_uuid.go` | R1 deterministic encoding. |
 
 ---
@@ -598,4 +643,5 @@ These are documented for transparency, not blocking issues. Closing them would r
 
 - [Facade Commits](facade-commits.md) — how git log data feeds Layer 2.
 - [Staged Pipeline](staged-pipeline.md) — how staging feeds Layer 1.
+- [Mailing-list ingestion](mailing-list.md) — how mailing-list senders feed Layer 3 (the third data origin).
 - [Overview](overview.md) — system architecture.

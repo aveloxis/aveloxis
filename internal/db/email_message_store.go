@@ -202,24 +202,41 @@ func (s *PostgresStore) ResolveMirrorLink(ctx context.Context, owner, repo, kind
 // Pattern-A signal where Apache bulk-imported Jira history into GitHub
 // issues. Idempotent (only fills empty keys). Returns rows updated.
 //
-// Conflict-safe: skips an issue whose derived key is ALREADY held by another
-// issue in the same repo (the UNIQUE idx_issues_external_key forbids two). That
-// collision arises when mailing-list projection minted a synthetic issue that
-// squats the key before this backfill ran (the missed-LINK shadow surfaced by
-// `mailing-list-stats`). Without the NOT EXISTS guard the whole UPDATE fails
-// with 23505; with it, the shadowed native issue is simply left key-less for
-// the operator to merge.
+// Conflict-safe against BOTH collision shapes the UNIQUE idx_issues_external_key
+// (repo_id, external_key) can hit:
+//
+//  1. Two empty-key issues in the same repo whose titles derive the SAME key
+//     (common in Apache Jira→GitHub imports — renamed/duplicate titles). A
+//     blind UPDATE would set both to the same value and fail 23505 WITHIN the
+//     statement. `DISTINCT ON (repo_id, key)` picks exactly one winner (lowest
+//     issue_id) per (repo, key) so only one row is keyed.
+//  2. A sibling that ALREADY holds the key (e.g. a synthetic issue minted by
+//     mailing-list projection that squats it — the missed-LINK shadow surfaced
+//     by `mailing-list-stats`). The NOT EXISTS guard skips those.
+//
+// In both cases the loser/shadowed issue is left key-less rather than erroring.
+// Idempotent. Returns the number of issues keyed.
 func (s *PostgresStore) BackfillIssueExternalKeys(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
+		WITH derived AS (
+		    SELECT issue_id, repo_id,
+		           substring(issue_title from '\[([A-Z][A-Z0-9]+-[0-9]+)\]') AS k
+		    FROM aveloxis_data.issues
+		    WHERE COALESCE(external_key, '') = ''
+		      AND issue_title ~ '\[[A-Z][A-Z0-9]+-[0-9]+\]'
+		),
+		pick AS (
+		    SELECT DISTINCT ON (repo_id, k) issue_id, repo_id, k
+		    FROM derived
+		    ORDER BY repo_id, k, issue_id
+		)
 		UPDATE aveloxis_data.issues i
-		SET external_key = substring(i.issue_title from '\[([A-Z][A-Z0-9]+-[0-9]+)\]')
-		WHERE COALESCE(i.external_key, '') = ''
-		  AND i.issue_title ~ '\[[A-Z][A-Z0-9]+-[0-9]+\]'
+		SET external_key = p.k
+		FROM pick p
+		WHERE i.issue_id = p.issue_id
 		  AND NOT EXISTS (
 		      SELECT 1 FROM aveloxis_data.issues j
-		      WHERE j.repo_id = i.repo_id
-		        AND j.issue_id <> i.issue_id
-		        AND j.external_key = substring(i.issue_title from '\[([A-Z][A-Z0-9]+-[0-9]+)\]')
+		      WHERE j.repo_id = p.repo_id AND j.issue_id <> p.issue_id AND j.external_key = p.k
 		  )`)
 	if err != nil {
 		return 0, fmt.Errorf("backfill issue external keys: %w", err)

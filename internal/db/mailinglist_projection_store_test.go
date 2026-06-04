@@ -249,3 +249,37 @@ func TestBackfillExternalKeysConflictSafe(t *testing.T) {
 		t.Errorf("shadowed native issue must stay key-less (synthetic owns RT-1); got %q", nativeKey)
 	}
 }
+
+// TestBackfillExternalKeysSameStatementDup pins the harder collision the first
+// fix missed: TWO empty-key issues in one repo whose titles derive the SAME
+// key. A blind UPDATE sets both → 23505 within the statement. The DISTINCT ON
+// winner-per-(repo,key) fix must key exactly one and not error.
+func TestBackfillExternalKeysSameStatementDup(t *testing.T) {
+	store, ctx := emConnect(t)
+	defer store.Close()
+
+	const repoGit = "https://github.com/_av_ssd/repo"
+	clean := func() {
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.issues WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git=$1)`, repoGit)
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_git=$1`, repoGit)
+	}
+	clean()
+	t.Cleanup(clean)
+
+	var repoID int64
+	store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (platform_id, repo_git, repo_owner, repo_name) VALUES (1,$1,'_av_ssd','repo') RETURNING repo_id`, repoGit).Scan(&repoID)
+	// Two native issues, same repo, same bracketed key, both empty external_key.
+	store.pool.Exec(ctx, `INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number, external_key, issue_title) VALUES
+		($1, 8810001, 1, '', 'add thing [XDUP-1]'),
+		($1, 8810002, 2, '', 'Re: add thing [XDUP-1]')`, repoID)
+
+	if _, err := store.BackfillIssueExternalKeys(ctx); err != nil {
+		t.Fatalf("must not 23505 on two empty-key issues with the same derived key; got %v", err)
+	}
+	// Exactly one issue got the key (the lowest issue_id wins).
+	var keyed int
+	store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_data.issues WHERE repo_id=$1 AND external_key='XDUP-1'`, repoID).Scan(&keyed)
+	if keyed != 1 {
+		t.Errorf("exactly one issue must be keyed XDUP-1, got %d", keyed)
+	}
+}

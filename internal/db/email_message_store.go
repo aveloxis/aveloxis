@@ -201,12 +201,26 @@ func (s *PostgresStore) ResolveMirrorLink(ctx context.Context, owner, repo, kind
 // carrying a bracketed tracker key (e.g. "... [LUCENE-1]") — the §6
 // Pattern-A signal where Apache bulk-imported Jira history into GitHub
 // issues. Idempotent (only fills empty keys). Returns rows updated.
+//
+// Conflict-safe: skips an issue whose derived key is ALREADY held by another
+// issue in the same repo (the UNIQUE idx_issues_external_key forbids two). That
+// collision arises when mailing-list projection minted a synthetic issue that
+// squats the key before this backfill ran (the missed-LINK shadow surfaced by
+// `mailing-list-stats`). Without the NOT EXISTS guard the whole UPDATE fails
+// with 23505; with it, the shadowed native issue is simply left key-less for
+// the operator to merge.
 func (s *PostgresStore) BackfillIssueExternalKeys(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE aveloxis_data.issues
-		SET external_key = substring(issue_title from '\[([A-Z][A-Z0-9]+-[0-9]+)\]')
-		WHERE COALESCE(external_key, '') = ''
-		  AND issue_title ~ '\[[A-Z][A-Z0-9]+-[0-9]+\]'`)
+		UPDATE aveloxis_data.issues i
+		SET external_key = substring(i.issue_title from '\[([A-Z][A-Z0-9]+-[0-9]+)\]')
+		WHERE COALESCE(i.external_key, '') = ''
+		  AND i.issue_title ~ '\[[A-Z][A-Z0-9]+-[0-9]+\]'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM aveloxis_data.issues j
+		      WHERE j.repo_id = i.repo_id
+		        AND j.issue_id <> i.issue_id
+		        AND j.external_key = substring(i.issue_title from '\[([A-Z][A-Z0-9]+-[0-9]+)\]')
+		  )`)
 	if err != nil {
 		return 0, fmt.Errorf("backfill issue external keys: %w", err)
 	}

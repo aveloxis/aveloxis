@@ -137,3 +137,50 @@ func TestLinkMailingListSenderCreatesContributorAndAlias(t *testing.T) {
 		t.Errorf("expected an alias row mapping %q → %q; got %d", email, want, n)
 	}
 }
+
+// TestCreateEmailOnlyContributor pins Phase 4: an email-only contributor is
+// created (random cntrb_id, cntrb_email set, gh_user_id NULL → eligible for the
+// convergence ticker), idempotent on re-call, and gets an alias row.
+func TestCreateEmailOnlyContributor(t *testing.T) {
+	store, ctx := emConnect(t)
+	defer store.Close()
+
+	const email = "_av_eoc_human@example.org"
+	clean := func() {
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors_aliases WHERE alias_email=$1`, email)
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_email=$1`, email)
+	}
+	clean()
+	t.Cleanup(clean)
+
+	id, err := store.CreateEmailOnlyContributor(ctx, email)
+	if err != nil || id == "" {
+		t.Fatalf("create: id=%q err=%v", id, err)
+	}
+	var login, gh string
+	var ghUserID *int64
+	store.pool.QueryRow(ctx, `SELECT cntrb_login, gh_login, gh_user_id FROM aveloxis_data.contributors WHERE cntrb_id=$1::uuid`, id).Scan(&login, &gh, &ghUserID)
+	if login != "" || gh != "" || ghUserID != nil {
+		t.Errorf("email-only contributor must have empty login + NULL gh_user_id (convergence precondition); got login=%q gh=%q ghUserID=%v", login, gh, ghUserID)
+	}
+	var canon string
+	store.pool.QueryRow(ctx, `SELECT cntrb_canonical FROM aveloxis_data.contributors WHERE cntrb_id=$1::uuid`, id).Scan(&canon)
+	if canon != email {
+		t.Errorf("cntrb_canonical = %q, want %q (so the convergence ticker can resolve it later)", canon, email)
+	}
+	// Idempotent: a second call returns the same row (no duplicate).
+	id2, err := store.CreateEmailOnlyContributor(ctx, email)
+	if err != nil || id2 != id {
+		t.Errorf("re-create must return the same id (idempotent); got %q vs %q err=%v", id2, id, err)
+	}
+	var n int
+	store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_data.contributors WHERE cntrb_email=$1`, email).Scan(&n)
+	if n != 1 {
+		t.Errorf("expected exactly one email-only contributor, got %d", n)
+	}
+	var aliases int
+	store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_data.contributors_aliases WHERE alias_email=$1`, email).Scan(&aliases)
+	if aliases != 1 {
+		t.Errorf("expected an alias row for convergence, got %d", aliases)
+	}
+}

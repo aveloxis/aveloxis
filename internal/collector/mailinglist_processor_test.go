@@ -37,6 +37,7 @@ type fakeProcStore struct {
 	createdIssues []string         // external_keys for which CREATE/LINK was called
 	bridgedIssues []int64          // issue_ids bridged
 	nextIssueID   int64
+	threadIssues  map[string]int64 // thread root → issue_id (FindIssueForThread fake)
 }
 
 func (f *fakeProcStore) ListsWithStaging(context.Context, int) ([]int64, error) {
@@ -97,6 +98,12 @@ func (f *fakeProcStore) LinkOrCreateIssueFromEmail(_ context.Context, _ int64, e
 func (f *fakeProcStore) BridgeEmailToIssue(_ context.Context, issueID, _, _ int64) error {
 	f.bridgedIssues = append(f.bridgedIssues, issueID)
 	return nil
+}
+func (f *fakeProcStore) FindIssueForThread(_ context.Context, threadRoot string, _ int64) (int64, bool, error) {
+	if id, ok := f.threadIssues[threadRoot]; ok {
+		return id, true, nil
+	}
+	return 0, false, nil
 }
 
 func rg(v int64) *int64 { return &v }
@@ -215,6 +222,60 @@ func TestProcessorSkipsProjectionWhenNotCleanFit(t *testing.T) {
 	}
 	if len(store.emails) != 1 || store.emails[0].ProjectedKind != "mailing_list_only" {
 		t.Errorf("non-clean_fit issue_event must stay mailing_list_only: %+v", store.emails)
+	}
+}
+
+// TestProcessorThreadInheritance pins #1: a non-keyed discussion reply that
+// shares a thread with a keyed Jira message inherits that message's issue —
+// linked_issue_id set, bridged as a comment, projected_kind=issue — so the
+// full thread (not just the Jira-notification stream) lands on the issue. A
+// message in no/unknown thread stays mailing_list_only.
+func TestProcessorThreadInheritance(t *testing.T) {
+	store := &fakeProcStore{
+		primaryRepoID: 42, primaryRepoOK: true,
+		rows: []db.StagedMailingListRow{
+			// keyed Jira root (ThreadRoot empty → its own MessageID is the root)
+			{MlsID: 1, RepoGroupID: rg(3), Message: model.MailingListStagedMessage{
+				MessageID: "root@x", ListAddress: "dev@arrow.apache.org", SenderEmail: "jira@apache.org",
+				MsgClass: mailinglist.ClassIssueEvent, ExternalKey: "ARROW-1", Body: "created",
+			}},
+			// human discussion reply in the same thread, NO external key
+			{MlsID: 2, RepoGroupID: rg(3), Message: model.MailingListStagedMessage{
+				MessageID: "reply@x", ThreadRoot: "root@x", ListAddress: "dev@arrow.apache.org",
+				SenderEmail: "alice@example.org", MsgClass: mailinglist.ClassDiscuss, Body: "I have thoughts",
+			}},
+			// unrelated discussion, no thread → stays mailing_list_only
+			{MlsID: 3, RepoGroupID: rg(3), Message: model.MailingListStagedMessage{
+				MessageID: "lone@x", ListAddress: "dev@arrow.apache.org",
+				SenderEmail: "bob@example.org", MsgClass: mailinglist.ClassDiscuss, Body: "unrelated",
+			}},
+		},
+	}
+	p := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := p.DrainList(context.Background(), 7); err != nil {
+		t.Fatalf("DrainList: %v", err)
+	}
+	byID := map[string]*model.EmailMessage{}
+	for _, em := range store.emails {
+		byID[em.MessageIDHeader] = em
+	}
+	// The keyed root projected an issue.
+	root := byID["root@x"]
+	if root == nil || root.LinkedIssueID == nil {
+		t.Fatalf("keyed root must project an issue: %+v", root)
+	}
+	// The reply inherited the SAME issue via the in-drain thread cache.
+	reply := byID["reply@x"]
+	if reply == nil || reply.LinkedIssueID == nil || *reply.LinkedIssueID != *root.LinkedIssueID || reply.ProjectedKind != "issue" {
+		t.Errorf("discussion reply must inherit the thread's issue (linked_issue_id=%v, projected_kind=issue): %+v", root.LinkedIssueID, reply)
+	}
+	// Both root and reply bridged onto the issue (2 bridges for 1 issue).
+	if len(store.bridgedIssues) != 2 {
+		t.Errorf("expected root + reply bridged (2), got %v", store.bridgedIssues)
+	}
+	// The lone discussion stayed mailing_list_only.
+	if lone := byID["lone@x"]; lone == nil || lone.LinkedIssueID != nil || lone.ProjectedKind != "mailing_list_only" {
+		t.Errorf("threadless discussion must stay mailing_list_only: %+v", lone)
 	}
 }
 

@@ -2125,6 +2125,11 @@ CREATE INDEX IF NOT EXISTS idx_issues_updated_at ON aveloxis_data.issues (update
 CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_id ON aveloxis_data.pull_requests (repo_id);
 CREATE INDEX IF NOT EXISTS idx_pull_requests_updated_at ON aveloxis_data.pull_requests (updated_at);
 CREATE INDEX IF NOT EXISTS idx_messages_repo_id ON aveloxis_data.messages (repo_id);
+-- v0.25.20: the mailing-list projection backfill looks up a body by node_id
+-- (= RFC-822 Message-ID); thread-inheritance looks up by thread_root_id.
+-- Without these the backfill sequential-scans messages / email_message per row.
+CREATE INDEX IF NOT EXISTS idx_messages_node_id ON aveloxis_data.messages (node_id) WHERE node_id <> '';
+CREATE INDEX IF NOT EXISTS idx_email_message_thread_root ON aveloxis_data.email_message (thread_root_id) WHERE thread_root_id <> '';
 CREATE INDEX IF NOT EXISTS idx_issue_events_repo_id ON aveloxis_data.issue_events (repo_id);
 CREATE INDEX IF NOT EXISTS idx_pr_events_repo_id ON aveloxis_data.pull_request_events (repo_id);
 CREATE INDEX IF NOT EXISTS idx_releases_repo_id ON aveloxis_data.releases (repo_id);

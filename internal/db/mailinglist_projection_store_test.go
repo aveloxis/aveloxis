@@ -283,3 +283,20 @@ func TestBackfillExternalKeysSameStatementDup(t *testing.T) {
 		t.Errorf("exactly one issue must be keyed XDUP-1, got %d", keyed)
 	}
 }
+
+// TestProjectionBackfillIndexesDeclared pins the v0.25.20 indexes that keep the
+// projection backfill's per-row lookups off sequential scans.
+func TestProjectionBackfillIndexesDeclared(t *testing.T) {
+	schema := readSchema(t)
+	for _, n := range []string{"idx_messages_node_id", "idx_email_message_thread_root"} {
+		if !strings.Contains(schema, n) {
+			t.Errorf("schema.sql must declare %s", n)
+		}
+	}
+	mig := readSourceFile(t, "migrate.go")
+	for _, n := range []string{"idx_messages_node_id", "idx_email_message_thread_root"} {
+		if !strings.Contains(mig, n) {
+			t.Errorf("migrate.go must create %s CONCURRENTLY", n)
+		}
+	}
+}

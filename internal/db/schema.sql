@@ -1771,6 +1771,34 @@ CREATE INDEX IF NOT EXISTS idx_staging_repo_id
     ON aveloxis_ops.staging (repo_id);
 
 -- ============================================================
+-- Mailing-list staging (v0.25.x). The mailing-list pipeline mirrors the
+-- API staged pipeline above: the MailingListWorker fetches + classifies and
+-- writes one JSONB envelope per message HERE (a cheap append, no hot-table
+-- contention); a per-list single-threaded batch Processor then drains it
+-- into email_message / messages / (later) issues / pull_requests with a
+-- write-through contributor cache. This keeps the mailing-list pipeline off
+-- the per-message direct-upsert path that reproduces Augur's lock contention
+-- on contributors / issues / pull_requests. See summary/12 §11.
+-- Keyed by rgls_id (the list) so draining is per-list.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS aveloxis_ops.mailing_list_staging (
+    mls_id            BIGSERIAL PRIMARY KEY,
+    rgls_id           BIGINT NOT NULL,
+    repo_group_id     BIGINT,
+    repo_id           BIGINT,
+    message_id_header TEXT NOT NULL,
+    envelope          JSONB NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed         BOOLEAN NOT NULL DEFAULT FALSE,
+    UNIQUE (rgls_id, message_id_header)
+);
+
+-- Drain claim + batch read: "unprocessed rows for a list".
+CREATE INDEX IF NOT EXISTS idx_mls_unprocessed
+    ON aveloxis_ops.mailing_list_staging (rgls_id)
+    WHERE NOT processed;
+
+-- ============================================================
 -- Collection queue: Postgres-backed priority queue.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_queue (

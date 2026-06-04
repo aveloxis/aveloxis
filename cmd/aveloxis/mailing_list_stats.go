@@ -86,6 +86,25 @@ func mailingListStatsCmd(cfgPath *string) *cobra.Command {
 					fmt.Printf("    %-40s repo_group=%-8d staged=%d\n", addr, m.RepoGroupID, m.StagedRows)
 				}
 			}
+
+			// #2 missed-LINK guard: synthetic ML issues that share an
+			// external_key with a native GitHub issue — created before the
+			// native issue carried the key. Run backfill-issue-external-keys +
+			// re-project (backfill-mailing-list-projection) to LINK instead.
+			dups, err := store.MailingListProjectionDuplicates(ctx, 50)
+			if err != nil {
+				return err
+			}
+			if len(dups) > 0 {
+				fmt.Printf("\n  ⚠ missed-LINK duplicates (synthetic ML issue + native GitHub issue share an external_key): %d\n", len(dups))
+				fmt.Println("    These were projected before the native issue carried its [KEY-N]. Run:")
+				fmt.Println("      aveloxis backfill-issue-external-keys && aveloxis backfill-mailing-list-projection")
+				fmt.Println("    to LINK them instead of duplicating.")
+				for _, d := range dups {
+					fmt.Printf("    repo_id=%-8d %-16s synthetic_issue=%d native_issue=%d\n",
+						d.RepoID, d.ExternalKey, d.SyntheticIssue, d.NativeIssue)
+				}
+			}
 			return nil
 		},
 	}

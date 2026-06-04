@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // mailinglist_sender_resolve_store.go is the store layer for Phase 2 of the
@@ -21,6 +22,11 @@ import (
 type SenderResolveCandidate struct {
 	SenderEmail string
 	MsgCount    int64
+	// HumanClass is true when the sender has sent at least one message that is
+	// NOT bot-relayed (i.e. not issue_event/github_mirror/commit_notify) — the
+	// signal that the sender address is a human, not a Jira/GitBox/CI relay.
+	// Phase 4 creates an email-only contributor only for HumanClass senders.
+	HumanClass bool
 }
 
 // GetMailingListSenderResolveCandidates returns sender emails worth an API
@@ -31,7 +37,8 @@ type SenderResolveCandidate struct {
 // first), capped at limit.
 func (s *PostgresStore) GetMailingListSenderResolveCandidates(ctx context.Context, minMessages int, cooldownSeconds float64, limit int) ([]SenderResolveCandidate, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT em.sender_email, count(*) AS cnt
+		SELECT em.sender_email, count(*) AS cnt,
+		       bool_or(em.msg_class NOT IN ('issue_event','github_mirror','commit_notify')) AS human_class
 		FROM aveloxis_data.email_message em
 		LEFT JOIN aveloxis_ops.mailing_list_sender_resolve r ON r.sender_email = em.sender_email
 		WHERE em.sender_email <> ''
@@ -56,12 +63,53 @@ func (s *PostgresStore) GetMailingListSenderResolveCandidates(ctx context.Contex
 	var out []SenderResolveCandidate
 	for rows.Next() {
 		var c SenderResolveCandidate
-		if err := rows.Scan(&c.SenderEmail, &c.MsgCount); err != nil {
+		if err := rows.Scan(&c.SenderEmail, &c.MsgCount, &c.HumanClass); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// CreateEmailOnlyContributor materializes a contributor for a mailing-list
+// sender we could not resolve to a platform identity (Phase 4 / §5g 2a). The
+// row is email-only: random cntrb_id, cntrb_login/gh_login empty, cntrb_email +
+// cntrb_canonical = the sender address. This is the same shape commit authors
+// get when only an email is known, and it makes the sender countable in
+// per-repo contributor analytics. Because gh_user_id stays NULL with a non-
+// empty cntrb_email, the row matches GetContributorsNeedingSearch and rides the
+// existing convergence ticker (LinkContributorToGitHubUser upgrades/merges it
+// in place if the person's GitHub identity is found later). Idempotent: returns
+// an existing contributor when the email already resolves. Returns "" for an
+// empty/invalid email (caller skips).
+func (s *PostgresStore) CreateEmailOnlyContributor(ctx context.Context, email string) (string, error) {
+	email = strings.TrimSpace(email)
+	if email == "" || !strings.Contains(email, "@") {
+		return "", nil
+	}
+	var id string
+	if err := s.pool.QueryRow(ctx, `
+		SELECT cntrb_id::text FROM aveloxis_data.contributors
+		WHERE COALESCE(cntrb_deleted, 0) = 0 AND (cntrb_email = $1 OR cntrb_canonical = $1)
+		LIMIT 1`, email).Scan(&id); err == nil && id != "" {
+		return id, nil
+	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT cntrb_id::text FROM aveloxis_data.contributors_aliases WHERE alias_email = $1 LIMIT 1`, email).Scan(&id); err == nil && id != "" {
+		return id, nil
+	}
+	if err := s.pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_data.contributors
+			(cntrb_id, cntrb_login, gh_login, cntrb_email, cntrb_canonical,
+			 tool_source, data_source, data_collection_date)
+		VALUES (gen_random_uuid(), '', '', $1, $1,
+			'Aveloxis Mailing List Collector', 'Mailing List', NOW())
+		RETURNING cntrb_id::text`, email).Scan(&id); err != nil {
+		return "", fmt.Errorf("create email-only contributor %q: %w", email, err)
+	}
+	// Alias for commit-email convergence (best-effort).
+	_ = s.EnsureContributorAlias(ctx, id, email)
+	return id, nil
 }
 
 // MarkSenderResolveAttempt records the outcome of one resolution attempt.

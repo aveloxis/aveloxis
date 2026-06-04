@@ -62,6 +62,7 @@ func main() {
 		loadFoundationOrgsCmd(&cfgPath),
 		loadApacheListsCmd(&cfgPath),
 		backfillExternalKeysCmd(&cfgPath),
+		backfillMailingListProjectionCmd(&cfgPath),
 		mailingListStatsCmd(&cfgPath),
 		verifyMailingListCmd(&cfgPath),
 		registerMailingListCmd(&cfgPath),

@@ -160,6 +160,7 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 				continue
 			}
 			linked := 0
+			created := 0
 			for _, c := range cands {
 				if ctx.Err() != nil {
 					return
@@ -177,6 +178,20 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 					continue
 				}
 				if login == "" {
+					// Phase 4 (§5g 2a): no platform identity found. For a
+					// DIRECT-HUMAN sender (not a Jira/GitBox/CI relay), create an
+					// email-only contributor so they're attributed and ride the
+					// convergence ticker. Bot-relayed senders get no contributor.
+					if c.HumanClass && !collector.IsBotEmail(c.SenderEmail) {
+						if _, cerr := s.store.CreateEmailOnlyContributor(ctx, c.SenderEmail); cerr != nil {
+							s.logger.Warn("mailing-list: email-only contributor create failed", "email", c.SenderEmail, "error", cerr)
+							_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+							continue
+						}
+						_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "email-only", "")
+						created++
+						continue
+					}
 					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
 					continue
 				}
@@ -188,9 +203,9 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 				_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, source, login)
 				linked++
 			}
-			if linked > 0 {
-				s.logger.Info("mailing-list: resolved senders via shared chain",
-					"linked", linked, "candidates", len(cands))
+			if linked > 0 || created > 0 {
+				s.logger.Info("mailing-list: sender resolution pass",
+					"linked", linked, "email_only_created", created, "candidates", len(cands))
 			}
 		}
 	}

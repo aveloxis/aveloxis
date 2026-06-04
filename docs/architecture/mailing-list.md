@@ -175,8 +175,9 @@ aveloxis load-foundation-orgs --yes      # track the foundation's GitHub org(s) 
 aveloxis load-apache-lists               # register per-PMC dev@/users@ lists via enumeration
 aveloxis register-mailing-list \         # register one list (any system, e.g. the kernel)
     --system lore_public_inbox --list linux-pci@vger.kernel.org --repo https://github.com/torvalds/linux
-aveloxis backfill-issue-external-keys    # populate issues.external_key from [KEY-N] title prefixes
-aveloxis mailing-list-stats              # coverage rollup
+aveloxis backfill-issue-external-keys    # populate issues.external_key from [KEY-N] title prefixes (conflict-safe)
+aveloxis backfill-mailing-list-projection # project existing issue_event mail → issues, in place (Phase 5)
+aveloxis mailing-list-stats              # coverage rollup (+ missed-LINK shadow guard)
 aveloxis verify-mailing-list [--strict]  # Phase 4 branch-coverage harness (§12)
 ```
 
@@ -207,14 +208,62 @@ Layer 1 (every email → `email_message` + body + classification + threading) is
 
 **Phase A (shipped) — `issue_event → issues` link-or-create** (`MailingListProcessor`, drain-time):
 
-1. An `issue_event` message with a parsed `external_key` (e.g. `KAFKA-123`): if an issue with that key already exists in the repo → **LINK** (`email_message.linked_issue_id` + `issue_message_ref`). Else → **CREATE** a synthetic issue (negative, deterministic `platform_issue_id` from the key, idempotent on `(repo_id, platform_issue_id)`).
-2. Every projected email is bridged as a comment (`issue_message_ref`), and `issues.comment_count` is recomputed so threads show in analytics.
-3. `reporter_id` is the resolved sender **only when it is not the `jira@`/bot sender** (attribution integrity); real-actor-from-body parsing is a follow-up.
-4. `email_message.projected_kind` records the outcome (`issue`/`pr`/`review`/`mailing_list_only`) so "what did this become" is queryable without joins.
+1. An `issue_event` message with a parsed `external_key` (e.g. `KAFKA-123`): **LINK** if an issue for that key already exists — matched by `external_key` OR by the bracketed `[KEY]` in a native issue's title (the Apache Jira→GitHub import shape). LINK-by-title **prevents the missed-LINK shadow**: without it, projecting before `backfill-issue-external-keys` would mint a synthetic that squats the key (the UNIQUE index then blocks the native issue from getting it). Else → **CREATE** a synthetic issue (negative, deterministic `platform_issue_id`, idempotent on `(repo_id, platform_issue_id)`).
+2. **Thread-inheritance (#1):** once any message in a thread is projected onto an issue, the rest of the thread — human discussion, `Re:` replies, `discuss`-class mail that carries no key — inherits that issue (via `thread_root_id`, cache + `FindIssueForThread`). So the **full email history** attaches, not just the Jira-notification stream.
+3. Every projected email is bridged as a comment (`issue_message_ref`); `issues.comment_count` is recomputed so threads show in analytics.
+4. `reporter_id` is the resolved sender **only when it is not the `jira@`/bot sender**; real-actor-from-body parsing is a follow-up.
+5. `email_message.projected_kind` records the outcome (`issue`/`pr`/`review`/`mailing_list_only`).
+
+**Backfill (Phase 5):** `aveloxis backfill-mailing-list-projection` runs the same projection over `email_message` rows collected before the projection code existed — in place, no re-collection. Three idempotent steps to convergence: keyed projection → thread-inheritance → mark-remaining. `aveloxis mailing-list-stats` surfaces any **missed-LINK shadows** (synthetic issue whose key sits in a native issue's title) for remediation; the conflict-safe `backfill-issue-external-keys` no longer errors on them.
+
+**Sender attribution (Phases 2+4):** senders the DB can't resolve are run through the shared email→identity chain; direct-human senders that still don't resolve get an **email-only contributor** (random `cntrb_id`, `cntrb_email` set) so they're counted and ride the convergence ticker. Bot/relay senders (`jira@`, `git@`, CI) never become contributors.
 
 **Phase B (verified, NOT built) — PR/review synthesis** from `github_mirror` mail. Verification (2026-06-04, summary/12 §3) settled it: `pull_requests.platform_pr_id` stores the GitHub PR **`databaseId`**, but mirror mail carries only the PR **number** — a synthesized PR keyed on the number would *duplicate* the API collector's row rather than merge. Decision: **don't synthesize**; the lever for full Apache PR data is **org collection** (`load-foundation-orgs`) + the existing `github_mirror` **LINK** path (which already covers collected PRs correctly). `linked_pr_review_id` remains in the schema should a future uncollectable-sibling case justify a number→databaseId resolution step.
 
 For `projection_policy: none` (kernel): none of the above runs — a `[PATCH]` is not a PR; Layer 1 is the faithful record.
+
+## 11d. Forge-less PR-equivalents — the special case (Phase C)
+
+Some communities — most notably the **Linux kernel** (lore.kernel.org,
+`projection_policy: none`) — do code review **entirely by email**. A `[PATCH]`
+thread *is* the pull request; the `Re:` replies *are* the review. There is no
+forge, and therefore no `pull_requests` / `pull_request_reviews` entity to
+project onto.
+
+**The special case, stated plainly:** Aveloxis deliberately does **NOT**
+synthesize `pull_requests` rows for these. Fabricating a "PR" for a community
+that doesn't use one misrepresents how it works and would pollute the real PR
+tables (the §1 governing principle: project only where it's a clean, faithful
+fit). The faithful record is the `email_message` rows themselves —
+`msg_class IN ('patch_submission','review')` + `thread_root_id` grouping.
+
+To make that ergonomic without a fake forge entity, Phase C ships a **read-only
+VIEW**, `aveloxis_data.mailing_list_pr_equivalents`, that groups those mail
+threads and presents each as a PR-equivalent:
+
+| column | meaning |
+|---|---|
+| `thread_key` | the patch-series identity (cover letter `[PATCH 0/N]` or a standalone `[PATCH]`) |
+| `repo_id` / `list_address` | the registered repo + list |
+| `title` / `author_email` / `author_cntrb_id` | from the series root patch (author resolved to a contributor when known) |
+| `created_at` / `last_activity_at` | first / last message in the thread |
+| `patch_count` / `review_count` / `participant_count` | thread aggregates |
+| `source` | always `'mailing_list'` — the explicit "this is mail-derived, **not** a forge PR" label |
+
+Two properties worth knowing:
+
+- **It is a plain VIEW** — zero storage, never materialized/refreshed, and
+  intentionally absent from the matview refresh list. Querying it always
+  reflects current `email_message` data.
+- **It is empty until forge-less lists are collected.** The filter
+  `msg_class IN ('patch_submission','review')` is itself the forge-less gate:
+  the 2026-06-03 survey found Apache produces **zero** of these classes (it is
+  GitHub-PR-native), so the view contains only kernel-style mail and stays
+  empty until lore/public-inbox lists (`register-mailing-list`) are actually
+  collected. That's by design — not a bug.
+
+Analysts who want "PR-like" activity for forge-less projects query this view;
+`pull_requests` stays exclusively real forge data.
 
 ## 12. Verification (Phase 4) and the collection-ordering caveat
 

@@ -44,3 +44,24 @@ func TestSenderResolveTickerWiredAndUsesSharedChain(t *testing.T) {
 		t.Error("bot senders must be stamped resolved=true (terminal) so they don't re-enter the candidate pool every cooldown")
 	}
 }
+
+// TestSenderResolvePhase4CreatesEmailOnlyForHumans pins Phase 4: on an API
+// miss, a DIRECT-HUMAN sender (HumanClass, non-bot) gets an email-only
+// contributor; bot-relayed senders do not.
+func TestSenderResolvePhase4CreatesEmailOnlyForHumans(t *testing.T) {
+	data, err := os.ReadFile("mailinglist_wiring.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(data), "func (s *Scheduler) runMailingListSenderResolve(")
+	for _, needle := range []string{
+		"c.HumanClass",                         // gate on direct-human
+		"!collector.IsBotEmail(c.SenderEmail)", // never a bot
+		"CreateEmailOnlyContributor(",          // the Phase 4 create
+		`MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "email-only"`, // terminal stamp
+	} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("runMailingListSenderResolve miss-path must reference %q (Phase 4)", needle)
+		}
+	}
+}

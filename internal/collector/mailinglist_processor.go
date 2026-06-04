@@ -43,6 +43,9 @@ type mlProcessorStore interface {
 	// CREATE a synthetic one; bridge the email as a comment.
 	LinkOrCreateIssueFromEmail(ctx context.Context, repoID int64, externalKey, title, body, dataSource string, reporterID *string, createdAt time.Time) (int64, bool, error)
 	BridgeEmailToIssue(ctx context.Context, issueID, repoID, msgID int64) error
+	// #1 thread-inheritance: the issue a thread is already projected onto, so a
+	// non-keyed reply/discussion in that thread attaches to the same issue.
+	FindIssueForThread(ctx context.Context, threadRoot string, repoID int64) (int64, bool, error)
 }
 
 // MailingListProcessor drains aveloxis_ops.mailing_list_staging one list at a
@@ -134,6 +137,7 @@ func (p *MailingListProcessor) DrainOnce(ctx context.Context, listLimit int) (in
 // once load-foundation-orgs / DOAP-enrichment populates the group.
 func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int, error) {
 	cntrbCache := map[string]*string{}
+	threadIssue := map[string]int64{} // thread root → projected issue_id (#1 inheritance)
 	var repoID int64
 	repoResolved := false
 	processed := 0
@@ -162,7 +166,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 
 		done := make([]int64, 0, len(batch))
 		for _, row := range batch {
-			if err := p.processRow(ctx, repoID, rglsID, row, cntrbCache); err != nil {
+			if err := p.processRow(ctx, repoID, rglsID, row, cntrbCache, threadIssue); err != nil {
 				// Mark processed anyway so the drain makes progress (collect what
 				// we can; one bad message must not wedge the whole list).
 				p.logger.Warn("mailing-list processor: write failed, dropping message",
@@ -193,7 +197,7 @@ func (p *MailingListProcessor) resolveRepo(ctx context.Context, row db.StagedMai
 // processRow resolves + writes one staged message. Mirrors the pre-split
 // worker.routeMessage, reading the already-computed classification from the
 // staging envelope instead of re-classifying.
-func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID int64, row db.StagedMailingListRow, cntrbCache map[string]*string) error {
+func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID int64, row db.StagedMailingListRow, cntrbCache map[string]*string, threadIssue map[string]int64) error {
 	m := row.Message
 
 	// §5b mirror handling: "skip" drops mirrors entirely (no provenance row).
@@ -242,6 +246,28 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		} else if id > 0 {
 			projectedIssueID = id
 			linkedIssueID = &id
+		}
+	}
+
+	// Record the keyed message's issue under its thread so non-keyed siblings
+	// in the same drain inherit it without a DB round-trip.
+	if projectedIssueID > 0 {
+		threadIssue[threadKey(m)] = projectedIssueID
+	}
+
+	// #1 thread-inheritance: a non-keyed, non-mirror message in a thread that
+	// already has a projected issue attaches to that issue — so the FULL thread
+	// (human discussion, Re: replies, class=discuss) lands on the issue, not
+	// just the Jira-notification stream. Cache first, then a DB lookup that
+	// covers cross-batch / cross-cycle siblings.
+	if projectedIssueID == 0 && p.projectionClean && !m.IsMirror && linkedPRID == nil && m.ThreadRoot != "" {
+		if id, ok := threadIssue[m.ThreadRoot]; ok && id > 0 {
+			projectedIssueID = id
+			linkedIssueID = &id
+		} else if id, ok, _ := p.store.FindIssueForThread(ctx, m.ThreadRoot, repoID); ok {
+			projectedIssueID = id
+			linkedIssueID = &id
+			threadIssue[m.ThreadRoot] = id
 		}
 	}
 
@@ -350,4 +376,14 @@ func derefInt64(p *int64) int64 {
 		return 0
 	}
 	return *p
+}
+
+// threadKey is the cache key for a message's thread: its thread root if it has
+// one, else its own Message-ID (it IS a root, so siblings' thread_root points
+// at it). Keeps the in-drain inheritance cache aligned with FindIssueForThread.
+func threadKey(m model.MailingListStagedMessage) string {
+	if m.ThreadRoot != "" {
+		return m.ThreadRoot
+	}
+	return m.MessageID
 }

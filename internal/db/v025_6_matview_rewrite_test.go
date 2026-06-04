@@ -211,10 +211,17 @@ func TestVersionStampedV0256(t *testing.T) {
 	// (Phase 3/Phase A: issue_event → issues link-or-create projection for
 	// clean_fit systems + projection_policy gate + email_message
 	// linked_pr_review_id/projected_kind columns. Apache issue data, formerly
-	// absent, lands under the PMC repo for standard per-repo analytics).
+	// absent, lands under the PMC repo for standard per-repo analytics) →
+	// 0.25.17 (thread-inheritance so full email threads attach to an issue;
+	// LINK-by-title + conflict-safe external-key backfill to prevent missed-LINK
+	// shadows; Phase 4 email-only contributors for direct-human senders; Phase 5
+	// backfill-mailing-list-projection over existing email_message rows) →
+	// 0.25.18 (Phase C: mailing_list_pr_equivalents read-only VIEW surfacing
+	// forge-less kernel [PATCH] threads as PR-equivalents without polluting
+	// pull_requests).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.16"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.16\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.18"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.18\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

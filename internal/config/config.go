@@ -595,6 +595,22 @@ type CollectionConfig struct {
 	MailingListBackfillMonths *int   `json:"mailing_list_backfill_months,omitempty"` // history window when a list has no checkpoint (absent → 6; explicit 0 or negative → full history from the list's first month)
 	MailingListPoliteEmail    string `json:"mailing_list_polite_email"`              // contact in the User-Agent so archive admins can reach us
 	MailingListMirrorHandling string `json:"mailing_list_mirror_handling"`           // skip | metadata_only (default) | full
+	// MailingListProcessorWorkers is how many drain goroutines per system pull
+	// staged messages through the resolve+write half (summary/12 §11). Default
+	// 1 — draining is single-threaded PER LIST; >1 only fans out across
+	// DISTINCT lists (an in-process per-list guard keeps two goroutines off the
+	// same list). Keep at 1 unless a deep per-list backlog needs cross-list
+	// parallelism.
+	MailingListProcessorWorkers int `json:"mailing_list_processor_workers"` // drain goroutines per system (default 1)
+}
+
+// MailingListProcessorWorkersOrDefault falls back to 1 drain goroutine per
+// system (single-threaded per list).
+func (c *CollectionConfig) MailingListProcessorWorkersOrDefault() int {
+	if c.MailingListProcessorWorkers <= 0 {
+		return 1
+	}
+	return c.MailingListProcessorWorkers
 }
 
 // MailingListCadenceDuration returns the per-list tail-refresh cadence.
@@ -1000,7 +1016,8 @@ func DefaultConfig() *Config {
 			// MailingListBackfillMonths left nil → MailingListBackfillMonthsOrDefault()
 			// returns 6. Set it explicitly to 0 (or negative) in aveloxis.json for
 			// full-history collection from each list's first month.
-			MailingListMirrorHandling: "metadata_only",
+			MailingListMirrorHandling:   "metadata_only",
+			MailingListProcessorWorkers: 1, // single-threaded per list (summary/12 §11)
 		},
 		LogLevel: "info",
 	}

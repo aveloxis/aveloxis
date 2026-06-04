@@ -106,6 +106,49 @@ func (s *PostgresStore) MarkMailingListStagingProcessed(ctx context.Context, mls
 	return err
 }
 
+// StuckMailingList is a list that has staged-but-undrained messages whose
+// repo_group has no repo yet. The MailingListProcessor leaves such lists
+// staged (messages.repo_id is NOT NULL, so it can't write a body without a
+// repo) until load-foundation-orgs / DOAP-enrichment populates the group
+// (summary/12 §11). Surfacing them lets an operator see which PMCs still need
+// org-population instead of discovering it by grepping logs.
+type StuckMailingList struct {
+	RglsID      int64
+	ListAddress string
+	RepoGroupID int64
+	StagedRows  int64
+}
+
+// StuckMailingLists returns every list with unprocessed staging rows whose
+// repo_group has no repo, ordered by staged-row count (the biggest backlog
+// first). An empty result means every list with staged data can resolve a
+// repo (or has already drained).
+func (s *PostgresStore) StuckMailingLists(ctx context.Context) ([]StuckMailingList, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT s.rgls_id, COALESCE(rgls.rgls_email, ''), COALESCE(rgls.repo_group_id, 0), count(*)
+		FROM aveloxis_ops.mailing_list_staging s
+		JOIN aveloxis_data.repo_groups_list_serve rgls ON rgls.rgls_id = s.rgls_id
+		WHERE NOT s.processed
+		  AND NOT EXISTS (
+		      SELECT 1 FROM aveloxis_data.repos r WHERE r.repo_group_id = rgls.repo_group_id
+		  )
+		GROUP BY s.rgls_id, rgls.rgls_email, rgls.repo_group_id
+		ORDER BY count(*) DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("stuck mailing lists: %w", err)
+	}
+	defer rows.Close()
+	var out []StuckMailingList
+	for rows.Next() {
+		var m StuckMailingList
+		if err := rows.Scan(&m.RglsID, &m.ListAddress, &m.RepoGroupID, &m.StagedRows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // PurgeMailingListStagingProcessed drops processed staging rows older than the
 // retention window (transient data; mirrors PurgeStagedProcessed).
 func (s *PostgresStore) PurgeMailingListStagingProcessed(ctx context.Context, retentionSeconds float64) (int64, error) {

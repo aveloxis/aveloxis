@@ -64,7 +64,8 @@
     "mailing_list_cadence_days": 30,
     "mailing_list_backfill_months": 6,
     "mailing_list_polite_email": "",
-    "mailing_list_mirror_handling": "metadata_only"
+    "mailing_list_mirror_handling": "metadata_only",
+    "mailing_list_processor_workers": 1
   },
   "web": {
     "addr": ":8082",

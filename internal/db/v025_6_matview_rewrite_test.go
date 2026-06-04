@@ -220,8 +220,8 @@ func TestVersionStampedV0256(t *testing.T) {
 	// forge-less kernel [PATCH] threads as PR-equivalents without polluting
 	// pull_requests).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.19"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.19\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.20"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.20\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

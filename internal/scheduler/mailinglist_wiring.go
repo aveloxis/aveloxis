@@ -102,7 +102,7 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 		if drainWorkers <= 0 {
 			drainWorkers = 1
 		}
-		proc := collector.NewMailingListProcessor(s.store, sys.Name, s.cfg.MailingListMirrorHandling, s.logger)
+		proc := collector.NewMailingListProcessor(s.store, sys.Name, s.cfg.MailingListMirrorHandling, sys.ProjectionClean(), s.logger)
 		for i := 0; i < drainWorkers; i++ {
 			go s.runMailingListDrainLoop(ctx, proc)
 		}
@@ -118,6 +118,82 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 	// against the now-fuller contributors table ("coverage improves over
 	// time"). Single goroutine; runs on the same cadence knob as enrichment.
 	go s.runMailingListSenderBackfill(ctx)
+
+	// Phase 2 (summary/12 §5): for senders the DB-only backfill can't resolve,
+	// run them through the shared email→identity chain (Search + global
+	// commit-search) and link/create the contributor. Single goroutine.
+	go s.runMailingListSenderResolve(ctx)
+}
+
+// runMailingListSenderResolve config. The min-message threshold (6) is the
+// "meaningful participant" cutoff from the 2026-06-04 bootstrap survey
+// (summary/12 §5g); the cooldown mirrors the contributor search-resolve
+// ticker's 30 days; the batch bounds the search-API spend per tick.
+const (
+	mailingListSenderResolveInterval    = time.Hour
+	mailingListSenderResolveBatch       = 100
+	mailingListSenderResolveMinMessages = 6
+	mailingListSenderResolveCooldown    = 30 * 24 * time.Hour
+)
+
+// runMailingListSenderResolve takes mailing-list senders the DB can't resolve
+// (>= the message threshold, past cooldown) and runs each through the shared
+// collector.ResolveEmailToIdentity chain. On a hit it links/creates the
+// contributor (LinkMailingListSender); the existing sender-backfill ticker then
+// stamps the sender's cntrb_id onto their messages rows. Bot/junk senders are
+// stamped resolved (terminal) so they leave the candidate pool permanently.
+func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
+	if s.ghClient == nil {
+		return // no GitHub client → the API tail can't run; DB backfill still does
+	}
+	t := time.NewTicker(mailingListSenderResolveInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			cands, err := s.store.GetMailingListSenderResolveCandidates(ctx,
+				mailingListSenderResolveMinMessages, mailingListSenderResolveCooldown.Seconds(), mailingListSenderResolveBatch)
+			if err != nil {
+				s.logger.Warn("mailing-list: sender-resolve candidate query error", "error", err)
+				continue
+			}
+			linked := 0
+			for _, c := range cands {
+				if ctx.Err() != nil {
+					return
+				}
+				// Bots are never people — terminal stamp so they drop out.
+				if collector.IsBotEmail(c.SenderEmail) {
+					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "bot", "")
+					continue
+				}
+				login, ghUserID, source, rerr := collector.ResolveEmailToIdentity(ctx, s.store, s.ghClient, c.SenderEmail)
+				if rerr != nil {
+					// Transient (transport/5xx): stamp the attempt so we back off
+					// to the cooldown rather than hammering on a persistent error.
+					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+					continue
+				}
+				if login == "" {
+					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+					continue
+				}
+				if _, lerr := s.store.LinkMailingListSender(ctx, c.SenderEmail, login, ghUserID); lerr != nil {
+					s.logger.Warn("mailing-list: sender link failed", "email", c.SenderEmail, "login", login, "error", lerr)
+					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+					continue
+				}
+				_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, source, login)
+				linked++
+			}
+			if linked > 0 {
+				s.logger.Info("mailing-list: resolved senders via shared chain",
+					"linked", linked, "candidates", len(cands))
+			}
+		}
+	}
 }
 
 // mailingListSenderBackfillInterval is how often unresolved sender→cntrb

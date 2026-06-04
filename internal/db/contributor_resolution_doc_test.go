@@ -47,6 +47,7 @@ func TestContributorResolutionDocReferencesCanonicalFunctions(t *testing.T) {
 		"ContributorResolver.Resolve",
 		"UpsertContributorBatch",
 		"LinkContributorToGitHubUser",
+		"ResolveEmailToIdentity", // the shared email→identity chain (commit + mailing-list)
 	} {
 		if !strings.Contains(doc, name) {
 			t.Errorf("%s must reference %q so a code rename triggers a doc-update "+

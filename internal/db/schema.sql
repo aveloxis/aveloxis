@@ -864,8 +864,12 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.email_message (
     signaled_repo_id  BIGINT REFERENCES aveloxis_data.repos(repo_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED,
     linked_issue_id        BIGINT REFERENCES aveloxis_data.issues(issue_id) DEFERRABLE INITIALLY DEFERRED,
     linked_pull_request_id BIGINT REFERENCES aveloxis_data.pull_requests(pull_request_id) DEFERRABLE INITIALLY DEFERRED,
+    linked_pr_review_id    BIGINT REFERENCES aveloxis_data.pull_request_reviews(pr_review_id) DEFERRABLE INITIALLY DEFERRED,
     linked_external_key    TEXT DEFAULT '',
     linked_commit_hash     TEXT DEFAULT '',
+    -- Phase 3 (summary/12 §10a): what this email was projected onto, so
+    -- "what did this become" is queryable without joins: issue|pr|review|mailing_list_only.
+    projected_kind         TEXT DEFAULT '',
     tool_source       TEXT DEFAULT 'Aveloxis Mailing List Collector',
     tool_version      TEXT DEFAULT '',
     data_source       TEXT DEFAULT '',
@@ -1797,6 +1801,19 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.mailing_list_staging (
 CREATE INDEX IF NOT EXISTS idx_mls_unprocessed
     ON aveloxis_ops.mailing_list_staging (rgls_id)
     WHERE NOT processed;
+
+-- Phase 2 (summary/12 §5): per-sender cooldown + outcome for the
+-- runMailingListSenderResolve ticker. Senders with >= a message threshold that
+-- the DB can't resolve are run through the shared email->identity chain
+-- (Search + global commit-search); this table bounds re-attempts and records
+-- the outcome. Keyed by the raw sender email.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.mailing_list_sender_resolve (
+    sender_email     TEXT PRIMARY KEY,
+    last_attempt_at  TIMESTAMPTZ,
+    resolved         BOOLEAN NOT NULL DEFAULT FALSE,
+    resolved_source  TEXT DEFAULT '',
+    resolved_login   TEXT DEFAULT ''
+);
 
 -- ============================================================
 -- Collection queue: Postgres-backed priority queue.

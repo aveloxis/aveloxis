@@ -61,12 +61,17 @@ func TestMailingListPipelineEndToEnd(t *testing.T) {
 	)
 
 	cleanup := func() {
-		// FK-safe: email_message_ref → messages → email_message → staging →
-		// repo_groups_list_serve → repos → repo_groups.
+		// FK-safe order. The clean_fit policy projects issue_event rows onto
+		// issues (+ issue_message_ref bridges), and email_message.linked_issue_id
+		// references issues, so: bridges → email_message_ref → email_message
+		// (clears linked_issue_id) → issues → messages → staging → list → repo → group.
+		repoSub := `(SELECT repo_id FROM aveloxis_data.repos WHERE repo_git=$1)`
+		pool.Exec(ctx, `DELETE FROM aveloxis_data.issue_message_ref WHERE repo_id IN `+repoSub, repoGit)
 		pool.Exec(ctx, `DELETE FROM aveloxis_data.email_message_ref WHERE email_message_id IN
 			(SELECT email_message_id FROM aveloxis_data.email_message WHERE data_source=$1)`, listAddr)
-		pool.Exec(ctx, `DELETE FROM aveloxis_data.messages WHERE data_source=$1`, listAddr)
 		pool.Exec(ctx, `DELETE FROM aveloxis_data.email_message WHERE data_source=$1`, listAddr)
+		pool.Exec(ctx, `DELETE FROM aveloxis_data.issues WHERE repo_id IN `+repoSub, repoGit)
+		pool.Exec(ctx, `DELETE FROM aveloxis_data.messages WHERE data_source=$1`, listAddr)
 		pool.Exec(ctx, `DELETE FROM aveloxis_ops.mailing_list_staging WHERE rgls_id IN
 			(SELECT rgls_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_email=$1)`, listAddr)
 		pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_groups_list_serve WHERE rgls_email=$1`, listAddr)
@@ -127,7 +132,7 @@ func TestMailingListPipelineEndToEnd(t *testing.T) {
 	}
 
 	// Drain through the real processor (metadata_only mirror handling).
-	proc := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", lg)
+	proc := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", true, lg)
 	n, err := proc.DrainList(ctx, rgls)
 	if err != nil {
 		t.Fatalf("DrainList: %v", err)
@@ -169,6 +174,22 @@ func TestMailingListPipelineEndToEnd(t *testing.T) {
 	pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_data.email_message WHERE rgls_id=$1 AND is_mirror`, rgls).Scan(&mirrorCount)
 	if mirrorCount != mirrors {
 		t.Errorf("is_mirror email_message rows = %d, want %d", mirrorCount, mirrors)
+	}
+
+	// Phase A projection: the issue_event cohort (i in [mirrors,total) with i odd)
+	// each became a synthetic issue under the seeded repo, provenance data_source='JIRA'.
+	wantIssues := 0
+	for i := mirrors; i < total; i++ {
+		if i%2 == 1 {
+			wantIssues++
+		}
+	}
+	var issueCount int
+	pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_data.issues
+		WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git=$1)
+		  AND data_source='JIRA'`, repoGit).Scan(&issueCount)
+	if issueCount != wantIssues {
+		t.Errorf("projected issues = %d, want %d (one per issue_event message)", issueCount, wantIssues)
 	}
 
 	// Re-draining is a no-op (everything already processed).

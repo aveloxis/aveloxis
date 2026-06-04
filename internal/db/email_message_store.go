@@ -46,16 +46,16 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 			sent_at, in_reply_to, references_chain, thread_root_id, has_patch,
 			msg_class, classification_source, is_mirror, mirrors_url,
 			signaled_repo_url, signaled_repo_id,
-			linked_issue_id, linked_pull_request_id, linked_external_key, linked_commit_hash,
-			data_source, tool_version
+			linked_issue_id, linked_pull_request_id, linked_pr_review_id, linked_external_key, linked_commit_hash,
+			projected_kind, data_source, tool_version
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21,
-			$22, $23, $24, $25,
-			$26, $27
+			$22, $23, $24, $25, $26,
+			$27, $28, $29
 		)
 		ON CONFLICT (message_id_header) DO UPDATE SET
 			repo_id            = COALESCE(aveloxis_data.email_message.repo_id, EXCLUDED.repo_id),
@@ -71,8 +71,10 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 			signaled_repo_id   = COALESCE(aveloxis_data.email_message.signaled_repo_id, EXCLUDED.signaled_repo_id),
 			linked_issue_id        = COALESCE(EXCLUDED.linked_issue_id, aveloxis_data.email_message.linked_issue_id),
 			linked_pull_request_id = COALESCE(EXCLUDED.linked_pull_request_id, aveloxis_data.email_message.linked_pull_request_id),
+			linked_pr_review_id    = COALESCE(EXCLUDED.linked_pr_review_id, aveloxis_data.email_message.linked_pr_review_id),
 			linked_external_key    = EXCLUDED.linked_external_key,
 			linked_commit_hash     = EXCLUDED.linked_commit_hash,
+			projected_kind     = EXCLUDED.projected_kind,
 			data_source        = EXCLUDED.data_source,
 			tool_version       = EXCLUDED.tool_version
 		RETURNING email_message_id`,
@@ -81,8 +83,8 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 		NullTime(em.SentAt), em.InReplyTo, em.ReferencesChain, em.ThreadRootID, em.HasPatch,
 		em.MsgClass, em.ClassificationSource, em.IsMirror, em.MirrorsURL,
 		em.SignaledRepoURL, em.SignaledRepoID,
-		em.LinkedIssueID, em.LinkedPullRequestID, em.LinkedExternalKey, em.LinkedCommitHash,
-		em.DataSource, ToolVersion,
+		em.LinkedIssueID, em.LinkedPullRequestID, em.LinkedReviewID, em.LinkedExternalKey, em.LinkedCommitHash,
+		em.ProjectedKind, em.DataSource, ToolVersion,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert email_message %q: %w", em.MessageIDHeader, err)

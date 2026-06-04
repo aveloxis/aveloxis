@@ -86,7 +86,7 @@ lore's HTTP surface is Anubis-gated, so the sanctioned bulk path is a **bare `gi
 
 ### 6.1 Sender identity (§5d)
 
-The sender email is resolved to a contributor via the same `ResolveContributorIDByEmail` chain the commit resolver uses, and stamped on the `messages` row. Unresolved senders keep their `sender_email` and are retried by a periodic `BackfillMailingListSenderIDs` ticker (hourly) as the contributors table fills from ongoing collection. List senders are largely committers, so resolution improves over time and after the linked repos' GitHub collection completes.
+Sender resolution happens at **drain time in the `MailingListProcessor`** (not in the fetch worker — see §8.1). For the inline stamp on the `messages` row the Processor does a DB lookup (`ResolveContributorIDByEmail`), cached per-list so a recurring sender is resolved once. Senders that don't resolve from the DB keep their `sender_email` and are retried two ways as the contributors table fills: the existing `BackfillMailingListSenderIDs` ticker (hourly DB re-lookup), and the v0.25.x `runMailingListSenderResolve` ticker, which runs senders with ≥ a message threshold through the **shared `ResolveEmailToIdentity` chain** (noreply → bot → DB → GitHub Search → GitHub **global commit-search**) — the same chain the commit resolver uses. Global commit-search is the load-bearing step: list senders are largely committers, so a sender who keeps their profile email private still resolves via a public commit they authored anywhere on GitHub. See [Contributor Resolution → Shared email→identity resolution](contributor-resolution.md#shared-emailidentity-resolution).
 
 ### 6.2 Signaled repo — two columns, never block
 
@@ -137,7 +137,7 @@ Per-column documentation is in [`docs/schema.md`](../schema.md). See [`docs/cont
         │ per system │             │  pool   │
         └───────────┘             │ (N=2)   │
                                   └─────────┘
-                                       │  claim→fetch→classify→resolve→route→checkpoint
+                                       │  claim→fetch→classify→STAGE→checkpoint
                                        ▼
                               ArchiveSource (Pony Mail | public-inbox)
 ```
@@ -146,6 +146,14 @@ Per-column documentation is in [`docs/schema.md`](../schema.md). See [`docs/cont
 - **Checkpoint**: each completed month stamps `mlls_last_month` via `CheckpointListMonth`, so an interrupted scan resumes from where it stopped rather than re-fetching.
 - **Months to scan**: from `mlls_last_month` forward to the current month; for a never-scanned list, from `FirstMonth` (full history) when `mailing_list_backfill_months <= 0`, else the recent N-month window.
 - **Failure backoff** (v0.21.4 quadratic, base 120s): `RecordListFailure` schedules 2m → 8m → 18m → … and sidelines the list after `MailingListMaxFailures = 10` consecutive failures.
+
+### 8.1 Staging split (v0.25.x)
+
+The pipeline is split into a **fetch** half and a **resolve+write** half across a staging table, for the same reason the API pipeline stages: doing per-message sender-resolution + hot-table writes inline (on every fetched message, across concurrent list runners) reproduces Augur's lock contention on `contributors` / `issues` / `pull_requests`. The split keeps the fetchers off the hot tables.
+
+- **`MailingListWorker`** (fetch half): claim → fetch a month → classify each message (cheap, no DB) → **stage** the classified envelope into `aveloxis_ops.mailing_list_staging` → checkpoint. It never touches the hot tables.
+- **`MailingListProcessor`** (resolve+write half): drains `mailing_list_staging` **one list at a time, single-threaded** (`mailing_list_processor_workers`, default 1 — `>1` only fans out across *distinct* lists via an in-process per-list guard). Per drained message it resolves the repo (once per list, from the staged `repo_group_id`), resolves the sender (per-list cached), resolves mirror-links / signaled-repo, and writes `email_message` + (for non-mirror) `messages` + `email_message_ref`.
+- **Deferral**: a list whose `repo_group` has no repo yet is **left staged** (`messages.repo_id` is `NOT NULL`); it drains automatically once `load-foundation-orgs` / DOAP-enrichment populates the group. `aveloxis mailing-list-stats` surfaces these stuck lists. The hourly staging sweep is `processed`-gated, so undrained rows are never purged.
 
 ## 9. Mirror handling
 

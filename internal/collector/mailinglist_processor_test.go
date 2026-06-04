@@ -31,6 +31,12 @@ type fakeProcStore struct {
 	mirrorIssueID *int64
 	mirrorPRID    *int64
 	nextBodyID    int64
+
+	// projection (Phase A)
+	issueByKey    map[string]int64 // external_key → issue_id (link-or-create)
+	createdIssues []string         // external_keys for which CREATE/LINK was called
+	bridgedIssues []int64          // issue_ids bridged
+	nextIssueID   int64
 }
 
 func (f *fakeProcStore) ListsWithStaging(context.Context, int) ([]int64, error) {
@@ -75,6 +81,23 @@ func (f *fakeProcStore) InsertEmailMessageRef(context.Context, int64, int64, *in
 	f.refs++
 	return nil
 }
+func (f *fakeProcStore) LinkOrCreateIssueFromEmail(_ context.Context, _ int64, externalKey, _, _, _ string, _ *string, _ time.Time) (int64, bool, error) {
+	if f.issueByKey == nil {
+		f.issueByKey = map[string]int64{}
+	}
+	if id, ok := f.issueByKey[externalKey]; ok {
+		f.createdIssues = append(f.createdIssues, externalKey)
+		return id, false, nil // LINK
+	}
+	f.nextIssueID++
+	f.issueByKey[externalKey] = f.nextIssueID
+	f.createdIssues = append(f.createdIssues, externalKey)
+	return f.nextIssueID, true, nil // CREATE
+}
+func (f *fakeProcStore) BridgeEmailToIssue(_ context.Context, issueID, _, _ int64) error {
+	f.bridgedIssues = append(f.bridgedIssues, issueID)
+	return nil
+}
 
 func rg(v int64) *int64 { return &v }
 
@@ -110,7 +133,7 @@ func TestProcessorRoutesMirrorVsBody(t *testing.T) {
 			}},
 		},
 	}
-	p := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	p := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	n, err := p.DrainList(context.Background(), 7)
 	if err != nil {
@@ -150,6 +173,49 @@ func TestProcessorRoutesMirrorVsBody(t *testing.T) {
 	if m := byID["m-discuss@x"]; m == nil || m.DataSource != "dev@arrow.apache.org" || m.MLSystem != "apache_ponymail" {
 		t.Errorf("discuss provenance wrong: %+v", m)
 	}
+
+	// Phase A projection: the jira issue_event projected onto an issue.
+	if m := byID["m-jira@x"]; m == nil || m.LinkedIssueID == nil || m.ProjectedKind != "issue" {
+		t.Errorf("jira message must project to an issue (linked_issue_id set, projected_kind=issue): %+v", m)
+	}
+	if len(store.createdIssues) != 1 || store.createdIssues[0] != "ARROW-99" {
+		t.Errorf("expected one issue link-or-create for ARROW-99, got %v", store.createdIssues)
+	}
+	if len(store.bridgedIssues) != 1 {
+		t.Errorf("expected the jira email bridged to its issue once, got %v", store.bridgedIssues)
+	}
+	// projected_kind reflects the routing for every class.
+	if m := byID["m-mirror@x"]; m == nil || m.ProjectedKind != "pr" {
+		t.Errorf("mirror→PR must have projected_kind=pr: %+v", m)
+	}
+	if m := byID["m-discuss@x"]; m == nil || m.ProjectedKind != "mailing_list_only" {
+		t.Errorf("discuss must have projected_kind=mailing_list_only: %+v", m)
+	}
+}
+
+// TestProcessorSkipsProjectionWhenNotCleanFit pins the §2 gate: a forge-less
+// system (projectionClean=false) never projects issue_event onto an issue —
+// the message stays Layer-1 (projected_kind=mailing_list_only, no issue create).
+func TestProcessorSkipsProjectionWhenNotCleanFit(t *testing.T) {
+	store := &fakeProcStore{
+		primaryRepoID: 42, primaryRepoOK: true,
+		rows: []db.StagedMailingListRow{
+			{MlsID: 1, RepoGroupID: rg(3), Message: model.MailingListStagedMessage{
+				MessageID: "m-jira@x", ListAddress: "dev@x.apache.org", SenderEmail: "jira@apache.org",
+				MsgClass: mailinglist.ClassIssueEvent, ExternalKey: "FOO-1", Body: "b",
+			}},
+		},
+	}
+	p := NewMailingListProcessor(store, "lore_public_inbox", "metadata_only", false /*projectionClean*/, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := p.DrainList(context.Background(), 7); err != nil {
+		t.Fatalf("DrainList: %v", err)
+	}
+	if len(store.createdIssues) != 0 {
+		t.Errorf("non-clean_fit system must NOT project issues; got %v", store.createdIssues)
+	}
+	if len(store.emails) != 1 || store.emails[0].ProjectedKind != "mailing_list_only" {
+		t.Errorf("non-clean_fit issue_event must stay mailing_list_only: %+v", store.emails)
+	}
 }
 
 // TestProcessorLeavesStagedWhenNoRepo pins the deferral path: a list whose
@@ -164,7 +230,7 @@ func TestProcessorLeavesStagedWhenNoRepo(t *testing.T) {
 			}},
 		},
 	}
-	p := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	p := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	n, err := p.DrainList(context.Background(), 7)
 	if err != nil {
 		t.Fatalf("DrainList: %v", err)

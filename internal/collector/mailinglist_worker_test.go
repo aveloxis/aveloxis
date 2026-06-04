@@ -179,3 +179,35 @@ func (f *fakeMLStoreNoRepo) RecordListFailure(context.Context, int64) error {
 	f.failed = true
 	return nil
 }
+
+// TestNewMailingListWorkerPreservesZeroBackfill pins the v0.25.13 fix: the
+// constructor must NOT clamp backfillMonths 0 → 6. A 0 is the explicit
+// "full history" signal monthsToScan's default branch depends on; the config
+// layer already maps absent → 6 (MailingListBackfillMonthsOrDefault, nil→6).
+// The duplicate clamp here made full history unreachable even with
+// backfill_months=0 set — the startup log showed 0 while the worker used 6.
+func TestNewMailingListWorkerPreservesZeroBackfill(t *testing.T) {
+	systems, _ := mailinglist.LoadSystems()
+	w := NewMailingListWorker(&fakeMLStore{}, systems["apache_ponymail"], &fakeBackend{},
+		mailinglist.NewPacer(time.Nanosecond, time.Millisecond), mailinglist.NewBreaker(10, time.Hour),
+		time.Hour, 0 /*full history*/, "metadata_only", 1, "boot", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if w.backfill != 0 {
+		t.Fatalf("constructor clamped backfill 0 → %d; 0 must be preserved as the full-history signal", w.backfill)
+	}
+}
+
+// TestMonthsToScanFullHistoryWhenBackfillZero is the END-TO-END behavioral
+// guard the config-accessor test could not provide: with backfill=0 and no
+// checkpoint, the worker must scan far more than a 6-month window.
+// (fakeBackend.FirstMonth returns "", so monthsToScan uses its 30-year floor —
+// ~360 months — proving it is NOT the bounded window.)
+func TestMonthsToScanFullHistoryWhenBackfillZero(t *testing.T) {
+	systems, _ := mailinglist.LoadSystems()
+	w := NewMailingListWorker(&fakeMLStore{}, systems["apache_ponymail"], &fakeBackend{},
+		mailinglist.NewPacer(time.Nanosecond, time.Millisecond), mailinglist.NewBreaker(10, time.Hour),
+		time.Hour, 0, "metadata_only", 1, "boot", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	months := w.monthsToScan(context.Background(), &db.ListJob{RglsID: 1, RepoGroupID: 1, ListAddress: "dev@x.apache.org"})
+	if len(months) <= 6 {
+		t.Fatalf("backfill=0 must scan full history; got %d months — a 6-month window means the constructor clamp is back", len(months))
+	}
+}

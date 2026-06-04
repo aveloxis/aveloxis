@@ -4,6 +4,7 @@
 package db
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -103,4 +104,97 @@ func containsInt64(xs []int64, v int64) bool {
 		}
 	}
 	return false
+}
+
+// TestStuckMailingLists pins the observability query: a list with
+// staged-but-undrained rows whose repo_group has NO repo is reported; a list
+// whose group HAS a repo is not (it can drain). summary/12 §11.
+func TestStuckMailingLists(t *testing.T) {
+	store, ctx := emConnect(t)
+	defer store.Close()
+
+	const (
+		stuckList  = "dev@_av_stuck.apache.org"
+		readyList  = "dev@_av_ready.apache.org"
+		stuckGroup = "_av_stuck_grp"
+		readyGroup = "_av_ready_grp"
+		readyRepo  = "https://github.com/_av_ready/repo"
+	)
+	clean := func() {
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.mailing_list_staging WHERE rgls_id IN
+			(SELECT rgls_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_email IN ($1,$2))`, stuckList, readyList)
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_groups_list_serve WHERE rgls_email IN ($1,$2)`, stuckList, readyList)
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_git=$1`, readyRepo)
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_groups WHERE rg_name IN ($1,$2)`, stuckGroup, readyGroup)
+	}
+	clean()
+	t.Cleanup(clean)
+
+	seedGroup := func(name string) int64 {
+		var id int64
+		if err := store.pool.QueryRow(ctx,
+			`INSERT INTO aveloxis_data.repo_groups (rg_name) VALUES ($1) RETURNING repo_group_id`, name).Scan(&id); err != nil {
+			t.Fatalf("seed group %s: %v", name, err)
+		}
+		return id
+	}
+	stuckGID := seedGroup(stuckGroup)
+	readyGID := seedGroup(readyGroup)
+	// readyGroup gets a repo; stuckGroup does not.
+	if _, err := store.pool.Exec(ctx,
+		`INSERT INTO aveloxis_data.repos (platform_id, repo_git, repo_owner, repo_name, repo_group_id)
+		 VALUES (1, $1, '_av_ready', 'repo', $2)`, readyRepo, readyGID); err != nil {
+		t.Fatalf("seed ready repo: %v", err)
+	}
+	if err := store.RegisterMailingList(ctx, stuckGID, stuckList, "apache_ponymail"); err != nil {
+		t.Fatalf("register stuck list: %v", err)
+	}
+	if err := store.RegisterMailingList(ctx, readyGID, readyList, "apache_ponymail"); err != nil {
+		t.Fatalf("register ready list: %v", err)
+	}
+	rgls := func(email string) int64 {
+		var id int64
+		store.pool.QueryRow(ctx, `SELECT rgls_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_email=$1`, email).Scan(&id)
+		return id
+	}
+	stuckRgls, readyRgls := rgls(stuckList), rgls(readyList)
+
+	// Stage messages for both lists.
+	for i, lst := range []struct {
+		rgls int64
+		gid  int64
+		addr string
+	}{{stuckRgls, stuckGID, stuckList}, {readyRgls, readyGID, readyList}} {
+		gid := lst.gid
+		msg := model.MailingListStagedMessage{
+			MessageID: fmt.Sprintf("<stuck-%d@x>", i), ListAddress: lst.addr,
+			MsgClass: "discuss", Body: "x",
+		}
+		if err := store.StageMailingListMessage(ctx, lst.rgls, &gid, nil, msg); err != nil {
+			t.Fatalf("stage for %s: %v", lst.addr, err)
+		}
+	}
+
+	stuck, err := store.StuckMailingLists(ctx)
+	if err != nil {
+		t.Fatalf("StuckMailingLists: %v", err)
+	}
+	var sawStuck, sawReady bool
+	for _, m := range stuck {
+		if m.RglsID == stuckRgls {
+			sawStuck = true
+			if m.ListAddress != stuckList || m.RepoGroupID != stuckGID || m.StagedRows != 1 {
+				t.Errorf("stuck row wrong: %+v", m)
+			}
+		}
+		if m.RglsID == readyRgls {
+			sawReady = true
+		}
+	}
+	if !sawStuck {
+		t.Error("the no-repo list must be reported as stuck")
+	}
+	if sawReady {
+		t.Error("a list whose group has a repo must NOT be reported as stuck")
+	}
 }

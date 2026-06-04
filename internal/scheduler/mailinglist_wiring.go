@@ -87,10 +87,26 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 			"backfill_months", s.cfg.MailingListBackfillMonths, "mirror_handling", s.cfg.MailingListMirrorHandling)
 		for i := 0; i < workers; i++ {
 			w := collector.NewMailingListWorker(s.store, sys, backend, pacer, breaker,
-				cadence, s.cfg.MailingListBackfillMonths, s.cfg.MailingListMirrorHandling,
+				cadence, s.cfg.MailingListBackfillMonths,
 				pid, bootID, s.logger)
 			go s.runMailingListLoop(ctx, w)
 		}
+
+		// The resolve+write half: a MailingListProcessor drains this system's
+		// staged messages one list at a time (single-threaded per list,
+		// summary/12 §11) so the hot-table writes never reproduce Augur's
+		// contention. Default one drain goroutine per system; >1 fans out across
+		// DISTINCT lists (the Processor's in-process per-list guard keeps two
+		// goroutines off the same list).
+		drainWorkers := s.cfg.MailingListProcessorWorkers
+		if drainWorkers <= 0 {
+			drainWorkers = 1
+		}
+		proc := collector.NewMailingListProcessor(s.store, sys.Name, s.cfg.MailingListMirrorHandling, s.logger)
+		for i := 0; i < drainWorkers; i++ {
+			go s.runMailingListDrainLoop(ctx, proc)
+		}
+
 		spawned++
 	}
 	if spawned == 0 {
@@ -139,6 +155,40 @@ func (s *Scheduler) runMailingListSenderBackfill(ctx context.Context) {
 			if n > 0 {
 				s.logger.Info("mailing-list: resolved sender identities", "count", n)
 			}
+		}
+	}
+}
+
+// mailingListDrainInterval is how long the drain loop waits before re-checking
+// for staged messages when the last pass found nothing to drain.
+const mailingListDrainInterval = 30 * time.Second
+
+// mailingListDrainListLimit bounds how many lists one drain pass considers.
+const mailingListDrainListLimit = 200
+
+// runMailingListDrainLoop drives one MailingListProcessor: drain every list
+// with staged messages (single-threaded per list), idle, repeat.
+func (s *Scheduler) runMailingListDrainLoop(ctx context.Context, proc *collector.MailingListProcessor) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		n, err := proc.DrainOnce(ctx, mailingListDrainListLimit)
+		if err != nil {
+			s.logger.Warn("mailing-list: drain cycle error", "error", err)
+		}
+		if n > 0 {
+			s.logger.Info("mailing-list: drained staged messages", "processed", n)
+			continue // more may have arrived; keep draining
+		}
+		t := time.NewTimer(mailingListDrainInterval)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
 		}
 	}
 }

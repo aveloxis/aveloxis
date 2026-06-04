@@ -61,6 +61,31 @@ func mailingListStatsCmd(cfgPath *string) *cobra.Command {
 					fmt.Printf("    %-16s %d\n", name, st.ByClass[k])
 				}
 			}
+
+			// Stuck lists: staged-but-undrained because their repo_group has no
+			// repo yet. The MailingListProcessor leaves these staged until
+			// load-foundation-orgs / DOAP-enrichment populates the group, so
+			// surfacing them tells the operator which PMCs still need org work.
+			stuck, err := store.StuckMailingLists(ctx)
+			if err != nil {
+				return err
+			}
+			if len(stuck) > 0 {
+				var totalStaged int64
+				for _, m := range stuck {
+					totalStaged += m.StagedRows
+				}
+				fmt.Printf("\n  ⚠ stuck lists (staged, awaiting repo for their org group): %d list(s), %d staged message(s)\n",
+					len(stuck), totalStaged)
+				fmt.Println("    Run load-foundation-orgs / DOAP-enrichment to populate the group; the processor drains them automatically once a repo appears.")
+				for _, m := range stuck {
+					addr := m.ListAddress
+					if addr == "" {
+						addr = fmt.Sprintf("rgls_id=%d", m.RglsID)
+					}
+					fmt.Printf("    %-40s repo_group=%-8d staged=%d\n", addr, m.RepoGroupID, m.StagedRows)
+				}
+			}
 			return nil
 		},
 	}

@@ -59,3 +59,29 @@ func TestMailingListBackfillJSONRoundTrip(t *testing.T) {
 		t.Errorf("explicit 0: got %d, want 0 (full history)", got)
 	}
 }
+
+// TestMailingListProcessorWorkersDefault pins the v0.25.x processor-workers
+// knob: absent/0/negative → 1 (single-threaded per list, summary/12 §11); an
+// explicit positive value is passed through unchanged.
+func TestMailingListProcessorWorkersDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"absent/zero → 1", 0, 1},
+		{"negative → 1", -3, 1},
+		{"explicit 4 → 4", 4, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &CollectionConfig{MailingListProcessorWorkers: tc.in}
+			if got := c.MailingListProcessorWorkersOrDefault(); got != tc.want {
+				t.Errorf("MailingListProcessorWorkersOrDefault() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+	if got := DefaultConfig().Collection.MailingListProcessorWorkersOrDefault(); got != 1 {
+		t.Errorf("DefaultConfig processor workers = %d, want 1", got)
+	}
+}

@@ -38,3 +38,23 @@ func TestPlatformClientHasSearchUserByEmail(t *testing.T) {
 			"contributors with email but no platform identity.")
 	}
 }
+
+// TestPlatformClientHasSearchCommitByAuthorEmail pins the global commit-search
+// resolution method (the shared resolver's load-bearing step — summary/12 §5g).
+func TestPlatformClientHasSearchCommitByAuthorEmail(t *testing.T) {
+	data, err := os.ReadFile("platform.go")
+	if err != nil {
+		t.Fatalf("read platform.go: %v", err)
+	}
+	src := string(data)
+	idx := strings.Index(src, "type Client interface")
+	if idx < 0 {
+		t.Fatal("could not locate type Client interface in platform.go")
+	}
+	end := strings.Index(src[idx:], "\n}")
+	iface := src[idx : idx+end]
+	if !strings.Contains(iface, "SearchCommitByAuthorEmail") {
+		t.Error("platform.Client must declare SearchCommitByAuthorEmail(ctx, email) (login string, userID int64, err error) — " +
+			"the global commit-search step that resolves private-profile-email users via their commit authorship.")
+	}
+}

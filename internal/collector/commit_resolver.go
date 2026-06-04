@@ -28,19 +28,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform/github"
 )
 
 // CommitResolver resolves commit authors to platform users.
 type CommitResolver struct {
-	store  *db.PostgresStore
-	http   *platform.HTTPClient
-	logger *slog.Logger
+	store *db.PostgresStore
+	http  *platform.HTTPClient
+	// searchClient is the shared email→identity API surface (Search API +
+	// global commit-search). An interface so tests can fake it; in
+	// production it's a *github.Client built from the same key pool.
+	searchClient emailSearchClient
+	logger       *slog.Logger
 
 	// Caches to avoid repeated lookups within a run.
 	emailCache map[string]string // email -> gh_login (or "" for not found)
@@ -50,11 +54,12 @@ type CommitResolver struct {
 // NewCommitResolver creates a resolver using the GitHub API via the given key pool.
 func NewCommitResolver(store *db.PostgresStore, keys *platform.KeyPool, logger *slog.Logger) *CommitResolver {
 	return &CommitResolver{
-		store:      store,
-		http:       platform.NewHTTPClient("https://api.github.com", keys, logger, platform.AuthGitHub),
-		logger:     logger,
-		emailCache: make(map[string]string),
-		hashCache:  make(map[string]string),
+		store:        store,
+		http:         platform.NewHTTPClient("https://api.github.com", keys, logger, platform.AuthGitHub),
+		searchClient: github.New("https://api.github.com", keys, logger),
+		logger:       logger,
+		emailCache:   make(map[string]string),
+		hashCache:    make(map[string]string),
 	}
 }
 
@@ -66,18 +71,19 @@ type unresolvedCommit struct {
 
 // ResolveResult tracks resolver statistics.
 type ResolveResult struct {
-	TotalCommits    int
-	ResolvedNoreply int
-	ResolvedDBHit   int
-	ResolvedAPI     int
-	ResolvedSearch  int
-	Unresolved      int
-	KeyExhausted    int // commits that failed because no API keys were available
-	Consecutive422  int // consecutive 422 "No commit found" errors from GitHub API
-	ContribsCreated int
-	ContribsUpdated int
-	AliasesCreated  int
-	Errors          int
+	TotalCommits         int
+	ResolvedNoreply      int
+	ResolvedDBHit        int
+	ResolvedAPI          int
+	ResolvedSearch       int
+	ResolvedCommitSearch int // resolved via global commit-search (shared resolver)
+	Unresolved           int
+	KeyExhausted         int // commits that failed because no API keys were available
+	Consecutive422       int // consecutive 422 "No commit found" errors from GitHub API
+	ContribsCreated      int
+	ContribsUpdated      int
+	AliasesCreated       int
+	Errors               int
 }
 
 // IsSuccess returns true if the resolution completed meaningfully —
@@ -226,6 +232,7 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		"db_hit", result.ResolvedDBHit,
 		"api", result.ResolvedAPI,
 		"search", result.ResolvedSearch,
+		"commit_search", result.ResolvedCommitSearch,
 		"unresolved", result.Unresolved,
 		"key_exhausted", result.KeyExhausted,
 		"errors", result.Errors,
@@ -293,16 +300,24 @@ func (r *CommitResolver) resolveOne(ctx context.Context, repoID int64, owner, re
 		return info.Login, info.UserID, nil
 	}
 
-	// Strategy 4: GitHub Search API (email search).
-	login, err := r.githubEmailSearch(ctx, email)
+	// Strategy 4: shared API tail — GitHub Search API, then global
+	// commit-search (the shared resolver, summary/12 §5g). commit-search
+	// resolves private-profile-email authors that user-search misses, and
+	// it now yields the gh_user_id too (the old githubEmailSearch returned
+	// login only).
+	login, ghUserID, source, err := ResolveEmailViaAPI(ctx, r.searchClient, email)
 	if err != nil {
 		return "", 0, err
 	}
 	if login != "" {
 		r.emailCache[email] = login
 		r.hashCache[cmt.Hash] = login
-		result.ResolvedSearch++
-		return login, 0, nil
+		if source == EmailSourceCommitSearch {
+			result.ResolvedCommitSearch++
+		} else {
+			result.ResolvedSearch++
+		}
+		return login, ghUserID, nil
 	}
 
 	// Not found.
@@ -425,37 +440,9 @@ func (r *CommitResolver) githubCommitLookup(ctx context.Context, owner, repo, sh
 	return nil, nil // no GitHub user linked
 }
 
-// githubEmailSearch uses the Search API to find a login by email.
-func (r *CommitResolver) githubEmailSearch(ctx context.Context, email string) (string, error) {
-	// Strip surrounding quotes that sometimes appear in git log author emails
-	// (e.g., `"steve@example.com"`). GitHub rejects quoted search queries with 400.
-	email = strings.Trim(email, `"' `)
-	if email == "" || !strings.Contains(email, "@") {
-		return "", nil
-	}
-	path := fmt.Sprintf("/search/users?q=%s+in:email&per_page=1", url.QueryEscape(email))
-
-	resp, err := r.http.Get(ctx, path)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var data struct {
-		TotalCount int `json:"total_count"`
-		Items      []struct {
-			Login string `json:"login"`
-		} `json:"items"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", nil // don't fail on decode error for search
-	}
-
-	if data.TotalCount > 0 && len(data.Items) > 0 {
-		return data.Items[0].Login, nil
-	}
-	return "", nil
-}
+// (githubEmailSearch removed v0.25.x — its Search-API logic now lives in the
+// shared github.Client.SearchUserByEmail, invoked via ResolveEmailViaAPI in
+// Strategy 4, which also adds the global commit-search fallback.)
 
 // ensureContributor creates or updates a contributor with full gh_* fields.
 // Uses the deterministic GithubUUID for the cntrb_id.

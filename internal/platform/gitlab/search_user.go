@@ -25,3 +25,11 @@ import "context"
 func (c *Client) SearchUserByEmail(ctx context.Context, email string) (string, int64, error) {
 	return "", 0, nil
 }
+
+// SearchCommitByAuthorEmail is a no-op on GitLab. gitlab.com has no
+// author-email commit search and gates email-based user search behind admin
+// (verified 2026-06-04), so there is no public email→identity path to offer.
+// See platform.Client.SearchCommitByAuthorEmail.
+func (c *Client) SearchCommitByAuthorEmail(ctx context.Context, email string) (string, int64, error) {
+	return "", 0, nil
+}

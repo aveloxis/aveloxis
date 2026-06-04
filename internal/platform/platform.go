@@ -56,6 +56,22 @@ type Client interface {
 	// the caller treats that as "no resolution available" and moves on.
 	SearchUserByEmail(ctx context.Context, email string) (login string, userID int64, err error)
 
+	// SearchCommitByAuthorEmail resolves a login by searching for any commit
+	// authored with the given email, across the whole platform. Same return
+	// contract as SearchUserByEmail: ("", 0, nil) on no hit, error only on
+	// transport/5xx. This catches users whose profile email is private but
+	// who authored commits with the address — the load-bearing step of the
+	// shared email→identity resolver (summary/12 §5g; bootstrap: ~35% vs
+	// ~8-11% for SearchUserByEmail on the same cohort).
+	//
+	// On GitHub: GET /search/commits?q=author-email:{email} (search budget,
+	// 30/min/token — callers must gate/pace).
+	//
+	// GitLab returns ("", 0, nil) unconditionally: gitlab.com has no
+	// author-email commit search and gates email user-search behind admin
+	// (verified 2026-06-04), so no public email→identity path exists.
+	SearchCommitByAuthorEmail(ctx context.Context, email string) (login string, userID int64, err error)
+
 	// Repo metadata
 	RepoCollector
 	// Issues and their related data

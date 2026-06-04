@@ -864,8 +864,12 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.email_message (
     signaled_repo_id  BIGINT REFERENCES aveloxis_data.repos(repo_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED,
     linked_issue_id        BIGINT REFERENCES aveloxis_data.issues(issue_id) DEFERRABLE INITIALLY DEFERRED,
     linked_pull_request_id BIGINT REFERENCES aveloxis_data.pull_requests(pull_request_id) DEFERRABLE INITIALLY DEFERRED,
+    linked_pr_review_id    BIGINT REFERENCES aveloxis_data.pull_request_reviews(pr_review_id) DEFERRABLE INITIALLY DEFERRED,
     linked_external_key    TEXT DEFAULT '',
     linked_commit_hash     TEXT DEFAULT '',
+    -- Phase 3 (summary/12 §10a): what this email was projected onto, so
+    -- "what did this become" is queryable without joins: issue|pr|review|mailing_list_only.
+    projected_kind         TEXT DEFAULT '',
     tool_source       TEXT DEFAULT 'Aveloxis Mailing List Collector',
     tool_version      TEXT DEFAULT '',
     data_source       TEXT DEFAULT '',
@@ -1769,6 +1773,47 @@ CREATE INDEX IF NOT EXISTS idx_staging_unprocessed
 -- aggregate that completes in ~10ms.
 CREATE INDEX IF NOT EXISTS idx_staging_repo_id
     ON aveloxis_ops.staging (repo_id);
+
+-- ============================================================
+-- Mailing-list staging (v0.25.x). The mailing-list pipeline mirrors the
+-- API staged pipeline above: the MailingListWorker fetches + classifies and
+-- writes one JSONB envelope per message HERE (a cheap append, no hot-table
+-- contention); a per-list single-threaded batch Processor then drains it
+-- into email_message / messages / (later) issues / pull_requests with a
+-- write-through contributor cache. This keeps the mailing-list pipeline off
+-- the per-message direct-upsert path that reproduces Augur's lock contention
+-- on contributors / issues / pull_requests. See summary/12 §11.
+-- Keyed by rgls_id (the list) so draining is per-list.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS aveloxis_ops.mailing_list_staging (
+    mls_id            BIGSERIAL PRIMARY KEY,
+    rgls_id           BIGINT NOT NULL,
+    repo_group_id     BIGINT,
+    repo_id           BIGINT,
+    message_id_header TEXT NOT NULL,
+    envelope          JSONB NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed         BOOLEAN NOT NULL DEFAULT FALSE,
+    UNIQUE (rgls_id, message_id_header)
+);
+
+-- Drain claim + batch read: "unprocessed rows for a list".
+CREATE INDEX IF NOT EXISTS idx_mls_unprocessed
+    ON aveloxis_ops.mailing_list_staging (rgls_id)
+    WHERE NOT processed;
+
+-- Phase 2 (summary/12 §5): per-sender cooldown + outcome for the
+-- runMailingListSenderResolve ticker. Senders with >= a message threshold that
+-- the DB can't resolve are run through the shared email->identity chain
+-- (Search + global commit-search); this table bounds re-attempts and records
+-- the outcome. Keyed by the raw sender email.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.mailing_list_sender_resolve (
+    sender_email     TEXT PRIMARY KEY,
+    last_attempt_at  TIMESTAMPTZ,
+    resolved         BOOLEAN NOT NULL DEFAULT FALSE,
+    resolved_source  TEXT DEFAULT '',
+    resolved_login   TEXT DEFAULT ''
+);
 
 -- ============================================================
 -- Collection queue: Postgres-backed priority queue.

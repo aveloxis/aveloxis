@@ -96,12 +96,13 @@ type Config struct {
 	DistributionTrackingImmediatePartialReclaim bool          // v0.25.3: partial-scan repos bypass cadence (default true)
 
 	// v0.25.7 MailingListWorker. collection.mailing_list_*.
-	MailingListEnabled        bool          // master switch (off by default)
-	MailingListWorkers        int           // concurrent list runners (default 2)
-	MailingListCadence        time.Duration // per-list tail-refresh cadence (default 30d)
-	MailingListBackfillMonths int           // history window for un-checkpointed lists (default 6)
-	MailingListPoliteEmail    string        // contact embedded in the archive User-Agent
-	MailingListMirrorHandling string        // skip | metadata_only | full
+	MailingListEnabled          bool          // master switch (off by default)
+	MailingListWorkers          int           // concurrent list runners (default 2)
+	MailingListCadence          time.Duration // per-list tail-refresh cadence (default 30d)
+	MailingListBackfillMonths   int           // history window for un-checkpointed lists (default 6)
+	MailingListPoliteEmail      string        // contact embedded in the archive User-Agent
+	MailingListMirrorHandling   string        // skip | metadata_only | full
+	MailingListProcessorWorkers int           // drain goroutines per system (default 1, single-threaded per list)
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -532,6 +533,20 @@ func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 	}
 	if deleted > 0 {
 		s.logger.Info("staging cleanup complete", "rows_deleted", deleted)
+	}
+
+	// Mailing-list staging (summary/12 §11) shares the same retention. The
+	// predicate is processed-gated, so undrained no-repo rows are never
+	// touched — they persist until the list's repo_group gains a repo and the
+	// MailingListProcessor drains them. Always-on (harmless DELETE on an empty
+	// table) so leftover processed rows from a prior enablement don't bloat.
+	mlDeleted, err := s.store.PurgeMailingListStagingProcessed(ctx, s.cfg.StagingRetention.Seconds())
+	if err != nil {
+		s.logger.Warn("mailing-list staging cleanup failed", "error", err)
+		return
+	}
+	if mlDeleted > 0 {
+		s.logger.Info("mailing-list staging cleanup complete", "rows_deleted", mlDeleted)
 	}
 }
 

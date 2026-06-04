@@ -86,7 +86,7 @@ lore's HTTP surface is Anubis-gated, so the sanctioned bulk path is a **bare `gi
 
 ### 6.1 Sender identity (§5d)
 
-The sender email is resolved to a contributor via the same `ResolveContributorIDByEmail` chain the commit resolver uses, and stamped on the `messages` row. Unresolved senders keep their `sender_email` and are retried by a periodic `BackfillMailingListSenderIDs` ticker (hourly) as the contributors table fills from ongoing collection. List senders are largely committers, so resolution improves over time and after the linked repos' GitHub collection completes.
+Sender resolution happens at **drain time in the `MailingListProcessor`** (not in the fetch worker — see §8.1). For the inline stamp on the `messages` row the Processor does a DB lookup (`ResolveContributorIDByEmail`), cached per-list so a recurring sender is resolved once. Senders that don't resolve from the DB keep their `sender_email` and are retried two ways as the contributors table fills: the existing `BackfillMailingListSenderIDs` ticker (hourly DB re-lookup), and the v0.25.x `runMailingListSenderResolve` ticker, which runs senders with ≥ a message threshold through the **shared `ResolveEmailToIdentity` chain** (noreply → bot → DB → GitHub Search → GitHub **global commit-search**) — the same chain the commit resolver uses. Global commit-search is the load-bearing step: list senders are largely committers, so a sender who keeps their profile email private still resolves via a public commit they authored anywhere on GitHub. See [Contributor Resolution → Shared email→identity resolution](contributor-resolution.md#shared-emailidentity-resolution).
 
 ### 6.2 Signaled repo — two columns, never block
 
@@ -137,7 +137,7 @@ Per-column documentation is in [`docs/schema.md`](../schema.md). See [`docs/cont
         │ per system │             │  pool   │
         └───────────┘             │ (N=2)   │
                                   └─────────┘
-                                       │  claim→fetch→classify→resolve→route→checkpoint
+                                       │  claim→fetch→classify→STAGE→checkpoint
                                        ▼
                               ArchiveSource (Pony Mail | public-inbox)
 ```
@@ -146,6 +146,14 @@ Per-column documentation is in [`docs/schema.md`](../schema.md). See [`docs/cont
 - **Checkpoint**: each completed month stamps `mlls_last_month` via `CheckpointListMonth`, so an interrupted scan resumes from where it stopped rather than re-fetching.
 - **Months to scan**: from `mlls_last_month` forward to the current month; for a never-scanned list, from `FirstMonth` (full history) when `mailing_list_backfill_months <= 0`, else the recent N-month window.
 - **Failure backoff** (v0.21.4 quadratic, base 120s): `RecordListFailure` schedules 2m → 8m → 18m → … and sidelines the list after `MailingListMaxFailures = 10` consecutive failures.
+
+### 8.1 Staging split (v0.25.x)
+
+The pipeline is split into a **fetch** half and a **resolve+write** half across a staging table, for the same reason the API pipeline stages: doing per-message sender-resolution + hot-table writes inline (on every fetched message, across concurrent list runners) reproduces Augur's lock contention on `contributors` / `issues` / `pull_requests`. The split keeps the fetchers off the hot tables.
+
+- **`MailingListWorker`** (fetch half): claim → fetch a month → classify each message (cheap, no DB) → **stage** the classified envelope into `aveloxis_ops.mailing_list_staging` → checkpoint. It never touches the hot tables.
+- **`MailingListProcessor`** (resolve+write half): drains `mailing_list_staging` **one list at a time, single-threaded** (`mailing_list_processor_workers`, default 1 — `>1` only fans out across *distinct* lists via an in-process per-list guard). Per drained message it resolves the repo (once per list, from the staged `repo_group_id`), resolves the sender (per-list cached), resolves mirror-links / signaled-repo, and writes `email_message` + (for non-mirror) `messages` + `email_message_ref`.
+- **Deferral**: a list whose `repo_group` has no repo yet is **left staged** (`messages.repo_id` is `NOT NULL`); it drains automatically once `load-foundation-orgs` / DOAP-enrichment populates the group. `aveloxis mailing-list-stats` surfaces these stuck lists. The hourly staging sweep is `processed`-gated, so undrained rows are never purged.
 
 ## 9. Mirror handling
 
@@ -167,8 +175,9 @@ aveloxis load-foundation-orgs --yes      # track the foundation's GitHub org(s) 
 aveloxis load-apache-lists               # register per-PMC dev@/users@ lists via enumeration
 aveloxis register-mailing-list \         # register one list (any system, e.g. the kernel)
     --system lore_public_inbox --list linux-pci@vger.kernel.org --repo https://github.com/torvalds/linux
-aveloxis backfill-issue-external-keys    # populate issues.external_key from [KEY-N] title prefixes
-aveloxis mailing-list-stats              # coverage rollup
+aveloxis backfill-issue-external-keys    # populate issues.external_key from [KEY-N] title prefixes (conflict-safe)
+aveloxis backfill-mailing-list-projection # project existing issue_event mail → issues, in place (Phase 5)
+aveloxis mailing-list-stats              # coverage rollup (+ missed-LINK shadow guard)
 aveloxis verify-mailing-list [--strict]  # Phase 4 branch-coverage harness (§12)
 ```
 
@@ -191,6 +200,71 @@ All under `collection` in `aveloxis.json`:
 }
 ```
 
+## 11c. Layer 2 projection — mailing-list → canonical entities (Phase 3)
+
+Layer 1 (every email → `email_message` + body + classification + threading) is universal and lossless. **Layer 2** *additionally* projects a message onto a canonical entity (`issues` / `pull_requests` / `pull_request_reviews`) **only where the mail maps cleanly to how that community operates** — gated by the per-system `projection_policy` in `systems.yaml` (`clean_fit` for Apache; `none` for the forge-less kernel). The processor reads the policy via `System.ProjectionClean()`.
+
+**Analytical purpose:** before this subsystem, Apache projects' issue data was *absent* (Apache tracks issues in Jira/Bugzilla, not GitHub Issues). Projected issues land under the **PMC's GitHub `repo_id`** — `issues` has no `platform_id` column, the repo carries the platform — so they appear in that repo's standard per-repo issue analytics exactly like native issues. Provenance lives in `external_key` + `data_source` (`'JIRA'`) + `tool_source`.
+
+**Phase A (shipped) — `issue_event → issues` link-or-create** (`MailingListProcessor`, drain-time):
+
+1. An `issue_event` message with a parsed `external_key` (e.g. `KAFKA-123`): **LINK** if an issue for that key already exists — matched by `external_key` OR by the bracketed `[KEY]` in a native issue's title (the Apache Jira→GitHub import shape). LINK-by-title **prevents the missed-LINK shadow**: without it, projecting before `backfill-issue-external-keys` would mint a synthetic that squats the key (the UNIQUE index then blocks the native issue from getting it). Else → **CREATE** a synthetic issue (negative, deterministic `platform_issue_id`, idempotent on `(repo_id, platform_issue_id)`).
+2. **Thread-inheritance (#1):** once any message in a thread is projected onto an issue, the rest of the thread — human discussion, `Re:` replies, `discuss`-class mail that carries no key — inherits that issue (via `thread_root_id`, cache + `FindIssueForThread`). So the **full email history** attaches, not just the Jira-notification stream.
+3. Every projected email is bridged as a comment (`issue_message_ref`); `issues.comment_count` is recomputed so threads show in analytics.
+4. `reporter_id` is the resolved sender **only when it is not the `jira@`/bot sender**; real-actor-from-body parsing is a follow-up.
+5. `email_message.projected_kind` records the outcome (`issue`/`pr`/`review`/`mailing_list_only`).
+
+**Backfill (Phase 5):** `aveloxis backfill-mailing-list-projection` runs the same projection over `email_message` rows collected before the projection code existed — in place, no re-collection. Three idempotent steps to convergence: keyed projection → thread-inheritance → mark-remaining. `aveloxis mailing-list-stats` surfaces any **missed-LINK shadows** (synthetic issue whose key sits in a native issue's title) for remediation; the conflict-safe `backfill-issue-external-keys` no longer errors on them.
+
+**Sender attribution (Phases 2+4):** senders the DB can't resolve are run through the shared email→identity chain; direct-human senders that still don't resolve get an **email-only contributor** (random `cntrb_id`, `cntrb_email` set) so they're counted and ride the convergence ticker. Bot/relay senders (`jira@`, `git@`, CI) never become contributors.
+
+**Phase B (verified, NOT built) — PR/review synthesis** from `github_mirror` mail. Verification (2026-06-04, summary/12 §3) settled it: `pull_requests.platform_pr_id` stores the GitHub PR **`databaseId`**, but mirror mail carries only the PR **number** — a synthesized PR keyed on the number would *duplicate* the API collector's row rather than merge. Decision: **don't synthesize**; the lever for full Apache PR data is **org collection** (`load-foundation-orgs`) + the existing `github_mirror` **LINK** path (which already covers collected PRs correctly). `linked_pr_review_id` remains in the schema should a future uncollectable-sibling case justify a number→databaseId resolution step.
+
+For `projection_policy: none` (kernel): none of the above runs — a `[PATCH]` is not a PR; Layer 1 is the faithful record.
+
+## 11d. Forge-less PR-equivalents — the special case (Phase C)
+
+Some communities — most notably the **Linux kernel** (lore.kernel.org,
+`projection_policy: none`) — do code review **entirely by email**. A `[PATCH]`
+thread *is* the pull request; the `Re:` replies *are* the review. There is no
+forge, and therefore no `pull_requests` / `pull_request_reviews` entity to
+project onto.
+
+**The special case, stated plainly:** Aveloxis deliberately does **NOT**
+synthesize `pull_requests` rows for these. Fabricating a "PR" for a community
+that doesn't use one misrepresents how it works and would pollute the real PR
+tables (the §1 governing principle: project only where it's a clean, faithful
+fit). The faithful record is the `email_message` rows themselves —
+`msg_class IN ('patch_submission','review')` + `thread_root_id` grouping.
+
+To make that ergonomic without a fake forge entity, Phase C ships a **read-only
+VIEW**, `aveloxis_data.mailing_list_pr_equivalents`, that groups those mail
+threads and presents each as a PR-equivalent:
+
+| column | meaning |
+|---|---|
+| `thread_key` | the patch-series identity (cover letter `[PATCH 0/N]` or a standalone `[PATCH]`) |
+| `repo_id` / `list_address` | the registered repo + list |
+| `title` / `author_email` / `author_cntrb_id` | from the series root patch (author resolved to a contributor when known) |
+| `created_at` / `last_activity_at` | first / last message in the thread |
+| `patch_count` / `review_count` / `participant_count` | thread aggregates |
+| `source` | always `'mailing_list'` — the explicit "this is mail-derived, **not** a forge PR" label |
+
+Two properties worth knowing:
+
+- **It is a plain VIEW** — zero storage, never materialized/refreshed, and
+  intentionally absent from the matview refresh list. Querying it always
+  reflects current `email_message` data.
+- **It is empty until forge-less lists are collected.** The filter
+  `msg_class IN ('patch_submission','review')` is itself the forge-less gate:
+  the 2026-06-03 survey found Apache produces **zero** of these classes (it is
+  GitHub-PR-native), so the view contains only kernel-style mail and stays
+  empty until lore/public-inbox lists (`register-mailing-list`) are actually
+  collected. That's by design — not a bug.
+
+Analysts who want "PR-like" activity for forge-less projects query this view;
+`pull_requests` stays exclusively real forge data.
+
 ## 12. Verification (Phase 4) and the collection-ordering caveat
 
 `aveloxis verify-mailing-list` is the branch-coverage harness: it reports, per logic branch, whether the subsystem produced any rows — every `msg_class`, both backends, each routing outcome, threading, signaled-repo resolution, sender resolution, and `external_key` backfill — each marked **PASS / EMPTY / DEFER**. `--strict` exits non-zero if a *required* (mailing-list-native) branch is empty, so it can gate a verification collection.
@@ -211,8 +285,10 @@ All under `collection` in `aveloxis.json`:
 - **Adding a backend**: [`docs/contributing/adding-a-platform.md`](../contributing/adding-a-platform.md) (the `ArchiveSource` interface follows the platform-extension shape).
 - **Source-of-truth files**:
   - `internal/mailinglist/` — `systems.yaml` + classifier, `defensive.go` (Pacer/Breaker), `archive.go` (interface + mbox/RFC822 parse), `ponymail.go`, `publicinbox.go`
-  - `internal/collector/mailinglist_worker.go` — claim→fetch→classify→resolve→route→checkpoint
+  - `internal/collector/mailinglist_worker.go` — fetch→classify→STAGE→checkpoint (the fetch half)
+  - `internal/collector/mailinglist_processor.go` — drain staging → resolve sender/mirror/repo → project (Layer 2) → write `email_message`/`messages`/bridges (the resolve+write half)
+  - `internal/db/mailinglist_staging_store.go`, `internal/db/mailinglist_projection_store.go`, `internal/db/mailinglist_sender_resolve_store.go`
   - `internal/db/email_message_store.go`, `internal/db/mailinglist_state_store.go`
   - `cmd/aveloxis/{load_foundation_orgs,load_apache_lists,register_mailing_list,backfill_external_keys,mailing_list_stats,verify_mailing_list}.go`
   - `internal/api/server.go` — `handleMailingListStats`
-- **Design archive**: `summary/10-apache-history-ingestion.md`, `summary/11-apache-mailing-list-implementation-plan.md`.
+- **Design archive**: `summary/10-apache-history-ingestion.md`, `summary/11-apache-mailing-list-implementation-plan.md`, `summary/12-mailing-list-projection.md`.

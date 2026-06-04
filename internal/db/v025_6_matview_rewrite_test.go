@@ -197,10 +197,31 @@ func TestVersionStampedV0256(t *testing.T) {
 	// Version line advances: 0.25.6 → 0.25.7 (mailing lists) → 0.25.8
 	// (matview commit-index fix) → 0.25.9 (Phase 4 verify-mailing-list
 	// harness + PonyMail FirstMonth cheap-window fix) → 0.25.10
-	// (explorer_new_contributors malformed-author-date guard).
+	// (explorer_new_contributors malformed-author-date guard) → 0.25.11
+	// (refresh tool_version on every data_collection_date upsert) → 0.25.12
+	// (mailing_list_backfill_months 0 = full history at the config layer) →
+	// 0.25.13 (remove the duplicate 0→6 clamp in the worker constructor that
+	// still defeated full history) → 0.25.14 (mailing-list staging refactor:
+	// MailingListWorker stages classified messages, a per-list single-threaded
+	// MailingListProcessor drains them — keeps the pipeline off the hot-table
+	// direct-upsert path that reproduced Augur's contention) → 0.25.15
+	// (Phase 2: runMailingListSenderResolve ticker resolves mailing-list
+	// senders the DB can't, via the shared email→identity chain — Search +
+	// global commit-search — and links/creates the contributor) → 0.25.16
+	// (Phase 3/Phase A: issue_event → issues link-or-create projection for
+	// clean_fit systems + projection_policy gate + email_message
+	// linked_pr_review_id/projected_kind columns. Apache issue data, formerly
+	// absent, lands under the PMC repo for standard per-repo analytics) →
+	// 0.25.17 (thread-inheritance so full email threads attach to an issue;
+	// LINK-by-title + conflict-safe external-key backfill to prevent missed-LINK
+	// shadows; Phase 4 email-only contributors for direct-human senders; Phase 5
+	// backfill-mailing-list-projection over existing email_message rows) →
+	// 0.25.18 (Phase C: mailing_list_pr_equivalents read-only VIEW surfacing
+	// forge-less kernel [PATCH] threads as PR-equivalents without polluting
+	// pull_requests).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.10"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.10\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.18"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.18\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

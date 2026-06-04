@@ -46,16 +46,16 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 			sent_at, in_reply_to, references_chain, thread_root_id, has_patch,
 			msg_class, classification_source, is_mirror, mirrors_url,
 			signaled_repo_url, signaled_repo_id,
-			linked_issue_id, linked_pull_request_id, linked_external_key, linked_commit_hash,
-			data_source, tool_version
+			linked_issue_id, linked_pull_request_id, linked_pr_review_id, linked_external_key, linked_commit_hash,
+			projected_kind, data_source, tool_version
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21,
-			$22, $23, $24, $25,
-			$26, $27
+			$22, $23, $24, $25, $26,
+			$27, $28, $29
 		)
 		ON CONFLICT (message_id_header) DO UPDATE SET
 			repo_id            = COALESCE(aveloxis_data.email_message.repo_id, EXCLUDED.repo_id),
@@ -71,8 +71,10 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 			signaled_repo_id   = COALESCE(aveloxis_data.email_message.signaled_repo_id, EXCLUDED.signaled_repo_id),
 			linked_issue_id        = COALESCE(EXCLUDED.linked_issue_id, aveloxis_data.email_message.linked_issue_id),
 			linked_pull_request_id = COALESCE(EXCLUDED.linked_pull_request_id, aveloxis_data.email_message.linked_pull_request_id),
+			linked_pr_review_id    = COALESCE(EXCLUDED.linked_pr_review_id, aveloxis_data.email_message.linked_pr_review_id),
 			linked_external_key    = EXCLUDED.linked_external_key,
 			linked_commit_hash     = EXCLUDED.linked_commit_hash,
+			projected_kind     = EXCLUDED.projected_kind,
 			data_source        = EXCLUDED.data_source,
 			tool_version       = EXCLUDED.tool_version
 		RETURNING email_message_id`,
@@ -81,8 +83,8 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 		NullTime(em.SentAt), em.InReplyTo, em.ReferencesChain, em.ThreadRootID, em.HasPatch,
 		em.MsgClass, em.ClassificationSource, em.IsMirror, em.MirrorsURL,
 		em.SignaledRepoURL, em.SignaledRepoID,
-		em.LinkedIssueID, em.LinkedPullRequestID, em.LinkedExternalKey, em.LinkedCommitHash,
-		em.DataSource, ToolVersion,
+		em.LinkedIssueID, em.LinkedPullRequestID, em.LinkedReviewID, em.LinkedExternalKey, em.LinkedCommitHash,
+		em.ProjectedKind, em.DataSource, ToolVersion,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert email_message %q: %w", em.MessageIDHeader, err)
@@ -199,12 +201,26 @@ func (s *PostgresStore) ResolveMirrorLink(ctx context.Context, owner, repo, kind
 // carrying a bracketed tracker key (e.g. "... [LUCENE-1]") — the §6
 // Pattern-A signal where Apache bulk-imported Jira history into GitHub
 // issues. Idempotent (only fills empty keys). Returns rows updated.
+//
+// Conflict-safe: skips an issue whose derived key is ALREADY held by another
+// issue in the same repo (the UNIQUE idx_issues_external_key forbids two). That
+// collision arises when mailing-list projection minted a synthetic issue that
+// squats the key before this backfill ran (the missed-LINK shadow surfaced by
+// `mailing-list-stats`). Without the NOT EXISTS guard the whole UPDATE fails
+// with 23505; with it, the shadowed native issue is simply left key-less for
+// the operator to merge.
 func (s *PostgresStore) BackfillIssueExternalKeys(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE aveloxis_data.issues
-		SET external_key = substring(issue_title from '\[([A-Z][A-Z0-9]+-[0-9]+)\]')
-		WHERE COALESCE(external_key, '') = ''
-		  AND issue_title ~ '\[[A-Z][A-Z0-9]+-[0-9]+\]'`)
+		UPDATE aveloxis_data.issues i
+		SET external_key = substring(i.issue_title from '\[([A-Z][A-Z0-9]+-[0-9]+)\]')
+		WHERE COALESCE(i.external_key, '') = ''
+		  AND i.issue_title ~ '\[[A-Z][A-Z0-9]+-[0-9]+\]'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM aveloxis_data.issues j
+		      WHERE j.repo_id = i.repo_id
+		        AND j.issue_id <> i.issue_id
+		        AND j.external_key = substring(i.issue_title from '\[([A-Z][A-Z0-9]+-[0-9]+)\]')
+		  )`)
 	if err != nil {
 		return 0, fmt.Errorf("backfill issue external keys: %w", err)
 	}

@@ -17,20 +17,19 @@ import (
 	"github.com/aveloxis/aveloxis/internal/model"
 )
 
-// mlStore is the slice of the store the MailingListWorker needs (interface
-// so the routing logic is unit-testable with a fake).
+// mlStore is the slice of the store the MailingListWorker needs. As of the
+// v0.25.x staging refactor (summary/12 §11) the worker only FETCHES, CLASSIFIES,
+// and STAGES — it no longer touches the hot tables (contributors / email_message
+// / messages). The resolve+write half moved to MailingListProcessor (which
+// drains the staging table per-list, single-threaded). This is what keeps the
+// mailing-list pipeline off the per-message direct-upsert path that reproduces
+// Augur's lock contention.
 type mlStore interface {
 	ClaimNextList(ctx context.Context, system string, cadence time.Duration, pid int, bootID string) (*db.ListJob, error)
 	CheckpointListMonth(ctx context.Context, rglsID int64, yyyymm string) error
 	CompleteListScan(ctx context.Context, rglsID int64, complete bool) error
 	RecordListFailure(ctx context.Context, rglsID int64) error
-	GetPrimaryRepoForGroup(ctx context.Context, repoGroupID int64) (int64, bool, error)
-	UpsertEmailMessage(ctx context.Context, em *model.EmailMessage) (int64, error)
-	UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string) (int64, error)
-	InsertEmailMessageRef(ctx context.Context, emailMessageID, msgID int64, repoGroupID *int64) error
-	ResolveContributorIDByEmail(ctx context.Context, email string) (string, bool, error)
-	ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int) (issueID, prID *int64, err error)
-	FindRepoByURL(ctx context.Context, gitURL string) (int64, error)
+	StageMailingListMessage(ctx context.Context, rglsID int64, repoGroupID, repoID *int64, msg model.MailingListStagedMessage) error
 }
 
 // MailingListWorker scans one mailing-list system's registered lists,
@@ -40,35 +39,37 @@ type mlStore interface {
 // (§5, no body re-copy — we already collect that data). The Pacer/Breaker
 // (§8) wrap each fetch.
 type MailingListWorker struct {
-	store          mlStore
-	sys            *mailinglist.System
-	backend        mailinglist.ArchiveSource
-	pacer          *mailinglist.Pacer
-	breaker        *mailinglist.Breaker
-	cadence        time.Duration
-	backfill       int    // months of history to scan when a list has no checkpoint
-	mirrorHandling string // skip | metadata_only | full (§5b)
-	pid            int
-	bootID         string
-	logger         *slog.Logger
-	now            func() time.Time
+	store    mlStore
+	sys      *mailinglist.System
+	backend  mailinglist.ArchiveSource
+	pacer    *mailinglist.Pacer
+	breaker  *mailinglist.Breaker
+	cadence  time.Duration
+	backfill int // months of history to scan when a list has no checkpoint
+	pid      int
+	bootID   string
+	logger   *slog.Logger
+	now      func() time.Time
 }
 
-// NewMailingListWorker builds a worker for one system + backend.
+// NewMailingListWorker builds a worker for one system + backend. Mirror
+// handling moved to the MailingListProcessor with the v0.25.x staging split:
+// the worker only fetches, classifies, and stages.
 func NewMailingListWorker(store mlStore, sys *mailinglist.System, backend mailinglist.ArchiveSource,
-	pacer *mailinglist.Pacer, breaker *mailinglist.Breaker, cadence time.Duration, backfillMonths int, mirrorHandling string, pid int, bootID string, logger *slog.Logger) *MailingListWorker {
+	pacer *mailinglist.Pacer, breaker *mailinglist.Breaker, cadence time.Duration, backfillMonths int, pid int, bootID string, logger *slog.Logger) *MailingListWorker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if backfillMonths <= 0 {
-		backfillMonths = 6
-	}
-	if mirrorHandling != "skip" && mirrorHandling != "full" {
-		mirrorHandling = "metadata_only"
-	}
+	// Do NOT clamp backfillMonths to a positive default here. A value of 0 (or
+	// negative) is the explicit "full history from the list's first month"
+	// signal that monthsToScan's default branch depends on. The bounded default
+	// of 6 is applied at the config layer (MailingListBackfillMonthsOrDefault,
+	// nil → 6); coercing it again here made full-history mode unreachable even
+	// when backfill_months=0 was set — the startup log showed 0 while the worker
+	// silently used 6 (v0.25.13).
 	return &MailingListWorker{
 		store: store, sys: sys, backend: backend, pacer: pacer, breaker: breaker,
-		cadence: cadence, backfill: backfillMonths, mirrorHandling: mirrorHandling,
+		cadence: cadence, backfill: backfillMonths,
 		pid: pid, bootID: bootID, logger: logger, now: time.Now,
 	}
 }
@@ -100,19 +101,9 @@ func (w *MailingListWorker) RunOnce(ctx context.Context) (bool, error) {
 // checkpoint is preserved so the next claim resumes) and returns. On a clean
 // pass it marks the scan complete.
 func (w *MailingListWorker) ProcessList(ctx context.Context, job *db.ListJob) error {
-	repoID, ok, err := w.store.GetPrimaryRepoForGroup(ctx, job.RepoGroupID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		// The per-PMC group has no repos yet — load-foundation-orgs /
-		// DOAP-enrichment must populate it first. messages.repo_id is NOT
-		// NULL, so we cannot write bodies without a repo.
-		_ = w.store.RecordListFailure(ctx, job.RglsID)
-		return fmt.Errorf("list %q: no repo in repo_group %d — run load-foundation-orgs/DOAP-enrich first",
-			job.ListAddress, job.RepoGroupID)
-	}
-
+	// No repo resolution here anymore — the worker stages classified messages
+	// and the MailingListProcessor resolves repo / sender / mirror at drain
+	// time. (summary/12 §11.)
 	for _, month := range w.monthsToScan(ctx, job) {
 		if d := w.pacer.Delay(); d > 0 {
 			if !sleepCtx(ctx, d) {
@@ -139,10 +130,12 @@ func (w *MailingListWorker) ProcessList(ctx context.Context, job *db.ListJob) er
 		w.pacer.OnSuccess()
 		w.breaker.RecordSuccess()
 
+		rgID := job.RepoGroupID
 		staged := 0
 		for i := range msgs {
-			if err := w.routeMessage(ctx, job, repoID, msgs[i]); err != nil {
-				w.logger.Warn("mailing-list: route message failed", "list", job.ListAddress,
+			env := w.buildStagedMessage(msgs[i])
+			if err := w.store.StageMailingListMessage(ctx, job.RglsID, &rgID, nil, env); err != nil {
+				w.logger.Warn("mailing-list: stage message failed", "list", job.ListAddress,
 					"message_id", msgs[i].MessageID, "error", err)
 				continue
 			}
@@ -151,105 +144,51 @@ func (w *MailingListWorker) ProcessList(ctx context.Context, job *db.ListJob) er
 		if err := w.store.CheckpointListMonth(ctx, job.RglsID, month); err != nil {
 			return err
 		}
-		w.logger.Info("mailing-list: month complete", "list", job.ListAddress, "month", month,
+		w.logger.Info("mailing-list: month staged", "list", job.ListAddress, "month", month,
 			"messages", len(msgs), "staged", staged)
 	}
 	return w.store.CompleteListScan(ctx, job.RglsID, true)
 }
 
-// routeMessage classifies one message and writes the rows: an email_message
-// entity always; for non-mirror classes the body to messages +
-// email_message_ref. Mirror classes record provenance + link only (§5).
-func (w *MailingListWorker) routeMessage(ctx context.Context, job *db.ListJob, repoID int64, am mailinglist.ArchiveMessage) error {
+// buildStagedMessage classifies a fetched message (cheap, no DB) into the
+// staging envelope the MailingListProcessor drains. Every DB-dependent
+// resolution (sender→cntrb, signaled_repo_id, mirror-link) and every hot-table
+// write happens at drain time, not here.
+func (w *MailingListWorker) buildStagedMessage(am mailinglist.ArchiveMessage) model.MailingListStagedMessage {
 	cls := w.sys.Classify(mailinglist.Message{
 		ListID: am.ListID, ListAddress: am.ListAddress, Subject: am.Subject, Sender: am.Sender, Body: am.Body,
 	})
-	isMirror := cls.Class == mailinglist.ClassGitHubMirror || cls.Class == mailinglist.ClassCommitNotify
-	signaledURL := w.sys.RepoURLFromCaptures(cls)
-
-	// §5b mirror handling: "skip" drops mirrors entirely (no provenance row).
-	if isMirror && w.mirrorHandling == "skip" {
-		return nil
+	env := model.MailingListStagedMessage{
+		MessageID:            am.MessageID,
+		ListAddress:          am.ListAddress,
+		ListID:               am.ListID,
+		Subject:              am.Subject,
+		SenderEmail:          am.SenderEmail,
+		SentAt:               am.SentAt,
+		InReplyTo:            am.InReplyTo,
+		References:           am.References,
+		ThreadRoot:           threadRoot(am),
+		Body:                 am.Body,
+		HasPatch:             am.HasPatch,
+		MsgClass:             cls.Class,
+		ClassificationSource: cls.Source,
+		IsMirror:             cls.Class == mailinglist.ClassGitHubMirror || cls.Class == mailinglist.ClassCommitNotify,
+		SignaledRepoURL:      w.sys.RepoURLFromCaptures(cls),
+		ExternalKey:          cls.Captures["external_key"],
 	}
-
-	var cntrbPtr *string
-	if id, ok, _ := w.store.ResolveContributorIDByEmail(ctx, am.SenderEmail); ok {
-		cntrbPtr = &id
-	}
-
-	// §5b: a github_mirror with a resolvable body URL links to the existing
-	// issue/PR we already collected (instead of duplicating it).
-	var linkedIssueID, linkedPRID *int64
 	if cls.Class == mailinglist.ClassGitHubMirror {
 		if n, err := strconv.Atoi(cls.Captures["number"]); err == nil && cls.Captures["repo"] != "" {
 			owner := cls.Captures["owner"]
 			if owner == "" {
 				owner = "apache"
 			}
-			linkedIssueID, linkedPRID, _ = w.store.ResolveMirrorLink(ctx, owner, cls.Captures["repo"], cls.Captures["kind"], n)
+			env.MirrorOwner = owner
+			env.MirrorRepo = cls.Captures["repo"]
+			env.MirrorKind = cls.Captures["kind"]
+			env.MirrorNumber = n
 		}
 	}
-
-	// §5c mail-side resolution: if the signaled repo is already in the
-	// catalog, resolve signaled_repo_id now (the repo-side org-scan backfill
-	// handles mail that predates the repo).
-	var signaledRepoID *int64
-	if signaledURL != "" {
-		if rid, err := w.store.FindRepoByURL(ctx, signaledURL); err == nil && rid > 0 {
-			signaledRepoID = &rid
-		}
-	}
-
-	rgID := job.RepoGroupID
-	rgls := job.RglsID
-	mirrorsURL := ""
-	if isMirror {
-		mirrorsURL = signaledURL
-	}
-	em := &model.EmailMessage{
-		RepoID:               &repoID,
-		RepoGroupID:          &rgID,
-		RglsID:               &rgls,
-		PlatformID:           model.Platform(db.MailingListPlatformID),
-		MLSystem:             w.sys.Name,
-		MessageIDHeader:      am.MessageID,
-		ListAddress:          am.ListAddress,
-		ListIDHeader:         am.ListID,
-		Subject:              am.Subject,
-		SenderEmail:          am.SenderEmail,
-		SentAt:               am.SentAt,
-		InReplyTo:            am.InReplyTo,
-		ReferencesChain:      am.References,
-		ThreadRootID:         threadRoot(am),
-		HasPatch:             am.HasPatch,
-		MsgClass:             cls.Class,
-		ClassificationSource: cls.Source,
-		IsMirror:             isMirror,
-		MirrorsURL:           mirrorsURL,
-		SignaledRepoURL:      signaledURL,
-		SignaledRepoID:       signaledRepoID,
-		LinkedIssueID:        linkedIssueID,
-		LinkedPullRequestID:  linkedPRID,
-		LinkedExternalKey:    cls.Captures["external_key"],
-		DataSource:           am.ListAddress,
-	}
-	emID, err := w.store.UpsertEmailMessage(ctx, em)
-	if err != nil {
-		return err
-	}
-
-	// Mirror classes: by default (metadata_only) record provenance + link
-	// only, no body re-copy (§5 — we already collect that data via GitHub).
-	// "full" keeps the body too (belt-and-suspenders completeness).
-	if isMirror && w.mirrorHandling != "full" {
-		return nil
-	}
-
-	msgID, err := w.store.UpsertMailingListMessageBody(ctx, repoID, am.MessageID, am.ListAddress, am.SenderEmail, am.Body, am.SentAt, cntrbPtr)
-	if err != nil {
-		return err
-	}
-	return w.store.InsertEmailMessageRef(ctx, emID, msgID, &rgID)
+	return env
 }
 
 // monthsToScan returns the yyyy-mm windows to fetch, through the current

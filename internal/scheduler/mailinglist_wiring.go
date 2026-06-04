@@ -87,10 +87,26 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 			"backfill_months", s.cfg.MailingListBackfillMonths, "mirror_handling", s.cfg.MailingListMirrorHandling)
 		for i := 0; i < workers; i++ {
 			w := collector.NewMailingListWorker(s.store, sys, backend, pacer, breaker,
-				cadence, s.cfg.MailingListBackfillMonths, s.cfg.MailingListMirrorHandling,
+				cadence, s.cfg.MailingListBackfillMonths,
 				pid, bootID, s.logger)
 			go s.runMailingListLoop(ctx, w)
 		}
+
+		// The resolve+write half: a MailingListProcessor drains this system's
+		// staged messages one list at a time (single-threaded per list,
+		// summary/12 §11) so the hot-table writes never reproduce Augur's
+		// contention. Default one drain goroutine per system; >1 fans out across
+		// DISTINCT lists (the Processor's in-process per-list guard keeps two
+		// goroutines off the same list).
+		drainWorkers := s.cfg.MailingListProcessorWorkers
+		if drainWorkers <= 0 {
+			drainWorkers = 1
+		}
+		proc := collector.NewMailingListProcessor(s.store, sys.Name, s.cfg.MailingListMirrorHandling, sys.ProjectionClean(), s.logger)
+		for i := 0; i < drainWorkers; i++ {
+			go s.runMailingListDrainLoop(ctx, proc)
+		}
+
 		spawned++
 	}
 	if spawned == 0 {
@@ -102,6 +118,97 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 	// against the now-fuller contributors table ("coverage improves over
 	// time"). Single goroutine; runs on the same cadence knob as enrichment.
 	go s.runMailingListSenderBackfill(ctx)
+
+	// Phase 2 (summary/12 §5): for senders the DB-only backfill can't resolve,
+	// run them through the shared email→identity chain (Search + global
+	// commit-search) and link/create the contributor. Single goroutine.
+	go s.runMailingListSenderResolve(ctx)
+}
+
+// runMailingListSenderResolve config. The min-message threshold (6) is the
+// "meaningful participant" cutoff from the 2026-06-04 bootstrap survey
+// (summary/12 §5g); the cooldown mirrors the contributor search-resolve
+// ticker's 30 days; the batch bounds the search-API spend per tick.
+const (
+	mailingListSenderResolveInterval    = time.Hour
+	mailingListSenderResolveBatch       = 100
+	mailingListSenderResolveMinMessages = 6
+	mailingListSenderResolveCooldown    = 30 * 24 * time.Hour
+)
+
+// runMailingListSenderResolve takes mailing-list senders the DB can't resolve
+// (>= the message threshold, past cooldown) and runs each through the shared
+// collector.ResolveEmailToIdentity chain. On a hit it links/creates the
+// contributor (LinkMailingListSender); the existing sender-backfill ticker then
+// stamps the sender's cntrb_id onto their messages rows. Bot/junk senders are
+// stamped resolved (terminal) so they leave the candidate pool permanently.
+func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
+	if s.ghClient == nil {
+		return // no GitHub client → the API tail can't run; DB backfill still does
+	}
+	t := time.NewTicker(mailingListSenderResolveInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			cands, err := s.store.GetMailingListSenderResolveCandidates(ctx,
+				mailingListSenderResolveMinMessages, mailingListSenderResolveCooldown.Seconds(), mailingListSenderResolveBatch)
+			if err != nil {
+				s.logger.Warn("mailing-list: sender-resolve candidate query error", "error", err)
+				continue
+			}
+			linked := 0
+			created := 0
+			for _, c := range cands {
+				if ctx.Err() != nil {
+					return
+				}
+				// Bots are never people — terminal stamp so they drop out.
+				if collector.IsBotEmail(c.SenderEmail) {
+					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "bot", "")
+					continue
+				}
+				login, ghUserID, source, rerr := collector.ResolveEmailToIdentity(ctx, s.store, s.ghClient, c.SenderEmail)
+				if rerr != nil {
+					// Transient (transport/5xx): stamp the attempt so we back off
+					// to the cooldown rather than hammering on a persistent error.
+					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+					continue
+				}
+				if login == "" {
+					// Phase 4 (§5g 2a): no platform identity found. For a
+					// DIRECT-HUMAN sender (not a Jira/GitBox/CI relay), create an
+					// email-only contributor so they're attributed and ride the
+					// convergence ticker. Bot-relayed senders get no contributor.
+					if c.HumanClass && !collector.IsBotEmail(c.SenderEmail) {
+						if _, cerr := s.store.CreateEmailOnlyContributor(ctx, c.SenderEmail); cerr != nil {
+							s.logger.Warn("mailing-list: email-only contributor create failed", "email", c.SenderEmail, "error", cerr)
+							_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+							continue
+						}
+						_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "email-only", "")
+						created++
+						continue
+					}
+					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+					continue
+				}
+				if _, lerr := s.store.LinkMailingListSender(ctx, c.SenderEmail, login, ghUserID); lerr != nil {
+					s.logger.Warn("mailing-list: sender link failed", "email", c.SenderEmail, "login", login, "error", lerr)
+					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+					continue
+				}
+				_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, source, login)
+				linked++
+			}
+			if linked > 0 || created > 0 {
+				s.logger.Info("mailing-list: sender resolution pass",
+					"linked", linked, "email_only_created", created, "candidates", len(cands))
+			}
+		}
+	}
 }
 
 // mailingListSenderBackfillInterval is how often unresolved sender→cntrb
@@ -139,6 +246,40 @@ func (s *Scheduler) runMailingListSenderBackfill(ctx context.Context) {
 			if n > 0 {
 				s.logger.Info("mailing-list: resolved sender identities", "count", n)
 			}
+		}
+	}
+}
+
+// mailingListDrainInterval is how long the drain loop waits before re-checking
+// for staged messages when the last pass found nothing to drain.
+const mailingListDrainInterval = 30 * time.Second
+
+// mailingListDrainListLimit bounds how many lists one drain pass considers.
+const mailingListDrainListLimit = 200
+
+// runMailingListDrainLoop drives one MailingListProcessor: drain every list
+// with staged messages (single-threaded per list), idle, repeat.
+func (s *Scheduler) runMailingListDrainLoop(ctx context.Context, proc *collector.MailingListProcessor) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		n, err := proc.DrainOnce(ctx, mailingListDrainListLimit)
+		if err != nil {
+			s.logger.Warn("mailing-list: drain cycle error", "error", err)
+		}
+		if n > 0 {
+			s.logger.Info("mailing-list: drained staged messages", "processed", n)
+			continue // more may have arrived; keep draining
+		}
+		t := time.NewTimer(mailingListDrainInterval)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
 		}
 	}
 }

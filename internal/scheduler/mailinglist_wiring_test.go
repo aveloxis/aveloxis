@@ -59,10 +59,14 @@ func TestMainPlumbsMailingListConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(data)
+	// Whitespace-tolerant: gofmt re-aligns the struct literal when the longest
+	// key changes, so pin the field reference, not the colon-to-value spacing.
 	for _, needle := range []string{
-		"MailingListEnabled:        cfg.Collection.MailingListEnabled",
+		"MailingListEnabled:",
+		"cfg.Collection.MailingListEnabled",
 		"cfg.Collection.MailingListCadenceDuration()",
 		"cfg.Collection.MailingListMirrorHandlingOrDefault()",
+		"cfg.Collection.MailingListProcessorWorkersOrDefault()",
 	} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("main.go must plumb %q", needle)

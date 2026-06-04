@@ -62,6 +62,7 @@ func main() {
 		loadFoundationOrgsCmd(&cfgPath),
 		loadApacheListsCmd(&cfgPath),
 		backfillExternalKeysCmd(&cfgPath),
+		backfillMailingListProjectionCmd(&cfgPath),
 		mailingListStatsCmd(&cfgPath),
 		verifyMailingListCmd(&cfgPath),
 		registerMailingListCmd(&cfgPath),
@@ -220,12 +221,13 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		DistributionTrackingImmediatePartialReclaim: cfg.Collection.DistributionTrackingImmediatePartialReclaimValue(), // v0.25.3
 
 		// v0.25.7 MailingListWorker.
-		MailingListEnabled:        cfg.Collection.MailingListEnabled,
-		MailingListWorkers:        cfg.Collection.MailingListWorkersOrDefault(),
-		MailingListCadence:        cfg.Collection.MailingListCadenceDuration(),
-		MailingListBackfillMonths: cfg.Collection.MailingListBackfillMonthsOrDefault(),
-		MailingListPoliteEmail:    cfg.Collection.MailingListPoliteEmail,
-		MailingListMirrorHandling: cfg.Collection.MailingListMirrorHandlingOrDefault(),
+		MailingListEnabled:          cfg.Collection.MailingListEnabled,
+		MailingListWorkers:          cfg.Collection.MailingListWorkersOrDefault(),
+		MailingListCadence:          cfg.Collection.MailingListCadenceDuration(),
+		MailingListBackfillMonths:   cfg.Collection.MailingListBackfillMonthsOrDefault(),
+		MailingListPoliteEmail:      cfg.Collection.MailingListPoliteEmail,
+		MailingListMirrorHandling:   cfg.Collection.MailingListMirrorHandlingOrDefault(),
+		MailingListProcessorWorkers: cfg.Collection.MailingListProcessorWorkersOrDefault(),
 	})
 	go sched.Run(ctx)
 

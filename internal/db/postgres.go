@@ -290,6 +290,7 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				forked_from = EXCLUDED.forked_from,
 				repo_archived = EXCLUDED.repo_archived,
 				updated_at = COALESCE(EXCLUDED.updated_at, repos.updated_at),
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()
 			RETURNING repo_id`,
 			groupID, int16(r.Platform), r.GitURL, r.Name, r.Owner,
@@ -585,6 +586,7 @@ func (s *PostgresStore) UpsertIssue(ctx context.Context, issue *model.Issue) (in
 				updated_at = EXCLUDED.updated_at,
 				closed_at = EXCLUDED.closed_at,
 				comment_count = EXCLUDED.comment_count,
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()
 			RETURNING issue_id`,
 			issue.RepoID, issue.PlatformID, issue.Number, issue.NodeID,
@@ -609,6 +611,7 @@ func (s *PostgresStore) UpsertIssueLabels(ctx context.Context, issueID, repoID i
 				ON CONFLICT (issue_id, label_text) DO UPDATE SET
 					label_description = EXCLUDED.label_description,
 					label_color = EXCLUDED.label_color,
+					tool_version = EXCLUDED.tool_version,
 					data_collection_date = NOW()`,
 				issueID, repoID, l.PlatformID, l.NodeID,
 				l.Text, l.Description, l.Color, l.Origin.DataSource,
@@ -662,6 +665,7 @@ func (s *PostgresStore) UpsertPullRequest(ctx context.Context, pr *model.PullReq
 				closed_at = EXCLUDED.closed_at,
 				merged_at = EXCLUDED.merged_at,
 				merge_commit_sha = EXCLUDED.merge_commit_sha,
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()
 			RETURNING pull_request_id`,
 			pr.RepoID, pr.PlatformSrcID, pr.NodeID, pr.Number,
@@ -686,6 +690,7 @@ func (s *PostgresStore) UpsertPRLabels(ctx context.Context, prID, repoID int64, 
 				ON CONFLICT (pull_request_id, label_name) DO UPDATE SET
 					label_description = EXCLUDED.label_description,
 					label_color = EXCLUDED.label_color,
+					tool_version = EXCLUDED.tool_version,
 					data_collection_date = NOW()`,
 				prID, repoID, l.PlatformID, l.NodeID,
 				l.Name, l.Description, l.Color, l.IsDefault, l.Origin.DataSource,
@@ -748,6 +753,7 @@ func (s *PostgresStore) UpsertPRReview(ctx context.Context, review *model.PullRe
 				review_state = EXCLUDED.review_state,
 				review_body = EXCLUDED.review_body,
 				cntrb_id = COALESCE(EXCLUDED.cntrb_id, pull_request_reviews.cntrb_id),
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()
 			RETURNING pr_review_id`,
 			review.PRID, review.RepoID, review.ContributorID, int16(review.PlatformID), review.PlatformReviewID,
@@ -775,6 +781,7 @@ func (s *PostgresStore) UpsertPRReview(ctx context.Context, review *model.PullRe
 				ON CONFLICT (platform_msg_id, platform_id) DO UPDATE SET
 					msg_text = EXCLUDED.msg_text,
 					cntrb_id = COALESCE(EXCLUDED.cntrb_id, messages.cntrb_id),
+					tool_version = EXCLUDED.tool_version,
 					data_collection_date = NOW()
 				RETURNING msg_id`,
 				review.RepoID, review.PlatformReviewID, int16(review.PlatformID),
@@ -811,6 +818,7 @@ func (s *PostgresStore) UpsertPRCommit(ctx context.Context, commit *model.PullRe
 			ON CONFLICT (pull_request_id, pr_cmt_sha) DO UPDATE SET
 				pr_cmt_message = EXCLUDED.pr_cmt_message,
 				author_cntrb_id = COALESCE(EXCLUDED.author_cntrb_id, pull_request_commits.author_cntrb_id),
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()`,
 			commit.PRID, commit.RepoID, commit.SHA, commit.NodeID,
 			commit.Message, commit.AuthorEmail, commit.AuthorID, NullTime(commit.Timestamp),
@@ -829,6 +837,7 @@ func (s *PostgresStore) UpsertPRFile(ctx context.Context, file *model.PullReques
 			ON CONFLICT (pull_request_id, pr_file_path) DO UPDATE SET
 				pr_file_additions = EXCLUDED.pr_file_additions,
 				pr_file_deletions = EXCLUDED.pr_file_deletions,
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()`,
 			file.PRID, file.RepoID, file.Path, file.Additions, file.Deletions,
 			file.Origin.DataSource,
@@ -848,6 +857,7 @@ func (s *PostgresStore) UpsertPRMeta(ctx context.Context, meta *model.PullReques
 				meta_label = EXCLUDED.meta_label,
 				meta_ref = EXCLUDED.meta_ref,
 				meta_sha = EXCLUDED.meta_sha,
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()
 			RETURNING pr_meta_id`,
 			meta.PRID, meta.RepoID, meta.HeadOrBase, meta.Label, meta.Ref, meta.SHA,
@@ -879,6 +889,7 @@ func (s *PostgresStore) UpsertPRRepo(ctx context.Context, repo *model.PullReques
 				pr_repo_full_name = EXCLUDED.pr_repo_full_name,
 				pr_repo_private_bool = EXCLUDED.pr_repo_private_bool,
 				pr_cntrb_id = COALESCE(EXCLUDED.pr_cntrb_id, pull_request_repo.pr_cntrb_id),
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()`,
 			repo.MetaID, repo.HeadOrBase, repo.SrcRepoID, repo.SrcNodeID,
 			repo.RepoName, repo.RepoFullName, repo.Private, repo.ContribID,
@@ -902,6 +913,7 @@ func (s *PostgresStore) UpsertIssueEvent(ctx context.Context, event *model.Issue
 			ON CONFLICT (repo_id, platform_event_id) DO UPDATE SET
 				action = EXCLUDED.action,
 				cntrb_id = COALESCE(EXCLUDED.cntrb_id, issue_events.cntrb_id),
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()`,
 			event.IssueID, event.RepoID, event.ContributorID, int16(event.PlatformID), event.PlatformEventID,
 			event.NodeID, event.Action, event.ActionCommitHash, NullTime(event.CreatedAt),
@@ -921,6 +933,7 @@ func (s *PostgresStore) UpsertPREvent(ctx context.Context, event *model.PullRequ
 			ON CONFLICT (repo_id, platform_event_id) DO UPDATE SET
 				action = EXCLUDED.action,
 				cntrb_id = COALESCE(EXCLUDED.cntrb_id, pull_request_events.cntrb_id),
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()`,
 			event.PRID, event.RepoID, event.ContributorID, int16(event.PlatformID), event.PlatformEventID,
 			event.NodeID, event.Action, event.ActionCommitHash, NullTime(event.CreatedAt),
@@ -945,6 +958,7 @@ func (s *PostgresStore) UpsertMessage(ctx context.Context, msg *model.Message) (
 			ON CONFLICT (platform_msg_id, platform_id) DO UPDATE SET
 				msg_text = EXCLUDED.msg_text,
 				cntrb_id = COALESCE(EXCLUDED.cntrb_id, messages.cntrb_id),
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()
 			RETURNING msg_id`,
 			msg.RepoID, msg.PlatformMsgID, int16(msg.PlatformID), msg.NodeID,
@@ -1029,6 +1043,7 @@ func (s *PostgresStore) UpsertMessageBatch(ctx context.Context, msgs []platform.
 				ON CONFLICT (platform_msg_id, platform_id) DO UPDATE SET
 					msg_text = EXCLUDED.msg_text,
 					cntrb_id = COALESCE(EXCLUDED.cntrb_id, messages.cntrb_id),
+					tool_version = EXCLUDED.tool_version,
 					data_collection_date = NOW()
 				RETURNING msg_id`,
 				m.Message.RepoID, m.Message.PlatformMsgID, int16(m.Message.PlatformID),
@@ -1091,6 +1106,7 @@ func (s *PostgresStore) UpsertReviewCommentBatch(ctx context.Context, comments [
 				ON CONFLICT (platform_msg_id, platform_id) DO UPDATE SET
 					msg_text = EXCLUDED.msg_text,
 					cntrb_id = COALESCE(EXCLUDED.cntrb_id, messages.cntrb_id),
+					tool_version = EXCLUDED.tool_version,
 					data_collection_date = NOW()
 				RETURNING msg_id`,
 				rc.Message.RepoID, rc.Message.PlatformMsgID, int16(rc.Message.PlatformID),
@@ -1156,6 +1172,7 @@ func (s *PostgresStore) UpsertRelease(ctx context.Context, r *model.Release) err
 				release_name = EXCLUDED.release_name,
 				release_description = EXCLUDED.release_description,
 				updated_at = EXCLUDED.updated_at,
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()`,
 			r.ID, r.RepoID, r.Name, r.Description,
 			r.Author, r.TagName, r.URL,
@@ -1654,6 +1671,7 @@ func (s *PostgresStore) UpsertCommitMessage(ctx context.Context, msg *model.Comm
 			VALUES ($1,$2,$3,'aveloxis-facade','git')
 			ON CONFLICT (repo_id, cmt_hash) DO UPDATE SET
 				cmt_msg = EXCLUDED.cmt_msg,
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()`,
 			msg.RepoID, msg.Message, msg.Hash,
 		)
@@ -1708,6 +1726,7 @@ func (s *PostgresStore) UpsertRepoClone(ctx context.Context, clone *model.RepoCl
 			ON CONFLICT (repo_id, clone_timestamp) DO UPDATE SET
 				total_clones = EXCLUDED.total_clones,
 				unique_clones = EXCLUDED.unique_clones,
+				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()`,
 			clone.RepoID, clone.Timestamp, clone.TotalClones, clone.UniqueClones,
 			clone.Origin.DataSource,

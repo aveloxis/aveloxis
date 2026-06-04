@@ -60,9 +60,13 @@ func NewMailingListWorker(store mlStore, sys *mailinglist.System, backend mailin
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if backfillMonths <= 0 {
-		backfillMonths = 6
-	}
+	// Do NOT clamp backfillMonths to a positive default here. A value of 0 (or
+	// negative) is the explicit "full history from the list's first month"
+	// signal that monthsToScan's default branch depends on. The bounded default
+	// of 6 is applied at the config layer (MailingListBackfillMonthsOrDefault,
+	// nil → 6); coercing it again here made full-history mode unreachable even
+	// when backfill_months=0 was set — the startup log showed 0 while the worker
+	// silently used 6 (v0.25.13).
 	if mirrorHandling != "skip" && mirrorHandling != "full" {
 		mirrorHandling = "metadata_only"
 	}

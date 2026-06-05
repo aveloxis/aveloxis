@@ -22,6 +22,7 @@ package mailer
 import (
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"net/smtp"
 	"strings"
 	"time"
@@ -87,7 +88,9 @@ func (m *Mailer) Send(to, subject, body string) error {
 		}
 		return nil
 	}
-	if strings.TrimSpace(to) == "" {
+
+	to = strings.TrimSpace(to)
+	if to == "" {
 		// Recipient missing — log and skip rather than error. The
 		// most common case is a user whose OAuth provider didn't
 		// return an email address; we don't want that to break
@@ -97,6 +100,18 @@ func (m *Mailer) Send(to, subject, body string) error {
 				"subject", subject)
 		}
 		return nil
+	}
+	if strings.ContainsAny(to, "\r\n") {
+		return fmt.Errorf("invalid recipient address")
+	}
+	parsedTo, err := mail.ParseAddress(to)
+	if err != nil {
+		return fmt.Errorf("invalid recipient address: %w", err)
+	}
+	safeTo := parsedTo.Address
+
+	if strings.ContainsAny(subject, "\r\n") {
+		return fmt.Errorf("invalid subject")
 	}
 
 	// v0.20.14: strip display-format spaces from the App Password
@@ -108,6 +123,12 @@ func (m *Mailer) Send(to, subject, body string) error {
 	if m.cfg.FromName != "" {
 		from = fmt.Sprintf("%s <%s>", m.cfg.FromName, m.cfg.GmailUser)
 	}
+	if strings.ContainsAny(from, "\r\n") {
+		return fmt.Errorf("invalid from header")
+	}
+
+	safeBody := strings.ReplaceAll(body, "\r\n", "\n")
+	safeBody = strings.ReplaceAll(safeBody, "\r", "\n")
 
 	msg := []byte(fmt.Sprintf(
 		"From: %s\r\n"+
@@ -118,12 +139,12 @@ func (m *Mailer) Send(to, subject, body string) error {
 			"Content-Type: text/plain; charset=UTF-8\r\n"+
 			"\r\n"+
 			"%s\r\n",
-		from, to, subject, time.Now().Format(time.RFC1123Z), body))
+		from, safeTo, subject, time.Now().Format(time.RFC1123Z), safeBody))
 
-	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{to}, msg); err != nil {
+	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{safeTo}, msg); err != nil {
 		if m.logger != nil {
 			m.logger.Warn("mailer.Send failed",
-				"to", to, "subject", subject, "error", err)
+				"to", safeTo, "subject", subject, "error", err)
 		}
 		return fmt.Errorf("smtp send: %w", err)
 	}

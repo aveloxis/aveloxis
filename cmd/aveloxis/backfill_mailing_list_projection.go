@@ -42,6 +42,16 @@ func backfillMailingListProjectionCmd(cfgPath *string) *cobra.Command {
 				batch = 500
 			}
 
+			// Ensure the per-row-lookup indexes exist before draining (CONCURRENTLY,
+			// IF NOT EXISTS — instant if present, non-blocking if it must build).
+			// Without these the backfill sequential-scans messages/email_message
+			// per row and crawls for days; this makes the command self-sufficient
+			// rather than depending on a separate `aveloxis migrate` having run.
+			fmt.Println("ensuring projection indexes (idx_messages_node_id, idx_email_message_thread_root)...")
+			if err := store.EnsureMailingListProjectionIndexes(ctx, logger); err != nil {
+				return fmt.Errorf("ensuring projection indexes: %w", err)
+			}
+
 			// Step 1: keyed issue_event projection (runs to completion first so
 			// every thread with a keyed message has its issue before step 2).
 			keyed := 0

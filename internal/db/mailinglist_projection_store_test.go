@@ -287,16 +287,34 @@ func TestBackfillExternalKeysSameStatementDup(t *testing.T) {
 // TestProjectionBackfillIndexesDeclared pins the v0.25.20 indexes that keep the
 // projection backfill's per-row lookups off sequential scans.
 func TestProjectionBackfillIndexesDeclared(t *testing.T) {
+	idxs := []string{"idx_messages_node_id", "idx_email_message_thread_root", "idx_em_proj_pending_keyed", "idx_em_proj_pending_threaded"}
 	schema := readSchema(t)
-	for _, n := range []string{"idx_messages_node_id", "idx_email_message_thread_root"} {
+	for _, n := range idxs {
 		if !strings.Contains(schema, n) {
 			t.Errorf("schema.sql must declare %s", n)
 		}
 	}
 	mig := readSourceFile(t, "migrate.go")
-	for _, n := range []string{"idx_messages_node_id", "idx_email_message_thread_root"} {
+	for _, n := range idxs {
 		if !strings.Contains(mig, n) {
 			t.Errorf("migrate.go must create %s CONCURRENTLY", n)
 		}
+	}
+	// The backfill command's ensure-helper must cover all four too.
+	bf := readSourceFile(t, "mailinglist_projection_backfill.go")
+	for _, n := range idxs {
+		if !strings.Contains(bf, n) {
+			t.Errorf("EnsureMailingListProjectionIndexes must create %s", n)
+		}
+	}
+}
+
+// TestBodyMsgIDQueryHasPartialPredicate pins the load-bearing `node_id <> ”`
+// in bodyMsgID — without it the partial idx_messages_node_id is unusable under
+// a generic plan and the lookup seq-scans ~20M messages (66s on prod).
+func TestBodyMsgIDQueryHasPartialPredicate(t *testing.T) {
+	src := readSourceFile(t, "mailinglist_projection_backfill.go")
+	if !strings.Contains(src, "node_id = $1 AND node_id <> ''") {
+		t.Error("bodyMsgID must include `node_id <> ''` so the partial index is usable under a generic plan")
 	}
 }

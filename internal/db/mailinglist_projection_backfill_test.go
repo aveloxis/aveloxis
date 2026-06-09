@@ -4,6 +4,8 @@
 package db
 
 import (
+	"io"
+	"log/slog"
 	"testing"
 )
 
@@ -116,6 +118,28 @@ func TestMlBackfillTitle(t *testing.T) {
 	for _, c := range cases {
 		if got := mlBackfillTitle(c.subj, c.key); got != c.want {
 			t.Errorf("mlBackfillTitle(%q,%q)=%q want %q", c.subj, c.key, got, c.want)
+		}
+	}
+}
+
+// TestEnsureMailingListProjectionIndexes verifies the helper runs cleanly
+// (idempotent) and the two indexes exist afterward.
+func TestEnsureMailingListProjectionIndexes(t *testing.T) {
+	store, ctx := emConnect(t)
+	defer store.Close()
+	lg := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := store.EnsureMailingListProjectionIndexes(ctx, lg); err != nil {
+		t.Fatalf("ensure indexes: %v", err)
+	}
+	// Idempotent second call.
+	if err := store.EnsureMailingListProjectionIndexes(ctx, lg); err != nil {
+		t.Fatalf("ensure indexes (re-run): %v", err)
+	}
+	for _, idx := range []string{"idx_messages_node_id", "idx_email_message_thread_root"} {
+		var n int
+		store.pool.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname='aveloxis_data' AND indexname=$1`, idx).Scan(&n)
+		if n != 1 {
+			t.Errorf("index %s must exist after EnsureMailingListProjectionIndexes; found %d", idx, n)
 		}
 	}
 }

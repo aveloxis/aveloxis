@@ -197,11 +197,16 @@ func (s *PostgresStore) FindIssueForThread(ctx context.Context, threadRoot strin
 		return 0, false, nil
 	}
 	var id int64
+	// `thread_root_id <> ''` in the first OR branch is load-bearing (not redundant):
+	// idx_email_message_thread_root is PARTIAL (WHERE thread_root_id <> ''), and under a
+	// parameterized/generic plan Postgres can't prove `$1 <> ''`, so without this literal
+	// the branch seq-scans email_message. threadRoot is always non-empty here (caller
+	// guards), so it changes no results. message_id_header uses its own UNIQUE index.
 	err := s.pool.QueryRow(ctx, `
 		SELECT linked_issue_id FROM aveloxis_data.email_message
 		WHERE linked_issue_id IS NOT NULL
 		  AND repo_id = $2
-		  AND (thread_root_id = $1 OR message_id_header = $1)
+		  AND ((thread_root_id = $1 AND thread_root_id <> '') OR message_id_header = $1)
 		LIMIT 1`, threadRoot, repoID).Scan(&id)
 	if err != nil {
 		return 0, false, nil //nolint:nilerr // no projected sibling yet is not an error

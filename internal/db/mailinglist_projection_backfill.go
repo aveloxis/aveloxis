@@ -5,10 +5,44 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
+
+// EnsureMailingListProjectionIndexes guarantees the indexes the backfill's
+// per-row lookups depend on (idx_messages_node_id, idx_email_message_thread_root)
+// exist before draining. Built CONCURRENTLY + IF NOT EXISTS, so it's a no-op
+// (instant) when they're already present and non-blocking when it has to build
+// them — the command ensures its OWN performance precondition rather than
+// silently sequential-scanning for days because a separate `aveloxis migrate`
+// was skipped. On a large `messages` table the first build can take a while,
+// but it never blocks concurrent writes.
+func (s *PostgresStore) EnsureMailingListProjectionIndexes(ctx context.Context, logger *slog.Logger) error {
+	var errs []error
+	execCreateIndexConcurrently(ctx, s, logger, &errs, "aveloxis_data", "idx_messages_node_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_node_id
+		 ON aveloxis_data.messages (node_id) WHERE node_id <> ''`)
+	execCreateIndexConcurrently(ctx, s, logger, &errs, "aveloxis_data", "idx_email_message_thread_root",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_thread_root
+		 ON aveloxis_data.email_message (thread_root_id) WHERE thread_root_id <> ''`)
+	// Partial indexes for the two candidate-batch queries (keyed + threaded), so
+	// each batch is an index scan over only the still-unprojected rows in
+	// email_message_id order instead of a full seq scan + sort of email_message
+	// (~4.4s/batch on prod). They shrink as rows get projected. The predicates
+	// are all constants, so they're usable without the generic-plan caveat.
+	execCreateIndexConcurrently(ctx, s, logger, &errs, "aveloxis_data", "idx_em_proj_pending_keyed",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_em_proj_pending_keyed
+		 ON aveloxis_data.email_message (email_message_id)
+		 WHERE msg_class = 'issue_event' AND COALESCE(projected_kind, '') = '' AND linked_external_key <> ''`)
+	execCreateIndexConcurrently(ctx, s, logger, &errs, "aveloxis_data", "idx_em_proj_pending_threaded",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_em_proj_pending_threaded
+		 ON aveloxis_data.email_message (email_message_id)
+		 WHERE thread_root_id <> '' AND COALESCE(projected_kind, '') = ''`)
+	return errors.Join(errs...)
+}
 
 // mailinglist_projection_backfill.go is Phase 5 of the mailing-list subsystem
 // (summary/12 §8): migrate the projection (Phase A issue link-or-create +
@@ -56,8 +90,13 @@ type backfillRow struct {
 // (e.g. a metadata-only mirror) so the caller skips the bridge.
 func (s *PostgresStore) bodyMsgID(ctx context.Context, messageIDHeader string) (int64, bool) {
 	var id int64
+	// The `node_id <> ''` predicate is load-bearing, not redundant: idx_messages_node_id
+	// is a PARTIAL index (WHERE node_id <> ''), and under a parameterized/generic plan
+	// Postgres can't prove `$1 <> ''`, so without this literal predicate it falls back
+	// to a 66-SECOND parallel seq scan of ~20M rows per call (verified on prod). With it,
+	// the partial index is usable → ~0.2ms. (2026-06-09 diagnosis.)
 	err := s.pool.QueryRow(ctx,
-		`SELECT msg_id FROM aveloxis_data.messages WHERE node_id = $1 AND platform_id = 6 LIMIT 1`,
+		`SELECT msg_id FROM aveloxis_data.messages WHERE node_id = $1 AND node_id <> '' AND platform_id = 6 LIMIT 1`,
 		messageIDHeader).Scan(&id)
 	if err != nil {
 		return 0, false

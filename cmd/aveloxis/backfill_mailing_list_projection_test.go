@@ -35,3 +35,22 @@ func TestBackfillProjectionCmdRegisteredAndOrdered(t *testing.T) {
 		t.Error("backfill command must NOT migrate (v0.21.5 contract)")
 	}
 }
+
+// TestBackfillProjectionEnsuresIndexes pins that the command guarantees its
+// per-row-lookup indexes before draining (so it never silently crawls because
+// `aveloxis migrate` was skipped).
+func TestBackfillProjectionEnsuresIndexes(t *testing.T) {
+	src, err := os.ReadFile("backfill_mailing_list_projection.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "EnsureMailingListProjectionIndexes(") {
+		t.Error("the command must call EnsureMailingListProjectionIndexes before draining")
+	}
+	ensure := strings.Index(s, "EnsureMailingListProjectionIndexes(")
+	keyed := strings.Index(s, "BackfillKeyedIssueProjection(")
+	if ensure < 0 || keyed < 0 || ensure > keyed {
+		t.Error("indexes must be ensured BEFORE the first keyed-projection step")
+	}
+}

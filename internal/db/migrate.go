@@ -224,6 +224,17 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_email_message_thread_root",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_thread_root
 		 ON aveloxis_data.email_message (thread_root_id) WHERE thread_root_id <> ''`)
+	// v0.25.22 — candidate-batch indexes for the projection backfill: each batch
+	// becomes an index scan over only the still-unprojected rows instead of a
+	// full seq scan + sort of email_message (~4.4s/batch on prod).
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_em_proj_pending_keyed",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_em_proj_pending_keyed
+		 ON aveloxis_data.email_message (email_message_id)
+		 WHERE msg_class = 'issue_event' AND COALESCE(projected_kind, '') = '' AND linked_external_key <> ''`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_em_proj_pending_threaded",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_em_proj_pending_threaded
+		 ON aveloxis_data.email_message (email_message_id)
+		 WHERE thread_root_id <> '' AND COALESCE(projected_kind, '') = ''`)
 
 	// v0.21.0 — ScancodeWorker state on aveloxis_data.repos.
 	//

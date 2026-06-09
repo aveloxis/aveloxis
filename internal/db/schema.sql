@@ -2130,6 +2130,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_repo_id ON aveloxis_data.messages (repo_
 -- Without these the backfill sequential-scans messages / email_message per row.
 CREATE INDEX IF NOT EXISTS idx_messages_node_id ON aveloxis_data.messages (node_id) WHERE node_id <> '';
 CREATE INDEX IF NOT EXISTS idx_email_message_thread_root ON aveloxis_data.email_message (thread_root_id) WHERE thread_root_id <> '';
+-- v0.25.22: partial indexes so each projection-backfill candidate batch is an
+-- index scan over only the still-unprojected rows (email_message_id order)
+-- instead of a full seq scan + sort. They shrink as rows are projected.
+CREATE INDEX IF NOT EXISTS idx_em_proj_pending_keyed ON aveloxis_data.email_message (email_message_id)
+    WHERE msg_class = 'issue_event' AND COALESCE(projected_kind, '') = '' AND linked_external_key <> '';
+CREATE INDEX IF NOT EXISTS idx_em_proj_pending_threaded ON aveloxis_data.email_message (email_message_id)
+    WHERE thread_root_id <> '' AND COALESCE(projected_kind, '') = '';
 CREATE INDEX IF NOT EXISTS idx_issue_events_repo_id ON aveloxis_data.issue_events (repo_id);
 CREATE INDEX IF NOT EXISTS idx_pr_events_repo_id ON aveloxis_data.pull_request_events (repo_id);
 CREATE INDEX IF NOT EXISTS idx_releases_repo_id ON aveloxis_data.releases (repo_id);

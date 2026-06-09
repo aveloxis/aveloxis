@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"sort"
 	"strings"
 	"time"
 
@@ -1295,7 +1296,22 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 		// in the savepoint name.
 		var spCounter int
 
-		for login, contrib := range merged {
+		// Acquire contributor locks in a DETERMINISTIC order (sorted by login)
+		// across every concurrent worker. Without this, the map iteration order
+		// is random, so two workers whose batches both touch popular shared
+		// contributors (e.g. regro-cf-autotick-bot, conda-forge-admin — bots
+		// that appear in thousands of repos) lock those rows in different orders
+		// and deadlock (SQLSTATE 40P01). Consistent ordering makes a lock cycle
+		// impossible. (2026-06-09: fixes the contributor-deadlock storm on
+		// aveloxis_large; same class as Augur's old contributor deadlocks.)
+		logins := make([]string, 0, len(merged))
+		for login := range merged {
+			logins = append(logins, login)
+		}
+		sort.Strings(logins)
+
+		for _, login := range logins {
+			contrib := merged[login]
 			var cntrb_id string
 			// v0.23.0: track whether this contributor's row was
 			// rename-recovered so the contributor_login_history rows

@@ -730,7 +730,36 @@ cat /var/log/unattended-upgrades/unattended-upgrades.log
 grep -i restart /etc/needrestart/needrestart.conf
 ```
 
-Typical culprits on Ubuntu 24.04: a custom backup/maintenance cron that does `systemctl restart postgresql`, or `unattended-upgrades` + `needrestart` restarting the service after a security update. Once identified, either reschedule it for a low-activity window or exclude postgresql from automatic restarts (`needrestart`'s `$nrconf{override_rc}`).
+Typical culprits on Ubuntu 24.04: `unattended-upgrades` + `needrestart` restarting the service after a security update (the confirmed cause on the chaoss.tv host — `apt-daily-upgrade.timer` fires ~06:1x UTC, upgrades `systemd` → a `daemon-reexec`, and `needrestart` then restarts every service linked to the patched libraries, including `postgresql@17-main`), or a custom backup/maintenance cron that does `systemctl restart postgresql`.
+
+**Fix (on the host)**
+
+Pick whichever matches your trigger:
+
+```bash
+# A. Stop needrestart from auto-restarting services (most common cause).
+#    List-only mode: needrestart reports what *would* restart but never does it,
+#    so a library update no longer bounces postgresql under a live fleet.
+sudo sed -i "s/^#\?\$nrconf{restart}.*/\$nrconf{restart} = 'l';/" /etc/needrestart/needrestart.conf
+#    (or, to keep auto-restart for everything EXCEPT postgresql, add a blacklist
+#     entry instead:  $nrconf{override_rc} = { qr(^postgresql) => 0 };  )
+
+# B. Or move the unattended-upgrade window to a true idle time (default ~06:00 UTC):
+sudo systemctl edit apt-daily-upgrade.timer
+#    [Timer]
+#    OnCalendar=
+#    OnCalendar=*-*-* 09:00      # whatever is genuinely low-traffic for your fleet
+#    RandomizedDelaySec=30m
+
+# C. Or, if you don't want unattended security upgrades restarting anything at all:
+sudo dpkg-reconfigure -plow unattended-upgrades   # disable, and patch on your own schedule
+
+# Verify nothing restarts postgresql automatically afterward:
+sudo needrestart -r l        # 'l' = list only; should NOT show postgresql being restarted
+systemctl list-timers --all  # confirm the apt-daily-upgrade window moved
+```
+
+A custom backup cron doing `systemctl restart postgresql` (found via `crontab -l` / `/etc/cron.*`) should either use online backup (`pg_basebackup` / WAL archiving — no restart needed) or run in a maintenance window you've coordinated with collection.
 
 **Mitigation on the Aveloxis side (v0.25.25+)**
 

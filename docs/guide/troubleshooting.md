@@ -656,6 +656,88 @@ If you see this error, it indicates a code path that bypasses sanitization. Repo
 
 ---
 
+## Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)
+
+**Symptoms**
+
+- The number of scanned repos increments extremely slowly; long (multi-hour) stretches with no `running ScanCode` log lines.
+- `aveloxis.log` shows `scancode runOne: scancode subprocess failed ... error="signal: killed"` with enormous `stderr_bytes` values (gigabytes), and `wall-clock timeout fired ... using stretched timeout`.
+- The per-repo stderr files under your scancode clone dir (e.g. `/mnt/spinner/scancode/repo_*_stderr.log`) are **gigabytes** each and consist almost entirely of:
+  ```
+  /usr/share/misc/magic.mgc, 3673: Warning: offset `' invalid
+  ```
+- Startup logs `scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed` (v0.25.x+), and:
+  ```sql
+  SELECT status, status_detail FROM aveloxis_ops.aveloxis_status WHERE status_name='scancode';
+  -- status = 'broken'  (status_detail names the libmagic fix)
+  ```
+
+**Cause**
+
+The host's system `libmagic` database (`/usr/share/misc/magic.mgc`) is corrupt or incompatible (seen on Ubuntu 24.04 after `file`/`libmagic1` updates). scancode's type detector (`typecode` → `python-magic` → `libmagic`) re-emits an `offset invalid` warning at huge volume — 14+ GB of stderr for a large repo. The scan bogs down so badly it never finishes within the wall-clock timeout, gets `SIGKILL`ed, and (v0.23.8 adaptive timeout) is retried with a **stretched** 4h→8h→16h→24h timeout — so a handful of doomed repos wedge every worker slot. `--quiet` does **not** suppress these (they come from the C library's stderr, not scancode's Python logging).
+
+**Fix**
+
+```bash
+# 1. Make scancode use its bundled libmagic instead of the broken system one:
+aveloxis upgrade-tools           # injects typecode-libmagic into the scancode venv
+# (or repair the OS package):  sudo apt-get install --reinstall libmagic1 file
+
+# 2. Reclaim disk from the giant warning-spam stderr files:
+rm /mnt/spinner/scancode/repo_*_stderr.log   # adjust path to your scancode_clone_dir
+
+# 3. Restart serve. The startup preflight should now log "scancode preflight: healthy"
+#    and aveloxis_status.status flip to 'ok'.
+aveloxis stop all && aveloxis start all
+```
+
+The **startup preflight** (added v0.25.x) runs one scancode invocation against a tiny input on every `aveloxis serve` start, detects this exact condition, logs it prominently, and records it in `aveloxis_ops.aveloxis_status` — so you find out at startup instead of after the fleet has crawled for days. See [ScanCode Worker §13](../architecture/scancode.md).
+
+---
+
+## PostgreSQL restarts nightly — `aveloxis.log` floods with "database system is shutting down"
+
+**Symptoms**
+
+- `aveloxis.log` contains huge bursts of:
+  ```
+  server error: FATAL: the database system is shutting down (SQLSTATE 57P03)
+  ```
+  and/or `failed to connect to ... server error: FATAL: the database system is starting up`, often hundreds of thousands of lines (the log balloons to hundreds of MB).
+- Frequently followed by a burst of contributor **deadlocks** (`SQLSTATE 40P01`) as every worker reconnects at once and contends.
+- In the PostgreSQL server log (`postgresql-17-main.log`), at roughly the same time each night:
+  ```
+  LOG:  received fast shutdown request
+  ...
+  LOG:  database system is ready to accept connections   (a minute or few later)
+  LOG:  database system was shut down at ...              (clean — NOT crash recovery)
+  ```
+
+**Cause**
+
+These are **clean, deliberate restarts of the PostgreSQL service by the host** — not a crash, not OOM, and (when the version line is unchanged, e.g. `starting PostgreSQL 17.10` on both sides) not a Postgres upgrade. PostgreSQL does not record *who* sent the shutdown signal, so identify the trigger on the box:
+
+```bash
+# What actually stopped/started postgresql, and when:
+sudo journalctl -u postgresql@17-main --since "yesterday" | grep -iE "stop|start|restart"
+# Scheduled jobs that could be doing it:
+systemctl list-timers --all | grep -iE "apt|postgres|backup"
+sudo crontab -l; ls -la /etc/cron.d /etc/cron.daily
+# Ubuntu auto-updates + needrestart (a common culprit — needrestart restarts
+# services whose shared libs, e.g. openssl/libc, were patched, WITHOUT changing
+# postgres's own version):
+cat /var/log/unattended-upgrades/unattended-upgrades.log
+grep -i restart /etc/needrestart/needrestart.conf
+```
+
+Typical culprits on Ubuntu 24.04: a custom backup/maintenance cron that does `systemctl restart postgresql`, or `unattended-upgrades` + `needrestart` restarting the service after a security update. Once identified, either reschedule it for a low-activity window or exclude postgresql from automatic restarts (`needrestart`'s `$nrconf{override_rc}`).
+
+**Mitigation on the Aveloxis side**
+
+Today Aveloxis has no DB-down backoff, so during each restart window it hammers the dying/recovering server and logs the `57P03` storm, then deadlocks on reconnect. Until a graceful "pause collection while the DB is unavailable" guard is added, the practical steps are: fix the host trigger (above), and truncate the log on restart (`aveloxis stop all && : > ~/.aveloxis/aveloxis.log && aveloxis start all`). The errors are transient and self-recover once the database is back.
+
+---
+
 ## Restart procedure
 
 The standard restart procedure for any issue:

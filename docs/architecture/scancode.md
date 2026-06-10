@@ -201,6 +201,8 @@ The data flows from `aveloxis_data.repos.scancode_last_run` (written by `MarkSca
 | Log line | When it fires | Meaning |
 |---|---|---|
 | `scancode worker started workers=N start_interval=...` | Once at startup | The pool is alive with N runners. If absent, scancode is disabled (binary not installed or `mkdir scancode_clone_dir` failed). |
+| `scancode preflight: healthy` | Once at startup | The §13 health check passed — the toolchain works. |
+| `scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed` | Once at startup (ERROR) | The §13 health check detected a systemic failure (corrupt libmagic, a repeated error, or no JSON). Read the `detail` field; `aveloxis_ops.aveloxis_status` is also set to `broken`. |
 | `scancode binary not installed; ScancodeWorker disabled` | Startup | Install with `pipx install scancode-toolkit` then restart serve. |
 | `scancode recoverOrphans: examining locked rows count=...` | Startup | Recovery pass found stale locks. Followed by per-row decisions. |
 | `scancode recover: reboot survivor — clearing lock` | Startup | Case 1 of §5. |
@@ -245,3 +247,33 @@ The v0.21.0 work added these tests as architectural pins. A future refactor that
 | `TestSchedulerRunStartsScancodeWorker` | Scheduler spawns the worker. |
 | `TestMainWiresScancodeConfig` | `cmd/aveloxis/main.go` reads the config knobs. |
 | `TestScancodeLicensesEndpointReturnsFreshness` | API surfaces the freshness signal. |
+
+## 13. Startup health preflight + `aveloxis_ops.aveloxis_status`
+
+A *system-level* scancode failure — one where every scan is doomed regardless of the repo — used to be invisible: the fleet just degraded. The 2026-06-09 `aveloxis_large` incident was the motivating case. On that Ubuntu 24.04 host the system `libmagic` database (`/usr/share/misc/magic.mgc`) was corrupt, so scancode (via `typecode` → `python-magic` → `libmagic`) emitted `Warning: offset ... invalid` at enormous volume — **14+ GB of stderr per large repo** — bogging scans down until the wall-clock timeout killed them. With the adaptive timeout stretching doomed scans to 16–24 h, a handful of repos wedged all worker slots and the scanned-repo count crawled.
+
+### The preflight
+
+On startup (`ScancodeWorker.Run`, before the dispatcher claims any work), the worker runs **one** scancode invocation against a tiny synthetic input and classifies the result:
+
+- **Bounded and safe.** 90-second wall-clock timeout, process-group kill, and a capped 1 MB stderr capture — the health check itself can never hang the worker or buffer gigabytes (the very failure it detects).
+- **`classifyScancodeHealth`** maps the outcome to a status:
+  - **`broken`** if stderr carries the libmagic signature (`magic.mgc` … `invalid`), **or** any single line repeats ≥ 50× (generic "the toolchain is spamming" signal), **or** no valid JSON was produced.
+  - **`not_installed`** if the `scancode` binary isn't on `PATH`.
+  - **`ok`** otherwise.
+- On anything other than `ok` it logs **`ERROR "scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed"`** with a `detail` string that names the remediation.
+
+It is **awareness only** — the preflight does **not** disable scancode (a deliberate scope decision; auto-pause is a possible follow-up). It records, logs, and lets the worker proceed.
+
+### The status table
+
+The outcome is upserted into `aveloxis_ops.aveloxis_status` (one row per subsystem, keyed by `status_name`; see [schema.md](../schema.md)):
+
+```sql
+SELECT status_name, status, status_detail, tool_version, data_collection_date
+FROM aveloxis_ops.aveloxis_status WHERE status_name = 'scancode';
+```
+
+A `broken` row's `status_detail` for the libmagic case reads, in part: *"system libmagic database (/usr/share/misc/magic.mgc) appears corrupt … run `aveloxis upgrade-tools` to inject typecode-libmagic, or reinstall the OS package (apt-get install --reinstall libmagic1 file)."* The table is generic by design — future subsystems record their own health under their own `status_name`, and the intent is to surface it to the operator (UI/API) over time.
+
+**Code:** `internal/collector/scancode_preflight.go` (preflight + `classifyScancodeHealth`), `internal/db/aveloxis_status_store.go` (`SetAveloxisStatus` / `GetAveloxisStatus`), `internal/db/schema.sql` (table).

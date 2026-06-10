@@ -206,6 +206,9 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	if _, err := exec.LookPath("scancode"); err != nil {
 		w.logger.Info("scancode binary not installed; ScancodeWorker disabled",
 			"install_hint", "pipx install scancode-toolkit")
+		// Record not-installed so the operator can see why scancode produces no data.
+		st, detail := classifyScancodeHealth(false, "", false)
+		w.recordScancodeStatus(ctx, st, detail)
 		return
 	}
 
@@ -221,6 +224,12 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 		"cadence", w.cadence.String(),
 		"clone_dir", w.cloneDir,
 		"shutdown_grace", w.shutdownGrace.String())
+
+	// v0.25.x scancode health preflight: one scan of a tiny synthetic input to
+	// detect a system-level toolchain failure (corrupt libmagic, etc.) and
+	// record it in aveloxis_ops.aveloxis_status before the dispatcher starts.
+	// Awareness only — it does not disable scancode.
+	w.preflight(ctx)
 
 	// One-shot recovery pass before the dispatcher starts claiming
 	// new work. This is what makes graceful shutdown + kill -9

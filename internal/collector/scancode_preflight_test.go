@@ -11,31 +11,46 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
-// realistic libmagic spam captured from the 2026-06-09 aveloxis_large incident.
+// realistic libmagic spam captured from the 2026-06-09 aveloxis_large (Ubuntu)
+// incident — the warning cites the compiled magic.mgc DB by path.
 const libmagicStderr = "/usr/share/misc/magic.mgc, 3673: Warning: offset `' invalid\n" +
 	"/usr/share/misc/magic.mgc, 3677: Warning: offset `' invalid\n" +
 	"/usr/share/misc/magic.mgc, 3678: Warning: offset `\\x05' invalid\n"
+
+// macOS-shaped libmagic corruption: Homebrew's libmagic can emit the same
+// 'Warning: offset ... invalid' shape without naming a .mgc file (it may cite
+// the magic source dir / a non-compiled path). The OS-independent fingerprint
+// (magic + Warning + offset + invalid) must still classify this as broken.
+const libmagicStderrMacOS = "magic, 412: Warning: offset `' invalid\n" +
+	"magic, 415: Warning: offset `\\x05' invalid\n"
 
 func TestClassifyScancodeHealth(t *testing.T) {
 	cases := []struct {
 		name       string
 		installed  bool
+		goos       string
 		stderr     string
 		jsonValid  bool
 		wantStatus string
 		detailHas  string
 	}{
-		{"not installed", false, "", false, db.StatusNotInstalled, "install-tools"},
-		{"libmagic corrupt", true, libmagicStderr, false, db.StatusBroken, "libmagic"},
+		{"not installed", false, "linux", "", false, db.StatusNotInstalled, "install-tools"},
+		{"libmagic corrupt (linux)", true, "linux", libmagicStderr, false, db.StatusBroken, "libmagic"},
+		// linux remediation names the apt path.
+		{"libmagic detail names apt on linux", true, "linux", libmagicStderr, false, db.StatusBroken, "apt-get"},
+		// macOS-shaped corruption (no .mgc path) is still caught by the generic fingerprint.
+		{"libmagic corrupt (macOS, no .mgc)", true, "darwin", libmagicStderrMacOS, false, db.StatusBroken, "libmagic"},
+		// darwin remediation names the brew path.
+		{"libmagic detail names brew on darwin", true, "darwin", libmagicStderrMacOS, false, db.StatusBroken, "brew reinstall"},
 		// libmagic signature wins even if JSON happened to be produced.
-		{"libmagic wins over json", true, libmagicStderr, true, db.StatusBroken, "upgrade-tools"},
-		{"repeated generic error", true, strings.Repeat("ERROR: cannot load plugin xyz\n", 60), false, db.StatusBroken, "repeated"},
-		{"no json, no signature", true, "some one-off warning\n", false, db.StatusBroken, "valid JSON"},
-		{"healthy", true, "", true, db.StatusOK, ""},
+		{"libmagic wins over json", true, "linux", libmagicStderr, true, db.StatusBroken, "upgrade-tools"},
+		{"repeated generic error", true, "linux", strings.Repeat("ERROR: cannot load plugin xyz\n", 60), false, db.StatusBroken, "repeated"},
+		{"no json, no signature", true, "linux", "some one-off warning\n", false, db.StatusBroken, "valid JSON"},
+		{"healthy", true, "linux", "", true, db.StatusOK, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			status, detail := classifyScancodeHealth(c.installed, c.stderr, c.jsonValid)
+			status, detail := classifyScancodeHealth(c.installed, c.goos, c.stderr, c.jsonValid)
 			if status != c.wantStatus {
 				t.Errorf("status = %q, want %q", status, c.wantStatus)
 			}

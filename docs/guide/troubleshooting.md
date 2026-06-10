@@ -674,14 +674,18 @@ If you see this error, it indicates a code path that bypasses sanitization. Repo
 
 **Cause**
 
-The host's system `libmagic` database (`/usr/share/misc/magic.mgc`) is corrupt or incompatible (seen on Ubuntu 24.04 after `file`/`libmagic1` updates). scancode's type detector (`typecode` → `python-magic` → `libmagic`) re-emits an `offset invalid` warning at huge volume — 14+ GB of stderr for a large repo. The scan bogs down so badly it never finishes within the wall-clock timeout, gets `SIGKILL`ed, and (v0.23.8 adaptive timeout) is retried with a **stretched** 4h→8h→16h→24h timeout — so a handful of doomed repos wedge every worker slot. `--quiet` does **not** suppress these (they come from the C library's stderr, not scancode's Python logging).
+The host's system `libmagic` database is corrupt or incompatible. On Linux that's `/usr/share/misc/magic.mgc` (seen on Ubuntu 24.04 after `file`/`libmagic1` updates); on macOS it's the Homebrew-installed magic file. scancode's type detector (`typecode` → `python-magic` → `libmagic`) re-emits an `offset invalid` warning at huge volume — 14+ GB of stderr for a large repo. The scan bogs down so badly it never finishes within the wall-clock timeout, gets `SIGKILL`ed, and (v0.23.8 adaptive timeout) is retried with a **stretched** 4h→8h→16h→24h timeout — so a handful of doomed repos wedge every worker slot. `--quiet` does **not** suppress these (they come from the C library's stderr, not scancode's Python logging).
 
 **Fix**
 
 ```bash
-# 1. Make scancode use its bundled libmagic instead of the broken system one:
+# 1. Make scancode use its bundled libmagic instead of the broken system one.
+#    This is the primary, OS-independent fix:
 aveloxis upgrade-tools           # injects typecode-libmagic into the scancode venv
-# (or repair the OS package):  sudo apt-get install --reinstall libmagic1 file
+
+# (Fallback — repair the OS library/package, depending on platform.)
+#   Linux:  sudo apt-get install --reinstall libmagic1 file
+#   macOS:  brew reinstall libmagic
 
 # 2. Reclaim disk from the giant warning-spam stderr files:
 rm /mnt/spinner/scancode/repo_*_stderr.log   # adjust path to your scancode_clone_dir
@@ -691,7 +695,7 @@ rm /mnt/spinner/scancode/repo_*_stderr.log   # adjust path to your scancode_clon
 aveloxis stop all && aveloxis start all
 ```
 
-The **startup preflight** (added v0.25.x) runs one scancode invocation against a tiny input on every `aveloxis serve` start, detects this exact condition, logs it prominently, and records it in `aveloxis_ops.aveloxis_status` — so you find out at startup instead of after the fleet has crawled for days. See [ScanCode Worker §13](../architecture/scancode.md).
+The **startup preflight** (added v0.25.x) runs one scancode invocation against a tiny input on every `aveloxis serve` start, detects this exact condition, logs it prominently, and records it in `aveloxis_ops.aveloxis_status` — so you find out at startup instead of after the fleet has crawled for days. The detection is cross-OS: it matches the libmagic corruption fingerprint (`magic` … `Warning` … `offset` … `invalid`) regardless of platform, plus a generic "same line repeated ≥50×" spam catch, and the recorded `status_detail` names the right remediation for the host OS (`brew` on macOS, `apt-get` on Linux). See [ScanCode Worker §13](../architecture/scancode.md).
 
 ---
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -60,7 +61,7 @@ func (w *capWriter) Write(p []byte) (int, error) {
 func (w *ScancodeWorker) preflight(ctx context.Context) {
 	scancodePath, err := exec.LookPath("scancode")
 	if err != nil {
-		status, detail := classifyScancodeHealth(false, "", false)
+		status, detail := classifyScancodeHealth(false, runtime.GOOS, "", false)
 		w.recordScancodeStatus(ctx, status, detail)
 		return
 	}
@@ -101,7 +102,7 @@ func (w *ScancodeWorker) preflight(ctx context.Context) {
 	_ = cmd.Run() // non-zero exit is expected on a broken toolchain; we classify from stderr + output
 
 	_, _, jsonOK := salvageScancodeOutput(outputPath)
-	status, detail := classifyScancodeHealth(true, string(stderr.buf), jsonOK)
+	status, detail := classifyScancodeHealth(true, runtime.GOOS, string(stderr.buf), jsonOK)
 	w.recordScancodeStatus(ctx, status, detail)
 }
 
@@ -125,19 +126,27 @@ func (w *ScancodeWorker) recordScancodeStatus(ctx context.Context, status, detai
 // classifyScancodeHealth maps a preflight run's outcome to a status + an
 // operator-facing detail/remediation string. Pure (no IO) so it's unit-tested
 // directly against captured stderr.
-func classifyScancodeHealth(installed bool, stderr string, jsonValid bool) (status, detail string) {
+func classifyScancodeHealth(installed bool, goos, stderr string, jsonValid bool) (status, detail string) {
 	if !installed {
 		return db.StatusNotInstalled,
 			"scancode binary not found on PATH — run 'aveloxis install-tools'"
 	}
-	// Corrupt system libmagic: the 2026-06-09 incident. scancode (typecode →
-	// python-magic → libmagic) spams '/usr/share/misc/magic.mgc, NNNN: Warning:
+	// Corrupt libmagic database — the same failure on Linux and macOS. scancode
+	// (typecode → python-magic → libmagic) spams 'magic.mgc, NNNN: Warning:
 	// offset ... invalid' at enormous volume, bogging scans down until the
-	// wall-clock timeout SIGKILLs them (14+ GB stderr per repo observed).
-	if strings.Contains(stderr, "magic.mgc") && strings.Contains(stderr, "invalid") {
+	// wall-clock timeout SIGKILLs them (14+ GB stderr per repo, 2026-06-09).
+	// The 'magic.mgc' compiled-DB name is shared across OSes; libmagic's C
+	// parser also emits the identical 'Warning: offset ... invalid' shape
+	// regardless of platform or DB path, so match EITHER signal — this stays
+	// robust whether the warning cites /usr/share/misc/magic.mgc (Ubuntu), a
+	// Homebrew/macOS magic file, or an uncompiled magic source dir.
+	corruptMagic := strings.Contains(stderr, "magic.mgc") ||
+		(strings.Contains(stderr, "magic") && strings.Contains(stderr, "Warning") &&
+			strings.Contains(stderr, "offset") && strings.Contains(stderr, "invalid"))
+	if corruptMagic {
 		return db.StatusBroken,
-			"system libmagic database (/usr/share/misc/magic.mgc) appears corrupt: scancode emits 'offset invalid' warning spam that wedges every scan. " +
-				"Fix: run 'aveloxis upgrade-tools' to inject typecode-libmagic into the scancode venv, or reinstall the OS package (apt-get install --reinstall libmagic1 file)."
+			"system libmagic magic database appears corrupt: scancode emits 'offset invalid' warning spam that wedges every scan. " +
+				"Fix: run 'aveloxis upgrade-tools' to inject typecode-libmagic into the scancode venv (works on any OS), " + osLibmagicHint(goos)
 	}
 	// Generic systemic signal: the same error/warning line repeated many times
 	// means the toolchain is misconfigured and scans will not complete.
@@ -154,6 +163,21 @@ func classifyScancodeHealth(installed bool, stderr string, jsonValid bool) (stat
 			"scancode health check produced no valid JSON output — check the scancode install ('aveloxis upgrade-tools')"
 	}
 	return db.StatusOK, ""
+}
+
+// osLibmagicHint returns an OS-appropriate fallback remediation for a corrupt
+// libmagic database. The primary fix ('aveloxis upgrade-tools' injects
+// typecode-libmagic into the scancode venv) is cross-OS; this is the
+// reinstall-the-system-library escape hatch, which differs per platform.
+func osLibmagicHint(goos string) string {
+	switch goos {
+	case "darwin":
+		return "or reinstall the OS library (brew reinstall libmagic)."
+	case "linux":
+		return "or reinstall the OS package (apt-get install --reinstall libmagic1 file)."
+	default:
+		return "or reinstall your OS's libmagic/file package."
+	}
 }
 
 // mostRepeatedLine returns the most frequently repeated non-blank line in s and

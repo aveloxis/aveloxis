@@ -258,7 +258,7 @@ On startup (`ScancodeWorker.Run`, before the dispatcher claims any work), the wo
 
 - **Bounded and safe.** 90-second wall-clock timeout, process-group kill, and a capped 1 MB stderr capture — the health check itself can never hang the worker or buffer gigabytes (the very failure it detects).
 - **`classifyScancodeHealth`** maps the outcome to a status:
-  - **`broken`** if stderr carries the libmagic signature (`magic.mgc` … `invalid`), **or** any single line repeats ≥ 50× (generic "the toolchain is spamming" signal), **or** no valid JSON was produced.
+  - **`broken`** if stderr carries the libmagic corruption fingerprint — either the compiled-DB name `magic.mgc`, or the OS-independent `magic` … `Warning` … `offset` … `invalid` shape that libmagic's C parser emits on Linux **and** macOS — **or** any single line repeats ≥ 50× (generic "the toolchain is spamming" signal), **or** no valid JSON was produced.
   - **`not_installed`** if the `scancode` binary isn't on `PATH`.
   - **`ok`** otherwise.
 - On anything other than `ok` it logs **`ERROR "scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed"`** with a `detail` string that names the remediation.
@@ -274,6 +274,6 @@ SELECT status_name, status, status_detail, tool_version, data_collection_date
 FROM aveloxis_ops.aveloxis_status WHERE status_name = 'scancode';
 ```
 
-A `broken` row's `status_detail` for the libmagic case reads, in part: *"system libmagic database (/usr/share/misc/magic.mgc) appears corrupt … run `aveloxis upgrade-tools` to inject typecode-libmagic, or reinstall the OS package (apt-get install --reinstall libmagic1 file)."* The table is generic by design — future subsystems record their own health under their own `status_name`, and the intent is to surface it to the operator (UI/API) over time.
+A `broken` row's `status_detail` for the libmagic case reads, in part: *"system libmagic magic database appears corrupt … run `aveloxis upgrade-tools` to inject typecode-libmagic (works on any OS), …"* followed by an OS-aware reinstall hint — `brew reinstall libmagic` on macOS, `apt-get install --reinstall libmagic1 file` on Linux (chosen via `runtime.GOOS`). The table is generic by design — future subsystems record their own health under their own `status_name`, and the intent is to surface it to the operator (UI/API) over time.
 
 **Code:** `internal/collector/scancode_preflight.go` (preflight + `classifyScancodeHealth`), `internal/db/aveloxis_status_store.go` (`SetAveloxisStatus` / `GetAveloxisStatus`), `internal/db/schema.sql` (table).

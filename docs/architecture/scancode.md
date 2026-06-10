@@ -258,12 +258,14 @@ On startup (`ScancodeWorker.Run`, before the dispatcher claims any work), the wo
 
 - **Bounded and safe.** 90-second wall-clock timeout, process-group kill, and a capped 1 MB stderr capture — the health check itself can never hang the worker or buffer gigabytes (the very failure it detects).
 - **`classifyScancodeHealth`** maps the outcome to a status:
-  - **`broken`** if stderr carries the libmagic corruption fingerprint — either the compiled-DB name `magic.mgc`, or the OS-independent `magic` … `Warning` … `offset` … `invalid` shape that libmagic's C parser emits on Linux **and** macOS — **or** any single line repeats ≥ 50× (generic "the toolchain is spamming" signal), **or** no valid JSON was produced.
+  - **`broken`** if stderr carries the libmagic corruption fingerprint **in volume** — either the compiled-DB name `magic.mgc`, or the OS-independent `magic` … `Warning` … `offset` … `invalid` shape that libmagic's C parser emits on Linux **and** macOS — repeated ≥ 50× (the wedging bug emits one warning per bad magic-DB entry at load time, saturating stderr; a repaired libmagic emitting a handful of benign warnings while scans complete is **not** flagged), **or** any single line repeats ≥ 50× (generic "the toolchain is spamming" signal), **or** no valid JSON was produced. Volume, not mere presence, is the signal — see the 2026-06-10 false-positive note below.
   - **`not_installed`** if the `scancode` binary isn't on `PATH`.
   - **`ok`** otherwise.
 - On anything other than `ok` it logs **`ERROR "scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed"`** with a `detail` string that names the remediation.
 
 It is **awareness only** — the preflight does **not** disable scancode (a deliberate scope decision; auto-pause is a possible follow-up). It records, logs, and lets the worker proceed.
+
+> **Volume, not presence (2026-06-10).** An early version of the libmagic check flagged `broken` on the mere *presence* of an `offset invalid` warning. That false-positives a working install: a repaired libmagic (e.g. after `aveloxis upgrade-tools` injects typecode-libmagic) can emit a *handful* of benign warnings while scans complete normally and produce valid data. The wedging bug is different in **kind** — the corrupt DB emits one warning per bad entry at load time, repeating the fingerprint thousands of times (it saturates the preflight's 1 MB stderr cap). The check now requires the fingerprint to repeat past the systemic-spam threshold (≥ 50), so a few incidental warnings no longer read as broken.
 
 ### The status table
 

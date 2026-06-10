@@ -12,17 +12,26 @@ import (
 )
 
 // realistic libmagic spam captured from the 2026-06-09 aveloxis_large (Ubuntu)
-// incident — the warning cites the compiled magic.mgc DB by path.
-const libmagicStderr = "/usr/share/misc/magic.mgc, 3673: Warning: offset `' invalid\n" +
-	"/usr/share/misc/magic.mgc, 3677: Warning: offset `' invalid\n" +
-	"/usr/share/misc/magic.mgc, 3678: Warning: offset `\\x05' invalid\n"
+// incident — the warning cites the compiled magic.mgc DB by path. The wedging
+// bug repeats this fingerprint thousands of times (it saturates the preflight's
+// 1 MB stderr cap), so the broken-test fixture repeats it well past the
+// systemic-spam threshold.
+var libmagicStderr = strings.Repeat("/usr/share/misc/magic.mgc, 3673: Warning: offset `' invalid\n", 200)
 
 // macOS-shaped libmagic corruption: Homebrew's libmagic can emit the same
 // 'Warning: offset ... invalid' shape without naming a .mgc file (it may cite
 // the magic source dir / a non-compiled path). The OS-independent fingerprint
-// (magic + Warning + offset + invalid) must still classify this as broken.
-const libmagicStderrMacOS = "magic, 412: Warning: offset `' invalid\n" +
-	"magic, 415: Warning: offset `\\x05' invalid\n"
+// (magic + Warning + offset + invalid) must still classify this as broken at
+// volume.
+var libmagicStderrMacOS = strings.Repeat("magic, 412: Warning: offset `' invalid\n", 200)
+
+// benignLibmagicStderr is the 2026-06-10 false-positive scenario: a repaired
+// libmagic (typecode-libmagic injected) emits only a HANDFUL of these warnings
+// while scans complete fine. This must NOT be classified as broken — volume,
+// not presence, is the signal.
+const benignLibmagicStderr = "/usr/share/misc/magic.mgc, 3673: Warning: offset `' invalid\n" +
+	"/usr/share/misc/magic.mgc, 3677: Warning: offset `' invalid\n" +
+	"/usr/share/misc/magic.mgc, 3678: Warning: offset `\\x05' invalid\n"
 
 func TestClassifyScancodeHealth(t *testing.T) {
 	cases := []struct {
@@ -38,12 +47,18 @@ func TestClassifyScancodeHealth(t *testing.T) {
 		{"libmagic corrupt (linux)", true, "linux", libmagicStderr, false, db.StatusBroken, "libmagic"},
 		// linux remediation names the apt path.
 		{"libmagic detail names apt on linux", true, "linux", libmagicStderr, false, db.StatusBroken, "apt-get"},
-		// macOS-shaped corruption (no .mgc path) is still caught by the generic fingerprint.
+		// macOS-shaped corruption (no .mgc path) is still caught by the generic fingerprint at volume.
 		{"libmagic corrupt (macOS, no .mgc)", true, "darwin", libmagicStderrMacOS, false, db.StatusBroken, "libmagic"},
 		// darwin remediation names the brew path.
 		{"libmagic detail names brew on darwin", true, "darwin", libmagicStderrMacOS, false, db.StatusBroken, "brew reinstall"},
-		// libmagic signature wins even if JSON happened to be produced.
+		// libmagic spam wins even if JSON happened to be produced (volume case).
 		{"libmagic wins over json", true, "linux", libmagicStderr, true, db.StatusBroken, "upgrade-tools"},
+		// 2026-06-10 false-positive guard: a handful of warnings + valid JSON is a
+		// WORKING install, not the wedging bug. Must be OK.
+		{"few benign warnings + valid json is healthy", true, "linux", benignLibmagicStderr, true, db.StatusOK, ""},
+		// a handful of warnings but NO json is broken on the no-json signal, NOT
+		// the libmagic signal — the detail must name the generic JSON failure.
+		{"few benign warnings, no json", true, "linux", benignLibmagicStderr, false, db.StatusBroken, "valid JSON"},
 		{"repeated generic error", true, "linux", strings.Repeat("ERROR: cannot load plugin xyz\n", 60), false, db.StatusBroken, "repeated"},
 		{"no json, no signature", true, "linux", "some one-off warning\n", false, db.StatusBroken, "valid JSON"},
 		{"healthy", true, "linux", "", true, db.StatusOK, ""},
@@ -61,6 +76,26 @@ func TestClassifyScancodeHealth(t *testing.T) {
 				t.Errorf("ok status must have empty detail, got %q", detail)
 			}
 		})
+	}
+}
+
+func TestCountLibmagicWarnings(t *testing.T) {
+	if n := countLibmagicWarnings(""); n != 0 {
+		t.Errorf("empty input must count 0, got %d", n)
+	}
+	if n := countLibmagicWarnings(benignLibmagicStderr); n != 3 {
+		t.Errorf("benign fixture has 3 warning lines, got %d", n)
+	}
+	if n := countLibmagicWarnings(libmagicStderr); n < scancodePreflightRepeatN {
+		t.Errorf("broken fixture must exceed the spam threshold, got %d", n)
+	}
+	// macOS-shaped (no .mgc) lines are counted by the generic fingerprint.
+	if n := countLibmagicWarnings(libmagicStderrMacOS); n < scancodePreflightRepeatN {
+		t.Errorf("macOS broken fixture must exceed the spam threshold, got %d", n)
+	}
+	// non-libmagic noise must not be counted.
+	if n := countLibmagicWarnings(strings.Repeat("ERROR: cannot load plugin xyz\n", 60)); n != 0 {
+		t.Errorf("non-libmagic lines must not count, got %d", n)
 	}
 }
 

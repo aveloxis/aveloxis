@@ -135,15 +135,25 @@ func classifyScancodeHealth(installed bool, goos, stderr string, jsonValid bool)
 	// (typecode → python-magic → libmagic) spams 'magic.mgc, NNNN: Warning:
 	// offset ... invalid' at enormous volume, bogging scans down until the
 	// wall-clock timeout SIGKILLs them (14+ GB stderr per repo, 2026-06-09).
+	//
+	// VOLUME, not presence, is the signal. A healthy/repaired libmagic — e.g.
+	// after `aveloxis upgrade-tools` injects typecode-libmagic, or on a host
+	// whose `file` package merely has a few tolerable bad magic entries — can
+	// still emit a HANDFUL of these warnings while scans complete normally and
+	// produce valid output. Flagging on mere presence false-positives that
+	// working install (observed 2026-06-10: valid scans + no failure stderr
+	// files, yet the preflight tripped). The wedging bug is different in kind:
+	// the corrupt DB emits one warning per bad entry at load time, repeating
+	// the fingerprint thousands of times (the preflight's 1 MB stderr cap fills
+	// completely). So require the fingerprint to repeat at the same "systemic
+	// spam" threshold the generic check uses.
+	//
 	// The 'magic.mgc' compiled-DB name is shared across OSes; libmagic's C
 	// parser also emits the identical 'Warning: offset ... invalid' shape
-	// regardless of platform or DB path, so match EITHER signal — this stays
-	// robust whether the warning cites /usr/share/misc/magic.mgc (Ubuntu), a
-	// Homebrew/macOS magic file, or an uncompiled magic source dir.
-	corruptMagic := strings.Contains(stderr, "magic.mgc") ||
-		(strings.Contains(stderr, "magic") && strings.Contains(stderr, "Warning") &&
-			strings.Contains(stderr, "offset") && strings.Contains(stderr, "invalid"))
-	if corruptMagic {
+	// regardless of platform or DB path. The warning lines vary by line number
+	// and offset, so the generic single-line mostRepeatedLine check below
+	// under-counts them — count the fingerprint across all lines here instead.
+	if countLibmagicWarnings(stderr) >= scancodePreflightRepeatN {
 		return db.StatusBroken,
 			"system libmagic magic database appears corrupt: scancode emits 'offset invalid' warning spam that wedges every scan. " +
 				"Fix: run 'aveloxis upgrade-tools' to inject typecode-libmagic into the scancode venv (works on any OS), " + osLibmagicHint(goos)
@@ -178,6 +188,29 @@ func osLibmagicHint(goos string) string {
 	default:
 		return "or reinstall your OS's libmagic/file package."
 	}
+}
+
+// countLibmagicWarnings counts lines carrying the OS-independent libmagic
+// magic-DB corruption fingerprint. Matches either the compiled-DB name
+// (magic.mgc) on an 'invalid' line, or the generic 'magic'+'Warning'+'offset'+
+// 'invalid' shape libmagic's C parser emits on Linux and macOS. The caller
+// uses the COUNT (not mere presence) so a handful of benign warnings from a
+// working install don't read as the wedging bug. Input is bounded (preflight
+// caps stderr at 1 MB).
+func countLibmagicWarnings(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		hasMagicMgc := strings.Contains(line, "magic.mgc") && strings.Contains(line, "invalid")
+		hasGeneric := strings.Contains(line, "magic") && strings.Contains(line, "Warning") &&
+			strings.Contains(line, "offset") && strings.Contains(line, "invalid")
+		if hasMagicMgc || hasGeneric {
+			n++
+		}
+	}
+	return n
 }
 
 // mostRepeatedLine returns the most frequently repeated non-blank line in s and

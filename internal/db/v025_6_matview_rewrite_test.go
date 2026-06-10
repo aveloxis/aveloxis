@@ -233,10 +233,15 @@ func TestVersionStampedV0256(t *testing.T) {
 	// nightly PostgreSQL restart pauses collection instead of erroring) → 0.25.26
 	// (cross-OS scancode libmagic check: generic 'magic + Warning + offset +
 	// invalid' fingerprint catches macOS Homebrew libmagic too, OS-aware
-	// remediation text via runtime.GOOS).
+	// remediation text via runtime.GOOS) → 0.25.27 (scancode preflight libmagic
+	// check is now VOLUME-based, not presence-based: only `broken` when the
+	// offset-invalid fingerprint repeats past the systemic-spam threshold —
+	// fixes the 2026-06-10 false positive where a repaired libmagic emitting a
+	// handful of benign warnings, with scans completing and producing valid
+	// data, was wrongly flagged broken).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.26"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.26\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.27"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.27\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

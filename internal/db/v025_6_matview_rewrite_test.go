@@ -218,10 +218,25 @@ func TestVersionStampedV0256(t *testing.T) {
 	// backfill-mailing-list-projection over existing email_message rows) →
 	// 0.25.18 (Phase C: mailing_list_pr_equivalents read-only VIEW surfacing
 	// forge-less kernel [PATCH] threads as PR-equivalents without polluting
-	// pull_requests).
+	// pull_requests) → 0.25.19 (conflict-safe external-key backfill: DISTINCT ON
+	// winner-per-key + NOT EXISTS guard, fixes the 23505 that survived the first
+	// partial fix) → 0.25.20 (literal `node_id <> ''` predicates + candidate-batch
+	// partial indexes so the projection backfill uses index scans instead of a
+	// 66s-per-row parallel seqscan over 19.8M messages) → 0.25.21–0.25.22
+	// (projection-backfill hardening) → 0.25.23 (deterministic lock order in
+	// UpsertContributorBatch via sort.Strings(logins) — fixes the 40P01 deadlocks
+	// from concurrent workers locking shared bot contributors in map-random order)
+	// → 0.25.24 (scancode startup preflight + aveloxis_ops.aveloxis_status table:
+	// detect a corrupt host libmagic that wedges every scan, log it prominently,
+	// record subsystem health) → 0.25.25 (DB-down graceful-pause guard:
+	// runDBHealthMonitor probes the pool, fillWorkerSlots gates on dbHealthy, so a
+	// nightly PostgreSQL restart pauses collection instead of erroring) → 0.25.26
+	// (cross-OS scancode libmagic check: generic 'magic + Warning + offset +
+	// invalid' fingerprint catches macOS Homebrew libmagic too, OS-aware
+	// remediation text via runtime.GOOS).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.25"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.25\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.26"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.26\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

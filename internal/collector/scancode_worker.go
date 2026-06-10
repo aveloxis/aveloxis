@@ -42,6 +42,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -207,7 +208,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 		w.logger.Info("scancode binary not installed; ScancodeWorker disabled",
 			"install_hint", "pipx install scancode-toolkit")
 		// Record not-installed so the operator can see why scancode produces no data.
-		st, detail := classifyScancodeHealth(false, "", false)
+		st, detail := classifyScancodeHealth(false, runtime.GOOS, "", false)
 		w.recordScancodeStatus(ctx, st, detail)
 		return
 	}

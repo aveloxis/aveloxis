@@ -732,9 +732,19 @@ grep -i restart /etc/needrestart/needrestart.conf
 
 Typical culprits on Ubuntu 24.04: a custom backup/maintenance cron that does `systemctl restart postgresql`, or `unattended-upgrades` + `needrestart` restarting the service after a security update. Once identified, either reschedule it for a low-activity window or exclude postgresql from automatic restarts (`needrestart`'s `$nrconf{override_rc}`).
 
-**Mitigation on the Aveloxis side**
+**Mitigation on the Aveloxis side (v0.25.25+)**
 
-Today Aveloxis has no DB-down backoff, so during each restart window it hammers the dying/recovering server and logs the `57P03` storm, then deadlocks on reconnect. Until a graceful "pause collection while the DB is unavailable" guard is added, the practical steps are: fix the host trigger (above), and truncate the log on restart (`aveloxis stop all && : > ~/.aveloxis/aveloxis.log && aveloxis start all`). The errors are transient and self-recover once the database is back.
+`aveloxis serve` runs a **DB-health monitor** that probes the database every 5 s. When a probe fails it sets `dbHealthy = false`, and `fillWorkerSlots` stops claiming new work — so collection **pauses** for the duration of the restart instead of hammering the dying/recovering server. You'll see one line, not a storm:
+
+```
+level=WARN msg="database unavailable — pausing new collection until it returns"
+level=WARN msg="collection still paused — database unavailable" unavailable_for=...   (once/min)
+level=INFO  msg="database back — resuming collection" unavailable_for=...
+```
+
+and the outage is recorded in `aveloxis_ops.aveloxis_status` (`status_name='database'`; `status='unavailable'` during the outage where writable, `status='ok'` with the recovery duration in `status_detail` afterward). In-flight jobs running at the instant of the restart still error and re-queue (that's expected), but no *new* work is dispatched into the dead window, which also avoids the reconnect deadlock pile-up.
+
+Still fix the host trigger (above) — pausing is graceful degradation, not a substitute for not restarting Postgres under a live fleet. The pre-v0.25.25 behavior (no backoff → `57P03` storm) is what bloats the log; if you're on an older build, truncate on restart (`aveloxis stop all && : > ~/.aveloxis/aveloxis.log && aveloxis start all`).
 
 ---
 

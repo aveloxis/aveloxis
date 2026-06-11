@@ -105,3 +105,39 @@ func TestRunOneCloneSkipsLFSSmudge(t *testing.T) {
 		t.Error("GIT_LFS_SKIP_SMUDGE=1 must be set on cloneCmd.Env (the per-process environment), NOT via os.Setenv (which would leak to every other subprocess this worker spawns).")
 	}
 }
+
+// TestRunOneStderrCaptureIsBounded is the regression guard for the 2026-06-11
+// 15 GB-in-RAM incident. A corrupt host libmagic made large repos (aws/aws-sdk-cpp,
+// Azure/azure-rest-api-specs) emit 15+ GB of warning spam; the pre-fix capture
+// used an unbounded bytes.Buffer that held all of it in RAM before writing an
+// equally huge per-repo failure file to disk. The capture must be bounded
+// (headTailBuffer), and the failure path must surface the libmagic cause hint.
+func TestRunOneStderrCaptureIsBounded(t *testing.T) {
+	src := readScancodeWorkerSource(t)
+	idx := strings.Index(src, "func (w *ScancodeWorker) runOne(")
+	if idx < 0 {
+		t.Fatal("cannot find runOne method")
+	}
+	tail := src[idx:]
+	endRel := strings.Index(tail[1:], "\nfunc ")
+	if endRel < 0 {
+		endRel = len(tail) - 1
+	}
+	body := tail[:1+endRel]
+
+	// The per-repo failure capture must use the bounded headTailBuffer, NOT an
+	// unbounded bytes.Buffer. The unbounded buffer held 15+ GB in RAM per failing
+	// repo on a corrupt-libmagic host.
+	if !strings.Contains(body, "headTailBuffer{") {
+		t.Error("runOne must capture stderr/stdout for the per-repo failure file with a bounded headTailBuffer. A corrupt host libmagic makes large repos emit 15+ GB of warning spam; an unbounded bytes.Buffer holds all of it in RAM (multi-GB heap spike per failing repo) AND writes a 15 GB file to disk.")
+	}
+	if strings.Contains(body, "&bytes.Buffer{}") {
+		t.Error("runOne must NOT use an unbounded &bytes.Buffer{} for the failure capture — that reintroduces the 2026-06-11 15 GB-in-RAM bug. Use headTailBuffer.")
+	}
+
+	// The failure log must surface the libmagic cause hint so a flood of these
+	// failures isn't confusing — it's the host's magic DB, not a per-repo issue.
+	if !strings.Contains(body, "countLibmagicWarnings(") {
+		t.Error("the cmd.Wait() failure path must check countLibmagicWarnings(...) and, when the stderr is libmagic-dominated, log a likely_cause pointing at the host libmagic / aveloxis_status. Otherwise operators can't tell 'this repo is broken' from 'the host's magic DB is corrupt'.")
+	}
+}

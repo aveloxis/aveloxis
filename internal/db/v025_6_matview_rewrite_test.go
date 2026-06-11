@@ -238,10 +238,15 @@ func TestVersionStampedV0256(t *testing.T) {
 	// offset-invalid fingerprint repeats past the systemic-spam threshold —
 	// fixes the 2026-06-10 false positive where a repaired libmagic emitting a
 	// handful of benign warnings, with scans completing and producing valid
-	// data, was wrongly flagged broken).
+	// data, was wrongly flagged broken) → 0.25.28 (bound the scancode per-repo
+	// failure capture with a head+tail buffer — the corrupt host libmagic made
+	// large repos like aws/aws-sdk-cpp emit 15+ GB of stderr that the unbounded
+	// bytes.Buffer held entirely in RAM; also surface a libmagic likely_cause
+	// hint on per-repo failures and name the libmagic-mgc package in the
+	// remediation text).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.27"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.27\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.28"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.28\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

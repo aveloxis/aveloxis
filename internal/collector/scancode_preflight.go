@@ -184,7 +184,10 @@ func osLibmagicHint(goos string) string {
 	case "darwin":
 		return "or reinstall the OS library (brew reinstall libmagic)."
 	case "linux":
-		return "or reinstall the OS package (apt-get install --reinstall libmagic1 file)."
+		// /usr/share/misc/magic.mgc ships from the libmagic-mgc package on
+		// Debian/Ubuntu (NOT libmagic1 or file) — reinstalling only the latter
+		// two leaves a corrupt magic.mgc in place. Include all three to be safe.
+		return "or reinstall the OS package (apt-get install --reinstall libmagic-mgc libmagic1 file)."
 	default:
 		return "or reinstall your OS's libmagic/file package."
 	}

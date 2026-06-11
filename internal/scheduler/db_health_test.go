@@ -54,9 +54,30 @@ func TestDBHealthGuardWired(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := string(mon)
-	for _, needle := range []string{"s.store.Ping(ctx)", "s.dbHealthy.Swap(", "SetAveloxisStatus(", "classifyHealthTransition("} {
+	for _, needle := range []string{"s.store.Ping(ctx)", "s.dbHealthy.Swap(", "SetAveloxisStatus(", "classifyHealthTransition(", "debouncedHealthy(", "consecutiveFail"} {
 		if !strings.Contains(m, needle) {
 			t.Errorf("runDBHealthMonitor must use %q", needle)
 		}
+	}
+}
+
+// TestDebouncedHealthy pins the debounce that suppresses the transient
+// connect/auth-timeout "false outage" blips (2026-06-11): healthy until
+// dbHealthFailureThreshold consecutive failures, then unavailable.
+func TestDebouncedHealthy(t *testing.T) {
+	// Sanity-check the threshold is a debounce (>1), not a single-probe flip.
+	if dbHealthFailureThreshold < 2 {
+		t.Fatalf("dbHealthFailureThreshold must be >= 2 to debounce transient blips, got %d", dbHealthFailureThreshold)
+	}
+	for n := 0; n < dbHealthFailureThreshold; n++ {
+		if !debouncedHealthy(n) {
+			t.Errorf("debouncedHealthy(%d) must be true (below threshold %d) — a transient blip must not pause the fleet", n, dbHealthFailureThreshold)
+		}
+	}
+	if debouncedHealthy(dbHealthFailureThreshold) {
+		t.Errorf("debouncedHealthy(%d) must be false at the threshold — a sustained failure pauses collection", dbHealthFailureThreshold)
+	}
+	if debouncedHealthy(dbHealthFailureThreshold + 5) {
+		t.Error("debouncedHealthy must stay false past the threshold")
 	}
 }

@@ -662,10 +662,12 @@ If you see this error, it indicates a code path that bypasses sanitization. Repo
 
 - The number of scanned repos increments extremely slowly; long (multi-hour) stretches with no `running ScanCode` log lines.
 - `aveloxis.log` shows `scancode runOne: scancode subprocess failed ... error="signal: killed"` with enormous `stderr_bytes` values (gigabytes), and `wall-clock timeout fired ... using stretched timeout`.
-- The per-repo stderr files under your scancode clone dir (e.g. `/mnt/spinner/scancode/repo_*_stderr.log`) are **gigabytes** each and consist almost entirely of:
+- The per-repo stderr files under your scancode clone dir (e.g. `/mnt/spinner/scancode/repo_*_stderr.log`) are **gigabytes** each (15+ GB observed) and consist almost entirely of:
   ```
   /usr/share/misc/magic.mgc, 3673: Warning: offset `' invalid
   ```
+  Often the lines look garbled/char-interleaved — that's multiple `scancode --processes` worker subprocesses each loading the corrupt DB and writing to the shared stderr pipe at once.
+- The failures cluster on **large** repositories (AWS/Azure SDKs, game engines, monorepos) while small repos succeed — this is the most confusing symptom, but it's **not** a per-repo or per-file problem. Every scan emits the spam; only the large repos emit *enough* of it (per file × per process) to blow past the wall-clock timeout. v0.25.28+ surfaces this directly: the failure log line carries a `likely_cause` field naming the corrupt host libmagic.
 - Startup logs `scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed` (v0.25.x+), and:
   ```sql
   SELECT status, status_detail FROM aveloxis_ops.aveloxis_status WHERE status_name='scancode';
@@ -674,7 +676,9 @@ If you see this error, it indicates a code path that bypasses sanitization. Repo
 
 **Cause**
 
-The host's system `libmagic` database is corrupt or incompatible. On Linux that's `/usr/share/misc/magic.mgc` (seen on Ubuntu 24.04 after `file`/`libmagic1` updates); on macOS it's the Homebrew-installed magic file. scancode's type detector (`typecode` → `python-magic` → `libmagic`) re-emits an `offset invalid` warning at huge volume — 14+ GB of stderr for a large repo. The scan bogs down so badly it never finishes within the wall-clock timeout, gets `SIGKILL`ed, and (v0.23.8 adaptive timeout) is retried with a **stretched** 4h→8h→16h→24h timeout — so a handful of doomed repos wedge every worker slot. `--quiet` does **not** suppress these (they come from the C library's stderr, not scancode's Python logging).
+The host's system `libmagic` database is corrupt or incompatible. On Linux that's `/usr/share/misc/magic.mgc` (seen on Ubuntu 24.04 after `file`/`libmagic1`/`libmagic-mgc` updates — the warning "offsets" are often garbage strings from unrelated files, indicating the `.mgc` was overwritten or is version-mismatched); on macOS it's the Homebrew-installed magic file. scancode's type detector (`typecode` → `python-magic` → `libmagic`) re-emits an `offset invalid` warning per bad magic-DB entry, per process, per file — 15+ GB of stderr for a large repo. The scan bogs down so badly it never finishes within the wall-clock timeout, gets `SIGKILL`ed, and (v0.23.8 adaptive timeout) is retried with a **stretched** 4h→8h→16h→24h timeout — so a handful of doomed large repos wedge every worker slot. `--quiet` does **not** suppress these (they come from the C library's stderr, not scancode's Python logging).
+
+> **Note on `magic.mgc` packaging (Linux).** On Debian/Ubuntu the file `/usr/share/misc/magic.mgc` is shipped by the **`libmagic-mgc`** package — *not* `libmagic1` or `file`. Reinstalling only the latter two leaves a corrupt `.mgc` in place. Always include `libmagic-mgc` in the reinstall.
 
 **Fix**
 
@@ -684,16 +688,19 @@ The host's system `libmagic` database is corrupt or incompatible. On Linux that'
 aveloxis upgrade-tools           # injects typecode-libmagic into the scancode venv
 
 # (Fallback — repair the OS library/package, depending on platform.)
-#   Linux:  sudo apt-get install --reinstall libmagic1 file
+#   Linux:  sudo apt-get install --reinstall libmagic-mgc libmagic1 file
 #   macOS:  brew reinstall libmagic
 
-# 2. Reclaim disk from the giant warning-spam stderr files:
+# 2. Reclaim disk from the warning-spam stderr files. (v0.25.28+ caps each new
+#    file at ~1.25 MB head+tail, but pre-fix files can be many GB each.)
 rm /mnt/spinner/scancode/repo_*_stderr.log   # adjust path to your scancode_clone_dir
 
 # 3. Restart serve. The startup preflight should now log "scancode preflight: healthy"
 #    and aveloxis_status.status flip to 'ok'.
 aveloxis stop all && aveloxis start all
 ```
+
+> **v0.25.28** bounds the per-repo failure capture to a head+tail buffer (~1.25 MB), so even while the host libmagic is still broken a failing scan can no longer buffer 15 GB in RAM or write a 15 GB file. This is a safety net, not the fix — repair the host libmagic so the large repos actually scan.
 
 The **startup preflight** (added v0.25.x) runs one scancode invocation against a tiny input on every `aveloxis serve` start, detects this exact condition, logs it prominently, and records it in `aveloxis_ops.aveloxis_status` — so you find out at startup instead of after the fleet has crawled for days. The detection is cross-OS: it matches the libmagic corruption fingerprint (`magic` … `Warning` … `offset` … `invalid`) regardless of platform, plus a generic "same line repeated ≥50×" spam catch, and the recorded `status_detail` names the right remediation for the host OS (`brew` on macOS, `apt-get` on Linux). See [ScanCode Worker §13](../architecture/scancode.md).
 

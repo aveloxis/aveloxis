@@ -243,10 +243,14 @@ func TestVersionStampedV0256(t *testing.T) {
 	// large repos like aws/aws-sdk-cpp emit 15+ GB of stderr that the unbounded
 	// bytes.Buffer held entirely in RAM; also surface a libmagic likely_cause
 	// hint on per-repo failures and name the libmagic-mgc package in the
-	// remediation text).
+	// remediation text) → 0.25.29 (debounce the DB-health monitor: require
+	// dbHealthFailureThreshold=3 consecutive failed probes before pausing
+	// collection, so transient connect/SASL-auth timeouts under host CPU
+	// pressure — TLS+SCRAM handshakes exceeding the 5s connect deadline — stop
+	// flapping the fleet between "unavailable"/"back" on non-outages).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.28"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.28\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.29"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.29\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

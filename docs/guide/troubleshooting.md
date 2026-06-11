@@ -788,6 +788,36 @@ Still fix the host trigger (above) — pausing is graceful degradation, not a su
 
 ---
 
+## Brief "database unavailable" blips that aren't real outages (connect/SASL-auth timeouts)
+
+**Symptoms**
+
+- Short `database unavailable — pausing` → `database back — resuming` pairs with `unavailable_for=0s..19s`, several times a day, with **no** `FATAL: the database system is shutting down` (`57P03`) — i.e. Postgres never actually restarted.
+- The error is in the **connection-establishment** phase, not a query:
+  ```
+  failed SASL auth: timeout: context deadline exceeded
+  dial error:       timeout: context deadline exceeded
+  ```
+- Worker paths (`UpdateRepoMetadata`, `failed to insert libyear`, `failed to upsert commit`, `heartbeat failed`, mailing-list `claim next list`) all WARN together at the same instant.
+
+**Cause**
+
+This is **not** an outage and **not** connection-limit saturation (check: `SELECT count(*) FROM pg_stat_activity` vs `max_connections` — typically tiny, e.g. 48/500). It's transient **connection-establishment timeout under host CPU pressure**. With `ssl=on` and `password_encryption=scram-sha-256`, every *new* connection pays a TLS handshake + a SCRAM (PBKDF2) auth handshake + a backend fork — all CPU-bound. When the host CPU spikes (a scancode storm, a matview rebuild, another tenant), those handshakes briefly exceed pgx's 5 s connect deadline. Existing pooled connections are fine; only *cold opens* fail. A low pool `MinConns` makes it worse: after a quiet spell the pool holds few warm connections, so the next burst must cold-open many at once — exactly when the CPU is busy.
+
+**What v0.25.29 does**
+
+The DB-health monitor now **debounces**: it requires `dbHealthFailureThreshold` (3) *consecutive* failed probes — ~15 s of sustained unreachability — before pausing. A single CPU-pressure blip no longer flaps the fleet between "unavailable"/"back". A real restart (down for minutes) still trips it. Sub-threshold blips are logged at DEBUG (`database probe failed transiently — not pausing`), quiet at the default INFO level.
+
+**Reducing the blips at the root**
+
+The debounce silences the *false pause*; to cut the underlying connect-timeout WARNs:
+
+1. **Reduce host CPU pressure.** A corrupt-libmagic scancode storm (see above) or a heavy matview rebuild competing with the postmaster are common triggers. Fixing those removes most blips.
+2. **Keep more warm connections** so bursts don't cold-open under load: raise the pool `MinConns` (default 2). On a busy `serve` (tens of active connections is normal), a `MinConns` closer to your steady-state concurrency keeps the hot set established. With `max_connections=500` and a handful of aveloxis processes, there's ample headroom.
+3. **Confirm it's CPU, not limits:** if `pg_stat_activity` is near `max_connections`, that's a *different* problem (raise the limit or reduce pool sizes); if it's well under (the usual case here), it's CPU/handshake latency.
+
+---
+
 ## Restart procedure
 
 The standard restart procedure for any issue:

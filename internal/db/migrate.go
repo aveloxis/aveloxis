@@ -341,15 +341,33 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// the extension already exists; CREATE INDEX IF NOT EXISTS is safe
 	// to run on every startup.
 	//
-	// pg_trgm is the only step that stays warn-only — the extension
-	// requires superuser/pg_create_extensions and is a perf optimization,
-	// not data integrity. The follow-up index creation is fatal because
-	// once the extension exists, the index DDL failing means a real
-	// schema problem.
+	// pg_trgm is warn-only — the extension requires superuser/
+	// pg_create_extensions and is a perf optimization, not data integrity.
+	//
+	// The dependent GIN index is ALSO warn-only, and the visibility check
+	// below is why (v0.25.30). The earlier assumption was "extension
+	// registered ⇒ gin_trgm_ops resolvable ⇒ index DDL failing means a
+	// real schema problem, so make it fatal." That assumption is wrong:
+	// the extension can be registered in pg_extension while its operator
+	// class lives in a schema (typically public) that is NOT on the
+	// connecting role's search_path. `CREATE EXTENSION IF NOT EXISTS`
+	// then returns nil (no-op) but the unqualified `gin_trgm_ops` in the
+	// index DDL fails with SQLSTATE 42704 ("operator class does not
+	// exist for access method gin"). Observed on kate 2026-06-13 with a
+	// search_path that excluded public. Blocking `serve` startup over a
+	// monitor-search perf index contradicts the warn-only intent, so we
+	// probe pg_opclass_is_visible first and skip-with-warning when the
+	// operator class isn't resolvable. When it IS visible, a failure of
+	// the index DDL is still surfaced (a genuine schema problem).
 	if _, err := pg.pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm`); err != nil {
 		logger.Warn("failed to create pg_trgm extension; monitor search will use sequential scans",
 			"error", err,
 			"hint", "the extension requires superuser or membership in pg_create_extensions; check your role grants")
+	} else if !ginTrgmOpsVisible(ctx, pg) {
+		logger.Warn("pg_trgm operator class gin_trgm_ops is not visible on the search_path; skipping idx_repos_owner_name_trgm (monitor search will use sequential scans)",
+			"hint", "pg_trgm is registered but its operator class is in a schema not on this role's search_path; "+
+				"put that schema on the path (e.g. ALTER ROLE aveloxis SET search_path = aveloxis_data, aveloxis_ops, public) "+
+				"or relocate it (ALTER EXTENSION pg_trgm SET SCHEMA aveloxis_data), then re-run migrate")
 	} else {
 		execCreateIndexConcurrently(ctx, pg, logger, &errs,
 			"aveloxis_data", "idx_repos_owner_name_trgm",
@@ -1203,6 +1221,29 @@ const MigrateAdvisoryLockID int64 = 0x4156454C4F584953
 // The schema and indexName are passed separately (rather than parsing
 // from the SQL) because the helper needs them for the indisvalid
 // query.
+// ginTrgmOpsVisible reports whether the gin_trgm_ops operator class is
+// resolvable by an unqualified reference on the current session's
+// search_path. pg_opclass_is_visible respects search_path, so this is
+// exactly the question the index DDL asks when it names gin_trgm_ops
+// without a schema qualifier. Returns false on query error (treat an
+// indeterminate result as "not safe to attempt the fatal index").
+func ginTrgmOpsVisible(ctx context.Context, pg *PostgresStore) bool {
+	var visible bool
+	err := pg.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_opclass oc
+			JOIN pg_am am ON am.oid = oc.opcmethod
+			WHERE oc.opcname = 'gin_trgm_ops'
+			  AND am.amname = 'gin'
+			  AND pg_opclass_is_visible(oc.oid)
+		)`).Scan(&visible)
+	if err != nil {
+		return false
+	}
+	return visible
+}
+
 func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, schema, indexName, sql string) {
 	var isInvalid bool
 	err := pg.pool.QueryRow(ctx, `

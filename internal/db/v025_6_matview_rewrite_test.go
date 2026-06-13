@@ -247,10 +247,17 @@ func TestVersionStampedV0256(t *testing.T) {
 	// dbHealthFailureThreshold=3 consecutive failed probes before pausing
 	// collection, so transient connect/SASL-auth timeouts under host CPU
 	// pressure — TLS+SCRAM handshakes exceeding the 5s connect deadline — stop
-	// flapping the fleet between "unavailable"/"back" on non-outages).
+	// flapping the fleet between "unavailable"/"back" on non-outages) →
+	// 0.25.30 (the pg_trgm GIN index idx_repos_owner_name_trgm is now
+	// warn-only like the extension it depends on: gate its creation on
+	// ginTrgmOpsVisible (pg_opclass_is_visible probe) so a registered-but-
+	// not-visible operator class — extension installed in a schema off the
+	// role's search_path, observed on kate 2026-06-13, SQLSTATE 42704 —
+	// skips-with-warning instead of failing migration fatally and blocking
+	// serve startup over a monitor-search perf optimization).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.29"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.29\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.30"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.30\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

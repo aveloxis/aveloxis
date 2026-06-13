@@ -48,6 +48,37 @@ func TestSchemaCreatesRepoNameTrigramIndex(t *testing.T) {
 	}
 }
 
+// TestTrigramIndexIsGatedOnOperatorClassVisibility pins the v0.25.30
+// fix: the GIN index must NOT be attempted unless gin_trgm_ops is
+// actually visible on the search_path. The extension can be registered
+// in pg_extension while its operator class lives in a schema not on
+// the connecting role's search_path (observed on kate 2026-06-13 with
+// SQLSTATE 42704). Because this index is a monitor-search PERF
+// optimization, not data integrity, a not-visible result must
+// warn-and-skip rather than become a fatal migration error that blocks
+// `serve` startup. A future refactor that drops the gate (reverting to
+// the unconditional fatal index) would re-introduce that startup-block
+// bug; this test fails the build first.
+func TestTrigramIndexIsGatedOnOperatorClassVisibility(t *testing.T) {
+	src := mustReadStoreSource(t, "migrate.go")
+
+	if !strings.Contains(src, "func ginTrgmOpsVisible(") {
+		t.Error("migrate.go must define ginTrgmOpsVisible — the search_path-aware " +
+			"probe that decides whether the unqualified gin_trgm_ops reference in the " +
+			"index DDL will resolve.")
+	}
+	if !strings.Contains(src, "pg_opclass_is_visible") {
+		t.Error("ginTrgmOpsVisible must use pg_opclass_is_visible so the probe respects " +
+			"the session search_path exactly as the index DDL's unqualified opclass " +
+			"reference does.")
+	}
+	if !strings.Contains(src, "ginTrgmOpsVisible(ctx, pg)") {
+		t.Error("the idx_repos_owner_name_trgm creation must be gated on " +
+			"ginTrgmOpsVisible(ctx, pg) so a not-visible operator class skips-with-warning " +
+			"instead of failing the migration fatally and blocking serve startup.")
+	}
+}
+
 // TestListQueuePageSearchUsesIndexedExpression pins the query side:
 // ListQueuePage's search must filter against the same `(repo_owner ||
 // '/' || repo_name)` expression the index covers, with `ILIKE

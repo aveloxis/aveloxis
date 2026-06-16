@@ -1790,6 +1790,33 @@ Tracks the current working commit for facade processing per repository.
 
 ## aveloxis_ops Schema
 
+### Subsystem health
+
+#### aveloxis_status
+
+One row per Aveloxis subsystem, recording whether it is healthy. Upserted by **startup preflights** so a *system-level* failure — one where the subsystem will never produce useful output until an operator intervenes — is recorded and surfaced instead of silently degrading. The first (and currently only) subsystem is **scancode**: a corrupt host `libmagic` makes every scan spam gigabytes of warnings and wedge workers (the 2026-06-09 `aveloxis_large` incident), which the scancode preflight now detects on start. See [ScanCode Worker §13](../architecture/scancode.md) and [Troubleshooting](../guide/troubleshooting.md).
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `status_name` | TEXT (PK) | Computed | Subsystem identifier, e.g. `'scancode'`. One row per subsystem. |
+| `status` | TEXT NOT NULL | Computed | `'ok'` \| `'broken'` \| `'not_installed'`. |
+| `status_detail` | TEXT | Computed | Human-readable reason + remediation hint (e.g. "system libmagic database appears corrupt … run `aveloxis upgrade-tools`"). For operator visibility. |
+| `tool_source` | TEXT | `'aveloxis'` | Provenance. |
+| `tool_version` | TEXT | Computed | Aveloxis version that recorded the status (`db.ToolVersion`). |
+| `data_source` | TEXT | Computed | What produced the status, e.g. `'scancode preflight'`. |
+| `data_collection_date` | TIMESTAMPTZ | Auto-generated | When the status was last written/refreshed. |
+
+Inspect with:
+
+```sql
+SELECT status_name, status, status_detail, data_collection_date
+FROM aveloxis_ops.aveloxis_status;
+```
+
+A row with `status = 'broken'` means that subsystem needs operator attention — read `status_detail` for what to do.
+
+---
+
 ### Collection Pipeline
 
 #### staging

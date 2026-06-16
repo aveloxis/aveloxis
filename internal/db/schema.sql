@@ -1745,6 +1745,23 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.schema_meta (
 INSERT INTO aveloxis_ops.schema_meta (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
 
 -- ============================================================
+-- Subsystem health/status: one row per subsystem (status_name), upserted by
+-- startup preflights so a system-level failure (e.g. a corrupt libmagic that
+-- makes every scancode run spam GB of warnings and wedge workers) is recorded
+-- and eventually surfaced to the operator instead of silently degrading.
+-- First subsystem: scancode.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS aveloxis_ops.aveloxis_status (
+    status_name          TEXT PRIMARY KEY,           -- e.g. 'scancode'
+    status               TEXT NOT NULL DEFAULT '',   -- ok | broken | not_installed
+    status_detail        TEXT DEFAULT '',            -- human-readable reason + remediation (operator visibility)
+    tool_source          TEXT DEFAULT 'aveloxis',
+    tool_version         TEXT DEFAULT '',
+    data_source          TEXT DEFAULT '',            -- what produced the status (e.g. 'scancode preflight')
+    data_collection_date TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================================
 -- Staging store: raw API responses land here before processing.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_ops.staging (

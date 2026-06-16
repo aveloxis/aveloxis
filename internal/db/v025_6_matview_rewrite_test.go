@@ -218,10 +218,46 @@ func TestVersionStampedV0256(t *testing.T) {
 	// backfill-mailing-list-projection over existing email_message rows) →
 	// 0.25.18 (Phase C: mailing_list_pr_equivalents read-only VIEW surfacing
 	// forge-less kernel [PATCH] threads as PR-equivalents without polluting
-	// pull_requests).
+	// pull_requests) → 0.25.19 (conflict-safe external-key backfill: DISTINCT ON
+	// winner-per-key + NOT EXISTS guard, fixes the 23505 that survived the first
+	// partial fix) → 0.25.20 (literal `node_id <> ''` predicates + candidate-batch
+	// partial indexes so the projection backfill uses index scans instead of a
+	// 66s-per-row parallel seqscan over 19.8M messages) → 0.25.21–0.25.22
+	// (projection-backfill hardening) → 0.25.23 (deterministic lock order in
+	// UpsertContributorBatch via sort.Strings(logins) — fixes the 40P01 deadlocks
+	// from concurrent workers locking shared bot contributors in map-random order)
+	// → 0.25.24 (scancode startup preflight + aveloxis_ops.aveloxis_status table:
+	// detect a corrupt host libmagic that wedges every scan, log it prominently,
+	// record subsystem health) → 0.25.25 (DB-down graceful-pause guard:
+	// runDBHealthMonitor probes the pool, fillWorkerSlots gates on dbHealthy, so a
+	// nightly PostgreSQL restart pauses collection instead of erroring) → 0.25.26
+	// (cross-OS scancode libmagic check: generic 'magic + Warning + offset +
+	// invalid' fingerprint catches macOS Homebrew libmagic too, OS-aware
+	// remediation text via runtime.GOOS) → 0.25.27 (scancode preflight libmagic
+	// check is now VOLUME-based, not presence-based: only `broken` when the
+	// offset-invalid fingerprint repeats past the systemic-spam threshold —
+	// fixes the 2026-06-10 false positive where a repaired libmagic emitting a
+	// handful of benign warnings, with scans completing and producing valid
+	// data, was wrongly flagged broken) → 0.25.28 (bound the scancode per-repo
+	// failure capture with a head+tail buffer — the corrupt host libmagic made
+	// large repos like aws/aws-sdk-cpp emit 15+ GB of stderr that the unbounded
+	// bytes.Buffer held entirely in RAM; also surface a libmagic likely_cause
+	// hint on per-repo failures and name the libmagic-mgc package in the
+	// remediation text) → 0.25.29 (debounce the DB-health monitor: require
+	// dbHealthFailureThreshold=3 consecutive failed probes before pausing
+	// collection, so transient connect/SASL-auth timeouts under host CPU
+	// pressure — TLS+SCRAM handshakes exceeding the 5s connect deadline — stop
+	// flapping the fleet between "unavailable"/"back" on non-outages) →
+	// 0.25.30 (the pg_trgm GIN index idx_repos_owner_name_trgm is now
+	// warn-only like the extension it depends on: gate its creation on
+	// ginTrgmOpsVisible (pg_opclass_is_visible probe) so a registered-but-
+	// not-visible operator class — extension installed in a schema off the
+	// role's search_path, observed on kate 2026-06-13, SQLSTATE 42704 —
+	// skips-with-warning instead of failing migration fatally and blocking
+	// serve startup over a monitor-search perf optimization).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.23"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.23\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.30"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.30\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

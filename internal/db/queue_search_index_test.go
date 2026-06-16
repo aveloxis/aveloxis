@@ -48,6 +48,41 @@ func TestSchemaCreatesRepoNameTrigramIndex(t *testing.T) {
 	}
 }
 
+// TestTrigramIndexSchemaQualifiesOperatorClass pins the v0.25.30 fix:
+// the GIN index must reference gin_trgm_ops SCHEMA-QUALIFIED with the
+// schema discovered from the catalog, so it resolves regardless of the
+// session search_path. The extension can be registered in pg_extension
+// while its operator class lives in a schema not on the connecting
+// role's search_path (observed on kate 2026-06-13 with SQLSTATE 42704);
+// an unqualified reference fails there and used to fatally block serve
+// startup over a perf index. A future refactor that reverts to an
+// unqualified `gin_trgm_ops` would re-introduce that bug; this test
+// fails the build first.
+func TestTrigramIndexSchemaQualifiesOperatorClass(t *testing.T) {
+	src := mustReadStoreSource(t, "migrate.go")
+
+	if !strings.Contains(src, "func ginTrgmOpsSchema(") {
+		t.Error("migrate.go must define ginTrgmOpsSchema — the catalog probe that " +
+			"discovers which schema contains the gin_trgm_ops operator class.")
+	}
+	if !strings.Contains(src, "ginTrgmOpsSchema(ctx, pg)") {
+		t.Error("the idx_repos_owner_name_trgm creation must call ginTrgmOpsSchema(ctx, pg) " +
+			"so the operator class can be schema-qualified (and so an absent opclass " +
+			"skips-with-warning instead of failing migration fatally).")
+	}
+	// The opclass reference in the index DDL must be schema-qualified via
+	// the discovered schema, not a bare `gin_trgm_ops`.
+	if !strings.Contains(src, "%s.gin_trgm_ops") {
+		t.Error("the index DDL must schema-qualify the operator class with the " +
+			"discovered schema (an fmt verb followed by .gin_trgm_ops), so resolution " +
+			"does not depend on the session search_path.")
+	}
+	if !strings.Contains(src, "quoteIdent(schema)") {
+		t.Error("the discovered schema must be passed through quoteIdent before " +
+			"interpolation into the index DDL.")
+	}
+}
+
 // TestListQueuePageSearchUsesIndexedExpression pins the query side:
 // ListQueuePage's search must filter against the same `(repo_owner ||
 // '/' || repo_name)` expression the index covers, with `ILIKE

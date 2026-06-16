@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -341,21 +342,41 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// the extension already exists; CREATE INDEX IF NOT EXISTS is safe
 	// to run on every startup.
 	//
-	// pg_trgm is the only step that stays warn-only — the extension
-	// requires superuser/pg_create_extensions and is a perf optimization,
-	// not data integrity. The follow-up index creation is fatal because
-	// once the extension exists, the index DDL failing means a real
-	// schema problem.
+	// pg_trgm extension creation stays warn-only — it requires superuser/
+	// pg_create_extensions and is a perf optimization, not data integrity.
+	//
+	// The dependent GIN index is built with a SCHEMA-QUALIFIED operator
+	// class (v0.25.30). The earlier code emitted an unqualified
+	// `gin_trgm_ops`, whose resolution depends on the session search_path.
+	// The extension can be registered in pg_extension while its operator
+	// class lives in a schema (typically public) that is NOT on the
+	// connecting role's search_path — `CREATE EXTENSION IF NOT EXISTS`
+	// returns nil (no-op) but the index DDL then fails with SQLSTATE 42704
+	// ("operator class gin_trgm_ops does not exist for access method gin").
+	// Observed on kate 2026-06-13 with a search_path that excluded public.
+	// We discover the schema that actually contains gin_trgm_ops and
+	// qualify the reference (`<schema>.gin_trgm_ops`), so the critical
+	// monitor-search index builds on the same migrate run regardless of
+	// search_path — no ALTER ROLE, no extra privileges, no global side
+	// effects. When the opclass is found, an index-DDL failure is still
+	// surfaced as a fatal error (a genuine schema problem). When it is
+	// absent entirely (extension not actually installed), we warn-and-skip
+	// rather than block serve startup over a perf index.
 	if _, err := pg.pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm`); err != nil {
 		logger.Warn("failed to create pg_trgm extension; monitor search will use sequential scans",
 			"error", err,
 			"hint", "the extension requires superuser or membership in pg_create_extensions; check your role grants")
+	} else if schema := ginTrgmOpsSchema(ctx, pg); schema == "" {
+		logger.Warn("pg_trgm operator class gin_trgm_ops not found; skipping idx_repos_owner_name_trgm (monitor search will use sequential scans)",
+			"hint", "CREATE EXTENSION reported success but no gin_trgm_ops opclass exists in any schema; "+
+				"verify pg_trgm is actually installed in this database (\\dx in psql), then re-run migrate")
 	} else {
 		execCreateIndexConcurrently(ctx, pg, logger, &errs,
 			"aveloxis_data", "idx_repos_owner_name_trgm",
-			`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_owner_name_trgm
+			fmt.Sprintf(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_owner_name_trgm
 				ON aveloxis_data.repos
-				USING GIN ((repo_owner || '/' || repo_name) gin_trgm_ops)`)
+				USING GIN ((repo_owner || '/' || repo_name) %s.gin_trgm_ops)`,
+				quoteIdent(schema)))
 	}
 	// NOTE: the mailing-list projection's LINK-by-title fallback
 	// (`issue_title LIKE '%[KEY-N]%'`) does NOT need a trigram index — the query
@@ -1203,6 +1224,38 @@ const MigrateAdvisoryLockID int64 = 0x4156454C4F584953
 // The schema and indexName are passed separately (rather than parsing
 // from the SQL) because the helper needs them for the indisvalid
 // query.
+// ginTrgmOpsSchema returns the name of the schema that contains the
+// gin_trgm_ops operator class (for access method gin), or "" if no such
+// opclass exists in any schema. The idx_repos_owner_name_trgm DDL
+// schema-qualifies the operator class with this value so it resolves
+// regardless of the session search_path — pg_trgm's objects frequently
+// live in a schema (e.g. public) that isn't on the connecting role's
+// path (observed on kate 2026-06-13, SQLSTATE 42704). Returns "" on
+// query error or when the opclass is absent (extension not actually
+// installed), which the caller treats as warn-and-skip.
+func ginTrgmOpsSchema(ctx context.Context, pg *PostgresStore) string {
+	var schema string
+	err := pg.pool.QueryRow(ctx, `
+		SELECT n.nspname
+		FROM pg_opclass oc
+		JOIN pg_am am ON am.oid = oc.opcmethod
+		JOIN pg_namespace n ON n.oid = oc.opcnamespace
+		WHERE oc.opcname = 'gin_trgm_ops'
+		  AND am.amname = 'gin'
+		LIMIT 1`).Scan(&schema)
+	if err != nil {
+		return ""
+	}
+	return schema
+}
+
+// quoteIdent wraps a PostgreSQL identifier in double quotes, escaping any
+// embedded double quotes, so it is safe to interpolate into DDL. Used to
+// qualify the gin_trgm_ops operator class with its discovered schema.
+func quoteIdent(ident string) string {
+	return `"` + strings.ReplaceAll(ident, `"`, `""`) + `"`
+}
+
 func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, schema, indexName, sql string) {
 	var isInvalid bool
 	err := pg.pool.QueryRow(ctx, `

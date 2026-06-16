@@ -656,6 +656,168 @@ If you see this error, it indicates a code path that bypasses sanitization. Repo
 
 ---
 
+## Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)
+
+**Symptoms**
+
+- The number of scanned repos increments extremely slowly; long (multi-hour) stretches with no `running ScanCode` log lines.
+- `aveloxis.log` shows `scancode runOne: scancode subprocess failed ... error="signal: killed"` with enormous `stderr_bytes` values (gigabytes), and `wall-clock timeout fired ... using stretched timeout`.
+- The per-repo stderr files under your scancode clone dir (e.g. `/mnt/spinner/scancode/repo_*_stderr.log`) are **gigabytes** each (15+ GB observed) and consist almost entirely of:
+  ```
+  /usr/share/misc/magic.mgc, 3673: Warning: offset `' invalid
+  ```
+  Often the lines look garbled/char-interleaved — that's multiple `scancode --processes` worker subprocesses each loading the corrupt DB and writing to the shared stderr pipe at once.
+- The failures cluster on **large** repositories (AWS/Azure SDKs, game engines, monorepos) while small repos succeed — this is the most confusing symptom, but it's **not** a per-repo or per-file problem. Every scan emits the spam; only the large repos emit *enough* of it (per file × per process) to blow past the wall-clock timeout. v0.25.28+ surfaces this directly: the failure log line carries a `likely_cause` field naming the corrupt host libmagic.
+- Startup logs `scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed` (v0.25.x+), and:
+  ```sql
+  SELECT status, status_detail FROM aveloxis_ops.aveloxis_status WHERE status_name='scancode';
+  -- status = 'broken'  (status_detail names the libmagic fix)
+  ```
+
+**Cause**
+
+The host's system `libmagic` database is corrupt or incompatible. On Linux that's `/usr/share/misc/magic.mgc` (seen on Ubuntu 24.04 after `file`/`libmagic1`/`libmagic-mgc` updates — the warning "offsets" are often garbage strings from unrelated files, indicating the `.mgc` was overwritten or is version-mismatched); on macOS it's the Homebrew-installed magic file. scancode's type detector (`typecode` → `python-magic` → `libmagic`) re-emits an `offset invalid` warning per bad magic-DB entry, per process, per file — 15+ GB of stderr for a large repo. The scan bogs down so badly it never finishes within the wall-clock timeout, gets `SIGKILL`ed, and (v0.23.8 adaptive timeout) is retried with a **stretched** 4h→8h→16h→24h timeout — so a handful of doomed large repos wedge every worker slot. `--quiet` does **not** suppress these (they come from the C library's stderr, not scancode's Python logging).
+
+> **Note on `magic.mgc` packaging (Linux).** On Debian/Ubuntu the file `/usr/share/misc/magic.mgc` is shipped by the **`libmagic-mgc`** package — *not* `libmagic1` or `file`. Reinstalling only the latter two leaves a corrupt `.mgc` in place. Always include `libmagic-mgc` in the reinstall.
+
+**Fix**
+
+```bash
+# 1. Make scancode use its bundled libmagic instead of the broken system one.
+#    This is the primary, OS-independent fix:
+aveloxis upgrade-tools           # injects typecode-libmagic into the scancode venv
+
+# (Fallback — repair the OS library/package, depending on platform.)
+#   Linux:  sudo apt-get install --reinstall libmagic-mgc libmagic1 file
+#   macOS:  brew reinstall libmagic
+
+# 2. Reclaim disk from the warning-spam stderr files. (v0.25.28+ caps each new
+#    file at ~1.25 MB head+tail, but pre-fix files can be many GB each.)
+rm /mnt/spinner/scancode/repo_*_stderr.log   # adjust path to your scancode_clone_dir
+
+# 3. Restart serve. The startup preflight should now log "scancode preflight: healthy"
+#    and aveloxis_status.status flip to 'ok'.
+aveloxis stop all && aveloxis start all
+```
+
+> **v0.25.28** bounds the per-repo failure capture to a head+tail buffer (~1.25 MB), so even while the host libmagic is still broken a failing scan can no longer buffer 15 GB in RAM or write a 15 GB file. This is a safety net, not the fix — repair the host libmagic so the large repos actually scan.
+
+The **startup preflight** (added v0.25.x) runs one scancode invocation against a tiny input on every `aveloxis serve` start, detects this exact condition, logs it prominently, and records it in `aveloxis_ops.aveloxis_status` — so you find out at startup instead of after the fleet has crawled for days. The detection is cross-OS: it matches the libmagic corruption fingerprint (`magic` … `Warning` … `offset` … `invalid`) regardless of platform, plus a generic "same line repeated ≥50×" spam catch, and the recorded `status_detail` names the right remediation for the host OS (`brew` on macOS, `apt-get` on Linux). See [ScanCode Worker §13](../architecture/scancode.md).
+
+---
+
+## PostgreSQL restarts nightly — `aveloxis.log` floods with "database system is shutting down"
+
+**Symptoms**
+
+- `aveloxis.log` contains huge bursts of:
+  ```
+  server error: FATAL: the database system is shutting down (SQLSTATE 57P03)
+  ```
+  and/or `failed to connect to ... server error: FATAL: the database system is starting up`, often hundreds of thousands of lines (the log balloons to hundreds of MB).
+- Frequently followed by a burst of contributor **deadlocks** (`SQLSTATE 40P01`) as every worker reconnects at once and contends.
+- In the PostgreSQL server log (`postgresql-17-main.log`), at roughly the same time each night:
+  ```
+  LOG:  received fast shutdown request
+  ...
+  LOG:  database system is ready to accept connections   (a minute or few later)
+  LOG:  database system was shut down at ...              (clean — NOT crash recovery)
+  ```
+
+**Cause**
+
+These are **clean, deliberate restarts of the PostgreSQL service by the host** — not a crash, not OOM, and (when the version line is unchanged, e.g. `starting PostgreSQL 17.10` on both sides) not a Postgres upgrade. PostgreSQL does not record *who* sent the shutdown signal, so identify the trigger on the box:
+
+```bash
+# What actually stopped/started postgresql, and when:
+sudo journalctl -u postgresql@17-main --since "yesterday" | grep -iE "stop|start|restart"
+# Scheduled jobs that could be doing it:
+systemctl list-timers --all | grep -iE "apt|postgres|backup"
+sudo crontab -l; ls -la /etc/cron.d /etc/cron.daily
+# Ubuntu auto-updates + needrestart (a common culprit — needrestart restarts
+# services whose shared libs, e.g. openssl/libc, were patched, WITHOUT changing
+# postgres's own version):
+cat /var/log/unattended-upgrades/unattended-upgrades.log
+grep -i restart /etc/needrestart/needrestart.conf
+```
+
+Typical culprits on Ubuntu 24.04: `unattended-upgrades` + `needrestart` restarting the service after a security update (the confirmed cause on the chaoss.tv host — `apt-daily-upgrade.timer` fires ~06:1x UTC, upgrades `systemd` → a `daemon-reexec`, and `needrestart` then restarts every service linked to the patched libraries, including `postgresql@17-main`), or a custom backup/maintenance cron that does `systemctl restart postgresql`.
+
+**Fix (on the host)**
+
+Pick whichever matches your trigger:
+
+```bash
+# A. Stop needrestart from auto-restarting services (most common cause).
+#    List-only mode: needrestart reports what *would* restart but never does it,
+#    so a library update no longer bounces postgresql under a live fleet.
+sudo sed -i "s/^#\?\$nrconf{restart}.*/\$nrconf{restart} = 'l';/" /etc/needrestart/needrestart.conf
+#    (or, to keep auto-restart for everything EXCEPT postgresql, add a blacklist
+#     entry instead:  $nrconf{override_rc} = { qr(^postgresql) => 0 };  )
+
+# B. Or move the unattended-upgrade window to a true idle time (default ~06:00 UTC):
+sudo systemctl edit apt-daily-upgrade.timer
+#    [Timer]
+#    OnCalendar=
+#    OnCalendar=*-*-* 09:00      # whatever is genuinely low-traffic for your fleet
+#    RandomizedDelaySec=30m
+
+# C. Or, if you don't want unattended security upgrades restarting anything at all:
+sudo dpkg-reconfigure -plow unattended-upgrades   # disable, and patch on your own schedule
+
+# Verify nothing restarts postgresql automatically afterward:
+sudo needrestart -r l        # 'l' = list only; should NOT show postgresql being restarted
+systemctl list-timers --all  # confirm the apt-daily-upgrade window moved
+```
+
+A custom backup cron doing `systemctl restart postgresql` (found via `crontab -l` / `/etc/cron.*`) should either use online backup (`pg_basebackup` / WAL archiving — no restart needed) or run in a maintenance window you've coordinated with collection.
+
+**Mitigation on the Aveloxis side (v0.25.25+)**
+
+`aveloxis serve` runs a **DB-health monitor** that probes the database every 5 s. When a probe fails it sets `dbHealthy = false`, and `fillWorkerSlots` stops claiming new work — so collection **pauses** for the duration of the restart instead of hammering the dying/recovering server. You'll see one line, not a storm:
+
+```
+level=WARN msg="database unavailable — pausing new collection until it returns"
+level=WARN msg="collection still paused — database unavailable" unavailable_for=...   (once/min)
+level=INFO  msg="database back — resuming collection" unavailable_for=...
+```
+
+and the outage is recorded in `aveloxis_ops.aveloxis_status` (`status_name='database'`; `status='unavailable'` during the outage where writable, `status='ok'` with the recovery duration in `status_detail` afterward). In-flight jobs running at the instant of the restart still error and re-queue (that's expected), but no *new* work is dispatched into the dead window, which also avoids the reconnect deadlock pile-up.
+
+Still fix the host trigger (above) — pausing is graceful degradation, not a substitute for not restarting Postgres under a live fleet. The pre-v0.25.25 behavior (no backoff → `57P03` storm) is what bloats the log; if you're on an older build, truncate on restart (`aveloxis stop all && : > ~/.aveloxis/aveloxis.log && aveloxis start all`).
+
+---
+
+## Brief "database unavailable" blips that aren't real outages (connect/SASL-auth timeouts)
+
+**Symptoms**
+
+- Short `database unavailable — pausing` → `database back — resuming` pairs with `unavailable_for=0s..19s`, several times a day, with **no** `FATAL: the database system is shutting down` (`57P03`) — i.e. Postgres never actually restarted.
+- The error is in the **connection-establishment** phase, not a query:
+  ```
+  failed SASL auth: timeout: context deadline exceeded
+  dial error:       timeout: context deadline exceeded
+  ```
+- Worker paths (`UpdateRepoMetadata`, `failed to insert libyear`, `failed to upsert commit`, `heartbeat failed`, mailing-list `claim next list`) all WARN together at the same instant.
+
+**Cause**
+
+This is **not** an outage and **not** connection-limit saturation (check: `SELECT count(*) FROM pg_stat_activity` vs `max_connections` — typically tiny, e.g. 48/500). It's transient **connection-establishment timeout under host CPU pressure**. With `ssl=on` and `password_encryption=scram-sha-256`, every *new* connection pays a TLS handshake + a SCRAM (PBKDF2) auth handshake + a backend fork — all CPU-bound. When the host CPU spikes (a scancode storm, a matview rebuild, another tenant), those handshakes briefly exceed pgx's 5 s connect deadline. Existing pooled connections are fine; only *cold opens* fail. A low pool `MinConns` makes it worse: after a quiet spell the pool holds few warm connections, so the next burst must cold-open many at once — exactly when the CPU is busy.
+
+**What v0.25.29 does**
+
+The DB-health monitor now **debounces**: it requires `dbHealthFailureThreshold` (3) *consecutive* failed probes — ~15 s of sustained unreachability — before pausing. A single CPU-pressure blip no longer flaps the fleet between "unavailable"/"back". A real restart (down for minutes) still trips it. Sub-threshold blips are logged at DEBUG (`database probe failed transiently — not pausing`), quiet at the default INFO level.
+
+**Reducing the blips at the root**
+
+The debounce silences the *false pause*; to cut the underlying connect-timeout WARNs:
+
+1. **Reduce host CPU pressure.** A corrupt-libmagic scancode storm (see above) or a heavy matview rebuild competing with the postmaster are common triggers. Fixing those removes most blips.
+2. **Keep more warm connections** so bursts don't cold-open under load: raise the pool `MinConns` (default 2). On a busy `serve` (tens of active connections is normal), a `MinConns` closer to your steady-state concurrency keeps the hot set established. With `max_connections=500` and a handful of aveloxis processes, there's ample headroom.
+3. **Confirm it's CPU, not limits:** if `pg_stat_activity` is near `max_connections`, that's a *different* problem (raise the limit or reduce pool sizes); if it's well under (the usual case here), it's CPU/handshake latency.
+
+---
+
 ## Restart procedure
 
 The standard restart procedure for any issue:

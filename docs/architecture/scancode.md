@@ -201,6 +201,8 @@ The data flows from `aveloxis_data.repos.scancode_last_run` (written by `MarkSca
 | Log line | When it fires | Meaning |
 |---|---|---|
 | `scancode worker started workers=N start_interval=...` | Once at startup | The pool is alive with N runners. If absent, scancode is disabled (binary not installed or `mkdir scancode_clone_dir` failed). |
+| `scancode preflight: healthy` | Once at startup | The §13 health check passed — the toolchain works. |
+| `scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed` | Once at startup (ERROR) | The §13 health check detected a systemic failure (corrupt libmagic, a repeated error, or no JSON). Read the `detail` field; `aveloxis_ops.aveloxis_status` is also set to `broken`. |
 | `scancode binary not installed; ScancodeWorker disabled` | Startup | Install with `pipx install scancode-toolkit` then restart serve. |
 | `scancode recoverOrphans: examining locked rows count=...` | Startup | Recovery pass found stale locks. Followed by per-row decisions. |
 | `scancode recover: reboot survivor — clearing lock` | Startup | Case 1 of §5. |
@@ -245,3 +247,41 @@ The v0.21.0 work added these tests as architectural pins. A future refactor that
 | `TestSchedulerRunStartsScancodeWorker` | Scheduler spawns the worker. |
 | `TestMainWiresScancodeConfig` | `cmd/aveloxis/main.go` reads the config knobs. |
 | `TestScancodeLicensesEndpointReturnsFreshness` | API surfaces the freshness signal. |
+
+## 13. Startup health preflight + `aveloxis_ops.aveloxis_status`
+
+A *system-level* scancode failure — one where every scan is doomed regardless of the repo — used to be invisible: the fleet just degraded. The 2026-06-09 `aveloxis_large` incident was the motivating case. On that Ubuntu 24.04 host the system `libmagic` database (`/usr/share/misc/magic.mgc`) was corrupt, so scancode (via `typecode` → `python-magic` → `libmagic`) emitted `Warning: offset ... invalid` at enormous volume — **14+ GB of stderr per large repo** — bogging scans down until the wall-clock timeout killed them. With the adaptive timeout stretching doomed scans to 16–24 h, a handful of repos wedged all worker slots and the scanned-repo count crawled.
+
+### The preflight
+
+On startup (`ScancodeWorker.Run`, before the dispatcher claims any work), the worker runs **one** scancode invocation against a tiny synthetic input and classifies the result:
+
+- **Bounded and safe.** 90-second wall-clock timeout, process-group kill, and a capped 1 MB stderr capture — the health check itself can never hang the worker or buffer gigabytes (the very failure it detects).
+- **`classifyScancodeHealth`** maps the outcome to a status:
+  - **`broken`** if stderr carries the libmagic corruption fingerprint **in volume** — either the compiled-DB name `magic.mgc`, or the OS-independent `magic` … `Warning` … `offset` … `invalid` shape that libmagic's C parser emits on Linux **and** macOS — repeated ≥ 50× (the wedging bug emits one warning per bad magic-DB entry at load time, saturating stderr; a repaired libmagic emitting a handful of benign warnings while scans complete is **not** flagged), **or** any single line repeats ≥ 50× (generic "the toolchain is spamming" signal), **or** no valid JSON was produced. Volume, not mere presence, is the signal — see the 2026-06-10 false-positive note below.
+  - **`not_installed`** if the `scancode` binary isn't on `PATH`.
+  - **`ok`** otherwise.
+- On anything other than `ok` it logs **`ERROR "scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed"`** with a `detail` string that names the remediation.
+
+It is **awareness only** — the preflight does **not** disable scancode (a deliberate scope decision; auto-pause is a possible follow-up). It records, logs, and lets the worker proceed.
+
+> **Volume, not presence (2026-06-10).** An early version of the libmagic check flagged `broken` on the mere *presence* of an `offset invalid` warning. That false-positives a working install: a repaired libmagic (e.g. after `aveloxis upgrade-tools` injects typecode-libmagic) can emit a *handful* of benign warnings while scans complete normally and produce valid data. The wedging bug is different in **kind** — the corrupt DB emits one warning per bad entry at load time, repeating the fingerprint thousands of times (it saturates the preflight's 1 MB stderr cap). The check now requires the fingerprint to repeat past the systemic-spam threshold (≥ 50), so a few incidental warnings no longer read as broken.
+
+### The status table
+
+The outcome is upserted into `aveloxis_ops.aveloxis_status` (one row per subsystem, keyed by `status_name`; see [schema.md](../schema.md)):
+
+```sql
+SELECT status_name, status, status_detail, tool_version, data_collection_date
+FROM aveloxis_ops.aveloxis_status WHERE status_name = 'scancode';
+```
+
+A `broken` row's `status_detail` for the libmagic case reads, in part: *"system libmagic magic database appears corrupt … run `aveloxis upgrade-tools` to inject typecode-libmagic (works on any OS), …"* followed by an OS-aware reinstall hint — `brew reinstall libmagic` on macOS, `apt-get install --reinstall libmagic-mgc libmagic1 file` on Linux (chosen via `runtime.GOOS`; `libmagic-mgc` is the package that actually ships `/usr/share/misc/magic.mgc` on Debian/Ubuntu). The table is generic by design — future subsystems record their own health under their own `status_name`, and the intent is to surface it to the operator (UI/API) over time.
+
+### Per-repo failure capture is bounded (v0.25.28)
+
+The startup preflight catches a *systemic* libmagic failure once. But even with a broken host libmagic, individual large repos still get claimed and fail. Pre-v0.25.28, `runOne` captured the full subprocess stderr in an **unbounded `bytes.Buffer`** and wrote it to a per-repo `repo_<id>_stderr.log` on failure. On 2026-06-11 a corrupt host `magic.mgc` made large repos (aws/aws-sdk-cpp, Azure/azure-rest-api-specs, aws/lumberyard) emit **15+ GB** of warning spam — buffered entirely in RAM (a multi-GB heap spike per failing repo) before being written as a 15 GB file, filling the scancode clone volume.
+
+v0.25.28 replaces that buffer with a bounded `headTailBuffer` (`internal/collector/tail_buffer.go`): the first 1 MB (failure onset) plus the last 256 KB (exit context), with an elision marker reporting the true total byte count. RAM and disk are now fixed regardless of how much the subprocess spews. The failure log line also carries a `likely_cause` field when the captured stderr is libmagic-dominated, so a flood of large-repo failures reads as "the host magic DB is corrupt" rather than "these specific repos are broken."
+
+**Code:** `internal/collector/scancode_preflight.go` (preflight + `classifyScancodeHealth`), `internal/collector/scancode_worker.go` + `internal/collector/tail_buffer.go` (`headTailBuffer`), `internal/db/aveloxis_status_store.go` (`SetAveloxisStatus` / `GetAveloxisStatus`), `internal/db/schema.sql` (table).

@@ -1,3 +1,4 @@
+syslog
 *.json
 *code-workspace
 db.config.json

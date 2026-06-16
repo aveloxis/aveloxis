@@ -120,6 +120,14 @@ type Scheduler struct {
 	// count drops below the ShouldStartMatviewRebuild threshold — see
 	// matview_gate.go for the design rationale.
 	matviewPending atomic.Bool
+
+	// dbHealthy gates new collection on database availability. The
+	// runDBHealthMonitor goroutine probes the DB and flips this; fillWorkerSlots
+	// refuses to claim new work while it's false. This turns a Postgres restart
+	// (the nightly unattended-upgrades/needrestart event) from a 500K-line
+	// connection-error storm + reconnect deadlock pile-up into a clean
+	// pause/resume. Starts true (the DB was reachable at startup).
+	dbHealthy atomic.Bool
 }
 
 // New creates a scheduler.
@@ -432,6 +440,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// where it left off.
 	go s.runRepoMetadataBackfill(ctx)
 
+	// DB-health monitor: probes the database and pauses collection while it's
+	// unavailable (the nightly unattended-upgrades Postgres restart). The DB
+	// was reachable at startup (migrate succeeded), so start healthy.
+	s.dbHealthy.Store(true)
+	go s.runDBHealthMonitor(ctx)
+
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
 	// this avoids a visible delay before collection begins.
@@ -673,6 +687,13 @@ func (s *Scheduler) runAffiliationsPopulation(ctx context.Context) {
 // runs. Existing in-flight jobs finish normally; this only gates claims.
 func (s *Scheduler) fillWorkerSlots(ctx context.Context, sem chan struct{}) {
 	if MatviewRebuildActive.Load() {
+		return
+	}
+	// Pause claiming new work while the database is unavailable (e.g. the
+	// nightly Postgres restart). The DB-health monitor resumes us when the
+	// server returns. Without this, every poll tick would dequeue → fail →
+	// log, and the reconnect would trigger a contributor-deadlock storm.
+	if !s.dbHealthy.Load() {
 		return
 	}
 	claimed := 0

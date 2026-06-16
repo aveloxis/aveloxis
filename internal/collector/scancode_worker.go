@@ -33,7 +33,6 @@
 package collector
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -42,6 +41,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -51,10 +51,22 @@ import (
 )
 
 // scancodeStderrTailBytes is the cap on how much subprocess output
-// we keep in memory and log on failure. Big enough to surface a
+// we keep in memory for the LOG LINE tail. Big enough to surface a
 // meaningful traceback or error message, small enough that 100+
 // concurrent failures don't pressure the heap.
 const scancodeStderrTailBytes = 4096
+
+// Caps on the per-repo failure file (written to disk on a failed scan).
+// v0.25.28: replaces the pre-fix unbounded bytes.Buffer that buffered the
+// ENTIRE stream in RAM — a corrupt host libmagic made a large repo emit 15+ GB
+// of warning spam, producing a multi-GB heap spike per failing repo AND a
+// 15 GB on-disk file. head shows the failure onset; tail shows the final
+// error / exit context. 1 MB + 256 KB retains all diagnostic value at a fixed
+// cost regardless of how much the subprocess spews.
+const (
+	scancodeFailHeadBytes = 1 << 20   // 1 MB
+	scancodeFailTailBytes = 256 << 10 // 256 KB
+)
 
 // v0.23.3: wall-clock timeouts on subprocess execution. These
 // bound how long a single worker slot can be consumed by one
@@ -206,6 +218,9 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	if _, err := exec.LookPath("scancode"); err != nil {
 		w.logger.Info("scancode binary not installed; ScancodeWorker disabled",
 			"install_hint", "pipx install scancode-toolkit")
+		// Record not-installed so the operator can see why scancode produces no data.
+		st, detail := classifyScancodeHealth(false, runtime.GOOS, "", false)
+		w.recordScancodeStatus(ctx, st, detail)
 		return
 	}
 
@@ -221,6 +236,12 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 		"cadence", w.cadence.String(),
 		"clone_dir", w.cloneDir,
 		"shutdown_grace", w.shutdownGrace.String())
+
+	// v0.25.x scancode health preflight: one scan of a tiny synthetic input to
+	// detect a system-level toolchain failure (corrupt libmagic, etc.) and
+	// record it in aveloxis_ops.aveloxis_status before the dispatcher starts.
+	// Awareness only — it does not disable scancode.
+	w.preflight(ctx)
 
 	// One-shot recovery pass before the dispatcher starts claiming
 	// new work. This is what makes graceful shutdown + kill -9
@@ -548,20 +569,22 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		tempDir,
 	)
 
-	// Capture stdout + stderr. v0.23.3: we now keep BOTH a bounded
-	// ring buffer (the tail, for quick triage in the log line) AND
-	// a full bytes.Buffer (for the per-repo stderr file written on
-	// failure). io.MultiWriter fans the stream into both. Pre-fix
-	// the tail-only approach was almost always dominated by 10+
-	// repetitions of the libmagic warning, hiding the actual error
-	// message that scrolled out of the 4 KB window. The operator
-	// had to grep the log every time to ask "what actually went
-	// wrong"; with the per-repo file the answer is right there at
+	// Capture stdout + stderr. v0.23.3: we keep BOTH a bounded ring
+	// buffer (the tail, for quick triage in the log line) AND a
+	// bounded head+tail buffer (for the per-repo stderr file written
+	// on failure — v0.25.28 made this bounded; it was an unbounded
+	// bytes.Buffer that held 15+ GB in RAM on a corrupt-libmagic repo).
+	// io.MultiWriter fans the stream into both. Pre-fix the tail-only
+	// approach was almost always dominated by 10+ repetitions of the
+	// libmagic warning, hiding the actual error message that scrolled
+	// out of the 4 KB window. The operator had to grep the log every
+	// time to ask "what actually went wrong"; with the per-repo file
+	// the answer (head: onset; tail: exit context) is right there at
 	// /tmp/aveloxis-scancode/repo_<id>_stderr.log.
 	stderrTail := &tailBuffer{cap: scancodeStderrTailBytes}
 	stdoutTail := &tailBuffer{cap: scancodeStderrTailBytes}
-	stderrFull := &bytes.Buffer{}
-	stdoutFull := &bytes.Buffer{}
+	stderrFull := &headTailBuffer{headCap: scancodeFailHeadBytes, tailCap: scancodeFailTailBytes}
+	stdoutFull := &headTailBuffer{headCap: scancodeFailHeadBytes, tailCap: scancodeFailTailBytes}
 	cmd.Stderr = io.MultiWriter(stderrTail, stderrFull)
 	cmd.Stdout = io.MultiWriter(stdoutTail, stdoutFull)
 
@@ -643,15 +666,18 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		"path", tempDir, "pid", pid)
 
 	if err := cmd.Wait(); err != nil {
-		// v0.23.3: write the FULL stderr to a per-repo file. Operator
-		// can `less /tmp/aveloxis-scancode/repo_<id>_stderr.log` to
-		// see the entire output, not just the 4 KB tail dominated by
-		// libmagic preamble. Best-effort: if the file write fails,
-		// the log line's stderr_tail is the fallback.
+		// v0.23.3: write a per-repo stderr file so the operator can
+		// `less /tmp/aveloxis-scancode/repo_<id>_stderr.log` instead of
+		// reading only the 4 KB log-line tail. v0.25.28: the capture is now
+		// bounded (head + tail) — a corrupt host libmagic can make a large
+		// repo emit 15+ GB, which the pre-fix unbounded bytes.Buffer held
+		// entirely in RAM. Best-effort: if the file write fails, the log
+		// line's stderr_tail is the fallback.
+		stderrBytes := stderrFull.Bytes()
 		stderrPath := filepath.Join(w.cloneDir, fmt.Sprintf("repo_%d_stderr.log", job.RepoID))
-		stderrWriteErr := os.WriteFile(stderrPath, stderrFull.Bytes(), 0o644)
+		stderrWriteErr := os.WriteFile(stderrPath, stderrBytes, 0o644)
 		stdoutPath := ""
-		if stdoutFull.Len() > 0 {
+		if stdoutFull.Total() > 0 {
 			stdoutPath = filepath.Join(w.cloneDir, fmt.Sprintf("repo_%d_stdout.log", job.RepoID))
 			_ = os.WriteFile(stdoutPath, stdoutFull.Bytes(), 0o644)
 		}
@@ -659,8 +685,19 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
 			"error", err, "pid", pid,
 			"full_stderr_at", stderrPath,
-			"stderr_bytes", stderrFull.Len(),
+			"stderr_bytes", stderrFull.Total(),
 			"stderr_tail", stderrTail.String(),
+		}
+		// v0.25.28: when the captured stderr is dominated by the libmagic
+		// corruption fingerprint, say so explicitly. This is NOT a per-repo or
+		// per-file problem — it's the host's magic database, the same condition
+		// the startup preflight records in aveloxis_ops.aveloxis_status. Surfacing
+		// it on the per-repo failure removes the "why does THIS repo choke?"
+		// confusion (answer: it's large enough that the per-file warning spam
+		// blows past the wall-clock timeout).
+		if countLibmagicWarnings(string(stderrBytes)) >= scancodePreflightRepeatN {
+			logArgs = append(logArgs,
+				"likely_cause", "corrupt host libmagic (offset-invalid warning spam) — not a per-repo issue; see aveloxis_ops.aveloxis_status('scancode') and the scancode preflight; repair the host with 'apt-get install --reinstall libmagic-mgc libmagic1 file' or 'aveloxis upgrade-tools'")
 		}
 		if stdoutPath != "" {
 			logArgs = append(logArgs, "full_stdout_at", stdoutPath)

@@ -240,6 +240,17 @@ SELECT COUNT(*) AS staged_rows
 FROM aveloxis_ops.staging;
 ```
 
+## Subsystem health (`aveloxis_status`)
+
+`aveloxis_ops.aveloxis_status` records system-level health per subsystem — set by startup preflights so a failure that means a subsystem "will never work until fixed" is visible instead of silently degrading. The first subsystem is **scancode** (a corrupt host libmagic that wedges every scan):
+
+```sql
+SELECT status_name, status, status_detail, data_collection_date
+FROM aveloxis_ops.aveloxis_status;
+```
+
+A `status = 'broken'` row needs operator attention — `status_detail` names the fix. For the scancode/libmagic case, see [Troubleshooting → Scancode produces no results](troubleshooting.md) and [ScanCode Worker §13](../architecture/scancode.md).
+
 ---
 
 ## Next steps

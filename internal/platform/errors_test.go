@@ -142,12 +142,13 @@ type customClassifiedError struct {
 func (customClassifiedError) Error() string       { return "custom" }
 func (c customClassifiedError) Class() ErrorClass { return c.class }
 
-// TestGet_401ReturnsClassAuth is the HTTP integration point: a 401 from
-// GitHub must surface as a ClassAuth-classifiable error. Today httpclient
-// invalidates the key and loops, so 401 typically never escapes. But when
-// ALL keys are invalidated it eventually bubbles up via "all API keys have
-// been invalidated" — that error should classify correctly.
-func TestGet_401ReturnsClassAuth(t *testing.T) {
+// TestGet_Persistent401QuarantinesNotCrashes pins the post-2026-06-17 contract:
+// a persistent 401 must NOT escalate to a ClassAuth crash. The key is
+// quarantined after consecutive failures and Get then blocks waiting for the
+// key to recover, so with a bounded context it returns a transient
+// (context-deadline) error — never ErrAllKeysInvalidated / ClassAuth. This is
+// what stops the scheduler from crash-looping during a GitHub auth incident.
+func TestGet_Persistent401QuarantinesNotCrashes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -157,15 +158,22 @@ func TestGet_401ReturnsClassAuth(t *testing.T) {
 	keys := NewKeyPool([]string{"bad-token"}, logger)
 	client := NewHTTPClient(server.URL, keys, logger, AuthGitHub)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	_, err := client.Get(ctx, "/repos/o/r")
 	if err == nil {
-		t.Fatal("expected error — all keys invalidated by 401")
+		t.Fatal("expected error — persistent 401 should eventually time out waiting for a usable key")
 	}
-	if got := ClassifyError(err); got != ClassAuth {
-		t.Errorf("error from all-keys-invalidated should classify as ClassAuth, got %v (err=%v)", got, err)
+	if got := ClassifyError(err); got == ClassAuth {
+		t.Errorf("persistent 401 must NOT classify as ClassAuth (that crashed the scheduler); got %v (err=%v)", got, err)
+	}
+	// The key must be quarantined (recoverable), never permanently invalidated.
+	if keys.keys[0].Invalid {
+		t.Error("a transient 401 wave permanently invalidated the key; it must only be quarantined")
+	}
+	if keys.keys[0].quarantineCount == 0 {
+		t.Error("expected the key to be quarantined after consecutive 401s")
 	}
 }
 

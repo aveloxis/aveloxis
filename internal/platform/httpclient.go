@@ -427,9 +427,14 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			// which is fine because maxRedirectHops=5 < maxRetries=10.)
 			continue
 		case resp.StatusCode == http.StatusUnauthorized:
-			// 401 = bad credentials. Permanently invalidate this key.
+			// 401 = bad credentials — but GitHub's auth backend returns this
+			// transiently for valid tokens during incidents, so a single 401
+			// must NOT kill the key. RecordAuthFailure quarantines only after
+			// several consecutive failures (any success resets the count), and
+			// even then the key auto-recovers after a cooldown. Either way we
+			// just rotate to the next key on the next loop iteration.
 			resp.Body.Close()
-			c.keys.InvalidateKey(key)
+			c.keys.RecordAuthFailure(key)
 			continue
 		case resp.StatusCode == http.StatusBadRequest:
 			// 400 = malformed request. GitHub returns HTML "Whoa there!" for

@@ -19,7 +19,24 @@ type APIKey struct {
 	Token     string
 	ResetAt   time.Time
 	Remaining int
-	Invalid   bool
+	Invalid   bool // legacy permanent-invalid backstop; the 401 path now quarantines instead
+
+	// authStrikes counts CONSECUTIVE 401 responses on this key. Any successful
+	// response resets it to 0. A single 401 — common when GitHub's auth
+	// backend has a transient hiccup and returns "Bad credentials" for a
+	// perfectly valid token — must NOT disable the key. See RecordAuthFailure.
+	authStrikes int
+	// quarantineUntil is the wall-clock time before which this key is skipped
+	// by GetKey. Set when authStrikes crosses maxAuthStrikes. The key recovers
+	// automatically once the cooldown elapses — no operator action or process
+	// restart required.
+	quarantineUntil time.Time
+	// quarantineCount is the lifetime number of times this key has been
+	// quarantined. It drives the exponential cooldown and the escalation to
+	// ERROR-level logging for a token that keeps failing (likely genuinely
+	// revoked). It is NOT reset on success — a flaky token earns progressively
+	// longer cooldowns.
+	quarantineCount int
 }
 
 // KeyPool manages a set of API keys with round-robin rotation.

@@ -19,7 +19,24 @@ type APIKey struct {
 	Token     string
 	ResetAt   time.Time
 	Remaining int
-	Invalid   bool
+	Invalid   bool // legacy permanent-invalid backstop; the 401 path now quarantines instead
+
+	// authStrikes counts CONSECUTIVE 401 responses on this key. Any successful
+	// response resets it to 0. A single 401 — common when GitHub's auth
+	// backend has a transient hiccup and returns "Bad credentials" for a
+	// perfectly valid token — must NOT disable the key. See RecordAuthFailure.
+	authStrikes int
+	// quarantineUntil is the wall-clock time before which this key is skipped
+	// by GetKey. Set when authStrikes crosses maxAuthStrikes. The key recovers
+	// automatically once the cooldown elapses — no operator action or process
+	// restart required.
+	quarantineUntil time.Time
+	// quarantineCount is the lifetime number of times this key has been
+	// quarantined. It drives the exponential cooldown and the escalation to
+	// ERROR-level logging for a token that keeps failing (likely genuinely
+	// revoked). It is NOT reset on success — a flaky token earns progressively
+	// longer cooldowns.
+	quarantineCount int
 }
 
 // KeyPool manages a set of API keys with round-robin rotation.
@@ -38,6 +55,30 @@ type KeyPool struct {
 // margin. With concurrent workers, a small buffer prevents 403s from workers
 // that checked out a key before the remaining count was updated.
 const DefaultBuffer = 15
+
+const (
+	// maxAuthStrikes is the number of CONSECUTIVE 401 responses a key must
+	// accumulate before it is quarantined. GitHub's auth backend intermittently
+	// returns "Bad credentials" for valid tokens during incidents; requiring
+	// several in a row (any success resets the count) prevents a transient
+	// 401 wave from permanently killing the whole pool — the failure mode that
+	// took aveloxis_large down repeatedly starting 2026-06-17.
+	maxAuthStrikes = 3
+
+	// authQuarantineBase and authQuarantineMax bound the exponential cooldown a
+	// quarantined key sits out before GetKey hands it out again: base, 2×base,
+	// 4×base, … capped at max. Short enough that a transient GitHub auth
+	// incident self-heals within minutes; long enough that a genuinely revoked
+	// token doesn't thrash.
+	authQuarantineBase = 1 * time.Minute
+	authQuarantineMax  = 30 * time.Minute
+
+	// authQuarantineEscalate is the quarantine count at which logging escalates
+	// from WARN (transient incident, will recover) to ERROR (this token has
+	// failed auth this many times — probably actually revoked; operator should
+	// verify it).
+	authQuarantineEscalate = 5
+)
 
 // NewKeyPool creates a pool from a list of API tokens.
 func NewKeyPool(tokens []string, logger *slog.Logger) *KeyPool {
@@ -83,50 +124,62 @@ func (kp *KeyPool) GetKey(ctx context.Context) (*APIKey, error) {
 			}
 		}
 
-		// Round-robin through all keys to find one with remaining > buffer.
+		// Round-robin through all keys to find one that is usable now: not
+		// permanently invalid, not currently quarantined for auth failures,
+		// and with rate-limit headroom above the buffer.
 		n := len(kp.keys)
 		for i := 0; i < n; i++ {
 			idx := (kp.rrIndex + i) % n
 			k := kp.keys[idx]
-			if !k.Invalid && k.Remaining > kp.buffer {
+			if !k.Invalid && now.After(k.quarantineUntil) && k.Remaining > kp.buffer {
 				kp.rrIndex = (idx + 1) % n // advance past this key for next call
 				kp.mu.Unlock()
 				return k, nil
 			}
 		}
 
-		// All keys exhausted — find earliest reset time.
-		var earliestReset time.Time
+		// No key is usable right now. Find the soonest time ANY non-invalid key
+		// becomes usable again — the later of its rate-limit reset and its auth
+		// quarantine expiry — and wait for it. Quarantined keys recover here
+		// automatically; a transient 401 wave no longer ends collection.
+		var earliestWake time.Time
 		allInvalid := true
 		for _, k := range kp.keys {
 			if k.Invalid {
 				continue
 			}
 			allInvalid = false
-			if earliestReset.IsZero() || k.ResetAt.Before(earliestReset) {
-				earliestReset = k.ResetAt
+			wake := k.ResetAt
+			if k.quarantineUntil.After(wake) {
+				wake = k.quarantineUntil
+			}
+			if earliestWake.IsZero() || (!wake.IsZero() && wake.Before(earliestWake)) {
+				earliestWake = wake
 			}
 		}
 		kp.mu.Unlock()
 
 		if allInvalid {
+			// Only reachable via the legacy permanent InvalidateKey path; the
+			// 401 quarantine path never sets Invalid, so a transient incident
+			// can't land here.
 			return nil, fmt.Errorf("%w: all API keys have been invalidated (bad credentials) — check your tokens", ErrAllKeysInvalidated)
 		}
 
-		// Wait for the earliest reset.
-		if earliestReset.IsZero() {
-			// No reset time known — all keys were calibrated below buffer but
+		// Wait for the earliest wake time.
+		if earliestWake.IsZero() {
+			// No wake time known — all keys were calibrated below buffer but
 			// no reset header was received yet. Wait briefly and retry.
-			earliestReset = now.Add(30 * time.Second)
+			earliestWake = now.Add(30 * time.Second)
 		}
 
-		wait := time.Until(earliestReset) + time.Duration(rand.IntN(3)+1)*time.Second
+		wait := time.Until(earliestWake) + time.Duration(rand.IntN(3)+1)*time.Second
 		if wait < time.Second {
 			wait = time.Second
 		}
-		kp.logger.Info("all API keys rate-limited, waiting for reset",
+		kp.logger.Info("all API keys unavailable (rate-limited or quarantined), waiting",
 			"keys", len(kp.keys), "buffer", kp.buffer,
-			"until", earliestReset.Format(time.RFC3339), "wait", wait.Truncate(time.Second))
+			"until", earliestWake.Format(time.RFC3339), "wait", wait.Truncate(time.Second))
 
 		select {
 		case <-ctx.Done():
@@ -148,6 +201,14 @@ func (kp *KeyPool) GetKey(ctx context.Context) (*APIKey, error) {
 func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	kp.mu.Lock()
 	defer kp.mu.Unlock()
+
+	// A successful (2xx) response proves the token is valid, so clear any
+	// accumulated 401 strikes before the resource early-return below — this is
+	// what keeps a transient 401 here and there from ever reaching the
+	// quarantine threshold. Done for every resource bucket (core/search/graphql).
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		key.authStrikes = 0
+	}
 
 	// Only update the key's core rate-limit tracking from core (or unknown) responses.
 	// Search and graphql have their own limits; applying their low "remaining"
@@ -212,7 +273,7 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 		}
 	}
 
-	prefix := key.Token[:min(8, len(key.Token))] + "..."
+	prefix := tokenPrefix(key.Token)
 	if validRemaining == 0 {
 		kp.logger.Error("LAST API key invalidated — all collection for this platform will fail",
 			"token_prefix", prefix)
@@ -220,6 +281,82 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 		kp.logger.Warn("API key invalidated",
 			"token_prefix", prefix, "valid_keys_remaining", validRemaining)
 	}
+}
+
+// RecordAuthFailure records a 401 (bad-credentials) response for key and
+// returns true if this call quarantined the key.
+//
+// It deliberately does NOT disable the key on a single 401. GitHub's auth
+// backend intermittently returns "Bad credentials" for valid tokens during
+// incidents (the cause of the 2026-06-17 aveloxis_large outage, where 18 good
+// keys bled out one at a time over 15 hours and the scheduler then crash-looped
+// on ErrAllKeysInvalidated). Only after maxAuthStrikes CONSECUTIVE failures —
+// any successful response resets the count via UpdateFromResponse — is the key
+// quarantined, and even then it recovers automatically once an exponentially
+// growing cooldown elapses. No key is ever permanently disabled by this path.
+func (kp *KeyPool) RecordAuthFailure(key *APIKey) bool {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+
+	key.authStrikes++
+	if key.authStrikes < maxAuthStrikes {
+		kp.logger.Warn("API key 401 — treating as transient, key not quarantined",
+			"token_prefix", tokenPrefix(key.Token),
+			"strike", key.authStrikes, "threshold", maxAuthStrikes)
+		return false
+	}
+
+	// Threshold reached — quarantine with exponential backoff.
+	key.quarantineCount++
+	cooldown := authQuarantineBase
+	for i := 1; i < key.quarantineCount; i++ {
+		cooldown *= 2
+		if cooldown >= authQuarantineMax {
+			cooldown = authQuarantineMax
+			break
+		}
+	}
+	key.quarantineUntil = time.Now().Add(cooldown)
+	key.authStrikes = 0 // must re-accumulate before it can re-quarantine
+
+	usable := kp.usableLocked(time.Now())
+	if key.quarantineCount >= authQuarantineEscalate || usable == 0 {
+		kp.logger.Error("API key quarantined after repeated 401s — verify the token is valid",
+			"token_prefix", tokenPrefix(key.Token),
+			"quarantine_count", key.quarantineCount,
+			"cooldown", cooldown, "usable_keys", usable)
+	} else {
+		kp.logger.Warn("API key quarantined after consecutive 401s (will auto-recover)",
+			"token_prefix", tokenPrefix(key.Token),
+			"cooldown", cooldown, "usable_keys", usable)
+	}
+	return true
+}
+
+// RecordAuthSuccess clears the consecutive-401 strike counter for key. Callers
+// that observe a successful response without routing through UpdateFromResponse
+// use this directly; UpdateFromResponse already clears strikes on 2xx.
+func (kp *KeyPool) RecordAuthSuccess(key *APIKey) {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	key.authStrikes = 0
+}
+
+// usableLocked counts keys usable at time now: not permanently invalid and not
+// currently quarantined. Caller must hold kp.mu.
+func (kp *KeyPool) usableLocked(now time.Time) int {
+	count := 0
+	for _, k := range kp.keys {
+		if !k.Invalid && now.After(k.quarantineUntil) {
+			count++
+		}
+	}
+	return count
+}
+
+// tokenPrefix returns a short, log-safe prefix of a token.
+func tokenPrefix(t string) string {
+	return t[:min(8, len(t))] + "..."
 }
 
 // IsEmpty returns true if the pool was created with zero keys.

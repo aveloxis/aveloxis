@@ -212,9 +212,13 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			return parseGraphQLResponse(respBody, dest, c.logger)
 
 		case resp.StatusCode == http.StatusUnauthorized:
+			// Same transient-tolerant policy as REST Get: a single 401 is
+			// treated as a transient auth-backend hiccup, not a dead token.
+			// RecordAuthFailure quarantines only after consecutive failures and
+			// auto-recovers; we rotate to the next key on the next iteration.
 			_ = resp.Body.Close()
-			c.logger.Warn("graphql 401, invalidating key", "url", url)
-			c.keys.InvalidateKey(key)
+			c.logger.Warn("graphql 401 — recording auth failure (quarantined only after repeated 401s)", "url", url)
+			c.keys.RecordAuthFailure(key)
 			continue
 
 		case resp.StatusCode == http.StatusForbidden:

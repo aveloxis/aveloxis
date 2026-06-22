@@ -254,10 +254,17 @@ func TestVersionStampedV0256(t *testing.T) {
 	// not-visible operator class — extension installed in a schema off the
 	// role's search_path, observed on kate 2026-06-13, SQLSTATE 42704 —
 	// skips-with-warning instead of failing migration fatally and blocking
-	// serve startup over a monitor-search perf optimization).
+	// serve startup over a monitor-search perf optimization) → 0.25.31 (a
+	// single 401 no longer permanently invalidates an API key: KeyPool now
+	// quarantines a key only after maxAuthStrikes consecutive 401s — any
+	// success resets the count — with an exponential auto-recovering cooldown,
+	// and GetKey waits for a quarantined key to recover instead of returning
+	// ErrAllKeysInvalidated. Fixes the 2026-06-17 aveloxis_large crash-loop
+	// where transient GitHub-auth-backend 401s bled 18 good keys out one at a
+	// time over 15 hours and the scheduler then crashed on ClassAuth).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.30"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.30\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.31"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.31\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

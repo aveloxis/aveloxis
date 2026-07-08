@@ -93,7 +93,10 @@ func TestPRChildModeConfigExists(t *testing.T) {
 	}
 	// v0.26.0: the default flipped to "graphql" (the v0.19.0 sunset plan's
 	// flip, finally executed). REST stays available as the escape hatch.
-	if !strings.Contains(code, `PRChildMode:             "graphql"`) {
+	// Whitespace-normalized: gofmt realigns struct literals when
+	// neighboring fields change width.
+	flat := strings.Join(strings.Fields(code), " ")
+	if !strings.Contains(flat, `PRChildMode: "graphql"`) {
 		t.Error("config.DefaultConfig must default PRChildMode to \"graphql\" (v0.26.0 flip); " +
 			"REST remains selectable via aveloxis.json")
 	}

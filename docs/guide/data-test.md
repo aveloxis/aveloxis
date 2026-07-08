@@ -302,3 +302,23 @@ merging any PR labeled `schema-change`.
   migrations.
 - Architecture: `internal/db/rowcount_diff.go` is the row-count diff
   primitive. `cmd/aveloxis/data_test_cmd.go` is the orchestrator.
+
+## Column-fill diff (v0.26.1)
+
+The row-count diff catches missing rows; the column-fill diff catches
+missing VALUES. For every column of every base table (all three
+schemas), data-test compares how many rows carry a meaningful value —
+type-aware: non-empty for text, non-zero for numerics, non-NULL for
+everything else — between `aveloxis_released` and `aveloxis_new`.
+
+A column that was populated under the released binary and is completely
+unpopulated under the new one ("went dark") is a **FAIL** and fails the
+run: that's the shape of a dropped struct mapping, a renamed JSON tag,
+or a code path that no longer fills a field. Partial differences are
+**FLAG** — the two collections run against a live repository minutes
+apart, so small drift is normal; the report shows both counts for
+review. Known accepted drift under the GraphQL default:
+`issue_labels.platform_label_id` / `pull_request_labels.platform_label_id`
+(GitHub's GraphQL Label type exposes no databaseId) — expect these as
+FAIL/FLAG entries when comparing a REST-era tag against v0.26.0+ and
+treat them as explained.

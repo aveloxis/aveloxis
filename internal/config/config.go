@@ -1005,11 +1005,11 @@ func DefaultConfig() *Config {
 			// repo. REST remains a first-class escape hatch: set
 			// "pr_child_mode"/"listing_mode" to "rest" in aveloxis.json.
 			// Path DELETION (phase B) is a separate operator go/no-go.
-			PRChildMode:             "graphql",
-			ListingMode:             "graphql",
-			ThreadingMode:           "single",
-			ShardSize:               3000,
-			IssueChildMode:          "graphql",
+			PRChildMode:    "graphql",
+			ListingMode:    "graphql",
+			ThreadingMode:  "single",
+			ShardSize:      3000,
+			IssueChildMode: "graphql",
 			// v0.21.0 ScancodeWorker defaults — see CollectionConfig
 			// field docs for the full rationale.
 			ScancodeWorkers:              2,

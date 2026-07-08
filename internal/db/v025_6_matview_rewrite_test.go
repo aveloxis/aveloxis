@@ -298,14 +298,18 @@ func TestVersionStampedV0256(t *testing.T) {
 	// GitHub PR-child fetch and issue+PR listing — the flip the v0.19.0
 	// sunset plan scheduled but never executed; REST stays as the
 	// aveloxis.json escape hatch, path deletion is a separate operator
-	// decision).
+	// decision) → 0.26.1 (data-test gains the column-fill diff: per-
+	// column populated counts, type-aware, FAIL when a column goes
+	// completely dark under the new binary — the platform_label_id=0
+	// class that row counts cannot see; row diff now also covers
+	// aveloxis_scan).
 	// (docs truth-reconciliation: 12 undocumented commands added to
 	// commands.md, stale counts/cadences/defaults fixed everywhere, and
 	// three VALUE-checking tripwires added — example-config effective
 	// defaults, commands-doc coverage, schema-count pins).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.26.0"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.26.0\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.26.1"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.26.1\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

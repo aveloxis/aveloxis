@@ -607,6 +607,23 @@ interpreting PASS / FLAG / FAIL results.
 
 ---
 
+### Column-fill diff (v0.26.1)
+
+Row counts can't see a column the new binary stopped populating (the
+canonical case: `issue_labels.platform_label_id` is `0` on every row
+under the GraphQL path while row counts match exactly). After the
+row-count diff, data-test therefore also compares per-column FILL
+COUNTS — how many rows carry a meaningful value, type-aware (`<> ''`
+for text, `<> 0` for numerics, `IS NOT NULL` otherwise) — across every
+column of every base table in all three schemas.
+
+- **FAIL** (exit code 1): a column populated under the released binary
+  is *completely* unpopulated under the new one — a dropped mapping or
+  renamed JSON tag.
+- **FLAG**: fill counts differ — review; small drift is expected since
+  the two collections run against a live repo minutes apart.
+
+
 ## `aveloxis shadow-diff`
 
 Semantic equivalence diff of issue/PR collection between two databases

@@ -134,19 +134,23 @@ FAIL (row loss / regression detected).`,
 				}
 			}
 
-			// Phase 4: diff
-			report, err := runRowCountDiff(ctx, logger, primaryCfg)
+			// Phase 4: diff — row counts first (missing ROWS), then the
+			// v0.26.1 column-fill diff (missing VALUES: a column the new
+			// binary stopped populating is invisible to row counts —
+			// the platform_label_id=0 class).
+			report, colReport, err := runRowCountDiff(ctx, logger, primaryCfg)
 			if err != nil {
 				return fmt.Errorf("runRowCountDiff: %w", err)
 			}
 
 			// Phase 5: report
 			reportPath := filepath.Join(workDir, "report.md")
-			if err := writeReport(reportPath, report, releasedTag, repoURL); err != nil {
+			if err := writeReport(reportPath, report, colReport, releasedTag, repoURL); err != nil {
 				return fmt.Errorf("writeReport: %w", err)
 			}
 			logger.Info("report written", "path", reportPath,
-				"has_failures", report.HasFailures())
+				"row_failures", report.HasFailures(),
+				"column_failures", colReport.HasFailures())
 
 			// Phase 6: cleanup (unless operator opted to keep)
 			if !keepDBs {
@@ -163,6 +167,9 @@ FAIL (row loss / regression detected).`,
 
 			if report.HasFailures() {
 				return fmt.Errorf("data-test FAILED: at least one table has row loss (see %s)", reportPath)
+			}
+			if colReport.HasFailures() {
+				return fmt.Errorf("data-test FAILED: at least one column went dark under the new binary (see %s)", reportPath)
 			}
 			logger.Info("data-test PASSED", "report", reportPath)
 			return nil
@@ -408,13 +415,14 @@ func dtRunCollect(ctx context.Context, logger *slog.Logger, binary, cfgPath, rep
 }
 
 // runRowCountDiff connects to both scratch DBs and runs the
-// row-count diff over aveloxis_data + aveloxis_ops.
-func runRowCountDiff(ctx context.Context, logger *slog.Logger, cfg *config.Config) (*db.RowCountDiffReport, error) {
+// row-count diff plus the v0.26.1 column-fill diff over the aveloxis
+// schemas.
+func runRowCountDiff(ctx context.Context, logger *slog.Logger, cfg *config.Config) (*db.RowCountDiffReport, *db.ColumnFillDiffReport, error) {
 	releasedCfg := cfg.Database
 	releasedCfg.DBName = "aveloxis_released"
 	releasedPool, err := pgxpool.New(ctx, releasedCfg.ConnectionString())
 	if err != nil {
-		return nil, fmt.Errorf("connect aveloxis_released: %w", err)
+		return nil, nil, fmt.Errorf("connect aveloxis_released: %w", err)
 	}
 	defer releasedPool.Close()
 
@@ -422,18 +430,27 @@ func runRowCountDiff(ctx context.Context, logger *slog.Logger, cfg *config.Confi
 	newCfg.DBName = "aveloxis_new"
 	newPool, err := pgxpool.New(ctx, newCfg.ConnectionString())
 	if err != nil {
-		return nil, fmt.Errorf("connect aveloxis_new: %w", err)
+		return nil, nil, fmt.Errorf("connect aveloxis_new: %w", err)
 	}
 	defer newPool.Close()
 
 	logger.Info("running row-count diff",
 		"released_db", "aveloxis_released", "new_db", "aveloxis_new")
-	return db.RowCountDiff(ctx, releasedPool, newPool, nil)
+	rowReport, err := db.RowCountDiff(ctx, releasedPool, newPool, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	logger.Info("running column-fill diff (v0.26.1)")
+	colReport, err := db.ColumnFillDiff(ctx, releasedPool, newPool, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("column-fill diff: %w", err)
+	}
+	return rowReport, colReport, nil
 }
 
 // writeReport renders a markdown report grouping rows by status
 // (FAIL first so the operator sees regressions immediately).
-func writeReport(path string, report *db.RowCountDiffReport, releasedTag, repoURL string) error {
+func writeReport(path string, report *db.RowCountDiffReport, colReport *db.ColumnFillDiffReport, releasedTag, repoURL string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# aveloxis data-test report\n\n")
 	fmt.Fprintf(&b, "- **Released tag**: %s (in `aveloxis_released`)\n", releasedTag)
@@ -475,6 +492,39 @@ func writeReport(path string, report *db.RowCountDiffReport, releasedTag, repoUR
 	writeSection("FAIL — regressions to investigate", failed)
 	writeSection("FLAG — new coverage to review", flagged)
 	writeSection("PASS — equal row counts", passed)
+
+	// v0.26.1 column-fill section: values, not rows. A FAIL here means
+	// a column that carried data under the released binary is
+	// COMPLETELY unpopulated under the new one (the
+	// platform_label_id=0 class row counts cannot see). FLAGs are
+	// partial differences — expected in small numbers because the two
+	// collections run against a live repo minutes apart.
+	fmt.Fprintf(&b, "## Column fill (values, not rows — v0.26.1)\n\n")
+	var colFailed, colFlagged []db.ColumnFillDiffRow
+	for _, r := range colReport.Rows {
+		if r.Status == "FAIL" {
+			colFailed = append(colFailed, r)
+		} else {
+			colFlagged = append(colFlagged, r)
+		}
+	}
+	fmt.Fprintf(&b, "- **Columns checked**: %d\n", colReport.ColumnsChecked)
+	fmt.Fprintf(&b, "- **FAIL** (column went dark under the new binary): %d\n", len(colFailed))
+	fmt.Fprintf(&b, "- **FLAG** (fill counts differ — review): %d\n\n", len(colFlagged))
+	writeColSection := func(name string, rows []db.ColumnFillDiffRow) {
+		if len(rows) == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "### %s\n\n", name)
+		fmt.Fprintf(&b, "| Column | Released populated | New populated |\n|---|---|---|\n")
+		for _, r := range rows {
+			fmt.Fprintf(&b, "| `%s.%s.%s` | %d | %d |\n",
+				r.Schema, r.Table, r.Column, r.ReleasedPopulated, r.NewPopulated)
+		}
+		fmt.Fprintln(&b)
+	}
+	writeColSection("FAIL — columns that went dark", colFailed)
+	writeColSection("FLAG — fill differences to review", colFlagged)
 
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

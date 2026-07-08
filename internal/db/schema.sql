@@ -2154,6 +2154,22 @@ CREATE INDEX IF NOT EXISTS idx_em_proj_pending_keyed ON aveloxis_data.email_mess
     WHERE msg_class = 'issue_event' AND COALESCE(projected_kind, '') = '' AND linked_external_key <> '';
 CREATE INDEX IF NOT EXISTS idx_em_proj_pending_threaded ON aveloxis_data.email_message (email_message_id)
     WHERE thread_root_id <> '' AND COALESCE(projected_kind, '') = '';
+-- v0.25.34: FK-side indexes for email_message's projection links. These
+-- columns arrived in v0.25.7 (after the v0.22.6/v0.22.7 FK-index audits)
+-- and shipped unindexed. Their FKs are NO-ACTION DEFERRABLE, so bulk
+-- deletes of issues/PRs/reviews (e.g. `aveloxis dedup-repos`) queue one
+-- deferred check per deleted parent row and run them AT COMMIT — each an
+-- unindexed sequential scan of email_message. Observed 2026-07-08: an
+-- Azure-sized pair spent 18+ minutes inside the `commit` statement.
+-- Partial (IS NOT NULL) because most emails carry no projection link;
+-- the RI check predicate (col = $1) implies IS NOT NULL, so the partial
+-- index serves it.
+CREATE INDEX IF NOT EXISTS idx_email_message_linked_issue
+    ON aveloxis_data.email_message (linked_issue_id) WHERE linked_issue_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_email_message_linked_pr
+    ON aveloxis_data.email_message (linked_pull_request_id) WHERE linked_pull_request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_email_message_linked_review
+    ON aveloxis_data.email_message (linked_pr_review_id) WHERE linked_pr_review_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_issue_events_repo_id ON aveloxis_data.issue_events (repo_id);
 CREATE INDEX IF NOT EXISTS idx_pr_events_repo_id ON aveloxis_data.pull_request_events (repo_id);
 CREATE INDEX IF NOT EXISTS idx_releases_repo_id ON aveloxis_data.releases (repo_id);

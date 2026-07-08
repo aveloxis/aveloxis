@@ -301,6 +301,65 @@ Safe to run repeatedly. All DDL uses `CREATE ... IF NOT EXISTS` and inserts use 
 
 ---
 
+## `aveloxis dedup-repos`
+
+Merges case-variant duplicate repositories (v0.25.32). GitHub and GitLab
+treat owner/repo URLs case-insensitively, so
+`github.com/azure/azure-sdk-tools` and `github.com/Azure/azure-sdk-tools`
+are the **same repository** — but fleets that predate v0.25.32 could
+accumulate both as separate rows, each collected in full (doubled API
+budget, storage, and double-counted analytics).
+
+```bash
+aveloxis dedup-repos --dry-run      # show the plan (first 20 pairs)
+aveloxis dedup-repos --limit 50     # canary batch
+aveloxis dedup-repos                # full run — re-run until "0 pairs"
+```
+
+### Flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--dry-run` | false | Print the merge plan without writing. Shows winner/loser URLs + repo_ids, per-side last-collected dates, and whether either side is mid-collection. |
+| `--batch-size` | 50 | Pairs merged per batch. Each pair is one heavy transaction (repoints + child-data deletes). |
+| `--limit` | 0 | Cap total pairs merged this run (0 = no cap). |
+
+### What each merge does
+
+Per pair, winner = the **oldest** `repo_id`, in one transaction:
+
+1. Repoints `user_repos` to the winner — every user group that
+   referenced either variant keeps the repo and immediately sees the
+   winner's collected data.
+2. Repoints shared-copy rows (`messages`, `email_message`,
+   `commit_comment_ref`, `foundation_membership`) — these tables are
+   globally unique, so the pair shares one copy. (`contributor_repo` is
+   deliberately untouched: it is the breadth worker's observational
+   record of contributors' GitHub-wide activity, keyed by the numeric
+   `gh_repo_id`, not a catalog reference.)
+3. Deletes the loser's duplicated child data (issues, PRs, commits,
+   releases, dependency scans, ...) leaves-first, then the loser row
+   itself. Nothing is lost: both sides collected the same repository.
+4. Enqueues the winner if it has never been collected.
+
+Pairs with either side `status='collecting'` are **skipped and
+reported** — re-run once those jobs finish. The command is idempotent;
+merged pairs drop out of the candidate set.
+
+### After the run
+
+```bash
+aveloxis migrate --skip-views   # builds uq_repos_repo_git_ci — the permanent
+                                # DB-level backstop (skipped with a WARN while
+                                # duplicates remain)
+aveloxis refresh-views          # matviews stop double-counting immediately
+```
+
+Generic-git repos (platform 3) are never touched: unknown hosts may
+legitimately be case-sensitive, so their URLs stay byte-exact.
+
+---
+
 ## `aveloxis refresh-views`
 
 Manually refreshes all 19 materialized views.

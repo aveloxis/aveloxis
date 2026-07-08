@@ -1007,12 +1007,11 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 // Handles both orgs (/orgs/{name}/repos) and users (/users/{name}/repos).
 func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string) {
 	orgURL = strings.TrimSuffix(strings.TrimSpace(orgURL), "/")
-	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(orgURL, "https://"), "http://"), "/")
-	if len(parts) < 2 {
+	host, name, err := platform.ParseOrgURL(orgURL)
+	if err != nil {
 		return
 	}
-	name := parts[1]
-	isGitHub := strings.Contains(orgURL, "github.com")
+	isGitHub := host == "github.com"
 
 	if !isGitHub || s.ghKeys == nil {
 		return

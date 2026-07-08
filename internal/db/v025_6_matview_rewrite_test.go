@@ -261,10 +261,27 @@ func TestVersionStampedV0256(t *testing.T) {
 	// and GetKey waits for a quarantined key to recover instead of returning
 	// ErrAllKeysInvalidated. Fixes the 2026-06-17 aveloxis_large crash-loop
 	// where transient GitHub-auth-backend 401s bled 18 good keys out one at a
-	// time over 15 hours and the scheduler then crashed on ClassAuth).
+	// time over 15 hours and the scheduler then crashed on ClassAuth) →
+	// 0.25.32 (case-variant duplicate repos: GitHub/GitLab URLs are
+	// case-insensitive at the forge, but repo_git matching was byte-exact —
+	// 1,220 duplicate pairs on aveloxis_large. Prevention via
+	// resolveCaseVariantURL in UpsertRepo/FindRepoByURL, cleanup via
+	// `aveloxis dedup-repos`, uq_repos_repo_git_ci backstop after drain,
+	// Phase 0 case self-heal via HealRepoCaseDrift) → 0.25.33 (first
+	// production dedup-repos run failed on 18f/identity-idp: the
+	// globally-scoped FindReviewDBID had cross-linked winner-owned
+	// review_comments to loser-owned reviews; dedupOnePair now remaps
+	// cross-repo review links to winner equivalents and FindReviewDBID is
+	// repo-scoped) → 0.25.34 (dedup pairs spent 18+ min inside COMMIT:
+	// email_message's linked_issue/PR/review FK columns shipped unindexed
+	// in v0.25.7, so deferred NO-ACTION checks seqscanned per deleted
+	// parent row — three partial indexes added; and the contributor_repo
+	// repoint was removed from dedupOnePair: it's the breadth worker's
+	// GitHub-wide observational stream with no repos FK, and the repoint
+	// both rewrote history and seqscanned 51M rows per pair).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.31"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.31\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.34"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.34\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

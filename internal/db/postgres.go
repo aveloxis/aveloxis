@@ -247,6 +247,24 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	// reaches the DB. API URLs built from repo_name (/repos/{owner}/{name}/...)
 	// 404 when the slug has a ".git" suffix.
 	r.Name = model.NormalizeRepoName(r.Name)
+
+	// Store repo_git without trailing "/" or ".git" (v0.25.32 hardening) —
+	// suffix variants would otherwise slip past both ON CONFLICT (repo_git)
+	// and the case-insensitive unique index and create duplicate rows.
+	r.GitURL = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(r.GitURL), "/"), ".git")
+
+	// Case-variant resolution (v0.25.32): GitHub and GitLab treat
+	// owner/repo paths case-insensitively, so a URL differing from a
+	// stored row only by case is the SAME repository. Substitute the
+	// stored spelling so the ON CONFLICT below updates that row instead
+	// of inserting a duplicate. Lookup errors are deliberately ignored —
+	// the INSERT below surfaces any real connectivity problem.
+	if r.Platform == model.PlatformGitHub || r.Platform == model.PlatformGitLab {
+		if stored, rerr := s.resolveCaseVariantURL(ctx, r.GitURL); rerr == nil && stored != "" {
+			r.GitURL = stored
+		}
+	}
+
 	var id int64
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		// Ensure a default repo group exists if no group is specified.
@@ -277,7 +295,8 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 			updatedAt = r.UpdatedAt
 		}
 
-		return s.pool.QueryRow(ctx, `
+		insert := func() error {
+			return s.pool.QueryRow(ctx, `
 			INSERT INTO aveloxis_data.repos
 				(repo_group_id, platform_id, repo_git, repo_name, repo_owner,
 				 repo_description, primary_language, forked_from, repo_archived,
@@ -294,10 +313,28 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()
 			RETURNING repo_id`,
-			groupID, int16(r.Platform), r.GitURL, r.Name, r.Owner,
-			r.Description, r.PrimaryLanguage, r.ForkedFrom, r.Archived,
-			r.PlatformID, createdAt, updatedAt, r.Platform.String()+" API",
-		).Scan(&id)
+				groupID, int16(r.Platform), r.GitURL, r.Name, r.Owner,
+				r.Description, r.PrimaryLanguage, r.ForkedFrom, r.Archived,
+				r.PlatformID, createdAt, updatedAt, r.Platform.String()+" API",
+			).Scan(&id)
+		}
+
+		err := insert()
+		// Unique-index race (v0.25.32): the pre-insert case resolution and
+		// the INSERT are not atomic. When uq_repos_repo_git_ci exists and a
+		// concurrent writer lands the other case variant between our resolve
+		// and our INSERT, the partial unique index rejects us with 23505 —
+		// re-resolve to the now-stored spelling and retry once, which routes
+		// the statement through ON CONFLICT (repo_git) DO UPDATE instead.
+		var pgErr *pgconn.PgError
+		if err != nil && errors.As(err, &pgErr) &&
+			pgErr.Code == "23505" && pgErr.ConstraintName == "uq_repos_repo_git_ci" {
+			if stored, rerr := s.resolveCaseVariantURL(ctx, r.GitURL); rerr == nil && stored != "" {
+				r.GitURL = stored
+				err = insert()
+			}
+		}
+		return err
 	})
 	return id, err
 }
@@ -404,12 +441,22 @@ func (s *PostgresStore) GetReposForRenameCheck(ctx context.Context, limit int) (
 	return repos, rows.Err()
 }
 
-// FindReviewDBID looks up the aveloxis DB pr_review_id from a platform review ID.
-func (s *PostgresStore) FindReviewDBID(ctx context.Context, platformReviewID int64) (int64, error) {
+// FindReviewDBID looks up the aveloxis DB pr_review_id for a platform
+// review ID within one repo.
+//
+// v0.25.33: repo-scoped. The pre-v0.25.33 global lookup returned an
+// ARBITRARY copy whenever the same repository existed under two
+// repo_ids (case-variant duplicates, pre-dedup), silently creating
+// cross-repo bridge rows — winner-owned review_comments pointing at
+// loser-owned reviews — which then broke `aveloxis dedup-repos` with
+// SQLSTATE 23503. A review comment's parent review MUST belong to the
+// same repo as the comment.
+func (s *PostgresStore) FindReviewDBID(ctx context.Context, repoID, platformReviewID int64) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx,
-		`SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE platform_review_id = $1`,
-		platformReviewID).Scan(&id)
+		`SELECT pr_review_id FROM aveloxis_data.pull_request_reviews
+		 WHERE platform_review_id = $1 AND repo_id = $2`,
+		platformReviewID, repoID).Scan(&id)
 	if err != nil {
 		return 0, nil
 	}
@@ -441,10 +488,22 @@ func (s *PostgresStore) FindPRDBID(ctx context.Context, repoID, prNumber int64) 
 }
 
 // FindRepoByURL returns the repo_id for a given git URL, or 0 if not found.
+//
+// v0.25.32: matching is case-insensitive for GitHub/GitLab (platform 1/2)
+// because those forges treat owner/repo paths case-insensitively — a URL
+// differing from a stored row only by case IS the same repository. A
+// byte-exact match is preferred when both exist (a pre-dedup DB can hold
+// both case variants; the exact row is the caller's literal intent).
+// Generic git (platform 3) stays byte-exact on purpose: unknown hosts may
+// legitimately be case-sensitive.
 func (s *PostgresStore) FindRepoByURL(ctx context.Context, gitURL string) (int64, error) {
 	var id int64
-	err := s.pool.QueryRow(ctx,
-		`SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1`, gitURL,
+	err := s.pool.QueryRow(ctx, `
+		SELECT repo_id FROM aveloxis_data.repos
+		WHERE repo_git = $1
+		   OR (LOWER(repo_git) = LOWER($1) AND platform_id IN (1, 2))
+		ORDER BY (repo_git = $1) DESC, repo_id
+		LIMIT 1`, gitURL,
 	).Scan(&id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -453,6 +512,29 @@ func (s *PostgresStore) FindRepoByURL(ctx context.Context, gitURL string) (int64
 		return 0, err
 	}
 	return id, nil
+}
+
+// resolveCaseVariantURL returns the stored repo_git spelling of an
+// existing GitHub/GitLab row whose URL matches gitURL case-insensitively,
+// or "" when no such row exists. UpsertRepo substitutes the stored
+// spelling before its INSERT so ON CONFLICT (repo_git) targets the
+// existing row instead of creating a case-variant duplicate. The
+// platform_id IN (1, 2) gate keeps generic-git hosts byte-exact.
+func (s *PostgresStore) resolveCaseVariantURL(ctx context.Context, gitURL string) (string, error) {
+	var stored string
+	err := s.pool.QueryRow(ctx, `
+		SELECT repo_git FROM aveloxis_data.repos
+		WHERE LOWER(repo_git) = LOWER($1) AND platform_id IN (1, 2)
+		ORDER BY (repo_git = $1) DESC, repo_id
+		LIMIT 1`, gitURL,
+	).Scan(&stored)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return stored, nil
 }
 
 // ArchiveRepo marks a repo as archived/dead. Data is kept, but the repo
@@ -529,17 +611,18 @@ func extractRepoPath(u string) string {
 // UpdateRepoURL changes the git URL, owner, and name of a repo (e.g., after a redirect).
 // Extracts the new owner/name from the URL so the dashboard and API show correct values.
 func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL string) error {
-	// Parse owner/name from the new URL.
+	// Parse owner/name from the new URL via the shared parser (v0.25.32
+	// consolidation; unparseable URLs keep empty owner/name — the URL
+	// column still updates, matching the historical permissiveness).
 	newURL = strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")
-	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(newURL, "https://"), "http://"), "/")
 	owner := ""
 	name := ""
-	if len(parts) >= 3 {
-		name = parts[len(parts)-1]
-		owner = strings.Join(parts[1:len(parts)-1], "/")
+	if ru, perr := platform.ParseAnyRepoURL(newURL); perr == nil {
+		owner = ru.Owner
+		name = ru.Repo
 	}
-	// Defense in depth: even after TrimSuffix above, normalize the extracted
-	// slug so every write path produces the same canonical form.
+	// Defense in depth: even after the parser's trimming, normalize the
+	// extracted slug so every write path produces the same canonical form.
 	name = model.NormalizeRepoName(name)
 
 	_, err := s.pool.Exec(ctx,

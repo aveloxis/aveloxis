@@ -1294,6 +1294,66 @@ If you still see them after upgrading, ensure both `aveloxis migrate` AND `avelo
 
 ---
 
+## Case-variant duplicate repositories
+
+**Symptom:** the same repository appears twice in the catalog and on
+dashboards under different casings — e.g. `repo_id 6000
+https://github.com/Azure/azure-rest-api-specs` AND `repo_id 94177
+https://github.com/azure/azure-rest-api-specs` — with both rows fully
+collected. Analytics double-count the repo, and every collection cycle
+burns twice the API budget on it.
+
+**Cause:** GitHub and GitLab treat owner/repo URL paths
+case-insensitively (both casings serve HTTP 200 with **no redirect**, so
+prelim's redirect-based dedup never fires), but before v0.25.32
+`repos.repo_git` matching was byte-exact everywhere — `UpsertRepo`,
+`FindRepoByURL`, and the web bulk-paste path all missed the existing row
+when a URL arrived with different casing and created a second full repo.
+
+**Diagnosis:**
+
+```sql
+SELECT LOWER(repo_git) AS repo, COUNT(*) AS variants
+FROM aveloxis_data.repos
+WHERE platform_id IN (1, 2)
+GROUP BY LOWER(repo_git)
+HAVING COUNT(*) > 1
+ORDER BY repo;
+```
+
+Zero rows means you're clean. `aveloxis migrate` also reports this
+state: while duplicates remain it logs
+
+```
+msg="case-variant duplicate repos present; skipping unique index uq_repos_repo_git_ci"
+  duplicate_groups=N hint="run `aveloxis dedup-repos` to merge them, then re-run `aveloxis migrate`"
+```
+
+**Fix sequence (v0.25.32+):**
+
+```bash
+aveloxis stop serve                 # optional — dedup-repos skips mid-flight
+                                    # pairs, but a quiet window drains all in one run
+aveloxis migrate --skip-views       # creates the LOWER(repo_git) lookup index;
+                                    # WARNs + skips the unique index while dups remain
+aveloxis dedup-repos --dry-run      # review the plan
+aveloxis dedup-repos --limit 50     # canary, then:
+aveloxis dedup-repos                # full run — repeat until "0 pairs"
+aveloxis migrate --skip-views       # now builds uq_repos_repo_git_ci (the backstop)
+aveloxis refresh-views              # matviews stop double-counting immediately
+aveloxis start all
+```
+
+Prevention is active from v0.25.32 regardless of cleanup state:
+`UpsertRepo`/`FindRepoByURL`/web paste resolve case variants to the
+existing row, and the Phase 0 self-heal corrects any stored casing that
+differs from the forge's canonical spelling. The unique index is the
+final DB-level guarantee once the fleet is clean. Generic-git repos
+(platform 3) deliberately stay byte-exact — unknown hosts may be
+case-sensitive.
+
+---
+
 ## Orphaned postgres backend after `aveloxis stop serve`
 
 **Symptom:** After stopping serve and starting it again (or running `aveloxis migrate`), the new process appears to hang. Specifically:

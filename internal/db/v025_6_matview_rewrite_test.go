@@ -272,10 +272,16 @@ func TestVersionStampedV0256(t *testing.T) {
 	// globally-scoped FindReviewDBID had cross-linked winner-owned
 	// review_comments to loser-owned reviews; dedupOnePair now remaps
 	// cross-repo review links to winner equivalents and FindReviewDBID is
-	// repo-scoped).
+	// repo-scoped) → 0.25.34 (dedup pairs spent 18+ min inside COMMIT:
+	// email_message's linked_issue/PR/review FK columns shipped unindexed
+	// in v0.25.7, so deferred NO-ACTION checks seqscanned per deleted
+	// parent row — three partial indexes added; and the contributor_repo
+	// repoint was removed from dedupOnePair: it's the breadth worker's
+	// GitHub-wide observational stream with no repos FK, and the repoint
+	// both rewrote history and seqscanned 51M rows per pair).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.33"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.33\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.34"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.34\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

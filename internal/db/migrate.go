@@ -998,6 +998,26 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_ops", "idx_staging_repo_id",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_staging_repo_id ON aveloxis_ops.staging (repo_id)`)
 
+	// v0.25.34: FK-side indexes on email_message's projection links
+	// (linked_issue_id / linked_pull_request_id / linked_pr_review_id).
+	// The columns arrived in v0.25.7, after the v0.22.6/v0.22.7 FK-index
+	// audits, and shipped unindexed. Their FKs are NO-ACTION DEFERRABLE:
+	// bulk deletes of issues/PRs/reviews (`aveloxis dedup-repos`) queue
+	// one deferred check per deleted parent row and run them AT COMMIT —
+	// each check a sequential scan of email_message without these.
+	// Observed on the 2026-07-08 production dedup run: 18+ minutes inside
+	// a single `commit` statement. Partial (IS NOT NULL) — the RI check
+	// predicate implies IS NOT NULL, and most emails carry no link.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_email_message_linked_issue",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_issue
+		ON aveloxis_data.email_message (linked_issue_id) WHERE linked_issue_id IS NOT NULL`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_email_message_linked_pr",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_pr
+		ON aveloxis_data.email_message (linked_pull_request_id) WHERE linked_pull_request_id IS NOT NULL`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_email_message_linked_review",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_review
+		ON aveloxis_data.email_message (linked_pr_review_id) WHERE linked_pr_review_id IS NOT NULL`)
+
 	// v0.23.0: contributor_login_history table + backfill. Closes the
 	// rename-audit gap documented as a v0.22.13 limitation
 	// ("Intermediate login history is NOT stored"). The CREATE TABLE

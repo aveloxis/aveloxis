@@ -441,12 +441,22 @@ func (s *PostgresStore) GetReposForRenameCheck(ctx context.Context, limit int) (
 	return repos, rows.Err()
 }
 
-// FindReviewDBID looks up the aveloxis DB pr_review_id from a platform review ID.
-func (s *PostgresStore) FindReviewDBID(ctx context.Context, platformReviewID int64) (int64, error) {
+// FindReviewDBID looks up the aveloxis DB pr_review_id for a platform
+// review ID within one repo.
+//
+// v0.25.33: repo-scoped. The pre-v0.25.33 global lookup returned an
+// ARBITRARY copy whenever the same repository existed under two
+// repo_ids (case-variant duplicates, pre-dedup), silently creating
+// cross-repo bridge rows — winner-owned review_comments pointing at
+// loser-owned reviews — which then broke `aveloxis dedup-repos` with
+// SQLSTATE 23503. A review comment's parent review MUST belong to the
+// same repo as the comment.
+func (s *PostgresStore) FindReviewDBID(ctx context.Context, repoID, platformReviewID int64) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx,
-		`SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE platform_review_id = $1`,
-		platformReviewID).Scan(&id)
+		`SELECT pr_review_id FROM aveloxis_data.pull_request_reviews
+		 WHERE platform_review_id = $1 AND repo_id = $2`,
+		platformReviewID, repoID).Scan(&id)
 	if err != nil {
 		return 0, nil
 	}

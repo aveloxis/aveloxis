@@ -267,10 +267,15 @@ func TestVersionStampedV0256(t *testing.T) {
 	// 1,220 duplicate pairs on aveloxis_large. Prevention via
 	// resolveCaseVariantURL in UpsertRepo/FindRepoByURL, cleanup via
 	// `aveloxis dedup-repos`, uq_repos_repo_git_ci backstop after drain,
-	// Phase 0 case self-heal via HealRepoCaseDrift).
+	// Phase 0 case self-heal via HealRepoCaseDrift) → 0.25.33 (first
+	// production dedup-repos run failed on 18f/identity-idp: the
+	// globally-scoped FindReviewDBID had cross-linked winner-owned
+	// review_comments to loser-owned reviews; dedupOnePair now remaps
+	// cross-repo review links to winner equivalents and FindReviewDBID is
+	// repo-scoped).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.32"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.32\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.33"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.33\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

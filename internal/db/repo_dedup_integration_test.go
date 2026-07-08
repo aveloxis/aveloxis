@@ -153,6 +153,110 @@ func TestDedupOnePairSkipsCollectingLoser(t *testing.T) {
 	}
 }
 
+// TestDedupOnePairRemapsCrossRepoReviewLinks reproduces the 2026-07-08
+// production failure (18f/identity-idp): the pre-v0.25.33 global
+// FindReviewDBID let WINNER-owned review_comments rows point at
+// LOSER-owned pull_request_reviews rows, and the pair transaction died
+// with SQLSTATE 23503 on review_comments_pr_review_id_fkey when it
+// deleted the loser's reviews. The merge must remap the cross-link to
+// the winner's copy of the same review (by platform_review_id) and
+// delete cross-links with no winner equivalent.
+func TestDedupOnePairRemapsCrossRepoReviewLinks(t *testing.T) {
+	ctx, store := caseConnect(t)
+	const slug = "_avdedup_xrev"
+	cleanupDedupRepos(ctx, t, store, slug)
+	t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+
+	winnerURL := "https://github.com/" + slug + "_Org/Repo"
+	loserURL := strings.ToLower(winnerURL)
+	winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, loserURL)
+
+	mustScan := func(dst *int64, sql string, args ...any) {
+		t.Helper()
+		if err := store.pool.QueryRow(ctx, sql, args...).Scan(dst); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := store.pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	// Both sides collected the same PR and the same review
+	// (platform_review_id 777000111). seedDedupPair already made the
+	// loser's PR 565656561; give the winner its copy plus reviews.
+	var winnerPRID, loserPRID int64
+	mustScan(&winnerPRID, `INSERT INTO aveloxis_data.pull_requests (repo_id, platform_pr_id, pr_number)
+		VALUES ($1, 565656561, 56) RETURNING pull_request_id`, winnerID)
+	mustScan(&loserPRID, `SELECT pull_request_id FROM aveloxis_data.pull_requests
+		WHERE repo_id = $1 AND platform_pr_id = 565656561`, loserID)
+
+	var winnerReview, loserReview, loserOnlyReview int64
+	mustScan(&winnerReview, `INSERT INTO aveloxis_data.pull_request_reviews
+		(pull_request_id, repo_id, platform_id, platform_review_id)
+		VALUES ($1, $2, 1, 777000111) RETURNING pr_review_id`, winnerPRID, winnerID)
+	mustScan(&loserReview, `INSERT INTO aveloxis_data.pull_request_reviews
+		(pull_request_id, repo_id, platform_id, platform_review_id)
+		VALUES ($1, $2, 1, 777000111) RETURNING pr_review_id`, loserPRID, loserID)
+	// A loser review with NO winner equivalent (timing skew).
+	mustScan(&loserOnlyReview, `INSERT INTO aveloxis_data.pull_request_reviews
+		(pull_request_id, repo_id, platform_id, platform_review_id)
+		VALUES ($1, $2, 1, 777000222) RETURNING pr_review_id`, loserPRID, loserID)
+
+	// WINNER-owned review comments whose pr_review_id points at LOSER
+	// reviews — the production cross-link shape.
+	var msgA, msgB int64
+	mustScan(&msgA, `INSERT INTO aveloxis_data.messages (repo_id, platform_msg_id, platform_id)
+		VALUES ($1, 909090902, 1) RETURNING msg_id`, winnerID)
+	mustScan(&msgB, `INSERT INTO aveloxis_data.messages (repo_id, platform_msg_id, platform_id)
+		VALUES ($1, 909090903, 1) RETURNING msg_id`, winnerID)
+	mustExec(`INSERT INTO aveloxis_data.review_comments (repo_id, msg_id, pr_review_id, platform_src_id)
+		VALUES ($1, $2, $3, 111222001)`, winnerID, msgA, loserReview)
+	mustExec(`INSERT INTO aveloxis_data.review_comments (repo_id, msg_id, pr_review_id, platform_src_id)
+		VALUES ($1, $2, $3, 111222002)`, winnerID, msgB, loserOnlyReview)
+
+	pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+	if pair == nil {
+		t.Fatal("candidate query did not surface the seeded pair")
+	}
+	if err := dedupOnePair(ctx, store, *pair); err != nil {
+		t.Fatalf("dedupOnePair must survive cross-repo review links, got: %v", err)
+	}
+
+	// Cross-link with a winner equivalent: remapped, not deleted.
+	var remapped int64
+	if err := store.pool.QueryRow(ctx,
+		`SELECT pr_review_id FROM aveloxis_data.review_comments WHERE platform_src_id = 111222001`,
+	).Scan(&remapped); err != nil {
+		t.Fatalf("remappable cross-link must survive: %v", err)
+	}
+	if remapped != winnerReview {
+		t.Errorf("cross-link pr_review_id = %d, want winner review %d", remapped, winnerReview)
+	}
+
+	// Cross-link with NO winner equivalent: deleted.
+	var n int
+	store.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM aveloxis_data.review_comments WHERE platform_src_id = 111222002`).Scan(&n)
+	if n != 0 {
+		t.Errorf("unmappable cross-link must be deleted, found %d rows", n)
+	}
+
+	// Loser reviews gone; winner review intact.
+	store.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1`, loserID).Scan(&n)
+	if n != 0 {
+		t.Errorf("loser reviews must be deleted, found %d", n)
+	}
+	store.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM aveloxis_data.pull_request_reviews WHERE pr_review_id = $1`, winnerReview).Scan(&n)
+	if n != 1 {
+		t.Error("winner review must survive")
+	}
+}
+
 // seedDedupPair inserts the winner/loser pair with the full child shape
 // described in the file header and returns their ids.
 func seedDedupPair(ctx context.Context, t *testing.T, store *PostgresStore, slug, winnerURL, loserURL string) (winnerID, loserID int64) {
@@ -253,6 +357,10 @@ func cleanupDedupRepos(ctx context.Context, t *testing.T, store *PostgresStore, 
 	for _, sql := range []string{
 		`DELETE FROM aveloxis_data.issue_message_ref WHERE repo_id IN
 		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
+		`DELETE FROM aveloxis_data.review_comments WHERE repo_id IN
+		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
+		`DELETE FROM aveloxis_data.pull_request_reviews WHERE repo_id IN
+		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
 		`DELETE FROM aveloxis_data.messages WHERE repo_id IN
 		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
 		`DELETE FROM aveloxis_data.issues WHERE repo_id IN
@@ -281,7 +389,8 @@ func cleanupDedupRepos(ctx context.Context, t *testing.T, store *PostgresStore, 
 	// run left it repointed at a repo outside the slug scope. Runs after
 	// the loop so its bridge rows are already gone (RESTRICT).
 	if _, err := store.pool.Exec(ctx,
-		`DELETE FROM aveloxis_data.messages WHERE platform_msg_id = 909090901 AND platform_id = 1`); err != nil {
+		`DELETE FROM aveloxis_data.messages
+		 WHERE platform_msg_id IN (909090901, 909090902, 909090903) AND platform_id = 1`); err != nil {
 		t.Logf("cleanup shared message (non-fatal): %v", err)
 	}
 }

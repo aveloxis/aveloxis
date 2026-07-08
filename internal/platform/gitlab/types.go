@@ -140,6 +140,7 @@ type glMRApproval struct {
 
 type glProject struct {
 	ID                   int64     `json:"id"`
+	PathWithNamespace    string    `json:"path_with_namespace"` // v0.25.32 — canonical group/subgroup/project for the case self-heal
 	Description          string    `json:"description"`
 	DefaultBranch        string    `json:"default_branch"`
 	WebURL               string    `json:"web_url"`

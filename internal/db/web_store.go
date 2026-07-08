@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // GetUserEmail returns the email column for the given user_id.
@@ -420,42 +423,31 @@ func (s *PostgresStore) AddRepoToGroup(ctx context.Context, userID int, groupID 
 		return fmt.Errorf("group has been rejected by an administrator")
 	}
 
-	// Ensure repo exists in repos table.
-	var repoID int64
-	err := s.pool.QueryRow(ctx,
-		`SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1`, repoURL).Scan(&repoID)
+	// Resolve the URL to an existing repo first — case-insensitively for
+	// GitHub/GitLab (v0.25.32). When ANY user already tracks this
+	// repository (under any casing), the SHARED repo_id is linked into
+	// this group below and the existing collected data is immediately
+	// visible: no new repos row, no re-collection.
+	repoID, err := s.FindRepoByURL(ctx, repoURL)
 	if err != nil {
-		// Not found — need to insert. Determine platform from URL.
-		platform := int16(1) // GitHub default
-		if strings.Contains(repoURL, "gitlab") {
-			platform = 2
-		} else if !strings.Contains(repoURL, "github.com") {
-			platform = 3 // Generic git — facade/analysis only
+		return fmt.Errorf("resolve repo URL: %w", err)
+	}
+	if repoID == 0 {
+		// New repo. Parse owner/name/platform via the shared parser.
+		// Unparseable URLs stay permissive (generic git, empty owner/name)
+		// to match the historical web-path behavior — ValidateRepoURL has
+		// already screened the input upstream.
+		newRepo := &model.Repo{GitURL: repoURL, Platform: model.PlatformGenericGit}
+		if ru, perr := platform.ParseAnyRepoURL(repoURL); perr == nil {
+			newRepo.Platform = ru.Platform
+			newRepo.Owner = ru.Owner
+			newRepo.Name = ru.Repo
 		}
-		// Extract owner/name from URL.
-		parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(repoURL, "https://"), "http://"), "/"), "/")
-		owner := ""
-		name := ""
-		if len(parts) >= 3 {
-			name = parts[len(parts)-1]
-			owner = strings.Join(parts[1:len(parts)-1], "/")
-		}
-
-		// Get or create default group.
-		var groupIDDB int64
-		_ = s.pool.QueryRow(ctx,
-			`SELECT repo_group_id FROM aveloxis_data.repo_groups WHERE rg_name = 'Default'`).Scan(&groupIDDB)
-		if groupIDDB == 0 {
-			s.pool.QueryRow(ctx,
-				`INSERT INTO aveloxis_data.repo_groups (rg_name, rg_description) VALUES ('Default', 'Auto-created') RETURNING repo_group_id`).Scan(&groupIDDB)
-		}
-
-		err = s.pool.QueryRow(ctx, `
-			INSERT INTO aveloxis_data.repos (repo_group_id, platform_id, repo_git, repo_name, repo_owner)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (repo_git) DO UPDATE SET repo_name = EXCLUDED.repo_name
-			RETURNING repo_id`,
-			groupIDDB, platform, repoURL, name, owner).Scan(&repoID)
+		// Existing repos are deliberately NOT routed through UpsertRepo:
+		// its ON CONFLICT DO UPDATE would clobber collected metadata
+		// (description, language, ...) with this minimal struct's empty
+		// fields. UpsertRepo runs only on this not-found branch.
+		repoID, err = s.UpsertRepo(ctx, newRepo)
 		if err != nil {
 			return err
 		}
@@ -465,10 +457,9 @@ func (s *PostgresStore) AddRepoToGroup(ctx context.Context, userID int, groupID 
 		// gives the admin a chance to review submissions before they
 		// burn API quota.
 		if status == "approved" {
-			s.pool.Exec(ctx, `
-				INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at)
-				VALUES ($1, 100, 'queued', NOW())
-				ON CONFLICT (repo_id) DO NOTHING`, repoID)
+			if err := s.EnqueueRepo(ctx, repoID, 100); err != nil {
+				return fmt.Errorf("enqueue repo: %w", err)
+			}
 		}
 	}
 
@@ -487,16 +478,20 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 		return err
 	}
 
-	// Determine platform and org name.
+	// Determine platform and org name via the shared parser (v0.25.32
+	// consolidation). Platform detection keeps the historical
+	// host-contains-"gitlab" heuristic; unparseable URLs keep an empty
+	// org name, matching the old inline split's permissiveness.
 	orgURL = strings.TrimSuffix(strings.TrimSpace(orgURL), "/")
-	platform := "github"
-	if strings.Contains(orgURL, "gitlab") {
-		platform = "gitlab"
-	}
-	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(orgURL, "https://"), "http://"), "/")
+	platformName := "github"
 	orgName := ""
-	if len(parts) >= 2 {
-		orgName = parts[1]
+	if host, org, perr := platform.ParseOrgURL(orgURL); perr == nil {
+		orgName = org
+		if strings.Contains(host, "gitlab") {
+			platformName = "gitlab"
+		}
+	} else if strings.Contains(orgURL, "gitlab") {
+		platformName = "gitlab"
 	}
 
 	// Insert org request.
@@ -505,7 +500,7 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 			(user_id, group_id, org_url, org_name, platform)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (group_id, org_url) DO NOTHING`,
-		userID, groupID, orgURL, orgName, platform)
+		userID, groupID, orgURL, orgName, platformName)
 	return err
 }
 

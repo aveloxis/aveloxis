@@ -213,6 +213,7 @@ type ghFile struct {
 }
 
 type ghRepoInfo struct {
+	FullName        string `json:"full_name"` // v0.25.32 — canonical owner/name for the case self-heal
 	ForksCount      int    `json:"forks_count"`
 	StargazersCount int    `json:"stargazers_count"`
 	WatchersCount   int    `json:"watchers_count"`

@@ -9,8 +9,16 @@ import "time"
 // Populated via GitHub GraphQL API to get accurate PR/issue/commit counts
 // and community profile files — the REST API doesn't expose these.
 type RepoInfo struct {
-	ID             int64
-	RepoID         int64
+	ID     int64
+	RepoID int64
+	// FullName is the forge's CANONICAL "owner/name" spelling exactly as
+	// reported (GitHub nameWithOwner / REST full_name, GitLab
+	// path_with_namespace — the latter carries nested groups in full).
+	// Both forges accept case-variant lookups but always return the
+	// canonical casing; the Phase 0 self-heal (HealRepoCaseDrift) uses
+	// this to correct case-drifted repo_git values. Empty when the
+	// transport didn't provide it.
+	FullName       string
 	LastUpdated    time.Time
 	IssuesEnabled  bool
 	PRsEnabled     bool

@@ -1425,9 +1425,11 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 		rc.Message.RepoID = repoID
 		rc.Comment.RepoID = repoID
 		rc.Message.ContributorID = p.resolveUser(ctx, platID, rc.Message.AuthorRef)
-		// Resolve platform review ID to DB pr_review_id.
+		// Resolve platform review ID to DB pr_review_id — repo-scoped
+		// (v0.25.33): the parent review must belong to this repo, or a
+		// case-variant duplicate pair gets cross-linked bridge rows.
 		if rc.Comment.PlatformReviewID != 0 {
-			dbID, err := p.store.FindReviewDBID(ctx, rc.Comment.PlatformReviewID)
+			dbID, err := p.store.FindReviewDBID(ctx, repoID, rc.Comment.PlatformReviewID)
 			if err == nil && dbID != 0 {
 				rc.Comment.ReviewID = dbID
 			}

@@ -152,6 +152,47 @@ func TestRepoDedupWinnerIsMinRepoID(t *testing.T) {
 	}
 }
 
+// Cross-repo review links (v0.25.33 hotfix). Review comments resolve
+// their parent review via FindReviewDBID, which was NOT repo-scoped —
+// on a duplicate pair the same platform_review_id exists twice and the
+// lookup picked an arbitrary copy, so WINNER-owned bridge rows can
+// point at LOSER-owned pull_request_reviews rows. The first production
+// run failed exactly there (18f/identity-idp, SQLSTATE 23503 on
+// review_comments_pr_review_id_fkey): deleting bridges by
+// repo_id = loser leaves the winner's cross-links behind, and they
+// RESTRICT the loser's reviews delete. The merge must REMAP cross-links
+// to the winner's equivalent review (by platform_review_id) and delete
+// any leftovers with no equivalent, BEFORE deleting the loser's reviews.
+func TestRepoDedupRemapsCrossRepoReviewLinks(t *testing.T) {
+	dedup := normWS(readRepoDedupSource(t))
+
+	for _, needle := range []string{
+		"UPDATE aveloxis_data.review_comments rc SET pr_review_id",
+		"UPDATE aveloxis_data.pull_request_review_message_ref mr SET pr_review_id",
+		// The remap join key: the winner's copy of the SAME review.
+		"wr.platform_review_id = lr.platform_review_id",
+	} {
+		if !strings.Contains(dedup, needle) {
+			t.Errorf("repo_dedup.go must remap cross-repo review links before deleting "+
+				"the loser's pull_request_reviews: expected %q. Without the remap, "+
+				"winner-owned bridge rows RESTRICT the delete (the 2026-07-08 "+
+				"production failure).", needle)
+		}
+	}
+
+	// Leftovers with no winner-equivalent review must be deleted (any
+	// repo_id) — their FK would still block the reviews delete.
+	for _, needle := range []string{
+		"DELETE FROM aveloxis_data.review_comments WHERE pr_review_id IN",
+		"DELETE FROM aveloxis_data.pull_request_review_message_ref WHERE pr_review_id IN",
+	} {
+		if !strings.Contains(dedup, needle) {
+			t.Errorf("repo_dedup.go must delete leftover bridge rows still pointing at "+
+				"loser reviews after the remap: expected %q.", needle)
+		}
+	}
+}
+
 // After a merge, a winner that has never been collected must be enqueued
 // — this is what makes the simple MIN(repo_id) rule safe for the pairs
 // where the data-less side wins (it just collects fresh).

@@ -414,6 +414,36 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		{"clear unmapped email_message review links", `
 			UPDATE aveloxis_data.email_message SET linked_pr_review_id = NULL
 			WHERE linked_pr_review_id IN (SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1)`, []any{pair.LoserID}},
+
+		// --- Step 2c: cross-repo review links (v0.25.33). Review
+		// comments used to resolve their parent review via a
+		// globally-scoped FindReviewDBID (repo-scoped since v0.25.33),
+		// so WINNER-owned bridge rows can point at LOSER-owned
+		// pull_request_reviews rows — the 2026-07-08 production failure
+		// (SQLSTATE 23503 on review_comments_pr_review_id_fkey). Remap
+		// every bridge row (ANY repo_id) from a loser review to the
+		// winner's copy of the same review; delete the leftovers with no
+		// winner equivalent. No bridge may still reference a loser
+		// review when Step 4 deletes them. Neither table has a unique
+		// key involving pr_review_id, so the remaps cannot conflict.
+		{"remap cross-repo review_comments", `
+			UPDATE aveloxis_data.review_comments rc SET pr_review_id = wr.pr_review_id
+			FROM aveloxis_data.pull_request_reviews lr
+			JOIN aveloxis_data.pull_request_reviews wr
+			  ON wr.repo_id = $2 AND wr.platform_review_id = lr.platform_review_id
+			WHERE rc.pr_review_id = lr.pr_review_id AND lr.repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
+		{"delete unmappable review_comments cross-links", `
+			DELETE FROM aveloxis_data.review_comments WHERE pr_review_id IN
+			(SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1)`, []any{pair.LoserID}},
+		{"remap cross-repo pull_request_review_message_ref", `
+			UPDATE aveloxis_data.pull_request_review_message_ref mr SET pr_review_id = wr.pr_review_id
+			FROM aveloxis_data.pull_request_reviews lr
+			JOIN aveloxis_data.pull_request_reviews wr
+			  ON wr.repo_id = $2 AND wr.platform_review_id = lr.platform_review_id
+			WHERE mr.pr_review_id = lr.pr_review_id AND lr.repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
+		{"delete unmappable pull_request_review_message_ref cross-links", `
+			DELETE FROM aveloxis_data.pull_request_review_message_ref WHERE pr_review_id IN
+			(SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1)`, []any{pair.LoserID}},
 	}
 	for _, st := range steps {
 		if err := exec(st.label, st.sql, st.args...); err != nil {

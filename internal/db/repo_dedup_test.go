@@ -81,7 +81,6 @@ func TestRepoDedupRepointsSharedCopyTables(t *testing.T) {
 		"UPDATE aveloxis_data.email_message SET repo_id",
 		"UPDATE aveloxis_data.email_message SET signaled_repo_id",
 		"UPDATE aveloxis_data.commit_comment_ref SET repo_id",
-		"UPDATE aveloxis_data.contributor_repo SET repo_git",
 		"UPDATE aveloxis_ops.mailing_list_staging SET repo_id",
 	}
 	for _, needle := range repoints {
@@ -100,6 +99,29 @@ func TestRepoDedupRepointsSharedCopyTables(t *testing.T) {
 			t.Errorf("repo_dedup.go must NOT contain %q — messages/email_message rows "+
 				"are shared between the pair (global unique keys) and must be "+
 				"repointed, not deleted.", forbidden)
+		}
+	}
+}
+
+// contributor_repo is DELIBERATELY untouched (v0.25.34). It is the
+// breadth worker's observational record of each contributor's
+// GitHub-wide event stream — its repo_git values overwhelmingly
+// reference repos Aveloxis does not track, it has NO foreign key to
+// repos, and its stable repo key is the numeric gh_repo_id (case-
+// immune). v0.25.32's repoint both rewrote observational history and
+// sequential-scanned the 51M-row table once per pair (observed on the
+// 2026-07-08 production run).
+func TestRepoDedupLeavesContributorRepoAlone(t *testing.T) {
+	dedup := readRepoDedupSource(t)
+	for _, forbidden := range []string{
+		"UPDATE aveloxis_data.contributor_repo",
+		"DELETE FROM aveloxis_data.contributor_repo",
+	} {
+		if strings.Contains(dedup, forbidden) {
+			t.Errorf("repo_dedup.go must NOT touch contributor_repo (%q found) — it is "+
+				"an observational GitHub-wide event stream keyed by gh_repo_id, not a "+
+				"catalog reference; mutating it rewrites history and costs a 51M-row "+
+				"seqscan per pair.", forbidden)
 		}
 	}
 }

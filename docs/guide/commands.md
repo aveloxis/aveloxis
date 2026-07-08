@@ -332,8 +332,11 @@ Per pair, winner = the **oldest** `repo_id`, in one transaction:
    referenced either variant keeps the repo and immediately sees the
    winner's collected data.
 2. Repoints shared-copy rows (`messages`, `email_message`,
-   `commit_comment_ref`, `contributor_repo`, `foundation_membership`) —
-   these tables are globally unique, so the pair shares one copy.
+   `commit_comment_ref`, `foundation_membership`) — these tables are
+   globally unique, so the pair shares one copy. (`contributor_repo` is
+   deliberately untouched: it is the breadth worker's observational
+   record of contributors' GitHub-wide activity, keyed by the numeric
+   `gh_repo_id`, not a catalog reference.)
 3. Deletes the loser's duplicated child data (issues, PRs, commits,
    releases, dependency scans, ...) leaves-first, then the loser row
    itself. Nothing is lost: both sides collected the same repository.

@@ -368,8 +368,13 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		{"repoint email_message.repo_id", `UPDATE aveloxis_data.email_message SET repo_id = $2 WHERE repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
 		{"repoint email_message.signaled_repo_id", `UPDATE aveloxis_data.email_message SET signaled_repo_id = $2 WHERE signaled_repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
 		{"repoint commit_comment_ref", `UPDATE aveloxis_data.commit_comment_ref SET repo_id = $2 WHERE repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
-		{"repoint contributor_repo", `UPDATE aveloxis_data.contributor_repo SET repo_git = $2, repo_name = $3 WHERE repo_git = $1`,
-			[]any{pair.LoserGit, pair.WinnerGit, pair.WinnerName}},
+		// contributor_repo is DELIBERATELY not touched (v0.25.34). It is
+		// the breadth worker's observational record of each contributor's
+		// GitHub-WIDE event stream: its repo_git values overwhelmingly
+		// reference repos Aveloxis does not track, it has no FK to repos,
+		// and its stable repo key is the numeric gh_repo_id (case-immune).
+		// The v0.25.32 repoint rewrote observational history AND
+		// sequential-scanned the 51M-row table once per pair.
 		{"migrate foundation_membership", `
 			INSERT INTO aveloxis_ops.foundation_membership (foundation, status, project_name, homepage_url, repo_url)
 			SELECT foundation, status, project_name, homepage_url, $2

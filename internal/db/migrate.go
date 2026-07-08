@@ -333,6 +333,29 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// /issues, /pulls). One-time cleanup; idempotent.
 	cleanupRepoNameGitSuffix(ctx, pg, logger)
 
+	// repos.repo_git case-insensitive matching (v0.25.32). GitHub and
+	// GitLab treat owner/repo paths case-insensitively, so case-variant
+	// URLs are the SAME repository — byte-exact matching let the same
+	// repo in twice under different casing (1,220 duplicate pairs on the
+	// production fleet, each collected in full twice). Two indexes with
+	// different contracts:
+	//
+	// idx_repos_repo_git_lower (non-unique, FAIL-CLOSED) serves the
+	// LOWER(repo_git) lookups in FindRepoByURL / resolveCaseVariantURL —
+	// without it each lookup sequential-scans the repos table.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs,
+		"aveloxis_data", "idx_repos_repo_git_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_repo_git_lower
+		ON aveloxis_data.repos (LOWER(repo_git))`)
+
+	// uq_repos_repo_git_ci (UNIQUE partial, WARN-ONLY) is the hard
+	// backstop against future case-variant duplicates. It can only be
+	// created once the fleet has zero case-dup groups — operators run
+	// `aveloxis dedup-repos` first, then re-run migrate. Per the
+	// CLAUDE.md schema-DDL-ordering rule the index is NOT declared in
+	// schema.sql (CREATE UNIQUE INDEX fails on existing duplicates).
+	ensureRepoGitCaseInsensitiveUnique(ctx, pg, logger)
+
 	// pg_trgm extension + GIN index on repos for monitor search
 	// (v0.18.30). The dashboard's `?q=foo/bar` ILIKE search at v0.18.29
 	// was unindexable (leading wildcard). With pg_trgm + a GIN index on
@@ -975,6 +998,26 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_ops", "idx_staging_repo_id",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_staging_repo_id ON aveloxis_ops.staging (repo_id)`)
 
+	// v0.25.34: FK-side indexes on email_message's projection links
+	// (linked_issue_id / linked_pull_request_id / linked_pr_review_id).
+	// The columns arrived in v0.25.7, after the v0.22.6/v0.22.7 FK-index
+	// audits, and shipped unindexed. Their FKs are NO-ACTION DEFERRABLE:
+	// bulk deletes of issues/PRs/reviews (`aveloxis dedup-repos`) queue
+	// one deferred check per deleted parent row and run them AT COMMIT —
+	// each check a sequential scan of email_message without these.
+	// Observed on the 2026-07-08 production dedup run: 18+ minutes inside
+	// a single `commit` statement. Partial (IS NOT NULL) — the RI check
+	// predicate implies IS NOT NULL, and most emails carry no link.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_email_message_linked_issue",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_issue
+		ON aveloxis_data.email_message (linked_issue_id) WHERE linked_issue_id IS NOT NULL`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_email_message_linked_pr",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_pr
+		ON aveloxis_data.email_message (linked_pull_request_id) WHERE linked_pull_request_id IS NOT NULL`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_email_message_linked_review",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_review
+		ON aveloxis_data.email_message (linked_pr_review_id) WHERE linked_pr_review_id IS NOT NULL`)
+
 	// v0.23.0: contributor_login_history table + backfill. Closes the
 	// rename-audit gap documented as a v0.22.13 limitation
 	// ("Intermediate login history is NOT stored"). The CREATE TABLE
@@ -1570,6 +1613,84 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 	if err != nil {
 		logger.Warn("failed to create commits unique index", "error", err)
 	}
+}
+
+// ensureRepoGitCaseInsensitiveUnique creates the UNIQUE partial index
+// uq_repos_repo_git_ci ON aveloxis_data.repos (LOWER(repo_git)) WHERE
+// platform_id IN (1, 2) — the hard backstop that prevents case-variant
+// duplicate repositories (GitHub/GitLab treat owner/repo paths
+// case-insensitively; generic git hosts on platform 3 may legitimately
+// be case-sensitive, so they are excluded and stay byte-exact-unique via
+// the existing repos.repo_git UNIQUE constraint).
+//
+// Create-after-cleanup contract (mirrors deduplicateCommits, per the
+// CLAUDE.md schema-DDL-ordering rule): the index is NOT in schema.sql
+// and is only created once the fleet has ZERO case-dup groups. Unlike
+// deduplicateCommits this function does NOT delete the duplicates itself
+// — a duplicate repo pair carries full child-data trees whose merge is
+// the operator-invoked `aveloxis dedup-repos` command's job. While
+// duplicates remain, this function WARNs (naming the command) and skips.
+//
+// Deliberately warn-only (no *errs collector): a fleet with pending
+// duplicates must still be able to start serve. The application-level
+// resolution in FindRepoByURL/resolveCaseVariantURL keeps prevention
+// best-effort until the index lands; the next migrate run after
+// dedup-repos drains creates it.
+func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+	// Fast path: a VALID index already exists — nothing to do.
+	var existsValid bool
+	pg.pool.QueryRow(ctx, `
+		SELECT i.indisvalid
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'uq_repos_repo_git_ci'`).Scan(&existsValid)
+	if existsValid {
+		return
+	}
+
+	// Gate on remaining case-variant duplicates: attempting the CREATE
+	// with duplicates present would fail and leave an INVALID index.
+	var dupGroups int
+	if err := pg.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT 1
+			FROM aveloxis_data.repos
+			WHERE platform_id IN (1, 2)
+			GROUP BY LOWER(repo_git)
+			HAVING COUNT(*) > 1
+		) dup`).Scan(&dupGroups); err != nil {
+		logger.Warn("could not count case-variant duplicate repos; skipping uq_repos_repo_git_ci", "error", err)
+		return
+	}
+	if dupGroups > 0 {
+		logger.Warn("case-variant duplicate repos present; skipping unique index uq_repos_repo_git_ci",
+			"duplicate_groups", dupGroups,
+			"hint", "run `aveloxis dedup-repos` to merge them, then re-run `aveloxis migrate`")
+		return
+	}
+
+	// Drop an INVALID leftover from a prior interrupted CONCURRENTLY
+	// build, then create. Same recovery shape as deduplicateCommits.
+	var existsInvalid bool
+	pg.pool.QueryRow(ctx, `
+		SELECT NOT i.indisvalid
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'uq_repos_repo_git_ci'`).Scan(&existsInvalid)
+	if existsInvalid {
+		logger.Warn("dropping invalid uq_repos_repo_git_ci from prior interrupted CONCURRENT build")
+		pg.pool.Exec(ctx, `DROP INDEX IF EXISTS aveloxis_data.uq_repos_repo_git_ci`)
+	}
+	if _, err := pg.pool.Exec(ctx, `
+		CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repos_repo_git_ci
+		ON aveloxis_data.repos (LOWER(repo_git))
+		WHERE platform_id IN (1, 2)`); err != nil {
+		logger.Warn("failed to create uq_repos_repo_git_ci", "error", err)
+		return
+	}
+	logger.Info("created case-insensitive unique index uq_repos_repo_git_ci — case-variant duplicate repos are now blocked at the database level")
 }
 
 // addColumnIfMissing runs ALTER TABLE ... ADD COLUMN IF NOT EXISTS for

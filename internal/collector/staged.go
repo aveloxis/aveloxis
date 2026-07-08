@@ -248,6 +248,23 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 			sc.logger.Warn("failed to update repos.repo_description/primary_language/languages",
 				"owner", owner, "repo", repo, "error", updateErr)
 		}
+
+		// v0.25.32: case self-heal. The forge returns the CANONICAL
+		// owner/name spelling regardless of the casing we queried with;
+		// when the stored value differs only by case, correct repo_git/
+		// repo_owner/repo_name via the rename machinery. Real renames
+		// stay prelim's job (HealRepoCaseDrift enforces the case-only
+		// gate). Non-fatal: cosmetic case drift must never fail a
+		// collection job, so failures log and continue.
+		if info.FullName != "" {
+			if healed, healErr := sc.store.HealRepoCaseDrift(ctx, repoID, info.FullName); healErr != nil {
+				sc.logger.Warn("case-drift self-heal failed",
+					"owner", owner, "repo", repo, "error", healErr)
+			} else if healed {
+				sc.logger.Info("healed repo case drift",
+					"repo_id", repoID, "canonical", info.FullName)
+			}
+		}
 	}
 
 	for rel, relErr := range sc.client.ListReleases(ctx, owner, repo) {
@@ -1408,9 +1425,11 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 		rc.Message.RepoID = repoID
 		rc.Comment.RepoID = repoID
 		rc.Message.ContributorID = p.resolveUser(ctx, platID, rc.Message.AuthorRef)
-		// Resolve platform review ID to DB pr_review_id.
+		// Resolve platform review ID to DB pr_review_id — repo-scoped
+		// (v0.25.33): the parent review must belong to this repo, or a
+		// case-variant duplicate pair gets cross-linked bridge rows.
 		if rc.Comment.PlatformReviewID != 0 {
-			dbID, err := p.store.FindReviewDBID(ctx, rc.Comment.PlatformReviewID)
+			dbID, err := p.store.FindReviewDBID(ctx, repoID, rc.Comment.PlatformReviewID)
 			if err == nil && dbID != 0 {
 				rc.Comment.ReviewID = dbID
 			}

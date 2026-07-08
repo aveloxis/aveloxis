@@ -25,31 +25,9 @@ func TestNormalizeRepoURL(t *testing.T) {
 	}
 }
 
-func TestParseOwnerName(t *testing.T) {
-	tests := []struct {
-		url       string
-		wantOwner string
-		wantName  string
-	}{
-		{"https://github.com/torvalds/linux", "torvalds", "linux"},
-		{"https://github.com/chaoss/augur.git", "chaoss", "augur"},
-		{"https://gitlab.com/group/subgroup/project", "group/subgroup", "project"},
-		{"https://gitlab.com/a/b/c/d", "a/b/c", "d"},
-		// Too few segments.
-		{"https://github.com/", "", ""},
-		{"https://github.com", "", ""},
-	}
-
-	for _, tt := range tests {
-		owner, name := parseOwnerName(tt.url)
-		if owner != tt.wantOwner {
-			t.Errorf("parseOwnerName(%q) owner = %q, want %q", tt.url, owner, tt.wantOwner)
-		}
-		if name != tt.wantName {
-			t.Errorf("parseOwnerName(%q) name = %q, want %q", tt.url, name, tt.wantName)
-		}
-	}
-}
+// TestParseOwnerName moved to internal/platform/repourl_any_test.go
+// (TestParseAnyRepoURL_ForgeURLs) when the inline parser was consolidated
+// into platform.ParseAnyRepoURL (v0.25.32).
 
 func TestNormalizeRepoURL_DetectsRedirect(t *testing.T) {
 	// Simulate a redirect: old URL and new URL should normalize differently

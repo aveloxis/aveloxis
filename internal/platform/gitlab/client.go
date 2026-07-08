@@ -1001,6 +1001,7 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	}
 
 	return &model.RepoInfo{
+		FullName:          raw.PathWithNamespace,
 		LastUpdated:       raw.LastActivityAt,
 		IssuesEnabled:     raw.IssuesEnabled,
 		PRsEnabled:        raw.MergeRequestsEnabled,

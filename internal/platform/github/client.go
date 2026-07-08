@@ -894,6 +894,7 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	}
 
 	return &model.RepoInfo{
+		FullName:          r.NameWithOwner,
 		LastUpdated:       r.UpdatedAt,
 		IssuesEnabled:     r.HasIssuesEnabled,
 		WikiEnabled:       r.HasWikiEnabled,
@@ -950,6 +951,7 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 		languages[raw.Language] = 1 // sentinel — real bytes via GraphQL
 	}
 	return &model.RepoInfo{
+		FullName:        raw.FullName,
 		LastUpdated:     raw.UpdatedAt,
 		IssuesEnabled:   raw.HasIssues,
 		WikiEnabled:     raw.HasWiki,
@@ -978,6 +980,7 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 func repoInfoGraphQL(owner, repo string) string {
 	return fmt.Sprintf(`{
   repository(owner: "%s", name: "%s") {
+    nameWithOwner
     updatedAt
     description
     hasIssuesEnabled
@@ -1052,6 +1055,7 @@ type graphQLRepoInfoResponse struct {
 }
 
 type graphQLRepo struct {
+	NameWithOwner    string    `json:"nameWithOwner"` // v0.25.32 — canonical owner/name for the case self-heal
 	UpdatedAt        time.Time `json:"updatedAt"`
 	HasIssuesEnabled bool      `json:"hasIssuesEnabled"`
 	HasWikiEnabled   bool      `json:"hasWikiEnabled"`

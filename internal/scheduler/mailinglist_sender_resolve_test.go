@@ -22,7 +22,7 @@ func TestSenderResolveTickerWiredAndUsesSharedChain(t *testing.T) {
 	}
 	src := string(data)
 
-	if !strings.Contains(src, "go s.runMailingListSenderResolve(ctx)") {
+	if !strings.Contains(src, `safego.Go(s.logger, "mailing-list-sender-resolve", func() { s.runMailingListSenderResolve(ctx) })`) {
 		t.Error("spawnMailingListWorker must spawn the runMailingListSenderResolve ticker goroutine")
 	}
 

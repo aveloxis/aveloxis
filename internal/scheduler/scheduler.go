@@ -27,6 +27,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // Config configures the scheduler.
@@ -315,7 +316,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.processLeftoverStaging(ctx)
 		} else if len(locked) > 0 {
 			s.logger.Info("launching background leftover-staging drain", "repos", len(locked))
-			go s.processLeftoverStagingBackground(ctx, locked)
+			safego.Go(s.logger, "leftover-staging-drain", func() { s.processLeftoverStagingBackground(ctx, locked) })
 		}
 	}
 
@@ -330,7 +331,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	orgRefreshTicker := time.NewTicker(s.cfg.OrgRefreshInterval)
 	defer orgRefreshTicker.Stop()
 	// Run org refresh once on startup too.
-	go s.refreshOrgs(ctx)
+	safego.Go(s.logger, "org-refresh", func() { s.refreshOrgs(ctx) })
 
 	// Contributor breadth: discovers cross-repo activity for
 	// every contributor with a gh_login. v0.20.17: cadence and
@@ -360,7 +361,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.cfg.ScancodeRunTimeoutCap,
 		s.cfg.ScancodeMaxInMemory,
 	)
-	go scancodeWorker.Run(ctx)
+	safego.Go(s.logger, "scancode-worker", func() { scancodeWorker.Run(ctx) })
 
 	// v0.24.0 — DistributionWorker goroutine. Off by default; only
 	// spawned when collection.distribution_tracking_enabled = true.
@@ -438,13 +439,13 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// Idempotent: each restart re-targets only repos still missing
 	// the data, so a partial run from a prior restart picks up
 	// where it left off.
-	go s.runRepoMetadataBackfill(ctx)
+	safego.Go(s.logger, "repo-metadata-backfill", func() { s.runRepoMetadataBackfill(ctx) })
 
 	// DB-health monitor: probes the database and pauses collection while it's
 	// unavailable (the nightly unattended-upgrades Postgres restart). The DB
 	// was reachable at startup (migrate succeeded), so start healthy.
 	s.dbHealthy.Store(true)
-	go s.runDBHealthMonitor(ctx)
+	safego.Go(s.logger, "db-health-monitor", func() { s.runDBHealthMonitor(ctx) })
 
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
@@ -491,11 +492,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.recoverStale(ctx)
 
 		case <-orgRefreshTicker.C:
-			go s.refreshOrgs(ctx)
-			go s.refreshUserOrgs(ctx)
+			safego.Go(s.logger, "org-refresh", func() { s.refreshOrgs(ctx) })
+			safego.Go(s.logger, "user-org-refresh", func() { s.refreshUserOrgs(ctx) })
 
 		case <-breadthTicker.C:
-			go s.runBreadth(ctx)
+			safego.Go(s.logger, "contributor-breadth", func() { s.runBreadth(ctx) })
 
 		case <-matviewCheckTicker.C:
 			now := time.Now()
@@ -513,16 +514,16 @@ func (s *Scheduler) Run(ctx context.Context) {
 			}
 
 		case <-stagingCleanupTicker.C:
-			go s.runStagingCleanup(ctx)
+			safego.Go(s.logger, "staging-cleanup", func() { s.runStagingCleanup(ctx) })
 
 		case <-enrichTicker.C:
-			go s.runEnrichment(ctx)
+			safego.Go(s.logger, "contributor-enrichment", func() { s.runEnrichment(ctx) })
 
 		case <-searchResolveTicker.C:
-			go s.runSearchResolve(ctx)
+			safego.Go(s.logger, "search-resolve", func() { s.runSearchResolve(ctx) })
 
 		case <-affiliationsTicker.C:
-			go s.runAffiliationsPopulation(ctx)
+			safego.Go(s.logger, "affiliations-population", func() { s.runAffiliationsPopulation(ctx) })
 
 		case <-pollTicker.C:
 			s.fillWorkerSlots(ctx, sem)
@@ -729,6 +730,7 @@ func (s *Scheduler) fillWorkerSlots(ctx context.Context, sem chan struct{}) {
 			}
 			claimed++
 			go func() {
+				defer safego.Recover(s.logger, "collection-job")
 				defer func() { <-sem }()
 				s.runJob(ctx, job)
 			}()
@@ -768,6 +770,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(ctx)
 	defer cancelHeartbeat()
 	go func() {
+		defer safego.Recover(s.logger, "job-heartbeat")
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -1638,6 +1641,7 @@ func (s *Scheduler) maybeStartMatviewRebuild(ctx context.Context, sem chan struc
 		return
 	}
 	go func() {
+		defer safego.Recover(s.logger, "matview-rebuild")
 		defer MatviewRebuildActive.Store(false)
 		defer s.matviewPending.Store(false)
 		s.rebuildMatviews(ctx)

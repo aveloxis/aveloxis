@@ -28,6 +28,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/safego"
 	"github.com/aveloxis/aveloxis/internal/static"
 	"golang.org/x/oauth2"
 )
@@ -998,7 +999,7 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 
 		// Immediately scan the org for repos and add them.
 		// Use a detached context — the HTTP request context gets canceled on redirect.
-		go s.scanOrgRepos(context.Background(), groupID, orgURL)
+		safego.Go(s.logger, "org-repo-scan", func() { s.scanOrgRepos(context.Background(), groupID, orgURL) })
 	}
 	http.Redirect(w, r, fmt.Sprintf("/groups/%d", groupID), http.StatusFound)
 }

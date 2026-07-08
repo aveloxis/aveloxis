@@ -45,7 +45,7 @@
     "scancode_start_interval_s": 90,
     "scancode_cadence_days": 180,
     "scancode_clone_dir": "/tmp/aveloxis-scancode",
-    "scancode_shutdown_grace_minutes": 30,
+    "scancode_shutdown_grace_minutes": 0,
     "scancode_run_timeout_hours": 2,
     "scancode_run_timeout_cap_hours": 24,
     "scancode_max_in_memory": 5000,

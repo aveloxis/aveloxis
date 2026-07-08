@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // LongJobsWatchdog is the v0.22.4 item-7 observation-only progress
@@ -66,7 +68,7 @@ func (w *LongJobsWatchdog) Start(ctx context.Context) func() {
 	wctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 
-	go w.run(wctx, done)
+	safego.Go(w.Logger, "long-jobs-watchdog", func() { w.run(wctx, done) })
 
 	var stopOnce sync.Once
 	return func() {

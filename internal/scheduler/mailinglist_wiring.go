@@ -17,6 +17,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/mailinglist"
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // mailingListIdleInterval is how long a runner waits before re-polling when
@@ -89,7 +90,7 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 			w := collector.NewMailingListWorker(s.store, sys, backend, pacer, breaker,
 				cadence, s.cfg.MailingListBackfillMonths,
 				pid, bootID, s.logger)
-			go s.runMailingListLoop(ctx, w)
+			safego.Go(s.logger, "mailing-list-worker", func() { s.runMailingListLoop(ctx, w) })
 		}
 
 		// The resolve+write half: a MailingListProcessor drains this system's
@@ -104,7 +105,7 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 		}
 		proc := collector.NewMailingListProcessor(s.store, sys.Name, s.cfg.MailingListMirrorHandling, sys.ProjectionClean(), s.logger)
 		for i := 0; i < drainWorkers; i++ {
-			go s.runMailingListDrainLoop(ctx, proc)
+			safego.Go(s.logger, "mailing-list-drain", func() { s.runMailingListDrainLoop(ctx, proc) })
 		}
 
 		spawned++
@@ -117,12 +118,12 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 	// §5d: periodically re-resolve unresolved mailing-list sender identities
 	// against the now-fuller contributors table ("coverage improves over
 	// time"). Single goroutine; runs on the same cadence knob as enrichment.
-	go s.runMailingListSenderBackfill(ctx)
+	safego.Go(s.logger, "mailing-list-sender-backfill", func() { s.runMailingListSenderBackfill(ctx) })
 
 	// Phase 2 (summary/12 §5): for senders the DB-only backfill can't resolve,
 	// run them through the shared email→identity chain (Search + global
 	// commit-search) and link/create the contributor. Single goroutine.
-	go s.runMailingListSenderResolve(ctx)
+	safego.Go(s.logger, "mailing-list-sender-resolve", func() { s.runMailingListSenderResolve(ctx) })
 }
 
 // runMailingListSenderResolve config. The min-message threshold (6) is the

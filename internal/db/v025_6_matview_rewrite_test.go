@@ -278,10 +278,14 @@ func TestVersionStampedV0256(t *testing.T) {
 	// parent row — three partial indexes added; and the contributor_repo
 	// repoint was removed from dedupOnePair: it's the breadth worker's
 	// GitHub-wide observational stream with no repos FK, and the repoint
-	// both rewrote history and seqscanned 51M rows per pair).
+	// both rewrote history and seqscanned 51M rows per pair) → 0.25.35
+	// (docs truth-reconciliation: 12 undocumented commands added to
+	// commands.md, stale counts/cadences/defaults fixed everywhere, and
+	// three VALUE-checking tripwires added — example-config effective
+	// defaults, commands-doc coverage, schema-count pins).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.34"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.34\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.25.35"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.35\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

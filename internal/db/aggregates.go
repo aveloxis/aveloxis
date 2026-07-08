@@ -287,14 +287,12 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 		return fmt.Errorf("querying repo groups: %w", err)
 	}
 	defer groupRows.Close()
-
-	var groupIDs []int64
-	for groupRows.Next() {
-		var id int64
-		if groupRows.Scan(&id) == nil {
-			groupIDs = append(groupIDs, id)
-		}
-	}
+	// NOTE: the DISTINCT repo_group_id result set is intentionally not
+	// iterated — RefreshRepoGroupAggregates derives the group from each
+	// repo. The query remains only as a connectivity check; the dead
+	// groupIDs accumulation it once fed was removed in v0.25.36
+	// (staticcheck SA4010). Refreshing per-group instead of per-repo is
+	// a future optimization (redundant refreshes for same-group repos).
 
 	for _, repoID := range repoIDs {
 		// RefreshRepoGroupAggregates looks up the group from the repo.

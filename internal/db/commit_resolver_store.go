@@ -209,7 +209,11 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 // backfillGHColumns copies GitHub identity data to the denormalized gh_* columns
 // on the contributors row if they're empty.
 func (s *PostgresStore) backfillGHColumns(ctx context.Context, cntrbID string) {
-	s.pool.Exec(ctx, `
+	// v0.25.36: error captured + logged. This ran as a bare Exec for
+	// years — a failed backfill UPDATE (constraint, connection blip)
+	// vanished silently, violating the "everything that errors should
+	// be logged" rule.
+	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.contributors c SET
 			gh_node_id = COALESCE(NULLIF(c.gh_node_id,''), ci.node_id),
 			gh_avatar_url = COALESCE(NULLIF(c.gh_avatar_url,''), ci.avatar_url),
@@ -223,6 +227,9 @@ func (s *PostgresStore) backfillGHColumns(ctx context.Context, cntrbID string) {
 		  AND (c.gh_node_id IS NULL OR c.gh_node_id = ''
 		    OR c.gh_avatar_url IS NULL OR c.gh_avatar_url = '')`,
 		cntrbID)
+	if err != nil {
+		s.logger.Warn("backfillGHColumns failed", "cntrb_id", cntrbID, "error", err)
+	}
 }
 
 // InsertUnresolvedEmail records a commit email that could not be resolved to
@@ -230,7 +237,8 @@ func (s *PostgresStore) backfillGHColumns(ctx context.Context, cntrbID string) {
 // Uses a single INSERT with a duplicate check in the WHERE clause to avoid
 // the race condition inherent in check-then-insert.
 func (s *PostgresStore) InsertUnresolvedEmail(ctx context.Context, email string) {
-	s.pool.Exec(ctx, `
+	// v0.25.36: error captured + logged (was a bare Exec).
+	_, err := s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_data.unresolved_commit_emails
 			(email, tool_source, tool_version, data_source, data_collection_date)
 		SELECT $1, 'aveloxis-commit-resolver', $2, 'git', NOW()
@@ -238,6 +246,9 @@ func (s *PostgresStore) InsertUnresolvedEmail(ctx context.Context, email string)
 			SELECT 1 FROM aveloxis_data.unresolved_commit_emails WHERE email = $1
 		)`,
 		email, ToolVersion)
+	if err != nil {
+		s.logger.Warn("InsertUnresolvedEmail failed", "email", email, "error", err)
+	}
 }
 
 // EnsureContributorAlias creates an alias linking a commit email to a contributor.

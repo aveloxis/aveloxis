@@ -38,10 +38,10 @@ func TestEmbeddedCatalogShapeMatchesNumfocus2026(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Sponsored == nil || len(c.Sponsored) < 50 || len(c.Sponsored) > 100 {
+	if len(c.Sponsored) < 50 || len(c.Sponsored) > 100 {
 		t.Errorf("sponsored entries = %d; expected ~63 (range 50-100 to absorb churn)", len(c.Sponsored))
 	}
-	if c.Affiliated == nil || len(c.Affiliated) < 80 || len(c.Affiliated) > 150 {
+	if len(c.Affiliated) < 80 || len(c.Affiliated) > 150 {
 		t.Errorf("affiliated entries = %d; expected ~103 (range 80-150 to absorb churn)", len(c.Affiliated))
 	}
 }

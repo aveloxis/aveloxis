@@ -357,6 +357,41 @@ Response (note: keys are PascalCase — the rollup struct carries no JSON tags):
 | `SenderTotal` / `SenderResolved` | mailing-list message bodies / those whose sender resolved to a contributor (improves over time via the hourly backfill) |
 | `ByClass` | per-`msg_class` message counts |
 
+## Scancode results
+
+Per-file license and copyright data gathered by the decoupled scancode
+worker (v0.21.0+).
+
+- `GET /api/v1/repos/{repoID}/scancode-licenses` — aggregated license
+  breakdown from per-file scan results, plus `last_run` and
+  `scancode_version` freshness metadata.
+- `GET /api/v1/repos/{repoID}/scancode-files` — per-file rows (path,
+  detected license expression, copyright holders) backing the repo detail
+  page's sortable table.
+
+## Augur-compatible metric endpoints
+
+For 8Knot and other Augur API consumers, the server also exposes the
+Augur swagger-spec metric routes. They use Augur's parameter conventions
+(`begin_date`, `end_date`, `period`) rather than the native `since`/`until`.
+
+Catalog routes: `/api/v1/repo-groups`, `/api/v1/repos`,
+`/api/v1/repos/{repoID}`, `/api/v1/repo-groups/{groupID}/repos`,
+`/api/v1/owner/{owner}/repo/{repo}`, `/api/v1/rg-name/{rgName}`,
+`/api/v1/rg-name/{rgName}/repo-name/{repoName}`.
+
+Per-repo metrics (all under `/api/v1/repos/{repoID}/`):
+
+| Category | Endpoints |
+|---|---|
+| Issues | `issues-new`, `issues-closed`, `issues-active`, `issue-backlog`, `issue-throughput`, `issue-duration`, `average-issue-resolution-time`, `abandoned-issues`, `open-issues-count`, `closed-issues-count` |
+| Pull requests | `pull-requests-new`, `reviews`, `reviews-accepted`, `reviews-declined`, `review-duration` |
+| Commits | `committers`, `code-changes`, `code-changes-lines` |
+| Contributors | `contributors`, `contributors-new` |
+| Popularity | `stars`, `stars-count`, `forks`, `fork-count`, `watchers`, `watchers-count` |
+| Code / deps | `languages`, `project-languages`, `project-files`, `project-lines`, `deps`, `libyear` |
+| Other | `repo-messages`, `releases` |
+
 ## CORS
 
 All API endpoints return `Access-Control-Allow-Origin: *` to allow cross-origin requests from the web GUI (which runs on a different port).

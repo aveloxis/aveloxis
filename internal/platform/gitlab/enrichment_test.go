@@ -267,13 +267,3 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
-
-// testClientWithLogger creates a test client with a custom logger for log verification.
-func testClientWithLogger(t *testing.T, handler http.Handler, logger *slog.Logger) *Client {
-	t.Helper()
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	keys := platform.NewKeyPool([]string{"test-token"}, logger)
-	httpClient := platform.NewHTTPClient(server.URL, keys, logger, platform.AuthGitLab)
-	return &Client{http: httpClient, logger: logger, host: "gitlab.com"}
-}

@@ -33,6 +33,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // Entity type constants for the staging table.
@@ -511,6 +512,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 
 	// Goroutine 1: Issues + inline issue comments from the unified listing.
 	go func() {
+		defer safego.Recover(sc.logger, "collect-issues")
 		defer wg.Done()
 		issueSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
@@ -528,6 +530,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 
 	// Goroutine 2: Pull Requests + inline PR / review comments (phase 4).
 	go func() {
+		defer safego.Recover(sc.logger, "collect-prs")
 		defer wg.Done()
 		prSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
@@ -544,6 +547,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 
 	// Goroutine 3: Events
 	go func() {
+		defer safego.Recover(sc.logger, "collect-messages")
 		defer wg.Done()
 		eventSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
@@ -848,6 +852,7 @@ func (sc *StagedCollector) runPRBatchSharded(ctx context.Context, sw *db.Staging
 	wg.Add(shardCount)
 	for shardIdx, shardPRs := range partitions {
 		go func(idx int, prs []model.PullRequest) {
+			defer safego.Recover(sc.logger, "pr-shard")
 			defer wg.Done()
 			if len(prs) == 0 {
 				return

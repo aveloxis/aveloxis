@@ -45,7 +45,7 @@ func TestDBHealthGuardWired(t *testing.T) {
 	if fw < 0 || gate < fw || (deq > 0 && gate > deq) {
 		t.Error("the dbHealthy gate must be at the top of fillWorkerSlots, before DequeueNext")
 	}
-	if !strings.Contains(s, "s.dbHealthy.Store(true)") || !strings.Contains(s, "go s.runDBHealthMonitor(ctx)") {
+	if !strings.Contains(s, "s.dbHealthy.Store(true)") || !strings.Contains(s, `safego.Go(s.logger, "db-health-monitor", func() { s.runDBHealthMonitor(ctx) })`) {
 		t.Error("Run must start healthy and launch the DB-health monitor goroutine")
 	}
 

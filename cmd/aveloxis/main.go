@@ -1051,7 +1051,7 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "refresh-views",
 		Short: "Refresh all materialized views (for 8Knot/analytics)",
-		Long:  `Refreshes all 18 materialized views used by 8Knot and other analytics tools. Views are also refreshed automatically every 2 hours by aveloxis serve.`,
+		Long:  `Refreshes all 20 materialized views used by 8Knot and other analytics tools. Views are also rebuilt automatically by aveloxis serve on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)

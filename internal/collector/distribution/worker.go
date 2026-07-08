@@ -10,6 +10,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // v0.24.0 — DistributionWorker pool.
@@ -141,11 +142,12 @@ func (w *Worker) Run(ctx context.Context) {
 	// Spawn N runners.
 	runnersDone := make(chan struct{}, w.workers)
 	for i := 0; i < w.workers; i++ {
-		go w.runner(ctx, jobs, runnersDone)
+		safego.Go(w.logger, "distribution-runner", func() { w.runner(ctx, jobs, runnersDone) })
 	}
 
 	// Dispatcher: claim loop with minimum-gap pacing (v0.21.3).
 	go func() {
+		defer safego.Recover(w.logger, "distribution-dispatcher")
 		defer close(jobs)
 		defer close(done)
 		w.dispatcher(ctx, jobs)

@@ -165,14 +165,25 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 		}
 
 		done := make([]int64, 0, len(batch))
+		dropped := 0
 		for _, row := range batch {
 			if err := p.processRow(ctx, repoID, rglsID, row, cntrbCache, threadIssue); err != nil {
 				// Mark processed anyway so the drain makes progress (collect what
-				// we can; one bad message must not wedge the whole list).
-				p.logger.Warn("mailing-list processor: write failed, dropping message",
+				// we can; one bad message must not wedge the whole list — the
+				// failing-cohort-dominates-pool lesson). The message IS lost,
+				// which is why this logs at ERROR, not WARN (v0.25.36): data
+				// loss must be loud. If dropped counts trend non-zero in
+				// production, the fix is an attempts column on
+				// mailing_list_staging + bounded retry, not silent re-marking.
+				dropped++
+				p.logger.Error("mailing-list processor: write failed, DROPPING message",
 					"rgls_id", rglsID, "message_id", row.Message.MessageID, "error", err)
 			}
 			done = append(done, row.MlsID)
+		}
+		if dropped > 0 {
+			p.logger.Error("mailing-list processor: batch completed with dropped messages",
+				"rgls_id", rglsID, "dropped", dropped, "batch", len(batch))
 		}
 		if err := p.store.MarkMailingListStagingProcessed(ctx, done); err != nil {
 			return processed, err

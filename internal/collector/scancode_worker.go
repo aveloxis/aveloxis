@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // scancodeStderrTailBytes is the cap on how much subprocess output
@@ -257,7 +258,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	// inconsistent lock acquired during this serve's runtime gets
 	// cleared without waiting for the next aveloxis restart.
 	// See checkOwnLocks for the specific patterns it handles.
-	go w.checkOwnLocks(ctx)
+	safego.Go(w.logger, "scancode-lock-check", func() { w.checkOwnLocks(ctx) })
 
 	jobs := make(chan db.ScancodeJob)
 	var wg sync.WaitGroup
@@ -265,7 +266,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	// Runner pool — each runner consumes one job at a time.
 	for i := 0; i < w.workerCount; i++ {
 		wg.Add(1)
-		go w.runner(ctx, jobs, &wg)
+		safego.Go(w.logger, "scancode-runner", func() { w.runner(ctx, jobs, &wg) })
 	}
 
 	// Dispatcher claims jobs and feeds the channel. When ctx is
@@ -273,6 +274,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	// runners drain naturally.
 	dispatcherDone := make(chan struct{})
 	go func() {
+		defer safego.Recover(w.logger, "scancode-dispatcher")
 		defer close(dispatcherDone)
 		w.dispatcher(ctx, jobs)
 		close(jobs)
@@ -286,6 +288,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	// graceful-shutdown defer chain on each runOne.
 	runnersDone := make(chan struct{})
 	go func() {
+		defer safego.Recover(w.logger, "scancode-runners-wait")
 		wg.Wait()
 		close(runnersDone)
 	}()
@@ -930,7 +933,7 @@ func (w *ScancodeWorker) recoverOrphans(ctx context.Context) {
 			w.logger.Info("scancode recover: live orphan detected — spawning monitor",
 				"repo_id", r.RepoID, "owner", r.RepoOwner, "repo", r.RepoName,
 				"pid", r.LockedPID, "output_path", r.OutputPath)
-			go w.monitorOrphan(ctx, r)
+			safego.Go(w.logger, "scancode-orphan-monitor", func() { w.monitorOrphan(ctx, r) })
 			continue
 		}
 

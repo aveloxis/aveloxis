@@ -32,4 +32,6 @@ jobs:
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
 
       - name: Run staticcheck
-        run: staticcheck ./... || echo "::warning::staticcheck reported issues (non-blocking)"
+        # Blocking since v0.25.36 — the codebase is staticcheck-clean and
+        # SA-class findings (e.g. SA4010 dead append) are bug-shaped.
+        run: staticcheck ./...

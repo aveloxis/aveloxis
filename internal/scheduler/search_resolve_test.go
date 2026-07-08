@@ -22,8 +22,13 @@ func TestSearchResolveIntervalConfigField(t *testing.T) {
 	}
 	end := strings.Index(src[idx:], "\n}")
 	configDecl := src[idx : idx+end]
-	if !strings.Contains(configDecl, "SearchResolveInterval") {
-		t.Error("scheduler.Config must declare SearchResolveInterval to control the cadence of the search-resolve background task")
+	// v0.25.37: the mirror field is gone; the cadence is read through
+	// the CollectionConfig accessor at the point of use.
+	if !strings.Contains(configDecl, "Collection *config.CollectionConfig") {
+		t.Error("scheduler.Config must carry Collection *config.CollectionConfig")
+	}
+	if !strings.Contains(src, "s.cfg.Collection.SearchResolveIntervalDuration()") {
+		t.Error("the search-resolve ticker must read s.cfg.Collection.SearchResolveIntervalDuration()")
 	}
 }
 
@@ -32,12 +37,11 @@ func TestSearchResolveIntervalConfigField(t *testing.T) {
 // plenty of headroom while making meaningful progress on a fleet.
 func TestSearchResolveIntervalDefaultIsSane(t *testing.T) {
 	src := mustReadSchedulerSource(t)
-	if !strings.Contains(src, "SearchResolveInterval == 0") {
-		t.Error("scheduler.NewWithKeys must default SearchResolveInterval when zero — same pattern as PollInterval, EnrichInterval, etc.")
-	}
-	if !strings.Contains(src, "1 * time.Hour") &&
-		!strings.Contains(src, "time.Hour") {
-		t.Error("expected 1 hour as the SearchResolveInterval default")
+	// v0.25.37: the 1-hour default lives in the CollectionConfig
+	// accessor ONLY. Re-defaulting here is the double-clamp incident
+	// class (mailing_list_backfill_months; scancode shutdown grace).
+	if strings.Contains(src, "SearchResolveInterval == 0") {
+		t.Error("scheduler must NOT re-default SearchResolveInterval — the accessor owns the default")
 	}
 }
 

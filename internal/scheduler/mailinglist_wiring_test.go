@@ -12,13 +12,19 @@ import (
 // TestSchedulerConfigHasMailingListFields — Config must carry the v0.25.7
 // mailing-list knobs so main.go can plumb them through.
 func TestSchedulerConfigHasMailingListFields(t *testing.T) {
-	src := readFile(t, "scheduler.go")
+	// v0.25.37: the mirror fields are gone — the wiring reads every
+	// mailing-list knob through cfg.Collection accessors.
+	src := readFile(t, "mailinglist_wiring.go") + readFile(t, "scheduler.go")
 	for _, f := range []string{
-		"MailingListEnabled", "MailingListWorkers", "MailingListCadence",
-		"MailingListBackfillMonths", "MailingListPoliteEmail", "MailingListMirrorHandling",
+		"s.cfg.Collection.MailingListEnabled",
+		"s.cfg.Collection.MailingListWorkersOrDefault()",
+		"s.cfg.Collection.MailingListCadenceDuration()",
+		"s.cfg.Collection.MailingListBackfillMonthsOrDefault()",
+		"s.cfg.Collection.MailingListPoliteEmail",
+		"s.cfg.Collection.MailingListMirrorHandlingOrDefault()",
 	} {
 		if !strings.Contains(src, f) {
-			t.Errorf("scheduler.Config must declare %s", f)
+			t.Errorf("mailing-list wiring must read %s (accessor = single default point)", f)
 		}
 	}
 }
@@ -27,8 +33,8 @@ func TestSchedulerConfigHasMailingListFields(t *testing.T) {
 // mirroring the distribution gate.
 func TestRunGatesMailingListWorker(t *testing.T) {
 	src := readFile(t, "scheduler.go")
-	if !strings.Contains(src, "if s.cfg.MailingListEnabled {") {
-		t.Error("Run must gate the mailing-list worker on s.cfg.MailingListEnabled")
+	if !strings.Contains(src, "if s.cfg.Collection.MailingListEnabled {") {
+		t.Error("Run must gate the mailing-list worker on s.cfg.Collection.MailingListEnabled")
 	}
 	if !strings.Contains(src, "s.spawnMailingListWorker(ctx)") {
 		t.Error("Run must call s.spawnMailingListWorker(ctx) when enabled")
@@ -61,16 +67,14 @@ func TestMainPlumbsMailingListConfig(t *testing.T) {
 	src := string(data)
 	// Whitespace-tolerant: gofmt re-aligns the struct literal when the longest
 	// key changes, so pin the field reference, not the colon-to-value spacing.
-	for _, needle := range []string{
-		"MailingListEnabled:",
-		"cfg.Collection.MailingListEnabled",
-		"cfg.Collection.MailingListCadenceDuration()",
-		"cfg.Collection.MailingListMirrorHandlingOrDefault()",
-		"cfg.Collection.MailingListProcessorWorkersOrDefault()",
-	} {
-		if !strings.Contains(src, needle) {
-			t.Errorf("main.go must plumb %q", needle)
-		}
+	// v0.25.37: main.go no longer plumbs per-knob fields — it hands the
+	// whole collection block to the scheduler, and the wiring reads the
+	// accessors at the point of use. A single needle suffices: if the
+	// Collection pointer is passed, every knob (present and future)
+	// arrives without wiring.
+	if !strings.Contains(src, "Collection: &cfg.Collection") {
+		t.Error("main.go must pass Collection: &cfg.Collection into scheduler.Config " +
+			"(v0.25.37 single-wiring-point contract)")
 	}
 }
 

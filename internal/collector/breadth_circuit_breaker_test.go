@@ -114,6 +114,11 @@ func TestBreadthWorkerCircuitBreakerThresholdAndPauseExist(t *testing.T) {
 }
 
 func TestBreadthWorkerRunCountsConsecutive5xxAndOpensCircuit(t *testing.T) {
+	// v0.25.38: the counting/trip logic moved into the
+	// noteContributorOutcome seam and is now BEHAVIORALLY tested
+	// (breadth_behavior_test.go: exact-threshold trip, reset-on-success,
+	// open-window short-circuit). This source pin just keeps Run wired
+	// to the seam.
 	src, err := os.ReadFile("breadth.go")
 	if err != nil {
 		t.Fatal(err)
@@ -125,28 +130,12 @@ func TestBreadthWorkerRunCountsConsecutive5xxAndOpensCircuit(t *testing.T) {
 	}
 	tail := code[idx:]
 	endRel := strings.Index(tail[1:], "\nfunc ")
-	if endRel < 0 {
-		t.Fatal("end of Run not found")
-	}
 	body := tail[:1+endRel]
-
-	// Must classify errors via ClassifyError and treat ClassTransient
-	// as the circuit-breaker signal.
-	if !strings.Contains(body, "ClassifyError") {
-		t.Error("BreadthWorker.Run must call platform.ClassifyError on processContributor's " +
-			"error so it can distinguish transient 5xx from per-user 404s. Only transient " +
-			"errors count toward the circuit-breaker threshold.")
+	if !strings.Contains(body, "bw.noteContributorOutcome(") {
+		t.Error("BreadthWorker.Run must route every contributor outcome through " +
+			"noteContributorOutcome — that's where the breaker counting lives")
 	}
-	if !strings.Contains(body, "ClassTransient") {
-		t.Error("BreadthWorker.Run must reference platform.ClassTransient when deciding " +
-			"whether to increment the consecutive-5xx counter.")
-	}
-	// Must increment the threshold check and open the circuit.
-	if !strings.Contains(body, "breadthCircuitBreakerThreshold") {
-		t.Error("BreadthWorker.Run must reference breadthCircuitBreakerThreshold to gate " +
-			"the circuit-opening logic.")
-	}
-	if !strings.Contains(body, "circuitOpenUntil") {
-		t.Error("BreadthWorker.Run must set bw.circuitOpenUntil when the threshold trips.")
+	if !strings.Contains(code, "platform.ClassifyError") {
+		t.Error("the breaker must classify via platform.ClassifyError (ClassTransient = signal)")
 	}
 }

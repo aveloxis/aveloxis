@@ -1,0 +1,30 @@
+# Weekly live-API canaries (v0.25.36). These tests are gated on
+# AVELOXIS_TEST_NETWORK and hit real third-party APIs (deps.dev, GitHub
+# search, Apache Pony Mail) to detect contract drift — URL-encoding
+# rules, response-shape changes — that mock-based suites structurally
+# cannot see (the v0.24.1 deps.dev lesson). Scheduled weekly rather than
+# per-PR so flaky networks never block merges; a failure here means
+# "investigate the upstream API", not "revert your change".
+name: Network Canaries
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run network-gated canaries
+        env:
+          AVELOXIS_TEST_NETWORK: "1"
+        run: |
+          go test ./internal/platform/depsdev/ -run TestLiveDepsDevReverseLookupForSeaborn -count=1 -v
+          go test ./internal/platform/github/ -run TestSearchCommitByAuthorEmailLive -count=1 -v
+          go test ./internal/mailinglist/ -run TestPonyMailLiveCanary -count=1 -v

@@ -278,14 +278,34 @@ func TestVersionStampedV0256(t *testing.T) {
 	// parent row — three partial indexes added; and the contributor_repo
 	// repoint was removed from dedupOnePair: it's the breadth worker's
 	// GitHub-wide observational stream with no repos FK, and the repoint
-	// both rewrote history and seqscanned 51M rows per pair) → 0.25.35
+	// both rewrote history and seqscanned 51M rows per pair) → 0.25.35 →
+	// 0.25.36 (safego recover-wrappers on ~30 goroutines, swallowed-Exec
+	// fixes, -race on the integration tier, staticcheck blocking, weekly
+	// network canaries, KeyPool concurrency stress test) → 0.25.37 (the
+	// three-layer config wiring collapsed: scheduler.Config's 45-field
+	// mirror is gone, the scheduler consumes *config.CollectionConfig
+	// directly through the accessors, main.go's 42-line wiring became
+	// one Collection pointer. The collapse FIXED a live double-clamp:
+	// NewWithKeys was still re-defaulting ScancodeShutdownGrace 0→30m,
+	// silently defeating the v0.23.7 immediate-kill default) → 0.25.38
+	// (behavioral tests on the three incident-prone hot paths: the
+	// Processor write path end-to-end, the breadth circuit breaker via
+	// the new noteContributorOutcome seam + breadthStore role interface,
+	// and the runJob lock lifecycle — which immediately exposed and
+	// fixed TWO real bugs: facade cloned https://unknown/... for every
+	// generic-git repo, and git-only facade failures reported SUCCESS
+	// with no last_error) → 0.26.0 (GraphQL becomes the DEFAULT for
+	// GitHub PR-child fetch and issue+PR listing — the flip the v0.19.0
+	// sunset plan scheduled but never executed; REST stays as the
+	// aveloxis.json escape hatch, path deletion is a separate operator
+	// decision).
 	// (docs truth-reconciliation: 12 undocumented commands added to
 	// commands.md, stale counts/cadences/defaults fixed everywhere, and
 	// three VALUE-checking tripwires added — example-config effective
 	// defaults, commands-doc coverage, schema-count pins).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.35"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.35\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.26.0"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.26.0\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

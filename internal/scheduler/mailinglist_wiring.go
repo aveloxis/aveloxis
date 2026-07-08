@@ -48,23 +48,23 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 	}
 
 	ua := mailinglist.DefaultUserAgent
-	if s.cfg.MailingListPoliteEmail != "" {
+	if s.cfg.Collection.MailingListPoliteEmail != "" {
 		// #13: validate the polite email so a fat-fingered value doesn't ship
 		// a malformed From-contact to archive admins.
-		if !strings.Contains(s.cfg.MailingListPoliteEmail, "@") {
+		if !strings.Contains(s.cfg.Collection.MailingListPoliteEmail, "@") {
 			s.logger.Warn("mailing-list: mailing_list_polite_email is not a valid email address — using default User-Agent",
-				"value", s.cfg.MailingListPoliteEmail)
+				"value", s.cfg.Collection.MailingListPoliteEmail)
 		} else {
 			ua = fmt.Sprintf("Aveloxis/%s (+https://github.com/aveloxis/aveloxis; %s)",
-				db.ToolVersion, s.cfg.MailingListPoliteEmail)
+				db.ToolVersion, s.cfg.Collection.MailingListPoliteEmail)
 		}
 	}
 
-	workers := s.cfg.MailingListWorkers
+	workers := s.cfg.Collection.MailingListWorkersOrDefault()
 	if workers <= 0 {
 		workers = 2
 	}
-	cadence := s.cfg.MailingListCadence
+	cadence := s.cfg.Collection.MailingListCadenceDuration()
 	if cadence <= 0 {
 		cadence = db.DefaultMailingListCadence
 	}
@@ -85,10 +85,10 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 		breaker := mailinglist.NewBreaker(mailinglist.DefaultCircuitThreshold, mailinglist.DefaultCircuitPause)
 		s.logger.Info("mailing-list worker starting",
 			"system", sys.Name, "backend", sys.ArchiveBackend, "workers", workers, "cadence", cadence,
-			"backfill_months", s.cfg.MailingListBackfillMonths, "mirror_handling", s.cfg.MailingListMirrorHandling)
+			"backfill_months", s.cfg.Collection.MailingListBackfillMonthsOrDefault(), "mirror_handling", s.cfg.Collection.MailingListMirrorHandlingOrDefault())
 		for i := 0; i < workers; i++ {
 			w := collector.NewMailingListWorker(s.store, sys, backend, pacer, breaker,
-				cadence, s.cfg.MailingListBackfillMonths,
+				cadence, s.cfg.Collection.MailingListBackfillMonthsOrDefault(),
 				pid, bootID, s.logger)
 			safego.Go(s.logger, "mailing-list-worker", func() { s.runMailingListLoop(ctx, w) })
 		}
@@ -99,11 +99,11 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 		// contention. Default one drain goroutine per system; >1 fans out across
 		// DISTINCT lists (the Processor's in-process per-list guard keeps two
 		// goroutines off the same list).
-		drainWorkers := s.cfg.MailingListProcessorWorkers
+		drainWorkers := s.cfg.Collection.MailingListProcessorWorkersOrDefault()
 		if drainWorkers <= 0 {
 			drainWorkers = 1
 		}
-		proc := collector.NewMailingListProcessor(s.store, sys.Name, s.cfg.MailingListMirrorHandling, sys.ProjectionClean(), s.logger)
+		proc := collector.NewMailingListProcessor(s.store, sys.Name, s.cfg.Collection.MailingListMirrorHandlingOrDefault(), sys.ProjectionClean(), s.logger)
 		for i := 0; i < drainWorkers; i++ {
 			safego.Go(s.logger, "mailing-list-drain", func() { s.runMailingListDrainLoop(ctx, proc) })
 		}

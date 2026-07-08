@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
@@ -27,7 +28,7 @@ import (
 
 func TestDetermineSince_RespectsForceFullCollect(t *testing.T) {
 	s := New(nil, nil, nil, slog.New(slog.NewTextHandler(os.Stderr, nil)), Config{
-		RecollectAfter: 24 * time.Hour,
+		Collection: &config.CollectionConfig{DaysUntilRecollect: 1},
 	})
 
 	// Repo was previously collected (LastCollected set) AND has the

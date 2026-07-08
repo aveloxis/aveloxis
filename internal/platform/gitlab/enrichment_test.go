@@ -6,15 +6,12 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/model"
-	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // TestEnrichContributorPopulatesAllFields verifies that EnrichContributor

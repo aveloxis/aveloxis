@@ -674,6 +674,16 @@ func (c *CollectionConfig) StagingRetentionDuration() time.Duration {
 // EnrichIntervalDuration converts EnrichIntervalMinutes to a time.Duration.
 // Falls back to 30 minutes when unset (zero) so existing aveloxis.json
 // files without the new key keep the documented default.
+// RecollectAfterDuration converts days_until_recollect to a duration.
+// Defaults to 24h when unset/non-positive — the single place this
+// default lives (v0.25.37; the scheduler's mirror fallback is gone).
+func (c *CollectionConfig) RecollectAfterDuration() time.Duration {
+	if c.DaysUntilRecollect <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.DaysUntilRecollect) * 24 * time.Hour
+}
+
 func (c *CollectionConfig) EnrichIntervalDuration() time.Duration {
 	if c.EnrichIntervalMinutes <= 0 {
 		return 30 * time.Minute
@@ -987,8 +997,16 @@ func DefaultConfig() *Config {
 			RepoCloneDir:            defaultCloneDir(),
 			MatviewRebuildDay:       "saturday",
 			MatviewRebuildOnStartup: false,
-			PRChildMode:             "rest",
-			ListingMode:             "rest",
+			// v0.26.0 (tech-debt Action 3, phase A): GraphQL is the
+			// default for GitHub PR-child fetch and issue+PR listing —
+			// the flip the v0.19.0 sunset plan scheduled but never
+			// executed. Shadow-diffed to column equivalence across the
+			// v0.18–v0.22 phases; ~5× faster wall-clock on the reference
+			// repo. REST remains a first-class escape hatch: set
+			// "pr_child_mode"/"listing_mode" to "rest" in aveloxis.json.
+			// Path DELETION (phase B) is a separate operator go/no-go.
+			PRChildMode:             "graphql",
+			ListingMode:             "graphql",
 			ThreadingMode:           "single",
 			ShardSize:               3000,
 			IssueChildMode:          "graphql",

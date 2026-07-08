@@ -35,15 +35,15 @@ import (
 // participates in the same fairness pool as the rest of GitHub
 // collection rather than competing with a separate budget.
 func (s *Scheduler) spawnDistributionWorker(ctx context.Context) {
-	workers := s.cfg.DistributionTrackingWorkers
+	workers := s.cfg.Collection.DistributionTrackingWorkersOrDefault()
 	if workers <= 0 {
 		workers = 4
 	}
-	startInterval := s.cfg.DistributionTrackingStartInterval
+	startInterval := s.cfg.Collection.DistributionTrackingStartInterval()
 	if startInterval <= 0 {
 		startInterval = 30 * time.Second
 	}
-	cadence := s.cfg.DistributionTrackingInterval
+	cadence := s.cfg.Collection.DistributionTrackingInterval()
 	if cadence <= 0 {
 		cadence = 180 * 24 * time.Hour
 	}
@@ -52,12 +52,12 @@ func (s *Scheduler) spawnDistributionWorker(ctx context.Context) {
 	// unauthenticated; they use a plain HTTP client.
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	depsDevClient := depsdev.New(depsdev.Options{
-		UserAgent:  s.cfg.DistributionTrackingUserAgent,
+		UserAgent:  s.cfg.Collection.DistributionTrackingUserAgent,
 		HTTPClient: httpClient,
 	})
 	ecoClient := ecosystems.New(ecosystems.Options{
-		UserAgent:   s.cfg.DistributionTrackingUserAgent,
-		PoliteEmail: s.cfg.DistributionTrackingPoliteEmail,
+		UserAgent:   s.cfg.Collection.DistributionTrackingUserAgent,
+		PoliteEmail: s.cfg.Collection.DistributionTrackingPoliteEmail,
 		HTTPClient:  httpClient,
 	})
 
@@ -76,7 +76,7 @@ func (s *Scheduler) spawnDistributionWorker(ctx context.Context) {
 	// NewCompositeScanner defaults to true; we only override when
 	// the operator explicitly set it (the cfg field is plumbed
 	// through from CollectionConfig.DistributionTrackingCrossCheckSourcesValue()).
-	scanner.CrossCheckSources = s.cfg.DistributionTrackingCrossCheckSources
+	scanner.CrossCheckSources = s.cfg.Collection.DistributionTrackingCrossCheckSourcesValue()
 
 	worker := distribution.NewWorker(distribution.WorkerOptions{
 		Store:                   s.store,
@@ -85,14 +85,14 @@ func (s *Scheduler) spawnDistributionWorker(ctx context.Context) {
 		StartInterval:           startInterval,
 		Cadence:                 cadence,
 		Logger:                  s.logger,
-		ImmediatePartialReclaim: s.cfg.DistributionTrackingImmediatePartialReclaim, // v0.25.3
+		ImmediatePartialReclaim: s.cfg.Collection.DistributionTrackingImmediatePartialReclaimValue(), // v0.25.3
 	})
 
 	s.logger.Info("distribution worker starting",
 		"workers", workers,
 		"start_interval", startInterval,
 		"cadence", cadence,
-		"polite_email_set", s.cfg.DistributionTrackingPoliteEmail != "")
+		"polite_email_set", s.cfg.Collection.DistributionTrackingPoliteEmail != "")
 
 	safego.Go(s.logger, "distribution-worker", func() { worker.Run(ctx) })
 }

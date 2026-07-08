@@ -83,12 +83,13 @@ func TestEnrichIntervalConfigField(t *testing.T) {
 		t.Fatal("could not find end of Config struct")
 	}
 	configDecl := src[idx : idx+end]
-	if !strings.Contains(configDecl, "EnrichInterval") {
-		t.Error("scheduler.Config must declare EnrichInterval so the cadence is configurable per deployment")
+	// v0.25.37: the mirror field is gone — the cadence comes from the
+	// operator's CollectionConfig, read through the accessor.
+	if !strings.Contains(configDecl, "Collection *config.CollectionConfig") {
+		t.Error("scheduler.Config must carry Collection *config.CollectionConfig — " +
+			"the enrich cadence (and every other knob) is read through its accessors")
 	}
-	if !strings.Contains(configDecl, "time.Duration") {
-		t.Error("expected time.Duration somewhere in Config — the existing Duration fields are the model")
-	}
+	_ = configDecl
 }
 
 // TestEnrichIntervalDefaultIsSane pins a 30-minute default. Any caller
@@ -97,14 +98,14 @@ func TestEnrichIntervalConfigField(t *testing.T) {
 // pressure; slower than 1 hour leaves enrichment lagging the fleet.
 func TestEnrichIntervalDefaultIsSane(t *testing.T) {
 	src := mustReadSchedulerSource(t)
-	// Look for a defaulting block in NewWithKeys or New.
-	if !strings.Contains(src, "EnrichInterval == 0") {
-		t.Error("scheduler.NewWithKeys must default EnrichInterval when it's zero — " +
-			"matching the pattern for PollInterval, RecollectAfter, OrgRefreshInterval")
+	// v0.25.37: the default lives in EXACTLY one place — the
+	// CollectionConfig accessor. The scheduler must consume the accessor
+	// and must NOT re-default (the double-clamp incident class).
+	if !strings.Contains(src, "s.cfg.Collection.EnrichIntervalDuration()") {
+		t.Error("the enrichment ticker must read s.cfg.Collection.EnrichIntervalDuration()")
 	}
-	if !strings.Contains(src, "30 * time.Minute") && !strings.Contains(src, "time.Minute * 30") {
-		// If a different default is used, this test will need updating; flag it.
-		t.Error("expected 30 * time.Minute as the EnrichInterval default — " +
-			"that's the value documented in the v0.18.29 plan")
+	if strings.Contains(src, "EnrichInterval == 0") {
+		t.Error("scheduler must NOT re-default EnrichInterval — the accessor owns " +
+			"the default (v0.25.37 single-default-point contract)")
 	}
 }

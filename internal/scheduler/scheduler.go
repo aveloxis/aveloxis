@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
+	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
@@ -32,78 +33,28 @@ import (
 
 // Config configures the scheduler.
 type Config struct {
-	Workers               int           // concurrent collection goroutines (default 1)
-	PollInterval          time.Duration // how often to check for due jobs (default 10s)
-	RecollectAfter        time.Duration // how long before re-collecting a repo (default 24h)
-	StaleLockTimeout      time.Duration // how long before reclaiming a locked job (default 1h)
-	RepoCloneDir          string        // directory for bare git clones (can be terabytes)
-	OrgRefreshInterval    time.Duration // how often to re-scan orgs for new/renamed repos (default 4h)
-	MatviewRebuildDay     int           // day of week for matview rebuild (0=Sun..6=Sat, -1=disabled)
-	ForceFullCollection   bool          // when true, all collections use since=zero (full re-collection)
-	PRChildMode           string        // "rest" (default) or "graphql" — routes PR child fetch through FetchPRBatch
-	ListingMode           string        // "rest" (default) or "graphql" — routes issue+PR listing through ListIssuesAndPRs
-	ThreadingMode         string        // "single" (default) or "sharded" — fans out PR batch fetching across goroutines
-	ShardSize             int           // item-count threshold for spawning an additional shard (default 3000)
-	IssueChildMode        string        // "rest" (default) or "graphql" — phase 5: inline issue label+assignee fetch via the GraphQL listing
-	EnrichInterval        time.Duration // how often to run thin-contributor enrichment (default 30 min). v0.18.29 moved enrichment out of per-job processing into a periodic scheduler task.
-	SearchResolveInterval time.Duration // how often to run the search-resolve background task (default 1 hour). v0.19.2 added this to backfill gh_user_id on contributors with email but no platform identity, using GitHub's search API at controlled rate.
-	AffiliationInterval   time.Duration // how often to run the periodic singleton PopulateAffiliations task (default 1 hour). v0.19.7 moved this off the per-job hot path to eliminate cross-worker contention on UNIQUE (ca_domain).
-	ShutdownGrace         time.Duration // how long to wait for in-flight workers to finish during ctx-cancel before closing the pgx pool (default 10s). v0.20.0. Bounds shutdown wall-clock time so a single long UPDATE can't block stop indefinitely.
-	BreadthInterval       time.Duration // how often the contributor breadth worker ticks (default 15min). v0.20.17. Was hardcoded to 6h, capping coverage to 400/day = 9.6 years for 1.4M contribs.
-	BreadthBatchSize      int           // maximum contributors per breadth tick (default 2000). v0.20.17.
-	BreadthCooldown       time.Duration // minimum interval between successive attempts on the same contributor (default 7 days). v0.20.17. Replaces the pre-fix "spin on dead-end contributors forever" pattern.
+	// Workers is the FLAG-RESOLVED concurrent collection goroutine
+	// count: serve's --workers overrides collection.workers in main.go.
+	// The one deliberate exception to the no-mirror rule (see below).
+	Workers int
 
-	// v0.21.0 — ScancodeWorker config knobs. Scancode runs in its
-	// own goroutine pool, decoupled from the per-repo collection
-	// pipeline. The 2026-05-14 incident showed the pre-v0.21.0
-	// 2-slot semaphore stalled 177 of 180 collection workers for
-	// 7+ hours; the decoupled pool fixes the bottleneck and adds
-	// operator-tunable cadence. See internal/collector/
-	// scancode_worker.go and docs/architecture/scancode.md.
-	ScancodeWorkers        int           // max concurrent scancode subprocesses (default 2)
-	ScancodeStartInterval  time.Duration // minimum interval between claim attempts (default 90s)
-	ScancodeCadence        time.Duration // minimum interval between scans on the same repo (default 180d)
-	ScancodeCloneDir       string        // parent directory for per-run shallow clones (default /tmp/aveloxis-scancode)
-	ScancodeShutdownGrace  time.Duration // wait budget for in-flight scancode runs on aveloxis stop (v0.23.7 default 0 = immediate kill)
-	ScancodeRunTimeoutBase time.Duration // v0.23.8 base per-job timeout (default 2h)
-	ScancodeRunTimeoutCap  time.Duration // v0.23.8 upper bound on adaptive per-job timeout (default 24h)
-	ScancodeMaxInMemory    int           // v0.25.2 scancode --max-in-memory file-result cap (default 5000)
+	// Scheduler-internal cadences with no aveloxis.json knob.
+	PollInterval       time.Duration // how often to check for due jobs (default 10s)
+	StaleLockTimeout   time.Duration // how long before reclaiming a locked job (default 1h)
+	OrgRefreshInterval time.Duration // how often to re-scan orgs for new/renamed repos (default 4h)
 
-	// PhaseWatchdog is the no-staging-growth threshold the v0.22.4
-	// observation watchdog uses to emit a long-jobs event. Default
-	// 75 minutes. Watchdog is purely observational — it NEVER cancels
-	// the job or requeues the repo. See long_jobs_watchdog.go.
-	PhaseWatchdog time.Duration
-
-	// StagingRetention is how long processed staging rows are kept
-	// before the hourly PurgeStagedProcessed sweep deletes them.
-	// Default 1 hour. v0.22.4 cut from the prior hardcoded 7-day window
-	// after 2026-05-16 production diagnostics showed JSONB tombstones
-	// stacking 3–5× on frequently-re-collected repos.
-	StagingRetention time.Duration
-
-	// v0.24.0 — DistributionWorker config. Captures evidence of where
-	// each repo is *published* via package managers (deps.dev,
-	// ecosyste.ms, GitHub Packages, GitHub release assets) plus
-	// in-repo manifest evidence. Off by default; opt-in via
-	// collection.distribution_tracking_enabled.
-	DistributionTrackingEnabled                 bool          // master switch (off by default)
-	DistributionTrackingInterval                time.Duration // per-repo cadence (default 180d)
-	DistributionTrackingWorkers                 int           // concurrent runners (default 4)
-	DistributionTrackingStartInterval           time.Duration // minimum gap between successful claims (default 30s)
-	DistributionTrackingPoliteEmail             string        // ecosyste.ms polite-pool From: header
-	DistributionTrackingUserAgent               string        // overrides "aveloxis/<version>" UA
-	DistributionTrackingCrossCheckSources       bool          // v0.25.0: always query both deps.dev AND ecosyste.ms (default true)
-	DistributionTrackingImmediatePartialReclaim bool          // v0.25.3: partial-scan repos bypass cadence (default true)
-
-	// v0.25.7 MailingListWorker. collection.mailing_list_*.
-	MailingListEnabled          bool          // master switch (off by default)
-	MailingListWorkers          int           // concurrent list runners (default 2)
-	MailingListCadence          time.Duration // per-list tail-refresh cadence (default 30d)
-	MailingListBackfillMonths   int           // history window for un-checkpointed lists (default 6)
-	MailingListPoliteEmail      string        // contact embedded in the archive User-Agent
-	MailingListMirrorHandling   string        // skip | metadata_only | full
-	MailingListProcessorWorkers int           // drain goroutines per system (default 1, single-threaded per list)
+	// Collection is the operator's aveloxis.json `collection` block —
+	// THE single source for every runtime knob (v0.25.37, tech-debt
+	// Action 1). The scheduler reads values through the CollectionConfig
+	// accessors at the point of use so each default/clamp exists in
+	// exactly one place. The pre-v0.25.37 45-field mirror struct was a
+	// proven incident generator: mailing_list_backfill_months was
+	// silently defeated for weeks by a duplicate clamp, and the
+	// v0.23.7 scancode immediate-kill default was still being re-clamped
+	// 0→30m here when the mirror was removed. Do NOT add per-knob
+	// fields to this struct — the mirror-detector tripwire
+	// (config_collapse_test.go) fails the build if you do.
+	Collection *config.CollectionConfig
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -144,58 +95,19 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = 10 * time.Second
 	}
-	if cfg.RecollectAfter == 0 {
-		cfg.RecollectAfter = 24 * time.Hour
-	}
 	if cfg.StaleLockTimeout == 0 {
 		cfg.StaleLockTimeout = 1 * time.Hour
 	}
 	if cfg.OrgRefreshInterval == 0 {
 		cfg.OrgRefreshInterval = 4 * time.Hour
 	}
-	if cfg.EnrichInterval == 0 {
-		cfg.EnrichInterval = 30 * time.Minute
-	}
-	if cfg.SearchResolveInterval == 0 {
-		cfg.SearchResolveInterval = 1 * time.Hour
-	}
-	if cfg.AffiliationInterval == 0 {
-		cfg.AffiliationInterval = 1 * time.Hour
-	}
-	if cfg.BreadthInterval == 0 {
-		cfg.BreadthInterval = 15 * time.Minute
-	}
-	if cfg.BreadthBatchSize == 0 {
-		cfg.BreadthBatchSize = 2000
-	}
-	if cfg.BreadthCooldown == 0 {
-		cfg.BreadthCooldown = 7 * 24 * time.Hour
-	}
-	if cfg.ShutdownGrace == 0 {
-		cfg.ShutdownGrace = 10 * time.Second
-	}
-	// v0.21.0 ScancodeWorker defaults — see CollectionConfig field
-	// docs and docs/architecture/scancode.md for the rationale.
-	if cfg.ScancodeWorkers == 0 {
-		cfg.ScancodeWorkers = 2
-	}
-	if cfg.ScancodeStartInterval == 0 {
-		cfg.ScancodeStartInterval = 90 * time.Second
-	}
-	if cfg.ScancodeCadence == 0 {
-		cfg.ScancodeCadence = 180 * 24 * time.Hour
-	}
-	if cfg.ScancodeCloneDir == "" {
-		cfg.ScancodeCloneDir = "/tmp/aveloxis-scancode"
-	}
-	if cfg.ScancodeShutdownGrace == 0 {
-		cfg.ScancodeShutdownGrace = 30 * time.Minute
-	}
-	if cfg.StagingRetention == 0 {
-		cfg.StagingRetention = 1 * time.Hour
-	}
-	if cfg.PhaseWatchdog == 0 {
-		cfg.PhaseWatchdog = 75 * time.Minute
+	// Collection knobs are NOT defaulted here — their defaults live in
+	// exactly one place, the CollectionConfig accessors (v0.25.37).
+	// Re-clamping here is how the v0.23.7 scancode immediate-kill
+	// default got silently defeated (0 → 30m) for two months.
+	if cfg.Collection == nil {
+		defaults := config.DefaultConfig().Collection
+		cfg.Collection = &defaults
 	}
 
 	hostname, _ := os.Hostname()
@@ -237,11 +149,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	s.logger.Info("scheduler started",
 		"workers", s.cfg.Workers,
 		"poll_interval", s.cfg.PollInterval,
-		"recollect_after", s.cfg.RecollectAfter,
+		"recollect_after", s.cfg.Collection.RecollectAfterDuration(),
 		"worker_id", s.workerID,
-		"force_full_collection", s.cfg.ForceFullCollection,
+		"force_full_collection", s.cfg.Collection.ForceFullCollection,
 	)
-	if s.cfg.ForceFullCollection {
+	if s.cfg.Collection.ForceFullCollection {
 		s.logger.Warn("FORCE FULL COLLECTION enabled — all repos will be fully re-collected. Set collection.force_full to false in aveloxis.json after this pass completes.")
 	}
 
@@ -286,11 +198,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// within seconds of restart. The fillWorkerSlots invariant (no new
 	// claims until staging is drained) is still enforced by the explicit
 	// call order below.
-	if realigned, err := s.store.RealignDueDates(ctx, s.cfg.RecollectAfter); err != nil {
+	if realigned, err := s.store.RealignDueDates(ctx, s.cfg.Collection.RecollectAfterDuration()); err != nil {
 		s.logger.Error("failed to realign queue due_at from config", "error", err)
 	} else if realigned > 0 {
 		s.logger.Info("realigned queue due_at from current days_until_recollect",
-			"rows_updated", realigned, "recollect_after", s.cfg.RecollectAfter)
+			"rows_updated", realigned, "recollect_after", s.cfg.Collection.RecollectAfterDuration())
 	}
 
 	// Identify the leftover-staging drain set and lock-park those repos
@@ -340,7 +252,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// 6h/100/no-cooldown capped throughput to 400 contribs/day
 	// and left zero-event contributors stuck at the queue head
 	// forever.
-	breadthTicker := time.NewTicker(s.cfg.BreadthInterval)
+	breadthTicker := time.NewTicker(s.cfg.Collection.BreadthIntervalDuration())
 	defer breadthTicker.Stop()
 
 	// v0.21.0 — ScancodeWorker goroutine. Runs its own pool of N
@@ -352,14 +264,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// docs/architecture/scancode.md.
 	scancodeWorker := collector.NewScancodeWorker(
 		s.store, s.logger,
-		s.cfg.ScancodeWorkers,
-		s.cfg.ScancodeStartInterval,
-		s.cfg.ScancodeCadence,
-		s.cfg.ScancodeCloneDir,
-		s.cfg.ScancodeShutdownGrace,
-		s.cfg.ScancodeRunTimeoutBase,
-		s.cfg.ScancodeRunTimeoutCap,
-		s.cfg.ScancodeMaxInMemory,
+		s.cfg.Collection.ScancodeWorkersOrDefault(),
+		s.cfg.Collection.ScancodeStartInterval(),
+		s.cfg.Collection.ScancodeCadence(),
+		s.cfg.Collection.ScancodeCloneDirOrDefault(),
+		s.cfg.Collection.ScancodeShutdownGrace(),
+		s.cfg.Collection.ScancodeRunTimeout(),
+		s.cfg.Collection.ScancodeRunTimeoutCap(),
+		s.cfg.Collection.ScancodeMaxInMemoryOrDefault(),
 	)
 	safego.Go(s.logger, "scancode-worker", func() { scancodeWorker.Run(ctx) })
 
@@ -370,7 +282,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// assets) plus in-repo manifest evidence. Independent of every
 	// other collection workload; failures here cannot affect main
 	// collection.
-	if s.cfg.DistributionTrackingEnabled {
+	if s.cfg.Collection.DistributionTrackingEnabled {
 		s.spawnDistributionWorker(ctx)
 	}
 
@@ -378,7 +290,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// Pony Mail) into email_message + messages. Off by default; depends on
 	// a populated per-PMC repo_group (load-foundation-orgs). Independent
 	// of the per-repo collection pipeline.
-	if s.cfg.MailingListEnabled {
+	if s.cfg.Collection.MailingListEnabled {
 		s.spawnMailingListWorker(ctx)
 	}
 
@@ -403,7 +315,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// each fired EnrichThinContributors(14000) after their tiny repo
 	// finished, attempting ~1.68M REST calls in parallel and
 	// exhausting all GitHub keys in ~11 minutes (production verified).
-	enrichTicker := time.NewTicker(s.cfg.EnrichInterval)
+	enrichTicker := time.NewTicker(s.cfg.Collection.EnrichIntervalDuration())
 	defer enrichTicker.Stop()
 
 	// v0.19.2: search-resolve background task. Takes contributors
@@ -412,7 +324,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// the core 5000/hour budget), and backfills gh_user_id on
 	// successful matches WITHOUT changing cntrb_id or cntrb_login
 	// (those would orphan FK refs / trip the partial unique index).
-	searchResolveTicker := time.NewTicker(s.cfg.SearchResolveInterval)
+	searchResolveTicker := time.NewTicker(s.cfg.Collection.SearchResolveIntervalDuration())
 	defer searchResolveTicker.Stop()
 
 	// v0.19.7: contributor_affiliations population. Was per-job
@@ -426,7 +338,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// when contributor enrichment data changes (bounded by the 30-day
 	// cntrb_last_enriched_at cooldown), so hourly cadence is plenty
 	// fresh.
-	affiliationsTicker := time.NewTicker(s.cfg.AffiliationInterval)
+	affiliationsTicker := time.NewTicker(s.cfg.Collection.AffiliationIntervalDuration())
 	defer affiliationsTicker.Stop()
 
 	// v0.23.0: kick off the repo-metadata backfill in the background.
@@ -456,14 +368,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			s.logger.Info("scheduler stopping, waiting for workers to finish",
-				"shutdown_grace", s.cfg.ShutdownGrace)
+				"shutdown_grace", s.cfg.Collection.ShutdownGraceDuration())
 			// Drain semaphore to wait for active workers, bounded by
 			// ShutdownGrace. Pre-v0.20.0 this loop was unbounded — a
 			// single 26-minute commits UPDATE blocked shutdown for the
 			// full duration, and any backend that didn't finish in
 			// time became an orphan once the parent process exited.
 			drained := 0
-			deadline := time.After(s.cfg.ShutdownGrace)
+			deadline := time.After(s.cfg.Collection.ShutdownGraceDuration())
 		drain:
 			for drained < s.cfg.Workers {
 				select {
@@ -500,7 +412,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-matviewCheckTicker.C:
 			now := time.Now()
-			rebuildDay := s.cfg.MatviewRebuildDay
+			rebuildDay := s.cfg.Collection.MatviewRebuildWeekday()
 			// Mark the rebuild as owed; the poll loop starts it once the
 			// worker pool has naturally drained below the threshold. This
 			// replaces the previous inline call that drained the semaphore
@@ -541,7 +453,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 // seconds) and at worst race on the same DELETE WHERE, which is
 // safe because the predicate is monotonic.
 func (s *Scheduler) runStagingCleanup(ctx context.Context) {
-	deleted, err := s.store.PurgeStagedProcessed(ctx, s.cfg.StagingRetention)
+	deleted, err := s.store.PurgeStagedProcessed(ctx, s.cfg.Collection.StagingRetentionDuration())
 	if err != nil {
 		s.logger.Warn("staging cleanup failed", "error", err)
 		return
@@ -555,7 +467,7 @@ func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 	// touched — they persist until the list's repo_group gains a repo and the
 	// MailingListProcessor drains them. Always-on (harmless DELETE on an empty
 	// table) so leftover processed rows from a prior enablement don't bloat.
-	mlDeleted, err := s.store.PurgeMailingListStagingProcessed(ctx, s.cfg.StagingRetention.Seconds())
+	mlDeleted, err := s.store.PurgeMailingListStagingProcessed(ctx, s.cfg.Collection.StagingRetentionDuration().Seconds())
 	if err != nil {
 		s.logger.Warn("mailing-list staging cleanup failed", "error", err)
 		return
@@ -805,7 +717,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		Logger:    s.logger,
 		LogPath:   longJobsLogPath(),
 		DumpDir:   longJobsDumpDir(),
-		Threshold: s.cfg.PhaseWatchdog,
+		Threshold: s.cfg.Collection.PhaseWatchdogDuration(),
 		PollEvery: 30 * time.Second,
 		Owner:     repo.Owner,
 		Repo:      repo.Name,
@@ -861,7 +773,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		// Runs after normal collection so we don't duplicate work for items
 		// already updated via the since-based incremental fetch.
 		if err == nil {
-			refresher := collector.NewOpenItemRefresherWithMode(s.store, client, s.logger, s.cfg.PRChildMode)
+			refresher := collector.NewOpenItemRefresherWithMode(s.store, client, s.logger, s.cfg.Collection.PRChildMode)
 			refresher.RefreshOpenItems(ctx, job.RepoID, repo.Owner, repo.Name)
 		}
 
@@ -871,7 +783,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		if err == nil {
 			metaIssues, metaPRs, metaErr := s.store.GetRepoMetaCounts(ctx, job.RepoID)
 			if metaErr == nil && (metaIssues > 0 || metaPRs > 0) {
-				gf := collector.NewGapFillerWithMode(s.store, client, s.logger, s.cfg.PRChildMode)
+				gf := collector.NewGapFillerWithMode(s.store, client, s.logger, s.cfg.Collection.PRChildMode)
 				filled, gfErr := gf.AssessAndFillGaps(ctx, job.RepoID, repo.Owner, repo.Name, metaIssues, metaPRs)
 				if gfErr != nil {
 					s.logger.Warn("gap fill error", "repo_id", job.RepoID, "error", gfErr)
@@ -929,7 +841,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	outcome := s.buildOutcome(result, facadeResult, analysisResult, err, gapFillErr)
 	duration := time.Since(start)
 
-	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, s.cfg.RecollectAfter,
+	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, s.cfg.Collection.RecollectAfterDuration(),
 		outcome.issues, outcome.prs, outcome.messages, outcome.events,
 		outcome.releases, outcome.contributors, outcome.commits,
 		duration.Milliseconds(), outcome.errMsg); err != nil {
@@ -965,7 +877,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 // failJob marks a job as failed with zero counts. Used for early exits
 // (repo lookup failure, unknown platform, etc.).
 func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
-	if err := s.store.CompleteJob(ctx, repoID, false, s.cfg.RecollectAfter,
+	if err := s.store.CompleteJob(ctx, repoID, false, s.cfg.Collection.RecollectAfterDuration(),
 		0, 0, 0, 0, 0, 0, 0, 0, errMsg); err != nil {
 		s.logger.Warn("failed to record job failure", "repo_id", repoID, "error", err)
 	}
@@ -974,7 +886,7 @@ func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
 // skipJob marks a job as successfully completed with zero counts and a reason.
 // Used when prelim determines the repo should be skipped (e.g., deleted, duplicate).
 func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
-	if err := s.store.CompleteJob(ctx, repoID, true, s.cfg.RecollectAfter,
+	if err := s.store.CompleteJob(ctx, repoID, true, s.cfg.Collection.RecollectAfterDuration(),
 		0, 0, 0, 0, 0, 0, 0, 0, reason); err != nil {
 		s.logger.Warn("failed to record job skip", "repo_id", repoID, "error", err)
 	}
@@ -1005,14 +917,14 @@ func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
 //     GraphQL-batch error class that leaves PR child data incomplete
 //     (v0.18.24), or manually via `aveloxis recollect <url>`.
 func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
-	if s.cfg.ForceFullCollection {
+	if s.cfg.Collection.ForceFullCollection {
 		return time.Time{} // force full re-collection (fleet-wide)
 	}
 	if job.ForceFullCollect {
 		return time.Time{} // force full re-collection (this repo only)
 	}
 	if job.LastCollected != nil {
-		return time.Now().Add(-s.cfg.RecollectAfter)
+		return time.Now().Add(-s.cfg.Collection.RecollectAfterDuration())
 	}
 	return time.Time{} // zero = full collection
 }
@@ -1044,9 +956,9 @@ func shouldForceFullRecollect(errMsg string) bool {
 // the API, then process staged data into relational tables with bulk
 // contributor resolution.
 func (s *Scheduler) collectAndProcess(ctx context.Context, repoID int64, repo *model.Repo, client platform.Client, since time.Time) (*collector.CollectResult, error) {
-	sc := collector.NewStagedCollectorWithAllModes(client, s.store, s.logger, s.cfg.PRChildMode, s.cfg.ListingMode, s.cfg.ThreadingMode, s.cfg.ShardSize).
+	sc := collector.NewStagedCollectorWithAllModes(client, s.store, s.logger, s.cfg.Collection.PRChildMode, s.cfg.Collection.ListingMode, s.cfg.Collection.ThreadingMode, s.cfg.Collection.ShardSize).
 		WithWorkers(s.cfg.Workers).
-		WithIssueChildMode(s.cfg.IssueChildMode)
+		WithIssueChildMode(s.cfg.Collection.IssueChildMode)
 	result, err := sc.CollectRepo(ctx, repoID, repo.Owner, repo.Name, since)
 
 	if err == nil {
@@ -1064,12 +976,26 @@ func (s *Scheduler) collectAndProcess(ctx context.Context, repoID int64, repo *m
 func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo *model.Repo) (*collector.FacadeResult, *collector.AnalysisResult) {
 	// Phase 3: Facade — creates/updates bare clone and parses git log.
 	var facadeResult *collector.FacadeResult
-	fc := collector.NewFacadeCollector(s.store, s.logger, s.cfg.RepoCloneDir)
-	gitURL := fmt.Sprintf("https://%s/%s/%s.git",
-		platformHostForModel(repo.Platform), repo.Owner, repo.Name)
+	fc := collector.NewFacadeCollector(s.store, s.logger, s.cfg.Collection.RepoCloneDir)
+	// Clone from the repo's OWN stored URL (v0.25.38). The pre-v0.25.38
+	// reconstruction via platformHostForModel produced
+	// https://unknown/owner/name.git for every GENERIC-GIT repo —
+	// breaking facade for the exact platform whose only collection IS
+	// facade — and forced github.com/gitlab.com hosts onto
+	// enterprise/self-hosted repos. Surfaced by the v0.25.38 runJob
+	// lifecycle test on its first execution.
+	gitURL := repo.GitURL
+	if gitURL == "" {
+		gitURL = fmt.Sprintf("https://%s/%s/%s.git",
+			platformHostForModel(repo.Platform), repo.Owner, repo.Name)
+	}
 	result, err := fc.CollectRepo(ctx, repoID, gitURL)
 	if err != nil {
 		s.logger.Warn("facade collection failed", "repo_id", repoID, "error", err)
+		// nil facadeResult is the "facade errored" signal buildOutcome
+		// keys on for git-only repos (v0.25.38) — CollectRepo returns a
+		// non-nil empty result alongside its error, so normalize here.
+		result = nil
 	} else if result != nil {
 		s.logger.Info("facade complete",
 			"repo_id", repoID,
@@ -1097,7 +1023,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	// Phase 4: Analysis — needs the bare clone from facade.
 	// RetainClone keeps the temp clone alive for scorecard local execution.
 	var analysisResult *collector.AnalysisResult
-	ac := collector.NewAnalysisCollector(s.store, s.logger, s.cfg.RepoCloneDir)
+	ac := collector.NewAnalysisCollector(s.store, s.logger, s.cfg.Collection.RepoCloneDir)
 	ac.RetainClone = true
 	aResult, aErr := ac.AnalyzeRepo(ctx, repoID)
 	if aErr != nil {
@@ -1259,6 +1185,18 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 		if out.errMsg == "" {
 			out.errMsg = "no data collected (possible API auth failure or empty repo)"
 		}
+	}
+
+	// v0.25.38: git-only repos have NO API collection (result == nil), so
+	// facade is their only failure signal — and it was previously
+	// invisible: the gate above requires result != nil, so a failed
+	// facade on a generic-git repo reported SUCCESS with no last_error,
+	// every cycle. A nil facadeResult means the clone/log errored; a
+	// non-nil result with zero commits is a legitimately empty repo and
+	// stays success.
+	if result == nil && facadeResult == nil && out.errMsg == "" {
+		out.success = false
+		out.errMsg = "facade collection failed (git-only repo; see facade warning in log)"
 	}
 
 	return out
@@ -1789,7 +1727,7 @@ func (s *Scheduler) runBreadth(ctx context.Context) {
 		return
 	}
 	bw := collector.NewBreadthWorker(s.store, s.ghKeys, s.logger)
-	result, err := bw.Run(ctx, s.cfg.BreadthBatchSize, s.cfg.BreadthCooldown)
+	result, err := bw.Run(ctx, s.cfg.Collection.BreadthBatchSizeOrDefault(), s.cfg.Collection.BreadthCooldownDuration())
 	if err != nil {
 		s.logger.Warn("breadth worker failed", "error", err)
 		return

@@ -178,57 +178,11 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	store.SetMatviewOnStartup(cfg.Collection.MatviewRebuildOnStartup)
 
 	sched := scheduler.NewWithKeys(store, ghClient, glClient, ghKeys, logger, scheduler.Config{
-		Workers:               workers,
-		RecollectAfter:        time.Duration(cfg.Collection.DaysUntilRecollect) * 24 * time.Hour,
-		RepoCloneDir:          cfg.Collection.RepoCloneDir,
-		MatviewRebuildDay:     cfg.Collection.MatviewRebuildWeekday(),
-		ForceFullCollection:   cfg.Collection.ForceFullCollection,
-		PRChildMode:           cfg.Collection.PRChildMode,
-		ListingMode:           cfg.Collection.ListingMode,
-		ThreadingMode:         cfg.Collection.ThreadingMode,
-		ShardSize:             cfg.Collection.ShardSize,
-		IssueChildMode:        cfg.Collection.IssueChildMode,
-		EnrichInterval:        cfg.Collection.EnrichIntervalDuration(),
-		SearchResolveInterval: cfg.Collection.SearchResolveIntervalDuration(),
-		AffiliationInterval:   cfg.Collection.AffiliationIntervalDuration(),
-		BreadthInterval:       cfg.Collection.BreadthIntervalDuration(),
-		BreadthBatchSize:      cfg.Collection.BreadthBatchSizeOrDefault(),
-		BreadthCooldown:       cfg.Collection.BreadthCooldownDuration(),
-		ShutdownGrace:         cfg.Collection.ShutdownGraceDuration(),
-		// v0.21.0 ScancodeWorker knobs. See
-		// docs/architecture/scancode.md.
-		ScancodeWorkers:        cfg.Collection.ScancodeWorkersOrDefault(),
-		ScancodeStartInterval:  cfg.Collection.ScancodeStartInterval(),
-		ScancodeCadence:        cfg.Collection.ScancodeCadence(),
-		ScancodeCloneDir:       cfg.Collection.ScancodeCloneDirOrDefault(),
-		ScancodeShutdownGrace:  cfg.Collection.ScancodeShutdownGrace(),
-		ScancodeRunTimeoutBase: cfg.Collection.ScancodeRunTimeout(),           // v0.23.8
-		ScancodeRunTimeoutCap:  cfg.Collection.ScancodeRunTimeoutCap(),        // v0.23.8
-		ScancodeMaxInMemory:    cfg.Collection.ScancodeMaxInMemoryOrDefault(), // v0.25.2
-		// v0.22.4 — staging-row cleanup retention. Default 1h.
-		StagingRetention: cfg.Collection.StagingRetentionDuration(),
-		// v0.22.4 — observation-only long-jobs watchdog. Default 75m.
-		PhaseWatchdog: cfg.Collection.PhaseWatchdogDuration(),
-		// v0.24.0 — DistributionWorker config. Off by default; the
-		// boolean gate prevents the worker from spawning at all when
-		// the operator hasn't opted in.
-		DistributionTrackingEnabled:                 cfg.Collection.DistributionTrackingEnabled,
-		DistributionTrackingInterval:                cfg.Collection.DistributionTrackingInterval(),
-		DistributionTrackingWorkers:                 cfg.Collection.DistributionTrackingWorkersOrDefault(),
-		DistributionTrackingStartInterval:           cfg.Collection.DistributionTrackingStartInterval(),
-		DistributionTrackingPoliteEmail:             cfg.Collection.DistributionTrackingPoliteEmail,
-		DistributionTrackingUserAgent:               cfg.Collection.DistributionTrackingUserAgent,
-		DistributionTrackingCrossCheckSources:       cfg.Collection.DistributionTrackingCrossCheckSourcesValue(),
-		DistributionTrackingImmediatePartialReclaim: cfg.Collection.DistributionTrackingImmediatePartialReclaimValue(), // v0.25.3
-
-		// v0.25.7 MailingListWorker.
-		MailingListEnabled:          cfg.Collection.MailingListEnabled,
-		MailingListWorkers:          cfg.Collection.MailingListWorkersOrDefault(),
-		MailingListCadence:          cfg.Collection.MailingListCadenceDuration(),
-		MailingListBackfillMonths:   cfg.Collection.MailingListBackfillMonthsOrDefault(),
-		MailingListPoliteEmail:      cfg.Collection.MailingListPoliteEmail,
-		MailingListMirrorHandling:   cfg.Collection.MailingListMirrorHandlingOrDefault(),
-		MailingListProcessorWorkers: cfg.Collection.MailingListProcessorWorkersOrDefault(),
+		Workers: workers,
+		// The whole aveloxis.json collection block, consumed directly —
+		// the scheduler reads knobs through the CollectionConfig
+		// accessors, so a new knob needs NO wiring here (v0.25.37).
+		Collection: &cfg.Collection,
 	})
 	go sched.Run(ctx)
 

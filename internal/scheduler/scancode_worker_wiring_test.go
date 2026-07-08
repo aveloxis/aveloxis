@@ -56,25 +56,16 @@ func TestSchedulerRunStartsScancodeWorker(t *testing.T) {
 }
 
 func TestMainWiresScancodeConfig(t *testing.T) {
-	// cmd/aveloxis/main.go's runServe must populate
-	// scheduler.Config's scancode fields from
-	// cfg.Collection.Scancode*. Without this, aveloxis.json edits
-	// of scancode_workers / scancode_cadence_days / etc. silently
-	// no-op.
+	// v0.25.37: main.go passes the whole collection block; the scancode
+	// knobs are read through cfg.Collection accessors inside the
+	// scheduler (see TestSchedulerSpawnsScancodeWorker's needles). The
+	// per-knob main.go plumb lines are gone by design.
 	data, err := os.ReadFile("../../cmd/aveloxis/main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := string(data)
-	for _, needle := range []string{
-		"ScancodeWorkersOrDefault",
-		"ScancodeStartInterval",
-		"ScancodeCadence",
-		"ScancodeCloneDirOrDefault",
-		"ScancodeShutdownGrace",
-	} {
-		if !strings.Contains(src, needle) {
-			t.Errorf("cmd/aveloxis/main.go must use cfg.Collection.%s when populating scheduler.Config — without this, the aveloxis.json scancode_* keys silently no-op", needle)
-		}
+	if !strings.Contains(string(data), "Collection: &cfg.Collection") {
+		t.Error("main.go must pass Collection: &cfg.Collection into scheduler.Config — " +
+			"without it every aveloxis.json collection knob silently no-ops")
 	}
 }

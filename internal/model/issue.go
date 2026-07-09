@@ -46,7 +46,8 @@ type IssueAssignee struct {
 	ID             int64
 	IssueID        int64
 	RepoID         int64
-	ContributorID  int64
+	ContributorID  *string // resolved cntrb_id (UUID), set by the processor (v0.26.5)
+	UserRef        UserRef // identity as delivered by the API; input to resolution
 	PlatformSrcID  int64
 	PlatformNodeID string
 	Origin         DataOrigin

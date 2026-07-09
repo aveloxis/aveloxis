@@ -75,6 +75,7 @@ func main() {
 		migrateCntrbIDsCmd(&cfgPath),
 		mergeCntrbCollisionsCmd(&cfgPath),
 		dedupReposCmd(&cfgPath),
+		backfillIdentitiesCmd(&cfgPath),
 		refreshViewsCmd(&cfgPath),
 		installToolsCmd(),
 		upgradeToolsCmd(),

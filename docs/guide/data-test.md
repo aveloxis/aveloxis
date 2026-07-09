@@ -321,7 +321,18 @@ review. Known accepted drift under the GraphQL default:
 `issue_labels.platform_label_id` / `pull_request_labels.platform_label_id`
 (GitHub's GraphQL Label type exposes no databaseId) — expect these as
 FAIL/FLAG entries when comparing a REST-era tag against v0.26.0+ and
-treat them as explained.
+treat them as explained. They are the ONLY expected dark columns as of
+v0.26.4, which closed the other four (pr_diff_url, meta_label,
+pr_cmt_node_id, issue_assignees.platform_node_id) — forward fixes for
+all four, plus one-shot SQL backfills for the two derivable ones
+(diff_url, meta_label). The two node_id columns backfill only via full
+re-collection, since incremental cycles are since-filtered and never
+revisit historical rows. Also expected when
+comparing REST-era tags: contributors/-identities slightly LOWER on
+the new side (deleted GitHub users — GraphQL reports a null author
+where REST preserves a stale login) and `merge_commit_sha` lower
+(REST fabricates test-merge SHAs for unmerged PRs; GraphQL reports
+only real merges).
 
 ## Expected event-table asymmetry vs pre-0.26.2 tags
 

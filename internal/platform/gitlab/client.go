@@ -163,6 +163,7 @@ func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, iss
 		for _, a := range raw.Assignees {
 			if !yield(model.IssueAssignee{
 				PlatformSrcID: a.ID,
+				UserRef:       glUserToRef(a),
 			}, nil) {
 				return
 			}
@@ -256,6 +257,7 @@ func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumb
 		for _, a := range raw.Assignees {
 			if !yield(model.PullRequestAssignee{
 				PlatformSrcID: a.ID,
+				UserRef:       glUserToRef(a),
 			}, nil) {
 				return
 			}
@@ -276,6 +278,7 @@ func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumb
 		for _, r := range raw.Reviewers {
 			if !yield(model.PullRequestReviewer{
 				PlatformSrcID: r.ID,
+				UserRef:       glUserToRef(r),
 			}, nil) {
 				return
 			}

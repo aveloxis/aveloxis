@@ -47,7 +47,9 @@ func TestCollectStoresEventsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	// t.Cleanup, not defer: function defers run BEFORE t.Cleanup
+	// callbacks, and the seed-row cleanup below needs the pool alive.
+	t.Cleanup(store.Close)
 	store.SetMatviewSkip(true)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)

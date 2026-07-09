@@ -1164,6 +1164,40 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		"v0.25.6 drop idx_contributors_canonical_eq_email (obsoleted by matview rewrite)",
 		`DROP INDEX IF EXISTS aveloxis_data.idx_contributors_canonical_eq_email`)
 
+	// v0.26.4 — backfill the two SQL-derivable GraphQL parity columns.
+	//
+	// The GraphQL collection path never populated pr_diff_url or
+	// meta_label (surfaced by the 2026-07-09 data-test column-fill
+	// diff; dark on production too). The forward fix synthesizes both
+	// at collection time, but incremental cycles are since-filtered —
+	// only items UPDATED after the fix get re-upserted, so historical
+	// rows would stay dark forever without this backfill. Both values
+	// are pure derivations of data already in the DB (no API calls):
+	// diff_url = html_url + ".diff"; meta_label = "owner:branch" from
+	// the paired pull_request_repo row. The other two parity columns
+	// (pr_cmt_node_id, issue_assignees.platform_node_id) need API
+	// values and heal only via full re-collection.
+	//
+	// Idempotent: the COALESCE(col, '') = '' predicates stop matching
+	// once filled.
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.26.4 backfill pull_requests.pr_diff_url from pr_html_url",
+		`UPDATE aveloxis_data.pull_requests
+		 SET pr_diff_url = pr_html_url || '.diff'
+		 WHERE COALESCE(pr_diff_url, '') = ''
+		   AND COALESCE(pr_html_url, '') <> ''`)
+
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.26.4 backfill pull_request_meta.meta_label from pull_request_repo",
+		`UPDATE aveloxis_data.pull_request_meta m
+		 SET meta_label = split_part(r.pr_repo_full_name, '/', 1) || ':' || m.meta_ref
+		 FROM aveloxis_data.pull_request_repo r
+		 WHERE r.pr_repo_meta_id = m.pr_meta_id
+		   AND r.pr_repo_head_or_base = m.head_or_base
+		   AND COALESCE(m.meta_label, '') = ''
+		   AND COALESCE(m.meta_ref, '') <> ''
+		   AND split_part(COALESCE(r.pr_repo_full_name, ''), '/', 1) <> ''`)
+
 	// v0.25.8 — index on commits.cmt_ght_author_id.
 	//
 	// cmt_ght_author_id is a plain UUID column with no REFERENCES clause

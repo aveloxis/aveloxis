@@ -711,10 +711,11 @@ func (s *PostgresStore) UpsertIssueAssignees(ctx context.Context, issueID, repoI
 		for _, a := range assignees {
 			batch.Queue(`
 				INSERT INTO aveloxis_data.issue_assignees
-					(issue_id, repo_id, platform_assignee_id, platform_node_id, data_source)
-				VALUES ($1,$2,$3,$4,$5)
-				ON CONFLICT (issue_id, platform_assignee_id) DO NOTHING`,
-				issueID, repoID, a.PlatformSrcID, a.PlatformNodeID, a.Origin.DataSource,
+					(issue_id, repo_id, cntrb_id, platform_assignee_id, platform_node_id, data_source)
+				VALUES ($1,$2,$3,$4,$5,$6)
+				ON CONFLICT (issue_id, platform_assignee_id) DO UPDATE SET
+					cntrb_id = COALESCE(issue_assignees.cntrb_id, EXCLUDED.cntrb_id)`,
+				issueID, repoID, a.ContributorID, a.PlatformSrcID, a.PlatformNodeID, a.Origin.DataSource,
 			)
 		}
 		return s.pool.SendBatch(ctx, batch).Close()
@@ -790,10 +791,11 @@ func (s *PostgresStore) UpsertPRAssignees(ctx context.Context, prID, repoID int6
 		for _, a := range assignees {
 			batch.Queue(`
 				INSERT INTO aveloxis_data.pull_request_assignees
-					(pull_request_id, repo_id, platform_assignee_id, data_source)
-				VALUES ($1,$2,$3,$4)
-				ON CONFLICT (pull_request_id, platform_assignee_id) DO NOTHING`,
-				prID, repoID, a.PlatformSrcID, a.Origin.DataSource,
+					(pull_request_id, repo_id, cntrb_id, platform_assignee_id, data_source)
+				VALUES ($1,$2,$3,$4,$5)
+				ON CONFLICT (pull_request_id, platform_assignee_id) DO UPDATE SET
+					cntrb_id = COALESCE(pull_request_assignees.cntrb_id, EXCLUDED.cntrb_id)`,
+				prID, repoID, a.ContributorID, a.PlatformSrcID, a.Origin.DataSource,
 			)
 		}
 		return s.pool.SendBatch(ctx, batch).Close()
@@ -806,10 +808,11 @@ func (s *PostgresStore) UpsertPRReviewers(ctx context.Context, prID, repoID int6
 		for _, r := range reviewers {
 			batch.Queue(`
 				INSERT INTO aveloxis_data.pull_request_reviewers
-					(pull_request_id, repo_id, platform_reviewer_id, data_source)
-				VALUES ($1,$2,$3,$4)
-				ON CONFLICT (pull_request_id, platform_reviewer_id) DO NOTHING`,
-				prID, repoID, r.PlatformSrcID, r.Origin.DataSource,
+					(pull_request_id, repo_id, cntrb_id, platform_reviewer_id, data_source)
+				VALUES ($1,$2,$3,$4,$5)
+				ON CONFLICT (pull_request_id, platform_reviewer_id) DO UPDATE SET
+					cntrb_id = COALESCE(pull_request_reviewers.cntrb_id, EXCLUDED.cntrb_id)`,
+				prID, repoID, r.ContributorID, r.PlatformSrcID, r.Origin.DataSource,
 			)
 		}
 		return s.pool.SendBatch(ctx, batch).Close()
@@ -935,16 +938,17 @@ func (s *PostgresStore) UpsertPRMeta(ctx context.Context, meta *model.PullReques
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		return s.pool.QueryRow(ctx, `
 			INSERT INTO aveloxis_data.pull_request_meta
-				(pull_request_id, repo_id, head_or_base, meta_label, meta_ref, meta_sha, data_source)
-			VALUES ($1,$2,$3,$4,$5,$6,$7)
+				(pull_request_id, repo_id, cntrb_id, head_or_base, meta_label, meta_ref, meta_sha, data_source)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 			ON CONFLICT (pull_request_id, head_or_base) DO UPDATE SET
+				cntrb_id = COALESCE(pull_request_meta.cntrb_id, EXCLUDED.cntrb_id),
 				meta_label = EXCLUDED.meta_label,
 				meta_ref = EXCLUDED.meta_ref,
 				meta_sha = EXCLUDED.meta_sha,
 				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()
 			RETURNING pr_meta_id`,
-			meta.PRID, meta.RepoID, meta.HeadOrBase, meta.Label, meta.Ref, meta.SHA,
+			meta.PRID, meta.RepoID, meta.AuthorID, meta.HeadOrBase, meta.Label, meta.Ref, meta.SHA,
 			meta.Origin.DataSource,
 		).Scan(&id)
 	})

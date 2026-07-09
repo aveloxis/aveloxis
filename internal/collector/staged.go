@@ -1139,6 +1139,18 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 		}
 	}
 
+	// v0.26.5: derive issues.closed_by_id from the latest 'closed'
+	// event per issue. closed_by is structurally absent from every LIST
+	// endpoint (REST list has no closed_by; GraphQL Issue has no
+	// closedBy field) — production had 775 of 5.26M closed issues
+	// attributed. Events are processed by this point, so the derivation
+	// is platform- and mode-agnostic with zero API cost.
+	if n, err := p.store.DeriveIssueClosedByFromEvents(ctx, repoID); err != nil {
+		p.logger.Warn("closed_by derivation failed", "repo_id", repoID, "error", err)
+	} else if n > 0 {
+		p.logger.Info("derived issue closed_by from events", "repo_id", repoID, "count", n)
+	}
+
 	// Update status based on whether any rows failed.
 	now := time.Now().Format(time.RFC3339)
 	status := string(StatusSuccess)
@@ -1245,6 +1257,12 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 			}
 		}
 		if len(env.Assignees) > 0 {
+			// v0.26.5: resolve each assignee's identity into cntrb_id —
+			// the same contract as reporter/author above. Before this,
+			// issue_assignees.cntrb_id was 0% populated since inception.
+			for i := range env.Assignees {
+				env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
+			}
 			if err := p.store.UpsertIssueAssignees(ctx, issueID, repoID, env.Assignees); err != nil {
 				p.logger.Warn("failed to upsert issue assignees", "issue_id", issueID, "error", err)
 			}
@@ -1272,11 +1290,17 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 			}
 		}
 		if len(env.Assignees) > 0 {
+			for i := range env.Assignees {
+				env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
+			}
 			if err := p.store.UpsertPRAssignees(ctx, prID, repoID, env.Assignees); err != nil {
 				p.logger.Warn("failed to upsert PR assignees", "pr_id", prID, "error", err)
 			}
 		}
 		if len(env.Reviewers) > 0 {
+			for i := range env.Reviewers {
+				env.Reviewers[i].ContributorID = p.resolveUser(ctx, platID, env.Reviewers[i].UserRef)
+			}
 			if err := p.store.UpsertPRReviewers(ctx, prID, repoID, env.Reviewers); err != nil {
 				p.logger.Warn("failed to upsert PR reviewers", "pr_id", prID, "error", err)
 			}
@@ -1309,6 +1333,7 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 			env.MetaHead.PRID = prID
 			env.MetaHead.RepoID = repoID
 			var metaErr error
+			env.MetaHead.AuthorID = p.resolveUser(ctx, platID, env.MetaHead.AuthorRef)
 			headMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaHead)
 			if metaErr != nil {
 				p.logger.Warn("failed to upsert PR meta (head)", "pr_id", prID, "error", metaErr)
@@ -1318,6 +1343,7 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 			env.MetaBase.PRID = prID
 			env.MetaBase.RepoID = repoID
 			var metaErr error
+			env.MetaBase.AuthorID = p.resolveUser(ctx, platID, env.MetaBase.AuthorRef)
 			baseMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaBase)
 			if metaErr != nil {
 				p.logger.Warn("failed to upsert PR meta (base)", "pr_id", prID, "error", metaErr)

@@ -168,6 +168,7 @@ func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, iss
 			if !yield(model.IssueAssignee{
 				PlatformSrcID:  a.ID,
 				PlatformNodeID: a.NodeID,
+				UserRef:        ghUserToRef(a),
 			}, nil) {
 				return
 			}
@@ -256,6 +257,7 @@ func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumb
 		for _, a := range raw.Assignees {
 			if !yield(model.PullRequestAssignee{
 				PlatformSrcID: a.ID,
+				UserRef:       ghUserToRef(a),
 			}, nil) {
 				return
 			}
@@ -276,6 +278,7 @@ func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumb
 		for _, u := range resp.Users {
 			if !yield(model.PullRequestReviewer{
 				PlatformSrcID: u.ID,
+				UserRef:       ghUserToRef(u),
 			}, nil) {
 				return
 			}
@@ -361,12 +364,14 @@ func (c *Client) FetchPRMeta(ctx context.Context, owner, repo string, prNumber i
 	}
 	head = &model.PullRequestMeta{
 		HeadOrBase: "head",
+		AuthorRef:  ghUserToRef(raw.Head.User),
 		Label:      raw.Head.Label,
 		Ref:        raw.Head.Ref,
 		SHA:        raw.Head.SHA,
 	}
 	base = &model.PullRequestMeta{
 		HeadOrBase: "base",
+		AuthorRef:  ghUserToRef(raw.Base.User),
 		Label:      raw.Base.Label,
 		Ref:        raw.Base.Ref,
 		SHA:        raw.Base.SHA,

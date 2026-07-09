@@ -338,6 +338,37 @@ Safe to run repeatedly. All DDL uses `CREATE ... IF NOT EXISTS` and inserts use 
 
 ---
 
+## `aveloxis backfill-identities`
+
+One-off repair for missing identity attribution (v0.26.5 — see
+`summary/identity-attribution-audit-2026-07-09.md`). The 2026-07-09
+audit found `cntrb_id` 0% populated on `issue_assignees`,
+`pull_request_assignees`, `pull_request_reviewers`, and
+`pull_request_meta`, and `issues.closed_by_id` at 0.015% — while the
+raw identity material (platform user ids) was stored at ~100%.
+
+```bash
+aveloxis backfill-identities --dry-run          # candidate counts, no writes
+aveloxis backfill-identities                    # all phases
+aveloxis backfill-identities --phase 1          # assignment joins + pr_meta owners (SQL only)
+aveloxis backfill-identities --phase 2          # closed_by from issue events (SQL only)
+aveloxis backfill-identities --phase 3          # closed_by GraphQL timeline sweep (needs API keys)
+```
+
+Flags: `--dry-run`, `--batch-size` (rows per UPDATE batch, default
+100000), `--limit` (cap per phase, 0 = unbounded), `--phase`
+(`all|1|2|3`), `--sweep-batch` (issues per GraphQL query in phase 3,
+default 100).
+
+Phases 1–2 are pure SQL derivation (no API calls; measured production
+coverage 99.87–99.98% for assignments). Phase 3 fetches closers the
+history-capped events feed cannot reach, via per-issue
+`timelineItems(itemTypes:[CLOSED_EVENT])` batched ~100 issues per
+GraphQL query (~3 points each). Run phase 2 after the v0.26.3
+event-healing cohort completes for best coverage; all phases are
+idempotent and resumable. Rows whose identity genuinely isn't
+derivable stay NULL — no data is fabricated.
+
 ## `aveloxis dedup-repos`
 
 Merges case-variant duplicate repositories (v0.25.32). GitHub and GitLab

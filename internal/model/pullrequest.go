@@ -51,7 +51,8 @@ type PullRequestAssignee struct {
 	ID            int64
 	PRID          int64
 	RepoID        int64
-	ContributorID int64
+	ContributorID *string // resolved cntrb_id (UUID), set by the processor (v0.26.5)
+	UserRef       UserRef // identity as delivered by the API; input to resolution
 	PlatformSrcID int64
 	Origin        DataOrigin
 }
@@ -61,7 +62,8 @@ type PullRequestReviewer struct {
 	ID            int64
 	PRID          int64
 	RepoID        int64
-	ContributorID int64
+	ContributorID *string // resolved cntrb_id (UUID), set by the processor (v0.26.5)
+	UserRef       UserRef // identity as delivered by the API; input to resolution
 	PlatformSrcID int64
 	Origin        DataOrigin
 }
@@ -91,10 +93,11 @@ type PullRequestMeta struct {
 	PRID       int64
 	RepoID     int64
 	AuthorID   *string
-	HeadOrBase string // "head" or "base"
-	Label      string // e.g. "owner:branch"
-	Ref        string // branch name
-	SHA        string // commit SHA
+	AuthorRef  UserRef // head/base ref owner as delivered by the API (v0.26.5)
+	HeadOrBase string  // "head" or "base"
+	Label      string  // e.g. "owner:branch"
+	Ref        string  // branch name
+	SHA        string  // commit SHA
 	Origin     DataOrigin
 }
 

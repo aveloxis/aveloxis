@@ -44,29 +44,9 @@ func TestStagedCollectorIgnoresReleaseNotFound(t *testing.T) {
 	}
 }
 
-// TestCollectorIgnoresReleaseNotFound — same guarantee for the legacy
-// (non-staged) Collector.collectReleases path in collector.go.
-func TestCollectorIgnoresReleaseNotFound(t *testing.T) {
-	src, err := os.ReadFile("collector.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	idx := strings.Index(code, "func (c *Collector) collectReleases(")
-	if idx < 0 {
-		t.Fatal("cannot find collectReleases function in collector.go")
-	}
-	// Look within the function body.
-	fnBody := code[idx:]
-	if len(fnBody) > 1500 {
-		fnBody = fnBody[:1500]
-	}
-	if !strings.Contains(fnBody, "ErrNotFound") {
-		t.Error("collector.go: collectReleases must check errors.Is(err, platform.ErrNotFound) " +
-			"and return nil so the collection doesn't fail on repos with no releases")
-	}
-}
+// TestCollectorIgnoresReleaseNotFound was removed in v0.26.2: the legacy
+// Collector.collectReleases path no longer exists — the one-shot collect
+// delegates to the staged pipeline, whose 404 handling is pinned above.
 
 // TestHTTPClientWrapsNotFoundSentinel verifies the platform HTTP client
 // wraps 404 responses with the exported ErrNotFound sentinel rather than

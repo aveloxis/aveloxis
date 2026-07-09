@@ -39,6 +39,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -103,6 +104,16 @@ type columnRef struct {
 	schema, table, column, dataType string
 }
 
+// colFillQuerier is the minimal query surface ColumnFillDiff needs.
+// *pgxpool.Pool and pgx.Tx both satisfy it; the self-comparison
+// integration test passes ONE repeatable-read transaction as both
+// sides so the comparison sees a single MVCC snapshot even while
+// other tests write to the same scratch database.
+type colFillQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // ColumnFillDiff enumerates every column of every base table in the
 // given schemas (default: the same set as RowCountDiff) and compares
 // per-column populated counts between the two databases. Column
@@ -110,6 +121,10 @@ type columnRef struct {
 // only in the new schema has no baseline to regress from (it surfaces
 // as FLAG via the count comparison when present in both).
 func ColumnFillDiff(ctx context.Context, released, newPool *pgxpool.Pool, schemas []string) (*ColumnFillDiffReport, error) {
+	return columnFillDiff(ctx, released, newPool, schemas)
+}
+
+func columnFillDiff(ctx context.Context, released, newSide colFillQuerier, schemas []string) (*ColumnFillDiffReport, error) {
 	if len(schemas) == 0 {
 		schemas = []string{"aveloxis_data", "aveloxis_ops", "aveloxis_scan"}
 	}
@@ -123,7 +138,7 @@ func ColumnFillDiff(ctx context.Context, released, newPool *pgxpool.Pool, schema
 	if err != nil {
 		return nil, fmt.Errorf("released DB fill counts: %w", err)
 	}
-	newFill, err := populatedCounts(ctx, newPool, cols)
+	newFill, err := populatedCounts(ctx, newSide, cols)
 	if err != nil {
 		return nil, fmt.Errorf("new DB fill counts: %w", err)
 	}
@@ -161,7 +176,7 @@ func ColumnFillDiff(ctx context.Context, released, newPool *pgxpool.Pool, schema
 	return report, nil
 }
 
-func enumerateColumns(ctx context.Context, pool *pgxpool.Pool, schemas []string) ([]columnRef, error) {
+func enumerateColumns(ctx context.Context, pool colFillQuerier, schemas []string) ([]columnRef, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT c.table_schema, c.table_name, c.column_name, c.data_type
 		FROM information_schema.columns c
@@ -190,7 +205,7 @@ func enumerateColumns(ctx context.Context, pool *pgxpool.Pool, schemas []string)
 // populatedCounts computes the populated count for every column, ONE
 // single-scan query per table (all of a table's columns aggregated in
 // one pass).
-func populatedCounts(ctx context.Context, pool *pgxpool.Pool, cols []columnRef) (map[string]int64, error) {
+func populatedCounts(ctx context.Context, pool colFillQuerier, cols []columnRef) (map[string]int64, error) {
 	byTable := map[string][]columnRef{}
 	for _, c := range cols {
 		key := c.schema + "." + c.table

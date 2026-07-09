@@ -18,6 +18,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -45,7 +46,17 @@ func TestColumnFillDiffSelfComparison(t *testing.T) {
 	}
 	defer pool.Close()
 
-	report, err := ColumnFillDiff(ctx, pool, pool, nil)
+	// One REPEATABLE READ transaction serves as BOTH sides: a single
+	// MVCC snapshot makes the self-comparison deterministic even while
+	// other integration tests write to the same scratch DB (observed
+	// flaking under cross-package -race parallelism otherwise).
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+
+	report, err := columnFillDiff(ctx, tx, tx, nil)
 	if err != nil {
 		t.Fatalf("ColumnFillDiff must handle every column type in the live schema: %v", err)
 	}

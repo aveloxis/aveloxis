@@ -4,9 +4,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -119,17 +121,17 @@ FAIL (row loss / regression detected).`,
 				{"new", localBin, newCfgPath},
 			} {
 				logger.Info("running side", "side", side.name, "binary", side.binary)
-				if err := runMigrate(ctx, logger, side.binary, side.cfg); err != nil {
+				if err := runMigrate(ctx, logger, side.name, side.binary, side.cfg); err != nil {
 					return fmt.Errorf("runMigrate(%s): %w", side.name, err)
 				}
 				scratchDBName := "aveloxis_" + side.name
 				if err := copyAPIKeys(ctx, logger, primaryCfg, scratchDBName); err != nil {
 					return fmt.Errorf("copyAPIKeys(%s): %w", side.name, err)
 				}
-				if err := dtRunAddRepo(ctx, logger, side.binary, side.cfg, repoURL); err != nil {
+				if err := dtRunAddRepo(ctx, logger, side.name, side.binary, side.cfg, repoURL); err != nil {
 					return fmt.Errorf("dtRunAddRepo(%s): %w", side.name, err)
 				}
-				if err := dtRunCollect(ctx, logger, side.binary, side.cfg, repoURL); err != nil {
+				if err := dtRunCollect(ctx, logger, side.name, side.binary, side.cfg, repoURL); err != nil {
 					return fmt.Errorf("dtRunCollect(%s): %w", side.name, err)
 				}
 			}
@@ -279,15 +281,55 @@ func generateScratchConfig(primary *config.Config, dbname, outputPath string) er
 	return os.WriteFile(outputPath, out, 0o600)
 }
 
+// prefixWriter prepends a side tag ("[released] " / "[new] ") to every
+// line written through it. v0.26.2: during the 2026-07-09 data-test
+// run, hours of FK-violation WARNs streamed with no way to tell which
+// binary produced them; every subprocess line is now attributable.
+type prefixWriter struct {
+	w       io.Writer
+	prefix  string
+	midline bool // last write ended mid-line: skip the next prefix
+}
+
+func (p *prefixWriter) Write(b []byte) (int, error) {
+	rest := b
+	for len(rest) > 0 {
+		if !p.midline {
+			if _, err := p.w.Write([]byte(p.prefix)); err != nil {
+				return len(b) - len(rest), err
+			}
+		}
+		nl := bytes.IndexByte(rest, '\n')
+		if nl < 0 {
+			if _, err := p.w.Write(rest); err != nil {
+				return len(b) - len(rest), err
+			}
+			p.midline = true
+			rest = nil
+			break
+		}
+		if _, err := p.w.Write(rest[:nl+1]); err != nil {
+			return len(b) - len(rest), err
+		}
+		p.midline = false
+		rest = rest[nl+1:]
+	}
+	return len(b), nil
+}
+
+func sideTaggedOutputs(side string) (io.Writer, io.Writer) {
+	return &prefixWriter{w: os.Stdout, prefix: "[" + side + "] "},
+		&prefixWriter{w: os.Stderr, prefix: "[" + side + "] "}
+}
+
 // runMigrate invokes `<binary> migrate --skip-views -c <cfg>` with
 // stdout/stderr streamed to the parent so the operator sees the
 // migration log live. --skip-views because matviews aren't needed
 // for the row-count comparison and they slow startup.
-func runMigrate(ctx context.Context, logger *slog.Logger, binary, cfgPath string) error {
+func runMigrate(ctx context.Context, logger *slog.Logger, side, binary, cfgPath string) error {
 	logger.Info("running migrate", "binary", binary, "cfg", cfgPath)
 	cmd := exec.CommandContext(ctx, binary, "-c", cfgPath, "migrate", "--skip-views")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout, cmd.Stderr = sideTaggedOutputs(side)
 	return cmd.Run()
 }
 
@@ -374,11 +416,10 @@ func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, s
 
 // dtRunAddRepo invokes `<binary> add-repo <url> -c <cfg>` to queue
 // the test repo.
-func dtRunAddRepo(ctx context.Context, logger *slog.Logger, binary, cfgPath, repoURL string) error {
+func dtRunAddRepo(ctx context.Context, logger *slog.Logger, side, binary, cfgPath, repoURL string) error {
 	logger.Info("running add-repo", "repo", repoURL)
 	cmd := exec.CommandContext(ctx, binary, "-c", cfgPath, "add-repo", repoURL)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout, cmd.Stderr = sideTaggedOutputs(side)
 	return cmd.Run()
 }
 
@@ -406,11 +447,10 @@ func dtRunAddRepo(ctx context.Context, logger *slog.Logger, binary, cfgPath, rep
 // (~30-45 min on augurlabs/augur vs ~20-25 min incremental). The
 // signal quality is worth it; the whole point of the harness is to
 // surface FK / data-loss regressions.
-func dtRunCollect(ctx context.Context, logger *slog.Logger, binary, cfgPath, repoURL string) error {
+func dtRunCollect(ctx context.Context, logger *slog.Logger, side, binary, cfgPath, repoURL string) error {
 	logger.Info("running collect --full (this is the long phase)", "repo", repoURL)
 	cmd := exec.CommandContext(ctx, binary, "-c", cfgPath, "collect", repoURL, "--full")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout, cmd.Stderr = sideTaggedOutputs(side)
 	return cmd.Run()
 }
 

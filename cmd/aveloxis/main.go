@@ -333,7 +333,9 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 			continue
 		}
 
-		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.Collection.RepoCloneDir)
+		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.Collection.RepoCloneDir).
+			WithCollectionModes(cfg.Collection.PRChildMode, cfg.Collection.ListingMode,
+				cfg.Collection.ThreadingMode, cfg.Collection.ShardSize, cfg.Collection.IssueChildMode)
 		result, err := coll.CollectRepo(ctx, repoID, owner, repo, since)
 		if err != nil {
 			logger.Error("collection failed", "url", repoURL, "error", err)

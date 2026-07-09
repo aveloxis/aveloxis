@@ -322,3 +322,15 @@ review. Known accepted drift under the GraphQL default:
 (GitHub's GraphQL Label type exposes no databaseId) — expect these as
 FAIL/FLAG entries when comparing a REST-era tag against v0.26.0+ and
 treat them as explained.
+
+## Expected event-table asymmetry vs pre-0.26.2 tags
+
+`aveloxis collect` before v0.26.2 used a legacy direct-write path that
+NEVER stored issue/PR events (every row failed its parent FK and was
+dropped with a WARN). Since v0.26.2 the one-shot collect runs the same
+staged pipeline as `serve`, so events land correctly. When the
+`--released-tag` is 0.26.1 or older, expect `issue_events` and
+`pull_request_events` to appear as **FLAG** (new > released) in the
+row-count diff — that is the fix working, not drift. Subprocess log
+lines are tagged `[released]` / `[new]` so any WARN stream is
+attributable to a side.

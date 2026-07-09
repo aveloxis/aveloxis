@@ -302,14 +302,17 @@ func TestVersionStampedV0256(t *testing.T) {
 	// column populated counts, type-aware, FAIL when a column goes
 	// completely dark under the new binary — the platform_label_id=0
 	// class that row counts cannot see; row diff now also covers
-	// aveloxis_scan).
+	// aveloxis_scan) → 0.26.2 (one-shot
+	// `aveloxis collect` delegates its API phases to the staged
+	// pipeline — the legacy direct-write path dropped EVERY event via
+	// FK 23503; data-test subprocess output now side-tagged).
 	// (docs truth-reconciliation: 12 undocumented commands added to
 	// commands.md, stale counts/cadences/defaults fixed everywhere, and
 	// three VALUE-checking tripwires added — example-config effective
 	// defaults, commands-doc coverage, schema-count pins).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.26.1"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.26.1\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.26.2"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.26.2\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

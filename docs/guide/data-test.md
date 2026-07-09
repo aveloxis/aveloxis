@@ -334,3 +334,9 @@ staged pipeline as `serve`, so events land correctly. When the
 row-count diff — that is the fix working, not drift. Subprocess log
 lines are tagged `[released]` / `[new]` so any WARN stream is
 attributable to a side.
+
+Additionally, released tags ≤ 0.26.2 lose PR events on quiet repos to
+an ETag self-aliasing bug (two paginations of the same GitHub events
+endpoint per cycle; the second got 304 and dropped the PR-event
+history). v0.26.3's single-pass feed fixes it, so `pull_request_events`
+FLAGging as new > released against those tags is likewise expected.

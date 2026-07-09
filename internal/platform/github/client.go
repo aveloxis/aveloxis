@@ -409,10 +409,11 @@ func (c *Client) FetchPRRepos(ctx context.Context, owner, repo string, prNumber 
 
 // --- EventCollector ---
 
-// fetchRepoEvents returns all issue/timeline events from the repo-wide events endpoint.
-// Both ListIssueEvents and ListPREvents call this shared iterator to avoid
-// fetching the same endpoint twice when both are collected sequentially.
-// The isPR callback determines whether an event belongs to a PR or an issue.
+// fetchRepoEvents returns all issue/timeline events from the repo-wide
+// /issues/events endpoint. ListRepoEvents is its ONLY consumer — one
+// pagination per collection cycle. It must never be iterated twice in
+// one cycle: the per-URL ETag cache turns the second pass into a 304
+// with zero items (the pre-v0.26.3 silent PR-event loss).
 func (c *Client) fetchRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[ghEvent, error] {
 	path := fmt.Sprintf("/repos/%s/%s/issues/events", owner, repo)
 	return func(yield func(ghEvent, error) bool) {
@@ -431,22 +432,37 @@ func (c *Client) fetchRepoEvents(ctx context.Context, owner, repo string, since 
 	}
 }
 
-func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.IssueEvent, error] {
-	return func(yield func(model.IssueEvent, error) bool) {
+// ListRepoEvents streams issue and PR events from ONE pass over the
+// repo-wide feed, routing each raw event by its pull_request marker.
+// See fetchRepoEvents for why a single pass is load-bearing.
+func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.RepoEvent, error] {
+	return func(yield func(platform.RepoEvent, error) bool) {
 		for raw, err := range c.fetchRepoEvents(ctx, owner, repo, since) {
 			if err != nil {
-				yield(model.IssueEvent{}, err)
+				yield(platform.RepoEvent{}, err)
 				return
 			}
-			// Skip events on PRs (they have a pull_request field on the issue).
 			if raw.Issue != nil && raw.Issue.PullRequest != nil {
+				ev := model.PullRequestEvent{
+					PlatformEventID:  raw.ID,
+					PlatformID:       model.PlatformGitHub,
+					PlatformPRID:     int64(raw.Issue.Number),
+					NodeID:           raw.NodeID,
+					Action:           raw.Event,
+					ActionCommitHash: raw.CommitID,
+					CreatedAt:        raw.CreatedAt,
+					ActorRef:         ghUserToRef(raw.Actor),
+				}
+				if !yield(platform.RepoEvent{PR: &ev}, nil) {
+					return
+				}
 				continue
 			}
 			platIssueID := int64(0)
 			if raw.Issue != nil {
 				platIssueID = int64(raw.Issue.Number)
 			}
-			if !yield(model.IssueEvent{
+			ev := model.IssueEvent{
 				PlatformEventID:  raw.ID,
 				PlatformID:       model.PlatformGitHub,
 				PlatformIssueID:  platIssueID,
@@ -455,34 +471,8 @@ func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since 
 				ActionCommitHash: raw.CommitID,
 				CreatedAt:        raw.CreatedAt,
 				ActorRef:         ghUserToRef(raw.Actor),
-			}, nil) {
-				return
 			}
-		}
-	}
-}
-
-func (c *Client) ListPREvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.PullRequestEvent, error] {
-	return func(yield func(model.PullRequestEvent, error) bool) {
-		for raw, err := range c.fetchRepoEvents(ctx, owner, repo, since) {
-			if err != nil {
-				yield(model.PullRequestEvent{}, err)
-				return
-			}
-			// Only include events on PRs.
-			if raw.Issue == nil || raw.Issue.PullRequest == nil {
-				continue
-			}
-			if !yield(model.PullRequestEvent{
-				PlatformEventID:  raw.ID,
-				PlatformID:       model.PlatformGitHub,
-				PlatformPRID:     int64(raw.Issue.Number),
-				NodeID:           raw.NodeID,
-				Action:           raw.Event,
-				ActionCommitHash: raw.CommitID,
-				CreatedAt:        raw.CreatedAt,
-				ActorRef:         ghUserToRef(raw.Actor),
-			}, nil) {
+			if !yield(platform.RepoEvent{Issue: &ev}, nil) {
 				return
 			}
 		}

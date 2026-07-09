@@ -984,35 +984,33 @@ func stagePRBatch(ctx context.Context, sw *db.StagingWriter, batch []platform.St
 // collectEvents stages issue and PR events.
 func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
 	sc.logger.Info("collecting events", "owner", owner, "repo", repo)
-	for event, err := range sc.client.ListIssueEvents(ctx, owner, repo, since) {
+	// Single pass over the unified feed (v0.26.3). The previous two
+	// sequential iterations (issue events, then PR events) each
+	// paginated the SAME GitHub endpoint; the second pass 304'd
+	// against the ETag the first pass primed and silently dropped the
+	// entire PR-event history on quiet repos.
+	for ev, err := range sc.client.ListRepoEvents(ctx, owner, repo, since) {
 		if err != nil {
 			if isOptionalEndpointSkip(err) {
-				sc.logger.Info("skipping issue events endpoint",
+				sc.logger.Info("skipping events endpoint",
 					"owner", owner, "repo", repo, "reason", err)
 				break
 			}
-			result.Errors = append(result.Errors, fmt.Errorf("issue events: %w", err))
+			result.Errors = append(result.Errors, fmt.Errorf("repo events: %w", err))
 			break
 		}
-		if err := sw.Stage(ctx, EntityIssueEvent, event); err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("stage issue event: %w", err))
-		}
-		result.Events++
-	}
-	for event, err := range sc.client.ListPREvents(ctx, owner, repo, since) {
-		if err != nil {
-			if isOptionalEndpointSkip(err) {
-				sc.logger.Info("skipping pr events endpoint",
-					"owner", owner, "repo", repo, "reason", err)
-				break
+		switch {
+		case ev.PR != nil:
+			if err := sw.Stage(ctx, EntityPREvent, *ev.PR); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("stage pr event: %w", err))
 			}
-			result.Errors = append(result.Errors, fmt.Errorf("pr events: %w", err))
-			break
+			result.Events++
+		case ev.Issue != nil:
+			if err := sw.Stage(ctx, EntityIssueEvent, *ev.Issue); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("stage issue event: %w", err))
+			}
+			result.Events++
 		}
-		if err := sw.Stage(ctx, EntityPREvent, event); err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("stage pr event: %w", err))
-		}
-		result.Events++
 	}
 	sc.logger.Info("events staged", "owner", owner, "repo", repo, "count", result.Events)
 }

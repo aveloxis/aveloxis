@@ -424,6 +424,36 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 
 // --- EventCollector ---
 
+// ListRepoEvents composes the two per-target-type endpoint iterations
+// into the unified feed the platform.Client interface requires. Unlike
+// GitHub, GitLab uses DISTINCT URLs per kind (?target_type=issue vs
+// merge_request), so there is no ETag aliasing here and two fetches
+// are correct.
+func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.RepoEvent, error] {
+	return func(yield func(platform.RepoEvent, error) bool) {
+		for ev, err := range c.ListIssueEvents(ctx, owner, repo, since) {
+			if err != nil {
+				yield(platform.RepoEvent{}, err)
+				return
+			}
+			e := ev
+			if !yield(platform.RepoEvent{Issue: &e}, nil) {
+				return
+			}
+		}
+		for ev, err := range c.ListPREvents(ctx, owner, repo, since) {
+			if err != nil {
+				yield(platform.RepoEvent{}, err)
+				return
+			}
+			e := ev
+			if !yield(platform.RepoEvent{PR: &e}, nil) {
+				return
+			}
+		}
+	}
+}
+
 func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.IssueEvent, error] {
 	pp := projectPath(owner, repo)
 	// GitLab uses resource state events per-issue. We iterate all issues and fetch events.

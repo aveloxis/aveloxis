@@ -394,7 +394,11 @@ Per-repo metrics (all under `/api/v1/repos/{repoID}/`):
 
 ## CORS
 
-All API endpoints return `Access-Control-Allow-Origin: *` to allow cross-origin requests from the web GUI (which runs on a different port).
+CORS is handled by a single middleware (v0.27.1). With `api.cors_origins`
+unset the API returns `Access-Control-Allow-Origin: *` (compatible with the
+web GUI's cross-port fetches); once configured it becomes a strict
+allowlist — set it in production deployments, listing the aveloxis-gui
+origin (and the web GUI origin if its pages fetch the API cross-port).
 
 ## Deployment
 

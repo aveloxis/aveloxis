@@ -75,7 +75,6 @@ func (s *Server) handleRepoContributors(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	setCORSIfLocalhost(r, w)
 	_ = json.NewEncoder(w).Encode(contribs)
 }
 
@@ -109,7 +108,6 @@ func (s *Server) handleRepoContributionsCoverage(w http.ResponseWriter, r *http.
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	setCORSIfLocalhost(r, w)
 	_ = json.NewEncoder(w).Encode(cov)
 }
 
@@ -138,6 +136,5 @@ func (s *Server) handleRepoAffiliations(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	setCORSIfLocalhost(r, w)
 	_ = json.NewEncoder(w).Encode(counts)
 }

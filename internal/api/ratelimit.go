@@ -214,11 +214,18 @@ func (rl *rateLimiter) evictOldestLocked() {
 	}
 }
 
-// cors handles the allowlist + preflight for the separate-origin GUI.
+// cors is the SINGLE CORS authority (v0.27.1 removed the per-handler
+// wildcard/echo headers that predated it). Empty cors_origins =
+// legacy-compatible `*` (the server-rendered GUI's cross-port fetches
+// rely on it); configured = strict allowlist — set it in production.
 func (rl *rateLimiter) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" && rl.origins[origin] {
+		if origin != "" && len(rl.origins) == 0 {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		} else if origin != "" && rl.origins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")

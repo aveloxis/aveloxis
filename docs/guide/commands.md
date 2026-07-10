@@ -355,8 +355,8 @@ aveloxis backfill-identities --phase 2          # closed_by from issue events (S
 aveloxis backfill-identities --phase 3          # closed_by GraphQL timeline sweep (needs API keys)
 ```
 
-Flags: `--dry-run`, `--batch-size` (rows per UPDATE batch, default
-100000), `--limit` (cap per phase, 0 = unbounded), `--phase`
+Flags: `--dry-run`, `--batch-size` (primary-key window width per UPDATE batch, default
+100000; on fleet-scale tables use 1000000), `--limit` (cap per phase, 0 = unbounded), `--phase`
 (`all|1|2|3`), `--sweep-batch` (issues per GraphQL query in phase 3,
 default 100).
 

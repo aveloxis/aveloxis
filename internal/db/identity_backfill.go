@@ -14,12 +14,19 @@ package db
 // pure SQL derivation — measured coverage 99.87–99.98% on production.
 //
 // All functions are idempotent (predicates stop matching once filled)
-// and batched by candidate LIMIT so no single transaction holds
-// millions of row locks on the production fleet.
+// and batched by KEYSET WINDOWS over the table's primary key, so every
+// batch is a bounded index-range scan. The first version batched by
+// `candidates LIMIT N`, which re-executed the FULL join per batch —
+// and DISTINCT ON forced a global sort before the LIMIT could apply.
+// On the 26M-row production pull_request_meta that meant one batch
+// ground for 9h45m without writing a row (observed 2026-07-10). A
+// 1K-row scratch validation cannot surface this class; window math is
+// sized against production PK ranges.
 
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // assignmentBackfillTables enumerates the three assignment-class
@@ -60,38 +67,34 @@ func (s *PostgresStore) BackfillAssignmentIdentities(ctx context.Context, batchS
 			total += n
 			continue
 		}
+		var maxID int64
+		if err := s.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT COALESCE(MAX(%s), 0) FROM aveloxis_data.%s`, t.pk, t.table)).Scan(&maxID); err != nil {
+			return total, fmt.Errorf("max id %s: %w", t.table, err)
+		}
 		var tableTotal int64
-		for {
-			batch := batchSize
-			if limit > 0 && int64(batch) > limit-tableTotal {
-				batch = int(limit - tableTotal)
-			}
-			if batch <= 0 {
-				break
-			}
+		window := int64(batchSize)
+		for lo := int64(0); lo < maxID; lo += window {
 			tag, err := s.pool.Exec(ctx, fmt.Sprintf(`
-				WITH cand AS (
-					SELECT a.%[2]s AS id, ci.cntrb_id
-					FROM aveloxis_data.%[1]s a
-					JOIN aveloxis_data.repos r USING (repo_id)
-					JOIN aveloxis_data.contributor_identities ci
-					  ON ci.platform_id = r.platform_id AND ci.platform_user_id = a.%[3]s
-					WHERE a.cntrb_id IS NULL AND a.%[3]s <> 0
-					LIMIT $1
-				)
-				UPDATE aveloxis_data.%[1]s t
-				SET cntrb_id = cand.cntrb_id
-				FROM cand WHERE t.%[2]s = cand.id`, t.table, t.pk, t.platCol), batch)
+				UPDATE aveloxis_data.%[1]s a
+				SET cntrb_id = ci.cntrb_id
+				FROM aveloxis_data.repos r, aveloxis_data.contributor_identities ci
+				WHERE a.repo_id = r.repo_id
+				  AND ci.platform_id = r.platform_id AND ci.platform_user_id = a.%[3]s
+				  AND a.cntrb_id IS NULL AND a.%[3]s <> 0
+				  AND a.%[2]s > $1 AND a.%[2]s <= $2`, t.table, t.pk, t.platCol),
+				lo, lo+window)
 			if err != nil {
-				return total, fmt.Errorf("backfill %s: %w", t.table, err)
+				return total, fmt.Errorf("backfill %s window %d: %w", t.table, lo, err)
 			}
 			n := tag.RowsAffected()
 			tableTotal += n
 			total += n
 			if n > 0 {
-				s.logger.Info("backfill-identities progress", "table", t.table, "updated", tableTotal)
+				s.logger.Info("backfill-identities progress",
+					"table", t.table, "updated", tableTotal, "window_hi", lo+window, "max_id", maxID)
 			}
-			if n < int64(batch) {
+			if limit > 0 && tableTotal >= limit {
 				break
 			}
 		}
@@ -110,6 +113,7 @@ func (s *PostgresStore) BackfillPRMetaOwners(ctx context.Context, batchSize int,
 	if batchSize <= 0 {
 		batchSize = 100000
 	}
+	// Window predicate %s slots the pr_meta_id range bounds in.
 	const candidates = `
 		SELECT DISTINCT ON (m.pr_meta_id) m.pr_meta_id, c.cntrb_id
 		FROM aveloxis_data.pull_request_meta m
@@ -121,38 +125,44 @@ func (s *PostgresStore) BackfillPRMetaOwners(ctx context.Context, batchSize int,
 		     LOWER(split_part(pr.pr_repo_full_name, '/', 1))
 		WHERE m.cntrb_id IS NULL
 		  AND split_part(COALESCE(pr.pr_repo_full_name, ''), '/', 1) <> ''
-		  AND COALESCE(c.cntrb_deleted, 0) = 0`
+		  AND COALESCE(c.cntrb_deleted, 0) = 0%s`
 	if dryRun {
+		// The dry-run count intentionally runs the join UNWINDOWED but
+		// without the DISTINCT-ON sort (COUNT of distinct meta ids).
+		q := `SELECT COUNT(DISTINCT m.pr_meta_id)` + strings.TrimPrefix(
+			fmt.Sprintf(candidates, ""), `
+		SELECT DISTINCT ON (m.pr_meta_id) m.pr_meta_id, c.cntrb_id`)
 		var n int64
-		if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (`+candidates+`) sub`).Scan(&n); err != nil {
+		if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
 			return 0, fmt.Errorf("dry-run count pull_request_meta: %w", err)
 		}
 		s.logger.Info("backfill-identities dry-run", "table", "pull_request_meta", "derivable", n)
 		return n, nil
 	}
+	var maxID int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(pr_meta_id), 0) FROM aveloxis_data.pull_request_meta`).Scan(&maxID); err != nil {
+		return 0, fmt.Errorf("max pr_meta_id: %w", err)
+	}
 	var total int64
-	for {
-		batch := batchSize
-		if limit > 0 && int64(batch) > limit-total {
-			batch = int(limit - total)
-		}
-		if batch <= 0 {
-			break
-		}
+	window := int64(batchSize)
+	for lo := int64(0); lo < maxID; lo += window {
+		cand := fmt.Sprintf(candidates, " AND m.pr_meta_id > $1 AND m.pr_meta_id <= $2")
 		tag, err := s.pool.Exec(ctx, `
-			WITH cand AS (`+candidates+` LIMIT $1)
+			WITH cand AS (`+cand+`)
 			UPDATE aveloxis_data.pull_request_meta m
 			SET cntrb_id = cand.cntrb_id
-			FROM cand WHERE m.pr_meta_id = cand.pr_meta_id`, batch)
+			FROM cand WHERE m.pr_meta_id = cand.pr_meta_id`, lo, lo+window)
 		if err != nil {
-			return total, fmt.Errorf("backfill pull_request_meta: %w", err)
+			return total, fmt.Errorf("backfill pull_request_meta window %d: %w", lo, err)
 		}
 		n := tag.RowsAffected()
 		total += n
 		if n > 0 {
-			s.logger.Info("backfill-identities progress", "table", "pull_request_meta", "updated", total)
+			s.logger.Info("backfill-identities progress",
+				"table", "pull_request_meta", "updated", total, "window_hi", lo+window, "max_id", maxID)
 		}
-		if n < int64(batch) {
+		if limit > 0 && total >= limit {
 			break
 		}
 	}
@@ -179,38 +189,43 @@ func (s *PostgresStore) BackfillClosedByFromEvents(ctx context.Context, batchSiz
 	if batchSize <= 0 {
 		batchSize = 100000
 	}
-	cand := fmt.Sprintf(closedByCandidates, "")
 	if dryRun {
+		cand := fmt.Sprintf(closedByCandidates, "")
+		q := `SELECT COUNT(DISTINCT e.issue_id)` + strings.TrimPrefix(cand, `
+	SELECT DISTINCT ON (issue_id) e.issue_id, e.cntrb_id`)
+		// Strip the ORDER BY — COUNT doesn't need it.
+		q = strings.Replace(q, "ORDER BY issue_id, e.created_at DESC", "", 1)
 		var n int64
-		if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (`+cand+`) sub`).Scan(&n); err != nil {
+		if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
 			return 0, fmt.Errorf("dry-run count closed_by: %w", err)
 		}
 		s.logger.Info("backfill-identities dry-run", "table", "issues.closed_by_id", "derivable", n)
 		return n, nil
 	}
+	var maxID int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(issue_id), 0) FROM aveloxis_data.issues`).Scan(&maxID); err != nil {
+		return 0, fmt.Errorf("max issue_id: %w", err)
+	}
 	var total int64
-	for {
-		batch := batchSize
-		if limit > 0 && int64(batch) > limit-total {
-			batch = int(limit - total)
-		}
-		if batch <= 0 {
-			break
-		}
+	window := int64(batchSize)
+	for lo := int64(0); lo < maxID; lo += window {
+		cand := fmt.Sprintf(closedByCandidates, "AND i.issue_id > $1 AND i.issue_id <= $2")
 		tag, err := s.pool.Exec(ctx, `
-			WITH cand AS (`+cand+` LIMIT $1)
+			WITH cand AS (`+cand+`)
 			UPDATE aveloxis_data.issues i
 			SET closed_by_id = cand.cntrb_id
-			FROM cand WHERE i.issue_id = cand.issue_id`, batch)
+			FROM cand WHERE i.issue_id = cand.issue_id`, lo, lo+window)
 		if err != nil {
-			return total, fmt.Errorf("backfill closed_by: %w", err)
+			return total, fmt.Errorf("backfill closed_by window %d: %w", lo, err)
 		}
 		n := tag.RowsAffected()
 		total += n
 		if n > 0 {
-			s.logger.Info("backfill-identities progress", "table", "issues.closed_by_id", "updated", total)
+			s.logger.Info("backfill-identities progress",
+				"table", "issues.closed_by_id", "updated", total, "window_hi", lo+window, "max_id", maxID)
 		}
-		if n < int64(batch) {
+		if limit > 0 && total >= limit {
 			break
 		}
 	}

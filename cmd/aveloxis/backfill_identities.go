@@ -96,7 +96,7 @@ func backfillIdentitiesCmd(cfgPath *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report candidate counts without writing")
-	cmd.Flags().IntVar(&batchSize, "batch-size", 100000, "rows per UPDATE batch (phases 1-2)")
+	cmd.Flags().IntVar(&batchSize, "batch-size", 100000, "primary-key window width per UPDATE batch (phases 1-2); each batch is a bounded index-range scan")
 	cmd.Flags().Int64Var(&limit, "limit", 0, "cap rows/issues per phase (0 = unbounded)")
 	cmd.Flags().StringVar(&phase, "phase", "all", "which phase to run: all | 1 | 2 | 3")
 	cmd.Flags().IntVar(&sweepBatch, "sweep-batch", 100, "issues per GraphQL query in phase 3")

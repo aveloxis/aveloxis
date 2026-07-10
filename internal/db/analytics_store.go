@@ -60,7 +60,7 @@ var metricSeriesSQL = map[string]string{
 		FROM (
 			SELECT created_at AS ts, reporter_id AS cntrb FROM aveloxis_data.issues WHERE repo_id = ANY($1) AND reporter_id IS NOT NULL
 			UNION ALL
-			SELECT pr_created_at, author_id FROM aveloxis_data.pull_requests WHERE repo_id = ANY($1) AND author_id IS NOT NULL
+			SELECT created_at, author_id FROM aveloxis_data.pull_requests WHERE repo_id = ANY($1) AND author_id IS NOT NULL
 			UNION ALL
 			SELECT cmt_author_timestamp, cmt_ght_author_id FROM aveloxis_data.commits WHERE repo_id = ANY($1) AND cmt_ght_author_id IS NOT NULL
 			UNION ALL
@@ -73,14 +73,14 @@ var metricSeriesSQL = map[string]string{
 		WHERE ts >= $2 AND ts < $3
 		GROUP BY 1 ORDER BY 1`,
 	"change_requests": `
-		SELECT date_trunc('%s', pr_created_at), COUNT(*)::float
+		SELECT date_trunc('%s', created_at), COUNT(*)::float
 		FROM aveloxis_data.pull_requests
-		WHERE repo_id = ANY($1) AND pr_created_at >= $2 AND pr_created_at < $3
+		WHERE repo_id = ANY($1) AND created_at >= $2 AND created_at < $3
 		GROUP BY 1 ORDER BY 1`,
 	"change_requests_merged": `
-		SELECT date_trunc('%s', pr_merged_at), COUNT(*)::float
+		SELECT date_trunc('%s', merged_at), COUNT(*)::float
 		FROM aveloxis_data.pull_requests
-		WHERE repo_id = ANY($1) AND pr_merged_at IS NOT NULL AND pr_merged_at >= $2 AND pr_merged_at < $3
+		WHERE repo_id = ANY($1) AND merged_at IS NOT NULL AND merged_at >= $2 AND merged_at < $3
 		GROUP BY 1 ORDER BY 1`,
 	"issues": `
 		SELECT date_trunc('%s', created_at), COUNT(*)::float

@@ -28,11 +28,12 @@ import (
 
 // Server is the Aveloxis REST API server.
 type Server struct {
-	store   *db.PostgresStore
-	logger  *slog.Logger
-	mux     *http.ServeMux
-	limiter *rateLimiter   // v0.27.0: nil only when construction failed
-	auth    *authenticator // v0.27.1: Bearer sessions + repo scope
+	store    *db.PostgresStore
+	logger   *slog.Logger
+	mux      *http.ServeMux
+	limiter  *rateLimiter   // v0.27.0: nil only when construction failed
+	auth     *authenticator // v0.27.1: Bearer sessions + repo scope
+	cmpCache *compareCache  // v0.27.2: 60s TTL for hot compare responses
 }
 
 // New creates an API server with default middleware options
@@ -69,6 +70,13 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/affiliations", s.handleRepoAffiliations)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/coverage", s.handleRepoContributionsCoverage)
 	s.mux.HandleFunc("GET /api/v1/repos/search", s.handleRepoSearch)
+	// v0.27.2 — comparison analytics (plan §4): metric catalog
+	// (docs-as-data), ≤7-entity temporal + snapshot comparison,
+	// three-class entity picker search.
+	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsCatalog)
+	s.mux.HandleFunc("GET /api/v1/compare", s.handleCompare)
+	s.mux.HandleFunc("GET /api/v1/compare/snapshot", s.handleCompareSnapshot)
+	s.mux.HandleFunc("GET /api/v1/entities/search", s.handleEntitiesSearch)
 	s.registerMetricRoutes()
 	rl, err := newRateLimiter(opts)
 	if err != nil {
@@ -76,6 +84,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	}
 	s.limiter = rl
 	s.auth = newAuthenticator(store, opts.RequireAuth)
+	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
 	return s, nil
 }
 

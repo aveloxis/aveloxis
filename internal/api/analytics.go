@@ -122,6 +122,32 @@ var metricCatalog = []MetricDef{
 
 const maxCompareEntities = 7
 
+// labelEntities resolves human-readable labels: repo entities become
+// "owner/name" (operator, 2026-07-10: nobody knows what repo:2160 is,
+// and ids vary by instance); org entities show their login.
+func (s *Server) labelEntities(r *http.Request, entities []entity) {
+	var ids []int64
+	for _, e := range entities {
+		if e.Kind == "repo" {
+			ids = append(ids, e.RepoID)
+		}
+	}
+	repos, err := s.store.GetReposBatch(r.Context(), ids)
+	if err != nil {
+		return // labels fall back to the raw entity tokens
+	}
+	for i := range entities {
+		switch entities[i].Kind {
+		case "repo":
+			if rp, ok := repos[entities[i].RepoID]; ok && rp != nil {
+				entities[i].Label = rp.Owner + "/" + rp.Name
+			}
+		case "org":
+			entities[i].Label = entities[i].Login + " (org)"
+		}
+	}
+}
+
 // entity is one parsed compare target.
 type entity struct {
 	Kind   string `json:"kind"` // repo | org
@@ -315,6 +341,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.labelEntities(r, entities)
 	series := make([]compareSeries, 0, len(entities))
 	for _, e := range entities {
 		ids, ok := s.resolveEntityRepos(w, r, e)
@@ -389,13 +416,19 @@ func (s *Server) summedSeries(ctx context.Context, ids []int64, bucket string, s
 // fillBuckets densifies a series: every bucket in [since, until) is
 // present, missing ones as 0 — charts need aligned x-axes.
 func fillBuckets(points []db.WeeklyPoint, since, until time.Time, bucket string) []db.WeeklyPoint {
-	byBucket := map[time.Time]float64{}
+	// Join on DATE STRINGS, not time.Time equality — the 2026-07-10
+	// flat-line bug: date_trunc in a non-UTC session returned Monday
+	// 00:00-05:00 while the generated grid was Monday 00:00 UTC, so
+	// time.Time map keys never matched and every real value was
+	// silently replaced by zero. The SQL now truncates AT TIME ZONE
+	// 'UTC'; the string key is the belt-and-suspenders.
+	byBucket := map[string]float64{}
 	for _, p := range points {
-		byBucket[p.Bucket.UTC()] = p.Value
+		byBucket[p.Bucket.UTC().Format("2006-01-02")] = p.Value
 	}
 	var out []db.WeeklyPoint
 	for t := truncBucket(since, bucket); t.Before(until); t = nextBucket(t, bucket) {
-		out = append(out, db.WeeklyPoint{Bucket: t, Value: byBucket[t]})
+		out = append(out, db.WeeklyPoint{Bucket: t, Value: byBucket[t.Format("2006-01-02")]})
 	}
 	return out
 }
@@ -502,6 +535,7 @@ func (s *Server) handleCompareSnapshot(w http.ResponseWriter, r *http.Request) {
 		Entity entity `json:"entity"`
 		db.SnapshotValue
 	}
+	s.labelEntities(r, entities)
 	values := make([]snapValue, 0, len(entities))
 	for _, e := range entities {
 		ids, ok := s.resolveEntityRepos(w, r, e)

@@ -52,8 +52,12 @@ func TestAnalyticsQueriesOnRealData(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", metric, err)
 		}
-		if len(pts) == 0 {
-			t.Errorf("%s: expected non-empty series on real 8Knot data", metric)
+		var sum float64
+		for _, p := range pts {
+			sum += p.Value
+		}
+		if len(pts) == 0 || sum == 0 {
+			t.Errorf("%s: expected non-empty NONZERO series on real 8Knot data (len=%d sum=%f)", metric, len(pts), sum)
 		}
 	}
 	// Month bucket + injection guard.

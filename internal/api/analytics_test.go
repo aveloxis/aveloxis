@@ -128,6 +128,26 @@ func TestFillBucketsAligns(t *testing.T) {
 	}
 }
 
+// TestFillBucketsSurvivesOffsetTimestamps is the 2026-07-10 flat-line
+// regression: a series whose buckets carry a non-UTC offset (what
+// date_trunc returns under a non-UTC session) must still join onto
+// the UTC-generated grid instead of zeroing out.
+func TestFillBucketsSurvivesOffsetTimestamps(t *testing.T) {
+	chicago := time.FixedZone("CDT", -5*3600)
+	pts := []db.WeeklyPoint{
+		{Bucket: time.Date(2026, 1, 5, 0, 0, 0, 0, chicago), Value: 42},
+	}
+	since := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	filled := fillBuckets(pts, since, since.AddDate(0, 0, 21), "week")
+	var sum float64
+	for _, p := range filled {
+		sum += p.Value
+	}
+	if sum != 42 {
+		t.Errorf("offset-timestamped value must survive densification, sum=%f (flat-line bug)", sum)
+	}
+}
+
 func TestAnalyticsRoutesRegistered(t *testing.T) {
 	src := mustReadFile(t, "server.go")
 	for _, route := range []string{

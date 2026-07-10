@@ -201,6 +201,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/auth/gitlab", s.handleGitLabAuth)
 	mux.HandleFunc("/auth/gitlab/callback", s.handleGitLabCallback)
 	mux.HandleFunc("/logout", s.handleLogout)
+	// v0.27.1: mints a DB-backed Bearer token for the separate-origin
+	// SPA (aveloxis-gui). The SPA completes OAuth on this origin (the
+	// session cookie), then exchanges it here for a token it sends as
+	// Authorization: Bearer to the api process.
+	mux.HandleFunc("/auth/token", s.requireAuth(s.handleAuthToken))
 
 	// Authenticated routes.
 	mux.HandleFunc("/dashboard", s.requireAuth(s.handleDashboard))
@@ -1359,4 +1364,29 @@ func (s *Server) handleMonitorPrioritize(w http.ResponseWriter, r *http.Request)
 	}
 	// Redirect back to the monitor page.
 	http.Redirect(w, r, "/monitor", http.StatusFound)
+}
+
+// handleAuthToken (v0.27.1) exchanges the caller's web session for a
+// DB-backed session token the api process validates. JSON response so
+// the SPA can store it (localStorage) and attach it as a Bearer.
+func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
+	sess := s.getSession(r)
+	if sess == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	token, err := s.store.CreateSessionToken(r.Context(), sess.UserID, 0)
+	if err != nil {
+		s.logger.Error("failed to mint session token", "user_id", sess.UserID, "error", err)
+		http.Error(w, "token creation failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"token":      token,
+		"expires_at": time.Now().Add(db.DefaultSessionTokenLifetime).UTC().Format(time.RFC3339),
+		"user_id":    sess.UserID,
+		"login":      sess.LoginName,
+	})
 }

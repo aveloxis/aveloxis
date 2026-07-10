@@ -254,6 +254,7 @@ func runAPI(cfgPath, addr string) error {
 		ExemptCIDRs:    cfg.API.ExemptCIDRsOrDefault(),
 		CORSOrigins:    cfg.API.CORSOrigins,
 		TrustedProxy:   cfg.API.TrustedProxy,
+		RequireAuth:    cfg.API.RequireAuth,
 	})
 	if err != nil {
 		return fmt.Errorf("api middleware config: %w", err)

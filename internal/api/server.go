@@ -31,7 +31,8 @@ type Server struct {
 	store   *db.PostgresStore
 	logger  *slog.Logger
 	mux     *http.ServeMux
-	limiter *rateLimiter // v0.27.0: nil only when construction failed
+	limiter *rateLimiter   // v0.27.0: nil only when construction failed
+	auth    *authenticator // v0.27.1: Bearer sessions + repo scope
 }
 
 // New creates an API server with default middleware options
@@ -74,13 +75,15 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		return nil, err
 	}
 	s.limiter = rl
+	s.auth = newAuthenticator(store, opts.RequireAuth)
 	return s, nil
 }
 
 // Handler returns the HTTP handler: CORS outermost (preflights are
-// never rate-limited), then the per-IP limiter, then the routes.
+// never rate-limited), then the per-IP limiter, then Bearer auth +
+// scope, then the routes.
 func (s *Server) Handler() http.Handler {
-	return s.limiter.cors(s.limiter.middleware(s.mux))
+	return s.limiter.cors(s.limiter.middleware(s.auth.middleware(s.limiter, s.mux)))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +107,9 @@ func (s *Server) handleRepoStats(w http.ResponseWriter, r *http.Request) {
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	stats, err := s.store.GetRepoStats(r.Context(), repoID)
@@ -150,6 +156,9 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	format := r.URL.Query().Get("format")
 	if format == "" {
 		format = "cyclonedx"
@@ -184,6 +193,9 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	// Default window: last 2 years to now. Both endpoints overridable via
@@ -243,6 +255,9 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	licenses, err := s.store.GetRepoLicenses(r.Context(), repoID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -261,6 +276,9 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 
@@ -313,6 +331,9 @@ func (s *Server) handleScancodeFiles(w http.ResponseWriter, r *http.Request) {
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	files, err := s.store.GetScancodeFileEntries(r.Context(), repoID)

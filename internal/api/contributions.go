@@ -59,6 +59,9 @@ func (s *Server) handleRepoContributors(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	since, until, ok := parseWindow(r)
 	if !ok {
 		http.Error(w, "since must be before until", http.StatusBadRequest)
@@ -90,6 +93,9 @@ func (s *Server) handleRepoContributionsCoverage(w http.ResponseWriter, r *http.
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	since, until, ok := parseWindow(r)
 	if !ok {
 		http.Error(w, "since must be before until", http.StatusBadRequest)
@@ -114,6 +120,9 @@ func (s *Server) handleRepoAffiliations(w http.ResponseWriter, r *http.Request) 
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	since, until, ok := parseWindow(r)

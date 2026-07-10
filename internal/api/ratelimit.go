@@ -40,6 +40,7 @@ type Options struct {
 	ExemptCIDRs    []string // client networks that bypass limiting entirely
 	CORSOrigins    []string // origins allowed to call the API from a browser
 	TrustedProxy   string   // peer IP whose X-Forwarded-For is believed
+	RequireAuth    bool     // v0.27.1: gate all data endpoints behind Bearer sessions
 }
 
 // DefaultExemptCIDRs is the "same box / same LAN" set.

@@ -369,6 +369,7 @@ same-box and same-LAN traffic is never limited.
 | `exempt_cidrs` | loopback + RFC1918 + `::1/128` | Client networks that bypass limiting entirely. |
 | `cors_origins` | `[]` | Browser origins allowed to call the API (the separate-repo aveloxis-gui). Empty = no cross-origin access. |
 | `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set this to your nginx host when proxying — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). |
+| `require_auth` | `false` | Gate every data endpoint (all but `/health`) behind Bearer session tokens minted by the web process's `/auth/token`. Flip on once the aveloxis-gui token flow is deployed. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
 
 ```jsonc
 "api": {

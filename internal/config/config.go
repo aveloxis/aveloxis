@@ -1065,6 +1065,12 @@ type APIConfig struct {
 	// believed when resolving the client address (the nginx-on-
 	// same-box layout). Empty = XFF ignored.
 	TrustedProxy string `json:"trusted_proxy,omitempty"`
+	// RequireAuth gates every data endpoint (all but /health) behind
+	// Bearer session tokens. Default FALSE: flip it on once the
+	// aveloxis-gui token flow is deployed — enabling it earlier
+	// breaks the server-rendered GUI's browser-side chart fetches.
+	// Exempt-CIDR clients bypass auth even when enabled.
+	RequireAuth bool `json:"require_auth,omitempty"`
 }
 
 // RateLimitRPSOrDefault returns the configured sustained rate, or 1.

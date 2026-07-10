@@ -371,6 +371,10 @@ same-box and same-LAN traffic is never limited.
 | `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set this to your nginx host when proxying — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). |
 | `require_auth` | `false` | Gate every data endpoint (all but `/health`) behind Bearer session tokens minted by the web process's `/auth/token`. Flip on once the aveloxis-gui token flow is deployed. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
 
+For the full public-GUI deployment runbook (nginx layout, OAuth
+callbacks, when to flip `require_auth`), see the aveloxis-gui
+repository's README "Production deployment" section.
+
 ```jsonc
 "api": {
   "rate_limit_rps": 1,

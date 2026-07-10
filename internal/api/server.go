@@ -28,13 +28,25 @@ import (
 
 // Server is the Aveloxis REST API server.
 type Server struct {
-	store  *db.PostgresStore
-	logger *slog.Logger
-	mux    *http.ServeMux
+	store   *db.PostgresStore
+	logger  *slog.Logger
+	mux     *http.ServeMux
+	limiter *rateLimiter // v0.27.0: nil only when construction failed
 }
 
-// New creates an API server.
+// New creates an API server with default middleware options
+// (rate limiting active with defaults, LAN exempt, no CORS origins).
+// Kept for tests and backward compatibility; runAPI uses
+// NewWithOptions with the aveloxis.json `api` block.
 func New(store *db.PostgresStore, logger *slog.Logger) *Server {
+	s, _ := NewWithOptions(store, logger, Options{ExemptCIDRs: DefaultExemptCIDRs})
+	return s
+}
+
+// NewWithOptions creates an API server whose Handler routes every
+// request through the CORS + rate-limit middleware chain (v0.27.0 —
+// plan: summary/api-analytics-plan-2026-07-10.md).
+func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) (*Server, error) {
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/v1/mailing-list/stats", s.handleMailingListStats)
@@ -57,12 +69,18 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/coverage", s.handleRepoContributionsCoverage)
 	s.mux.HandleFunc("GET /api/v1/repos/search", s.handleRepoSearch)
 	s.registerMetricRoutes()
-	return s
+	rl, err := newRateLimiter(opts)
+	if err != nil {
+		return nil, err
+	}
+	s.limiter = rl
+	return s, nil
 }
 
-// Handler returns the HTTP handler.
+// Handler returns the HTTP handler: CORS outermost (preflights are
+// never rate-limited), then the per-IP limiter, then the routes.
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	return s.limiter.cors(s.limiter.middleware(s.mux))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

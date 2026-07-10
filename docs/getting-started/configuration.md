@@ -354,6 +354,33 @@ Do not delete this directory while Aveloxis is running. If deleted while stopped
 
 ---
 
+
+## Public analytics API (`api`)
+
+v0.27.0: rate limiting + CORS for the `aveloxis api` process. Limits
+apply ONLY to clients whose resolved IP falls outside `exempt_cidrs` —
+same-box and same-LAN traffic is never limited.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `rate_limit_rps` | `1` | Sustained per-IP requests/second (token bucket). |
+| `rate_limit_burst` | `10` | Per-IP burst capacity. |
+| `rate_limit_daily` | `1000` | Per-IP daily request quota — the anti-bulk-crawl control. Exceeding returns 429 with `Retry-After: 86400`. |
+| `exempt_cidrs` | loopback + RFC1918 + `::1/128` | Client networks that bypass limiting entirely. |
+| `cors_origins` | `[]` | Browser origins allowed to call the API (the separate-repo aveloxis-gui). Empty = no cross-origin access. |
+| `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set this to your nginx host when proxying — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). |
+
+```jsonc
+"api": {
+  "rate_limit_rps": 1,
+  "rate_limit_burst": 10,
+  "rate_limit_daily": 1000,
+  "exempt_cidrs": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+  "cors_origins": ["https://your-gui.example.org"],
+  "trusted_proxy": "127.0.0.1"
+}
+```
+
 ## Email (Gmail SMTP, optional)
 
 Aveloxis can send transactional emails (welcome on first signup, group-approval notifications) via Gmail SMTP. The mailer is **optional** — when not configured, the application works fine without sending email.

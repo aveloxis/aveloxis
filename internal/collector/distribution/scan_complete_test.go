@@ -196,11 +196,13 @@ func TestCompositeScannerReturnsIncompleteOnEcosystemsCircuitOpen(t *testing.T) 
 	}))
 	t.Cleanup(depsServer.Close)
 
-	// Build an ecosystems client and trip its breaker manually.
-	ecoClient := ecosystems.New(ecosystems.Options{BaseURL: "http://does-not-matter"})
-	// Trip via direct state mutation — same pattern as the
-	// circuit-breaker tests in the ecosystems package.
-	tripBreakerManually(t, ecoClient)
+	// Build an ecosystems client pointed at a local always-500 server
+	// and trip its breaker with real HTTP failures — deterministic on
+	// any network (the previous "http://does-not-matter" approach
+	// relied on DNS lookup failure, which NXDOMAIN-hijacking resolvers
+	// on public Wi-Fi break: the name resolves, the calls don't
+	// classify as transient, the breaker never opens).
+	ecoClient := trippedEcosystemsClient(t)
 
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -237,31 +239,26 @@ func TestCompositeScannerReturnsIncompleteOnEcosystemsCircuitOpen(t *testing.T) 
 	}
 }
 
-// tripBreakerManually mutates the ecosystems Client's internal
-// state to open the circuit. Uses the same direct-mutation pattern
-// as circuit_breaker_test.go in the ecosystems package. We import
-// nothing extra: ecosystems.Client's cb* fields aren't accessible
-// from this package (different package, lowercase fields), so we
-// drive the trip via 10 real failing calls to a 500-returning
-// httptest server.
-func tripBreakerManually(t *testing.T, c *ecosystems.Client) {
+// trippedEcosystemsClient returns an ecosystems client whose circuit
+// breaker is OPEN, tripped by real HTTP 500 responses from a local
+// httptest server. Deterministic on any network — never depends on
+// DNS behavior (public-Wi-Fi resolvers that hijack NXDOMAIN broke the
+// earlier does-not-resolve approach on 2026-07-10).
+func trippedEcosystemsClient(t *testing.T) *ecosystems.Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "down", http.StatusInternalServerError)
 	}))
 	t.Cleanup(server.Close)
 
-	// We can't redirect the client's baseURL post-construction.
-	// Drive the trip via the public LookupPackages path — but the
-	// constructed client points at "http://does-not-matter" which
-	// will fail at the transport layer (which also counts as a
-	// transient failure per noteTransientFailure in client.go).
+	c := ecosystems.New(ecosystems.Options{BaseURL: server.URL})
 	for i := 0; i < ecosystems.CircuitBreakerThreshold; i++ {
 		_, _ = c.LookupPackages(context.Background(), "https://github.com/x/y")
 	}
 	if !c.IsCircuitOpen() {
-		t.Fatal("expected breaker to be open after threshold failures; check ecosystems CircuitBreakerThreshold constant + tripBreakerManually helper")
+		t.Fatal("expected breaker to be open after threshold 500s; check ecosystems CircuitBreakerThreshold + noteTransientFailure")
 	}
+	return c
 }
 
 // TestWorkerDispatcherPausesAndResumes confirms the dispatcher

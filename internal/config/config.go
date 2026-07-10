@@ -38,6 +38,9 @@ type Config struct {
 	// v0.23.0: Monitor dashboard settings.
 	Monitor MonitorConfig `json:"monitor"`
 
+	// v0.27.0: public analytics API settings (rate limiting + CORS).
+	API APIConfig `json:"api"`
+
 	// LogLevel sets the minimum log level: "debug", "info", "warn", or "error".
 	LogLevel string `json:"log_level"`
 }
@@ -1039,4 +1042,60 @@ func DefaultConfig() *Config {
 		},
 		LogLevel: "info",
 	}
+}
+
+// APIConfig configures the public analytics API (v0.27.0). Rate
+// limits apply ONLY to clients whose resolved IP is outside
+// ExemptCIDRs — same-box / same-LAN traffic is never limited.
+type APIConfig struct {
+	// RateLimitRPS is the sustained per-IP request rate. Default 1.
+	RateLimitRPS float64 `json:"rate_limit_rps,omitempty"`
+	// RateLimitBurst is the per-IP burst capacity. Default 10.
+	RateLimitBurst int `json:"rate_limit_burst,omitempty"`
+	// RateLimitDaily is the per-IP daily request quota — the actual
+	// anti-bulk-crawl control. Default 1000.
+	RateLimitDaily int `json:"rate_limit_daily,omitempty"`
+	// ExemptCIDRs lists client networks that bypass limiting
+	// entirely. Default: loopback + RFC1918 (+ ::1).
+	ExemptCIDRs []string `json:"exempt_cidrs,omitempty"`
+	// CORSOrigins lists browser origins allowed to call the API
+	// (the separate-repo GUI). Empty = no cross-origin access.
+	CORSOrigins []string `json:"cors_origins,omitempty"`
+	// TrustedProxy is the peer IP whose X-Forwarded-For header is
+	// believed when resolving the client address (the nginx-on-
+	// same-box layout). Empty = XFF ignored.
+	TrustedProxy string `json:"trusted_proxy,omitempty"`
+}
+
+// RateLimitRPSOrDefault returns the configured sustained rate, or 1.
+func (a APIConfig) RateLimitRPSOrDefault() float64 {
+	if a.RateLimitRPS <= 0 {
+		return 1
+	}
+	return a.RateLimitRPS
+}
+
+// RateLimitBurstOrDefault returns the configured burst, or 10.
+func (a APIConfig) RateLimitBurstOrDefault() int {
+	if a.RateLimitBurst <= 0 {
+		return 10
+	}
+	return a.RateLimitBurst
+}
+
+// RateLimitDailyOrDefault returns the configured daily quota, or 1000.
+func (a APIConfig) RateLimitDailyOrDefault() int {
+	if a.RateLimitDaily <= 0 {
+		return 1000
+	}
+	return a.RateLimitDaily
+}
+
+// ExemptCIDRsOrDefault returns the configured exempt networks, or the
+// loopback + RFC1918 default set.
+func (a APIConfig) ExemptCIDRsOrDefault() []string {
+	if len(a.ExemptCIDRs) == 0 {
+		return []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+	}
+	return a.ExemptCIDRs
 }

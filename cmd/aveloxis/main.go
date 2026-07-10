@@ -247,7 +247,17 @@ func runAPI(cfgPath, addr string) error {
 	// api does not run migrations — check if schema is current.
 	store.CheckSchemaVersion(ctx, logger)
 
-	apiServer := api.New(store, logger)
+	apiServer, err := api.NewWithOptions(store, logger, api.Options{
+		RateLimitRPS:   cfg.API.RateLimitRPSOrDefault(),
+		RateLimitBurst: cfg.API.RateLimitBurstOrDefault(),
+		RateLimitDaily: cfg.API.RateLimitDailyOrDefault(),
+		ExemptCIDRs:    cfg.API.ExemptCIDRsOrDefault(),
+		CORSOrigins:    cfg.API.CORSOrigins,
+		TrustedProxy:   cfg.API.TrustedProxy,
+	})
+	if err != nil {
+		return fmt.Errorf("api middleware config: %w", err)
+	}
 	srv := &http.Server{Addr: addr, Handler: apiServer.Handler()}
 
 	go func() {

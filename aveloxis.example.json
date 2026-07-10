@@ -82,5 +82,19 @@
   "monitor": {
     "refresh_seconds": 60
   },
-  "log_level": "info"
+  "log_level": "info",
+  "api": {
+    "rate_limit_rps": 1,
+    "rate_limit_burst": 10,
+    "rate_limit_daily": 1000,
+    "exempt_cidrs": [
+      "127.0.0.0/8",
+      "::1/128",
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16"
+    ],
+    "cors_origins": [],
+    "trusted_proxy": ""
+  }
 }

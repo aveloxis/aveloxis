@@ -150,3 +150,25 @@ When writing queries against Aveloxis:
 - **Against materialized views:** Use Augur column names (`pr_src_id`, `pr_src_state`, `pr_created_at`, etc.)
 
 The `queries/` directory in the repository contains ~100 analytical SQL queries that have been rewritten from Augur's schema to Aveloxis's. These can be used as examples of the correct column names for direct table queries.
+
+## `pull_request_meta.meta_label` — why it is sometimes empty
+
+`meta_label` is the head/base ref in GitHub's `owner:branch` form
+(e.g. `octocat:feature-x`). On the GraphQL collection path (the
+default since v0.26.0) it is synthesized from the head/base
+repository's `nameWithOwner` plus the ref name.
+
+**When the fork behind a PR's head branch has been DELETED, the label
+is empty (`''`) on GraphQL-collected rows.** GitHub's REST API kept a
+copy of the label string on the PR object itself, so REST-era rows
+carry labels even for long-deleted forks; GraphQL exposes only the
+live repository object, which is `null` once the fork is gone — there
+is nothing to reconstruct the owner from. Measured scale on
+`augurlabs/augur` (2026-07-10): 119 of 5,263 head/base rows (~2%).
+
+This is a deliberate honest-NULL: we do not cache or fabricate values
+we cannot verify (the same policy as null `author_id` for deleted
+users and null `closed_by_id` for deleted closers). Analysts joining
+on `meta_label` should treat `''` as "fork deleted"; the branch NAME
+is still available in `meta_ref`, and the paired `pull_request_repo`
+row is likewise absent for deleted forks.

@@ -330,9 +330,12 @@ re-collection, since incremental cycles are since-filtered and never
 revisit historical rows. Also expected when
 comparing REST-era tags: contributors/-identities slightly LOWER on
 the new side (deleted GitHub users — GraphQL reports a null author
-where REST preserves a stale login) and `merge_commit_sha` lower
+where REST preserves a stale login) `merge_commit_sha` lower
 (REST fabricates test-merge SHAs for unmerged PRs; GraphQL reports
-only real merges).
+only real merges — verified: the GraphQL fill count exactly equals
+the merged-PR count), and `meta_label` slightly lower (REST kept
+label strings for DELETED forks on the PR object; GraphQL cannot
+reconstruct them — see docs/architecture/column-mapping.md).
 
 ## Expected event-table asymmetry vs pre-0.26.2 tags
 

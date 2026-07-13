@@ -106,6 +106,19 @@ func (a *authenticator) resolveToken(ctx context.Context, token string) (authInf
 	return info, true
 }
 
+// invalidateAll drops every cached token validation so role and scope
+// changes take effect immediately instead of after authCacheTTL.
+// Called from the admin mutation handlers (promote/demote, group
+// approve/reject) — without this, a freshly promoted user's own
+// /api/v1/me kept answering is_admin=false for up to 60s, and a user
+// whose group was just approved kept an empty scope. Admin mutations
+// are rare, so re-validating every active token once is cheap.
+func (a *authenticator) invalidateAll() {
+	a.mu.Lock()
+	a.cache = map[string]cachedAuth{}
+	a.mu.Unlock()
+}
+
 // middleware enforces Bearer auth on every route except /api/v1/health
 // when require is set. Exempt-CIDR clients bypass (LAN tooling).
 func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Handler {

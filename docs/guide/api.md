@@ -433,3 +433,55 @@ out-of-scope entities return a structured 403.
 - `GET /api/v1/entities/search?q=augur` — picker results in three
   classes: `in_scope` (chartable now), `collected` (one click to add),
   `uncollected` (submit a collection request).
+
+## Portal and admin endpoints (v0.27.3)
+
+These back the aveloxis-gui portal pages (group / monitor /
+pending-groups / users). Unlike the read endpoints above — which are
+gated by `api.require_auth` during rollout — **every endpoint here
+requires a valid `Authorization: Bearer` token unconditionally**,
+even from exempt-LAN addresses and while `require_auth` is off. They
+carry user context (whose groups? who approves?) that cannot exist
+without an identity. The `/api/v1/admin/*` routes additionally
+require the caller's user to be an administrator (403 otherwise).
+
+Per-user:
+
+- `GET /api/v1/me` — `{user_id, is_admin, scope_repo_count}`.
+  `scope_repo_count` is `-1` for admins (unscoped). The GUI uses
+  `is_admin` to decide whether to render the admin navigation.
+- `GET /api/v1/groups` — the caller's groups:
+  `{groups: [{group_id, name, status, repo_count, favorited}]}`.
+  `status` is `approved`, `pending`, or `rejected` (empty legacy
+  values normalize to `approved`).
+- `POST /api/v1/groups` with `{"name": "..."}` — create a group.
+  Non-admin users' groups start `pending` per the v0.19.0 approval
+  workflow. Returns `{group_id}`.
+- `GET /api/v1/groups/{groupID}/repos` — the group's repos:
+  `{repos: [{repo_id, owner, name, git_url}]}`. Non-admins may only
+  read their own groups (403 otherwise).
+- `POST /api/v1/groups/{groupID}/repos` with
+  `{"url": "https://github.com/owner/repo", "kind": "repo"}` (or
+  `"kind": "org"` with an org URL) — add a repo or track an org.
+  This is the "request access / request collection" affordance the
+  compare picker's three-class results point at: already-collected
+  repos link instantly; new repos in a pending group wait for admin
+  approval before collection starts.
+
+Admin-only:
+
+- `GET /api/v1/admin/users` —
+  `{users: [{user_id, login, email, provider, is_admin, created_at}]}`.
+- `POST /api/v1/admin/users/{userID}/admin` with
+  `{"admin": true|false}` — promote/demote. Self-demotion is refused
+  (last-admin guard).
+- `GET /api/v1/admin/groups/pending` — pending groups awaiting
+  approval, with requester login/email and repo/org counts.
+- `POST /api/v1/admin/groups/{groupID}/approve` (or `/reject`) —
+  decide a pending group. Approval bulk-enqueues the group's repos
+  for collection (same machinery as the server-rendered admin UI).
+- `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`.
+- `GET /api/v1/admin/monitor/queue?page=1&q=augur` — the collection
+  queue, 100 rows per page, optional search. Each job carries the
+  repo label (`owner/name`), status, priority, due_at,
+  last_collected, last_error, and gathered issue/PR/commit counts.

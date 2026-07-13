@@ -779,9 +779,15 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 			Origin:     pr.Origin,
 		}
 		// REST parity (v0.26.4): meta_label is "owner:branch". The
-		// owner comes from the head repository; a deleted fork (nil
-		// repository) leaves the label empty, matching REST's null
-		// label for the same case.
+		// owner comes from the head repository, so a DELETED fork (nil
+		// repository) leaves the label empty. KNOWN, ACCEPTED GAP
+		// (measured 2026-07-10: 119 of 5,263 labels on augur): REST
+		// stores the label string ON THE PR ITSELF, so it survives
+		// fork deletion — GraphQL cannot reconstruct the owner from a
+		// null repository. The honest NULL is preferred over caching
+		// a value we cannot verify (same class as null authors for
+		// deleted users). Documented in
+		// docs/architecture/column-mapping.md.
 		if n.HeadRepository != nil && n.HeadRefName != "" {
 			if owner := ownerFromNameWithOwner(n.HeadRepository.NameWithOwner); owner != "" {
 				staged.MetaHead.Label = owner + ":" + n.HeadRefName

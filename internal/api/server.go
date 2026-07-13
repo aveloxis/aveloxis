@@ -77,6 +77,20 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/compare", s.handleCompare)
 	s.mux.HandleFunc("GET /api/v1/compare/snapshot", s.handleCompareSnapshot)
 	s.mux.HandleFunc("GET /api/v1/entities/search", s.handleEntitiesSearch)
+	// v0.27.3 — portal + admin endpoints for the SPA pages. ALWAYS
+	// require a Bearer identity (admin routes require admin), even
+	// while api.require_auth is off for the read endpoints.
+	s.mux.HandleFunc("GET /api/v1/me", s.handleMe)
+	s.mux.HandleFunc("GET /api/v1/groups", s.handleGroupsList)
+	s.mux.HandleFunc("POST /api/v1/groups", s.handleGroupCreate)
+	s.mux.HandleFunc("GET /api/v1/groups/{groupID}/repos", s.handleGroupRepos)
+	s.mux.HandleFunc("POST /api/v1/groups/{groupID}/repos", s.handleGroupAddRepo)
+	s.mux.HandleFunc("GET /api/v1/admin/users", s.handleAdminUsers)
+	s.mux.HandleFunc("POST /api/v1/admin/users/{userID}/admin", s.handleAdminSetUserAdmin)
+	s.mux.HandleFunc("GET /api/v1/admin/groups/pending", s.handleAdminPendingGroups)
+	s.mux.HandleFunc("POST /api/v1/admin/groups/{groupID}/{decision}", s.handleAdminGroupDecision)
+	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)
+	s.mux.HandleFunc("GET /api/v1/admin/monitor/queue", s.handleAdminMonitorQueue)
 	s.registerMetricRoutes()
 	rl, err := newRateLimiter(opts)
 	if err != nil {

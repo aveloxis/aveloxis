@@ -1256,12 +1256,27 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
+    -- v0.27.4 lifecycle: rows are never deleted; a complete scan that no
+    -- longer reports a (vuln_id, purl) pair stamps resolved_at, keeping
+    -- the historical record. NULL resolved_at = currently affected.
+    first_detected_at TIMESTAMPTZ DEFAULT NOW(),
+    last_seen_at      TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at       TIMESTAMPTZ,
     data_collection_date TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (repo_id, vuln_id, package_purl)
 );
 
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_repo_id
     ON aveloxis_data.repo_deps_vulnerabilities (repo_id);
+-- v0.27.4: per-user starred repositories for the GUI home tab.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
+    user_id    INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE,
+    repo_id    BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, repo_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_repo_stars_repo ON aveloxis_ops.user_repo_stars (repo_id);
+
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_cve_id
     ON aveloxis_data.repo_deps_vulnerabilities (cve_id)
     WHERE cve_id != '';

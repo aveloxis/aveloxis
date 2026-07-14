@@ -360,3 +360,53 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		"jobs": out, "total": total, "page": page, "page_size": pageSize,
 	})
 }
+
+// --- v0.27.4: home tab (stars + activity) ---
+
+// handleStarRepo stars (PUT) or unstars (DELETE) a repo for the
+// signed-in user. Requires identity unconditionally — stars are
+// per-user state. The repo must be in the caller's scope.
+func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		return
+	}
+	if !info.IsAdmin && !info.Scope[repoID] {
+		writeAuthError(w, http.StatusForbidden, "repository is outside your collection scope")
+		return
+	}
+	if r.Method == http.MethodDelete {
+		err = s.store.UnstarRepo(r.Context(), info.UserID, repoID)
+	} else {
+		err = s.store.StarRepo(r.Context(), info.UserID, repoID)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "starred": r.Method != http.MethodDelete})
+}
+
+// handleHomeRepos returns the signed-in user's home-tab repo list:
+// starred repos first (always shown), then the most active repos from
+// their own groups over the trailing 90 days.
+func (s *Server) handleHomeRepos(w http.ResponseWriter, r *http.Request) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	repos, err := s.store.GetHomeRepos(r.Context(), info.UserID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"repos": repos})
+}

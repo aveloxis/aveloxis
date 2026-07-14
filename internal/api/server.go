@@ -91,6 +91,11 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("POST /api/v1/admin/groups/{groupID}/{decision}", s.handleAdminGroupDecision)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/queue", s.handleAdminMonitorQueue)
+	// v0.27.4 — per-repo vulnerabilities + home-tab stars/activity.
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/vulnerabilities", s.handleRepoVulnerabilities)
+	s.mux.HandleFunc("PUT /api/v1/repos/{repoID}/star", s.handleStarRepo)
+	s.mux.HandleFunc("DELETE /api/v1/repos/{repoID}/star", s.handleStarRepo)
+	s.mux.HandleFunc("GET /api/v1/home/repos", s.handleHomeRepos)
 	s.registerMetricRoutes()
 	rl, err := newRateLimiter(opts)
 	if err != nil {
@@ -201,10 +206,32 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	withVulns := r.URL.Query().Get("vulns") == "1"
+	if withVulns && format != "cyclonedx" {
+		http.Error(w, "vulns=1 is only supported for format=cyclonedx (CycloneDX has a native vulnerabilities section)", http.StatusBadRequest)
+		return
+	}
+
 	data, err := collector.GenerateSBOM(r.Context(), s.store, repoID, sbomFormat)
 	if err != nil {
 		http.Error(w, "SBOM generation failed: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// v0.27.4: annotate the CURRENT SBOM with the repo's unresolved
+	// findings (CycloneDX 1.5 vulnerabilities array; affects.ref =
+	// component purl/bom-ref).
+	if withVulns {
+		vulns, verr := s.store.GetRepoVulnerabilities(r.Context(), repoID)
+		if verr != nil {
+			http.Error(w, "vulnerability lookup failed", http.StatusInternalServerError)
+			return
+		}
+		if data, err = annotateCycloneDXWithVulns(data, vulns); err != nil {
+			http.Error(w, "SBOM annotation failed", http.StatusInternalServerError)
+			return
+		}
+		filename = fmt.Sprintf("sbom-repo-%d-cyclonedx-with-vulns.json", repoID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -284,10 +311,14 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// v0.27.4: `scanned` lets the GUI distinguish "dependency analysis
+	// hasn't run yet" from "this repository declares no dependencies".
+	scanned, _ := s.store.HasDependencyData(r.Context(), repoID)
 	w.Header().Set("Content-Type", "application/json")
-	// Allow cross-origin only from localhost origins (web GUI on different port).
-	// Wildcard "*" was removed because it exposes data to any website the operator visits.
-	json.NewEncoder(w).Encode(licenses)
+	json.NewEncoder(w).Encode(map[string]any{
+		"scanned":  scanned,
+		"licenses": licenses,
+	})
 }
 
 // handleScancodeLicenses returns source code license detections from ScanCode.

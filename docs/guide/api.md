@@ -434,6 +434,83 @@ out-of-scope entities return a structured 403.
   classes: `in_scope` (chartable now), `collected` (one click to add),
   `uncollected` (submit a collection request).
 
+## Authentication: getting an API token
+
+When `api.require_auth` is `true`, every data endpoint (everything
+except `GET /api/v1/health`) requires a session token sent as
+`Authorization: Bearer <token>`. Exempt-CIDR clients (same box / LAN
+by default) bypass this for the read endpoints; the portal endpoints
+above always require a token regardless.
+
+**Using the web GUI**: nothing to do — the login page exchanges your
+OAuth session for a token automatically and stores it in the browser.
+
+**For scripts, curl, or notebooks**, mint a token through the same
+exchange:
+
+1. Sign in to the web GUI (GitHub or GitLab OAuth) in your browser.
+2. In the same browser, visit `https://<your-site>/auth/token`.
+   You get JSON back:
+
+   ```json
+   {"token": "64-hex-chars...", "expires_at": "2026-08-13T10:00:00Z",
+    "user_id": 3, "login": "yourlogin"}
+   ```
+
+3. Copy the `token` value and send it on every request:
+
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" \
+        "https://<your-site>/api/v1/compare?entities=repo:42&metric=contributors"
+   ```
+
+Token semantics:
+
+- Tokens are DB-backed and live **30 days** — they survive server
+  restarts. An expired or unknown token gets a structured 401; sign
+  in again and mint a new one.
+- Each visit to `/auth/token` mints a **new** token; existing tokens
+  keep working until they expire, so long-running scripts aren't cut
+  off when you log in elsewhere.
+- Your token carries **your** repository scope: requests for repos
+  outside your approved groups return a structured 403
+  (`repo_out_of_scope`) with a hint to request access via your
+  groups. Administrators are unscoped.
+- Treat the token like a password. There is no self-service revoke
+  endpoint yet; operators can delete rows from
+  `aveloxis_ops.user_session_tokens` to revoke immediately.
+
+## Vulnerabilities and home tab (v0.27.4)
+
+- `GET /api/v1/repos/{repoID}/vulnerabilities` — every finding ever
+  recorded for the repo, most critical first, CURRENT findings before
+  resolved-historical ones. Rows are never deleted: when a complete
+  scan stops reporting a finding it is stamped `resolved_at`
+  (dependency upgraded past it, or dropped) and kept as historical
+  record; a finding that reappears is un-resolved automatically.
+  Each row carries `advisory_url` (osv.dev — resolves every id) and
+  `cve_url` (app.opencve.io, only when a CVE id exists), plus
+  `first_detected_at` / `last_seen_at` / `resolved_at` (absent =
+  currently affected). The envelope's `counts` object has `current`,
+  `resolved`, and `critical` (current-only).
+- `GET /api/v1/repos/{repoID}/sbom?format=cyclonedx&vulns=1` — the
+  CURRENT SBOM with a native CycloneDX 1.5 `vulnerabilities` array
+  covering the repo's unresolved findings (`affects.ref` = component
+  purl). Rejected with 400 for `format=spdx` (SPDX has no equivalent
+  section).
+- `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
+  `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
+  dependency-analysis phase has not recorded anything for this repo
+  yet; `scanned=true` with an empty list means the repository declares
+  no dependencies.
+- `PUT|DELETE /api/v1/repos/{repoID}/star` — star/unstar for the
+  signed-in user (Bearer required unconditionally; repo must be in
+  scope). Idempotent.
+- `GET /api/v1/home/repos?limit=20` — the home-tab list: the user's
+  starred repos first (always included), then the most active repos
+  from their own groups over the trailing 90 days (issues + change
+  requests opened + distinct commits).
+
 ## Portal and admin endpoints (v0.27.3)
 
 These back the aveloxis-gui portal pages (group / monitor /

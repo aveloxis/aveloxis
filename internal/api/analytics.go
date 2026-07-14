@@ -49,7 +49,7 @@ type MetricDef struct {
 
 func metricDef(id, name, def, unit, kind, chaossURL, delta string) MetricDef {
 	m := MetricDef{ID: id, Name: name, Definition: def, Unit: unit, Kind: kind,
-		OurReferenceURL: "https://aveloxis.readthedocs.io/guide/metrics/#" + id}
+		OurReferenceURL: "https://aveloxis.readthedocs.io/en/latest/guide/metrics.html#" + id}
 	m.ImprovesOn.ChaossURL = chaossURL
 	m.ImprovesOn.DeltaNote = delta
 	return m

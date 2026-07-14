@@ -355,6 +355,13 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 			SELECT group_id, $2 FROM aveloxis_ops.user_repos WHERE repo_id = $1
 			ON CONFLICT DO NOTHING`, []any{pair.LoserID, pair.WinnerID}},
 		{"delete loser user_repos", `DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1`, []any{pair.LoserID}},
+		// v0.27.4: per-user stars are links like user_repos — repoint so
+		// a user who starred either case variant keeps their star.
+		{"repoint user_repo_stars", `
+			INSERT INTO aveloxis_ops.user_repo_stars (user_id, repo_id)
+			SELECT user_id, $2 FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1
+			ON CONFLICT DO NOTHING`, []any{pair.LoserID, pair.WinnerID}},
+		{"delete loser user_repo_stars", `DELETE FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"delete loser collection_queue", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"delete loser collection_status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"delete loser staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, []any{pair.LoserID}},

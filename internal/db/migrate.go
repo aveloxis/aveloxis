@@ -984,6 +984,23 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// the startup backfill task populate them on next FetchRepoInfo.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "languages", "JSONB DEFAULT '{}'::jsonb")
 
+	// v0.27.4 — vulnerability lifecycle columns (historical record +
+	// resolved marking) and per-user starred repos for the GUI home tab.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_vulnerabilities", "first_detected_at", "TIMESTAMPTZ DEFAULT NOW()")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_vulnerabilities", "last_seen_at", "TIMESTAMPTZ DEFAULT NOW()")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_vulnerabilities", "resolved_at", "TIMESTAMPTZ")
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.4 create user_repo_stars",
+		`CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
+			user_id    INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE,
+			repo_id    BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			PRIMARY KEY (user_id, repo_id)
+		)`)
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.4 index user_repo_stars by repo",
+		`CREATE INDEX IF NOT EXISTS idx_user_repo_stars_repo ON aveloxis_ops.user_repo_stars (repo_id)`)
+
 	// v0.23.2: idx_staging_repo_id supports the v0.22.4 long-jobs
 	// watchdog's per-repo staging COUNT(*) query. Without this index
 	// the watchdog falls through to a parallel sequential scan of

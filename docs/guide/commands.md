@@ -679,6 +679,24 @@ row-count comparison, see `aveloxis data-test`.
 
 ---
 
+## `aveloxis heal-vulnerabilities`
+
+One-shot healer for vulnerability rows stored before v0.27.4's
+two-phase OSV fetch (they carry `severity=UNKNOWN` and empty
+summaries — the querybatch endpoint only returns id stubs). Re-scans
+every repository that has vulnerability rows, filling severity, CVSS,
+summary, fix versions, aliases, and references from `/v1/vulns/{id}`.
+
+```bash
+aveloxis heal-vulnerabilities              # all repos with findings
+aveloxis heal-vulnerabilities --limit 50   # bounded canary run
+```
+
+Idempotent (prefer-nonempty upserts never downgrade filled data) and
+safe alongside a running `serve`. Without this command the same
+healing happens gradually as each repo's next scheduled collection
+cycle re-scans it.
+
 ## `aveloxis staging-stats`
 
 Read-only view of the JSONB staging table, per repo and entity type

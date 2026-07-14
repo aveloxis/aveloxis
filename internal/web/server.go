@@ -202,6 +202,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/auth/gitlab", s.handleGitLabAuth)
 	mux.HandleFunc("/auth/gitlab/callback", s.handleGitLabCallback)
 	mux.HandleFunc("/logout", s.handleLogout)
+	// v0.27.4: alias under /auth/ so the SPA can reach logout through
+	// the same proxy prefix as the OAuth routes (nginx/dev-server only
+	// forward /auth/* and /api/*). Clears the session + oauth cookies;
+	// the SPA ignores the redirect and routes itself to login.html.
+	mux.HandleFunc("/auth/logout", s.handleLogout)
 	// v0.27.1: mints a DB-backed Bearer token for the separate-origin
 	// SPA (aveloxis-gui). The SPA completes OAuth on this origin (the
 	// session cookie), then exchanges it here for a token it sends as

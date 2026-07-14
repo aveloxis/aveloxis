@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -389,6 +390,7 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.homeCache.invalidate(info.UserID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "starred": r.Method != http.MethodDelete})
 }
@@ -402,11 +404,63 @@ func (s *Server) handleHomeRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if body, ok := s.homeCache.get(info.UserID); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "hit")
+		_, _ = w.Write(body)
+		return
+	}
 	repos, err := s.store.GetHomeRepos(r.Context(), info.UserID, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	body, _ := json.Marshal(map[string]any{"repos": repos})
+	s.homeCache.set(info.UserID, body)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"repos": repos})
+	_, _ = w.Write(body)
+}
+
+// homeReposCache bounds the cost of GetHomeRepos: ~5s cold on a
+// fleet-scale admin group set (86,909 repos), so navigating back to
+// the home tab shouldn't re-run it. Invalidated per-user on
+// star/unstar so toggles survive a reload within the TTL.
+type homeReposCache struct {
+	mu      sync.Mutex
+	entries map[int]homeCacheEntry
+}
+
+type homeCacheEntry struct {
+	body    []byte
+	expires time.Time
+}
+
+const homeReposCacheTTL = 5 * time.Minute
+
+func (c *homeReposCache) get(userID int) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[userID]
+	if !ok || time.Now().After(e.expires) {
+		return nil, false
+	}
+	return e.body, true
+}
+
+func (c *homeReposCache) set(userID int, body []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = map[int]homeCacheEntry{}
+	}
+	if len(c.entries) > 10000 {
+		c.entries = map[int]homeCacheEntry{}
+	}
+	c.entries[userID] = homeCacheEntry{body: body, expires: time.Now().Add(homeReposCacheTTL)}
+}
+
+func (c *homeReposCache) invalidate(userID int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, userID)
 }

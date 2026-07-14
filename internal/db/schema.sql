@@ -1277,6 +1277,13 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
 );
 CREATE INDEX IF NOT EXISTS idx_user_repo_stars_repo ON aveloxis_ops.user_repo_stars (repo_id);
 
+-- v0.27.4: serve the home tab's 90-day activity counts as tight
+-- per-repo index range probes (86,909-repo admin group sets).
+CREATE INDEX IF NOT EXISTS idx_issues_repo_created
+    ON aveloxis_data.issues (repo_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_created
+    ON aveloxis_data.pull_requests (repo_id, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_cve_id
     ON aveloxis_data.repo_deps_vulnerabilities (cve_id)
     WHERE cve_id != '';

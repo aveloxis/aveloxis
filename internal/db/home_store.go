@@ -41,9 +41,14 @@ func (s *PostgresStore) UnstarRepo(ctx context.Context, userID int, repoID int64
 // repo (always included, however idle), then the most active repos
 // from the user's own groups over the trailing 90 days, deduplicated,
 // capped at limit. Activity = issues opened + change requests opened
-// + distinct commits authored in the window. Both admins and regular
-// users see THEIR OWN groups' repos here — the home tab is personal;
-// fleet-wide views live on the monitor.
+// in the window (commits are deliberately excluded — a 90-day count
+// against the 474M-row commits table per candidate repo is what made
+// the first version time out for an 86,909-repo admin).
+//
+// Shape matters at fleet scale: the candidate set is joined via
+// unnest() and each activity count is ONE set-based GROUP BY backed
+// by the (repo_id, created_at) composite indexes — a tight index
+// probe per candidate repo, most of which return instantly.
 func (s *PostgresStore) GetHomeRepos(ctx context.Context, userID int, limit int) ([]HomeRepo, error) {
 	if limit <= 0 {
 		limit = 20
@@ -61,24 +66,27 @@ func (s *PostgresStore) GetHomeRepos(ctx context.Context, userID int, limit int)
 			FROM aveloxis_ops.user_repo_stars st
 			WHERE st.user_id = $1
 		),
-		act AS (
-			SELECT m.repo_id, m.starred,
-				COALESCE((SELECT COUNT(*) FROM aveloxis_data.issues i
-				          WHERE i.repo_id = m.repo_id
-				            AND i.created_at >= NOW() - INTERVAL '90 days'), 0)
-				+ COALESCE((SELECT COUNT(*) FROM aveloxis_data.pull_requests p
-				            WHERE p.repo_id = m.repo_id
-				              AND p.created_at >= NOW() - INTERVAL '90 days'), 0)
-				+ COALESCE((SELECT COUNT(DISTINCT c.cmt_commit_hash) FROM aveloxis_data.commits c
-				            WHERE c.repo_id = m.repo_id
-				              AND c.cmt_author_timestamp >= NOW() - INTERVAL '90 days'), 0)
-				AS activity
-			FROM mine m
+		iss AS (
+			SELECT i.repo_id, COUNT(*) AS c
+			FROM aveloxis_data.issues i
+			JOIN mine m ON m.repo_id = i.repo_id
+			WHERE i.created_at >= NOW() - INTERVAL '90 days'
+			GROUP BY i.repo_id
+		),
+		prs AS (
+			SELECT p.repo_id, COUNT(*) AS c
+			FROM aveloxis_data.pull_requests p
+			JOIN mine m ON m.repo_id = p.repo_id
+			WHERE p.created_at >= NOW() - INTERVAL '90 days'
+			GROUP BY p.repo_id
 		)
-		SELECT a.repo_id, r.repo_owner, r.repo_name, a.starred, a.activity
-		FROM act a
+		SELECT m.repo_id, r.repo_owner, r.repo_name, m.starred,
+		       COALESCE(iss.c, 0) + COALESCE(prs.c, 0) AS activity
+		FROM mine m
 		JOIN aveloxis_data.repos r USING (repo_id)
-		ORDER BY a.starred DESC, a.activity DESC, r.repo_owner, r.repo_name
+		LEFT JOIN iss ON iss.repo_id = m.repo_id
+		LEFT JOIN prs ON prs.repo_id = m.repo_id
+		ORDER BY m.starred DESC, activity DESC, r.repo_owner, r.repo_name
 		LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err

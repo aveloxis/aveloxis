@@ -28,12 +28,13 @@ import (
 
 // Server is the Aveloxis REST API server.
 type Server struct {
-	store    *db.PostgresStore
-	logger   *slog.Logger
-	mux      *http.ServeMux
-	limiter  *rateLimiter   // v0.27.0: nil only when construction failed
-	auth     *authenticator // v0.27.1: Bearer sessions + repo scope
-	cmpCache *compareCache  // v0.27.2: 60s TTL for hot compare responses
+	store     *db.PostgresStore
+	logger    *slog.Logger
+	mux       *http.ServeMux
+	limiter   *rateLimiter   // v0.27.0: nil only when construction failed
+	auth      *authenticator // v0.27.1: Bearer sessions + repo scope
+	cmpCache  *compareCache  // v0.27.2: 60s TTL for hot compare responses
+	homeCache homeReposCache // v0.27.4: 5m per-user TTL — ~5s cold query on fleet-scale group sets
 }
 
 // New creates an API server with default middleware options

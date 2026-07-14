@@ -84,6 +84,7 @@ func main() {
 		dataTestCmd(&cfgPath),
 		testMailCmd(&cfgPath),
 		stagingStatsCmd(&cfgPath),
+		healVulnerabilitiesCmd(&cfgPath),
 		distributionStatsCmd(&cfgPath),
 		versionCmd(),
 	)

@@ -1000,6 +1000,12 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	execMigrationStep(ctx, pg, logger, &errs,
 		"v0.27.4 index user_repo_stars by repo",
 		`CREATE INDEX IF NOT EXISTS idx_user_repo_stars_repo ON aveloxis_ops.user_repo_stars (repo_id)`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_issues_repo_created",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_repo_created
+			ON aveloxis_data.issues (repo_id, created_at)`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_pull_requests_repo_created",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_repo_created
+			ON aveloxis_data.pull_requests (repo_id, created_at)`)
 
 	// v0.23.2: idx_staging_repo_id supports the v0.22.4 long-jobs
 	// watchdog's per-repo staging COUNT(*) query. Without this index

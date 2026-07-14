@@ -350,7 +350,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 		}
 		points, err := s.metricSeries(r, ids, metric, bucket, since, until)
 		if err != nil {
-			s.logger.Error("compare series failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", err)
+			s.logger.Error("compare series failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error()))
 			http.Error(w, "series computation failed", http.StatusInternalServerError)
 			return
 		}
@@ -552,7 +552,7 @@ func (s *Server) handleCompareSnapshot(w http.ResponseWriter, r *http.Request) {
 			sv, err = s.store.LicenseCoverageSnapshot(r.Context(), ids)
 		}
 		if err != nil {
-			s.logger.Error("snapshot failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", err)
+			s.logger.Error("snapshot failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error()))
 			http.Error(w, "snapshot computation failed", http.StatusInternalServerError)
 			return
 		}

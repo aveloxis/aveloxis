@@ -51,10 +51,26 @@ func TestKeyPoolConcurrentAccess(t *testing.T) {
 					kp.UpdateFromResponse(key, mkResp("4000"))
 				case 3:
 					// Auth failure + success cycle — exercises the
-					// v0.25.31 quarantine counters without ever
-					// reaching maxAuthStrikes (success resets).
-					kp.RecordAuthFailure(key)
-					kp.RecordAuthSuccess(key)
+					// v0.25.31 quarantine counters. ONLY worker 0
+					// records strikes: with many concurrent
+					// strike-writers, three unpaired failures from
+					// different workers can land on one key
+					// back-to-back and legitimately quarantine it
+					// (strikes count CONSECUTIVE 401s; success clears
+					// strikes but never lifts an active quarantine).
+					// On a slow -race CI runner that occasionally
+					// quarantined ALL keys at once and starved GetKey
+					// past its 30s ctx — a test-design flake, not a
+					// pool bug (observed 2026-07-14). A single
+					// strike-writer keeps the "never reaches
+					// maxAuthStrikes" invariant true while these
+					// methods still race against 31 other workers.
+					if w == 0 {
+						kp.RecordAuthFailure(key)
+						kp.RecordAuthSuccess(key)
+					} else {
+						kp.UpdateFromResponse(key, mkResp("4000"))
+					}
 				case 4:
 					// Read-side methods raced against the writers.
 					_ = kp.AliveCount()

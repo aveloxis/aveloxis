@@ -53,7 +53,7 @@ func TestLogSafePassesCleanStringsThrough(t *testing.T) {
 func TestUserInputLogSitesAreSanitized(t *testing.T) {
 	src := mustReadFile(t, "analytics.go")
 	for _, needle := range []string{
-		`"metric", logSafe(metric), "entity", logSafe(e.Label)`,
+		`"metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error())`,
 	} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("analytics.go log sites must sanitize user-derived values via logSafe; missing %q", needle)

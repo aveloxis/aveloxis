@@ -145,6 +145,14 @@ type WebConfig struct {
 	// the web process, which matches `aveloxis start all`. Override to point
 	// at a remote API instance.
 	APIInternalURL string `json:"api_internal_url"`
+
+	// SPAURL is the trusted origin of the separate-repo SPA
+	// (aveloxis-gui). When set, OAuth callbacks honor a ?next=
+	// parameter pointing there (or any relative path), so signing in
+	// from the SPA returns the user TO the SPA instead of the
+	// server-rendered /dashboard. Empty (default) = only relative
+	// next paths are honored. v0.27.4.
+	SPAURL string `json:"spa_url"`
 }
 
 // CollectionConfig controls collection behavior.

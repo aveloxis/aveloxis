@@ -109,7 +109,8 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "gitlab_client_id": "your-gitlab-oauth-app-id",
     "gitlab_client_secret": "your-gitlab-oauth-app-secret",
     "gitlab_base_url": "https://gitlab.com",
-    "api_internal_url": "http://127.0.0.1:8383"
+    "api_internal_url": "http://127.0.0.1:8383",
+    "spa_url": ""
   },
   "log_level": "info"
 }
@@ -258,6 +259,7 @@ The `web` block configures the `aveloxis web` server. Optional — if you only r
 | `web.gitlab_client_secret` | string | (none) | GitLab OAuth Application secret. |
 | `web.gitlab_base_url` | string | `"https://gitlab.com"` | GitLab base URL for OAuth (the HTML site, NOT the API URL). Override for self-hosted GitLab. |
 | `web.api_internal_url` | string | `"http://127.0.0.1:8383"` | Server-to-server URL where the web process reaches `aveloxis api`. The web server reverse-proxies `/api/*` requests to this URL so the browser only talks to the web origin. Set this to a remote URL if running the API on a different host. |
+| `web.spa_url` | string | `""` | Trusted origin of the separate-repo SPA (aveloxis-gui), e.g. `https://gui.example.org` (or `http://localhost:8000` in dev). When set, the OAuth flow honors a `?next=` URL under this origin so signing in from the SPA returns the user to the SPA instead of the server-rendered `/dashboard`. Relative `next` paths are always honored; anything else is rejected (open-redirect protection). |
 
 ### Monitor (dashboard, v0.23.0)
 

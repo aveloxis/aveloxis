@@ -58,3 +58,7 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+# wiped from history 2026-07-14 (contained credentials) — never re-add
+aveloxis-shadow-graphql.json
+aveloxis-shadow-rest.json
+aveloxis.nsa.json

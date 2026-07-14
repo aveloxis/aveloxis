@@ -136,7 +136,8 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 			IdleConnTimeout:       60 * time.Second,
 		}
 		rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.Warn("api reverse proxy error", "path", r.URL.Path, "error", err)
+			// r.URL.Path is attacker-controlled — sanitize before logging.
+			logger.Warn("api reverse proxy error", "path", truncateForLog([]byte(r.URL.Path), 200), "error", err)
 			http.Error(w, "API backend unavailable", http.StatusBadGateway)
 		}
 		s.apiProxy = rp
@@ -354,10 +355,22 @@ func generateToken() string {
 // bytes, suitable for surfacing in an error log without flooding it
 // when the upstream returns an HTML error page or other large body.
 func truncateForLog(body []byte, max int) string {
-	if len(body) <= max {
-		return string(body)
+	// The inputs here are untrusted (third-party API response bodies,
+	// request paths) — strip newlines and other control characters so
+	// they cannot forge log lines (CodeQL: go/log-injection), then
+	// bound the length.
+	s := strings.ReplaceAll(string(body), "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) <= max {
+		return s
 	}
-	return string(body[:max]) + "...(truncated)"
+	return s[:max] + "...(truncated)"
 }
 
 // ============================================================
@@ -519,7 +532,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// nice-to-have, not a gate.
 	if wasNewUser && s.mailer != nil && ghUser.Email != "" {
 		if err := s.mailer.SendWelcome(ghUser.Email, ghUser.Login, "GitHub"); err != nil {
-			s.logger.Warn("failed to send welcome email", "login", ghUser.Login, "error", err)
+			s.logger.Warn("failed to send welcome email", "login", truncateForLog([]byte(ghUser.Login), 100), "error", err)
 		}
 	}
 
@@ -667,7 +680,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 
 	if wasNewUser && s.mailer != nil && glUser.Email != "" {
 		if err := s.mailer.SendWelcome(glUser.Email, glUser.Username, "GitLab"); err != nil {
-			s.logger.Warn("failed to send welcome email", "login", glUser.Username, "error", err)
+			s.logger.Warn("failed to send welcome email", "login", truncateForLog([]byte(glUser.Username), 100), "error", err)
 		}
 	}
 

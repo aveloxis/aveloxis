@@ -94,7 +94,14 @@ func TestDocsTableCountsMatchSchema(t *testing.T) {
 
 	// CLAUDE.md's headline claim gets a coarse pin: it must not
 	// understate the fleet ("108+ tables across two schemas" was stale).
+	// CLAUDE.md is an internal dev doc that public release builds
+	// deliberately exclude — its absence means "not a dev checkout",
+	// not a failure. Any other read error still fails loudly.
 	claude, err := os.ReadFile("../../CLAUDE.md")
+	if os.IsNotExist(err) {
+		t.Log("CLAUDE.md not present (release build) — skipping the dev-tree-only pin")
+		return
+	}
 	if err != nil {
 		t.Fatalf("read CLAUDE.md: %v", err)
 	}

@@ -28,6 +28,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/safego"
 	"github.com/aveloxis/aveloxis/internal/static"
 	"golang.org/x/oauth2"
 )
@@ -135,7 +136,8 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 			IdleConnTimeout:       60 * time.Second,
 		}
 		rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.Warn("api reverse proxy error", "path", r.URL.Path, "error", err)
+			// r.URL.Path is attacker-controlled — sanitize before logging.
+			logger.Warn("api reverse proxy error", "path", truncateForLog([]byte(r.URL.Path), 200), "error", err)
 			http.Error(w, "API backend unavailable", http.StatusBadGateway)
 		}
 		s.apiProxy = rp
@@ -200,6 +202,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/auth/gitlab", s.handleGitLabAuth)
 	mux.HandleFunc("/auth/gitlab/callback", s.handleGitLabCallback)
 	mux.HandleFunc("/logout", s.handleLogout)
+	// v0.27.1: mints a DB-backed Bearer token for the separate-origin
+	// SPA (aveloxis-gui). The SPA completes OAuth on this origin (the
+	// session cookie), then exchanges it here for a token it sends as
+	// Authorization: Bearer to the api process.
+	mux.HandleFunc("/auth/token", s.requireAuth(s.handleAuthToken))
 
 	// Authenticated routes.
 	mux.HandleFunc("/dashboard", s.requireAuth(s.handleDashboard))
@@ -348,10 +355,22 @@ func generateToken() string {
 // bytes, suitable for surfacing in an error log without flooding it
 // when the upstream returns an HTML error page or other large body.
 func truncateForLog(body []byte, max int) string {
-	if len(body) <= max {
-		return string(body)
+	// The inputs here are untrusted (third-party API response bodies,
+	// request paths) — strip newlines and other control characters so
+	// they cannot forge log lines (CodeQL: go/log-injection), then
+	// bound the length.
+	s := strings.ReplaceAll(string(body), "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) <= max {
+		return s
 	}
-	return string(body[:max]) + "...(truncated)"
+	return s[:max] + "...(truncated)"
 }
 
 // ============================================================
@@ -513,7 +532,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// nice-to-have, not a gate.
 	if wasNewUser && s.mailer != nil && ghUser.Email != "" {
 		if err := s.mailer.SendWelcome(ghUser.Email, ghUser.Login, "GitHub"); err != nil {
-			s.logger.Warn("failed to send welcome email", "login", ghUser.Login, "error", err)
+			s.logger.Warn("failed to send welcome email", "login", truncateForLog([]byte(ghUser.Login), 100), "error", err)
 		}
 	}
 
@@ -661,7 +680,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 
 	if wasNewUser && s.mailer != nil && glUser.Email != "" {
 		if err := s.mailer.SendWelcome(glUser.Email, glUser.Username, "GitLab"); err != nil {
-			s.logger.Warn("failed to send welcome email", "login", glUser.Username, "error", err)
+			s.logger.Warn("failed to send welcome email", "login", truncateForLog([]byte(glUser.Username), 100), "error", err)
 		}
 	}
 
@@ -998,7 +1017,7 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 
 		// Immediately scan the org for repos and add them.
 		// Use a detached context — the HTTP request context gets canceled on redirect.
-		go s.scanOrgRepos(context.Background(), groupID, orgURL)
+		safego.Go(s.logger, "org-repo-scan", func() { s.scanOrgRepos(context.Background(), groupID, orgURL) })
 	}
 	http.Redirect(w, r, fmt.Sprintf("/groups/%d", groupID), http.StatusFound)
 }
@@ -1007,12 +1026,11 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 // Handles both orgs (/orgs/{name}/repos) and users (/users/{name}/repos).
 func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string) {
 	orgURL = strings.TrimSuffix(strings.TrimSpace(orgURL), "/")
-	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(orgURL, "https://"), "http://"), "/")
-	if len(parts) < 2 {
+	host, name, err := platform.ParseOrgURL(orgURL)
+	if err != nil {
 		return
 	}
-	name := parts[1]
-	isGitHub := strings.Contains(orgURL, "github.com")
+	isGitHub := host == "github.com"
 
 	if !isGitHub || s.ghKeys == nil {
 		return
@@ -1359,4 +1377,29 @@ func (s *Server) handleMonitorPrioritize(w http.ResponseWriter, r *http.Request)
 	}
 	// Redirect back to the monitor page.
 	http.Redirect(w, r, "/monitor", http.StatusFound)
+}
+
+// handleAuthToken (v0.27.1) exchanges the caller's web session for a
+// DB-backed session token the api process validates. JSON response so
+// the SPA can store it (localStorage) and attach it as a Bearer.
+func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
+	sess := s.getSession(r)
+	if sess == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	token, err := s.store.CreateSessionToken(r.Context(), sess.UserID, 0)
+	if err != nil {
+		s.logger.Error("failed to mint session token", "user_id", sess.UserID, "error", err)
+		http.Error(w, "token creation failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"token":      token,
+		"expires_at": time.Now().Add(db.DefaultSessionTokenLifetime).UTC().Format(time.RFC3339),
+		"user_id":    sess.UserID,
+		"login":      sess.LoginName,
+	})
 }

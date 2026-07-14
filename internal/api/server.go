@@ -28,13 +28,27 @@ import (
 
 // Server is the Aveloxis REST API server.
 type Server struct {
-	store  *db.PostgresStore
-	logger *slog.Logger
-	mux    *http.ServeMux
+	store    *db.PostgresStore
+	logger   *slog.Logger
+	mux      *http.ServeMux
+	limiter  *rateLimiter   // v0.27.0: nil only when construction failed
+	auth     *authenticator // v0.27.1: Bearer sessions + repo scope
+	cmpCache *compareCache  // v0.27.2: 60s TTL for hot compare responses
 }
 
-// New creates an API server.
+// New creates an API server with default middleware options
+// (rate limiting active with defaults, LAN exempt, no CORS origins).
+// Kept for tests and backward compatibility; runAPI uses
+// NewWithOptions with the aveloxis.json `api` block.
 func New(store *db.PostgresStore, logger *slog.Logger) *Server {
+	s, _ := NewWithOptions(store, logger, Options{ExemptCIDRs: DefaultExemptCIDRs})
+	return s
+}
+
+// NewWithOptions creates an API server whose Handler routes every
+// request through the CORS + rate-limit middleware chain (v0.27.0 —
+// plan: summary/api-analytics-plan-2026-07-10.md).
+func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) (*Server, error) {
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/v1/mailing-list/stats", s.handleMailingListStats)
@@ -56,13 +70,43 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/affiliations", s.handleRepoAffiliations)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/coverage", s.handleRepoContributionsCoverage)
 	s.mux.HandleFunc("GET /api/v1/repos/search", s.handleRepoSearch)
+	// v0.27.2 — comparison analytics (plan §4): metric catalog
+	// (docs-as-data), ≤7-entity temporal + snapshot comparison,
+	// three-class entity picker search.
+	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsCatalog)
+	s.mux.HandleFunc("GET /api/v1/compare", s.handleCompare)
+	s.mux.HandleFunc("GET /api/v1/compare/snapshot", s.handleCompareSnapshot)
+	s.mux.HandleFunc("GET /api/v1/entities/search", s.handleEntitiesSearch)
+	// v0.27.3 — portal + admin endpoints for the SPA pages. ALWAYS
+	// require a Bearer identity (admin routes require admin), even
+	// while api.require_auth is off for the read endpoints.
+	s.mux.HandleFunc("GET /api/v1/me", s.handleMe)
+	s.mux.HandleFunc("GET /api/v1/groups", s.handleGroupsList)
+	s.mux.HandleFunc("POST /api/v1/groups", s.handleGroupCreate)
+	s.mux.HandleFunc("GET /api/v1/groups/{groupID}/repos", s.handleGroupRepos)
+	s.mux.HandleFunc("POST /api/v1/groups/{groupID}/repos", s.handleGroupAddRepo)
+	s.mux.HandleFunc("GET /api/v1/admin/users", s.handleAdminUsers)
+	s.mux.HandleFunc("POST /api/v1/admin/users/{userID}/admin", s.handleAdminSetUserAdmin)
+	s.mux.HandleFunc("GET /api/v1/admin/groups/pending", s.handleAdminPendingGroups)
+	s.mux.HandleFunc("POST /api/v1/admin/groups/{groupID}/{decision}", s.handleAdminGroupDecision)
+	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)
+	s.mux.HandleFunc("GET /api/v1/admin/monitor/queue", s.handleAdminMonitorQueue)
 	s.registerMetricRoutes()
-	return s
+	rl, err := newRateLimiter(opts)
+	if err != nil {
+		return nil, err
+	}
+	s.limiter = rl
+	s.auth = newAuthenticator(store, opts.RequireAuth)
+	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
+	return s, nil
 }
 
-// Handler returns the HTTP handler.
+// Handler returns the HTTP handler: CORS outermost (preflights are
+// never rate-limited), then the per-IP limiter, then Bearer auth +
+// scope, then the routes.
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	return s.limiter.cors(s.limiter.middleware(s.auth.middleware(s.limiter, s.mux)))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +130,9 @@ func (s *Server) handleRepoStats(w http.ResponseWriter, r *http.Request) {
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	stats, err := s.store.GetRepoStats(r.Context(), repoID)
@@ -132,6 +179,9 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	format := r.URL.Query().Get("format")
 	if format == "" {
 		format = "cyclonedx"
@@ -168,6 +218,9 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	// Default window: last 2 years to now. Both endpoints overridable via
 	// ?since=YYYY-MM-DD and ?until=YYYY-MM-DD. An invalid value falls back
 	// to the default rather than erroring, so charts keep rendering.
@@ -197,7 +250,6 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 	// Allow cross-origin for the web GUI (different port).
 	// Allow cross-origin only from localhost origins (web GUI on different port).
 	// Wildcard "*" was removed because it exposes data to any website the operator visits.
-	setCORSIfLocalhost(r, w)
 	json.NewEncoder(w).Encode(ts)
 }
 
@@ -215,7 +267,6 @@ func (s *Server) handleRepoSearch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	// Allow cross-origin only from localhost origins (web GUI on different port).
 	// Wildcard "*" was removed because it exposes data to any website the operator visits.
-	setCORSIfLocalhost(r, w)
 	json.NewEncoder(w).Encode(repos)
 }
 
@@ -223,6 +274,9 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	licenses, err := s.store.GetRepoLicenses(r.Context(), repoID)
@@ -233,7 +287,6 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	// Allow cross-origin only from localhost origins (web GUI on different port).
 	// Wildcard "*" was removed because it exposes data to any website the operator visits.
-	setCORSIfLocalhost(r, w)
 	json.NewEncoder(w).Encode(licenses)
 }
 
@@ -243,6 +296,9 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 
@@ -285,7 +341,6 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	// Allow cross-origin only from localhost origins (web GUI on different port).
 	// Wildcard "*" was removed because it exposes data to any website the operator visits.
-	setCORSIfLocalhost(r, w)
 	json.NewEncoder(w).Encode(resp)
 }
 
@@ -295,6 +350,9 @@ func (s *Server) handleScancodeFiles(w http.ResponseWriter, r *http.Request) {
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	files, err := s.store.GetScancodeFileEntries(r.Context(), repoID)
@@ -307,24 +365,5 @@ func (s *Server) handleScancodeFiles(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	// Allow cross-origin only from localhost origins (web GUI on different port).
 	// Wildcard "*" was removed because it exposes data to any website the operator visits.
-	setCORSIfLocalhost(r, w)
 	json.NewEncoder(w).Encode(files)
-}
-
-// setCORSIfLocalhost allows cross-origin requests only from localhost/127.0.0.1
-// origins. The web GUI runs on a different port than the API, so same-host
-// cross-origin is needed. Wildcard "*" was removed because it exposes all
-// collected data to any website the operator visits via fetch().
-func setCORSIfLocalhost(r *http.Request, w http.ResponseWriter) {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return
-	}
-	// Allow localhost and 127.0.0.1 on any port.
-	if strings.HasPrefix(origin, "http://localhost") ||
-		strings.HasPrefix(origin, "http://127.0.0.1") ||
-		strings.HasPrefix(origin, "https://localhost") ||
-		strings.HasPrefix(origin, "https://127.0.0.1") {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-	}
 }

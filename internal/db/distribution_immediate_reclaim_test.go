@@ -72,13 +72,15 @@ func TestClaimSQLDocumentsBothBranches(t *testing.T) {
 }
 
 func TestSchedulerConfigHasImmediateReclaim(t *testing.T) {
-	srcBytes, err := os.ReadFile("../scheduler/scheduler.go")
+	srcBytes, err := os.ReadFile("../scheduler/distribution_wiring.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(srcBytes)
-	if !strings.Contains(src, "DistributionTrackingImmediatePartialReclaim") {
-		t.Error("scheduler.Config must declare DistributionTrackingImmediatePartialReclaim — without it the value from CollectionConfig can't reach the worker")
+	// v0.25.37: the mirror field is gone — the wiring reads the
+	// *Value() accessor (nil→true default) at the point of use.
+	if !strings.Contains(src, "DistributionTrackingImmediatePartialReclaimValue()") {
+		t.Error("distribution wiring must read s.cfg.Collection.DistributionTrackingImmediatePartialReclaimValue()")
 	}
 }
 
@@ -88,10 +90,7 @@ func TestMainWiresImmediateReclaimAccessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(srcBytes)
-	if !strings.Contains(src, "DistributionTrackingImmediatePartialReclaim:") {
-		t.Error("cmd/aveloxis/main.go must populate scheduler.Config.DistributionTrackingImmediatePartialReclaim")
-	}
-	if !strings.Contains(src, "DistributionTrackingImmediatePartialReclaimValue()") {
-		t.Error("cmd/aveloxis/main.go must call the *Value() accessor — handles the nil→true default for legacy aveloxis.json files")
+	if !strings.Contains(src, "Collection: &cfg.Collection") {
+		t.Error("main.go must pass Collection: &cfg.Collection into scheduler.Config (v0.25.37)")
 	}
 }

@@ -6,15 +6,12 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/model"
-	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // TestEnrichContributorPopulatesAllFields verifies that EnrichContributor
@@ -266,14 +263,4 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
-}
-
-// testClientWithLogger creates a test client with a custom logger for log verification.
-func testClientWithLogger(t *testing.T, handler http.Handler, logger *slog.Logger) *Client {
-	t.Helper()
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	keys := platform.NewKeyPool([]string{"test-token"}, logger)
-	httpClient := platform.NewHTTPClient(server.URL, keys, logger, platform.AuthGitLab)
-	return &Client{http: httpClient, logger: logger, host: "gitlab.com"}
 }

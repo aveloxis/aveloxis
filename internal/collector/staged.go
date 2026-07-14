@@ -33,6 +33,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // Entity type constants for the staging table.
@@ -247,6 +248,23 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		if updateErr := sc.store.UpdateRepoMetadata(ctx, repoID, info.Description, info.PrimaryLanguage, info.Languages); updateErr != nil {
 			sc.logger.Warn("failed to update repos.repo_description/primary_language/languages",
 				"owner", owner, "repo", repo, "error", updateErr)
+		}
+
+		// v0.25.32: case self-heal. The forge returns the CANONICAL
+		// owner/name spelling regardless of the casing we queried with;
+		// when the stored value differs only by case, correct repo_git/
+		// repo_owner/repo_name via the rename machinery. Real renames
+		// stay prelim's job (HealRepoCaseDrift enforces the case-only
+		// gate). Non-fatal: cosmetic case drift must never fail a
+		// collection job, so failures log and continue.
+		if info.FullName != "" {
+			if healed, healErr := sc.store.HealRepoCaseDrift(ctx, repoID, info.FullName); healErr != nil {
+				sc.logger.Warn("case-drift self-heal failed",
+					"owner", owner, "repo", repo, "error", healErr)
+			} else if healed {
+				sc.logger.Info("healed repo case drift",
+					"repo_id", repoID, "canonical", info.FullName)
+			}
 		}
 	}
 
@@ -494,6 +512,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 
 	// Goroutine 1: Issues + inline issue comments from the unified listing.
 	go func() {
+		defer safego.Recover(sc.logger, "collect-issues")
 		defer wg.Done()
 		issueSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
@@ -511,6 +530,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 
 	// Goroutine 2: Pull Requests + inline PR / review comments (phase 4).
 	go func() {
+		defer safego.Recover(sc.logger, "collect-prs")
 		defer wg.Done()
 		prSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
@@ -527,6 +547,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 
 	// Goroutine 3: Events
 	go func() {
+		defer safego.Recover(sc.logger, "collect-messages")
 		defer wg.Done()
 		eventSW := db.NewStagingWriter(sc.store, repoID, sc.platID, sc.logger)
 		localResult := &CollectResult{}
@@ -831,6 +852,7 @@ func (sc *StagedCollector) runPRBatchSharded(ctx context.Context, sw *db.Staging
 	wg.Add(shardCount)
 	for shardIdx, shardPRs := range partitions {
 		go func(idx int, prs []model.PullRequest) {
+			defer safego.Recover(sc.logger, "pr-shard")
 			defer wg.Done()
 			if len(prs) == 0 {
 				return
@@ -962,35 +984,33 @@ func stagePRBatch(ctx context.Context, sw *db.StagingWriter, batch []platform.St
 // collectEvents stages issue and PR events.
 func (sc *StagedCollector) collectEvents(ctx context.Context, sw *db.StagingWriter, owner, repo string, since time.Time, result *CollectResult) {
 	sc.logger.Info("collecting events", "owner", owner, "repo", repo)
-	for event, err := range sc.client.ListIssueEvents(ctx, owner, repo, since) {
+	// Single pass over the unified feed (v0.26.3). The previous two
+	// sequential iterations (issue events, then PR events) each
+	// paginated the SAME GitHub endpoint; the second pass 304'd
+	// against the ETag the first pass primed and silently dropped the
+	// entire PR-event history on quiet repos.
+	for ev, err := range sc.client.ListRepoEvents(ctx, owner, repo, since) {
 		if err != nil {
 			if isOptionalEndpointSkip(err) {
-				sc.logger.Info("skipping issue events endpoint",
+				sc.logger.Info("skipping events endpoint",
 					"owner", owner, "repo", repo, "reason", err)
 				break
 			}
-			result.Errors = append(result.Errors, fmt.Errorf("issue events: %w", err))
+			result.Errors = append(result.Errors, fmt.Errorf("repo events: %w", err))
 			break
 		}
-		if err := sw.Stage(ctx, EntityIssueEvent, event); err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("stage issue event: %w", err))
-		}
-		result.Events++
-	}
-	for event, err := range sc.client.ListPREvents(ctx, owner, repo, since) {
-		if err != nil {
-			if isOptionalEndpointSkip(err) {
-				sc.logger.Info("skipping pr events endpoint",
-					"owner", owner, "repo", repo, "reason", err)
-				break
+		switch {
+		case ev.PR != nil:
+			if err := sw.Stage(ctx, EntityPREvent, *ev.PR); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("stage pr event: %w", err))
 			}
-			result.Errors = append(result.Errors, fmt.Errorf("pr events: %w", err))
-			break
+			result.Events++
+		case ev.Issue != nil:
+			if err := sw.Stage(ctx, EntityIssueEvent, *ev.Issue); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("stage issue event: %w", err))
+			}
+			result.Events++
 		}
-		if err := sw.Stage(ctx, EntityPREvent, event); err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("stage pr event: %w", err))
-		}
-		result.Events++
 	}
 	sc.logger.Info("events staged", "owner", owner, "repo", repo, "count", result.Events)
 }
@@ -1119,6 +1139,18 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 		}
 	}
 
+	// v0.26.5: derive issues.closed_by_id from the latest 'closed'
+	// event per issue. closed_by is structurally absent from every LIST
+	// endpoint (REST list has no closed_by; GraphQL Issue has no
+	// closedBy field) — production had 775 of 5.26M closed issues
+	// attributed. Events are processed by this point, so the derivation
+	// is platform- and mode-agnostic with zero API cost.
+	if n, err := p.store.DeriveIssueClosedByFromEvents(ctx, repoID); err != nil {
+		p.logger.Warn("closed_by derivation failed", "repo_id", repoID, "error", err)
+	} else if n > 0 {
+		p.logger.Info("derived issue closed_by from events", "repo_id", repoID, "count", n)
+	}
+
 	// Update status based on whether any rows failed.
 	now := time.Now().Format(time.RFC3339)
 	status := string(StatusSuccess)
@@ -1225,6 +1257,12 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 			}
 		}
 		if len(env.Assignees) > 0 {
+			// v0.26.5: resolve each assignee's identity into cntrb_id —
+			// the same contract as reporter/author above. Before this,
+			// issue_assignees.cntrb_id was 0% populated since inception.
+			for i := range env.Assignees {
+				env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
+			}
 			if err := p.store.UpsertIssueAssignees(ctx, issueID, repoID, env.Assignees); err != nil {
 				p.logger.Warn("failed to upsert issue assignees", "issue_id", issueID, "error", err)
 			}
@@ -1252,11 +1290,17 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 			}
 		}
 		if len(env.Assignees) > 0 {
+			for i := range env.Assignees {
+				env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
+			}
 			if err := p.store.UpsertPRAssignees(ctx, prID, repoID, env.Assignees); err != nil {
 				p.logger.Warn("failed to upsert PR assignees", "pr_id", prID, "error", err)
 			}
 		}
 		if len(env.Reviewers) > 0 {
+			for i := range env.Reviewers {
+				env.Reviewers[i].ContributorID = p.resolveUser(ctx, platID, env.Reviewers[i].UserRef)
+			}
 			if err := p.store.UpsertPRReviewers(ctx, prID, repoID, env.Reviewers); err != nil {
 				p.logger.Warn("failed to upsert PR reviewers", "pr_id", prID, "error", err)
 			}
@@ -1289,6 +1333,7 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 			env.MetaHead.PRID = prID
 			env.MetaHead.RepoID = repoID
 			var metaErr error
+			env.MetaHead.AuthorID = p.resolveUser(ctx, platID, env.MetaHead.AuthorRef)
 			headMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaHead)
 			if metaErr != nil {
 				p.logger.Warn("failed to upsert PR meta (head)", "pr_id", prID, "error", metaErr)
@@ -1298,6 +1343,7 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 			env.MetaBase.PRID = prID
 			env.MetaBase.RepoID = repoID
 			var metaErr error
+			env.MetaBase.AuthorID = p.resolveUser(ctx, platID, env.MetaBase.AuthorRef)
 			baseMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaBase)
 			if metaErr != nil {
 				p.logger.Warn("failed to upsert PR meta (base)", "pr_id", prID, "error", metaErr)
@@ -1408,9 +1454,11 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 		rc.Message.RepoID = repoID
 		rc.Comment.RepoID = repoID
 		rc.Message.ContributorID = p.resolveUser(ctx, platID, rc.Message.AuthorRef)
-		// Resolve platform review ID to DB pr_review_id.
+		// Resolve platform review ID to DB pr_review_id — repo-scoped
+		// (v0.25.33): the parent review must belong to this repo, or a
+		// case-variant duplicate pair gets cross-linked bridge rows.
 		if rc.Comment.PlatformReviewID != 0 {
-			dbID, err := p.store.FindReviewDBID(ctx, rc.Comment.PlatformReviewID)
+			dbID, err := p.store.FindReviewDBID(ctx, repoID, rc.Comment.PlatformReviewID)
 			if err == nil && dbID != 0 {
 				rc.Comment.ReviewID = dbID
 			}

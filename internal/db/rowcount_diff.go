@@ -81,9 +81,11 @@ func classifyRowCountDiff(released, newCount int64) string {
 func RowCountDiff(ctx context.Context, released, newPool *pgxpool.Pool, schemas []string) (*RowCountDiffReport, error) {
 	if len(schemas) == 0 {
 		// aveloxis_data is the primary data schema; aveloxis_ops
-		// holds queue / staging / API key state. Both are touched
-		// by a single-repo collection.
-		schemas = []string{"aveloxis_data", "aveloxis_ops"}
+		// holds queue / staging / API key state. aveloxis_scan
+		// (v0.26.1) completes the set — its tables are empty in a
+		// data-test run (scancode only executes under serve), so
+		// they compare 0=0, but "all tables" should mean ALL.
+		schemas = []string{"aveloxis_data", "aveloxis_ops", "aveloxis_scan"}
 	}
 
 	releasedCounts, err := tableRowCounts(ctx, released, schemas)

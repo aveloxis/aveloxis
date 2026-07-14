@@ -168,6 +168,7 @@ func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, iss
 			if !yield(model.IssueAssignee{
 				PlatformSrcID:  a.ID,
 				PlatformNodeID: a.NodeID,
+				UserRef:        ghUserToRef(a),
 			}, nil) {
 				return
 			}
@@ -256,6 +257,7 @@ func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumb
 		for _, a := range raw.Assignees {
 			if !yield(model.PullRequestAssignee{
 				PlatformSrcID: a.ID,
+				UserRef:       ghUserToRef(a),
 			}, nil) {
 				return
 			}
@@ -276,6 +278,7 @@ func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumb
 		for _, u := range resp.Users {
 			if !yield(model.PullRequestReviewer{
 				PlatformSrcID: u.ID,
+				UserRef:       ghUserToRef(u),
 			}, nil) {
 				return
 			}
@@ -361,12 +364,14 @@ func (c *Client) FetchPRMeta(ctx context.Context, owner, repo string, prNumber i
 	}
 	head = &model.PullRequestMeta{
 		HeadOrBase: "head",
+		AuthorRef:  ghUserToRef(raw.Head.User),
 		Label:      raw.Head.Label,
 		Ref:        raw.Head.Ref,
 		SHA:        raw.Head.SHA,
 	}
 	base = &model.PullRequestMeta{
 		HeadOrBase: "base",
+		AuthorRef:  ghUserToRef(raw.Base.User),
 		Label:      raw.Base.Label,
 		Ref:        raw.Base.Ref,
 		SHA:        raw.Base.SHA,
@@ -409,10 +414,11 @@ func (c *Client) FetchPRRepos(ctx context.Context, owner, repo string, prNumber 
 
 // --- EventCollector ---
 
-// fetchRepoEvents returns all issue/timeline events from the repo-wide events endpoint.
-// Both ListIssueEvents and ListPREvents call this shared iterator to avoid
-// fetching the same endpoint twice when both are collected sequentially.
-// The isPR callback determines whether an event belongs to a PR or an issue.
+// fetchRepoEvents returns all issue/timeline events from the repo-wide
+// /issues/events endpoint. ListRepoEvents is its ONLY consumer — one
+// pagination per collection cycle. It must never be iterated twice in
+// one cycle: the per-URL ETag cache turns the second pass into a 304
+// with zero items (the pre-v0.26.3 silent PR-event loss).
 func (c *Client) fetchRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[ghEvent, error] {
 	path := fmt.Sprintf("/repos/%s/%s/issues/events", owner, repo)
 	return func(yield func(ghEvent, error) bool) {
@@ -431,22 +437,37 @@ func (c *Client) fetchRepoEvents(ctx context.Context, owner, repo string, since 
 	}
 }
 
-func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.IssueEvent, error] {
-	return func(yield func(model.IssueEvent, error) bool) {
+// ListRepoEvents streams issue and PR events from ONE pass over the
+// repo-wide feed, routing each raw event by its pull_request marker.
+// See fetchRepoEvents for why a single pass is load-bearing.
+func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.RepoEvent, error] {
+	return func(yield func(platform.RepoEvent, error) bool) {
 		for raw, err := range c.fetchRepoEvents(ctx, owner, repo, since) {
 			if err != nil {
-				yield(model.IssueEvent{}, err)
+				yield(platform.RepoEvent{}, err)
 				return
 			}
-			// Skip events on PRs (they have a pull_request field on the issue).
 			if raw.Issue != nil && raw.Issue.PullRequest != nil {
+				ev := model.PullRequestEvent{
+					PlatformEventID:  raw.ID,
+					PlatformID:       model.PlatformGitHub,
+					PlatformPRID:     int64(raw.Issue.Number),
+					NodeID:           raw.NodeID,
+					Action:           raw.Event,
+					ActionCommitHash: raw.CommitID,
+					CreatedAt:        raw.CreatedAt,
+					ActorRef:         ghUserToRef(raw.Actor),
+				}
+				if !yield(platform.RepoEvent{PR: &ev}, nil) {
+					return
+				}
 				continue
 			}
 			platIssueID := int64(0)
 			if raw.Issue != nil {
 				platIssueID = int64(raw.Issue.Number)
 			}
-			if !yield(model.IssueEvent{
+			ev := model.IssueEvent{
 				PlatformEventID:  raw.ID,
 				PlatformID:       model.PlatformGitHub,
 				PlatformIssueID:  platIssueID,
@@ -455,34 +476,8 @@ func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since 
 				ActionCommitHash: raw.CommitID,
 				CreatedAt:        raw.CreatedAt,
 				ActorRef:         ghUserToRef(raw.Actor),
-			}, nil) {
-				return
 			}
-		}
-	}
-}
-
-func (c *Client) ListPREvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.PullRequestEvent, error] {
-	return func(yield func(model.PullRequestEvent, error) bool) {
-		for raw, err := range c.fetchRepoEvents(ctx, owner, repo, since) {
-			if err != nil {
-				yield(model.PullRequestEvent{}, err)
-				return
-			}
-			// Only include events on PRs.
-			if raw.Issue == nil || raw.Issue.PullRequest == nil {
-				continue
-			}
-			if !yield(model.PullRequestEvent{
-				PlatformEventID:  raw.ID,
-				PlatformID:       model.PlatformGitHub,
-				PlatformPRID:     int64(raw.Issue.Number),
-				NodeID:           raw.NodeID,
-				Action:           raw.Event,
-				ActionCommitHash: raw.CommitID,
-				CreatedAt:        raw.CreatedAt,
-				ActorRef:         ghUserToRef(raw.Actor),
-			}, nil) {
+			if !yield(platform.RepoEvent{Issue: &ev}, nil) {
 				return
 			}
 		}
@@ -894,6 +889,7 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	}
 
 	return &model.RepoInfo{
+		FullName:          r.NameWithOwner,
 		LastUpdated:       r.UpdatedAt,
 		IssuesEnabled:     r.HasIssuesEnabled,
 		WikiEnabled:       r.HasWikiEnabled,
@@ -950,6 +946,7 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 		languages[raw.Language] = 1 // sentinel — real bytes via GraphQL
 	}
 	return &model.RepoInfo{
+		FullName:        raw.FullName,
 		LastUpdated:     raw.UpdatedAt,
 		IssuesEnabled:   raw.HasIssues,
 		WikiEnabled:     raw.HasWiki,
@@ -978,6 +975,7 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 func repoInfoGraphQL(owner, repo string) string {
 	return fmt.Sprintf(`{
   repository(owner: "%s", name: "%s") {
+    nameWithOwner
     updatedAt
     description
     hasIssuesEnabled
@@ -1052,6 +1050,7 @@ type graphQLRepoInfoResponse struct {
 }
 
 type graphQLRepo struct {
+	NameWithOwner    string    `json:"nameWithOwner"` // v0.25.32 — canonical owner/name for the case self-heal
 	UpdatedAt        time.Time `json:"updatedAt"`
 	HasIssuesEnabled bool      `json:"hasIssuesEnabled"`
 	HasWikiEnabled   bool      `json:"hasWikiEnabled"`

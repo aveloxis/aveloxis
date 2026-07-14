@@ -91,9 +91,13 @@ func TestPRChildModeConfigExists(t *testing.T) {
 	if !strings.Contains(code, `json:"pr_child_mode"`) {
 		t.Error("PRChildMode must have the json tag 'pr_child_mode' to match the snake_case convention in aveloxis.json")
 	}
-	// Default must be "rest" so existing deployments pick up v0.18.1 without
-	// behavior change until operators explicitly opt in to GraphQL.
-	if !strings.Contains(code, `"rest"`) {
-		t.Error("config.DefaultConfig must default PRChildMode to \"rest\" — GraphQL is opt-in until validated in production")
+	// v0.26.0: the default flipped to "graphql" (the v0.19.0 sunset plan's
+	// flip, finally executed). REST stays available as the escape hatch.
+	// Whitespace-normalized: gofmt realigns struct literals when
+	// neighboring fields change width.
+	flat := strings.Join(strings.Fields(code), " ")
+	if !strings.Contains(flat, `PRChildMode: "graphql"`) {
+		t.Error("config.DefaultConfig must default PRChildMode to \"graphql\" (v0.26.0 flip); " +
+			"REST remains selectable via aveloxis.json")
 	}
 }

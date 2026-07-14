@@ -13,22 +13,25 @@ import (
 // the DistributionWorker.
 
 func TestSchedulerConfigHasDistributionFields(t *testing.T) {
-	data, err := os.ReadFile("scheduler.go")
+	// v0.25.37: the mirror fields are gone — the wiring must read every
+	// distribution knob through cfg.Collection accessors instead.
+	data, err := os.ReadFile("distribution_wiring.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(data)
-
 	for _, needle := range []string{
-		"DistributionTrackingEnabled",
-		"DistributionTrackingInterval",
-		"DistributionTrackingWorkers",
-		"DistributionTrackingStartInterval",
-		"DistributionTrackingPoliteEmail",
-		"DistributionTrackingUserAgent",
+		"s.cfg.Collection.DistributionTrackingInterval()",
+		"s.cfg.Collection.DistributionTrackingWorkersOrDefault()",
+		"s.cfg.Collection.DistributionTrackingStartInterval()",
+		"s.cfg.Collection.DistributionTrackingPoliteEmail",
+		"s.cfg.Collection.DistributionTrackingUserAgent",
+		"s.cfg.Collection.DistributionTrackingCrossCheckSourcesValue()",
+		"s.cfg.Collection.DistributionTrackingImmediatePartialReclaimValue()",
 	} {
 		if !strings.Contains(src, needle) {
-			t.Errorf("scheduler.Config must declare %s for v0.24.0 DistributionWorker wiring", needle)
+			t.Errorf("distribution wiring must read %s — knobs come from the "+
+				"CollectionConfig accessors (single default point, v0.25.37)", needle)
 		}
 	}
 }
@@ -42,7 +45,7 @@ func TestSchedulerRunSpawnsWorkerWhenEnabled(t *testing.T) {
 
 	// Pin: gate on DistributionTrackingEnabled, then call
 	// spawnDistributionWorker. Off-by-default contract.
-	if !strings.Contains(src, "if s.cfg.DistributionTrackingEnabled") {
+	if !strings.Contains(src, "if s.cfg.Collection.DistributionTrackingEnabled") {
 		t.Error("scheduler.Run must guard distribution worker spawn on DistributionTrackingEnabled (off-by-default contract)")
 	}
 	if !strings.Contains(src, "spawnDistributionWorker") {

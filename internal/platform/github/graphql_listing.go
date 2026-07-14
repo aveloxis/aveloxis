@@ -101,7 +101,7 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
           pageInfo { hasNextPage endCursor }
         }
         assignees(first: 100) {
-          nodes { databaseId login avatarUrl url name email }
+          nodes { id databaseId login avatarUrl url name email }
           pageInfo { hasNextPage endCursor }
         }
         author {
@@ -261,8 +261,13 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
 			var assignees []model.IssueAssignee
 			for _, a := range n.Assignees.Nodes {
 				assignees = append(assignees, model.IssueAssignee{
-					PlatformSrcID:  a.DatabaseID,
-					PlatformNodeID: "", // GraphQL User node ID is the global ID, not what postgres stores here
+					PlatformSrcID: a.DatabaseID,
+					// v0.26.4: REST's node_id IS the GraphQL global ID
+					// (same string) — the earlier claim that they
+					// differ was wrong; the column was dark on the
+					// GraphQL path until this fix.
+					PlatformNodeID: a.ID,
+					UserRef:        userRefFromGraphQL(&a),
 					Origin:         origin,
 				})
 			}
@@ -336,7 +341,7 @@ func (c *Client) paginateIssueAssignees(ctx context.Context, owner, repo string,
   repository(owner: $owner, name: $repo) {
     issue(number: $number) {
       assignees(first: 100, after: $after) {
-        nodes { databaseId login avatarUrl url name email }
+        nodes { id databaseId login avatarUrl url name email }
         pageInfo { hasNextPage endCursor }
       }
     }
@@ -357,8 +362,10 @@ func (c *Client) paginateIssueAssignees(ctx context.Context, owner, repo string,
 		}
 		for _, a := range resp.Repository.Issue.Assignees.Nodes {
 			out = append(out, model.IssueAssignee{
-				PlatformSrcID: a.DatabaseID,
-				Origin:        origin,
+				PlatformSrcID:  a.DatabaseID,
+				PlatformNodeID: a.ID,
+				UserRef:        userRefFromGraphQL(&a),
+				Origin:         origin,
 			})
 		}
 		pi := resp.Repository.Issue.Assignees.PageInfo
@@ -520,6 +527,7 @@ func (c *Client) listPullRequestsGraphQL(ctx context.Context, owner, repo string
 				Locked:            n.Locked,
 				URL:               n.URL,
 				HTMLURL:           n.URL,
+				DiffURL:           diffURL(n.URL),
 				CreatedAt:         n.CreatedAt,
 				UpdatedAt:         n.UpdatedAt,
 				ClosedAt:          n.ClosedAt,

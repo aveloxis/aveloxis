@@ -120,6 +120,75 @@ func ParseRepoURLWithHints(rawURL string, gitlabHosts map[string]bool) (RepoURL,
 	return result, nil
 }
 
+// ParseAnyRepoURL is ParseRepoURL with a generic-git fallback: URLs on
+// hosts that are neither GitHub nor GitLab return Platform =
+// model.PlatformGenericGit (last path segment as Repo, the rest as Owner)
+// instead of ErrUnknownPlatform. Use this where the catalog accepts any
+// git host (web bulk paste, redirect handling, URL rewrites); use
+// ParseRepoURL where only forge URLs are valid.
+//
+// Note the host-based detection is stricter than the historical
+// strings.Contains(url, "github.com") checks it replaces: a URL like
+// https://mirror.example/github.com/x now classifies as generic git.
+func ParseAnyRepoURL(rawURL string) (RepoURL, error) {
+	parsed, err := ParseRepoURLWithHints(rawURL, nil)
+	if err == nil {
+		return parsed, nil
+	}
+	if !errors.Is(err, ErrUnknownPlatform) {
+		return RepoURL{}, err
+	}
+
+	// Unknown host — generic git. Re-derive host/path with the same
+	// trimming rules as ParseRepoURLWithHints.
+	trimmed := strings.TrimSpace(rawURL)
+	trimmed = strings.TrimSuffix(trimmed, "/")
+	trimmed = strings.TrimSuffix(trimmed, ".git")
+	u, perr := url.Parse(trimmed)
+	if perr != nil {
+		return RepoURL{}, fmt.Errorf("%w: %v", ErrInvalidRepoURL, perr)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 {
+		return RepoURL{}, fmt.Errorf("%w: need at least owner/repo in path", ErrInvalidRepoURL)
+	}
+	return RepoURL{
+		Platform: model.PlatformGenericGit,
+		Host:     strings.ToLower(u.Host),
+		Owner:    strings.Join(parts[:len(parts)-1], "/"),
+		Repo:     parts[len(parts)-1],
+		Raw:      trimmed,
+	}, nil
+}
+
+// ParseOrgURL extracts the host and org/group name from an org URL like
+// https://github.com/torvalds or https://gitlab.com/gitlab-org. The org
+// name is the FIRST path segment only (top-level org/group) — matching the
+// historical inline parsers in AddOrgToGroup and scanOrgRepos this
+// consolidates. Schemeless input ("github.com/chaoss") is tolerated
+// because the web org-add path historically accepted it.
+func ParseOrgURL(rawURL string) (host, orgName string, err error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", "", fmt.Errorf("%w: empty URL", ErrInvalidRepoURL)
+	}
+	if !strings.Contains(rawURL, "://") {
+		rawURL = "https://" + rawURL
+	}
+	u, perr := url.Parse(rawURL)
+	if perr != nil {
+		return "", "", fmt.Errorf("%w: %v", ErrInvalidRepoURL, perr)
+	}
+	if u.Host == "" {
+		return "", "", fmt.Errorf("%w: missing host", ErrInvalidRepoURL)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return "", "", fmt.Errorf("%w: missing org name in path", ErrInvalidRepoURL)
+	}
+	return strings.ToLower(u.Host), parts[0], nil
+}
+
 // detectPlatform identifies the platform from the hostname.
 func detectPlatform(host string, gitlabHosts map[string]bool) model.Platform {
 	if host == "github.com" || strings.HasSuffix(host, ".github.com") {

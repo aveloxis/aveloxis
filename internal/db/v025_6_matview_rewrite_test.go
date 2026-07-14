@@ -261,10 +261,58 @@ func TestVersionStampedV0256(t *testing.T) {
 	// and GetKey waits for a quarantined key to recover instead of returning
 	// ErrAllKeysInvalidated. Fixes the 2026-06-17 aveloxis_large crash-loop
 	// where transient GitHub-auth-backend 401s bled 18 good keys out one at a
-	// time over 15 hours and the scheduler then crashed on ClassAuth).
+	// time over 15 hours and the scheduler then crashed on ClassAuth) →
+	// 0.25.32 (case-variant duplicate repos: GitHub/GitLab URLs are
+	// case-insensitive at the forge, but repo_git matching was byte-exact —
+	// 1,220 duplicate pairs on aveloxis_large. Prevention via
+	// resolveCaseVariantURL in UpsertRepo/FindRepoByURL, cleanup via
+	// `aveloxis dedup-repos`, uq_repos_repo_git_ci backstop after drain,
+	// Phase 0 case self-heal via HealRepoCaseDrift) → 0.25.33 (first
+	// production dedup-repos run failed on 18f/identity-idp: the
+	// globally-scoped FindReviewDBID had cross-linked winner-owned
+	// review_comments to loser-owned reviews; dedupOnePair now remaps
+	// cross-repo review links to winner equivalents and FindReviewDBID is
+	// repo-scoped) → 0.25.34 (dedup pairs spent 18+ min inside COMMIT:
+	// email_message's linked_issue/PR/review FK columns shipped unindexed
+	// in v0.25.7, so deferred NO-ACTION checks seqscanned per deleted
+	// parent row — three partial indexes added; and the contributor_repo
+	// repoint was removed from dedupOnePair: it's the breadth worker's
+	// GitHub-wide observational stream with no repos FK, and the repoint
+	// both rewrote history and seqscanned 51M rows per pair) → 0.25.35 →
+	// 0.25.36 (safego recover-wrappers on ~30 goroutines, swallowed-Exec
+	// fixes, -race on the integration tier, staticcheck blocking, weekly
+	// network canaries, KeyPool concurrency stress test) → 0.25.37 (the
+	// three-layer config wiring collapsed: scheduler.Config's 45-field
+	// mirror is gone, the scheduler consumes *config.CollectionConfig
+	// directly through the accessors, main.go's 42-line wiring became
+	// one Collection pointer. The collapse FIXED a live double-clamp:
+	// NewWithKeys was still re-defaulting ScancodeShutdownGrace 0→30m,
+	// silently defeating the v0.23.7 immediate-kill default) → 0.25.38
+	// (behavioral tests on the three incident-prone hot paths: the
+	// Processor write path end-to-end, the breadth circuit breaker via
+	// the new noteContributorOutcome seam + breadthStore role interface,
+	// and the runJob lock lifecycle — which immediately exposed and
+	// fixed TWO real bugs: facade cloned https://unknown/... for every
+	// generic-git repo, and git-only facade failures reported SUCCESS
+	// with no last_error) → 0.26.0 (GraphQL becomes the DEFAULT for
+	// GitHub PR-child fetch and issue+PR listing — the flip the v0.19.0
+	// sunset plan scheduled but never executed; REST stays as the
+	// aveloxis.json escape hatch, path deletion is a separate operator
+	// decision) → 0.26.1 (data-test gains the column-fill diff: per-
+	// column populated counts, type-aware, FAIL when a column goes
+	// completely dark under the new binary — the platform_label_id=0
+	// class that row counts cannot see; row diff now also covers
+	// aveloxis_scan) → 0.26.2 (one-shot
+	// `aveloxis collect` delegates its API phases to the staged
+	// pipeline — the legacy direct-write path dropped EVERY event via
+	// FK 23503; data-test subprocess output now side-tagged).
+	// (docs truth-reconciliation: 12 undocumented commands added to
+	// commands.md, stale counts/cadences/defaults fixed everywhere, and
+	// three VALUE-checking tripwires added — example-config effective
+	// defaults, commands-doc coverage, schema-count pins).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.25.31"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.25.31\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.27.3"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.27.3\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

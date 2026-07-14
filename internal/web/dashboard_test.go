@@ -164,18 +164,3 @@ func TestCompareSearchWidgetIsShared(t *testing.T) {
 		}
 	}
 }
-
-// extractTemplateSection returns the content between the first occurrence of
-// startMarker and the next matching end marker in the Go template string.
-func extractTemplateSection(tmpl, startMarker, endMarker string) string {
-	start := strings.Index(tmpl, startMarker)
-	if start < 0 {
-		return ""
-	}
-	rest := tmpl[start+len(startMarker):]
-	end := strings.Index(rest, endMarker)
-	if end < 0 {
-		return ""
-	}
-	return rest[:end]
-}

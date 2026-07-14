@@ -391,7 +391,7 @@ const prNodeFragment = `
         nodes {
           requestedReviewer {
             __typename
-            ... on User { databaseId login avatarUrl url }
+            ... on User { databaseId login avatarUrl url name email }
           }
         }
         pageInfo { hasNextPage endCursor }
@@ -414,7 +414,7 @@ const prNodeFragment = `
       commits(first: 50) {
         nodes {
           commit {
-            oid message committedDate
+            id oid message committedDate
             author {
               email name date
               user { databaseId login avatarUrl url name email }
@@ -502,6 +502,7 @@ type prBatchPRNode struct {
 
 type prBatchUser struct {
 	Typename   string `json:"__typename"`
+	ID         string `json:"id"`
 	Login      string `json:"login"`
 	DatabaseID int64  `json:"databaseId"`
 	AvatarURL  string `json:"avatarUrl"`
@@ -594,6 +595,7 @@ type prBatchComments struct {
 type prBatchCommits struct {
 	Nodes []struct {
 		Commit struct {
+			ID            string    `json:"id"`
 			OID           string    `json:"oid"`
 			Message       string    `json:"message"`
 			CommittedDate time.Time `json:"committedDate"`
@@ -643,6 +645,7 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 		Number:            n.Number,
 		URL:               n.URL,
 		HTMLURL:           n.URL, // GraphQL conflates these; REST has both
+		DiffURL:           diffURL(n.URL),
 		Title:             n.Title,
 		Body:              n.Body,
 		State:             mapPRState(n.State, n.MergedAt),
@@ -685,6 +688,7 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 	for _, a := range n.Assignees.Nodes {
 		staged.Assignees = append(staged.Assignees, model.PullRequestAssignee{
 			PlatformSrcID: a.DatabaseID,
+			UserRef:       userRefFromGraphQL(&a),
 			Origin:        pr.Origin,
 		})
 	}
@@ -695,6 +699,7 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 		}
 		staged.Reviewers = append(staged.Reviewers, model.PullRequestReviewer{
 			PlatformSrcID: r.RequestedReviewer.DatabaseID,
+			UserRef:       userRefFromGraphQL(r.RequestedReviewer),
 			Origin:        pr.Origin,
 		})
 	}
@@ -727,6 +732,7 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 	for _, c := range n.Commits.Nodes {
 		cm := model.PullRequestCommit{
 			SHA:         c.Commit.OID,
+			NodeID:      c.Commit.ID,
 			Message:     c.Commit.Message,
 			AuthorEmail: c.Commit.Author.Email,
 			Timestamp:   c.Commit.CommittedDate,
@@ -772,6 +778,22 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 			SHA:        n.HeadRefOid,
 			Origin:     pr.Origin,
 		}
+		// REST parity (v0.26.4): meta_label is "owner:branch". The
+		// owner comes from the head repository, so a DELETED fork (nil
+		// repository) leaves the label empty. KNOWN, ACCEPTED GAP
+		// (measured 2026-07-10: 119 of 5,263 labels on augur): REST
+		// stores the label string ON THE PR ITSELF, so it survives
+		// fork deletion — GraphQL cannot reconstruct the owner from a
+		// null repository. The honest NULL is preferred over caching
+		// a value we cannot verify (same class as null authors for
+		// deleted users). Documented in
+		// docs/architecture/column-mapping.md.
+		if n.HeadRepository != nil && n.HeadRefName != "" {
+			if owner := ownerFromNameWithOwner(n.HeadRepository.NameWithOwner); owner != "" {
+				staged.MetaHead.Label = owner + ":" + n.HeadRefName
+				staged.MetaHead.AuthorRef = model.UserRef{Login: owner}
+			}
+		}
 	}
 	if n.BaseRefName != "" || n.BaseRefOid != "" {
 		staged.MetaBase = &model.PullRequestMeta{
@@ -779,6 +801,12 @@ func mapPRNodeToStagedPR(n *prBatchPRNode, number int) StagedPR {
 			Ref:        n.BaseRefName,
 			SHA:        n.BaseRefOid,
 			Origin:     pr.Origin,
+		}
+		if n.BaseRepository != nil && n.BaseRefName != "" {
+			if owner := ownerFromNameWithOwner(n.BaseRepository.NameWithOwner); owner != "" {
+				staged.MetaBase.Label = owner + ":" + n.BaseRefName
+				staged.MetaBase.AuthorRef = model.UserRef{Login: owner}
+			}
 		}
 	}
 
@@ -851,6 +879,28 @@ func userRefFromGraphQL(u *prBatchUser) model.UserRef {
 		URL:        u.URL,
 		Type:       t,
 	}
+}
+
+// diffURL synthesizes REST's pr_diff_url from the PR's html URL —
+// GraphQL exposes no diff_url field, but GitHub's diff endpoint is
+// always the PR page + ".diff" (v0.26.4 parity fix).
+func diffURL(htmlURL string) string {
+	if htmlURL == "" {
+		return ""
+	}
+	return htmlURL + ".diff"
+}
+
+// ownerFromNameWithOwner extracts the owner login from a GraphQL
+// nameWithOwner ("owner/repo"). Used to synthesize REST's head/base
+// meta_label ("owner:branch") which GraphQL does not provide directly
+// (v0.26.4 parity fix).
+func ownerFromNameWithOwner(nwo string) string {
+	i := strings.Index(nwo, "/")
+	if i <= 0 {
+		return ""
+	}
+	return nwo[:i]
 }
 
 func repoFromGraphQL(r *prBatchRepo, headOrBase string, origin model.DataOrigin) *model.PullRequestRepo {
@@ -937,7 +987,7 @@ func (c *Client) paginatePRCommits(ctx context.Context, owner, repo string, numb
     pullRequest(number: $number) {
       commits(first: 100, after: $after) {
         nodes { commit {
-          oid message committedDate
+          id oid message committedDate
           author { email name date user { databaseId login avatarUrl url name email } }
         } }
         pageInfo { hasNextPage endCursor }
@@ -961,6 +1011,7 @@ func (c *Client) paginatePRCommits(ctx context.Context, owner, repo string, numb
 		for _, c := range resp.Repository.PullRequest.Commits.Nodes {
 			cm := model.PullRequestCommit{
 				SHA:         c.Commit.OID,
+				NodeID:      c.Commit.ID,
 				Message:     c.Commit.Message,
 				AuthorEmail: c.Commit.Author.Email,
 				Timestamp:   c.Commit.CommittedDate,
@@ -1151,6 +1202,7 @@ func (c *Client) paginatePRAssignees(ctx context.Context, owner, repo string, nu
 		for _, a := range resp.Repository.PullRequest.Assignees.Nodes {
 			out = append(out, model.PullRequestAssignee{
 				PlatformSrcID: a.DatabaseID,
+				UserRef:       userRefFromGraphQL(&a),
 				Origin:        origin,
 			})
 		}

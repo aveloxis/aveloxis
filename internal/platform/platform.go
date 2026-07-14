@@ -239,11 +239,18 @@ type PullRequestCollector interface {
 
 // EventCollector fetches timeline events on issues and PRs/MRs.
 type EventCollector interface {
-	// ListIssueEvents returns events for issues in the repo since the given time.
-	ListIssueEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.IssueEvent, error]
-
-	// ListPREvents returns events for PRs/MRs in the repo since the given time.
-	ListPREvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.PullRequestEvent, error]
+	// ListRepoEvents streams the repo's issue AND PR events as ONE
+	// tagged-union feed. Deliberately a single method: on GitHub both
+	// kinds come from the same /issues/events endpoint, and the
+	// pre-v0.26.3 two-pass design (ListIssueEvents then ListPREvents,
+	// each a full pagination of the SAME URL) self-aliased through the
+	// per-URL ETag cache — the second pass got 304 on any repo with no
+	// new event in the seconds between passes, and the entire
+	// PR-event history was silently dropped (2026-07-09: 209
+	// production repos with 50+ PRs and zero PR events). One pass
+	// makes the aliasing structurally impossible and halves the cost
+	// of the most expensive endpoint on large repos.
+	ListRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[RepoEvent, error]
 }
 
 // MessageCollector fetches comments/notes.
@@ -292,6 +299,13 @@ type ContributorCollector interface {
 }
 
 // MessageWithRef pairs a message with its parent reference (issue or PR).
+// RepoEvent is one event from a repo-wide event feed, tagged as either
+// an issue event or a PR event. Exactly one field is non-nil.
+type RepoEvent struct {
+	Issue *model.IssueEvent
+	PR    *model.PullRequestEvent
+}
+
 type MessageWithRef struct {
 	Message  model.Message
 	IssueRef *model.IssueMessageRef

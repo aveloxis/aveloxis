@@ -32,8 +32,7 @@ func TestStagedCollectorTreatsNotFoundAndForbiddenAsNonFatal(t *testing.T) {
 		"ListContributors",
 		"ListIssues",
 		"ListPullRequests",
-		"ListIssueEvents",
-		"ListPREvents",
+		"ListRepoEvents",
 		"ListIssueComments",
 		"ListReviewComments",
 	}

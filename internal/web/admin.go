@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +99,7 @@ func (s *Server) handleApproveGroup(w http.ResponseWriter, r *http.Request) {
 	// email delivery.
 	if s.mailer != nil && requesterEmail != "" {
 		go func() {
+			defer safego.Recover(s.logger, "group-approved-email")
 			if err := s.mailer.SendGroupApproved(requesterEmail, requesterLogin, groupName, groupID); err != nil {
 				s.logger.Warn("failed to send group-approved email",
 					"group_id", groupID, "to", requesterEmail, "error", err)

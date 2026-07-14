@@ -173,8 +173,8 @@ These four settings control the staged collector's request shape. The default fo
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `collection.pr_child_mode` | string | `"rest"` | `"rest"` uses the per-PR REST waterfall (8 calls per PR). `"graphql"` (v0.18.1+) uses `FetchPRBatch` — one GraphQL query per 10 PRs returning all child data inline. GitLab path is REST composition in both modes (column parity preserved). |
-| `collection.listing_mode` | string | `"rest"` | `"rest"` uses separate iterators for `/issues` and `/pulls`. `"graphql"` (v0.18.2+) calls `ListIssuesAndPRs` once per repo — a pair of paginated GraphQL queries instead of two REST scans. Setting both this AND `pr_child_mode` to `"graphql"` activates v0.18.5's `fullGraphQLMode` gate: conversation comments are delivered inline, eliminating one repo-wide REST call. |
+| `collection.pr_child_mode` | string | `"graphql"` (v0.26.0; was `"rest"`) | `"rest"` uses the per-PR REST waterfall (8 calls per PR). `"graphql"` (v0.18.1+) uses `FetchPRBatch` — one GraphQL query per 10 PRs returning all child data inline. GitLab path is REST composition in both modes (column parity preserved). |
+| `collection.listing_mode` | string | `"graphql"` (v0.26.0; was `"rest"`) | `"rest"` uses separate iterators for `/issues` and `/pulls`. `"graphql"` (v0.18.2+) calls `ListIssuesAndPRs` once per repo — a pair of paginated GraphQL queries instead of two REST scans. Setting both this AND `pr_child_mode` to `"graphql"` activates v0.18.5's `fullGraphQLMode` gate: conversation comments are delivered inline, eliminating one repo-wide REST call. |
 | `collection.threading_mode` | string | `"single"` | `"single"` fetches PR batches sequentially. `"sharded"` (v0.18.3+) partitions the enumerated PR list and runs each shard in its own goroutine when the PR count exceeds `shard_size`. Only activates when `pr_child_mode=graphql`. |
 | `collection.shard_size` | integer | `3000` | Item-count threshold for `threading_mode=sharded`. Number of shards = `ceil(prs / shard_size)`. Smaller values fan out earlier on medium repos. Ignored when `threading_mode != "sharded"`. |
 | `collection.issue_child_mode` | string | `"graphql"` | `"graphql"` (v0.22.3+ default, phase 5.2) drains labels and assignees from the inline maps delivered by `ListIssuesAndPRs`, eliminating two per-issue REST calls. ~100× speedup on the issue phase on repos with thousands of issues; ~13–15× speedup on full augur collection (verified by shadow-diff on 2026-05-16). `"rest"` keeps the legacy waterfall (two REST calls per issue) — available as an escape hatch, same posture as `pr_child_mode` after its v0.19.0 default flip. Requires `listing_mode=graphql` to take effect (the inline maps come from that path). GitLab path is REST composition in both modes (column parity preserved at the row level). **Known parity gap**: `issue_labels.platform_label_id` stays 0 on the GraphQL path because GitHub's GraphQL `Label` type has no `databaseId` — same gap as `pull_request_labels.platform_label_id`. The column has no SELECT/JOIN/WHERE consumers anywhere in the codebase (verified by grep over `internal/db/`, `queries/`, `internal/api/`), so this is a known parity gap, not a regression. The only material loss is detection of label renames within a project: renamed labels show as two rows instead of one. |
@@ -353,6 +353,38 @@ Do not delete this directory while Aveloxis is running. If deleted while stopped
 ```
 
 ---
+
+
+## Public analytics API (`api`)
+
+v0.27.0: rate limiting + CORS for the `aveloxis api` process. Limits
+apply ONLY to clients whose resolved IP falls outside `exempt_cidrs` —
+same-box and same-LAN traffic is never limited.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `rate_limit_rps` | `1` | Sustained per-IP requests/second (token bucket). |
+| `rate_limit_burst` | `10` | Per-IP burst capacity. |
+| `rate_limit_daily` | `1000` | Per-IP daily request quota — the anti-bulk-crawl control. Exceeding returns 429 with `Retry-After: 86400`. |
+| `exempt_cidrs` | loopback + RFC1918 + `::1/128` | Client networks that bypass limiting entirely. |
+| `cors_origins` | `[]` | Browser origins allowed to call the API (the separate-repo aveloxis-gui). Empty = no cross-origin access. |
+| `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set this to your nginx host when proxying — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). |
+| `require_auth` | `false` | Gate every data endpoint (all but `/health`) behind Bearer session tokens minted by the web process's `/auth/token`. Flip on once the aveloxis-gui token flow is deployed. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
+
+For the full public-GUI deployment runbook (nginx layout, OAuth
+callbacks, when to flip `require_auth`), see the aveloxis-gui
+repository's README "Production deployment" section.
+
+```jsonc
+"api": {
+  "rate_limit_rps": 1,
+  "rate_limit_burst": 10,
+  "rate_limit_daily": 1000,
+  "exempt_cidrs": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+  "cors_origins": ["https://your-gui.example.org"],
+  "trusted_proxy": "127.0.0.1"
+}
+```
 
 ## Email (Gmail SMTP, optional)
 

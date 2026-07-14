@@ -16,8 +16,8 @@ aveloxis serve [flags]
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--monitor` | string | `":5555"` | Address for the monitoring dashboard and REST API. Set to `":0"` to disable. |
-| `--workers` | integer | `1` | Number of concurrent collection workers. Each worker claims one repo at a time from the queue. |
+| `--monitor` | string | `"127.0.0.1:5555"` | Address for the monitoring dashboard (the REST API is a separate process — see `aveloxis api`). Always started with serve. |
+| `--workers` | integer | config `collection.workers` (default `12`); flag overrides | Number of concurrent collection workers. Each worker claims one repo at a time from the queue. The cobra flag default is 1, but when the flag is not explicitly set, serve uses `collection.workers` from `aveloxis.json`. |
 | `--augur-keys` | boolean | `false` | Also load API keys from Augur's `augur_operations.worker_oauth` table. |
 
 ### Behavior
@@ -36,8 +36,8 @@ The scheduler also runs these background tasks:
 | Task | Interval | Description |
 |---|---|---|
 | Org refresh | Every 4 hours | Re-fetches org membership lists |
-| Contributor breadth | Every 6 hours | Discovers cross-repo contributor activity via GitHub Events API |
-| Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes all 19 matviews, resumes |
+| Contributor breadth | Every 15 minutes (config `breadth_interval_minutes`) | Discovers cross-repo contributor activity via GitHub Events API |
+| Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes all 20 materialized views, resumes |
 | Stale lock recovery | Every 5 minutes | Re-queues jobs locked for more than 1 hour |
 
 ### Scancode worker tuning
@@ -117,6 +117,42 @@ aveloxis web
 ```
 
 See the [Web GUI guide](web-gui.md) for detailed setup instructions.
+
+---
+
+## `aveloxis api`
+
+Starts the REST API server (default `:8383`). Serves repo statistics, weekly
+time series, dependency licenses, scancode results, SBOM downloads, repo
+search, and the Augur-compatible metric endpoints. The web GUI's charts and
+the comparison page load their data from this process.
+
+```bash
+aveloxis api --addr :8383
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--addr` | string | `":8383"` | Listen address for the API server. |
+
+Run alongside `aveloxis serve` and `aveloxis web` — `aveloxis start all`
+starts all three. See the [REST API guide](api.md) for the endpoint
+reference.
+
+---
+
+## `aveloxis test-mail`
+
+Sends a test email through the configured Gmail SMTP settings (v0.20.14).
+Validates the `mail` block of `aveloxis.json` first (fail-fast on syntactic
+mistakes like a bare domain in `gmail_user` or a non-App-Password), then
+actually exercises the credentials.
+
+```bash
+aveloxis test-mail you@example.org
+```
+
+Use at deploy time so the first user signup isn't the first SMTP attempt.
 
 ---
 
@@ -290,10 +326,11 @@ Creates or updates the database schema.
 aveloxis migrate
 ```
 
-Creates 108 tables and 19 materialized views across two PostgreSQL schemas:
+Creates 129 tables and 20 materialized views across three PostgreSQL schemas:
 
-- **`aveloxis_data`** (84 tables + 19 materialized views) -- all collected data
-- **`aveloxis_ops`** (24 tables) -- operational state
+- **`aveloxis_data`** (95 tables + 20 materialized views) -- all collected data
+- **`aveloxis_ops`** (30 tables) -- operational state
+- **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.
 
@@ -301,15 +338,171 @@ Safe to run repeatedly. All DDL uses `CREATE ... IF NOT EXISTS` and inserts use 
 
 ---
 
+## `aveloxis backfill-identities`
+
+One-off repair for missing identity attribution (v0.26.5 — see
+`summary/identity-attribution-audit-2026-07-09.md`). The 2026-07-09
+audit found `cntrb_id` 0% populated on `issue_assignees`,
+`pull_request_assignees`, `pull_request_reviewers`, and
+`pull_request_meta`, and `issues.closed_by_id` at 0.015% — while the
+raw identity material (platform user ids) was stored at ~100%.
+
+```bash
+aveloxis backfill-identities --dry-run          # candidate counts, no writes
+aveloxis backfill-identities                    # all phases
+aveloxis backfill-identities --phase 1          # assignment joins + pr_meta owners (SQL only)
+aveloxis backfill-identities --phase 2          # closed_by from issue events (SQL only)
+aveloxis backfill-identities --phase 3          # closed_by GraphQL timeline sweep (needs API keys)
+```
+
+Flags: `--dry-run`, `--batch-size` (primary-key window width per UPDATE batch, default
+100000; on fleet-scale tables use 1000000), `--limit` (cap per phase, 0 = unbounded), `--phase`
+(`all|1|2|3`), `--sweep-batch` (issues per GraphQL query in phase 3,
+default 100).
+
+Phases 1–2 are pure SQL derivation (no API calls; measured production
+coverage 99.87–99.98% for assignments). Phase 3 fetches closers the
+history-capped events feed cannot reach, via per-issue
+`timelineItems(itemTypes:[CLOSED_EVENT])` batched ~100 issues per
+GraphQL query (~3 points each). Run phase 2 after the v0.26.3
+event-healing cohort completes for best coverage; all phases are
+idempotent and resumable. Rows whose identity genuinely isn't
+derivable stay NULL — no data is fabricated.
+
+## `aveloxis dedup-repos`
+
+Merges case-variant duplicate repositories (v0.25.32). GitHub and GitLab
+treat owner/repo URLs case-insensitively, so
+`github.com/azure/azure-sdk-tools` and `github.com/Azure/azure-sdk-tools`
+are the **same repository** — but fleets that predate v0.25.32 could
+accumulate both as separate rows, each collected in full (doubled API
+budget, storage, and double-counted analytics).
+
+```bash
+aveloxis dedup-repos --dry-run      # show the plan (first 20 pairs)
+aveloxis dedup-repos --limit 50     # canary batch
+aveloxis dedup-repos                # full run — re-run until "0 pairs"
+```
+
+### Flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--dry-run` | false | Print the merge plan without writing. Shows winner/loser URLs + repo_ids, per-side last-collected dates, and whether either side is mid-collection. |
+| `--batch-size` | 50 | Pairs merged per batch. Each pair is one heavy transaction (repoints + child-data deletes). |
+| `--limit` | 0 | Cap total pairs merged this run (0 = no cap). |
+
+### What each merge does
+
+Per pair, winner = the **oldest** `repo_id`, in one transaction:
+
+1. Repoints `user_repos` to the winner — every user group that
+   referenced either variant keeps the repo and immediately sees the
+   winner's collected data.
+2. Repoints shared-copy rows (`messages`, `email_message`,
+   `commit_comment_ref`, `foundation_membership`) — these tables are
+   globally unique, so the pair shares one copy. (`contributor_repo` is
+   deliberately untouched: it is the breadth worker's observational
+   record of contributors' GitHub-wide activity, keyed by the numeric
+   `gh_repo_id`, not a catalog reference.)
+3. Deletes the loser's duplicated child data (issues, PRs, commits,
+   releases, dependency scans, ...) leaves-first, then the loser row
+   itself. Nothing is lost: both sides collected the same repository.
+4. Enqueues the winner if it has never been collected.
+
+Pairs with either side `status='collecting'` are **skipped and
+reported** — re-run once those jobs finish. The command is idempotent;
+merged pairs drop out of the candidate set.
+
+### After the run
+
+```bash
+aveloxis migrate --skip-views   # builds uq_repos_repo_git_ci — the permanent
+                                # DB-level backstop (skipped with a WARN while
+                                # duplicates remain)
+aveloxis refresh-views          # matviews stop double-counting immediately
+```
+
+Generic-git repos (platform 3) are never touched: unknown hosts may
+legitimately be case-sensitive, so their URLs stay byte-exact.
+
+---
+
+## `aveloxis migrate-cntrb-ids`
+
+One-shot opt-in data migration (v0.22.2): rewrites contributors whose
+`cntrb_id` is a legacy random UUID to the deterministic
+`PlatformUUID(platform_id, platform_user_id)` form, cascading through all
+child tables via the v0.22.1 `ON UPDATE CASCADE` FKs.
+
+```bash
+aveloxis migrate-cntrb-ids --dry-run     # show the plan
+aveloxis migrate-cntrb-ids               # execute (batched transactions)
+aveloxis migrate-cntrb-ids --limit 10000 # incremental run
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | `false` | Show the plan and a sample without writing. |
+| `--batch-size` | `5000` | Rows per transaction (use 500 on fleet-scale DBs). |
+| `--limit` | `0` | Cap rows migrated this run (0 = no cap). |
+| `--skip-precheck` | `false` | DANGEROUS: skip the ON UPDATE CASCADE precheck. |
+
+Run `aveloxis refresh-views` afterwards. Collision pairs are left for
+`merge-cntrb-collisions`.
+
+---
+
+## `aveloxis merge-cntrb-collisions`
+
+Soft-merges the rename-collision pairs `migrate-cntrb-ids` skips (v0.22.3):
+same platform user under two rows. Moves identities to the winner, merges
+non-empty fields, inserts an alias, marks the loser `cntrb_deleted = 1`
+(row stays in place — no FK rewrites).
+
+```bash
+aveloxis merge-cntrb-collisions --dry-run
+aveloxis merge-cntrb-collisions
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | `false` | Show the merge plan without writing. |
+| `--batch-size` | `500` | Pairs merged per batch (one transaction each). |
+| `--limit` | `0` | Cap total pairs merged this run. |
+
+---
+
 ## `aveloxis refresh-views`
 
-Manually refreshes all 19 materialized views.
+Manually refreshes all 20 materialized views.
 
 ```bash
 aveloxis refresh-views
 ```
 
 Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. Views are also rebuilt automatically every Saturday by `aveloxis serve`.
+
+---
+
+## `aveloxis sbom`
+
+Generates a CycloneDX or SPDX Software Bill of Materials from the
+dependency data collected for a repository.
+
+```bash
+aveloxis sbom 42 --format cyclonedx -o sbom.json
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--format` | `cyclonedx` | Output format: `cyclonedx` or `spdx`. |
+| `--output`, `-o` | stdout | Write to a file instead of stdout. |
+| `--store` | `false` | Also store the SBOM in `repo_sbom_scans`. |
+
+The repo must have been collected with dependency analysis (automatic
+under `aveloxis serve`). SBOMs are also downloadable from the web GUI and
+the REST API.
 
 ---
 
@@ -321,9 +514,26 @@ Installs optional analysis tools.
 aveloxis install-tools
 ```
 
-Currently installs [scc](https://github.com/boyter/scc) (Sloc Cloc and Code) for per-file code complexity analysis. Requires Go to be installed.
+Installs three external analysis tools: [scc](https://github.com/boyter/scc) (per-file code complexity; requires Go), [scorecard](https://github.com/ossf/scorecard) (OpenSSF security posture; release tarball), and [scancode](https://github.com/nexB/scancode-toolkit) (per-file license/copyright scanning; requires **Python 3.10+** and pipx — also injects the `typecode-libmagic` plugin). If the Python prerequisite is missing, scancode installation fails and per-file license scanning never runs; see `aveloxis upgrade-tools` for updating installed tools.
 
 If `scc` is not installed, the code complexity phase is silently skipped during collection.
+
+---
+
+## `aveloxis upgrade-tools`
+
+Upgrades the external analysis tools in place (v0.23.6). Unlike
+`install-tools` (which short-circuits when a tool exists), this re-runs
+the install path to pull updates: `go install ...@latest` for scc, a fresh
+release tarball for scorecard, and `pipx upgrade` for scancode (preserving
+venv customizations) plus a `typecode-libmagic` re-injection.
+
+```bash
+aveloxis upgrade-tools
+```
+
+Exits non-zero if any tool fails to upgrade, so it can run from a
+maintenance cron.
 
 ---
 
@@ -425,6 +635,81 @@ aveloxis data-test --released-tag 0.22.6 \
 The full report is written to `<work-dir>/report.md`. See
 [Schema-change verification](data-test.md) for guidance on
 interpreting PASS / FLAG / FAIL results.
+
+---
+
+### Column-fill diff (v0.26.1)
+
+Row counts can't see a column the new binary stopped populating (the
+canonical case: `issue_labels.platform_label_id` is `0` on every row
+under the GraphQL path while row counts match exactly). After the
+row-count diff, data-test therefore also compares per-column FILL
+COUNTS — how many rows carry a meaningful value, type-aware (`<> ''`
+for text, `<> 0` for numerics, `IS NOT NULL` otherwise) — across every
+column of every base table in all three schemas.
+
+- **FAIL** (exit code 1): a column populated under the released binary
+  is *completely* unpopulated under the new one — a dropped mapping or
+  renamed JSON tag.
+- **FLAG**: fill counts differ — review; small drift is expected since
+  the two collections run against a live repo minutes apart.
+
+
+## `aveloxis shadow-diff`
+
+Semantic equivalence diff of issue/PR collection between two databases
+(the harness behind the REST → GraphQL refactor's per-phase validation).
+Compares issues, PRs, labels, assignees, reviewers, reviews, commits,
+files, messages, and bridge tables by platform-stable keys.
+
+```bash
+aveloxis shadow-diff --rest-dsn postgres://.../aveloxis_shadow_rest \
+                     --graphql-dsn postgres://.../aveloxis_shadow_graphql
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--rest-dsn` | (required) | Postgres DSN for the baseline database. |
+| `--graphql-dsn` | (required) | Postgres DSN for the comparison database. |
+| `--repo-id` | `0` | Restrict the diff to one repo_id (0 = all). |
+| `--json` | `false` | Machine-readable report for CI pipes. |
+
+Exit code 1 on any FAIL-level difference. For a coarser whole-schema
+row-count comparison, see `aveloxis data-test`.
+
+---
+
+## `aveloxis staging-stats`
+
+Read-only view of the JSONB staging table, per repo and entity type
+(v0.22.4): row counts, processed/unprocessed split, oldest/newest
+timestamps, and approximate bytes.
+
+```bash
+aveloxis staging-stats              # top 10 (repo, entity_type) cohorts
+aveloxis staging-stats --top 50
+aveloxis staging-stats --repo microsoft/vscode
+```
+
+Use it to confirm the `staging_retention_hours` cleanup is working and to
+spot repos whose staged rows aren't being processed.
+
+---
+
+## `aveloxis distribution-stats`
+
+Read-only rollup of the distribution-tracking subsystem (v0.24.0): which
+repos publish to package registries, and which declare packaging manifests
+without any registry evidence.
+
+```bash
+aveloxis distribution-stats                    # fleet rollup
+aveloxis distribution-stats --orphans          # manifest-without-registry list
+aveloxis distribution-stats --repo owner/repo  # per-repo drill-down
+```
+
+Requires `collection.distribution_tracking_enabled: true`. See the
+[distribution architecture doc](../architecture/distribution.md).
 
 ---
 
@@ -544,6 +829,56 @@ steady-state operation once the linked repos' GitHub data is collected and
 the periodic backfills run. See
 [Mailing-list ingestion §12](../architecture/mailing-list.md) for the
 collection-ordering caveat.
+
+---
+
+## `aveloxis backfill-mailing-list-projection`
+
+Projects already-ingested mailing-list `issue_event` mail onto issues
+(mailing-list Phase 5). In-place and idempotent; batched.
+
+```bash
+aveloxis backfill-mailing-list-projection --batch 500
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--batch` | `500` | Rows per batch. |
+
+---
+
+## `aveloxis load-numfocus-projects`
+
+Loads the embedded NumFocus project catalog (v0.25.4): creates the
+"NumFocus Sponsored" / "NumFocus Affiliated" user groups and adds each
+project's flagship repository.
+
+```bash
+aveloxis load-numfocus-projects --dry-run
+aveloxis load-numfocus-projects
+aveloxis load-numfocus-projects --detect-new   # report catalog drift vs numfocus.org
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--user-id` | `1` | Owner of the created groups. |
+| `--dry-run` | `false` | Preview without writing. |
+| `--detect-new` | `false` | Crawl numfocus.org and report projects missing from the embedded catalog. |
+| `--catalog-file` | (embedded) | Override the embedded YAML catalog. |
+
+---
+
+## `aveloxis load-numfocus-orgs`
+
+Companion to `load-numfocus-projects`: registers each NumFocus project's
+GitHub organization for ongoing repo-discovery refresh ("NumFocus
+Sponsored Orgs" / "NumFocus Affiliated Orgs" groups). Same flag surface as
+`load-numfocus-projects`.
+
+```bash
+aveloxis load-numfocus-orgs --dry-run
+aveloxis load-numfocus-orgs
+```
 
 ---
 

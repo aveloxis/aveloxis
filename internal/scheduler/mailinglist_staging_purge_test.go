@@ -22,7 +22,7 @@ func TestRunStagingCleanupPurgesMailingListStaging(t *testing.T) {
 	if !strings.Contains(body, "PurgeMailingListStagingProcessed(") {
 		t.Error("runStagingCleanup must call PurgeMailingListStagingProcessed so processed mailing-list staging rows don't accumulate forever")
 	}
-	if !strings.Contains(body, "s.cfg.StagingRetention") {
+	if !strings.Contains(body, "s.cfg.Collection.StagingRetentionDuration()") {
 		t.Error("the mailing-list purge should reuse the StagingRetention window")
 	}
 }

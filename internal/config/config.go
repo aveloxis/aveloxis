@@ -38,6 +38,9 @@ type Config struct {
 	// v0.23.0: Monitor dashboard settings.
 	Monitor MonitorConfig `json:"monitor"`
 
+	// v0.27.0: public analytics API settings (rate limiting + CORS).
+	API APIConfig `json:"api"`
+
 	// LogLevel sets the minimum log level: "debug", "info", "warn", or "error".
 	LogLevel string `json:"log_level"`
 }
@@ -674,6 +677,16 @@ func (c *CollectionConfig) StagingRetentionDuration() time.Duration {
 // EnrichIntervalDuration converts EnrichIntervalMinutes to a time.Duration.
 // Falls back to 30 minutes when unset (zero) so existing aveloxis.json
 // files without the new key keep the documented default.
+// RecollectAfterDuration converts days_until_recollect to a duration.
+// Defaults to 24h when unset/non-positive — the single place this
+// default lives (v0.25.37; the scheduler's mirror fallback is gone).
+func (c *CollectionConfig) RecollectAfterDuration() time.Duration {
+	if c.DaysUntilRecollect <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.DaysUntilRecollect) * 24 * time.Hour
+}
+
 func (c *CollectionConfig) EnrichIntervalDuration() time.Duration {
 	if c.EnrichIntervalMinutes <= 0 {
 		return 30 * time.Minute
@@ -987,11 +1000,19 @@ func DefaultConfig() *Config {
 			RepoCloneDir:            defaultCloneDir(),
 			MatviewRebuildDay:       "saturday",
 			MatviewRebuildOnStartup: false,
-			PRChildMode:             "rest",
-			ListingMode:             "rest",
-			ThreadingMode:           "single",
-			ShardSize:               3000,
-			IssueChildMode:          "graphql",
+			// v0.26.0 (tech-debt Action 3, phase A): GraphQL is the
+			// default for GitHub PR-child fetch and issue+PR listing —
+			// the flip the v0.19.0 sunset plan scheduled but never
+			// executed. Shadow-diffed to column equivalence across the
+			// v0.18–v0.22 phases; ~5× faster wall-clock on the reference
+			// repo. REST remains a first-class escape hatch: set
+			// "pr_child_mode"/"listing_mode" to "rest" in aveloxis.json.
+			// Path DELETION (phase B) is a separate operator go/no-go.
+			PRChildMode:    "graphql",
+			ListingMode:    "graphql",
+			ThreadingMode:  "single",
+			ShardSize:      3000,
+			IssueChildMode: "graphql",
 			// v0.21.0 ScancodeWorker defaults — see CollectionConfig
 			// field docs for the full rationale.
 			ScancodeWorkers:              2,
@@ -1021,4 +1042,66 @@ func DefaultConfig() *Config {
 		},
 		LogLevel: "info",
 	}
+}
+
+// APIConfig configures the public analytics API (v0.27.0). Rate
+// limits apply ONLY to clients whose resolved IP is outside
+// ExemptCIDRs — same-box / same-LAN traffic is never limited.
+type APIConfig struct {
+	// RateLimitRPS is the sustained per-IP request rate. Default 1.
+	RateLimitRPS float64 `json:"rate_limit_rps,omitempty"`
+	// RateLimitBurst is the per-IP burst capacity. Default 10.
+	RateLimitBurst int `json:"rate_limit_burst,omitempty"`
+	// RateLimitDaily is the per-IP daily request quota — the actual
+	// anti-bulk-crawl control. Default 1000.
+	RateLimitDaily int `json:"rate_limit_daily,omitempty"`
+	// ExemptCIDRs lists client networks that bypass limiting
+	// entirely. Default: loopback + RFC1918 (+ ::1).
+	ExemptCIDRs []string `json:"exempt_cidrs,omitempty"`
+	// CORSOrigins lists browser origins allowed to call the API
+	// (the separate-repo GUI). Empty = no cross-origin access.
+	CORSOrigins []string `json:"cors_origins,omitempty"`
+	// TrustedProxy is the peer IP whose X-Forwarded-For header is
+	// believed when resolving the client address (the nginx-on-
+	// same-box layout). Empty = XFF ignored.
+	TrustedProxy string `json:"trusted_proxy,omitempty"`
+	// RequireAuth gates every data endpoint (all but /health) behind
+	// Bearer session tokens. Default FALSE: flip it on once the
+	// aveloxis-gui token flow is deployed — enabling it earlier
+	// breaks the server-rendered GUI's browser-side chart fetches.
+	// Exempt-CIDR clients bypass auth even when enabled.
+	RequireAuth bool `json:"require_auth,omitempty"`
+}
+
+// RateLimitRPSOrDefault returns the configured sustained rate, or 1.
+func (a APIConfig) RateLimitRPSOrDefault() float64 {
+	if a.RateLimitRPS <= 0 {
+		return 1
+	}
+	return a.RateLimitRPS
+}
+
+// RateLimitBurstOrDefault returns the configured burst, or 10.
+func (a APIConfig) RateLimitBurstOrDefault() int {
+	if a.RateLimitBurst <= 0 {
+		return 10
+	}
+	return a.RateLimitBurst
+}
+
+// RateLimitDailyOrDefault returns the configured daily quota, or 1000.
+func (a APIConfig) RateLimitDailyOrDefault() int {
+	if a.RateLimitDaily <= 0 {
+		return 1000
+	}
+	return a.RateLimitDaily
+}
+
+// ExemptCIDRsOrDefault returns the configured exempt networks, or the
+// loopback + RFC1918 default set.
+func (a APIConfig) ExemptCIDRsOrDefault() []string {
+	if len(a.ExemptCIDRs) == 0 {
+		return []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+	}
+	return a.ExemptCIDRs
 }

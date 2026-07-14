@@ -26,16 +26,19 @@ func TestNoCORSWildcard(t *testing.T) {
 	}
 }
 
-// TestCORSLocalhostOnlyFunction verifies the setCORSIfLocalhost helper exists
-// to restrict cross-origin access to localhost origins.
-func TestCORSLocalhostOnlyFunction(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	if !strings.Contains(code, "setCORSIfLocalhost") {
-		t.Error("API server must use setCORSIfLocalhost to restrict CORS to localhost origins only")
+// TestCORSCentralized (v0.27.1) replaces the old
+// TestCORSLocalhostOnlyFunction: per-handler CORS (the
+// setCORSIfLocalhost helper and jsonResponse's wildcard) is GONE —
+// the middleware in ratelimit.go is the single CORS authority, so
+// the cors_origins allowlist cannot be bypassed route-by-route.
+func TestCORSCentralized(t *testing.T) {
+	for _, f := range []string{"server.go", "contributions.go", "metrics.go"} {
+		src := mustReadFile(t, f)
+		if strings.Contains(src, "setCORSIfLocalhost") {
+			t.Errorf("%s still references setCORSIfLocalhost — per-handler CORS bypasses the allowlist", f)
+		}
+		if strings.Contains(src, `Set("Access-Control-Allow-Origin"`) {
+			t.Errorf("%s sets Access-Control-Allow-Origin directly — only the middleware may", f)
+		}
 	}
 }

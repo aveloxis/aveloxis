@@ -44,58 +44,9 @@ func TestNormalizeRepoURL_HTTPOnly(t *testing.T) {
 	}
 }
 
-// ============================================================
-// parseOwnerName edge cases (beyond prelim_test.go coverage)
-// ============================================================
-
-func TestParseOwnerName_DeeplyNested(t *testing.T) {
-	owner, name := parseOwnerName("https://gitlab.com/a/b/c/d/project")
-	if owner != "a/b/c/d" {
-		t.Errorf("deeply nested owner = %q, want a/b/c/d", owner)
-	}
-	if name != "project" {
-		t.Errorf("name = %q", name)
-	}
-}
-
-func TestParseOwnerName_WithDotGit(t *testing.T) {
-	owner, name := parseOwnerName("https://github.com/org/repo.git")
-	if owner != "org" {
-		t.Errorf("owner = %q", owner)
-	}
-	if name != "repo" {
-		t.Errorf("name with .git = %q, want repo", name)
-	}
-}
-
-func TestParseOwnerName_TrailingSlash(t *testing.T) {
-	owner, name := parseOwnerName("https://github.com/org/repo/")
-	if owner != "org" || name != "repo" {
-		t.Errorf("trailing slash: owner=%q name=%q", owner, name)
-	}
-}
-
-func TestParseOwnerName_HostOnly(t *testing.T) {
-	owner, name := parseOwnerName("github.com")
-	if owner != "" || name != "" {
-		t.Errorf("host only: owner=%q name=%q", owner, name)
-	}
-}
-
-func TestParseOwnerName_HostAndOwnerOnly(t *testing.T) {
-	// Only 2 path segments — not enough for owner + name.
-	owner, name := parseOwnerName("https://github.com/org")
-	if owner != "" || name != "" {
-		t.Errorf("host+owner only: owner=%q name=%q", owner, name)
-	}
-}
-
-func TestParseOwnerName_Empty(t *testing.T) {
-	owner, name := parseOwnerName("")
-	if owner != "" || name != "" {
-		t.Errorf("empty: owner=%q name=%q", owner, name)
-	}
-}
+// The parseOwnerName edge-case tests that used to live here moved to
+// internal/platform/repourl_any_test.go when the inline parser was
+// consolidated into platform.ParseAnyRepoURL (v0.25.32).
 
 // ============================================================
 // PrelimResult field combinations

@@ -82,5 +82,9 @@ jobs:
       # var still set. Any other AVELOXIS_TEST_DB-gated tests that
       # exist now or get added later will run here too, against the
       # same Postgres service container.
+      # -race here is deliberate (v0.25.36): test.yml runs -race but has
+      # no DB, so the worker pools / KeyPool / caches never executed under
+      # the race detector before this. This is the only tier where the
+      # goroutine-heavy paths actually run.
       - name: Run full suite with integration tier enabled
-        run: go test -count=1 ./...
+        run: go test -race -count=1 ./...

@@ -838,9 +838,7 @@ func parsePipfileVersions(content string) []libyearDep {
 			if strings.HasPrefix(versionRaw, "{") {
 				for _, kv := range strings.Split(versionRaw, ",") {
 					kv = strings.TrimSpace(kv)
-					if strings.HasPrefix(kv, "{") {
-						kv = strings.TrimPrefix(kv, "{")
-					}
+					kv = strings.TrimPrefix(kv, "{")
 					kv = strings.TrimSuffix(kv, "}")
 					kv = strings.TrimSpace(kv)
 					if strings.HasPrefix(kv, "version") {

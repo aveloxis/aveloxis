@@ -109,10 +109,6 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 // company name wins. Public email domains (gmail, yahoo, etc.) are excluded.
 func buildAffiliationMap(candidates []affiliationCandidate) map[string]string {
 	// Count domain→company occurrences.
-	type domainCompany struct {
-		company string
-		count   int
-	}
 	domainCounts := make(map[string]map[string]int) // domain -> company -> count
 
 	for _, c := range candidates {

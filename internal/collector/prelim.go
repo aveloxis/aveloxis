@@ -27,6 +27,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // PrelimResult describes what the prelim phase found.
@@ -118,13 +119,16 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 
 	// Update the repo struct so collection uses the new URL.
 	repo.GitURL = finalURL
-	// Re-parse owner/name from new URL if it changed.
-	newOwner, newName := parseOwnerName(finalURL)
-	if newOwner != "" {
-		repo.Owner = newOwner
-	}
-	if newName != "" {
-		repo.Name = newName
+	// Re-parse owner/name from the new URL (shared parser, v0.25.32).
+	// On parse failure the old owner/name are kept — same guard the
+	// deleted inline parseOwnerName provided via empty returns.
+	if ru, perr := platform.ParseAnyRepoURL(finalURL); perr == nil {
+		if ru.Owner != "" {
+			repo.Owner = ru.Owner
+		}
+		if ru.Repo != "" {
+			repo.Name = ru.Repo
+		}
 	}
 
 	return result, nil
@@ -195,18 +199,6 @@ func normalizeRepoURL(u string) string {
 	return strings.ToLower(u)
 }
 
-// parseOwnerName extracts owner and repo name from a URL like https://github.com/owner/repo.
-func parseOwnerName(u string) (owner, name string) {
-	u = strings.TrimPrefix(u, "https://")
-	u = strings.TrimPrefix(u, "http://")
-	u = strings.TrimSuffix(u, "/")
-	u = strings.TrimSuffix(u, ".git")
-	parts := strings.Split(u, "/")
-	if len(parts) < 3 {
-		return "", ""
-	}
-	// parts[0] = host, parts[1..n-1] = owner path, parts[n] = repo name
-	name = parts[len(parts)-1]
-	owner = strings.Join(parts[1:len(parts)-1], "/")
-	return owner, name
-}
+// The inline parseOwnerName helper that used to live here was
+// consolidated into platform.ParseAnyRepoURL (v0.25.32) — one shared
+// owner/name parser for prelim, the web store, and URL rewrites.

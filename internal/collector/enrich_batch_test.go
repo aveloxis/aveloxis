@@ -59,47 +59,16 @@ func TestEnrichThinContributorsAccumulatesBeforeFlush(t *testing.T) {
 	}
 }
 
-// TestCollectContributorsBatchesUpserts pins the same pattern in the
-// legacy non-staged collector path. collector.go:588 currently calls
-// UpsertContributor once per row inside the API iterator. Batching
-// here matters less than enrichment (the staged collector is the main
-// path) but still cuts per-repo write traffic by an order of magnitude
-// for repos with many contributors.
-func TestCollectContributorsBatchesUpserts(t *testing.T) {
-	src := mustReadCollectorSource(t)
-	idx := strings.Index(src, "func (c *Collector) collectContributors(")
-	if idx < 0 {
-		t.Fatal("could not locate collectContributors")
-	}
-	body := src[idx:]
-	if end := strings.Index(body[1:], "\nfunc "); end > 0 {
-		body = body[:end+1]
-	}
-
-	if !strings.Contains(body, "UpsertContributorBatch") {
-		t.Error("collectContributors must accumulate into a []model.Contributor and call " +
-			"UpsertContributorBatch once at the end, instead of UpsertContributor per row inside the iterator.")
-	}
-	if strings.Contains(body, "c.store.UpsertContributor(ctx, &contrib)") {
-		t.Error("collectContributors must NOT call UpsertContributor per row — that's the pre-Fix-4 hot path " +
-			"that this fix replaces with a single batch flush.")
-	}
-}
+// TestCollectContributorsBatchesUpserts was removed in v0.26.2: the
+// legacy Collector.collectContributors path no longer exists — the
+// one-shot collect delegates to the staged pipeline, whose processor
+// already batch-upserts contributors.
 
 func mustReadEnrichSource(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile("enrich.go")
 	if err != nil {
 		t.Fatalf("read enrich.go: %v", err)
-	}
-	return string(data)
-}
-
-func mustReadCollectorSource(t *testing.T) string {
-	t.Helper()
-	data, err := os.ReadFile("collector.go")
-	if err != nil {
-		t.Fatalf("read collector.go: %v", err)
 	}
 	return string(data)
 }

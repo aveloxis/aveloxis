@@ -59,6 +59,9 @@ func (s *Server) handleRepoContributors(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	since, until, ok := parseWindow(r)
 	if !ok {
 		http.Error(w, "since must be before until", http.StatusBadRequest)
@@ -72,7 +75,6 @@ func (s *Server) handleRepoContributors(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	setCORSIfLocalhost(r, w)
 	_ = json.NewEncoder(w).Encode(contribs)
 }
 
@@ -90,6 +92,9 @@ func (s *Server) handleRepoContributionsCoverage(w http.ResponseWriter, r *http.
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	since, until, ok := parseWindow(r)
 	if !ok {
 		http.Error(w, "since must be before until", http.StatusBadRequest)
@@ -103,7 +108,6 @@ func (s *Server) handleRepoContributionsCoverage(w http.ResponseWriter, r *http.
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	setCORSIfLocalhost(r, w)
 	_ = json.NewEncoder(w).Encode(cov)
 }
 
@@ -114,6 +118,9 @@ func (s *Server) handleRepoAffiliations(w http.ResponseWriter, r *http.Request) 
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	since, until, ok := parseWindow(r)
@@ -129,6 +136,5 @@ func (s *Server) handleRepoAffiliations(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	setCORSIfLocalhost(r, w)
 	_ = json.NewEncoder(w).Encode(counts)
 }

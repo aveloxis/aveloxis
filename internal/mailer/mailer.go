@@ -67,6 +67,22 @@ func New(cfg Config, logger *slog.Logger) *Mailer {
 	return &Mailer{cfg: cfg, logger: logger}
 }
 
+// sanitizeHeader strips CR/LF (and other ASCII control characters)
+// from a value destined for an SMTP header line. Header values built
+// with untrusted input (recipient addresses from the account-email
+// form, group names in approval subjects) could otherwise inject
+// arbitrary headers — CWE-93 / CodeQL go/email-injection.
+func sanitizeHeader(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", "")
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // Send dispatches a single email. Subject and body are plain text.
 // to should be a single RFC-5322 address; the bare local-part forms
 // like "alice" without an "@" will be rejected by Gmail's submission
@@ -106,9 +122,14 @@ func (m *Mailer) Send(to, subject, body string) error {
 
 	from := m.cfg.GmailUser
 	if m.cfg.FromName != "" {
-		from = fmt.Sprintf("%s <%s>", m.cfg.FromName, m.cfg.GmailUser)
+		from = fmt.Sprintf("%s <%s>", sanitizeHeader(m.cfg.FromName), m.cfg.GmailUser)
 	}
 
+	// Header values are interpolated into the RFC 5322 header block, so
+	// a CR/LF inside one would inject arbitrary headers (CWE-93 — e.g.
+	// a group named "x\r\nBcc: ..." reaching the Subject line via the
+	// approval email). Strip line breaks from every header value; the
+	// body sits after the blank line and needs no such treatment.
 	msg := []byte(fmt.Sprintf(
 		"From: %s\r\n"+
 			"To: %s\r\n"+
@@ -118,7 +139,8 @@ func (m *Mailer) Send(to, subject, body string) error {
 			"Content-Type: text/plain; charset=UTF-8\r\n"+
 			"\r\n"+
 			"%s\r\n",
-		from, to, subject, time.Now().Format(time.RFC1123Z), body))
+		from, sanitizeHeader(to), sanitizeHeader(subject),
+		time.Now().Format(time.RFC1123Z), body))
 
 	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{to}, msg); err != nil {
 		if m.logger != nil {

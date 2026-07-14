@@ -302,3 +302,55 @@ merging any PR labeled `schema-change`.
   migrations.
 - Architecture: `internal/db/rowcount_diff.go` is the row-count diff
   primitive. `cmd/aveloxis/data_test_cmd.go` is the orchestrator.
+
+## Column-fill diff (v0.26.1)
+
+The row-count diff catches missing rows; the column-fill diff catches
+missing VALUES. For every column of every base table (all three
+schemas), data-test compares how many rows carry a meaningful value —
+type-aware: non-empty for text, non-zero for numerics, non-NULL for
+everything else — between `aveloxis_released` and `aveloxis_new`.
+
+A column that was populated under the released binary and is completely
+unpopulated under the new one ("went dark") is a **FAIL** and fails the
+run: that's the shape of a dropped struct mapping, a renamed JSON tag,
+or a code path that no longer fills a field. Partial differences are
+**FLAG** — the two collections run against a live repository minutes
+apart, so small drift is normal; the report shows both counts for
+review. Known accepted drift under the GraphQL default:
+`issue_labels.platform_label_id` / `pull_request_labels.platform_label_id`
+(GitHub's GraphQL Label type exposes no databaseId) — expect these as
+FAIL/FLAG entries when comparing a REST-era tag against v0.26.0+ and
+treat them as explained. They are the ONLY expected dark columns as of
+v0.26.4, which closed the other four (pr_diff_url, meta_label,
+pr_cmt_node_id, issue_assignees.platform_node_id) — forward fixes for
+all four, plus one-shot SQL backfills for the two derivable ones
+(diff_url, meta_label). The two node_id columns backfill only via full
+re-collection, since incremental cycles are since-filtered and never
+revisit historical rows. Also expected when
+comparing REST-era tags: contributors/-identities slightly LOWER on
+the new side (deleted GitHub users — GraphQL reports a null author
+where REST preserves a stale login) `merge_commit_sha` lower
+(REST fabricates test-merge SHAs for unmerged PRs; GraphQL reports
+only real merges — verified: the GraphQL fill count exactly equals
+the merged-PR count), and `meta_label` slightly lower (REST kept
+label strings for DELETED forks on the PR object; GraphQL cannot
+reconstruct them — see docs/architecture/column-mapping.md).
+
+## Expected event-table asymmetry vs pre-0.26.2 tags
+
+`aveloxis collect` before v0.26.2 used a legacy direct-write path that
+NEVER stored issue/PR events (every row failed its parent FK and was
+dropped with a WARN). Since v0.26.2 the one-shot collect runs the same
+staged pipeline as `serve`, so events land correctly. When the
+`--released-tag` is 0.26.1 or older, expect `issue_events` and
+`pull_request_events` to appear as **FLAG** (new > released) in the
+row-count diff — that is the fix working, not drift. Subprocess log
+lines are tagged `[released]` / `[new]` so any WARN stream is
+attributable to a side.
+
+Additionally, released tags ≤ 0.26.2 lose PR events on quiet repos to
+an ETag self-aliasing bug (two paginations of the same GitHub events
+endpoint per cycle; the second got 304 and dropped the PR-event
+history). v0.26.3's single-pass feed fixes it, so `pull_request_events`
+FLAGging as new > released against those tags is likewise expected.

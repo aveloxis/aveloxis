@@ -49,8 +49,22 @@ const (
 // breaker trips (threshold consecutive 5xx-class errors), Run sets
 // this to time.Now().Add(breadthCircuitBreakerPause) and returns.
 // Future Run calls return early until the deadline passes.
+// breadthStore is the role interface for the store methods the breadth
+// worker actually uses (v0.25.38, tech-debt Action 2). Narrowing from
+// the 355-method *db.PostgresStore is what makes the circuit breaker
+// behaviorally testable with a fake — the pattern to follow for other
+// hot-path consumers (see also mailinglist_processor.go, distribution
+// worker).
+type breadthStore interface {
+	GetContributorsForBreadth(ctx context.Context, limit int, cooldown time.Duration) ([]db.BreadthContributor, error)
+	MarkBreadthAttempted(ctx context.Context, cntrbID string) error
+	RenameContributorGhLogin(ctx context.Context, cntrbID, newLogin string, ghUserID int64) error
+	GetNewestContributorRepoEvent(ctx context.Context, cntrbID string) (time.Time, error)
+	InsertContributorRepo(ctx context.Context, row *db.ContributorRepoRow) error
+}
+
 type BreadthWorker struct {
-	store            *db.PostgresStore
+	store            breadthStore
 	http             *platform.HTTPClient
 	logger           *slog.Logger
 	circuitOpenUntil time.Time
@@ -58,11 +72,51 @@ type BreadthWorker struct {
 
 // NewBreadthWorker creates a breadth worker using the GitHub API.
 func NewBreadthWorker(store *db.PostgresStore, keys *platform.KeyPool, logger *slog.Logger) *BreadthWorker {
+	return NewBreadthWorkerWithHTTP(store,
+		platform.NewHTTPClient("https://api.github.com", keys, logger, platform.AuthGitHub), logger)
+}
+
+// NewBreadthWorkerWithHTTP builds a breadth worker around an arbitrary
+// HTTP client and store implementation — the injectable form behavioral
+// tests use (httptest server + fake store).
+func NewBreadthWorkerWithHTTP(store breadthStore, http *platform.HTTPClient, logger *slog.Logger) *BreadthWorker {
 	return &BreadthWorker{
 		store:  store,
-		http:   platform.NewHTTPClient("https://api.github.com", keys, logger, platform.AuthGitHub),
+		http:   http,
 		logger: logger,
 	}
+}
+
+// noteContributorOutcome advances or resets the consecutive-transient
+// counter for one contributor's fetch outcome and trips the breaker at
+// the threshold (setting circuitOpenUntil). Returns true when THIS
+// outcome tripped it.
+//
+// Extracted as a seam for behavioral testing (v0.25.38): a transient
+// 5xx exhausts the HTTP client's full retry backoff inside a single
+// Get call, so driving a real 20-failure storm through httptest takes
+// hours — the trip/reset/deadline logic is tested directly instead.
+// Per-user 404s and other non-transient errors leave the counter alone:
+// they're legitimate per-contributor problems, not an incident signal.
+func (bw *BreadthWorker) noteContributorOutcome(err error, consecutive *int, login string) bool {
+	if err != nil && platform.ClassifyError(err) == platform.ClassTransient {
+		*consecutive++
+		if *consecutive >= breadthCircuitBreakerThreshold {
+			bw.circuitOpenUntil = time.Now().Add(breadthCircuitBreakerPause)
+			bw.logger.Warn("GitHub events endpoint appears unhealthy — pausing breadth worker",
+				"consecutive_5xx", *consecutive,
+				"threshold", breadthCircuitBreakerThreshold,
+				"pause", breadthCircuitBreakerPause,
+				"open_until", bw.circuitOpenUntil,
+				"login", login,
+				"last_error", err)
+			return true
+		}
+	} else if err == nil {
+		// Reset the consecutive counter on any success.
+		*consecutive = 0
+	}
+	return false
 }
 
 // BreadthResult tracks statistics for a breadth run.
@@ -137,26 +191,9 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 		// contributor, we want them to re-enter the queue on the
 		// next cycle once GitHub recovers — stamping would push
 		// them back behind the cooldown window unnecessarily.
-		if err != nil && platform.ClassifyError(err) == platform.ClassTransient {
-			consecutive5xxFailures++
-			if consecutive5xxFailures >= breadthCircuitBreakerThreshold {
-				bw.circuitOpenUntil = time.Now().Add(breadthCircuitBreakerPause)
-				bw.logger.Warn("GitHub events endpoint appears unhealthy — pausing breadth worker",
-					"consecutive_5xx", consecutive5xxFailures,
-					"threshold", breadthCircuitBreakerThreshold,
-					"pause", breadthCircuitBreakerPause,
-					"open_until", bw.circuitOpenUntil,
-					"login", c.Login,
-					"last_error", err)
-				result.CircuitBreakerTripped = true
-				return result, nil
-			}
-		} else if err == nil {
-			// Reset the consecutive counter on any success. Per-user
-			// 404s and other non-transient errors leave the counter
-			// alone — they're legitimate per-contributor problems, not
-			// a GitHub-wide incident signal.
-			consecutive5xxFailures = 0
+		if bw.noteContributorOutcome(err, &consecutive5xxFailures, c.Login) {
+			result.CircuitBreakerTripped = true
+			return result, nil
 		}
 
 		// Stamp the attempt timestamp AFTER the circuit-breaker

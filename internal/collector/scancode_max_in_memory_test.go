@@ -77,8 +77,10 @@ func TestSchedulerConfigHasScancodeMaxInMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(srcBytes)
-	if !strings.Contains(src, "ScancodeMaxInMemory") {
-		t.Error("scheduler.Config must declare ScancodeMaxInMemory so the value flows from main.go through to NewScancodeWorker")
+	// v0.25.37: the mirror field is gone — the scheduler reads
+	// cfg.Collection.ScancodeMaxInMemoryOrDefault() at the spawn site.
+	if !strings.Contains(src, "ScancodeMaxInMemoryOrDefault()") {
+		t.Error("the scancode spawn must read s.cfg.Collection.ScancodeMaxInMemoryOrDefault()")
 	}
 }
 
@@ -88,10 +90,9 @@ func TestMainWiresScancodeMaxInMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(srcBytes)
-	if !strings.Contains(src, "ScancodeMaxInMemory:") {
-		t.Error("cmd/aveloxis/main.go must populate scheduler.Config.ScancodeMaxInMemory from cfg.Collection.ScancodeMaxInMemoryOrDefault()")
-	}
-	if !strings.Contains(src, "ScancodeMaxInMemoryOrDefault()") {
-		t.Error("cmd/aveloxis/main.go must call cfg.Collection.ScancodeMaxInMemoryOrDefault() — the accessor handles the legacy-config zero-value fallback")
+	// v0.25.37: main.go hands the whole collection block to the
+	// scheduler; the accessor is consumed at the spawn site instead.
+	if !strings.Contains(src, "Collection: &cfg.Collection") {
+		t.Error("cmd/aveloxis/main.go must pass Collection: &cfg.Collection into scheduler.Config")
 	}
 }

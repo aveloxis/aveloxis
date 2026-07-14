@@ -29,8 +29,8 @@
     "force_full": false,
     "matview_rebuild_day": "saturday",
     "matview_rebuild_on_startup": false,
-    "pr_child_mode": "rest",
-    "listing_mode": "rest",
+    "pr_child_mode": "graphql",
+    "listing_mode": "graphql",
     "threading_mode": "single",
     "shard_size": 3000,
     "issue_child_mode": "graphql",
@@ -45,7 +45,7 @@
     "scancode_start_interval_s": 90,
     "scancode_cadence_days": 180,
     "scancode_clone_dir": "/tmp/aveloxis-scancode",
-    "scancode_shutdown_grace_minutes": 30,
+    "scancode_shutdown_grace_minutes": 0,
     "scancode_run_timeout_hours": 2,
     "scancode_run_timeout_cap_hours": 24,
     "scancode_max_in_memory": 5000,
@@ -82,5 +82,20 @@
   "monitor": {
     "refresh_seconds": 60
   },
-  "log_level": "info"
+  "log_level": "info",
+  "api": {
+    "rate_limit_rps": 1,
+    "rate_limit_burst": 10,
+    "rate_limit_daily": 1000,
+    "exempt_cidrs": [
+      "127.0.0.0/8",
+      "::1/128",
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16"
+    ],
+    "cors_origins": [],
+    "trusted_proxy": "",
+    "require_auth": false
+  }
 }

@@ -357,9 +357,48 @@ Response (note: keys are PascalCase — the rollup struct carries no JSON tags):
 | `SenderTotal` / `SenderResolved` | mailing-list message bodies / those whose sender resolved to a contributor (improves over time via the hourly backfill) |
 | `ByClass` | per-`msg_class` message counts |
 
+## Scancode results
+
+Per-file license and copyright data gathered by the decoupled scancode
+worker (v0.21.0+).
+
+- `GET /api/v1/repos/{repoID}/scancode-licenses` — aggregated license
+  breakdown from per-file scan results, plus `last_run` and
+  `scancode_version` freshness metadata.
+- `GET /api/v1/repos/{repoID}/scancode-files` — per-file rows (path,
+  detected license expression, copyright holders) backing the repo detail
+  page's sortable table.
+
+## Augur-compatible metric endpoints
+
+For 8Knot and other Augur API consumers, the server also exposes the
+Augur swagger-spec metric routes. They use Augur's parameter conventions
+(`begin_date`, `end_date`, `period`) rather than the native `since`/`until`.
+
+Catalog routes: `/api/v1/repo-groups`, `/api/v1/repos`,
+`/api/v1/repos/{repoID}`, `/api/v1/repo-groups/{groupID}/repos`,
+`/api/v1/owner/{owner}/repo/{repo}`, `/api/v1/rg-name/{rgName}`,
+`/api/v1/rg-name/{rgName}/repo-name/{repoName}`.
+
+Per-repo metrics (all under `/api/v1/repos/{repoID}/`):
+
+| Category | Endpoints |
+|---|---|
+| Issues | `issues-new`, `issues-closed`, `issues-active`, `issue-backlog`, `issue-throughput`, `issue-duration`, `average-issue-resolution-time`, `abandoned-issues`, `open-issues-count`, `closed-issues-count` |
+| Pull requests | `pull-requests-new`, `reviews`, `reviews-accepted`, `reviews-declined`, `review-duration` |
+| Commits | `committers`, `code-changes`, `code-changes-lines` |
+| Contributors | `contributors`, `contributors-new` |
+| Popularity | `stars`, `stars-count`, `forks`, `fork-count`, `watchers`, `watchers-count` |
+| Code / deps | `languages`, `project-languages`, `project-files`, `project-lines`, `deps`, `libyear` |
+| Other | `repo-messages`, `releases` |
+
 ## CORS
 
-All API endpoints return `Access-Control-Allow-Origin: *` to allow cross-origin requests from the web GUI (which runs on a different port).
+CORS is handled by a single middleware (v0.27.1). With `api.cors_origins`
+unset the API returns `Access-Control-Allow-Origin: *` (compatible with the
+web GUI's cross-port fetches); once configured it becomes a strict
+allowlist — set it in production deployments, listing the aveloxis-gui
+origin (and the web GUI origin if its pages fetch the API cross-port).
 
 ## Deployment
 
@@ -373,3 +412,76 @@ The API server is stateless — it reads directly from PostgreSQL. You can run m
 ```
 
 The web GUI's Chart.js visualizations fetch data from the API server. The API URL is configured as `http://localhost:8383` by default. If running on a different host or port, update the API base URL in the web templates.
+
+## Comparison analytics (v0.27.2)
+
+See `docs/guide/metrics.md` for the metric definitions ("Improvements
+on CHAOSS metrics"). Entities: `repo:<id>` or `org:<host>/<login>`
+(≤7 per request; an org is the union of its tracked repos, capped at
+500). All entities are validated against the caller's §2b scope;
+out-of-scope entities return a structured 403.
+
+- `GET /api/v1/metrics` — the metric catalog (docs-as-data; drives
+  the GUI's popovers and reference page).
+- `GET /api/v1/compare?entities=repo:1,org:github.com/chaoss&metric=contributors&since=2023-07-01&until=2026-07-01&bucket=week`
+  — temporal metrics; window defaults to the trailing 3 years; bucket
+  week (default) or month; buckets are densified (aligned x-axes).
+  Responses are cached 60s per (user, query).
+- `GET /api/v1/compare/snapshot?entities=...&metric=labor_investment`
+  — snapshot metrics (labor_investment, upstream_dependencies,
+  license_coverage) with per-entity value + as_of + detail.
+- `GET /api/v1/entities/search?q=augur` — picker results in three
+  classes: `in_scope` (chartable now), `collected` (one click to add),
+  `uncollected` (submit a collection request).
+
+## Portal and admin endpoints (v0.27.3)
+
+These back the aveloxis-gui portal pages (group / monitor /
+pending-groups / users). Unlike the read endpoints above — which are
+gated by `api.require_auth` during rollout — **every endpoint here
+requires a valid `Authorization: Bearer` token unconditionally**,
+even from exempt-LAN addresses and while `require_auth` is off. They
+carry user context (whose groups? who approves?) that cannot exist
+without an identity. The `/api/v1/admin/*` routes additionally
+require the caller's user to be an administrator (403 otherwise).
+
+Per-user:
+
+- `GET /api/v1/me` — `{user_id, is_admin, scope_repo_count}`.
+  `scope_repo_count` is `-1` for admins (unscoped). The GUI uses
+  `is_admin` to decide whether to render the admin navigation.
+- `GET /api/v1/groups` — the caller's groups:
+  `{groups: [{group_id, name, status, repo_count, favorited}]}`.
+  `status` is `approved`, `pending`, or `rejected` (empty legacy
+  values normalize to `approved`).
+- `POST /api/v1/groups` with `{"name": "..."}` — create a group.
+  Non-admin users' groups start `pending` per the v0.19.0 approval
+  workflow. Returns `{group_id}`.
+- `GET /api/v1/groups/{groupID}/repos` — the group's repos:
+  `{repos: [{repo_id, owner, name, git_url}]}`. Non-admins may only
+  read their own groups (403 otherwise).
+- `POST /api/v1/groups/{groupID}/repos` with
+  `{"url": "https://github.com/owner/repo", "kind": "repo"}` (or
+  `"kind": "org"` with an org URL) — add a repo or track an org.
+  This is the "request access / request collection" affordance the
+  compare picker's three-class results point at: already-collected
+  repos link instantly; new repos in a pending group wait for admin
+  approval before collection starts.
+
+Admin-only:
+
+- `GET /api/v1/admin/users` —
+  `{users: [{user_id, login, email, provider, is_admin, created_at}]}`.
+- `POST /api/v1/admin/users/{userID}/admin` with
+  `{"admin": true|false}` — promote/demote. Self-demotion is refused
+  (last-admin guard).
+- `GET /api/v1/admin/groups/pending` — pending groups awaiting
+  approval, with requester login/email and repo/org counts.
+- `POST /api/v1/admin/groups/{groupID}/approve` (or `/reject`) —
+  decide a pending group. Approval bulk-enqueues the group's repos
+  for collection (same machinery as the server-rendered admin UI).
+- `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`.
+- `GET /api/v1/admin/monitor/queue?page=1&q=augur` — the collection
+  queue, 100 rows per page, optional search. Each job carries the
+  repo label (`owner/name`), status, priority, due_at,
+  last_collected, last_error, and gathered issue/PR/commit counts.

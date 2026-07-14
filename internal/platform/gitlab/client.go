@@ -163,6 +163,7 @@ func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, iss
 		for _, a := range raw.Assignees {
 			if !yield(model.IssueAssignee{
 				PlatformSrcID: a.ID,
+				UserRef:       glUserToRef(a),
 			}, nil) {
 				return
 			}
@@ -256,6 +257,7 @@ func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumb
 		for _, a := range raw.Assignees {
 			if !yield(model.PullRequestAssignee{
 				PlatformSrcID: a.ID,
+				UserRef:       glUserToRef(a),
 			}, nil) {
 				return
 			}
@@ -276,6 +278,7 @@ func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumb
 		for _, r := range raw.Reviewers {
 			if !yield(model.PullRequestReviewer{
 				PlatformSrcID: r.ID,
+				UserRef:       glUserToRef(r),
 			}, nil) {
 				return
 			}
@@ -423,6 +426,36 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 }
 
 // --- EventCollector ---
+
+// ListRepoEvents composes the two per-target-type endpoint iterations
+// into the unified feed the platform.Client interface requires. Unlike
+// GitHub, GitLab uses DISTINCT URLs per kind (?target_type=issue vs
+// merge_request), so there is no ETag aliasing here and two fetches
+// are correct.
+func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.RepoEvent, error] {
+	return func(yield func(platform.RepoEvent, error) bool) {
+		for ev, err := range c.ListIssueEvents(ctx, owner, repo, since) {
+			if err != nil {
+				yield(platform.RepoEvent{}, err)
+				return
+			}
+			e := ev
+			if !yield(platform.RepoEvent{Issue: &e}, nil) {
+				return
+			}
+		}
+		for ev, err := range c.ListPREvents(ctx, owner, repo, since) {
+			if err != nil {
+				yield(platform.RepoEvent{}, err)
+				return
+			}
+			e := ev
+			if !yield(platform.RepoEvent{PR: &e}, nil) {
+				return
+			}
+		}
+	}
+}
 
 func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.IssueEvent, error] {
 	pp := projectPath(owner, repo)
@@ -1001,6 +1034,7 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	}
 
 	return &model.RepoInfo{
+		FullName:          raw.PathWithNamespace,
 		LastUpdated:       raw.LastActivityAt,
 		IssuesEnabled:     raw.IssuesEnabled,
 		PRsEnabled:        raw.MergeRequestsEnabled,

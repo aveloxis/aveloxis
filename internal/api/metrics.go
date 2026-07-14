@@ -133,8 +133,10 @@ func parsePeriod(r *http.Request) string {
 }
 
 func jsonResponse(w http.ResponseWriter, data interface{}) {
+	// CORS is handled centrally by the v0.27.x middleware chain
+	// (ratelimit.go cors) — per-handler headers here would bypass the
+	// cors_origins allowlist.
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(data)
 }
 
@@ -164,6 +166,9 @@ func (s *Server) handleRepoByID(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	repo, err := s.store.GetRepoByID(r.Context(), repoID)
@@ -242,6 +247,9 @@ func (s *Server) handleIssuesNew(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	begin, end := parseDateRange(r)
 	period := parsePeriod(r)
 	data, err := s.store.IssuesNew(r.Context(), repoID, period, begin, end)
@@ -256,6 +264,9 @@ func (s *Server) handleIssuesClosed(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	begin, end := parseDateRange(r)
@@ -274,6 +285,9 @@ func (s *Server) handleIssuesActive(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	begin, end := parseDateRange(r)
 	period := parsePeriod(r)
 	data, err := s.store.IssuesActive(r.Context(), repoID, period, begin, end)
@@ -290,6 +304,9 @@ func (s *Server) handleIssueBacklog(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	count, err := s.store.IssueBacklog(r.Context(), repoID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -304,6 +321,9 @@ func (s *Server) handleIssueThroughput(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	throughput, err := s.store.IssueThroughput(r.Context(), repoID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -316,6 +336,9 @@ func (s *Server) handleIssueDuration(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	begin, end := parseDateRange(r)
@@ -333,6 +356,9 @@ func (s *Server) handleAvgIssueResolution(w http.ResponseWriter, r *http.Request
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	avg, err := s.store.AverageIssueResolutionTime(r.Context(), repoID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -345,6 +371,9 @@ func (s *Server) handleAbandonedIssues(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	data, err := s.store.AbandonedIssues(r.Context(), repoID)
@@ -361,6 +390,9 @@ func (s *Server) handleOpenIssuesCount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	count, err := s.store.IssueBacklog(r.Context(), repoID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -373,6 +405,9 @@ func (s *Server) handleClosedIssuesCount(w http.ResponseWriter, r *http.Request)
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	var count int
@@ -391,6 +426,9 @@ func (s *Server) handlePRsNew(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	begin, end := parseDateRange(r)
@@ -414,6 +452,9 @@ func (s *Server) handleReviewsAccepted(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	begin, end := parseDateRange(r)
 	period := parsePeriod(r)
 	data, err := s.store.ReviewsAccepted(r.Context(), repoID, period, begin, end)
@@ -430,6 +471,9 @@ func (s *Server) handleReviewsDeclined(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	begin, end := parseDateRange(r)
 	period := parsePeriod(r)
 	data, err := s.store.ReviewsDeclined(r.Context(), repoID, period, begin, end)
@@ -444,6 +488,9 @@ func (s *Server) handleReviewDuration(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	begin, end := parseDateRange(r)
@@ -465,6 +512,9 @@ func (s *Server) handleCommitters(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	begin, end := parseDateRange(r)
 	period := parsePeriod(r)
 	data, err := s.store.Committers(r.Context(), repoID, period, begin, end)
@@ -481,6 +531,9 @@ func (s *Server) handleCodeChanges(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	begin, end := parseDateRange(r)
 	period := parsePeriod(r)
 	data, err := s.store.CodeChanges(r.Context(), repoID, period, begin, end)
@@ -495,6 +548,9 @@ func (s *Server) handleCodeChangesLines(w http.ResponseWriter, r *http.Request) 
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	begin, end := parseDateRange(r)
@@ -517,6 +573,9 @@ func (s *Server) handleContributors(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	begin, end := parseDateRange(r)
 	data, err := s.store.Contributors(r.Context(), repoID, begin, end)
 	if err != nil {
@@ -530,6 +589,9 @@ func (s *Server) handleContributorsNew(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	begin, end := parseDateRange(r)
@@ -552,6 +614,9 @@ func (s *Server) handleStars(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	data, err := s.store.StarsTimeSeries(r.Context(), repoID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -564,6 +629,9 @@ func (s *Server) handleStarsCount(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	count, name, err := s.store.LatestCount(r.Context(), repoID, "stars_count")
@@ -580,6 +648,9 @@ func (s *Server) handleForks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	data, err := s.store.ForksTimeSeries(r.Context(), repoID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -594,6 +665,9 @@ func (s *Server) handleForkCount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	count, name, err := s.store.LatestCount(r.Context(), repoID, "fork_count")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -606,6 +680,9 @@ func (s *Server) handleWatchers(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	// Watchers time series — same pattern as stars/forks but with watchers_count.
@@ -638,6 +715,9 @@ func (s *Server) handleWatchersCount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	count, name, err := s.store.LatestCount(r.Context(), repoID, "watchers_count")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -650,6 +730,9 @@ func (s *Server) handleLanguages(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	lang, err := s.store.Languages(r.Context(), repoID)
@@ -670,6 +753,9 @@ func (s *Server) handleDeps(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	data, err := s.store.Deps(r.Context(), repoID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -686,6 +772,9 @@ func (s *Server) handleRepoMessages(w http.ResponseWriter, r *http.Request) {
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	begin, end := parseDateRange(r)
@@ -708,6 +797,9 @@ func (s *Server) handleReleases(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
 	data, err := s.store.Releases(r.Context(), repoID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -724,6 +816,9 @@ func (s *Server) handleProjectLanguages(w http.ResponseWriter, r *http.Request) 
 	repoID, err := parseRepoID(r)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
 	data, err := s.store.ProjectLanguages(r.Context(), repoID)

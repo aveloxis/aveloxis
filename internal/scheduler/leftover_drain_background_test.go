@@ -50,7 +50,7 @@ func TestLeftoverStagingRunsInBackground(t *testing.T) {
 			"Wrap the call in a `go ` goroutine after lock-parking the drain set.")
 	}
 
-	hasGoroutine := strings.Contains(body, "go s.processLeftoverStagingBackground(") ||
+	hasGoroutine := strings.Contains(body, `"leftover-staging-drain", func() { s.processLeftoverStagingBackground(`) ||
 		strings.Contains(body, "go func()") &&
 			strings.Contains(body, "processLeftoverStaging(")
 	if !hasGoroutine {
@@ -79,7 +79,7 @@ func TestDrainLockParkComesBeforeBackgroundLaunch(t *testing.T) {
 			"will wipe in-flight staging rows.")
 		return
 	}
-	goIdx := strings.Index(body, "go s.processLeftoverStagingBackground")
+	goIdx := strings.Index(body, `"leftover-staging-drain", func() { s.processLeftoverStagingBackground`)
 	if goIdx < 0 {
 		// Fallback: any `go ` pointing at the drain.
 		goIdx = strings.Index(body, "go func()")

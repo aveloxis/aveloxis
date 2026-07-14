@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
+	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 )
@@ -90,8 +91,8 @@ func TestConfigDefaults(t *testing.T) {
 	if s.cfg.PollInterval != 10*time.Second {
 		t.Errorf("PollInterval = %v, want 10s", s.cfg.PollInterval)
 	}
-	if s.cfg.RecollectAfter != 24*time.Hour {
-		t.Errorf("RecollectAfter = %v, want 24h", s.cfg.RecollectAfter)
+	if s.cfg.Collection.RecollectAfterDuration() != 24*time.Hour {
+		t.Errorf("RecollectAfterDuration = %v, want 24h", s.cfg.Collection.RecollectAfterDuration())
 	}
 	if s.cfg.StaleLockTimeout != 1*time.Hour {
 		t.Errorf("StaleLockTimeout = %v, want 1h", s.cfg.StaleLockTimeout)
@@ -105,9 +106,9 @@ func TestConfigCustomValues(t *testing.T) {
 	cfg := Config{
 		Workers:            8,
 		PollInterval:       30 * time.Second,
-		RecollectAfter:     48 * time.Hour,
 		StaleLockTimeout:   2 * time.Hour,
 		OrgRefreshInterval: 12 * time.Hour,
+		Collection:         &config.CollectionConfig{DaysUntilRecollect: 2},
 	}
 	s := New(nil, nil, nil, slog.New(slog.NewTextHandler(os.Stderr, nil)), cfg)
 
@@ -117,8 +118,8 @@ func TestConfigCustomValues(t *testing.T) {
 	if s.cfg.PollInterval != 30*time.Second {
 		t.Errorf("PollInterval = %v, want 30s", s.cfg.PollInterval)
 	}
-	if s.cfg.RecollectAfter != 48*time.Hour {
-		t.Errorf("RecollectAfter = %v, want 48h", s.cfg.RecollectAfter)
+	if s.cfg.Collection.RecollectAfterDuration() != 48*time.Hour {
+		t.Errorf("RecollectAfterDuration = %v, want 48h", s.cfg.Collection.RecollectAfterDuration())
 	}
 }
 
@@ -164,7 +165,7 @@ func TestSelectClient(t *testing.T) {
 
 func TestDetermineSince(t *testing.T) {
 	s := New(nil, nil, nil, slog.New(slog.NewTextHandler(os.Stderr, nil)), Config{
-		RecollectAfter: 24 * time.Hour,
+		Collection: &config.CollectionConfig{DaysUntilRecollect: 1},
 	})
 
 	// First-time repo: LastCollected is nil -> zero time (full collection).
@@ -294,12 +295,28 @@ func TestBuildOutcome_ZeroData(t *testing.T) {
 func TestBuildOutcome_NilResult(t *testing.T) {
 	s := New(nil, nil, nil, slog.New(slog.NewTextHandler(os.Stderr, nil)), Config{})
 
-	// Nil result with no error should be success (can happen if collection
-	// short-circuits but no error was set).
+	// v0.25.38 contract change: nil result + nil facadeResult is a
+	// GIT-ONLY repo whose facade errored (runFacadeAndAnalysis
+	// normalizes an errored facade to nil). That combination used to
+	// report SUCCESS with no last_error — the silent-failure gap the
+	// runJob lifecycle test exposed (facade was cloning
+	// https://unknown/... for every generic-git repo and nothing
+	// noticed).
 	out := s.buildOutcome(nil, nil, nil, nil, nil)
+	if out.success {
+		t.Error("nil result + nil facadeResult must be a FAILURE — a git-only repo " +
+			"whose facade errored has produced nothing, and success here hides it")
+	}
+	if out.errMsg == "" {
+		t.Error("the git-only facade failure must carry an errMsg for last_error")
+	}
 
-	if !out.success {
-		t.Error("expected success=true for nil result with no error")
+	// A git-only repo whose facade SUCCEEDED (even with zero commits —
+	// legitimately empty repo) stays success.
+	okOut := s.buildOutcome(nil, &collector.FacadeResult{}, nil, nil, nil)
+	if !okOut.success {
+		t.Error("nil result with a non-nil (empty) facadeResult is a legitimately " +
+			"empty git-only repo and must stay success")
 	}
 }
 

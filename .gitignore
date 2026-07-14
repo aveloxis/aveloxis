@@ -1,3 +1,4 @@
+*.err
 syslog
 *.json
 *code-workspace

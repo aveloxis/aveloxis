@@ -1300,6 +1300,17 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
     first_detected_at TIMESTAMPTZ DEFAULT NOW(),
     last_seen_at      TIMESTAMPTZ DEFAULT NOW(),
     resolved_at       TIMESTAMPTZ,
+    -- v0.27.11 version-resolution accuracy: the raw requirement string
+    -- from the manifest ("apache-airflow>=3.0.0") and how the scanned
+    -- version was chosen: 'locked' (a lockfile resolved it, or go.mod
+    -- exact-by-construction), 'exact' (==X or bare version),
+    -- 'bounded-range' (~=, ^, ~, or a compound with an upper bound —
+    -- floor scanned), 'range-floor' (lower bound only — floor scanned),
+    -- 'unpinned' (no version). '' = pre-v0.27.11 row; heals on the
+    -- repo's next scan. Always refreshed on upsert (NOT prefer-nonempty:
+    -- the classification must track the current manifest).
+    declared_requirement TEXT DEFAULT '',
+    version_resolution   TEXT DEFAULT '',
     data_collection_date TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (repo_id, vuln_id, package_purl)
 );
@@ -1325,6 +1336,70 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_sbom_scans (
     sbom_version     TEXT DEFAULT '',
     created_at       TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- ============================================================
+-- Lockfile inventory + direct-dep resolutions (v0.27.11)
+-- ============================================================
+-- When a repo commits a lockfile, the resolved version of each direct
+-- dependency is KNOWN — the vulnerability scan uses that version
+-- instead of the manifest range's floor, and the API surfaces
+-- repo-level "lockfile certainty". Both tables are snapshot-replaced
+-- per analysis run (delete + insert in one transaction — no history
+-- table by design: lockfile state is derivable from git history and
+-- has no analytical time-series consumer).
+--
+-- requirements.txt is NEVER treated as a lockfile (operator ruling
+-- 2026-07-15: "it usually includes all the same ambiguities and is
+-- often their source") — its ==pins classify per-finding as 'exact'
+-- but never contribute rows here.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfiles (
+    lockfile_id      BIGSERIAL PRIMARY KEY,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id)
+                       ON UPDATE CASCADE ON DELETE RESTRICT
+                       DEFERRABLE INITIALLY DEFERRED,
+    ecosystem        TEXT NOT NULL,
+    lockfile_path    TEXT NOT NULL,
+    lockfile_kind    TEXT NOT NULL,
+    -- Phase-C sizing data: entry_count is EVERY package the lockfile
+    -- resolves (transitives included, even though only direct-matched
+    -- entries are stored below); direct_count is the entries the
+    -- format flags as direct when it distinguishes, else the count of
+    -- entries matched to the repo's declared direct dependencies.
+    entry_count      INTEGER DEFAULT 0,
+    direct_count     INTEGER DEFAULT 0,
+    tool_source      TEXT DEFAULT 'aveloxis',
+    tool_version     TEXT DEFAULT '',
+    data_source      TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, lockfile_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_lockfiles_repo_id
+    ON aveloxis_data.repo_lockfiles (repo_id);
+
+-- Only entries matching the repo's DIRECT declared dependencies (the
+-- repo_deps_libyear rows) are stored — bounding storage; full
+-- transitive storage is the deferred Phase C. A package resolving to
+-- DIFFERENT versions in different lockfiles is legitimate (two apps in
+-- one monorepo) — all distinct (package, version) pairs are kept.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfile_packages (
+    lockfile_pkg_id  BIGSERIAL PRIMARY KEY,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id)
+                       ON UPDATE CASCADE ON DELETE RESTRICT
+                       DEFERRABLE INITIALLY DEFERRED,
+    ecosystem        TEXT NOT NULL,
+    package_name     TEXT NOT NULL,
+    resolved_version TEXT NOT NULL,
+    lockfile_path    TEXT NOT NULL,
+    tool_source      TEXT DEFAULT 'aveloxis',
+    tool_version     TEXT DEFAULT '',
+    data_source      TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, lockfile_path, package_name, resolved_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_lockfile_packages_repo_id
+    ON aveloxis_data.repo_lockfile_packages (repo_id);
 
 -- ============================================================
 -- Libraries

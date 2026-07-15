@@ -234,6 +234,26 @@ func v0251Connect(t *testing.T) (*PostgresStore, context.Context) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	// Consumers of this helper seed repos with a hardcoded
+	// repo_group_id = 1. On a POPULATED scratch DB group 1 has always
+	// existed; on a truly FRESH database (the CI / fresh-DB-gate tier,
+	// v0.27.9 lesson) it only exists if some earlier test happened to
+	// trigger UpsertRepo's lazy default-group creation — a cross-test
+	// (and cross-PACKAGE, under go test's parallel package execution)
+	// ordering race observed 2026-07-15. Seed it deterministically,
+	// and advance the sequence so a later lazy INSERT (which takes
+	// nextval) can't collide with the explicit id.
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.repo_groups (repo_group_id, rg_name)
+		VALUES (1, 'fresh-db-test-default')
+		ON CONFLICT (repo_group_id) DO NOTHING`); err != nil {
+		t.Fatalf("ensure test repo group: %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+		SELECT setval(pg_get_serial_sequence('aveloxis_data.repo_groups','repo_group_id'),
+		              GREATEST((SELECT MAX(repo_group_id) FROM aveloxis_data.repo_groups), 1))`); err != nil {
+		t.Fatalf("advance repo_groups sequence: %v", err)
+	}
 	return store, ctx
 }
 

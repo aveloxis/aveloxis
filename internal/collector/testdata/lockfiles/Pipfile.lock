@@ -1,0 +1,36 @@
+{
+    "_meta": {
+        "hash": {
+            "sha256": "abc123"
+        },
+        "pipfile-spec": 6,
+        "requires": {
+            "python_version": "3.11"
+        },
+        "sources": [
+            {
+                "name": "pypi",
+                "url": "https://pypi.org/simple",
+                "verify_ssl": true
+            }
+        ]
+    },
+    "default": {
+        "flask": {
+            "hashes": ["sha256:abc"],
+            "index": "pypi",
+            "version": "==2.3.3"
+        },
+        "werkzeug": {
+            "hashes": ["sha256:def"],
+            "version": "==3.0.1"
+        }
+    },
+    "develop": {
+        "pytest": {
+            "hashes": ["sha256:ghi"],
+            "index": "pypi",
+            "version": "==7.4.4"
+        }
+    }
+}

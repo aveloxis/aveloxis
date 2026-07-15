@@ -56,11 +56,13 @@ func NewAnalysisCollector(store *db.PostgresStore, logger *slog.Logger, bareDir 
 
 // AnalysisResult tracks what was collected.
 type AnalysisResult struct {
-	Dependencies  int
-	LibyearDeps   int
-	LaborFiles    int
-	ScancodeFiles int // files with scancode findings (licenses, copyrights, packages)
-	Errors        []error
+	Dependencies     int
+	LibyearDeps      int
+	Lockfiles        int // v0.27.11: committed lockfiles inventoried
+	LockfilePackages int // v0.27.11: direct-dep resolutions stored
+	LaborFiles       int
+	ScancodeFiles    int // files with scancode findings (licenses, copyrights, packages)
+	Errors           []error
 
 	// ClonePath is the path to the temporary full clone. Only set when
 	// AnalysisCollector.RetainClone is true. The caller must clean it up
@@ -113,6 +115,14 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 		result.Errors = append(result.Errors, fmt.Errorf("libyear: %w", err))
 	}
 
+	// Phase 2b (v0.27.11): lockfile inventory + direct-dep
+	// resolutions. Must run AFTER Phase 2 — the storage filter matches
+	// lockfile entries against the repo_deps_libyear rows the libyear
+	// phase just refreshed. Best-effort like every other phase.
+	if err := ac.scanLockfiles(ctx, repoID, workDir, result); err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("lockfiles: %w", err))
+	}
+
 	// Phase 3: Code complexity via scc (if installed).
 	if err := ac.scanSCC(ctx, repoID, workDir, result); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("scc: %w", err))
@@ -141,6 +151,8 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 		"repo_id", repoID,
 		"dependencies", result.Dependencies,
 		"libyear_deps", result.LibyearDeps,
+		"lockfiles", result.Lockfiles,
+		"lockfile_packages", result.LockfilePackages,
 		"labor_files", result.LaborFiles,
 		"retain_clone", ac.RetainClone,
 		"errors", len(result.Errors))

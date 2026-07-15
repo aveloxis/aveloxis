@@ -3,6 +3,8 @@ scancode-logs-chaoss.tv/**
 *.err
 syslog
 *.json
+# ... but committed test fixtures named like real lockfiles must stay trackable
+!internal/collector/testdata/lockfiles/*.json
 *code-workspace
 db.config.json
 aveloxis.chaoss.tv.json

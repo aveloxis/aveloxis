@@ -1,0 +1,333 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+// Package db — lockfile_store.go persists the v0.27.11 lockfile
+// inventory (repo_lockfiles) and direct-dependency resolutions
+// (repo_lockfile_packages), and serves the vulnerability scan's
+// version-accuracy reads:
+//
+//   - GetRepoDepsForVulnScan — the scan's dependency source (name,
+//     floor version, purl, RAW requirement string). Deliberately a
+//     separate method from GetRepoLibyearDeps so the libyear/SBOM read
+//     path stays byte-identical (HARD RULE: libyear is untouched).
+//   - GetRepoSelfPackageNames — the "self-set" used to exclude a
+//     publisher monorepo's own packages from vuln purl generation.
+//   - GetRepoLockedVersions — lockfile-resolved versions consumed at
+//     purl construction (repo_lockfile_packages, so
+//     `aveloxis heal-vulnerabilities` — which scans WITHOUT a fresh
+//     analysis pass — benefits too).
+//   - GetRepoLockfileCertainty — the API's repo-level
+//     "lockfile certainty" summary, derived at read time.
+package db
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// VulnScanDep is one dependency as the vulnerability scan consumes it:
+// the libyear table's floor version + purl plus the RAW requirement
+// string the manifest declared ("apache-airflow>=3.0.0"), which drives
+// the v0.27.11 version_resolution classification.
+type VulnScanDep struct {
+	Name           string
+	CurrentVersion string
+	PackageManager string
+	Purl           string
+	Requirement    string
+}
+
+// GetRepoDepsForVulnScan returns the repo's dependencies with the raw
+// requirement string, for vulnerability purl construction. Reads
+// repo_deps_libyear (the same source the scan always used) but through
+// its own SELECT so GetRepoLibyearDeps — the libyear/SBOM contract —
+// is not modified.
+func (s *PostgresStore) GetRepoDepsForVulnScan(ctx context.Context, repoID int64) ([]VulnScanDep, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT name, current_version, package_manager,
+			COALESCE(purl, ''), COALESCE(requirement, '')
+		FROM aveloxis_data.repo_deps_libyear
+		WHERE repo_id = $1
+		ORDER BY name`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var deps []VulnScanDep
+	for rows.Next() {
+		var d VulnScanDep
+		if err := rows.Scan(&d.Name, &d.CurrentVersion, &d.PackageManager, &d.Purl, &d.Requirement); err != nil {
+			return nil, err
+		}
+		deps = append(deps, d)
+	}
+	return deps, rows.Err()
+}
+
+// GetRepoSelfPackageNames builds the repo's "self-set": lowercased
+// package names that ARE the repo's own published packages, so a
+// manifest declaring a supported range of them is a support-matrix
+// declaration, not exposure (the apache/airflow provider-manifest
+// case). Union of three signals:
+//
+//	(a) packages the repo PUBLISHES (repo_distribution),
+//	(b) packages the repo DECLARES in its own manifests
+//	    (repo_distribution_manifest.package_name_declared),
+//	(c) a name heuristic — always available even where distribution
+//	    tracking never ran: repo_name, repo_name with '_'→'-',
+//	    owner-name, owner-name with '_'→'-' (all lowercased).
+//
+// Exact matches only — NO prefix rules. The distribution tables cover
+// provider-style subpackages (apache-airflow-providers-*) where they
+// exist; a prefix rule would over-exclude forks and lookalikes.
+func (s *PostgresStore) GetRepoSelfPackageNames(ctx context.Context, repoID int64) (map[string]bool, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT LOWER(package_name) FROM aveloxis_data.repo_distribution
+		WHERE repo_id = $1 AND package_name <> ''
+		UNION
+		SELECT LOWER(package_name_declared) FROM aveloxis_data.repo_distribution_manifest
+		WHERE repo_id = $1 AND package_name_declared <> ''
+		UNION
+		SELECT unnest(ARRAY[
+			LOWER(r.repo_name),
+			LOWER(REPLACE(r.repo_name, '_', '-')),
+			LOWER(r.repo_owner || '-' || r.repo_name),
+			LOWER(REPLACE(r.repo_owner || '-' || r.repo_name, '_', '-'))
+		]) FROM aveloxis_data.repos r WHERE r.repo_id = $1`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out, rows.Err()
+}
+
+// RepoLockfileInfo is one inventory row for repo_lockfiles: a lockfile
+// the analysis walk found, with Phase-C sizing counters (EntryCount =
+// every package the lockfile resolves, transitives included;
+// DirectCount = direct entries when the format distinguishes them,
+// else the entries matched to declared direct deps).
+type RepoLockfileInfo struct {
+	Ecosystem    string // package-manager string: npm/pypi/cargo/…
+	LockfilePath string // repo-relative path
+	LockfileKind string // e.g. "package-lock.json", "poetry.lock"
+	EntryCount   int
+	DirectCount  int
+}
+
+// RepoLockfilePackage is one stored resolution: a lockfile-resolved
+// version of a package that matches one of the repo's DIRECT declared
+// dependencies.
+type RepoLockfilePackage struct {
+	Ecosystem       string
+	PackageName     string
+	ResolvedVersion string
+	LockfilePath    string
+}
+
+// ReplaceRepoLockfileSnapshot atomically replaces a repo's lockfile
+// inventory + direct-dep resolutions: DELETE both tables' rows for the
+// repo, then INSERT the fresh ones, all in ONE transaction (the
+// v0.27.7 ReplaceRepoLaborSnapshot shape). No history tables exist by
+// design — lockfile state is derivable from git history and has no
+// time-series consumer — so the rotation half is a plain DELETE; the
+// single transaction still guarantees a failed analysis pass can never
+// leave the tables empty or half-written (previous snapshot stays
+// current on rollback).
+//
+// An empty snapshot (no lockfiles found) still deletes: the tables are
+// a snapshot of the last successful analysis walk. Callers must NOT
+// invoke this when the walk itself failed.
+func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID int64,
+	inventory []*RepoLockfileInfo, packages []*RepoLockfilePackage) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM aveloxis_data.repo_lockfile_packages WHERE repo_id = $1`, repoID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM aveloxis_data.repo_lockfiles WHERE repo_id = $1`, repoID); err != nil {
+			return err
+		}
+
+		batch := &pgx.Batch{}
+		for _, inv := range inventory {
+			batch.Queue(`
+				INSERT INTO aveloxis_data.repo_lockfiles
+					(repo_id, ecosystem, lockfile_path, lockfile_kind,
+					 entry_count, direct_count, data_source, data_collection_date)
+				VALUES ($1, $2, $3, $4, $5, $6, 'analysis', NOW())
+				ON CONFLICT (repo_id, lockfile_path) DO UPDATE SET
+					ecosystem = EXCLUDED.ecosystem,
+					lockfile_kind = EXCLUDED.lockfile_kind,
+					entry_count = EXCLUDED.entry_count,
+					direct_count = EXCLUDED.direct_count,
+					data_collection_date = NOW()`,
+				repoID, inv.Ecosystem, inv.LockfilePath, inv.LockfileKind,
+				inv.EntryCount, inv.DirectCount)
+		}
+		for _, p := range packages {
+			batch.Queue(`
+				INSERT INTO aveloxis_data.repo_lockfile_packages
+					(repo_id, ecosystem, package_name, resolved_version,
+					 lockfile_path, data_source, data_collection_date)
+				VALUES ($1, $2, $3, $4, $5, 'analysis', NOW())
+				ON CONFLICT (repo_id, lockfile_path, package_name, resolved_version) DO NOTHING`,
+				repoID, p.Ecosystem, p.PackageName, p.ResolvedVersion, p.LockfilePath)
+		}
+		if batch.Len() > 0 {
+			if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+				return err
+			}
+		}
+		return tx.Commit(ctx)
+	})
+}
+
+// GetRepoLockedVersions returns every stored lockfile resolution for a
+// repo. The vulnerability scan consumes this at purl construction —
+// reading the TABLE (not a fresh parse) is what lets
+// `aveloxis heal-vulnerabilities`, which runs scans without an
+// analysis pass, benefit from lockfile accuracy too.
+func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT ecosystem, package_name, resolved_version, lockfile_path
+		FROM aveloxis_data.repo_lockfile_packages
+		WHERE repo_id = $1
+		ORDER BY package_name, resolved_version`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RepoLockfilePackage
+	for rows.Next() {
+		var p RepoLockfilePackage
+		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// LockfileEcosystemCertainty is one ecosystem's slice of the API's
+// lockfile_certainty summary.
+type LockfileEcosystemCertainty struct {
+	Ecosystem      string `json:"ecosystem"`
+	LockfileKind   string `json:"lockfile_kind"`
+	LockedPackages int    `json:"locked_packages"`
+}
+
+// LockfileCertainty is the repo-level summary served by
+// GET /api/v1/repos/{id}/vulnerabilities. Overall is "full" when every
+// ecosystem that has dependencies also has a lockfile (Go counts as
+// locked by construction — go.mod versions are exact under MVS),
+// "partial" when some do, "none" otherwise (including the
+// no-dependencies case: with nothing declared there is nothing a
+// lockfile could make certain).
+type LockfileCertainty struct {
+	Overall    string                       `json:"overall"` // "full" | "partial" | "none"
+	Ecosystems []LockfileEcosystemCertainty `json:"ecosystems"`
+}
+
+// GetRepoLockfileCertainty derives the lockfile-certainty summary at
+// read time: dependency ecosystems come from repo_deps_libyear,
+// lockfile coverage from repo_lockfiles/repo_lockfile_packages, and Go
+// is intrinsically covered (synthesized as lockfile_kind "go.mod").
+func (s *PostgresStore) GetRepoLockfileCertainty(ctx context.Context, repoID int64) (*LockfileCertainty, error) {
+	// Ecosystems that have dependencies, with per-ecosystem dep counts
+	// (the Go count doubles as its locked_packages figure).
+	depRows, err := s.pool.Query(ctx, `
+		SELECT package_manager, COUNT(*)
+		FROM aveloxis_data.repo_deps_libyear
+		WHERE repo_id = $1 AND package_manager <> ''
+		GROUP BY package_manager`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	depCounts := map[string]int{}
+	for depRows.Next() {
+		var eco string
+		var n int
+		if err := depRows.Scan(&eco, &n); err != nil {
+			depRows.Close()
+			return nil, err
+		}
+		depCounts[eco] = n
+	}
+	depRows.Close()
+	if err := depRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Lockfile coverage per (ecosystem, kind), with the count of
+	// distinct stored (direct-matched) packages resolved by that kind's
+	// lockfiles.
+	lockRows, err := s.pool.Query(ctx, `
+		SELECT l.ecosystem, l.lockfile_kind, COUNT(DISTINCT p.package_name)
+		FROM aveloxis_data.repo_lockfiles l
+		LEFT JOIN aveloxis_data.repo_lockfile_packages p
+			ON p.repo_id = l.repo_id AND p.lockfile_path = l.lockfile_path
+		WHERE l.repo_id = $1
+		GROUP BY l.ecosystem, l.lockfile_kind
+		ORDER BY l.ecosystem, l.lockfile_kind`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer lockRows.Close()
+
+	out := &LockfileCertainty{Ecosystems: []LockfileEcosystemCertainty{}}
+	coveredEcos := map[string]bool{}
+	for lockRows.Next() {
+		var e LockfileEcosystemCertainty
+		if err := lockRows.Scan(&e.Ecosystem, &e.LockfileKind, &e.LockedPackages); err != nil {
+			return nil, err
+		}
+		out.Ecosystems = append(out.Ecosystems, e)
+		coveredEcos[e.Ecosystem] = true
+	}
+	if err := lockRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Go needs no lockfile: go.mod versions are exact under MVS, so
+	// the ecosystem is covered by construction.
+	if n, ok := depCounts["go"]; ok && !coveredEcos["go"] {
+		out.Ecosystems = append(out.Ecosystems, LockfileEcosystemCertainty{
+			Ecosystem: "go", LockfileKind: "go.mod", LockedPackages: n,
+		})
+		coveredEcos["go"] = true
+	}
+
+	covered := 0
+	for eco := range depCounts {
+		if coveredEcos[eco] {
+			covered++
+		}
+	}
+	switch {
+	case len(depCounts) > 0 && covered == len(depCounts):
+		out.Overall = "full"
+	case covered > 0:
+		out.Overall = "partial"
+	default:
+		out.Overall = "none"
+	}
+	return out, nil
+}

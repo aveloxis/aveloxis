@@ -48,6 +48,15 @@ type vulnJSON struct {
 	FirstDetectedAt   time.Time       `json:"first_detected_at"`
 	LastSeenAt        time.Time       `json:"last_seen_at"`
 	ResolvedAt        *time.Time      `json:"resolved_at,omitempty"` // null = currently affected
+
+	// v0.27.11 version-resolution accuracy: the raw manifest
+	// requirement ("apache-airflow>=3.0.0") and how the scanned
+	// version was chosen — locked / exact / bounded-range /
+	// range-floor / unpinned. Absent on pre-v0.27.11 rows (heals on
+	// the repo's next scan); the GUI renders e.g.
+	// "≥3.0.0 declared — floor shown" for range-floor.
+	DeclaredRequirement string `json:"declared_requirement,omitempty"`
+	VersionResolution   string `json:"version_resolution,omitempty"`
 }
 
 // advisoryURLs returns the canonical description pages for a finding:
@@ -98,13 +107,25 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 			References:  json.RawMessage(v.ReferencesJSON),
 			AdvisoryURL: osvURL, CVEURL: cveURL,
 			FirstDetectedAt: v.FirstDetectedAt, LastSeenAt: v.LastSeenAt,
-			ResolvedAt: v.ResolvedAt,
+			ResolvedAt:          v.ResolvedAt,
+			DeclaredRequirement: v.DeclaredRequirement,
+			VersionResolution:   v.VersionResolution,
 		})
+	}
+	// v0.27.11: repo-level lockfile certainty — derived at read time
+	// (overall=full iff every ecosystem with dependencies also has a
+	// lockfile; Go is locked by construction). Best-effort: a lookup
+	// error degrades to "none" rather than failing the finding list.
+	certainty, cerr := s.store.GetRepoLockfileCertainty(r.Context(), repoID)
+	if cerr != nil {
+		s.logger.Warn("lockfile certainty lookup failed", "repo_id", repoID, "error", cerr)
+		certainty = &db.LockfileCertainty{Overall: "none", Ecosystems: []db.LockfileEcosystemCertainty{}}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"repo_id":         repoID,
-		"vulnerabilities": out,
+		"repo_id":            repoID,
+		"vulnerabilities":    out,
+		"lockfile_certainty": certainty,
 		"counts": map[string]int{
 			"current": current, "resolved": resolved, "critical": critical,
 		},

@@ -908,7 +908,7 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	execMigrationStep(ctx, pg, logger, &errs, "create email_confirmations table",
 		`CREATE TABLE IF NOT EXISTS aveloxis_ops.email_confirmations (
 			token TEXT PRIMARY KEY,
-			user_id INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE,
+			user_id INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
 			email TEXT NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			expires_at TIMESTAMPTZ NOT NULL
@@ -1015,7 +1015,7 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	execMigrationStep(ctx, pg, logger, &errs,
 		"v0.27.4 create user_repo_stars",
 		`CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
-			user_id    INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE,
+			user_id    INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
 			repo_id    BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
 			created_at TIMESTAMPTZ DEFAULT NOW(),
 			PRIMARY KEY (user_id, repo_id)
@@ -1320,6 +1320,66 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// OS; use pg_repack or VACUUM FULL on aveloxis_data.repo_labor in
 	// a maintenance window (docs/architecture/analysis.md).
 	migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, &errs)
+
+	// v0.27.11 — vulnerability version-resolution accuracy. Every
+	// finding carries the raw manifest requirement and how the scanned
+	// version was chosen ('locked'/'exact'/'bounded-range'/
+	// 'range-floor'/'unpinned'). Pre-v0.27.11 rows keep '' and heal on
+	// the repo's next scan — deliberately NO backfill: the
+	// classification must come from the current manifest, which only a
+	// scan can read.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_vulnerabilities", "declared_requirement", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_vulnerabilities", "version_resolution", "TEXT DEFAULT ''")
+
+	// v0.27.11 — lockfile inventory + direct-dep resolutions. When a
+	// repo commits a lockfile, the resolved version of each direct
+	// dependency is KNOWN — the vulnerability scan uses that version
+	// instead of the range floor. Snapshot-replaced per analysis run;
+	// no history tables by design. requirements.txt is NEVER a
+	// lockfile (operator ruling).
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.11 create repo_lockfiles",
+		`CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfiles (
+			lockfile_id      BIGSERIAL PRIMARY KEY,
+			repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id)
+			                   ON UPDATE CASCADE ON DELETE RESTRICT
+			                   DEFERRABLE INITIALLY DEFERRED,
+			ecosystem        TEXT NOT NULL,
+			lockfile_path    TEXT NOT NULL,
+			lockfile_kind    TEXT NOT NULL,
+			entry_count      INTEGER DEFAULT 0,
+			direct_count     INTEGER DEFAULT 0,
+			tool_source      TEXT DEFAULT 'aveloxis',
+			tool_version     TEXT DEFAULT '',
+			data_source      TEXT DEFAULT '',
+			data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE (repo_id, lockfile_path)
+		)`)
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.11 index repo_lockfiles by repo",
+		`CREATE INDEX IF NOT EXISTS idx_repo_lockfiles_repo_id
+			ON aveloxis_data.repo_lockfiles (repo_id)`)
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.11 create repo_lockfile_packages",
+		`CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfile_packages (
+			lockfile_pkg_id  BIGSERIAL PRIMARY KEY,
+			repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id)
+			                   ON UPDATE CASCADE ON DELETE RESTRICT
+			                   DEFERRABLE INITIALLY DEFERRED,
+			ecosystem        TEXT NOT NULL,
+			package_name     TEXT NOT NULL,
+			resolved_version TEXT NOT NULL,
+			lockfile_path    TEXT NOT NULL,
+			tool_source      TEXT DEFAULT 'aveloxis',
+			tool_version     TEXT DEFAULT '',
+			data_source      TEXT DEFAULT '',
+			data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE (repo_id, lockfile_path, package_name, resolved_version)
+		)`)
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.11 index repo_lockfile_packages by repo",
+		`CREATE INDEX IF NOT EXISTS idx_repo_lockfile_packages_repo_id
+			ON aveloxis_data.repo_lockfile_packages (repo_id)`)
 
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).

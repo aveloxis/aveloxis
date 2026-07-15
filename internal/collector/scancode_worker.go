@@ -367,7 +367,19 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	// v0.27.6 startup sweep: reconcile the clone DIRECTORY against
 	// the (post-recovery) lock rows. runOne's defer only removes its
 	// clone on clean exits; hard kills leaked clone dirs forever.
-	w.sweepCloneDirAtStartup(ctx)
+	//
+	// v0.27.13: runs in the BACKGROUND. On 2026-07-15 kate's first
+	// post-upgrade start spent 20+ minutes inside this call — serial
+	// os.RemoveAll of multi-GB stale clones on a spinning disk ran
+	// 10+ minutes PER DIRECTORY — and the dispatcher below never
+	// started, so scancode looked dead. Backgrounding is race-free
+	// by construction: sweepScancodeDir takes ONE os.ReadDir
+	// snapshot before removing anything, so clone dirs created by
+	// jobs the dispatcher claims meanwhile are never in its list,
+	// and the keep-set already protects live-locked repos.
+	w.logger.Info("scancode startup sweep running in background — dispatcher is NOT blocked",
+		"clone_dir", w.cloneDir)
+	safego.Go(w.logger, "scancode-startup-sweep", func() { w.sweepCloneDirAtStartup(ctx) })
 
 	// v0.23.3: in-flight orphan recovery — periodic cleanup of
 	// stale NULL-PID lock rows (the v0.21.0 inconsistency state).

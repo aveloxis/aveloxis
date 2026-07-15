@@ -288,6 +288,9 @@ See the [Email section below](#email-gmail-smtp-optional) for setup details. The
 | Field | Type | Description |
 |---|---|---|
 | `mail.gmail_user` | string | Gmail address used for SMTP auth and as the `From` address. Empty disables the mailer (no-op). |
+| `mail.operator_email` | string | Where fleet-level operator notifications go (v0.27.12) — currently the new-vulnerabilities digest. Empty (default) disables operator notifications entirely. |
+| `mail.vuln_digest_min_severity` | string | Severity floor for the vulnerability digest: `CRITICAL`, `HIGH` (default — admits CRITICAL+HIGH), `MEDIUM`, `LOW`, or `ALL`. Unrecognized values fall back to `HIGH`. |
+| `mail.vuln_digest_interval_hours` | int | Minimum gap between digest emails (default 24). The scheduler checks hourly; a digest is sent only when the interval has elapsed AND new findings exist — quiet windows produce no email. |
 | `mail.gmail_app_password` | string | The 16-character App Password (spaces allowed). Not the account's regular password. |
 | `mail.from_name` | string | Display name shown in recipients' inboxes. |
 | `mail.site_url` | string | Public-facing URL used in email body links. |
@@ -530,3 +533,28 @@ See `docs/architecture/distribution.md` §12 for the full design rationale.
 
 - [Quick Start](quickstart.md) -- get collecting in 5 steps
 - [Commands Reference](../guide/commands.md) -- full CLI reference
+
+
+## Operator vulnerability digest (v0.27.12)
+
+When `mail.operator_email` is set (and the Gmail mailer is configured),
+`aveloxis serve` emails a digest of **newly detected, unresolved
+vulnerability findings** at or above `mail.vuln_digest_min_severity`.
+
+Semantics worth knowing:
+
+- The scheduler checks hourly, but sends at most one digest per
+  `vuln_digest_interval_hours` (default 24). Quiet windows (no new
+  findings) produce **no email** — the window still advances.
+- The very first digest after enabling covers only one interval back,
+  NOT all history — enabling the feature on an established fleet does
+  not dump the entire findings table into one email.
+- A failed send is retried with the SAME window on the next hourly
+  check (nothing is dropped); the window only advances after a
+  successful send or a quiet evaluation.
+- The email body itemizes up to 50 findings (most severe first) and
+  always states the total; the state lives in
+  `~/.aveloxis/vuln-digest-last`.
+- Findings enter the digest by `first_detected_at`, so a finding is
+  reported once when first seen — re-scans of the same vulnerability
+  do not re-notify.

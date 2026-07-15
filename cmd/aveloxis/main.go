@@ -187,7 +187,20 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		// the scheduler reads knobs through the CollectionConfig
 		// accessors, so a new knob needs NO wiring here (v0.25.37).
 		Collection: &cfg.Collection,
+		// The mail block rides the same single-source pattern
+		// (v0.27.12 operator vulnerability digest).
+		Mail: &cfg.Mail,
 	})
+	// v0.27.12: operator vulnerability digest. Must be injected
+	// BEFORE Run starts (the ticker gate is evaluated at startup).
+	if cfg.Mail.OperatorEmail != "" {
+		sched.SetDigestMailer(digestMailerAdapter{mailer.New(mailer.Config{
+			GmailUser:        cfg.Mail.GmailUser,
+			GmailAppPassword: cfg.Mail.GmailAppPassword,
+			FromName:         cfg.Mail.FromName,
+			SiteURL:          cfg.Mail.SiteURL,
+		}, logger)})
+	}
 	go sched.Run(ctx)
 
 	// Start monitor.
@@ -1584,4 +1597,24 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 	}
 
 	return platform.NewKeyPool(ghTokens, logger), platform.NewKeyPool(glTokens, logger), nil
+}
+
+// digestMailerAdapter bridges *mailer.Mailer to the scheduler's
+// digestMailer role interface (v0.27.12). The mailer package stays
+// free of aveloxis imports, so the db→mailer item copy happens here.
+type digestMailerAdapter struct{ m *mailer.Mailer }
+
+func (a digestMailerAdapter) SendVulnerabilityDigest(to string, since time.Time, items []db.VulnDigestItem) error {
+	conv := make([]mailer.VulnDigestItem, len(items))
+	for i, it := range items {
+		conv[i] = mailer.VulnDigestItem{
+			RepoOwner:   it.RepoOwner,
+			RepoName:    it.RepoName,
+			VulnID:      it.VulnID,
+			Severity:    it.Severity,
+			PackagePurl: it.PackagePurl,
+			Summary:     it.Summary,
+		}
+	}
+	return a.m.SendVulnerabilityDigest(to, since, conv)
 }

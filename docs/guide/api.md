@@ -495,6 +495,42 @@ Token semantics:
   `first_detected_at` / `last_seen_at` / `resolved_at` (absent =
   currently affected). The envelope's `counts` object has `current`,
   `resolved`, and `critical` (current-only).
+
+  **Version-resolution accuracy (v0.27.11).** Each finding also
+  carries `declared_requirement` — the raw manifest requirement
+  string (`apache-airflow>=3.0.0`) — and `version_resolution`, how
+  the scanned version was chosen:
+
+  | `version_resolution` | Meaning |
+  |---|---|
+  | `locked` | A committed lockfile resolved this package — the purl is the LOCKED version, not the range floor. Go dependencies are `locked` by construction (go.mod versions are exact under MVS). |
+  | `exact` | `==X` or a bare version: the manifest names exactly one version. |
+  | `bounded-range` | The requirement has an upper bound (`~=`, `^`, `~`, or a compound containing `<`/`<=`). The purl is the range FLOOR. |
+  | `range-floor` | Lower bound only (`>=`, `>`). The purl is the FLOOR — the worst case the declaration permits. UIs should render e.g. "≥2.20 declared — floor shown". |
+  | `unpinned` | No version declared (produces no findings today). |
+
+  Both fields are absent (`""`) on findings last touched by a
+  pre-v0.27.11 scan and heal on the repo's next scan.
+
+  The envelope also gains `lockfile_certainty`, derived at read time:
+
+  ```json
+  "lockfile_certainty": {
+    "overall": "partial",
+    "ecosystems": [
+      {"ecosystem": "npm", "lockfile_kind": "package-lock.json", "locked_packages": 14},
+      {"ecosystem": "go", "lockfile_kind": "go.mod", "locked_packages": 9}
+    ]
+  }
+  ```
+
+  `overall` is `full` when every ecosystem that has dependencies also
+  has a committed lockfile (Go counts as covered by construction),
+  `partial` when some do, `none` otherwise (including repos with no
+  dependencies at all). `requirements.txt` is NEVER treated as a
+  lockfile — even fully `==`-pinned it carries the same ambiguities
+  as any other manifest (its pins classify per-finding as `exact`,
+  but it does not contribute lockfile certainty).
 - `GET /api/v1/repos/{repoID}/sbom?format=cyclonedx&vulns=1` — the
   CURRENT SBOM with a native CycloneDX 1.5 `vulnerabilities` array
   covering the repo's unresolved findings (`affects.ref` = component

@@ -1,0 +1,24 @@
+version = 1
+requires-python = ">=3.11"
+
+[[package]]
+name = "fixture-app"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "flask" },
+]
+
+[[package]]
+name = "flask"
+version = "2.3.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "werkzeug" },
+]
+sdist = { url = "https://files.pythonhosted.org/flask-2.3.3.tar.gz", hash = "sha256:abc", size = 12345 }
+
+[[package]]
+name = "werkzeug"
+version = "3.0.1"
+source = { registry = "https://pypi.org/simple" }

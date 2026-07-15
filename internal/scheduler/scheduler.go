@@ -55,6 +55,20 @@ type Config struct {
 	// fields to this struct — the mirror-detector tripwire
 	// (config_collapse_test.go) fails the build if you do.
 	Collection *config.CollectionConfig
+
+	// Mail is the operator's aveloxis.json `mail` block (same
+	// single-source pattern as Collection — read through its
+	// accessors at the point of use, never mirrored per-knob).
+	// Drives the v0.27.12 operator vulnerability digest; nil or an
+	// empty OperatorEmail disables it.
+	Mail *config.MailConfig
+}
+
+// digestMailer is the narrow mailer surface the digest ticker needs
+// (v0.25.38 role-interface pattern). *mailer.Mailer satisfies it via
+// the SendVulnerabilityDigest adapter in cmd/aveloxis/main.go.
+type digestMailer interface {
+	SendVulnerabilityDigest(to string, since time.Time, items []db.VulnDigestItem) error
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -80,6 +94,20 @@ type Scheduler struct {
 	// connection-error storm + reconnect deadlock pile-up into a clean
 	// pause/resume. Starts true (the DB was reachable at startup).
 	dbHealthy atomic.Bool
+
+	// digestMailer + digestStampPath drive the v0.27.12 operator
+	// vulnerability digest. mailer is injected via SetDigestMailer
+	// from runServe; stampPath defaults to ~/.aveloxis/vuln-digest-last
+	// and is overridable in tests.
+	digestMailer    digestMailer
+	digestStampPath string
+}
+
+// SetDigestMailer injects the operator-notification mailer (v0.27.12).
+// Called by runServe after constructing the Gmail mailer; the digest
+// ticker only runs when both this and cfg.Mail.OperatorEmail are set.
+func (s *Scheduler) SetDigestMailer(m digestMailer) {
+	s.digestMailer = m
 }
 
 // New creates a scheduler.
@@ -327,6 +355,23 @@ func (s *Scheduler) Run(ctx context.Context) {
 	enrichTicker := time.NewTicker(s.cfg.Collection.EnrichIntervalDuration())
 	defer enrichTicker.Stop()
 
+	// v0.27.12: operator vulnerability digest. The ticker fires
+	// hourly as a CHECK cadence; runVulnDigest itself enforces the
+	// configured interval (default 24h) via the stamp file, sends
+	// only when new findings exist, and advances the window
+	// monotonically. Disabled entirely (channel stays nil) unless an
+	// operator email is configured AND a mailer was injected.
+	var vulnDigestC <-chan time.Time
+	if s.digestMailer != nil && s.cfg.Mail != nil && s.cfg.Mail.OperatorEmail != "" {
+		vulnDigestTicker := time.NewTicker(1 * time.Hour)
+		defer vulnDigestTicker.Stop()
+		vulnDigestC = vulnDigestTicker.C
+		s.logger.Info("operator vulnerability digest enabled",
+			"operator_email", s.cfg.Mail.OperatorEmail,
+			"min_severity", s.cfg.Mail.VulnDigestMinSeverityOrDefault(),
+			"interval", s.cfg.Mail.VulnDigestInterval())
+	}
+
 	// v0.19.2: search-resolve background task. Takes contributors
 	// with email but no gh_user_id, calls /search/users?q=email at
 	// controlled rate (search API is 30/min/token — separate from
@@ -439,6 +484,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-enrichTicker.C:
 			safego.Go(s.logger, "contributor-enrichment", func() { s.runEnrichment(ctx) })
+
+		case <-vulnDigestC:
+			safego.Go(s.logger, "vuln-digest", func() { s.runVulnDigest(ctx) })
 
 		case <-searchResolveTicker.C:
 			safego.Go(s.logger, "search-resolve", func() { s.runSearchResolve(ctx) })

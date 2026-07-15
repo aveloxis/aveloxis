@@ -232,3 +232,67 @@ View your group: %s
 `, login, groupName, link)
 	return m.Send(toEmail, subject, body)
 }
+
+// digestBodyMaxItems caps the per-email listing so a fleet-scale burst
+// of new findings can't produce a megabyte email; the subject and the
+// closing line always carry the TOTAL count, so nothing is hidden —
+// just not itemized past the cap. Presentation bound only.
+const digestBodyMaxItems = 50
+
+// SendVulnerabilityDigest emails the operator a digest of findings
+// first detected since the previous digest window (v0.27.12). Called
+// by the scheduler's digest ticker; no-op when the mailer is
+// unconfigured (Send handles that). items must already be filtered to
+// the operator's severity floor and ordered most-severe-first.
+func (m *Mailer) SendVulnerabilityDigest(to string, since time.Time, items []VulnDigestItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	critical := 0
+	for _, it := range items {
+		if strings.EqualFold(it.Severity, "CRITICAL") {
+			critical++
+		}
+	}
+	subject := fmt.Sprintf("Aveloxis: %d new vulnerability finding(s)", len(items))
+	if critical > 0 {
+		subject += fmt.Sprintf(" (%d critical)", critical)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "New vulnerability findings detected since %s (UTC):\n\n",
+		since.UTC().Format("2006-01-02 15:04"))
+	shown := items
+	if len(shown) > digestBodyMaxItems {
+		shown = shown[:digestBodyMaxItems]
+	}
+	for _, it := range shown {
+		summary := it.Summary
+		if len(summary) > 100 {
+			summary = summary[:100] + "…"
+		}
+		fmt.Fprintf(&b, "%-8s  %s/%s\n          %s  %s\n          %s\n\n",
+			strings.ToUpper(it.Severity), it.RepoOwner, it.RepoName,
+			it.VulnID, it.PackagePurl, summary)
+	}
+	if len(items) > len(shown) {
+		fmt.Fprintf(&b, "…and %d more finding(s) not itemized here.\n\n", len(items)-len(shown))
+	}
+	if m.SiteURL() != "" {
+		fmt.Fprintf(&b, "Dashboard: %s\n", m.SiteURL())
+	}
+	b.WriteString("\nYou receive this because mail.operator_email is configured in aveloxis.json.\n")
+	return m.Send(to, subject, b.String())
+}
+
+// VulnDigestItem mirrors db.VulnDigestItem's display fields. Declared
+// here (not imported) so the mailer package keeps zero aveloxis
+// dependencies — callers copy the fields across.
+type VulnDigestItem struct {
+	RepoOwner   string
+	RepoName    string
+	VulnID      string
+	Severity    string
+	PackagePurl string
+	Summary     string
+}

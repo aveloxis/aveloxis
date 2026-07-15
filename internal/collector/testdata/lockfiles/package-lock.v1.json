@@ -1,0 +1,30 @@
+{
+  "name": "fixture-app",
+  "version": "1.0.0",
+  "lockfileVersion": 1,
+  "requires": true,
+  "dependencies": {
+    "express": {
+      "version": "4.19.2",
+      "resolved": "https://registry.npmjs.org/express/-/express-4.19.2.tgz",
+      "integrity": "sha512-abc",
+      "requires": {
+        "body-parser": "1.20.2"
+      }
+    },
+    "body-parser": {
+      "version": "1.20.2",
+      "resolved": "https://registry.npmjs.org/body-parser/-/body-parser-1.20.2.tgz",
+      "integrity": "sha512-def"
+    },
+    "jest": {
+      "version": "29.7.0",
+      "dev": true,
+      "dependencies": {
+        "nested-dep": {
+          "version": "2.0.1"
+        }
+      }
+    }
+  }
+}

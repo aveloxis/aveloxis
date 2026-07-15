@@ -83,12 +83,13 @@ var smokeRecipes = map[string]smokeRecipe{
 	"DELETE /api/v1/repos/{repoID}/star":  {auth: "user", after: "PUT /api/v1/repos/{repoID}/star"},
 
 	// Admin.
-	"GET /api/v1/admin/users":                        {auth: "admin"},
-	"GET /api/v1/admin/groups/pending":               {auth: "admin"},
-	"GET /api/v1/admin/monitor/stats":                {auth: "admin"},
-	"GET /api/v1/admin/monitor/queue":                {auth: "admin"},
-	"POST /api/v1/admin/users/{userID}/admin":        {auth: "admin", body: `{"admin":true}`},
-	"POST /api/v1/admin/groups/{groupID}/{decision}": {auth: "admin"},
+	"GET /api/v1/admin/users":                              {auth: "admin"},
+	"GET /api/v1/admin/groups/pending":                     {auth: "admin"},
+	"GET /api/v1/admin/monitor/stats":                      {auth: "admin"},
+	"GET /api/v1/admin/monitor/queue":                      {auth: "admin"},
+	"POST /api/v1/admin/users/{userID}/admin":              {auth: "admin", body: `{"admin":true}`},
+	"POST /api/v1/admin/groups/{groupID}/{decision}":       {auth: "admin"},
+	"POST /api/v1/admin/monitor/queue/{repoID}/prioritize": {auth: "admin"}, // v0.27.14 Boost (fixture seeds the queue row)
 
 	// Augur-compat metric routes (metrics.go).
 	"GET /api/v1/owner/{owner}/repo/{repo}":                    {},

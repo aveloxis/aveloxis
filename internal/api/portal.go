@@ -131,6 +131,24 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"group_id": id})
 }
 
+// parsePortalPage reads the v0.27.14 pagination params: page
+// (default 1) and page_size (default 50, capped at 100). Garbage,
+// zero, and negative inputs collapse to the defaults.
+func parsePortalPage(r *http.Request) (page, pageSize int) {
+	page, _ = strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ = strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
 func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 	info, ok := s.requireUser(w, r)
 	if !ok {
@@ -141,13 +159,38 @@ func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid group id", http.StatusBadRequest)
 		return
 	}
-	repos, err := s.store.GetPortalGroupReposForUser(r.Context(), info.UserID, groupID, info.IsAdmin)
+	page, pageSize := parsePortalPage(r)
+	repos, total, err := s.store.GetPortalGroupReposForUser(r.Context(), info.UserID, groupID, info.IsAdmin, pageSize, (page-1)*pageSize)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
+	// v0.27.14: annotate the PAGE (never the whole group) with ALL-TIME
+	// counts from the latest repo_info snapshot via the batched-stats
+	// cache, plus the caller's star state. OPERATOR DECISION: all-time
+	// totals, NOT the 90-day activity metric (the v0.27.4 nginx-timeout
+	// class at fleet scale).
+	ids := make([]int64, 0, len(repos))
+	for _, g := range repos {
+		ids = append(ids, g.RepoID)
+	}
+	stats, _ := s.store.GetRepoStatsBatch(r.Context(), ids)
+	starred, _ := s.store.GetUserStarredRepoIDs(r.Context(), info.UserID)
+	for i := range repos {
+		if st, ok := stats[repos[i].RepoID]; ok && st != nil {
+			repos[i].CommitsAllTime = st.MetadataCommits
+			repos[i].IssuesAllTime = st.MetadataIssues
+			repos[i].PRsAllTime = st.MetadataPRs
+		}
+		repos[i].Starred = starred[repos[i].RepoID]
+	}
+	if repos == nil {
+		repos = []db.PortalGroupRepo{}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"repos": repos})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"repos": repos, "total": total, "page": page, "page_size": pageSize,
+	})
 }
 
 // handleGroupAddRepo is the "request access / request collection"
@@ -373,6 +416,31 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"jobs": out, "total": total, "page": page, "page_size": pageSize,
 	})
+}
+
+// handleAdminPrioritizeRepo (v0.27.14) is the SPA monitor's "Boost"
+// button: pure reuse of store.PrioritizeRepo — the identical call the
+// legacy :5555 monitor's POST /api/prioritize/{repoID} makes (push to
+// priority 0, due now, back to 'queued').
+func (s *Server) handleAdminPrioritizeRepo(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.PrioritizeRepo(r.Context(), repoID); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, "repo not found in queue", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "repo_id": repoID})
 }
 
 // --- v0.27.4: home tab (stars + activity) ---

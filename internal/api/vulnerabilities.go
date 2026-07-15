@@ -22,22 +22,28 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 type vulnJSON struct {
-	VulnID            string          `json:"vuln_id"`
-	CVEID             string          `json:"cve_id,omitempty"`
-	PackageName       string          `json:"package_name"`
-	PackagePurl       string          `json:"package_purl,omitempty"`
-	Ecosystem         string          `json:"ecosystem,omitempty"`
-	Severity          string          `json:"severity"`
-	CVSSScore         float64         `json:"cvss_score"`
-	CVSSVector        string          `json:"cvss_vector,omitempty"`
-	Summary           string          `json:"summary"`
-	Details           string          `json:"details,omitempty"`
+	VulnID      string  `json:"vuln_id"`
+	CVEID       string  `json:"cve_id,omitempty"`
+	PackageName string  `json:"package_name"`
+	PackagePurl string  `json:"package_purl,omitempty"`
+	Ecosystem   string  `json:"ecosystem,omitempty"`
+	Severity    string  `json:"severity"`
+	CVSSScore   float64 `json:"cvss_score"`
+	CVSSVector  string  `json:"cvss_vector,omitempty"`
+	Summary     string  `json:"summary"`
+	Details     string  `json:"details,omitempty"`
+	// ScannedVersion (v0.27.14) is the version the scan actually ran
+	// against, derived from the purl — the GUI's Version column pairs
+	// it with the version-resolution badge so "scanned 4.17.21" is
+	// never read as "installed 4.17.21" on range-declared deps.
+	ScannedVersion    string          `json:"scanned_version,omitempty"`
 	FixedVersion      string          `json:"fixed_version,omitempty"`
 	IntroducedVersion string          `json:"introduced_version,omitempty"`
 	Source            string          `json:"source"`
@@ -57,6 +63,27 @@ type vulnJSON struct {
 	// "≥3.0.0 declared — floor shown" for range-floor.
 	DeclaredRequirement string `json:"declared_requirement,omitempty"`
 	VersionResolution   string `json:"version_resolution,omitempty"`
+}
+
+// scannedVersionFromPurl derives the version a finding was scanned at
+// from its package purl: everything after the LAST '@'. This is
+// npm-scope-safe — a scope's '@' ("pkg:npm/@babel/traverse@7.23.2")
+// always precedes the final '/', while the version separator always
+// follows it, so a last-'@' that sits before the last '/' means the
+// purl carries no version at all. Qualifiers ("?type=jar") and
+// subpaths ("#lib") after the version are stripped. Empty when the
+// purl has no version.
+func scannedVersionFromPurl(purl string) string {
+	// Strip qualifiers/subpath FIRST — a "#lib/utils" subpath contains
+	// a '/' that would otherwise defeat the scope guard below.
+	if i := strings.IndexAny(purl, "?#"); i >= 0 {
+		purl = purl[:i]
+	}
+	lastAt := strings.LastIndex(purl, "@")
+	if lastAt <= 0 || lastAt < strings.LastIndex(purl, "/") {
+		return ""
+	}
+	return purl[lastAt+1:]
 }
 
 // advisoryURLs returns the canonical description pages for a finding:
@@ -102,7 +129,8 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 			Ecosystem: v.Ecosystem, Severity: v.Severity,
 			CVSSScore: v.CVSSScore, CVSSVector: v.CVSSVector,
 			Summary: v.Summary, Details: v.Details,
-			FixedVersion: v.FixedVersion, IntroducedVersion: v.IntroducedVersion,
+			ScannedVersion: scannedVersionFromPurl(v.PackagePurl),
+			FixedVersion:   v.FixedVersion, IntroducedVersion: v.IntroducedVersion,
 			Source: v.Source, Aliases: v.Aliases,
 			References:  json.RawMessage(v.ReferencesJSON),
 			AdvisoryURL: osvURL, CVEURL: cveURL,

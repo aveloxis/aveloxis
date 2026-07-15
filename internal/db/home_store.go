@@ -54,7 +54,7 @@ func (s *PostgresStore) UnstarRepo(ctx context.Context, userID int, repoID int64
 // probe per candidate repo, most of which return instantly.
 func (s *PostgresStore) GetHomeRepos(ctx context.Context, userID int, limit int) ([]HomeRepo, error) {
 	if limit <= 0 {
-		limit = 20
+		limit = 50 // v0.27.14: raised from 20 (operator ask — the home list capacity)
 	}
 	rows, err := s.pool.Query(ctx, `
 		WITH mine AS (
@@ -145,21 +145,41 @@ func (s *PostgresStore) GetUserStarredRepoIDs(ctx context.Context, userID int) (
 // see and prune it like any group).
 const StarredGroupName = "Starred"
 
-// FindOrCreateStarredGroup returns the user's Starred group id,
-// creating the group on first use. Creation goes through
-// CreateUserGroup so the v0.19.0 status rules apply uniformly — the
-// status only matters for future COLLECTION enqueues, never for
-// scope (see GetUserRepoScope).
-func (s *PostgresStore) FindOrCreateStarredGroup(ctx context.Context, userID int) (int64, error) {
+// ComparisonsGroupName is the implicit per-user group that
+// out-of-scope compare selections ride into scope on (v0.27.14 —
+// same pattern as Starred). It only ever receives ALREADY-COLLECTED
+// repos (the compare picker surfaces nothing else), so it can never
+// trigger new collection; org entities add their collected repo set
+// here and NEVER register org tracking.
+const ComparisonsGroupName = "Comparisons"
+
+// findOrCreateNamedGroup is the shared find-or-create for the
+// implicit per-user groups (Starred, Comparisons). Creation goes
+// through CreateUserGroup so the v0.19.0 status rules apply
+// uniformly — the status only matters for future COLLECTION
+// enqueues, never for scope (see GetUserRepoScope).
+func (s *PostgresStore) findOrCreateNamedGroup(ctx context.Context, userID int, name string) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `
 		SELECT group_id FROM aveloxis_ops.user_groups
 		WHERE user_id = $1 AND name = $2
-		ORDER BY group_id LIMIT 1`, userID, StarredGroupName).Scan(&id)
+		ORDER BY group_id LIMIT 1`, userID, name).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
-	return s.CreateUserGroup(ctx, userID, StarredGroupName)
+	return s.CreateUserGroup(ctx, userID, name)
+}
+
+// FindOrCreateStarredGroup returns the user's Starred group id,
+// creating the group on first use.
+func (s *PostgresStore) FindOrCreateStarredGroup(ctx context.Context, userID int) (int64, error) {
+	return s.findOrCreateNamedGroup(ctx, userID, StarredGroupName)
+}
+
+// FindOrCreateComparisonsGroup returns the user's Comparisons group
+// id, creating the group on first use (v0.27.14).
+func (s *PostgresStore) FindOrCreateComparisonsGroup(ctx context.Context, userID int) (int64, error) {
+	return s.findOrCreateNamedGroup(ctx, userID, ComparisonsGroupName)
 }
 
 // ScorecardOverallName is the reserved row name under which the

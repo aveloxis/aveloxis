@@ -191,8 +191,26 @@ func parseEntities(raw string) ([]entity, error) {
 }
 
 // resolveEntityRepos expands an entity to repo ids and applies §2b
-// scope. Returns (ids, ok); on !ok a structured 403 was written.
-func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e entity) ([]int64, bool) {
+// scope. Returns (ids, addedToGroup, ok); on !ok a structured 403 was
+// written. addedToGroup is non-empty when the v0.27.14 auto-add fired
+// (the entity was fully out of the caller's scope and its COLLECTED
+// repos were added to the implicit "Comparisons" group) so the
+// handlers can surface a one-time notice for the GUI toast.
+//
+// v0.27.14 (mirrors the v0.27.4 Starred flow): an authenticated user
+// selecting a collected-but-not-in-their-groups entity no longer gets
+// a dead-end 403. The entity's already-collected repos are added to
+// the user's Comparisons group via AddRepoToGroupByID (a user_repos
+// INSERT only — NEVER a collection_queue insert), the auth cache is
+// invalidated so the next request sees the new scope, and THIS
+// request proceeds with the resolved ids. Approval gates NEW
+// COLLECTION, never visibility of collected data; the picker only
+// surfaces collected entities, so this flow can never enqueue
+// collection. Org entities add ONLY the resolved collected repo set
+// (≤ OrgRepoCap) — org TRACKING is deliberately never registered,
+// because the org-refresh ticker would then enqueue new repos, i.e.
+// collection without approval.
+func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e entity) ([]int64, string, bool) {
 	info, authed := r.Context().Value(authCtxKey{}).(authInfo)
 	scoped := authed && !info.IsAdmin
 
@@ -205,9 +223,10 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 		ids, err = s.store.ResolveOrgRepos(r.Context(), e.Host, e.Login)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return nil, false
+			return nil, "", false
 		}
 	}
+	collected := ids
 	if scoped {
 		var in []int64
 		for _, id := range ids {
@@ -217,6 +236,35 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 		}
 		ids = in
 	}
+	if len(ids) == 0 && scoped && len(collected) > 0 {
+		// Auto-add path. For repo entities the id came from the URL, so
+		// verify it actually IS a collected repo before linking (org ids
+		// come straight from the repos table and always exist).
+		if e.Kind == "repo" {
+			repos, err := s.store.GetReposBatch(r.Context(), collected)
+			if err != nil || repos[collected[0]] == nil {
+				collected = nil
+			}
+		}
+		if len(collected) > 0 {
+			gid, err := s.store.FindOrCreateComparisonsGroup(r.Context(), info.UserID)
+			if err == nil {
+				for _, id := range collected {
+					if err = s.store.AddRepoToGroupByID(r.Context(), gid, id); err != nil {
+						break
+					}
+				}
+			}
+			if err != nil {
+				http.Error(w, "could not add the selection to your Comparisons group", http.StatusInternalServerError)
+				return nil, "", false
+			}
+			// Scope changed — the cached token validation must re-resolve
+			// so the user's next request sees the new repos.
+			s.auth.invalidateAll()
+			return collected, db.ComparisonsGroupName, true
+		}
+	}
 	if len(ids) == 0 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
@@ -225,9 +273,9 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 			"entity": e.Label,
 			"hint":   "add this repository or organization to one of your groups to request access",
 		})
-		return nil, false
+		return nil, "", false
 	}
-	return ids, true
+	return ids, "", true
 }
 
 // compareWindow parses since/until with the 3-year default.
@@ -260,6 +308,11 @@ func compareWindow(r *http.Request) (since, until time.Time, bucket string, err 
 type compareSeries struct {
 	Entity entity           `json:"entity"`
 	Points []db.WeeklyPoint `json:"points"`
+	// Parts carries named component series for multi-series metrics
+	// (v0.27.16: contributor_retention → "drive_by" + "repeat");
+	// omitted for single-series metrics. Points then holds the
+	// per-bucket total so single-series consumers keep rendering.
+	Parts map[string][]db.WeeklyPoint `json:"parts,omitempty"`
 }
 
 // compareCache is a small TTL cache for hot compare responses.
@@ -328,12 +381,21 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// v0.27.16: contributor_retention's threshold (default = 8Knot's
+	// 4). Parsed unconditionally so it can ride the cache key below;
+	// a no-op for single-series metrics.
+	retentionThreshold, err := parseRetentionThreshold(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	// Cache key includes the caller's scope identity so users cannot
 	// read each other's cached responses.
 	info, _ := r.Context().Value(authCtxKey{}).(authInfo)
-	key := fmt.Sprintf("cmp|%d|%s|%s|%s|%s|%s", info.UserID, metric,
-		r.URL.Query().Get("entities"), since.Format("2006-01-02"), until.Format("2006-01-02"), bucket)
+	key := fmt.Sprintf("cmp|%d|%s|%s|%s|%s|%s|rt%d", info.UserID, metric,
+		r.URL.Query().Get("entities"), since.Format("2006-01-02"), until.Format("2006-01-02"), bucket,
+		retentionThreshold)
 	if body, ok := s.cmpCache.get(key); ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "hit")
@@ -343,26 +405,43 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 
 	s.labelEntities(r, entities)
 	series := make([]compareSeries, 0, len(entities))
+	var added []map[string]string // v0.27.14 one-time auto-add notices
 	for _, e := range entities {
-		ids, ok := s.resolveEntityRepos(w, r, e)
+		ids, addedGroup, ok := s.resolveEntityRepos(w, r, e)
 		if !ok {
 			return
 		}
-		points, err := s.metricSeries(r, ids, metric, bucket, since, until)
+		if addedGroup != "" {
+			added = append(added, map[string]string{"entity": e.Label, "group": addedGroup})
+		}
+		// v0.27.16: routed through metricSeriesAndParts (retention.go)
+		// so multi-series metrics deliver named component series;
+		// single-series metrics behave exactly as before (densified
+		// points, nil parts).
+		points, parts, err := s.metricSeriesAndParts(r, ids, metric, bucket, since, until, retentionThreshold)
 		if err != nil {
 			s.logger.Error("compare series failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error()))
 			http.Error(w, "series computation failed", http.StatusInternalServerError)
 			return
 		}
-		series = append(series, compareSeries{Entity: e, Points: fillBuckets(points, since, until, bucket)})
+		series = append(series, compareSeries{Entity: e, Points: points, Parts: parts})
 	}
 
-	body, _ := json.Marshal(map[string]any{
+	resp := map[string]any{
 		"metric": def, "bucket": bucket,
 		"since": since.Format("2006-01-02"), "until": until.Format("2006-01-02"),
 		"series": series,
-	})
-	s.cmpCache.put(key, body)
+	}
+	if len(added) > 0 {
+		resp["added_to_group"] = added
+	}
+	body, _ := json.Marshal(resp)
+	// The auto-add notice is one-time — caching it would replay the
+	// "added to your Comparisons group" toast on every reload within
+	// the TTL, so responses that carried it are never cached.
+	if len(added) == 0 {
+		s.cmpCache.put(key, body)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
 }
@@ -537,10 +616,14 @@ func (s *Server) handleCompareSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	s.labelEntities(r, entities)
 	values := make([]snapValue, 0, len(entities))
+	var added []map[string]string // v0.27.14 one-time auto-add notices
 	for _, e := range entities {
-		ids, ok := s.resolveEntityRepos(w, r, e)
+		ids, addedGroup, ok := s.resolveEntityRepos(w, r, e)
 		if !ok {
 			return
+		}
+		if addedGroup != "" {
+			added = append(added, map[string]string{"entity": e.Label, "group": addedGroup})
 		}
 		var sv db.SnapshotValue
 		switch metric {
@@ -558,8 +641,12 @@ func (s *Server) handleCompareSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 		values = append(values, snapValue{Entity: e, SnapshotValue: sv})
 	}
+	resp := map[string]any{"metric": def, "values": values}
+	if len(added) > 0 {
+		resp["added_to_group"] = added
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"metric": def, "values": values})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleEntitiesSearch returns picker results in the three §2b

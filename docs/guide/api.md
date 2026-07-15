@@ -418,8 +418,22 @@ The web GUI's Chart.js visualizations fetch data from the API server. The API UR
 See `docs/guide/metrics.md` for the metric definitions ("Improvements
 on CHAOSS metrics"). Entities: `repo:<id>` or `org:<host>/<login>`
 (≤7 per request; an org is the union of its tracked repos, capped at
-500). All entities are validated against the caller's §2b scope;
-out-of-scope entities return a structured 403.
+500). All entities are validated against the caller's §2b scope.
+
+**Out-of-scope selections auto-add (v0.27.14).** When an
+authenticated non-admin selects a COLLECTED entity entirely outside
+their groups, the request no longer dead-ends in a 403: the entity's
+already-collected repos are added to the user's implicit
+"Comparisons" group (created on first use, normal v0.19.0 status
+rules — the same pattern as the v0.27.4 "Starred" group), the request
+proceeds, and the response carries a one-time
+`added_to_group: [{entity, group}]` notice for the GUI toast
+(responses carrying it are never cached). Org entities add only the
+org's already-collected repo set (≤500) — org TRACKING is never
+registered, so the flow can never enqueue new collection; approval
+continues to gate collection, not visibility. The structured 403
+(`entity_out_of_scope`) remains for entities that resolve to nothing
+collected.
 
 - `GET /api/v1/metrics` — the metric catalog (docs-as-data; drives
   the GUI's popovers and reference page).
@@ -427,6 +441,14 @@ out-of-scope entities return a structured 403.
   — temporal metrics; window defaults to the trailing 3 years; bucket
   week (default) or month; buckets are densified (aligned x-axes).
   Responses are cached 60s per (user, query).
+  - **`metric=contributor_retention`** (v0.27.16) additionally accepts
+    `retention_threshold=N` (N ≥ 1, default **4** — 8Knot's
+    "Contributions Required" default): contributors with ≥ N total
+    contributions across all collected history are "repeat", the rest
+    "drive-by", bucketed by the month/week of their FIRST
+    contribution. Each series in the response carries `points`
+    (per-bucket total) plus `parts.drive_by` and `parts.repeat`
+    component series — the only multi-series temporal metric.
 - `GET /api/v1/compare/snapshot?entities=...&metric=labor_investment`
   — snapshot metrics (labor_investment, upstream_dependencies,
   license_coverage) with per-entity value + as_of + detail.
@@ -531,6 +553,13 @@ Token semantics:
   lockfile — even fully `==`-pinned it carries the same ambiguities
   as any other manifest (its pins classify per-finding as `exact`,
   but it does not contribute lockfile certainty).
+
+  `scanned_version`
+  (v0.27.14) is the version the scan actually ran against, derived
+  from the purl (everything after the last `@`; empty when the purl
+  carries no version) — pair it with the version-resolution class
+  when rendering, since a range-declared dependency is scanned at its
+  floor, not necessarily the installed version.
 - `GET /api/v1/repos/{repoID}/sbom?format=cyclonedx&vulns=1` — the
   CURRENT SBOM with a native CycloneDX 1.5 `vulnerabilities` array
   covering the repo's unresolved findings (`affects.ref` = component
@@ -549,10 +578,12 @@ Token semantics:
   collection, and stars can only target already-collected repos, so
   no approval is involved. Unstarring never removes the repo from
   the group (scope stays until the user prunes the group).
-- `GET /api/v1/home/repos?limit=20` — the home-tab list: the user's
+- `GET /api/v1/home/repos?limit=50` — the home-tab list: the user's
   starred repos first (always included), then the most active repos
   from their own groups over the trailing 90 days (issues + change
-  requests opened).
+  requests opened). Default limit is 50 (v0.27.14; was 20). There is
+  no cap on the number of repos a user may star — the limit only
+  bounds how many rows the home list returns per request.
 - `GET /api/v1/repos/{repoID}/scorecard` — the current OpenSSF
   Scorecard results for the repo:
   `{"repo_id", "scanned", "as_of", "overall", "checks": [{"name", "score"}]}`.
@@ -586,9 +617,16 @@ Per-user:
 - `POST /api/v1/groups` with `{"name": "..."}` — create a group.
   Non-admin users' groups start `pending` per the v0.19.0 approval
   workflow. Returns `{group_id}`.
-- `GET /api/v1/groups/{groupID}/repos` — the group's repos:
-  `{repos: [{repo_id, owner, name, git_url}]}`. Non-admins may only
-  read their own groups (403 otherwise).
+- `GET /api/v1/groups/{groupID}/repos?page=1&page_size=50` — one page
+  of the group's repos in a pagination envelope (v0.27.14):
+  `{repos: [...], total, page, page_size}` (`page_size` defaults to
+  50, capped at 100). Each repo row is
+  `{repo_id, owner, name, git_url, commits_all_time, issues_all_time,
+  prs_all_time, starred}` — the `*_all_time` counts are the forge's
+  own ALL-TIME totals from the latest repo_info snapshot (deliberately
+  not a windowed activity metric), fetched per page via the batched
+  stats cache; `starred` reflects the calling user's star state.
+  Non-admins may only read their own groups (403 otherwise).
 - `POST /api/v1/groups/{groupID}/repos` with
   `{"url": "https://github.com/owner/repo", "kind": "repo"}` (or
   `"kind": "org"` with an org URL) — add a repo or track an org.
@@ -618,3 +656,9 @@ Admin-only:
   the forge-reported meta counts (`meta_issues`, `meta_prs`,
   `meta_commits` from the latest repo_info snapshot) for
   gathered-vs-metadata comparison.
+- `POST /api/v1/admin/monitor/queue/{repoID}/prioritize` — the SPA
+  monitor's "Boost" button (v0.27.14). Pushes the repo to priority 0,
+  makes it immediately due, and resets its status to `queued` — the
+  exact same `PrioritizeRepo` store call the legacy :5555 monitor's
+  `/api/prioritize/{repoID}` makes. 404 when the repo has no queue
+  row; 400 for a non-numeric id. Returns `{ok: true, repo_id}`.

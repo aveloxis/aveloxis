@@ -76,6 +76,21 @@ the union for people-counting metrics.
 - **Improvement on CHAOSS**: Self-normalized z-score composite instead of raw log-log axes, so a 7-entity overlay reads directly.
 - **CHAOSS nominal**: https://chaoss.community/kb/metric-project-velocity/
 
+## Contributor Retention (Drive-by vs Repeat) {#contributor_retention}
+
+- **id**: `contributor_retention` · **kind**: temporal · **unit**: contributors
+- **Our definition**: Each contributor in the entity's repo set is classified by their TOTAL contribution count over all collected history (distinct commits, issues opened, change requests opened, reviews, and conversation comments): below the threshold = drive-by, at/above = repeat (?retention_threshold, default 4, mirroring 8Knot's Contributions Required input). Contributors bucket by the month of their FIRST contribution; the series counts drive-by vs repeat per bucket. Bots and soft-deleted merge-loser identities are excluded.
+- **Improvement on CHAOSS**: Splits every new-contributor cohort into drive-by vs repeat by eventual total engagement (an 8Knot port), computed live from base tables over resolved platform identities — so one chart answers both 'how many arrived' and 'how many stayed'.
+- **CHAOSS nominal**: https://chaoss.community/kb/metric-new-contributors/
+
+This is the only multi-series temporal metric: `GET /api/v1/compare`
+responses carry each entity's `points` (per-bucket TOTAL new
+contributors) plus a `parts` object with the `drive_by` and `repeat`
+component series. The classification threshold is per-request
+(`?retention_threshold=N`, N ≥ 1); the classification window is ALL
+collected history, so a contributor's drive-by/repeat class never
+changes with the chart's zoom level.
+
 ## Labor Investment {#labor_investment}
 
 - **id**: `labor_investment` · **kind**: snapshot · **unit**: person-months

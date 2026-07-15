@@ -92,6 +92,8 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("POST /api/v1/admin/groups/{groupID}/{decision}", s.handleAdminGroupDecision)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/queue", s.handleAdminMonitorQueue)
+	// v0.27.14 — SPA monitor "Boost": pure reuse of store.PrioritizeRepo.
+	s.mux.HandleFunc("POST /api/v1/admin/monitor/queue/{repoID}/prioritize", s.handleAdminPrioritizeRepo)
 	// v0.27.4 — per-repo vulnerabilities + home-tab stars/activity.
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/vulnerabilities", s.handleRepoVulnerabilities)
 	s.mux.HandleFunc("PUT /api/v1/repos/{repoID}/star", s.handleStarRepo)

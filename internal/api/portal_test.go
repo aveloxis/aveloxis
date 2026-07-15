@@ -50,6 +50,7 @@ func TestAdminRoutesRejectNonAdmins(t *testing.T) {
 		s.handleAdminUsers, s.handleAdminPendingGroups,
 		s.handleAdminGroupDecision, s.handleAdminSetUserAdmin,
 		s.handleAdminMonitorStats, s.handleAdminMonitorQueue,
+		s.handleAdminPrioritizeRepo,
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/api/v1/admin/x", nil)

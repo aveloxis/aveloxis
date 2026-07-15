@@ -1321,6 +1321,16 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// a maintenance window (docs/architecture/analysis.md).
 	migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, &errs)
 
+	// v0.27.15 — message-bridge metadata repairs: dedup
+	// pull_request_review_message_ref (its bare ON CONFLICT had no
+	// unique arbiter — 5.26M duplicate rows on production), create
+	// uq_pr_review_msg_ref AFTER the dedup, backfill data_source on
+	// all three bridges from the messages rows they point at, and
+	// backfill inline review comments (with full line metadata) from
+	// review_comments. All from in-database data — zero API calls.
+	// See msg_ref_metadata.go.
+	ensureMsgRefMetadata(ctx, pg, logger, &errs)
+
 	// v0.27.11 — vulnerability version-resolution accuracy. Every
 	// finding carries the raw manifest requirement and how the scanned
 	// version was chosen ('locked'/'exact'/'bounded-range'/

@@ -20,7 +20,10 @@
     "gmail_user": "",
     "gmail_app_password": "",
     "from_name": "Aveloxis",
-    "site_url": ""
+    "site_url": "",
+    "operator_email": "",
+    "vuln_digest_min_severity": "HIGH",
+    "vuln_digest_interval_hours": 24
   },
   "collection": {
     "days_until_recollect": 1,

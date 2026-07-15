@@ -1058,6 +1058,42 @@ type MailConfig struct {
 	GmailAppPassword string `json:"gmail_app_password"`
 	FromName         string `json:"from_name"`
 	SiteURL          string `json:"site_url"`
+
+	// OperatorEmail (v0.27.12) is where fleet-level operator
+	// notifications go — currently the new-vulnerabilities digest.
+	// Empty (the default) disables operator notifications entirely;
+	// the digest ticker never starts.
+	OperatorEmail string `json:"operator_email"`
+
+	// VulnDigestMinSeverity is the severity floor for the digest:
+	// CRITICAL, HIGH (default — admits CRITICAL+HIGH), MEDIUM, LOW,
+	// or ALL (everything incl. UNKNOWN). Unrecognized values fall
+	// back to HIGH.
+	VulnDigestMinSeverity string `json:"vuln_digest_min_severity"`
+
+	// VulnDigestIntervalHours is the minimum gap between digest
+	// emails (default 24). The ticker checks hourly; a digest is
+	// sent only when the interval has elapsed AND new findings
+	// exist — quiet windows produce no email.
+	VulnDigestIntervalHours int `json:"vuln_digest_interval_hours"`
+}
+
+// VulnDigestMinSeverityOrDefault returns the configured digest floor,
+// defaulting to HIGH when unset.
+func (m MailConfig) VulnDigestMinSeverityOrDefault() string {
+	if strings.TrimSpace(m.VulnDigestMinSeverity) == "" {
+		return "HIGH"
+	}
+	return m.VulnDigestMinSeverity
+}
+
+// VulnDigestInterval returns the configured digest interval,
+// defaulting to 24h when unset or non-positive.
+func (m MailConfig) VulnDigestInterval() time.Duration {
+	if m.VulnDigestIntervalHours <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(m.VulnDigestIntervalHours) * time.Hour
 }
 
 // Load reads configuration from a JSON file.

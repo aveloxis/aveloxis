@@ -102,7 +102,7 @@ Then run migrations:
 aveloxis migrate
 ```
 
-This creates 133 tables (98 in `aveloxis_data`, 31 in `aveloxis_ops`, 4 in `aveloxis_scan`) with full parity to Augur's schema. All DDL uses `CREATE ... IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so `migrate` is safe to run repeatedly.
+This creates 134 tables (98 in `aveloxis_data`, 32 in `aveloxis_ops`, 4 in `aveloxis_scan`) with full parity to Augur's schema. All DDL uses `CREATE ... IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so `migrate` is safe to run repeatedly.
 
 ### OAUTH App Setup
 You will need a github OAUTH application for login to work on the web view. And there's nothing available without login. You can also use GitLab's OAUTH, or configure both. 
@@ -542,9 +542,9 @@ Combine with `aveloxis prioritize <url>` if you want the re-collection to start 
 aveloxis migrate
 ```
 
-Creates 133 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 134 tables and 20 materialized views across three PostgreSQL schemas:
 - **`aveloxis_data`** (98 tables + 20 materialized views) — all collected data plus analytics views
-- **`aveloxis_ops`** (31 tables) — operational tables: collection queue, JSONB staging store, collection status, API credentials, users/auth, config, worker state
+- **`aveloxis_ops`** (32 tables) — operational tables: collection queue, JSONB staging store, collection status, API credentials, users/auth, config, worker state
 - **`aveloxis_scan`** (4 tables) — scancode per-file license/copyright results and history
 - **`aveloxis_augur_data`** (6 views) — Augur compatibility layer for 8Knot. Contains views that alias Aveloxis column names to Augur conventions (e.g., `star_count` → `stars_count`, `pr_number` → `pr_src_number`). Only tables with column name differences have views here; identical tables resolve via search_path fallback to `aveloxis_data`.
 
@@ -947,7 +947,7 @@ Aveloxis creates 20 materialized views compatible with [8Knot](https://github.co
 Three schemas in PostgreSQL with full parity to Augur's `augur_data` and `augur_operations`, plus a dedicated schema for ScanCode results:
 
 - **`aveloxis_data`** (98 tables + 20 materialized views) — All collected data: repos, issues, PRs, commits (per-file), commit parents, commit messages, messages, events, releases, contributors, contributor identities/aliases/affiliations, dependencies/SBOM, sentiment/NLP analysis, LSTM anomaly detection, topic modeling, Facade aggregates (dm_repo_annual/monthly/weekly, dm_repo_group_annual/monthly/weekly), repo labor/complexity, DEI badging, CHAOSS metrics, network analysis, repo insights, and more. Plus 20 materialized views for 8Knot compatibility.
-- **`aveloxis_ops`** (31 tables) — Operational tables: collection queue, JSONB staging store, collection status (tracks core/secondary/facade/ML phases independently), API credentials, users/auth/sessions, config, worker history/jobs, network weighted tables.
+- **`aveloxis_ops`** (32 tables) — Operational tables: collection queue, JSONB staging store, collection status (tracks core/secondary/facade/ML phases independently), API credentials, users/auth/sessions, config, worker history/jobs, network weighted tables.
 - **`aveloxis_scan`** (4 tables) — ScanCode per-file license and copyright detection: `scancode_scans` (scan metadata), `scancode_file_results` (per-file SPDX license, copyrights, holders, packages as JSONB), plus `_history` tables for both.
 
 Tables omitted from Augur (junk): `_transfer_testing`, `_transfer_training`, `akl;fjlk;a` (renamed to `dei_badging`), `analysis_log`, `all`, `github_users_2`, `worker_oauth_copy1`.

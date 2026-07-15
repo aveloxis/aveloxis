@@ -170,6 +170,17 @@ func TestEveryEndpointExecutes(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 
+	// Migrate before seeding (v0.27.13): on a truly FRESH database
+	// this package's tests can run BEFORE internal/db's migration
+	// tests under go test's package parallelism, and the fixture
+	// seed fails on missing relations. Populated scratch DBs masked
+	// this — same cross-package fresh-DB race class as the
+	// v0251Connect repo-group seed. Migrate is idempotent and cheap
+	// when already applied.
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
 	fx := seedSmokeFixture(t, ctx, store)
 
 	srv, err := NewWithOptions(store, logger, Options{

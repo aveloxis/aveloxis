@@ -2132,7 +2132,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repos (
 -- any FK that points at it; TestSchemaCreatesTablesBeforeReferencingThem
 -- now enforces this file-wide.
 CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
-    user_id    INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE,
+    user_id    INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
     repo_id    BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (user_id, repo_id)
@@ -2168,6 +2168,21 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_session_tokens (
     expiration     BIGINT,
     application_id TEXT REFERENCES aveloxis_ops.client_applications(id) DEFERRABLE INITIALLY DEFERRED
 );
+
+-- v0.20.4 email-confirmation tokens for the manual-entry email flow.
+-- Declared here since v0.27.12 — this table previously existed ONLY as
+-- a migrate.go step, so schema.sql undercounted the real database by
+-- one table (fresh installs got it from migrate; the declarative
+-- schema was incomplete). The migrate.go step remains (idempotent).
+CREATE TABLE IF NOT EXISTS aveloxis_ops.email_confirmations (
+    token      TEXT PRIMARY KEY,
+    user_id    INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    email      TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_confirmations_user
+    ON aveloxis_ops.email_confirmations (user_id);
 
 CREATE TABLE IF NOT EXISTS aveloxis_ops.refresh_tokens (
     id                   TEXT PRIMARY KEY,

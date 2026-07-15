@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -110,9 +111,16 @@ func TestV0274RoutesRegistered(t *testing.T) {
 		`"PUT /api/v1/repos/{repoID}/star"`,
 		`"DELETE /api/v1/repos/{repoID}/star"`,
 		`"GET /api/v1/home/repos"`,
+		`"GET /api/v1/repos/{repoID}/scorecard"`,
 	} {
 		if !strings.Contains(src, route) {
 			t.Errorf("server.go must register %s", route)
+		}
+	}
+	portal := mustReadFile(t, "portal.go")
+	for _, needle := range []string{"GetRepoStatsBatch", "MetaIssues", "MetaPRs", "MetaCommits"} {
+		if !strings.Contains(portal, needle) {
+			t.Errorf("handleAdminMonitorQueue must attach repo_info meta counts (%q missing) — the monitor shows gathered vs metadata pairs", needle)
 		}
 	}
 	// The licenses handler must ship the scanned flag (GUI empty-state
@@ -121,5 +129,30 @@ func TestV0274RoutesRegistered(t *testing.T) {
 		if !strings.Contains(src, needle) {
 			t.Errorf("server.go missing v0.27.4 wiring %q", needle)
 		}
+	}
+}
+
+// TestScorecardOverallStoredAndServed pins the v0.27.4 headline-score
+// chain: the collector stores scorecard's aggregate under the
+// reserved __overall__ row, and the endpoint surfaces it as a
+// separate `overall` field (never mixed into the checks list).
+func TestScorecardOverallStoredAndServed(t *testing.T) {
+	collSrc, err := os.ReadFile("../collector/scorecard.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(collSrc), "db.ScorecardOverallName") {
+		t.Error("RunScorecard must store the aggregate score under db.ScorecardOverallName — it was previously logged and dropped (operator gap report 2026-07-15)")
+	}
+	apiSrc := mustReadFile(t, "vulnerabilities.go")
+	if !strings.Contains(apiSrc, `resp["overall"]`) {
+		t.Error("handleRepoScorecard must serve the aggregate as a separate `overall` field")
+	}
+	storeSrc, err := os.ReadFile("../db/home_store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(storeSrc), "continue // the aggregate is not a check row") {
+		t.Error("GetRepoScorecard must exclude the __overall__ row from the checks list")
 	}
 }

@@ -97,6 +97,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("PUT /api/v1/repos/{repoID}/star", s.handleStarRepo)
 	s.mux.HandleFunc("DELETE /api/v1/repos/{repoID}/star", s.handleStarRepo)
 	s.mux.HandleFunc("GET /api/v1/home/repos", s.handleHomeRepos)
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scorecard", s.handleRepoScorecard)
 	s.registerMetricRoutes()
 	rl, err := newRateLimiter(opts)
 	if err != nil {

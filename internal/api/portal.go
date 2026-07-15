@@ -331,12 +331,15 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Attach repo names — ids alone mean nothing to users (operator).
+	// Attach repo names — ids alone mean nothing to users (operator) —
+	// and the repo_info meta counts so gathered-vs-metadata pairs render
+	// side by side (operator, 2026-07-15).
 	ids := make([]int64, 0, len(jobs))
 	for _, j := range jobs {
 		ids = append(ids, j.RepoID)
 	}
 	repos, _ := s.store.GetReposBatch(r.Context(), ids)
+	stats, _ := s.store.GetRepoStatsBatch(r.Context(), ids)
 	type jobJSON struct {
 		RepoID        int64      `json:"repo_id"`
 		Repo          string     `json:"repo"`
@@ -348,6 +351,9 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		Issues        int        `json:"issues"`
 		PRs           int        `json:"prs"`
 		Commits       int        `json:"commits"`
+		MetaIssues    int        `json:"meta_issues"`
+		MetaPRs       int        `json:"meta_prs"`
+		MetaCommits   int        `json:"meta_commits"`
 	}
 	out := make([]jobJSON, 0, len(jobs))
 	for _, j := range jobs {
@@ -355,8 +361,13 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		if rp, ok := repos[j.RepoID]; ok && rp != nil {
 			label = rp.Owner + "/" + rp.Name
 		}
-		out = append(out, jobJSON{j.RepoID, label, j.Status, j.Priority, j.DueAt,
-			j.LastCollected, j.LastError, j.LastIssues, j.LastPRs, j.LastCommits})
+		row := jobJSON{RepoID: j.RepoID, Repo: label, Status: j.Status, Priority: j.Priority,
+			DueAt: j.DueAt, LastCollected: j.LastCollected, LastError: j.LastError,
+			Issues: j.LastIssues, PRs: j.LastPRs, Commits: j.LastCommits}
+		if st, ok := stats[j.RepoID]; ok && st != nil {
+			row.MetaIssues, row.MetaPRs, row.MetaCommits = st.MetadataIssues, st.MetadataPRs, st.MetadataCommits
+		}
+		out = append(out, row)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{

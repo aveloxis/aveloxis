@@ -163,3 +163,33 @@ func cdxSeverity(s string) string {
 		return "unknown"
 	}
 }
+
+// handleRepoScorecard serves the current OpenSSF Scorecard checks for
+// a repo (v0.27.4 — repo page + comparison page tables). Thresholds
+// are a GUI concern; scores ship raw (0–10, -1 = not applicable).
+func (s *Server) handleRepoScorecard(w http.ResponseWriter, r *http.Request) {
+	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeRepo(w, r, repoID) {
+		return
+	}
+	checks, overall, asOf, err := s.store.GetRepoScorecard(r.Context(), repoID)
+	if err != nil {
+		http.Error(w, "scorecard lookup failed", http.StatusInternalServerError)
+		return
+	}
+	resp := map[string]any{"repo_id": repoID, "checks": checks, "scanned": len(checks) > 0}
+	if overall != nil {
+		// The headline aggregate. Absent on scans that predate v0.27.4;
+		// heals on the repo's next scorecard run.
+		resp["overall"] = *overall
+	}
+	if !asOf.IsZero() {
+		resp["as_of"] = asOf
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}

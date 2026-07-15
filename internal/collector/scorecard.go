@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -46,7 +47,7 @@ type ScorecardResult struct {
 // ScorecardCheck is a single scorecard check result.
 type ScorecardCheck struct {
 	Name    string   `json:"name"`
-	Score   int      `json:"score"`
+	Score   float64  // scorecard emits numbers; fractional values must not break the parse      `json:"score"`
 	Reason  string   `json:"reason"`
 	Details []string `json:"details,omitempty"`
 }
@@ -162,6 +163,15 @@ func RunScorecard(ctx context.Context, store *db.PostgresStore, repoID int64, re
 		logger.Warn("failed to rotate scorecard to history", "repo_id", repoID, "error", err)
 	}
 
+	// Store the aggregate ("headline") score under the reserved
+	// __overall__ row name — v0.27.4; it was previously logged and
+	// dropped, which the operator called out as a gap. One decimal,
+	// matching scorecard's own output.
+	if err := store.InsertScorecardResult(ctx, repoID, db.ScorecardOverallName,
+		fmt.Sprintf("%.1f", raw.Score), nil); err != nil {
+		logger.Warn("failed to store scorecard overall score", "repo_id", repoID, "error", err)
+	}
+
 	// Store each check as a row in repo_deps_scorecard.
 	for _, check := range raw.Checks {
 		sc := ScorecardCheck{
@@ -174,7 +184,7 @@ func RunScorecard(ctx context.Context, store *db.PostgresStore, repoID int64, re
 
 		// Store in database with full check details as JSONB.
 		detailsJSON, _ := json.Marshal(check)
-		if err := store.InsertScorecardResult(ctx, repoID, check.Name, fmt.Sprintf("%d", check.Score), detailsJSON); err != nil {
+		if err := store.InsertScorecardResult(ctx, repoID, check.Name, strconv.FormatFloat(check.Score, 'f', -1, 64), detailsJSON); err != nil {
 			logger.Warn("failed to store scorecard check", "check", check.Name, "error", err)
 		}
 	}

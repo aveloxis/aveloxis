@@ -516,7 +516,16 @@ Token semantics:
 - `GET /api/v1/home/repos?limit=20` — the home-tab list: the user's
   starred repos first (always included), then the most active repos
   from their own groups over the trailing 90 days (issues + change
-  requests opened + distinct commits).
+  requests opened).
+- `GET /api/v1/repos/{repoID}/scorecard` — the current OpenSSF
+  Scorecard results for the repo:
+  `{"repo_id", "scanned", "as_of", "overall", "checks": [{"name", "score"}]}`.
+  `overall` is scorecard's aggregate headline score (one decimal);
+  it is absent for repos whose last scan predates v0.27.4 and fills
+  in on the next scheduled scorecard run. Check scores are 0–10 as
+  reported by scorecard; `-1` means the check did not apply or was
+  inconclusive (render as N/A, not as a failure). `scanned=false`
+  means scorecard has never run for this repository.
 
 ## Portal and admin endpoints (v0.27.3)
 
@@ -568,4 +577,7 @@ Admin-only:
 - `GET /api/v1/admin/monitor/queue?page=1&q=augur` — the collection
   queue, 100 rows per page, optional search. Each job carries the
   repo label (`owner/name`), status, priority, due_at,
-  last_collected, last_error, and gathered issue/PR/commit counts.
+  last_collected, last_error, gathered issue/PR/commit counts, AND
+  the forge-reported meta counts (`meta_issues`, `meta_prs`,
+  `meta_commits` from the latest repo_info snapshot) for
+  gathered-vs-metadata comparison.

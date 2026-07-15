@@ -10,6 +10,9 @@ package db
 
 import (
 	"context"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // HomeRepo is one row of the home-tab repo list.
@@ -157,4 +160,67 @@ func (s *PostgresStore) FindOrCreateStarredGroup(ctx context.Context, userID int
 		return id, nil
 	}
 	return s.CreateUserGroup(ctx, userID, StarredGroupName)
+}
+
+// ScorecardOverallName is the reserved row name under which the
+// collector stores scorecard's aggregate score (v0.27.4 — previously
+// it was logged and dropped). Double-underscored so it can never
+// collide with a real check name (those are Hyphenated-Caps).
+const ScorecardOverallName = "__overall__"
+
+// ScorecardCheck is one OpenSSF Scorecard check result for a repo
+// (latest snapshot; history lives in repo_deps_scorecard_history).
+// Score is 0–10; -1 means the check did not apply or was inconclusive.
+// float64 because the aggregate carries one decimal (e.g. 5.6);
+// individual checks are whole numbers.
+type ScorecardCheck struct {
+	Name  string  `json:"name"`
+	Score float64 `json:"score"`
+}
+
+// GetRepoScorecard returns the current scorecard checks for repoID,
+// the aggregate ("headline") score when the collector has stored one
+// (nil for scans that predate v0.27.4 — heals on the next scorecard
+// run), and the scan timestamp. Empty checks + zero time = never
+// scanned.
+func (s *PostgresStore) GetRepoScorecard(ctx context.Context, repoID int64) ([]ScorecardCheck, *float64, time.Time, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT name, score, data_collection_date
+		FROM aveloxis_data.repo_deps_scorecard
+		WHERE repo_id = $1
+		ORDER BY name`, repoID)
+	if err != nil {
+		return nil, nil, time.Time{}, err
+	}
+	defer rows.Close()
+	var (
+		checks  []ScorecardCheck
+		overall *float64
+		asOf    time.Time
+	)
+	for rows.Next() {
+		var (
+			c        ScorecardCheck
+			scoreTxt string
+			ts       time.Time
+		)
+		if err := rows.Scan(&c.Name, &scoreTxt, &ts); err != nil {
+			return nil, nil, time.Time{}, err
+		}
+		if f, perr := strconv.ParseFloat(strings.TrimSpace(scoreTxt), 64); perr == nil {
+			c.Score = f
+		} else {
+			c.Score = -1 // unparseable legacy value → N/A, never fabricate
+		}
+		if ts.After(asOf) {
+			asOf = ts
+		}
+		if c.Name == ScorecardOverallName {
+			v := c.Score
+			overall = &v
+			continue // the aggregate is not a check row
+		}
+		checks = append(checks, c)
+	}
+	return checks, overall, asOf, rows.Err()
 }

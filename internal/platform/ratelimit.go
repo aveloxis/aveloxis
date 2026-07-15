@@ -379,6 +379,27 @@ func (kp *KeyPool) AliveCount() int {
 	return count
 }
 
+// AllTokens returns the token strings of every non-invalidated key in
+// pool order (v0.27.5). Built for scorecard's comma-separated multi-token
+// GITHUB_TOKEN: scorecard round-robins the list per request, so
+// rate-limit state and auth quarantine are deliberately IGNORED here —
+// scorecard paces itself across the whole set, and a
+// quarantined-but-valid token is still useful to it. Only the legacy
+// permanent Invalid flag excludes a key. No checkout happens: the pool's
+// round-robin index and Remaining counters are untouched.
+func (kp *KeyPool) AllTokens() []string {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	out := make([]string, 0, len(kp.keys))
+	for _, k := range kp.keys {
+		if k.Invalid {
+			continue
+		}
+		out = append(out, k.Token)
+	}
+	return out
+}
+
 // TotalRemaining returns the sum of remaining requests across all alive keys.
 func (kp *KeyPool) TotalRemaining() int {
 	kp.mu.Lock()

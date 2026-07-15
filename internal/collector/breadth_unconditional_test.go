@@ -9,12 +9,18 @@ import (
 	"testing"
 )
 
-// v0.20.17: BreadthWorker.Run must call MarkBreadthAttempted on
-// each contributor regardless of whether processContributor
-// found any events. The 200ms inter-contributor sleep is removed
-// — rate limiting in the HTTPClient already paces requests, and
-// the sleep was capping throughput to 5/sec single-threaded
-// while the 73-key fleet has 365K/hr available.
+// v0.20.17: BreadthWorker.Run must mark every contributor attempted
+// regardless of whether the fetch found any events. The 200ms
+// inter-contributor sleep is removed — rate limiting in the
+// HTTPClient already paces requests, and the sleep was capping
+// throughput to 5/sec single-threaded while the 73-key fleet has
+// 365K/hr available.
+//
+// v0.27.8: marking flows through MarkBreadthAttemptedBatch (chunked
+// UPDATEs) instead of one single-row UPDATE per contributor; the
+// unconditional-stamp semantics are unchanged and behaviorally
+// covered in breadth_behavior_test.go (TestBreadthHealthyRunDoesNotTrip)
+// and breadth_concurrent_test.go.
 
 func TestBreadthWorkerMarksAttemptedUnconditionally(t *testing.T) {
 	data, err := os.ReadFile("breadth.go")
@@ -35,8 +41,12 @@ func TestBreadthWorkerMarksAttemptedUnconditionally(t *testing.T) {
 	}
 	body := tail[:1+endRel]
 
-	if !strings.Contains(body, "MarkBreadthAttempted") {
-		t.Error("BreadthWorker.Run must call store.MarkBreadthAttempted after each contributor regardless of success. Pre-v0.20.17 a contributor with zero events left no signal that we'd tried, and the worker kept reselecting them — 225/1.4M coverage after weeks of running.")
+	if !strings.Contains(body, "MarkBreadthAttemptedBatch") {
+		t.Error("BreadthWorker.Run must stamp every attempted contributor via " +
+			"store.MarkBreadthAttemptedBatch regardless of fetch success. " +
+			"Pre-v0.20.17 a contributor with zero events left no signal that " +
+			"we'd tried, and the worker kept reselecting them — 225/1.4M " +
+			"coverage after weeks of running.")
 	}
 }
 

@@ -74,7 +74,7 @@ The v0.21.0 worker:
    - `collection_queue.last_collected IS NOT NULL` — the repo has been collected at least once. Newly-added repos collect basic metrics first; scancode runs against them only after the first collection completes.
    - `repo_archived = FALSE` (or NULL).
    - `scancode_last_run IS NULL OR < NOW() - cadence` — cadence gate.
-   - `scancode_locked_at IS NULL OR < NOW() - 12h` — stale-lock fallback (the silent-corpse safety net; the explicit `recoverOrphans` pass is the primary recovery path).
+   - `scancode_locked_at IS NULL OR < NOW() - staleLockWindow` — stale-lock fallback (the silent-corpse safety net; the explicit `recoverOrphans` pass is the primary recovery path). v0.27.6: the window is DERIVED by the worker as `scancode_run_timeout_cap_hours + 2h` (26h at defaults), floored at 12h. The pre-v0.27.6 bare 12h constant undercut the 24h adaptive-timeout cap — any scan past 12h had its lock treated as stale and a SECOND worker claimed the same repo (confirmed interleaving in the June 2026 logs).
 2. **Lock acquired**: the same SQL statement sets `scancode_locked_at = NOW()` on the candidate row and returns the (repo_id, owner, name, git_url) tuple. The row is now claimed atomically.
 3. **Job sent to runner channel**: dispatcher writes the job; if no runner slot is free the dispatcher blocks until one is — this is the documented concurrency cap.
 4. **Runner picks up job**:
@@ -241,7 +241,7 @@ The v0.21.0 work added these tests as architectural pins. A future refactor that
 | `TestRunOneClearsLockOnSuccess` / `TestRunOneClearsLockOnFailure` | Lock-clear paths exist on both branches. |
 | `TestClaimUsesForUpdateSkipLocked` | Claim SQL uses `FOR UPDATE SKIP LOCKED`. |
 | `TestClaimGatesOnLastCollected` | Claim filters on `last_collected IS NOT NULL`. |
-| `TestClaimGatesOnCadenceAndStaleLock` | Claim respects both the cadence config and the 12h stale-lock fallback. |
+| `TestClaimGatesOnCadenceAndStaleLock` | Claim respects both the cadence config and the stale-lock fallback (v0.27.6: derived `cap + 2h`, floored at 12h). |
 | `TestClaimExcludesArchivedRepos` | Claim WHERE clause matches the partial-index predicate. |
 | `TestScancodeWorkerCallsRecoverBeforeDispatcher` | Recovery runs before any new claim. |
 | `TestSchedulerRunStartsScancodeWorker` | Scheduler spawns the worker. |
@@ -263,7 +263,11 @@ On startup (`ScancodeWorker.Run`, before the dispatcher claims any work), the wo
   - **`ok`** otherwise.
 - On anything other than `ok` it logs **`ERROR "scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed"`** with a `detail` string that names the remediation.
 
-It is **awareness only** — the preflight does **not** disable scancode (a deliberate scope decision; auto-pause is a possible follow-up). It records, logs, and lets the worker proceed.
+**v0.27.6 revised the original "awareness-only" scope decision.** The June 2026 logs settled it: on 2026-06-11 the preflight logged SYSTEM-LEVEL FAILURE at startup and the dispatcher then ran **2,473 scans on the broken toolchain anyway** — producing stderr artifacts up to 9.5 GB and wedging every worker. Detection without gating just timestamps the damage. The preflight now:
+
+1. **Pins the typecode-libmagic env pairing** on every scancode subprocess. The July 2026 root cause (verified on the production host) was NOT a corrupt system magic DB — the system libmagic was healthy and the wheel was injected, yet typecode's plugin resolution failed at runtime inside scancode-toolkit-mini's venv and fell back to "typical system locations", cross-loading a 5.39-vintage wheel `.so` against the 5.45-compiled system `magic.mgc` (format mismatch → thousands of "offset invalid" warnings per load). The fix that wins unconditionally: `typecode/magic2.py` checks `TYPECODE_LIBMAGIC_PATH` + `TYPECODE_LIBMAGIC_DB_PATH` FIRST, before plugin resolution and the system fallback. At startup the worker discovers the wheel's matched pair inside the venv (following the scancode binary, with the pipx default venv path as fallback), injects the wheel if absent, and sets both env vars on EVERY scancode subprocess (preflight probe and real scans alike).
+2. **Runs an auto-remediation ladder** when the probe hits the libmagic fingerprint: (i) discover + apply the env pairing; (ii) `pipx inject scancode-toolkit-mini typecode-libmagic` then re-discover; (iii) still broken → LAST-resort **advice only** (the OS package reinstall hint is logged, never executed — the system DB is usually healthy). A health re-probe runs after each step.
+3. **Gates the dispatcher.** While the recorded status is `broken`, the dispatcher claims NOTHING; it re-probes every 15 minutes and auto-resumes on a passing probe (one WARN entering the pause, one INFO on exit — the v0.25.0 distribution-dispatcher pattern). An operator fixing the host out-of-band resumes claims without a restart.
 
 > **Volume, not presence (2026-06-10).** An early version of the libmagic check flagged `broken` on the mere *presence* of an `offset invalid` warning. That false-positives a working install: a repaired libmagic (e.g. after `aveloxis upgrade-tools` injects typecode-libmagic) can emit a *handful* of benign warnings while scans complete normally and produce valid data. The wedging bug is different in **kind** — the corrupt DB emits one warning per bad entry at load time, repeating the fingerprint thousands of times (it saturates the preflight's 1 MB stderr cap). The check now requires the fingerprint to repeat past the systemic-spam threshold (≥ 50), so a few incidental warnings no longer read as broken.
 

@@ -260,20 +260,29 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// collection.scancode_workers) with a 6-month default cadence
 	// and 90-second start-pacing. Decoupled from the main worker
 	// pool so a slow scancode run on one repo can't stall main
-	// collection across the fleet. See
-	// docs/architecture/scancode.md.
-	scancodeWorker := collector.NewScancodeWorker(
-		s.store, s.logger,
-		s.cfg.Collection.ScancodeWorkersOrDefault(),
-		s.cfg.Collection.ScancodeStartInterval(),
-		s.cfg.Collection.ScancodeCadence(),
-		s.cfg.Collection.ScancodeCloneDirOrDefault(),
-		s.cfg.Collection.ScancodeShutdownGrace(),
-		s.cfg.Collection.ScancodeRunTimeout(),
-		s.cfg.Collection.ScancodeRunTimeoutCap(),
-		s.cfg.Collection.ScancodeMaxInMemoryOrDefault(),
-	)
-	safego.Go(s.logger, "scancode-worker", func() { scancodeWorker.Run(ctx) })
+	// collection across the fleet. See docs/architecture/scancode.md.
+	//
+	// v0.27.6: options built via the shared ScancodeOptionsFromConfig
+	// mapping so this spawn site and the dedicated
+	// `aveloxis scancode-worker` command can never drift.
+	//
+	// scancode_workers: 0 (EXPLICIT in aveloxis.json — an absent key
+	// keeps the DefaultConfig value of 2) disables the pool on this
+	// process. That's the dedicated-scancode-host recipe: the primary
+	// server sets 0 and the adjacent machine runs
+	// `aveloxis scancode-worker` against the shared DB. See
+	// docs/guide/dedicated-scancode-host.md. Pre-v0.27.6 an explicit
+	// 0 was silently clamped to 2 by the accessor — surprise workers
+	// on a host the operator tried to opt out.
+	if s.cfg.Collection.ScancodeWorkers == 0 {
+		s.logger.Info("scancode worker disabled on this process (scancode_workers: 0) — run `aveloxis scancode-worker` on a dedicated host instead")
+	} else {
+		scancodeWorker := collector.NewScancodeWorker(
+			s.store, s.logger,
+			collector.ScancodeOptionsFromConfig(s.cfg.Collection),
+		)
+		safego.Go(s.logger, "scancode-worker", func() { scancodeWorker.Run(ctx) })
+	}
 
 	// v0.24.0 — DistributionWorker goroutine. Off by default; only
 	// spawned when collection.distribution_tracking_enabled = true.
@@ -1037,56 +1046,65 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	}
 	analysisResult = aResult
 
-	// Phase 4b: OpenSSF Scorecard — runs locally against the retained temp clone.
-	// Local execution is much faster than remote mode: scorecard skips cloning
-	// and runs many checks (Binary-Artifacts, Pinned-Dependencies, etc.) purely
-	// against local files. API-dependent checks (Code-Review, Maintained, etc.)
-	// still need GITHUB_TOKEN but make far fewer calls (~20-50 vs ~150-300).
-	// No concurrency semaphore needed — local mode is mostly disk I/O, and the
-	// small number of remaining API calls is handled by MarkDepleted so the key
-	// pool rotates past used tokens.
-	//
-	// The temp clone is cleaned up after scorecard finishes, regardless of outcome.
-	{
-		repoURL := fmt.Sprintf("https://%s/%s/%s",
-			platformHostForModel(repo.Platform), repo.Owner, repo.Name)
-
-		// Determine the local clone path from analysis result.
-		localPath := ""
-		if analysisResult != nil && analysisResult.ClonePath != "" {
-			localPath = analysisResult.ClonePath
-		}
-
-		token := ""
-		var usedKey *platform.APIKey
-		if s.ghKeys != nil {
-			if key, err := s.ghKeys.GetKey(ctx); err == nil {
-				token = key.Token
-				usedKey = key
-			}
-		}
-		_, scErr := collector.RunScorecard(ctx, s.store, repoID, repoURL, localPath, token, s.logger)
-		if scErr != nil {
-			s.logger.Warn("scorecard failed", "repo_id", repoID, "error", scErr)
-		}
-
-		// Mark the token as depleted. Local mode makes fewer API calls
-		// (~20-50 vs ~150-300 in remote mode), so the penalty is reduced.
-		if usedKey != nil && s.ghKeys != nil {
-			s.ghKeys.MarkDepleted(usedKey, 100)
-		}
-
-		// Clean up the retained temp clone now that scorecard is done.
-		if localPath != "" {
-			if err := os.RemoveAll(localPath); err != nil {
-				s.logger.Warn("failed to remove retained analysis clone", "path", localPath, "error", err)
-			} else {
-				s.logger.Info("removed retained analysis clone after scorecard", "path", localPath)
-			}
-		}
+	// Phase 4b: OpenSSF Scorecard. Extracted to runScorecardPhase
+	// (v0.27.5) — remote-primary for GitHub with a local backstop
+	// against the retained temp clone; local-only for GitLab/generic.
+	// Determine the local clone path from analysis result.
+	localPath := ""
+	if analysisResult != nil && analysisResult.ClonePath != "" {
+		localPath = analysisResult.ClonePath
 	}
+	s.runScorecardPhase(ctx, repoID, repo, localPath)
 
 	return facadeResult, analysisResult
+}
+
+// runScorecardPhase is Phase 4b of the per-repo pipeline (v0.27.5 —
+// extracted from runFacadeAndAnalysis).
+//
+// Mode order: GitHub repos run REMOTE-primary (--repo, full ~18-check
+// set, ~40 API calls measured) with the retained analysis clone as the
+// LOCAL backstop on error/timeout (--local, ~11 checks, 0 API calls —
+// 11 checks beat none). GitLab and generic-git repos run local only
+// (scorecard's GitLab remote support is immature).
+//
+// Tokens: scorecard receives a comma-separated GITHUB_TOKEN built from
+// the pool (collection.scorecard_token_count; 0 = all tokens) and
+// round-robins it per request. NO key checkout happens — the
+// pre-v0.27.5 GetKey + MarkDepleted pattern is gone: checking one key
+// out starved it against 40 collection workers and was the measured
+// cause of the multi-DAY remote hangs (scorecard sleeps through the
+// single token's rate-limit reset).
+//
+// The retained temp clone is cleaned up after scorecard finishes,
+// regardless of outcome.
+func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *model.Repo, analysisClonePath string) {
+	repoURL := fmt.Sprintf("https://%s/%s/%s",
+		platformHostForModel(repo.Platform), repo.Owner, repo.Name)
+
+	token, instrumentToken := collector.ScorecardTokens(
+		s.ghKeys, s.cfg.Collection.ScorecardTokenCountOrDefault())
+
+	_, scErr := collector.RunScorecard(ctx, s.store, repoID, collector.ScorecardOptions{
+		RepoURL:         repoURL,
+		LocalPath:       analysisClonePath,
+		RemotePrimary:   repo.Platform == model.PlatformGitHub,
+		Timeout:         s.cfg.Collection.ScorecardTimeout(),
+		GithubToken:     token,
+		InstrumentToken: instrumentToken,
+	}, s.logger)
+	if scErr != nil {
+		s.logger.Warn("scorecard failed", "repo_id", repoID, "error", scErr)
+	}
+
+	// Clean up the retained temp clone now that scorecard is done.
+	if analysisClonePath != "" {
+		if err := os.RemoveAll(analysisClonePath); err != nil {
+			s.logger.Warn("failed to remove retained analysis clone", "path", analysisClonePath, "error", err)
+		} else {
+			s.logger.Info("removed retained analysis clone after scorecard", "path", analysisClonePath)
+		}
+	}
 }
 
 // runCommitResolution resolves git commit emails to GitHub users.
@@ -1726,7 +1744,8 @@ func (s *Scheduler) runBreadth(ctx context.Context) {
 	if s.ghKeys == nil {
 		return
 	}
-	bw := collector.NewBreadthWorker(s.store, s.ghKeys, s.logger)
+	bw := collector.NewBreadthWorker(s.store, s.ghKeys, s.logger).
+		WithFetchConcurrency(s.cfg.Collection.BreadthFetchConcurrencyOrDefault())
 	result, err := bw.Run(ctx, s.cfg.Collection.BreadthBatchSizeOrDefault(), s.cfg.Collection.BreadthCooldownDuration())
 	if err != nil {
 		s.logger.Warn("breadth worker failed", "error", err)

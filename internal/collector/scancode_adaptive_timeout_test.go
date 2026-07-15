@@ -34,17 +34,18 @@ import (
 // calling RecordScancodeTimeout vs RecordScancodeFailure.
 
 func TestRunOneGatesTimeoutFailureOnSignalKilled(t *testing.T) {
-	src, err := os.ReadFile("scancode_worker.go")
+	// v0.27.6: the timeout-vs-failure routing was consolidated into
+	// the classifyScanOutcome classifier in scancode_policy.go.
+	src, err := os.ReadFile("scancode_policy.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	code := string(src)
-	// The failure branch must inspect err.Error() (or err.String()) for
-	// the "signal: killed" substring that Go's exec package emits when
-	// a subprocess is SIGKILL'd. That's the cmd.Cancel signature when
-	// scanCtx times out.
+	// The classifier must inspect err.Error() for the "signal: killed"
+	// substring that Go's exec package emits when a subprocess is
+	// SIGKILL'd. That's the cmd.Cancel signature when scanCtx times out.
 	if !strings.Contains(code, `"signal: killed"`) {
-		t.Error("runOne must gate the timeout-vs-real-failure routing on " +
+		t.Error("classifyScanOutcome must gate the timeout-vs-real-failure routing on " +
 			"the literal substring `signal: killed` (Go's exec.ExitError " +
 			"text for a SIGKILL'd subprocess). Without the gate, a " +
 			"genuine scancode crash (`exit status 1`) would get treated " +

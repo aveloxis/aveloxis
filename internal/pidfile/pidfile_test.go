@@ -5,9 +5,39 @@ package pidfile
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
+
+// TestIsRunning_LiveProcess pins the v0.27.5 fix: the pre-fix
+// implementation called proc.Signal(nil), which errors for EVERY pid
+// ("unsupported signal type"), so IsRunning reported every process —
+// including this test's own — as dead. `aveloxis start`'s
+// already-running guard never fired and `aveloxis stop` always logged
+// "stale PID file". Caught by run-scorecard's serve-guard behavioral
+// test on first run.
+func TestIsRunning_LiveProcess(t *testing.T) {
+	if !IsRunning(os.Getpid()) {
+		t.Error("IsRunning(own pid) = false — a live process must report as running " +
+			"(pre-v0.27.5 proc.Signal(nil) bug: every process reported dead)")
+	}
+}
+
+func TestIsRunning_DeadProcess(t *testing.T) {
+	// Spawn a process that exits immediately, then check its pid.
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if IsRunning(pid) {
+		t.Errorf("IsRunning(%d) = true for an exited (reaped) process", pid)
+	}
+}
 
 func TestWrite_CreatesFile(t *testing.T) {
 	dir := t.TempDir()

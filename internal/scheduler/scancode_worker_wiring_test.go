@@ -27,18 +27,41 @@ func readSchedulerSourceForScancodeTest(t *testing.T) string {
 }
 
 func TestSchedulerConfigHasScancodeFields(t *testing.T) {
-	src := readSchedulerSourceForScancodeTest(t)
-	required := []string{
-		"ScancodeWorkers",
-		"ScancodeStartInterval",
-		"ScancodeCadence",
-		"ScancodeCloneDir",
-		"ScancodeShutdownGrace",
+	// v0.27.6: the per-knob accessor calls moved from the scheduler's
+	// spawn site into the shared collector.ScancodeOptionsFromConfig
+	// mapping (ONE mapping for both spawn sites — serve and the
+	// dedicated `aveloxis scancode-worker` command). Pin every knob
+	// there, and pin that the scheduler routes through the mapping
+	// (plus the explicit-0 disable gate for the dedicated-host
+	// recipe).
+	optSrc, err := os.ReadFile("../collector/scancode_options.go")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, field := range required {
-		if !strings.Contains(src, field) {
-			t.Errorf("scheduler.Config must declare %s. Without it, the v0.21.0 scancode worker has no way to receive its config from aveloxis.json via cmd/aveloxis/main.go.", field)
+	required := []string{
+		"ScancodeWorkersOrDefault()",
+		"ScancodeStartInterval()",
+		"ScancodeCadence()",
+		"ScancodeCloneDirOrDefault()",
+		"ScancodeShutdownGrace()",
+		"ScancodeRunTimeout()",
+		"ScancodeRunTimeoutCap()",
+		"ScancodeMaxInMemoryOrDefault()",
+		"ScancodeTimeoutCapStrikesOrDefault()",
+		"ScancodeIgnoreGlobsOrDefault()",
+	}
+	for _, accessor := range required {
+		if !strings.Contains(string(optSrc), accessor) {
+			t.Errorf("collector.ScancodeOptionsFromConfig must read %s. Without it, the corresponding aveloxis.json knob silently no-ops on BOTH spawn sites.", accessor)
 		}
+	}
+
+	src := readSchedulerSourceForScancodeTest(t)
+	if !strings.Contains(src, "ScancodeOptionsFromConfig(") {
+		t.Error("scheduler.go must build the worker's options via collector.ScancodeOptionsFromConfig — a hand-rolled literal here can drift from the `aveloxis scancode-worker` spawn site")
+	}
+	if !strings.Contains(src, "ScancodeWorkers == 0") {
+		t.Error("scheduler.go must gate the spawn on an EXPLICIT scancode_workers: 0 (the dedicated-scancode-host disable; docs/guide/dedicated-scancode-host.md)")
 	}
 }
 

@@ -329,6 +329,18 @@ type CollectionConfig struct {
 	// budget for a 73-key fleet.
 	BreadthCooldownDays int `json:"breadth_cooldown_days"`
 
+	// BreadthFetchConcurrency is the number of fetcher goroutines the
+	// contributor breadth worker runs per cycle (v0.27.8). Pre-v0.27.8
+	// the Run loop was strictly sequential — one contributor, one HTTP
+	// request in flight — so cycle throughput was bounded by HTTP RTT
+	// (~1–2 contributors/sec) regardless of API budget. With N fetchers
+	// the cycle scales ~N× until the key pool's rate limits pace it.
+	// Default 8 when unset. Raising this trades API-budget burn rate
+	// for wall-clock; the 73-key production fleet has headroom for far
+	// more, but 8 keeps a single breadth cycle from dominating the
+	// shared pool.
+	BreadthFetchConcurrency int `json:"breadth_fetch_concurrency"`
+
 	// ShutdownGraceSeconds caps how long Scheduler.Run's ctx-cancel
 	// branch waits for in-flight workers to finish before closing the
 	// pgx pool. Default 10 (seconds) when unset. Pre-v0.20.0 the wait
@@ -353,6 +365,16 @@ type CollectionConfig struct {
 	// load. Operators on machines with spare CPU cores should raise
 	// this (operator running aveloxis_large at 64 cores has tested 12
 	// without issues).
+	//
+	// v0.27.6: an EXPLICIT `"scancode_workers": 0` in aveloxis.json
+	// disables the scancode pool on `aveloxis serve` entirely — the
+	// dedicated-scancode-host recipe (the adjacent machine runs
+	// `aveloxis scancode-worker` against the shared DB; see
+	// docs/guide/dedicated-scancode-host.md). An ABSENT key keeps the
+	// default of 2 (config.Load overlays aveloxis.json onto
+	// DefaultConfig, so only a written 0 reaches the scheduler's
+	// disable gate). Pre-v0.27.6 an explicit 0 was silently clamped
+	// to 2.
 	ScancodeWorkers int `json:"scancode_workers"`
 
 	// ScancodeStartIntervalSec is the minimum time between consecutive
@@ -467,6 +489,58 @@ type CollectionConfig struct {
 	// fall back to the default; the accessor clamps so a bogus
 	// value can't reach the scancode subprocess.
 	ScancodeMaxInMemory int `json:"scancode_max_in_memory"`
+
+	// ScorecardTimeoutMinutes is the per-ATTEMPT wall-clock cap for a
+	// single OpenSSF Scorecard invocation (v0.27.5). Default 15
+	// minutes when unset. The remote-primary phase applies it to the
+	// remote attempt AND, when a fallback fires, again to the local
+	// attempt — so a repo can hold a scorecard slot for at most
+	// 2×timeout. Motivated by the production multi-DAY hang class:
+	// remote scorecard with a single shared token sleeps through
+	// rate-limit resets; the timeout converts "hung for days" into
+	// "fell back to local mode after 15 minutes" (11 checks beat
+	// none).
+	ScorecardTimeoutMinutes int `json:"scorecard_timeout_minutes"`
+
+	// ScorecardTokenCount caps how many key-pool tokens are handed to
+	// scorecard as a comma-separated GITHUB_TOKEN (scorecard
+	// round-robins the list per request). Default 0 = ALL non-invalid
+	// pool tokens; N>0 = the first N. Multi-token is what makes remote
+	// mode viable at fleet scale — a single token shared with 40
+	// collection workers is the measured cause of the multi-day remote
+	// hangs (scorecard sleeps until the token's reset). Negative
+	// values collapse to 0 (all tokens).
+	ScorecardTokenCount int `json:"scorecard_token_count"`
+	// ScancodeTimeoutCapStrikes (v0.27.6) is the number of CONSECUTIVE
+	// wall-clock timeouts AT the adaptive-timeout cap
+	// (scancode_run_timeout_cap_hours) after which the repo is
+	// sidelined exactly like the v0.21.4 10-strike failure path
+	// (scancode_last_run is stamped so the cadence gate excludes it
+	// for the full cadence window). Default 3 when unset or
+	// non-positive.
+	//
+	// Why this exists: the v0.23.8 adaptive-timeout design
+	// deliberately never sidelined timeout-class failures — a repo
+	// that needs more time is big, not broken. That held until the
+	// June 2026 production logs showed pytorch/docs and
+	// WHO/smart-html claimed 27× EACH: stretched timeout reaches the
+	// 24h cap → "signal: killed" → RecordScancodeTimeout (grows the
+	// next timeout, which is already capped) → re-claimed → repeat
+	// forever. Once a repo times out at the cap, no bigger timeout is
+	// coming; N consecutive at-cap timeouts is proof the repo cannot
+	// be scanned within the operator's budget. The diagnostic trail
+	// stays in scancode_timeout_attempts (never reset by the
+	// sideline).
+	ScancodeTimeoutCapStrikes int `json:"scancode_timeout_cap_strikes"`
+
+	// ScancodeIgnoreGlobs (v0.27.6) is an optional list of path globs
+	// passed to the scancode subprocess as repeated `--ignore <glob>`
+	// flags. Empty by default (no flags added — identical behavior to
+	// pre-v0.27.6). Operators use it to exclude generated or vendored
+	// trees fleet-wide (e.g. "*.min.js", "*/node_modules/*",
+	// "*/docs/_build/*") without waiting for the per-repo
+	// generated-content skip policy to trigger.
+	ScancodeIgnoreGlobs []string `json:"scancode_ignore_globs"`
 
 	// PhaseWatchdogMinutes controls the v0.22.4 observation watchdog's
 	// stall threshold. If staging row count for a repo does not grow
@@ -757,6 +831,16 @@ func (c *CollectionConfig) BreadthCooldownDuration() time.Duration {
 	return time.Duration(c.BreadthCooldownDays) * 24 * time.Hour
 }
 
+// BreadthFetchConcurrencyOrDefault returns BreadthFetchConcurrency or
+// 8 when unset/invalid — the v0.27.8 fetcher-pool size for the
+// contributor breadth worker.
+func (c *CollectionConfig) BreadthFetchConcurrencyOrDefault() int {
+	if c.BreadthFetchConcurrency <= 0 {
+		return 8
+	}
+	return c.BreadthFetchConcurrency
+}
+
 // DistributionTrackingInterval converts DistributionTrackingIntervalDays
 // to a time.Duration. Falls back to 180 days (6 months) when unset —
 // the v0.24.0 design default.
@@ -909,6 +993,54 @@ func (c *CollectionConfig) ScancodeMaxInMemoryOrDefault() int {
 	return c.ScancodeMaxInMemory
 }
 
+// ScorecardTimeout returns the per-attempt wall-clock cap for a
+// single scorecard invocation (v0.27.5). Defaults to 15 minutes when
+// unset or non-positive. Applied per ATTEMPT: the remote attempt gets
+// the full window, and the local fallback (when one fires) gets a
+// fresh window of its own.
+func (c *CollectionConfig) ScorecardTimeout() time.Duration {
+	if c.ScorecardTimeoutMinutes <= 0 {
+		return 15 * time.Minute
+	}
+	return time.Duration(c.ScorecardTimeoutMinutes) * time.Minute
+}
+
+// ScorecardTokenCountOrDefault returns how many pool tokens to hand
+// scorecard (v0.27.5). 0 means "all tokens" — the default. Negative
+// inputs collapse to 0 so a bogus config value can't panic a slice
+// bound downstream.
+func (c *CollectionConfig) ScorecardTokenCountOrDefault() int {
+	if c.ScorecardTokenCount < 0 {
+		return 0
+	}
+	return c.ScorecardTokenCount
+}
+
+// ScancodeTimeoutCapStrikesOrDefault returns the consecutive at-cap
+// timeout count after which a repo is sidelined (v0.27.6). Defaults
+// to 3 when unset or non-positive — there is deliberately no "0 =
+// disabled" escape hatch, because an at-cap timeout can never be
+// cured by another attempt (the timeout is already at its maximum)
+// and unlimited retries are exactly the pytorch/docs 27-claim spin
+// loop this knob exists to end.
+func (c *CollectionConfig) ScancodeTimeoutCapStrikesOrDefault() int {
+	if c.ScancodeTimeoutCapStrikes <= 0 {
+		return 3
+	}
+	return c.ScancodeTimeoutCapStrikes
+}
+
+// ScancodeIgnoreGlobsOrDefault returns the operator's scancode
+// --ignore globs, normalizing "absent" and "empty list" to nil so
+// the two JSON spellings produce identical effective behavior
+// (no --ignore flags at all). v0.27.6.
+func (c *CollectionConfig) ScancodeIgnoreGlobsOrDefault() []string {
+	if len(c.ScancodeIgnoreGlobs) == 0 {
+		return nil
+	}
+	return c.ScancodeIgnoreGlobs
+}
+
 // MailConfig configures the Gmail-backed transactional mailer
 // (v0.19.0). When GmailUser is empty the mailer is a no-op — the rest
 // of the application works without email enabled.
@@ -1031,6 +1163,7 @@ func DefaultConfig() *Config {
 			ScancodeRunTimeoutHours:      2,    // v0.23.8: base wall-clock per scan
 			ScancodeRunTimeoutCapHours:   24,   // v0.23.8: upper bound on adaptive timeout
 			ScancodeMaxInMemory:          5000, // v0.25.2: matches pre-v0.25.2 hardcoded value; bump on RAM-rich production hosts
+			ScancodeTimeoutCapStrikes:    3,    // v0.27.6: sideline after 3 consecutive at-cap timeouts (the pytorch/docs 27× spin loop)
 			// v0.24.0 DistributionWorker defaults. Off by default;
 			// 6-month cadence; modest concurrency. See CollectionConfig
 			// field docs for the full rationale.

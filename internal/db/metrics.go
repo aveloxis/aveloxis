@@ -17,8 +17,11 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ============================================================
@@ -68,7 +71,7 @@ func (s *PostgresStore) GetAllRepoGroups(ctx context.Context) ([]RepoGroupResult
 // GetAllRepos returns all repos with basic info.
 func (s *PostgresStore) GetAllRepos(ctx context.Context) ([]RepoResult, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT repo_id, repo_group_id, repo_git, repo_name, repo_owner, platform_id, COALESCE(repo_archived, false)
+		SELECT repo_id, COALESCE(repo_group_id, 0), repo_git, repo_name, repo_owner, platform_id, COALESCE(repo_archived, false)
 		FROM aveloxis_data.repos
 		ORDER BY repo_owner, repo_name`)
 	if err != nil {
@@ -89,7 +92,7 @@ func (s *PostgresStore) GetAllRepos(ctx context.Context) ([]RepoResult, error) {
 // GetReposByGroup returns repos belonging to a specific repo group.
 func (s *PostgresStore) GetReposByGroup(ctx context.Context, groupID int64) ([]RepoResult, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT repo_id, repo_group_id, repo_git, repo_name, repo_owner, platform_id, COALESCE(repo_archived, false)
+		SELECT repo_id, COALESCE(repo_group_id, 0), repo_git, repo_name, repo_owner, platform_id, COALESCE(repo_archived, false)
 		FROM aveloxis_data.repos
 		WHERE repo_group_id = $1
 		ORDER BY repo_owner, repo_name`, groupID)
@@ -112,7 +115,7 @@ func (s *PostgresStore) GetReposByGroup(ctx context.Context, groupID int64) ([]R
 func (s *PostgresStore) GetRepoByOwnerName(ctx context.Context, owner, name string) (*RepoResult, error) {
 	var r RepoResult
 	err := s.pool.QueryRow(ctx, `
-		SELECT repo_id, repo_group_id, repo_git, repo_name, repo_owner, platform_id, COALESCE(repo_archived, false)
+		SELECT repo_id, COALESCE(repo_group_id, 0), repo_git, repo_name, repo_owner, platform_id, COALESCE(repo_archived, false)
 		FROM aveloxis_data.repos
 		WHERE LOWER(repo_owner) = LOWER($1) AND LOWER(repo_name) = LOWER($2)
 		LIMIT 1`, owner, name).Scan(&r.ID, &r.GroupID, &r.GitURL, &r.Name, &r.Owner, &r.Platform, &r.Archived)
@@ -298,11 +301,11 @@ func (s *PostgresStore) AbandonedIssues(ctx context.Context, repoID int64) ([]ma
 // PRsNew returns count of new pull requests per period.
 func (s *PostgresStore) PRsNew(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
-		SELECT date_trunc($1, pr_created_at::DATE) AS date, COUNT(*) AS value, r.repo_name
+		SELECT date_trunc($1, p.created_at::DATE) AS date, COUNT(*) AS value, r.repo_name
 		FROM aveloxis_data.pull_requests p
 		JOIN aveloxis_data.repos r ON p.repo_id = r.repo_id
 		WHERE p.repo_id = $2
-		AND pr_created_at BETWEEN $3 AND $4
+		AND p.created_at BETWEEN $3 AND $4
 		GROUP BY date, r.repo_name
 		ORDER BY date`, period, repoID, begin, end)
 }
@@ -310,12 +313,12 @@ func (s *PostgresStore) PRsNew(ctx context.Context, repoID int64, period string,
 // ReviewsAccepted returns merged PRs per period.
 func (s *PostgresStore) ReviewsAccepted(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
-		SELECT date_trunc($1, pr_merged_at::DATE) AS date, COUNT(*) AS value, r.repo_name
+		SELECT date_trunc($1, p.merged_at::DATE) AS date, COUNT(*) AS value, r.repo_name
 		FROM aveloxis_data.pull_requests p
 		JOIN aveloxis_data.repos r ON p.repo_id = r.repo_id
 		WHERE p.repo_id = $2
-		AND pr_merged_at IS NOT NULL
-		AND pr_merged_at BETWEEN $3 AND $4
+		AND p.merged_at IS NOT NULL
+		AND p.merged_at BETWEEN $3 AND $4
 		GROUP BY date, r.repo_name
 		ORDER BY date`, period, repoID, begin, end)
 }
@@ -323,13 +326,13 @@ func (s *PostgresStore) ReviewsAccepted(ctx context.Context, repoID int64, perio
 // ReviewsDeclined returns closed (not merged) PRs per period.
 func (s *PostgresStore) ReviewsDeclined(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
-		SELECT date_trunc($1, pr_closed_at::DATE) AS date, COUNT(*) AS value, r.repo_name
+		SELECT date_trunc($1, p.closed_at::DATE) AS date, COUNT(*) AS value, r.repo_name
 		FROM aveloxis_data.pull_requests p
 		JOIN aveloxis_data.repos r ON p.repo_id = r.repo_id
 		WHERE p.repo_id = $2
-		AND pr_closed_at IS NOT NULL
-		AND pr_merged_at IS NULL
-		AND pr_closed_at BETWEEN $3 AND $4
+		AND p.closed_at IS NOT NULL
+		AND p.merged_at IS NULL
+		AND p.closed_at BETWEEN $3 AND $4
 		GROUP BY date, r.repo_name
 		ORDER BY date`, period, repoID, begin, end)
 }
@@ -346,14 +349,14 @@ type ReviewDurationRow struct {
 // ReviewDuration returns creation-to-merge duration for each merged PR.
 func (s *PostgresStore) ReviewDuration(ctx context.Context, repoID int64, begin, end time.Time) ([]ReviewDurationRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT p.pull_request_id, p.pr_created_at, p.pr_merged_at,
-		       EXTRACT(EPOCH FROM p.pr_merged_at - p.pr_created_at) / 86400.0 AS days,
+		SELECT p.pull_request_id, p.created_at, p.merged_at,
+		       EXTRACT(EPOCH FROM p.merged_at - p.created_at) / 86400.0 AS days,
 		       r.repo_name
 		FROM aveloxis_data.pull_requests p
 		JOIN aveloxis_data.repos r ON p.repo_id = r.repo_id
 		WHERE p.repo_id = $1
-		AND p.pr_merged_at IS NOT NULL
-		AND p.pr_created_at BETWEEN $2 AND $3
+		AND p.merged_at IS NOT NULL
+		AND p.created_at BETWEEN $2 AND $3
 		ORDER BY p.pull_request_id`, repoID, begin, end)
 	if err != nil {
 		return nil, err
@@ -383,7 +386,7 @@ func (s *PostgresStore) Committers(ctx context.Context, repoID int64, period str
 		FROM aveloxis_data.commits c
 		JOIN aveloxis_data.repos r ON c.repo_id = r.repo_id
 		WHERE c.repo_id = $2
-		AND cmt_author_date BETWEEN $3 AND $4
+		AND cmt_author_date::DATE BETWEEN $3 AND $4
 		GROUP BY date, r.repo_name
 		ORDER BY date`, period, repoID, begin, end)
 }
@@ -397,7 +400,7 @@ func (s *PostgresStore) CodeChanges(ctx context.Context, repoID int64, period st
 		FROM aveloxis_data.commits c
 		JOIN aveloxis_data.repos r ON c.repo_id = r.repo_id
 		WHERE c.repo_id = $2
-		AND cmt_author_date BETWEEN $3 AND $4
+		AND cmt_author_date::DATE BETWEEN $3 AND $4
 		GROUP BY date, r.repo_name
 		ORDER BY date`, period, repoID, begin, end)
 }
@@ -420,7 +423,7 @@ func (s *PostgresStore) CodeChangesLines(ctx context.Context, repoID int64, peri
 		FROM aveloxis_data.commits c
 		JOIN aveloxis_data.repos r ON c.repo_id = r.repo_id
 		WHERE c.repo_id = $2
-		AND cmt_author_date BETWEEN $3 AND $4
+		AND cmt_author_date::DATE BETWEEN $3 AND $4
 		GROUP BY date, r.repo_name
 		ORDER BY date`, period, repoID, begin, end)
 	if err != nil {
@@ -469,7 +472,7 @@ func (s *PostgresStore) Contributors(ctx context.Context, repoID int64, begin, e
 			       0 AS issues, 0 AS prs, 0 AS issue_comments, 0 AS pr_comments, repo_id
 			FROM aveloxis_data.commits
 			WHERE repo_id = $1 AND cmt_ght_author_id IS NOT NULL
-			AND cmt_author_date BETWEEN $2 AND $3
+			AND cmt_author_date::DATE BETWEEN $2 AND $3
 			GROUP BY cmt_ght_author_id, repo_id
 			UNION ALL
 			-- Issues opened
@@ -480,11 +483,11 @@ func (s *PostgresStore) Contributors(ctx context.Context, repoID int64, begin, e
 			GROUP BY reporter_id, repo_id
 			UNION ALL
 			-- PRs opened
-			SELECT pr_augur_contributor_id AS cntrb_id, 0, 0, COUNT(*), 0, 0, repo_id
+			SELECT author_id AS cntrb_id, 0, 0, COUNT(*), 0, 0, repo_id
 			FROM aveloxis_data.pull_requests
-			WHERE repo_id = $1 AND pr_augur_contributor_id IS NOT NULL
-			AND pr_created_at BETWEEN $2 AND $3
-			GROUP BY pr_augur_contributor_id, repo_id
+			WHERE repo_id = $1 AND author_id IS NOT NULL
+			AND created_at BETWEEN $2 AND $3
+			GROUP BY author_id, repo_id
 		) a
 		JOIN aveloxis_data.repos r ON a.repo_id = r.repo_id
 		GROUP BY cntrb_id, r.repo_name
@@ -509,12 +512,12 @@ func (s *PostgresStore) ContributorsNew(ctx context.Context, repoID int64, perio
 	return s.timeSeriesMetric(ctx, `
 		SELECT date_trunc($1, first_seen::DATE) AS date, COUNT(*) AS value, r.repo_name
 		FROM (
-			SELECT cmt_ght_author_id AS cntrb_id, MIN(cmt_author_date) AS first_seen, repo_id
+			SELECT cmt_ght_author_id AS cntrb_id, MIN(cmt_author_date::DATE) AS first_seen, repo_id
 			FROM aveloxis_data.commits
 			WHERE repo_id = $2 AND cmt_ght_author_id IS NOT NULL
 			GROUP BY cmt_ght_author_id, repo_id
 			UNION ALL
-			SELECT reporter_id, MIN(created_at), repo_id
+			SELECT reporter_id, MIN(created_at::DATE), repo_id
 			FROM aveloxis_data.issues
 			WHERE repo_id = $2 AND reporter_id IS NOT NULL AND pull_request IS NULL
 			GROUP BY reporter_id, repo_id
@@ -532,11 +535,11 @@ func (s *PostgresStore) ContributorsNew(ctx context.Context, repoID int64, perio
 // StarsTimeSeries returns star count over time from repo_info snapshots.
 func (s *PostgresStore) StarsTimeSeries(ctx context.Context, repoID int64) ([]MetricRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT data_collection_date AS date, stars_count AS value, r.repo_name
+		SELECT ri.data_collection_date AS date, ri.star_count AS value, r.repo_name
 		FROM aveloxis_data.repo_info ri
 		JOIN aveloxis_data.repos r ON ri.repo_id = r.repo_id
 		WHERE ri.repo_id = $1
-		ORDER BY data_collection_date`, repoID)
+		ORDER BY ri.data_collection_date`, repoID)
 	if err != nil {
 		return nil, err
 	}
@@ -555,11 +558,11 @@ func (s *PostgresStore) StarsTimeSeries(ctx context.Context, repoID int64) ([]Me
 // ForksTimeSeries returns fork count over time from repo_info snapshots.
 func (s *PostgresStore) ForksTimeSeries(ctx context.Context, repoID int64) ([]MetricRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT data_collection_date AS date, fork_count AS value, r.repo_name
+		SELECT ri.data_collection_date AS date, ri.fork_count AS value, r.repo_name
 		FROM aveloxis_data.repo_info ri
 		JOIN aveloxis_data.repos r ON ri.repo_id = r.repo_id
 		WHERE ri.repo_id = $1
-		ORDER BY data_collection_date`, repoID)
+		ORDER BY ri.data_collection_date`, repoID)
 	if err != nil {
 		return nil, err
 	}
@@ -579,7 +582,7 @@ func (s *PostgresStore) ForksTimeSeries(ctx context.Context, repoID int64) ([]Me
 func (s *PostgresStore) LatestCount(ctx context.Context, repoID int64, column string) (int, string, error) {
 	// Validate column name to prevent SQL injection.
 	allowed := map[string]bool{
-		"stars_count": true, "fork_count": true, "watchers_count": true,
+		"star_count": true, "fork_count": true, "watcher_count": true,
 		"commit_count": true, "issues_count": true, "pr_count": true,
 	}
 	if !allowed[column] {
@@ -594,6 +597,10 @@ func (s *PostgresStore) LatestCount(ctx context.Context, repoID int64, column st
 		WHERE ri.repo_id = $1
 		ORDER BY ri.data_collection_date DESC
 		LIMIT 1`, column), repoID).Scan(&count, &name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No repo_info snapshot yet (repo not collected) — zero, not 500.
+		return 0, "", nil
+	}
 	return count, name, err
 }
 
@@ -601,7 +608,7 @@ func (s *PostgresStore) LatestCount(ctx context.Context, repoID int64, column st
 func (s *PostgresStore) Languages(ctx context.Context, repoID int64) (string, error) {
 	var lang string
 	err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(repo_language, '')
+		SELECT COALESCE(primary_language, '')
 		FROM aveloxis_data.repos
 		WHERE repo_id = $1`, repoID).Scan(&lang)
 	return lang, err
@@ -627,14 +634,14 @@ type ReleaseRow struct {
 // Releases returns all releases for a repo.
 func (s *PostgresStore) Releases(ctx context.Context, repoID int64) ([]ReleaseRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT rl.release_id, rl.release_name, COALESCE(rl.release_description, ''),
+		SELECT rl.release_id::TEXT, rl.release_name, COALESCE(rl.release_description, ''),
 		       rl.release_author, rl.release_tag_name, COALESCE(rl.release_url, ''),
-		       rl.release_created_at, rl.release_published_at,
+		       rl.created_at, rl.published_at,
 		       r.repo_name
 		FROM aveloxis_data.releases rl
 		JOIN aveloxis_data.repos r ON rl.repo_id = r.repo_id
 		WHERE rl.repo_id = $1
-		ORDER BY rl.release_published_at DESC NULLS LAST`, repoID)
+		ORDER BY rl.published_at DESC NULLS LAST`, repoID)
 	if err != nil {
 		return nil, err
 	}
@@ -671,7 +678,7 @@ type DepRow struct {
 // Deps returns all dependencies for a repo (latest collection).
 func (s *PostgresStore) Deps(ctx context.Context, repoID int64) ([]DepRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT name, COALESCE(requirement, ''), COALESCE(dep_type, ''),
+		SELECT name, COALESCE(requirement, ''), COALESCE(type, ''),
 		       COALESCE(package_manager, ''), COALESCE(current_version, ''),
 		       COALESCE(latest_version, ''), COALESCE(libyear, 0),
 		       COALESCE(license, ''), COALESCE(purl, '')
@@ -702,7 +709,7 @@ func (s *PostgresStore) Deps(ctx context.Context, repoID int64) ([]DepRow, error
 func (s *PostgresStore) RepoMessages(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
 		SELECT date_trunc($1, msg_timestamp::DATE) AS date, COUNT(*) AS value, r.repo_name
-		FROM aveloxis_data.message m
+		FROM aveloxis_data.messages m
 		JOIN aveloxis_data.repos r ON m.repo_id = r.repo_id
 		WHERE m.repo_id = $2
 		AND msg_timestamp BETWEEN $3 AND $4
@@ -746,15 +753,15 @@ type ComplexityRow struct {
 // ProjectLanguages returns language breakdown from SCC data.
 func (s *PostgresStore) ProjectLanguages(ctx context.Context, repoID int64) ([]ComplexityRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT rl_language, COUNT(*) AS files,
-		       COALESCE(SUM(rl_code + rl_blank + rl_comment), 0) AS lines,
-		       COALESCE(SUM(rl_blank), 0) AS blanks,
-		       COALESCE(SUM(rl_comment), 0) AS comments,
-		       COALESCE(SUM(rl_code), 0) AS code,
-		       COALESCE(SUM(rl_complexity), 0) AS complexity
+		SELECT programming_language, COUNT(*) AS files,
+		       COALESCE(SUM(total_lines), 0) AS lines,
+		       COALESCE(SUM(blank_lines), 0) AS blanks,
+		       COALESCE(SUM(comment_lines), 0) AS comments,
+		       COALESCE(SUM(code_lines), 0) AS code,
+		       COALESCE(SUM(code_complexity), 0) AS complexity
 		FROM aveloxis_data.repo_labor
 		WHERE repo_id = $1
-		GROUP BY rl_language
+		GROUP BY programming_language
 		ORDER BY code DESC`, repoID)
 	if err != nil {
 		return nil, err

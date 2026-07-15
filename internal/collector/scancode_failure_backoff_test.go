@@ -20,34 +20,39 @@ import (
 
 func TestRunOneRoutesFailuresThroughRecordFailure(t *testing.T) {
 	src := readScancodeWorkerSource(t)
-	idx := strings.Index(src, "func (w *ScancodeWorker) runOne(")
-	if idx < 0 {
-		t.Fatal("cannot find runOne method")
-	}
-	tail := src[idx:]
-	endRel := strings.Index(tail[1:], "\nfunc ")
-	if endRel < 0 {
-		endRel = len(tail) - 1
-	}
-	body := tail[:1+endRel]
 
-	// runOne must call recordFailureBestEffort on its failure paths.
-	// We pin the helper name rather than counting occurrences so a
-	// future refactor (e.g. consolidating defers) doesn't trip the
-	// test for a stylistic reason.
-	if !strings.Contains(body, "recordFailureBestEffort") {
-		t.Error("runOne must call w.recordFailureBestEffort on failure paths (clone error, scancode subprocess crash, ingest error). The pre-v0.21.4 clearLockBestEffort path discarded the failure event entirely — losing the failure history, so the next claim cycle saw the row as healthy and immediately re-dispatched it. recordFailureBestEffort wraps RecordScancodeFailure which increments the counter and stamps last_failed_at for the backoff gate.")
+	// v0.27.6 decomposed runOne into phase methods. The failure
+	// routing lives in each phase: prepareClone (mkdir/clone errors),
+	// executeScan (LookPath / Start / lock-state errors), finishScan
+	// (real-failure classification + ingest errors). Every one of
+	// them must route through recordFailureBestEffort, and NONE of
+	// the pipeline may call clearLockBestEffort (that's reserved for
+	// the dispatcher's clean release).
+	for _, decl := range []string{
+		"func (w *ScancodeWorker) prepareClone(",
+		"func (w *ScancodeWorker) executeScan(",
+		"func (w *ScancodeWorker) finishScan(",
+	} {
+		body := scancodeMethodBody(t, src, decl)
+		if !strings.Contains(body, "recordFailureBestEffort") {
+			t.Errorf("%s must call w.recordFailureBestEffort on its failure paths. The pre-v0.21.4 clearLockBestEffort path discarded the failure event entirely — losing the failure history, so the next claim cycle saw the row as healthy and immediately re-dispatched it. recordFailureBestEffort wraps RecordScancodeFailure which increments the counter and stamps last_failed_at for the backoff gate.", decl)
+		}
 	}
 
-	// runOne must NOT call clearLockBestEffort on its failure
-	// paths (it's allowed at one location — the dispatcher's
-	// ctx-canceled-after-claim cleanup — but that lives in
-	// `dispatcher`, not `runOne`). Pin the actual call-site
-	// shape `w.clearLockBestEffort(` rather than the bare token,
-	// because the body slice may extend into the next function's
-	// docstring which legitimately mentions the helper name.
-	if strings.Contains(body, "w.clearLockBestEffort(") {
-		t.Error("runOne must not call w.clearLockBestEffort(...) — failure paths must route through w.recordFailureBestEffort(...) so the failure is tracked and backed off, not just silently cleared. (clearLockBestEffort is still allowed in dispatcher's ctx-canceled-after-claim cleanup, which is a clean release rather than a failure.)")
+	// The runOne pipeline must NOT call clearLockBestEffort on its
+	// failure paths (it's allowed in `dispatcher` — the
+	// ctx-canceled-after-claim cleanup — and the recovery paths).
+	// Pin the actual call-site shape `w.clearLockBestEffort(`.
+	for _, decl := range []string{
+		"func (w *ScancodeWorker) runOne(",
+		"func (w *ScancodeWorker) prepareClone(",
+		"func (w *ScancodeWorker) executeScan(",
+		"func (w *ScancodeWorker) finishScan(",
+	} {
+		body := scancodeMethodBody(t, src, decl)
+		if strings.Contains(body, "w.clearLockBestEffort(") {
+			t.Errorf("%s must not call w.clearLockBestEffort(...) — failure paths must route through w.recordFailureBestEffort(...) so the failure is tracked and backed off, not just silently cleared. (clearLockBestEffort is still allowed in dispatcher's ctx-canceled-after-claim cleanup, which is a clean release rather than a failure.)", decl)
+		}
 	}
 }
 

@@ -1350,6 +1350,12 @@ Per-file code complexity and line count metrics, typically from `scc` (Sloc Cloc
 | `repo_url` | TEXT | Computed | Git URL of the repo. |
 | | | | *Standard metadata columns* |
 
+Since v0.27.7, `repo_labor` holds only the **latest** snapshot per repo. Each analysis run atomically rotates the previous snapshot into `repo_labor_history` and inserts the fresh per-file rows in one transaction (see `docs/architecture/analysis.md`, "Snapshot rotation and history").
+
+#### repo_labor_history
+
+Prior `repo_labor` snapshots, rotated on each analysis run. Declared `LIKE repo_labor INCLUDING ALL` — identical columns, PK on `repo_labor_id` preserved, no natural-key UNIQUEs (history holds many snapshots per repo/file over time). Query it for time-series questions about a repo's code size and complexity.
+
 ---
 
 #### repo_meta

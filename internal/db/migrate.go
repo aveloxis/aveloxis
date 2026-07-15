@@ -178,6 +178,19 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// the worker kept reselecting the same dead-end users.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "cntrb_last_breadth_at", "TIMESTAMPTZ")
 
+	// v0.27.8 — index serving GetContributorsForBreadth's claim query
+	// (`ORDER BY cntrb_last_breadth_at ASC NULLS FIRST LIMIT N`). The
+	// column shipped in v0.20.17 with no index, so every breadth cycle
+	// full-sorted the contributors table — 2.3M rows on the production
+	// fleet, every 15 minutes. ASC NULLS FIRST must be explicit:
+	// Postgres's ASC default is NULLS LAST and a default-order index
+	// cannot serve this ORDER BY in either scan direction. CONCURRENTLY
+	// because contributors is on the hot write path of every collection
+	// worker. Must run after the addColumnIfMissing above.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_contributors_last_breadth",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_last_breadth
+		 ON aveloxis_data.contributors (cntrb_last_breadth_at ASC NULLS FIRST)`)
+
 	// v0.25.7 — mailing-list ingestion. New email_message + email_message_ref
 	// tables are created by schema.sql's CREATE TABLE IF NOT EXISTS on every
 	// migrate. These add the columns that land on EXISTING tables, plus the
@@ -297,6 +310,16 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// don't trigger the v0.21.4 10-strike sideline on kernel-class
 	// repos.
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_timeout_attempts", "INTEGER DEFAULT 0")
+
+	// v0.27.6 — dedicated-scancode-host + skip-policy columns.
+	// scancode_locked_host: hostname that recorded the lock; with a
+	// dedicated scancode host sharing the table, (pid, boot_id)
+	// liveness is only adjudicable on the machine that wrote it.
+	// scancode_skip_reason: why the last "run" was a no-scan skip
+	// ('generated-content' for the >5 GiB / >=90% HTML+CSS+JS
+	// policy); cleared back to '' by the next real successful scan.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_locked_host", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "scancode_skip_reason", "TEXT DEFAULT ''")
 
 	// v0.24.0 — DistributionWorker columns. Mirror the v0.21.0
 	// scancode_* triple but for the new package-distribution-evidence
@@ -1007,6 +1030,17 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_repo_created
 			ON aveloxis_data.pull_requests (repo_id, created_at)`)
 
+	// v0.27.5 — scorecard execution-mode marker. 'remote' (--repo, ~18
+	// checks) vs 'local' (--local, ~11 checks) overall scores are NOT
+	// comparable, so every check row and the __overall__ row records
+	// which mode produced it. '' = pre-v0.27.5 scan. MUST be added to
+	// BOTH the main table AND the history table: RotateScorecardToHistory
+	// does `INSERT INTO ..._history SELECT * FROM ...`, which requires
+	// identical column sets — adding the column to only one side breaks
+	// every rotation on existing fleets.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_scorecard", "scorecard_mode", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_scorecard_history", "scorecard_mode", "TEXT DEFAULT ''")
+
 	// v0.23.2: idx_staging_repo_id supports the v0.22.4 long-jobs
 	// watchdog's per-repo staging COUNT(*) query. Without this index
 	// the watchdog falls through to a parallel sequential scan of
@@ -1242,6 +1276,50 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_commits_cmt_ght_author_id
 		 ON aveloxis_data.commits (cmt_ght_author_id)
 		 WHERE cmt_ght_author_id IS NOT NULL`)
+
+	// v0.27.7 — repo_labor becomes latest-snapshot-only (the house
+	// history pattern: repo_info, repo_deps_scorecard,
+	// repo_distribution). Pre-v0.27.7 every scc analysis run INSERTed
+	// a full fresh per-file snapshot and NOTHING was ever rotated or
+	// deleted — production reached 2.0M live rows / 29 GB, growing
+	// unboundedly. Downstream consumers (explorer_repo_files /
+	// explorer_repo_languages matviews, LaborInvestmentSnapshot's
+	// COCOMO query) already filter to "latest scan per repo", so their
+	// output is unchanged by rotation.
+	//
+	// Step 1: the history table. Belt-and-suspenders — schema.sql's
+	// base DDL above already declares it; IF NOT EXISTS no-ops here.
+	// LIKE INCLUDING ALL keeps the PK on repo_labor_id. Per the
+	// v0.25.1 lesson a parent's natural-key UNIQUEs must not survive
+	// into history — repo_labor has none (audited v0.27.7: only the
+	// BIGSERIAL PK), so unlike the distribution history tables there
+	// is no DROP CONSTRAINT companion. If a UNIQUE is ever added to
+	// repo_labor, drop its inherited copy here by its auto-generated
+	// (63-char-truncated) name with IF EXISTS.
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.7 create repo_labor_history (latest-snapshot-only pattern for repo_labor)",
+		`CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor_history (
+		    LIKE aveloxis_data.repo_labor INCLUDING ALL
+		)`)
+
+	// Step 2: one-shot rotation of every NON-latest snapshot into
+	// history, batched by KEYSET WINDOWS over the repo_labor_id PK
+	// (v0.26.6 lesson — never LIMIT-rescan loops, never per-batch
+	// DISTINCT-ON global sorts). Idempotent: after the first pass only
+	// latest cohorts remain and the movable predicate matches nothing.
+	// NULL rl_analysis_date rows rotate as "oldest" whenever the repo
+	// has any dated snapshot; all-NULL repos keep their rows (see
+	// repo_labor_history.go for the full rule + rationale). Must run
+	// AFTER the v0.25.5 idx_repo_labor_repo_id_analysis_date build
+	// above — the per-row latest-cohort check is a correlated MAX
+	// served by that index. Forward-path rotation happens in
+	// ReplaceRepoLaborSnapshot from here on.
+	//
+	// Disk note for operators: moving ~90% of a 29 GB table leaves
+	// dead tuples behind — plain VACUUM won't return the space to the
+	// OS; use pg_repack or VACUUM FULL on aveloxis_data.repo_labor in
+	// a maintenance window (docs/architecture/analysis.md).
+	migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, &errs)
 
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).

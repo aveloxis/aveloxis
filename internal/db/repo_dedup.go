@@ -287,6 +287,7 @@ var loserHygieneDeletes = []string{
 	"aveloxis_data.repo_info_history",
 	"aveloxis_data.repo_deps_libyear_history",
 	"aveloxis_data.repo_deps_scorecard_history",
+	"aveloxis_data.repo_labor_history", // v0.27.7: rotated scc snapshots (no FK — LIKE doesn't copy them)
 	"aveloxis_data.repo_distribution_history",
 	"aveloxis_data.repo_distribution_manifest_history",
 	"aveloxis_scan.scancode_scans",

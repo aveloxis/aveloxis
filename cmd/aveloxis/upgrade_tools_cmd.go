@@ -5,7 +5,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 
 	"github.com/spf13/cobra"
@@ -109,39 +108,20 @@ func upgradeOne(tool collector.ExternalTool) error {
 	return collector.RunToolInstall(tool)
 }
 
-// upgradeScancode runs `pipx upgrade scancode-toolkit-mini` then
-// re-injects typecode-libmagic. Falls back to the standard install
-// path if pipx isn't available (in which case the tool was likely
-// installed via pip --user and the upgrade is a fresh install).
+// upgradeScancode delegates to the unified install/upgrade/inject
+// helper (v0.27.6): scancode is installed here (upgradeOne only runs
+// for tools on PATH), so EnsureScancodeCurrent(true) runs
+// `pipx upgrade scancode-toolkit-mini` and ALWAYS re-injects
+// typecode-libmagic (via collector.InjectTypecodeLibmagic's
+// underlying `pipx inject` — pipx upgrade may have rebuilt the venv,
+// dropping the prior injection).
+//
+// Pre-v0.27.6 this file carried its own upgrade+inject sequence while
+// the monthly CheckAndUpdateTools path ran a bare `pipx install` that
+// failed on installed packages and fell back to an uninjected
+// `pip install --user`. The three paths (install-tools, monthly
+// updater, this CLI) now share ONE implementation so they can never
+// diverge again.
 func upgradeScancode() error {
-	const pkg = "scancode-toolkit-mini"
-
-	pipxPath, err := exec.LookPath("pipx")
-	if err != nil {
-		// No pipx — fall back to the standard install path.
-		fmt.Println("pipx not found; falling back to fresh install via pip...")
-		for _, t := range collector.ExternalTools() {
-			if t.Name == "scancode" {
-				return collector.RunToolInstall(t)
-			}
-		}
-		return fmt.Errorf("scancode tool definition missing")
-	}
-
-	upgrade := exec.Command(pipxPath, "upgrade", pkg)
-	upgrade.Stdout = os.Stdout
-	upgrade.Stderr = os.Stderr
-	if err := upgrade.Run(); err != nil {
-		return fmt.Errorf("pipx upgrade %s: %w", pkg, err)
-	}
-
-	// Re-inject typecode-libmagic. Non-fatal if it fails: the upgrade
-	// succeeded; the warning will just continue to print until the
-	// operator fixes it manually.
-	if err := collector.InjectTypecodeLibmagic(pipxPath, pkg); err != nil {
-		fmt.Printf("warning: typecode-libmagic re-injection failed: %v\n", err)
-		fmt.Println("  scancode upgrade succeeded; libmagic UserWarning may continue to print.")
-		fmt.Println("  to retry: pipx inject scancode-toolkit-mini typecode-libmagic")
-	}
-	return nil
+	return collector.EnsureScancodeCurrent(true)
 }

@@ -49,21 +49,27 @@ func TestSchedulerSourceHasImmediateFirstPoll(t *testing.T) {
 	}
 }
 
-// TestSchedulerUsesLocalScorecard verifies the scheduler runs scorecard
-// locally against the retained analysis clone and marks the token as depleted
-// afterward. No concurrency semaphore needed — local mode is mostly disk I/O
-// and MarkDepleted handles token rotation for the small number of API calls.
-func TestSchedulerUsesLocalScorecard(t *testing.T) {
+// TestSchedulerScorecardPhaseContract verifies the v0.27.5 scorecard
+// phase shape: the retained analysis clone is still produced
+// (RetainClone) so the local backstop has something to run against,
+// and tokens flow to scorecard via the pooled multi-token path
+// (ScorecardTokens/AllTokens) — NOT via a per-key checkout.
+//
+// Replaces the pre-v0.27.5 TestSchedulerUsesLocalScorecard, whose
+// MarkDepleted pin covered the single-key GetKey+MarkDepleted pattern
+// that v0.27.5 deliberately removed (checking one key out and
+// depleting it was the measured cause of the multi-day remote hangs).
+func TestSchedulerScorecardPhaseContract(t *testing.T) {
 	data, err := os.ReadFile("scheduler.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(data)
-	if !strings.Contains(src, "MarkDepleted") {
-		t.Error("scheduler must mark token as depleted after scorecard (untracked API calls)")
-	}
 	if !strings.Contains(src, "RetainClone") {
-		t.Error("scheduler must set RetainClone for local scorecard execution")
+		t.Error("scheduler must set RetainClone so the scorecard local backstop has a clone to run against")
+	}
+	if !strings.Contains(src, "collector.ScorecardTokens(") {
+		t.Error("scorecard phase must build its GITHUB_TOKEN from the pool via collector.ScorecardTokens (multi-token round-robin)")
 	}
 }
 

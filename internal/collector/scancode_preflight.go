@@ -17,18 +17,29 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
-// scancode_preflight.go is the v0.25.x scancode startup health check. A
-// system-level failure of the scancode toolchain — most importantly a corrupt
-// system libmagic database (the 2026-06-09 incident: /usr/share/misc/magic.mgc
-// emitting millions of "offset invalid" warnings, producing 14+ GB of stderr
-// per repo and wedging every worker) — silently degrades the whole subsystem.
-// The preflight runs ONE scancode invocation against a tiny synthetic input at
-// startup, classifies the outcome, logs a systemic failure prominently, and
-// records it in aveloxis_ops.aveloxis_status so the operator can see it.
+// scancode_preflight.go is the scancode startup health check. A
+// system-level failure of the scancode toolchain — most importantly the
+// libmagic "offset invalid" warning-spam condition (the 2026-06-09 incident:
+// millions of warnings per load, 9.5+ GB of stderr per repo, every worker
+// wedged) — silently degrades the whole subsystem. The preflight runs ONE
+// scancode invocation against a tiny synthetic input at startup, classifies
+// the outcome, logs a systemic failure prominently, and records it in
+// aveloxis_ops.aveloxis_status.
 //
-// Awareness only (per operator direction): it does NOT disable scancode; that
-// is a deliberate follow-up. The point here is to stop the failure from being
-// invisible.
+// v0.27.6 REVISES the original awareness-only contract (see
+// scancode_remediate.go for the June 11 evidence): the preflight now also
+//
+//  1. discovers the venv's matched typecode-libmagic pair and pins it via
+//     the TYPECODE_LIBMAGIC_* env vars on every scancode subprocess (the
+//     deterministic fix for the July 2026 root cause — typecode's plugin
+//     resolution failing inside the mini venv and cross-loading a wheel
+//     .so against the system's differently-versioned compiled magic DB),
+//     injecting the wheel first when it's absent;
+//  2. runs the remediation ladder when the probe hits the libmagic
+//     fingerprint; and
+//  3. feeds the worker's toolchain health gate — while BROKEN, the
+//     dispatcher claims NOTHING and awaitHealthyToolchain re-probes every
+//     15 minutes, auto-resuming on a passing probe.
 
 const (
 	scancodePreflightTimeout   = 90 * time.Second // the health check must never hang the worker
@@ -56,21 +67,91 @@ func (w *capWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// preflight runs the scancode health check once and records the result. Called
-// from Run before the dispatcher starts claiming work.
+// preflight runs the startup health sequence: env-pair pinning, the health
+// probe, the remediation ladder on the libmagic fingerprint, status
+// recording, and the dispatcher health gate. Called from Run before the
+// dispatcher starts claiming work.
 func (w *ScancodeWorker) preflight(ctx context.Context) {
+	// v0.27.6 primary self-healing: pin the venv's matched
+	// typecode-libmagic pair on every scancode subprocess. Runs before the
+	// probe so a host that only needed the pairing probes healthy on the
+	// first try.
+	w.ensureTypecodeEnvPair(ctx)
+
+	status, detail, libmagicCorrupt := w.probeScancodeHealth(ctx)
+	if status == "" {
+		// The probe itself couldn't run (temp-dir failure). Don't claim
+		// health either way; the gate stays at its fail-open default.
+		return
+	}
+
+	if status == db.StatusBroken && libmagicCorrupt {
+		status, detail = remediateCorruptLibmagic(ctx, w.remediationDeps(), status, detail)
+	}
+
+	w.recordScancodeStatus(ctx, status, detail)
+	w.setToolchainHealth(status)
+}
+
+// remediationDeps wires the worker's real seams into the testable ladder.
+func (w *ScancodeWorker) remediationDeps() remediationDeps {
+	return remediationDeps{
+		logger:       w.logger,
+		goos:         runtime.GOOS,
+		probe:        w.probeScancodeHealth,
+		runCmd:       runLoggedCommand(w.logger),
+		discover:     discoverTypecodeLibmagic,
+		applyEnvPair: w.setTypecodeEnvPair,
+	}
+}
+
+// ensureTypecodeEnvPair discovers the wheel's matched (.so, magic.mgc) pair
+// and pins it for every scancode subprocess. When the wheel is absent it runs
+// the injection once and re-discovers. Best-effort: a host where discovery
+// fails falls back to typecode's own resolution order, and the health probe +
+// dispatcher gate remain the safety net.
+func (w *ScancodeWorker) ensureTypecodeEnvPair(ctx context.Context) {
+	if pair, ok := discoverTypecodeLibmagic(); ok {
+		w.setTypecodeEnvPair(pair)
+		w.logger.Info("scancode preflight: pinned typecode-libmagic pair on every scancode subprocess",
+			typecodeLibmagicPathEnv, pair.LibPath,
+			typecodeLibmagicDBPathEnv, pair.DBPath)
+		return
+	}
+	w.logger.Warn("scancode preflight: typecode-libmagic wheel not found in the scancode venv — injecting",
+		"command", "pipx inject "+scancodePipxPackage+" typecode-libmagic")
+	if err := runLoggedCommand(w.logger)(ctx, "pipx", "inject", scancodePipxPackage, "typecode-libmagic"); err != nil {
+		w.logger.Error("scancode preflight: typecode-libmagic injection failed",
+			"error", err,
+			"retry_hint", "pipx inject "+scancodePipxPackage+" typecode-libmagic")
+	}
+	if pair, ok := discoverTypecodeLibmagic(); ok {
+		w.setTypecodeEnvPair(pair)
+		w.logger.Info("scancode preflight: pinned typecode-libmagic pair after injection",
+			typecodeLibmagicPathEnv, pair.LibPath,
+			typecodeLibmagicDBPathEnv, pair.DBPath)
+		return
+	}
+	w.logger.Warn("scancode preflight: env pinning unavailable (wheel not discoverable) — typecode's own plugin resolution / system fallback will decide which libmagic loads")
+}
+
+// probeScancodeHealth runs one scancode invocation against a tiny synthetic
+// input and classifies the outcome. Returns ("", "", false) when the probe
+// itself could not run (the caller treats that as "unknown"). Pure with
+// respect to worker state — it records nothing; preflight and
+// awaitHealthyToolchain own the bookkeeping.
+func (w *ScancodeWorker) probeScancodeHealth(ctx context.Context) (status, detail string, libmagicCorrupt bool) {
 	scancodePath, err := exec.LookPath("scancode")
 	if err != nil {
-		status, detail := classifyScancodeHealth(false, runtime.GOOS, "", false)
-		w.recordScancodeStatus(ctx, status, detail)
-		return
+		st, d := classifyScancodeHealth(false, runtime.GOOS, "", false)
+		return st, d, false
 	}
 
 	dir, err := os.MkdirTemp(w.cloneDir, "scancode-preflight-")
 	if err != nil {
 		// Can't run the check — don't claim health either way; log and move on.
 		w.logger.Warn("scancode preflight: could not create temp dir; skipping health check", "error", err)
-		return
+		return "", "", false
 	}
 	defer os.RemoveAll(dir)
 	// One trivial file with a recognizable license/copyright line so scancode
@@ -88,6 +169,10 @@ func (w *ScancodeWorker) preflight(ctx context.Context) {
 		"--max-in-memory", strconv.Itoa(w.maxInMemory),
 		dir,
 	)
+	// v0.27.6: the probe runs with the same pinned typecode env pair as the
+	// real scans — probing a DIFFERENT libmagic than the scans would use
+	// makes the health verdict meaningless.
+	cmd.Env = w.scancodeEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -102,8 +187,43 @@ func (w *ScancodeWorker) preflight(ctx context.Context) {
 	_ = cmd.Run() // non-zero exit is expected on a broken toolchain; we classify from stderr + output
 
 	_, _, jsonOK := salvageScancodeOutput(outputPath)
-	status, detail := classifyScancodeHealth(true, runtime.GOOS, string(stderr.buf), jsonOK)
-	w.recordScancodeStatus(ctx, status, detail)
+	libmagicCorrupt = countLibmagicWarnings(string(stderr.buf)) >= scancodePreflightRepeatN
+	status, detail = classifyScancodeHealth(true, runtime.GOOS, string(stderr.buf), jsonOK)
+	return status, detail, libmagicCorrupt
+}
+
+// setToolchainHealth flips the dispatcher gate from a recorded status.
+func (w *ScancodeWorker) setToolchainHealth(status string) {
+	w.healthy.Store(status == db.StatusOK)
+}
+
+// awaitHealthyToolchain parks the dispatcher while the toolchain is BROKEN:
+// one WARN on entering the pause, a re-probe every healthRecheck (15 min in
+// production), one INFO on exit — the v0.25.0 distribution-dispatcher pause
+// pattern. An operator fixing the host out-of-band (or the remediation env
+// pairing taking effect after a venv change) auto-resumes claims without a
+// restart.
+func (w *ScancodeWorker) awaitHealthyToolchain(ctx context.Context) {
+	w.logger.Warn("scancode dispatcher paused — toolchain BROKEN; claiming NOTHING until a health probe passes",
+		"recheck_interval", w.healthRecheck.String())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(w.healthRecheck):
+		}
+		status, detail, _ := w.probeScancodeHealth(ctx)
+		if status == "" {
+			// Probe couldn't run; stay paused and try again next tick.
+			continue
+		}
+		w.recordScancodeStatus(ctx, status, detail)
+		w.setToolchainHealth(status)
+		if status == db.StatusOK {
+			w.logger.Info("scancode dispatcher resuming — health probe passed")
+			return
+		}
+	}
 }
 
 // recordScancodeStatus logs the outcome (prominently when broken) and upserts
@@ -114,9 +234,14 @@ func (w *ScancodeWorker) recordScancodeStatus(ctx context.Context, status, detai
 		w.logger.Info("scancode preflight: healthy", "status", status)
 	default:
 		// Prominent: this means scancode will not produce useful results until
-		// the operator acts.
+		// the operator acts (and, as of v0.27.6, that the dispatcher is gated).
 		w.logger.Error("scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed",
 			"status", status, "detail", detail)
+	}
+	// Defensive nil guard: the behavioral tests drive the health gate
+	// without a database; production always has a store.
+	if w.store == nil {
+		return
 	}
 	if err := w.store.SetAveloxisStatus(ctx, scancodeStatusName, status, detail, scancodeStatusSource); err != nil {
 		w.logger.Warn("scancode preflight: failed to record status", "error", err)
@@ -131,10 +256,14 @@ func classifyScancodeHealth(installed bool, goos, stderr string, jsonValid bool)
 		return db.StatusNotInstalled,
 			"scancode binary not found on PATH — run 'aveloxis install-tools'"
 	}
-	// Corrupt libmagic database — the same failure on Linux and macOS. scancode
-	// (typecode → python-magic → libmagic) spams 'magic.mgc, NNNN: Warning:
-	// offset ... invalid' at enormous volume, bogging scans down until the
-	// wall-clock timeout SIGKILLs them (14+ GB stderr per repo, 2026-06-09).
+	// libmagic magic-database mismatch/corruption — the same failure shape on
+	// Linux and macOS. scancode (typecode → python-magic → libmagic) spams
+	// 'magic.mgc, NNNN: Warning: offset ... invalid' at enormous volume,
+	// bogging scans down until the wall-clock timeout SIGKILLs them (14+ GB
+	// stderr per repo, 2026-06-09). July 2026 RCA: the usual cause is a
+	// version-mismatched wheel .so reading a foreign compiled magic.mgc —
+	// fixed deterministically by the TYPECODE_LIBMAGIC_* env pairing the
+	// v0.27.6 preflight pins (see scancode_remediate.go).
 	//
 	// VOLUME, not presence, is the signal. A healthy/repaired libmagic — e.g.
 	// after `aveloxis upgrade-tools` injects typecode-libmagic, or on a host
@@ -177,8 +306,10 @@ func classifyScancodeHealth(installed bool, goos, stderr string, jsonValid bool)
 
 // osLibmagicHint returns an OS-appropriate fallback remediation for a corrupt
 // libmagic database. The primary fix ('aveloxis upgrade-tools' injects
-// typecode-libmagic into the scancode venv) is cross-OS; this is the
-// reinstall-the-system-library escape hatch, which differs per platform.
+// typecode-libmagic into the scancode venv; the v0.27.6 preflight pins the
+// wheel pair via TYPECODE_LIBMAGIC_* env vars automatically) is cross-OS;
+// this is the reinstall-the-system-library escape hatch, which differs per
+// platform. v0.27.6: never executed automatically — advice only.
 func osLibmagicHint(goos string) string {
 	switch goos {
 	case "darwin":

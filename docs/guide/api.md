@@ -570,7 +570,8 @@ Admin-only:
   (last-admin guard).
 - `GET /api/v1/admin/groups/pending` — pending groups awaiting
   approval, with requester login/email and repo/org counts.
-- `POST /api/v1/admin/groups/{groupID}/approve` (or `/reject`) —
+- `POST /api/v1/admin/groups/{groupID}/{decision}` where decision is
+  `approve` or `reject` —
   decide a pending group. Approval bulk-enqueues the group's repos
   for collection (same machinery as the server-rendered admin UI).
 - `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`.

@@ -1331,6 +1331,66 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// See msg_ref_metadata.go.
 	ensureMsgRefMetadata(ctx, pg, logger, &errs)
 
+	// v0.27.17 — repo_groups consolidation. The lazy 'Default'-group
+	// creation used a bare ON CONFLICT DO NOTHING with NO unique on
+	// rg_name, so the INSERT succeeded on EVERY UpsertRepo call with
+	// GroupID=0: production accumulated 93,912 'Default' groups (one
+	// per repo), making almost every repo its own singleton group in
+	// every repo_group_id rollup (dm_repo_group_*, rg-name metric
+	// routes, 8Knot). Consolidate per rg_name to the MIN id, repoint
+	// every FK table, hygiene-delete the dm_repo_group_* rows of the
+	// losers (rebuilt by the weekly aggregate pass), delete the loser
+	// groups, THEN create uq_repo_groups_rg_name (after dedup —
+	// schema-DDL-ordering rule: NOT in schema.sql). All idempotent.
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.17 repoint repos.repo_group_id to canonical group per rg_name",
+		`UPDATE aveloxis_data.repos r SET repo_group_id = c.canon
+		 FROM aveloxis_data.repo_groups g,
+		      (SELECT rg_name, MIN(repo_group_id) AS canon
+		       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+		 WHERE g.repo_group_id = r.repo_group_id
+		   AND g.rg_name = c.rg_name AND r.repo_group_id <> c.canon`)
+	for _, tbl := range []string{
+		"aveloxis_data.repo_groups_list_serve",
+		"aveloxis_data.email_message",
+		"aveloxis_data.email_message_ref",
+		"aveloxis_data.repo_group_insights",
+	} {
+		execMigrationStep(ctx, pg, logger, &errs,
+			"v0.27.17 repoint "+tbl+".repo_group_id to canonical group",
+			`UPDATE `+tbl+` t SET repo_group_id = c.canon
+			 FROM aveloxis_data.repo_groups g,
+			      (SELECT rg_name, MIN(repo_group_id) AS canon
+			       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+			 WHERE g.repo_group_id = t.repo_group_id
+			   AND g.rg_name = c.rg_name AND t.repo_group_id <> c.canon`)
+	}
+	for _, tbl := range []string{
+		"aveloxis_data.dm_repo_group_annual",
+		"aveloxis_data.dm_repo_group_monthly",
+		"aveloxis_data.dm_repo_group_weekly",
+	} {
+		execMigrationStep(ctx, pg, logger, &errs,
+			"v0.27.17 drop "+tbl+" rows of consolidated loser groups (weekly rebuild recomputes)",
+			`DELETE FROM `+tbl+` t
+			 WHERE EXISTS (
+			   SELECT 1 FROM aveloxis_data.repo_groups g
+			   JOIN (SELECT rg_name, MIN(repo_group_id) AS canon
+			         FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+			     ON c.rg_name = g.rg_name
+			   WHERE g.repo_group_id = t.repo_group_id AND g.repo_group_id <> c.canon)`)
+	}
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.17 delete consolidated loser repo_groups rows",
+		`DELETE FROM aveloxis_data.repo_groups g
+		 WHERE g.repo_group_id <> (
+		   SELECT MIN(g2.repo_group_id) FROM aveloxis_data.repo_groups g2
+		   WHERE g2.rg_name = g.rg_name)`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs,
+		"aveloxis_data", "uq_repo_groups_rg_name",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repo_groups_rg_name
+		 ON aveloxis_data.repo_groups (rg_name)`)
+
 	// v0.27.11 — vulnerability version-resolution accuracy. Every
 	// finding carries the raw manifest requirement and how the scanned
 	// version was chosen ('locked'/'exact'/'bounded-range'/

@@ -50,9 +50,17 @@ func TestLibyearRotationCalledBeforeInsert(t *testing.T) {
 	if idx < 0 {
 		t.Fatal("cannot find scanLibyear function")
 	}
-	fnBody := code[idx : idx+800]
+	fnBody := code[idx : idx+1600]
 
 	if !strings.Contains(fnBody, "RotateLibyearToHistory") {
 		t.Error("scanLibyear must call RotateLibyearToHistory before inserting fresh data")
+	}
+	// v0.27.17: a FAILED rotation must abort the pass, not warn and
+	// insert on top of the un-rotated snapshot — the tables have no
+	// unique arbiter, so continuing would duplicate every row.
+	rot := strings.Index(fnBody, "RotateLibyearToHistory")
+	errBranch := fnBody[rot : rot+600]
+	if !strings.Contains(errBranch, "return fmt.Errorf") {
+		t.Error("scanLibyear must ABORT (return the error) when RotateLibyearToHistory fails — inserting after a failed rotation duplicates the snapshot")
 	}
 }

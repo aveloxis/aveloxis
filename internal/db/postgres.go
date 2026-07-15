@@ -232,13 +232,21 @@ func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, websi
 	if err == nil {
 		return id, nil
 	}
-	// Create new group.
+	// Create new group. rg_name is the identity key (v0.27.17 —
+	// uq_repo_groups_rg_name); on a concurrent create the arbiter
+	// fires, RETURNING yields no row, and we return the existing
+	// group by name (rg_type is metadata, not identity).
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.repo_groups (rg_name, rg_type, rg_website, rg_description)
 		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (rg_name) DO NOTHING
 		RETURNING repo_group_id`,
 		name, rgType, website, fmt.Sprintf("Auto-created from %s", website),
 	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = s.pool.QueryRow(ctx,
+			`SELECT repo_group_id FROM aveloxis_data.repo_groups WHERE rg_name = $1`, name).Scan(&id)
+	}
 	return id, err
 }
 
@@ -270,10 +278,17 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 		// Ensure a default repo group exists if no group is specified.
 		groupID := r.GroupID
 		if groupID == 0 {
+			// v0.27.17: the arbiter is NAMED. The previous bare
+			// ON CONFLICT had no unique to arbitrate against, so this
+			// INSERT succeeded on EVERY call — production accumulated
+			// 93,912 'Default' groups (one per repo), shattering every
+			// repo_group_id rollup. With uq_repo_groups_rg_name in
+			// place the conflict fires and the lookup below (dead code
+			// until now) finally runs.
 			err := s.pool.QueryRow(ctx, `
 				INSERT INTO aveloxis_data.repo_groups (rg_name, rg_description)
 				VALUES ('Default', 'Auto-created default repo group')
-				ON CONFLICT DO NOTHING
+				ON CONFLICT (rg_name) DO NOTHING
 				RETURNING repo_group_id`).Scan(&groupID)
 			if err != nil {
 				// ON CONFLICT DO NOTHING returns no rows — look it up.

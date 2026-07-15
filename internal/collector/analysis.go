@@ -1049,8 +1049,15 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	// This ensures the main table always has the latest snapshot with current
 	// license values. Without rotation, old rows with empty licenses persist
 	// because ON CONFLICT DO NOTHING skips existing rows.
+	// v0.27.17: a failed rotation ABORTS this pass. The tables have no
+	// unique arbiter, so inserting on top of an un-rotated snapshot
+	// would duplicate every row (the old blanket ON CONFLICT DO
+	// NOTHING never protected against this — it was dead code). The
+	// next cycle retries with a fresh rotation.
 	if err := ac.store.RotateLibyearToHistory(ctx, repoID); err != nil {
-		ac.logger.Warn("failed to rotate libyear to history", "repo_id", repoID, "error", err)
+		ac.logger.Error("failed to rotate libyear to history — skipping libyear insert this cycle",
+			"repo_id", repoID, "error", err)
+		return fmt.Errorf("rotate libyear to history: %w", err)
 	}
 
 	var allDeps []libyearDep

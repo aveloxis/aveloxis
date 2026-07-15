@@ -86,6 +86,14 @@ func TestBatchInsertsHaveOnConflict(t *testing.T) {
 		"aveloxis_data.repo_sbom_scans":     true, // SBOMs accumulate per collection run
 		"aveloxis_data.repo_deps_scorecard": true, // uses RotateScorecardToHistory before insert
 		"aveloxis_data.repo_deps_libyear":   true, // uses RotateLibyearToHistory before insert
+		// v0.27.17: repo_dependencies is snapshot-replaced by the SAME
+		// RotateLibyearToHistory pass (it deletes both tables' current
+		// rows), and neither table has a unique arbiter — the old
+		// blanket ON CONFLICT DO NOTHING was dead code (the
+		// repo_labor/review_msg_ref/repo_groups class; see
+		// on_conflict_arbiter_test.go). A failed rotation now ABORTS
+		// the insert instead of writing on top of the old snapshot.
+		"aveloxis_data.repo_dependencies": true,
 		// v0.27.7: ReplaceRepoLaborSnapshot rotates the previous
 		// snapshot to repo_labor_history in the SAME transaction as
 		// the insert, so re-collection produces zero duplicates by

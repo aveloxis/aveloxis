@@ -226,7 +226,7 @@ type scorecardOutput struct {
 	Score  float64 `json:"score"`
 	Checks []struct {
 		Name    string   `json:"name"`
-		Score   int      `json:"score"`
+		Score   float64  `json:"score"` // fractional check scores must not break the parse
 		Reason  string   `json:"reason"`
 		Details []string `json:"details"`
 	} `json:"checks"`

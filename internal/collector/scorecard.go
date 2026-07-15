@@ -173,12 +173,18 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		timeout = defaultScorecardTimeout
 	}
 	start := time.Now()
+	// Repo URLs originate from operator/user input (add-repo, web GUI).
+	// slog's TextHandler quote-escapes attribute values so log forgery
+	// is not actually possible, but scrubbing CR/LF at user-influenced
+	// log sites is the house defense-in-depth pattern (see
+	// internal/api/logsafe.go, internal/web truncateForLog). v0.27.10.
+	safeRepoURL := scrubLogValue(opts.RepoURL)
 
 	if !opts.RemotePrimary {
 		// Local-only platforms (GitLab, generic git).
 		if opts.LocalPath == "" {
 			logger.Info("scorecard skipped — local-only platform with no analysis clone",
-				"repo_id", repoID, "url", opts.RepoURL)
+				"repo_id", repoID, "url", safeRepoURL)
 			return nil, nil
 		}
 		raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, opts.GithubToken, logger)
@@ -212,7 +218,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 
 	// Local backstop: 11 checks beat none. Fresh per-attempt timeout.
 	logger.Warn("scorecard remote attempt failed — falling back to local mode",
-		"repo_id", repoID, "url", opts.RepoURL, "error", remoteErr)
+		"repo_id", repoID, "url", safeRepoURL, "error", remoteErr)
 	raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, opts.GithubToken, logger)
 	if localErr != nil {
 		return nil, fmt.Errorf("scorecard remote attempt failed (%v); local fallback also failed: %w", remoteErr, localErr)

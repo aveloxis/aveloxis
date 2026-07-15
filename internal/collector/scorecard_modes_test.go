@@ -391,3 +391,21 @@ func TestScorecardTokensHelper(t *testing.T) {
 		t.Errorf("ScorecardTokens(empty, 0) = %q/%q, want empty", joined, first)
 	}
 }
+
+// TestScorecardLogSitesUseScrubbedURL pins that RunScorecard's
+// user-influenced URL log attributes go through scrubLogValue
+// (v0.27.10 defense-in-depth; CodeQL go/log-injection hygiene). The
+// raw opts.RepoURL must not appear as a log attribute value.
+func TestScorecardLogSitesUseScrubbedURL(t *testing.T) {
+	src, err := os.ReadFile("scorecard.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "safeRepoURL := scrubLogValue(opts.RepoURL)") {
+		t.Error("RunScorecard must scrub opts.RepoURL via scrubLogValue before logging it")
+	}
+	if strings.Contains(s, `"url", opts.RepoURL`) {
+		t.Error("a log site passes raw opts.RepoURL — use safeRepoURL (v0.27.10)")
+	}
+}

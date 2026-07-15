@@ -32,22 +32,42 @@ func withNextCookie(next string) *http.Request {
 }
 
 func TestPostLoginRedirectValidation(t *testing.T) {
-	s := redirectServer("http://localhost:8000")
+	// The matrix drives safeNextTarget directly: Go's own cookie
+	// transport strips backslashes (RFC 6265 excludes 0x5C), so the
+	// /\ bypass inputs cannot be delivered through AddCookie — the
+	// pure function is the testable seam for the full matrix, and the
+	// wiring test below proves postLoginRedirect consumes it.
+	const spa = "http://localhost:8000"
 	cases := []struct {
-		next, want string
+		next, want string // want "" = untrusted → blocked
 	}{
-		{"", "/dashboard"},                     // no next → legacy behavior
-		{"/groups/5", "/groups/5"},             // relative path ok
-		{"//evil.example/phish", "/dashboard"}, // scheme-relative open redirect BLOCKED
+		{"", ""},                     // empty → untrusted
+		{"/groups/5", "/groups/5"},   // relative path ok
+		{"//evil.example/phish", ""}, // scheme-relative open redirect BLOCKED
+		// Browsers normalize backslash to slash, so /\host is ALSO a
+		// protocol-relative absolute URL (CodeQL go/bad-redirect-check,
+		// fixed v0.27.10).
+		{`/\evil.example/phish`, ""},                                             // backslash protocol-relative BLOCKED
+		{"/groups/5/repos/9", "/groups/5/repos/9"},                               // deeper relative path still ok
 		{"http://localhost:8000/login.html", "http://localhost:8000/login.html"}, // configured SPA origin ok
 		{"http://localhost:8000", "http://localhost:8000"},                       // bare origin ok
-		{"http://localhost:80001/x", "/dashboard"},                               // prefix trick (extra digit) BLOCKED
-		{"https://evil.example/login.html", "/dashboard"},                        // arbitrary origin BLOCKED
+		{"http://localhost:80001/x", ""},                                         // prefix trick (extra digit) BLOCKED
+		{"https://evil.example/login.html", ""},                                  // arbitrary origin BLOCKED
 	}
 	for _, c := range cases {
-		if got := s.postLoginRedirect(withNextCookie(c.next)); got != c.want {
-			t.Errorf("next=%q → %q, want %q", c.next, got, c.want)
+		if got := safeNextTarget(c.next, spa); got != c.want {
+			t.Errorf("safeNextTarget(%q) = %q, want %q", c.next, got, c.want)
 		}
+	}
+
+	// Wiring: postLoginRedirect must route through the validator and
+	// fall back to /dashboard on untrusted input.
+	s := redirectServer(spa)
+	if got := s.postLoginRedirect(withNextCookie("/groups/5")); got != "/groups/5" {
+		t.Errorf("postLoginRedirect trusted path → %q, want /groups/5", got)
+	}
+	if got := s.postLoginRedirect(withNextCookie("//evil.example/phish")); got != "/dashboard" {
+		t.Errorf("postLoginRedirect untrusted path → %q, want /dashboard", got)
 	}
 }
 
@@ -73,4 +93,44 @@ func TestOAuthFlowCarriesNext(t *testing.T) {
 	if strings.Count(s, "s.postLoginRedirect(r)") < 2 {
 		t.Error("both OAuth callbacks must resolve their redirect via postLoginRedirect")
 	}
+}
+
+// TestOAuthNextCookiesCarryHouseAttributes pins the house cookie rule
+// (HttpOnly always; Secure unless dev_mode) on BOTH oauth_next
+// Set-Cookie emissions — the stash AND the expiry. CodeQL flagged the
+// pre-v0.27.10 clearNext for missing both attributes; deletion cookies
+// must carry the same attributes as the original.
+func TestOAuthNextCookiesCarryHouseAttributes(t *testing.T) {
+	s := redirectServer("http://localhost:8000") // DevMode=false → Secure expected
+
+	// stashNext
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/auth/github?next=/groups/5", nil)
+	s.stashNext(w, r)
+	stash := findCookie(t, w, "oauth_next")
+	if !stash.HttpOnly || !stash.Secure {
+		t.Errorf("stashNext cookie must be HttpOnly+Secure, got HttpOnly=%v Secure=%v", stash.HttpOnly, stash.Secure)
+	}
+
+	// clearNext
+	w = httptest.NewRecorder()
+	s.clearNext(w)
+	clear := findCookie(t, w, "oauth_next")
+	if !clear.HttpOnly || !clear.Secure {
+		t.Errorf("clearNext expiry cookie must be HttpOnly+Secure, got HttpOnly=%v Secure=%v", clear.HttpOnly, clear.Secure)
+	}
+	if clear.MaxAge >= 0 {
+		t.Errorf("clearNext must expire the cookie (MaxAge<0), got %d", clear.MaxAge)
+	}
+}
+
+func findCookie(t *testing.T, w *httptest.ResponseRecorder, name string) *http.Cookie {
+	t.Helper()
+	for _, c := range w.Result().Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("no %s cookie in response", name)
+	return nil
 }

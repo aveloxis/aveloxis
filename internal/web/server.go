@@ -436,16 +436,33 @@ func (s *Server) postLoginRedirect(r *http.Request) string {
 	if err != nil || c.Value == "" {
 		return "/dashboard"
 	}
-	next := c.Value
-	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
+	if target := safeNextTarget(c.Value, s.cfg.SPAURL); target != "" {
+		return target
+	}
+	s.logger.Warn("ignoring untrusted post-login next URL", "next", truncateForLog([]byte(c.Value), 120))
+	return "/dashboard"
+}
+
+// safeNextTarget validates a post-login redirect destination and
+// returns "" when it is untrusted. Extracted as a pure function
+// (v0.27.10) so the open-redirect matrix — including inputs Go's own
+// cookie transport would sanitize away — is directly testable.
+//
+// Relative paths only: browsers treat both "//host" AND "/\host" as
+// protocol-relative absolute URLs (backslash is normalized to slash),
+// so a bare leading-slash check is an open-redirect bypass
+// (CodeQL go/bad-redirect-check, fixed v0.27.10). Absolute URLs are
+// honored ONLY under the configured spa_url origin.
+func safeNextTarget(next, spaURL string) string {
+	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") &&
+		!strings.HasPrefix(next, `/\`) {
 		return next
 	}
-	if spa := strings.TrimSuffix(s.cfg.SPAURL, "/"); spa != "" &&
+	if spa := strings.TrimSuffix(spaURL, "/"); spa != "" &&
 		(next == spa || strings.HasPrefix(next, spa+"/")) {
 		return next
 	}
-	s.logger.Warn("ignoring untrusted post-login next URL", "next", truncateForLog([]byte(next), 120))
-	return "/dashboard"
+	return ""
 }
 
 // stashNext records a login flow's ?next= destination for the callback.
@@ -458,9 +475,15 @@ func (s *Server) stashNext(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// clearNext expires the oauth_next cookie once consumed.
+// clearNext expires the oauth_next cookie once consumed. The expiry
+// cookie carries the same attributes as stashNext's original — the
+// house rule (HttpOnly always; Secure unless dev_mode) applies to
+// every Set-Cookie we emit, deletions included (v0.27.10).
 func (s *Server) clearNext(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{
+		Name: "oauth_next", Value: "", Path: "/",
+		MaxAge: -1, HttpOnly: true, Secure: !s.cfg.DevMode, SameSite: http.SameSiteLaxMode,
+	})
 }
 
 func (s *Server) handleGitHubAuth(w http.ResponseWriter, r *http.Request) {

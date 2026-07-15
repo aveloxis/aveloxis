@@ -292,9 +292,16 @@ func (s *Server) handleRepoSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// v0.27.4: annotate star state when the caller presented a Bearer
+	// identity, so the GUI renders the correct toggle on search rows.
+	if info, ok := r.Context().Value(authCtxKey{}).(authInfo); ok {
+		if starred, serr := s.store.GetUserStarredRepoIDs(r.Context(), info.UserID); serr == nil {
+			for i := range repos {
+				repos[i].Starred = starred[repos[i].ID]
+			}
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	// Allow cross-origin only from localhost origins (web GUI on different port).
-	// Wildcard "*" was removed because it exposes data to any website the operator visits.
 	json.NewEncoder(w).Encode(repos)
 }
 

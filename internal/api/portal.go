@@ -17,6 +17,8 @@ package api
 
 import (
 	"encoding/json"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 	"net/http"
 	"strconv"
 	"strings"
@@ -377,9 +379,26 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo id", http.StatusBadRequest)
 		return
 	}
-	if !info.IsAdmin && !info.Scope[repoID] {
-		writeAuthError(w, http.StatusForbidden, "repository is outside your collection scope")
-		return
+	// v0.27.4 (operator decision): starring an out-of-scope repo
+	// auto-adds it to the user's implicit "Starred" group instead of
+	// 403ing. Search only surfaces already-collected repos, so this
+	// can never trigger new collection — and approval exists to gate
+	// new collection (the 50,000-repo bulk-add case), never to gate
+	// access to data we already have. Unstar needs no scope at all.
+	addedToGroup := ""
+	if r.Method != http.MethodDelete && !info.IsAdmin && !info.Scope[repoID] {
+		gid, gerr := s.store.FindOrCreateStarredGroup(r.Context(), info.UserID)
+		if gerr == nil {
+			gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
+		}
+		if gerr != nil {
+			http.Error(w, "could not add repository to your Starred group", http.StatusInternalServerError)
+			return
+		}
+		addedToGroup = db.StarredGroupName
+		// Scope changed — the user's cached token validation must
+		// re-resolve so their next data request sees the repo.
+		s.auth.invalidateAll()
 	}
 	if r.Method == http.MethodDelete {
 		err = s.store.UnstarRepo(r.Context(), info.UserID, repoID)
@@ -392,7 +411,11 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	s.homeCache.invalidate(info.UserID)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "starred": r.Method != http.MethodDelete})
+	resp := map[string]any{"ok": true, "starred": r.Method != http.MethodDelete}
+	if addedToGroup != "" {
+		resp["added_to_group"] = addedToGroup
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleHomeRepos returns the signed-in user's home-tab repo list:

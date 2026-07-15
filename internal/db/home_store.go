@@ -115,3 +115,46 @@ func (s *PostgresStore) HasDependencyData(ctx context.Context, repoID int64) (bo
 		repoID).Scan(&exists)
 	return exists, err
 }
+
+// GetUserStarredRepoIDs returns the set of repo ids userID has
+// starred — used to annotate search results with star state.
+func (s *PostgresStore) GetUserStarredRepoIDs(ctx context.Context, userID int) (map[int64]bool, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT repo_id FROM aveloxis_ops.user_repo_stars WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// StarredGroupName is the implicit per-user group that stars ride
+// into scope on. Auto-created on the first star of a repo outside the
+// user's groups; follows the normal group rules otherwise (a user can
+// see and prune it like any group).
+const StarredGroupName = "Starred"
+
+// FindOrCreateStarredGroup returns the user's Starred group id,
+// creating the group on first use. Creation goes through
+// CreateUserGroup so the v0.19.0 status rules apply uniformly — the
+// status only matters for future COLLECTION enqueues, never for
+// scope (see GetUserRepoScope).
+func (s *PostgresStore) FindOrCreateStarredGroup(ctx context.Context, userID int) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT group_id FROM aveloxis_ops.user_groups
+		WHERE user_id = $1 AND name = $2
+		ORDER BY group_id LIMIT 1`, userID, StarredGroupName).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	return s.CreateUserGroup(ctx, userID, StarredGroupName)
+}

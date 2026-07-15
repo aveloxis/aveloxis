@@ -113,7 +113,11 @@ func TestSessionTokensAndScopeEndToEnd(t *testing.T) {
 		t.Errorf("deleted token must be invalid, got %v", err)
 	}
 
-	// Scope: approved group's repo in; pending group's repo out.
+	// Scope: EVERY group's repos are in scope, pending included —
+	// operator clarification 2026-07-14: approval gates NEW COLLECTION
+	// only (the 50,000-repo bulk-add case), never visibility of
+	// already-collected data. A pending group's uncollected repos
+	// being "in scope" grants nothing until collection is approved.
 	scope, err := store.GetUserRepoScope(ctx, userID)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +129,7 @@ func TestSessionTokensAndScopeEndToEnd(t *testing.T) {
 	if !in[repoA] {
 		t.Errorf("approved-group repo %d must be in scope %v", repoA, scope)
 	}
-	if in[repoB] {
-		t.Errorf("PENDING-group repo %d must NOT be in scope %v (v0.19.0 approval workflow)", repoB, scope)
+	if !in[repoB] {
+		t.Errorf("pending-group repo %d must ALSO be in scope %v — approval gates collection, not visibility", repoB, scope)
 	}
 }

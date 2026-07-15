@@ -87,14 +87,19 @@ func TestStarRequiresIdentityAndScope(t *testing.T) {
 		t.Errorf("star without identity must 401, got %d", rec.Code)
 	}
 
-	// Out-of-scope repo → 403.
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest("PUT", "/api/v1/repos/999/star", nil)
-	req.SetPathValue("repoID", "999")
-	req.Header.Set("Authorization", "Bearer tok")
-	s.handleStarRepo(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("starring an out-of-scope repo must 403, got %d", rec.Code)
+	// Out-of-scope PUT no longer 403s — it auto-adds to the user's
+	// Starred group (operator decision 2026-07-14: approval gates NEW
+	// COLLECTION only, and stars can only target collected repos).
+	// Pin the source contract; the full flow is covered by the
+	// AVELOXIS_TEST_DB integration test.
+	src := mustReadFile(t, "portal.go")
+	for _, needle := range []string{"FindOrCreateStarredGroup", "AddRepoToGroupByID", "invalidateAll()"} {
+		if !strings.Contains(src, needle) {
+			t.Errorf("handleStarRepo's out-of-scope branch must auto-add via %s, not 403", needle)
+		}
+	}
+	if strings.Contains(src, `"repository is outside your collection scope"`) {
+		t.Error("the star 403 must be gone — out-of-scope stars auto-add to the Starred group")
 	}
 }
 

@@ -74,17 +74,20 @@ func (s *PostgresStore) DeleteSessionToken(ctx context.Context, token string) er
 	return err
 }
 
-// GetUserRepoScope returns the repo ids the user may see: every repo
-// linked into one of their APPROVED groups (v0.19.0 approval
-// workflow; pre-status rows count as approved). Admins are unscoped —
+// GetUserRepoScope returns every repo in ANY of the user's groups —
+// pending groups included. Operator clarification (2026-07-14):
+// approval exists to gate NEW COLLECTION (so nobody bulk-adds 50,000
+// uncollected repos), never to gate visibility of already-collected
+// data. A pending group's uncollected repos being "in scope" grants
+// nothing (there is no data until an admin approves the collection),
+// so the status filter was pure friction. Admins are unscoped —
 // callers check IsUserAdmin and skip this entirely (§2b).
 func (s *PostgresStore) GetUserRepoScope(ctx context.Context, userID int) ([]int64, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT DISTINCT ur.repo_id
 		FROM aveloxis_ops.user_repos ur
 		JOIN aveloxis_ops.user_groups g USING (group_id)
-		WHERE g.user_id = $1
-		  AND COALESCE(g.status, 'approved') = 'approved'`, userID)
+		WHERE g.user_id = $1`, userID)
 	if err != nil {
 		return nil, err
 	}

@@ -472,8 +472,10 @@ Token semantics:
 - Each visit to `/auth/token` mints a **new** token; existing tokens
   keep working until they expire, so long-running scripts aren't cut
   off when you log in elsewhere.
-- Your token carries **your** repository scope: requests for repos
-  outside your approved groups return a structured 403
+- Your token carries **your** repository scope — every repo in any
+  of your groups (pending included; approval gates new collection,
+  not visibility of collected data). Requests for repos outside your
+  groups return a structured 403
   (`repo_out_of_scope`) with a hint to request access via your
   groups. Administrators are unscoped.
 - Treat the token like a password. There is no self-service revoke
@@ -504,8 +506,13 @@ Token semantics:
   yet; `scanned=true` with an empty list means the repository declares
   no dependencies.
 - `PUT|DELETE /api/v1/repos/{repoID}/star` — star/unstar for the
-  signed-in user (Bearer required unconditionally; repo must be in
-  scope). Idempotent.
+  signed-in user (Bearer required unconditionally). Idempotent.
+  Starring a repo outside the caller's groups auto-adds it to their
+  implicit "Starred" group (created on first use) and the response
+  carries `added_to_group: "Starred"` — approval only ever gates NEW
+  collection, and stars can only target already-collected repos, so
+  no approval is involved. Unstarring never removes the repo from
+  the group (scope stays until the user prunes the group).
 - `GET /api/v1/home/repos?limit=20` — the home-tab list: the user's
   starred repos first (always included), then the most active repos
   from their own groups over the trailing 90 days (issues + change

@@ -28,6 +28,9 @@ type SearchRepoResult struct {
 	ID    int64  `json:"id"`
 	Owner string `json:"owner"`
 	Name  string `json:"name"`
+	// Starred is annotated by the API layer when the caller presents a
+	// Bearer identity (v0.27.4 — star toggles on search results).
+	Starred bool `json:"starred"`
 }
 
 // SearchRepos searches repos by name or owner (case-insensitive). Used by the

@@ -225,3 +225,69 @@ func mustReadFileStr(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+func TestFindOrCreateStarredGroup(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store, err := NewPostgresStore(ctx, dsn, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	suffix := time.Now().UnixNano()
+	var userID int
+	if err := store.pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_ops.users (login_name, oauth_provider, email)
+		VALUES ($1, 'github', '') RETURNING user_id`,
+		fmt.Sprintf("_avstargrp_%d", suffix)).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	var repoID int64
+	if err := store.pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id)
+		VALUES ($1, '_avstargrp', $2, 1) RETURNING repo_id`,
+		fmt.Sprintf("https://github.com/_avstargrp/r%d", suffix),
+		fmt.Sprintf("r%d", suffix)).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1`, repoID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id = $1`, userID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, userID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+	})
+
+	// First call creates; second call reuses — never a duplicate group.
+	g1, err := store.FindOrCreateStarredGroup(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2, err := store.FindOrCreateStarredGroup(ctx, userID)
+	if err != nil || g1 != g2 {
+		t.Fatalf("Starred group must be reused: %d vs %d (err=%v)", g1, g2, err)
+	}
+
+	// The star auto-add flow: repo added to the Starred group → in scope
+	// even though the group is PENDING (non-admin user, v0.19.0 rules).
+	if err := store.AddRepoToGroupByID(ctx, g1, repoID); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := store.GetUserRepoScope(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, id := range scope {
+		if id == repoID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a repo starred into the (pending) Starred group must be in scope — approval gates collection, not visibility")
+	}
+}

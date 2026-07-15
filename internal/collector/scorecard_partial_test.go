@@ -9,11 +9,15 @@ import (
 	"testing"
 )
 
-// TestScorecardParsesPartialResults verifies that RunScorecard parses the
-// JSON output even when scorecard exits with status 1 (some checks failed).
-// Scorecard produces valid JSON with scores for successful checks plus
-// error details for failed ones. Treating exit 1 as a total failure
-// discards all the good data.
+// TestScorecardParsesPartialResults verifies that the scorecard invoke
+// half parses the JSON output even when scorecard exits with status 1
+// (some checks failed). Scorecard produces valid JSON with scores for
+// successful checks plus error details for failed ones. Treating exit 1
+// as a total failure discards all the good data.
+//
+// v0.27.5: the subprocess handling moved from RunScorecard into
+// invokeScorecard (the invoke/persist split); this pin moved with it —
+// same contract, new home.
 func TestScorecardParsesPartialResults(t *testing.T) {
 	src, err := os.ReadFile("scorecard.go")
 	if err != nil {
@@ -21,11 +25,11 @@ func TestScorecardParsesPartialResults(t *testing.T) {
 	}
 	code := string(src)
 
-	idx := strings.Index(code, "func RunScorecard(")
+	idx := strings.Index(code, "func invokeScorecard(")
 	if idx < 0 {
-		t.Fatal("cannot find RunScorecard function")
+		t.Fatal("cannot find invokeScorecard function (the v0.27.5 invoke half)")
 	}
-	// Scan only RunScorecard's body, bounded by the next top-level
+	// Scan only invokeScorecard's body, bounded by the next top-level
 	// `func ` definition after it. The pre-v0.23.7 version capped
 	// at a fixed byte offset (3000), which was fragile — adding
 	// v0.23.7 cleanup comments pushed the `runErr` token past the
@@ -35,8 +39,8 @@ func TestScorecardParsesPartialResults(t *testing.T) {
 	// a false-positive. Bounding by the next `func ` keyword is
 	// resilient to both.
 	fnBody := code[idx:]
-	if nextFn := strings.Index(fnBody[len("func RunScorecard("):], "\nfunc "); nextFn > 0 {
-		fnBody = fnBody[:len("func RunScorecard(")+nextFn]
+	if nextFn := strings.Index(fnBody[len("func invokeScorecard("):], "\nfunc "); nextFn > 0 {
+		fnBody = fnBody[:len("func invokeScorecard(")+nextFn]
 	}
 
 	// The old pattern was:
@@ -46,13 +50,13 @@ func TestScorecardParsesPartialResults(t *testing.T) {
 	// The correct pattern: capture cmd.Run() error, then attempt JSON parse.
 	// Only return error if JSON parse fails AND cmd.Run() failed.
 	if strings.Contains(fnBody, `if err := cmd.Run(); err != nil`) {
-		t.Error("RunScorecard must not return error immediately on non-zero exit — " +
+		t.Error("invokeScorecard must not return error immediately on non-zero exit — " +
 			"scorecard produces valid JSON with partial results even when " +
 			"individual checks fail (exit 1). Capture error, then parse stdout.")
 	}
 	// Must capture the run error into a variable and continue to JSON parsing.
 	if !strings.Contains(fnBody, "runErr") && !strings.Contains(fnBody, "cmdErr") {
-		t.Error("RunScorecard should capture cmd.Run() error into a named variable " +
-			"(e.g., runErr) and attempt JSON parse regardless")
+		t.Error("invokeScorecard should capture the cmd.Wait() error into a named " +
+			"variable (e.g., runErr) and attempt JSON parse regardless")
 	}
 }

@@ -38,49 +38,73 @@ func TestNewScancodeWorkerAcceptsMaxInMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(srcBytes)
-	// Constructor signature must accept the new parameter. Pin via
-	// whitespace-tolerant regex on the function signature region so
-	// gofmt column re-alignment doesn't break this.
-	re := regexp.MustCompile(`func NewScancodeWorker\([^)]+maxInMemory\s+int`)
+	// v0.27.6: the constructor takes ScancodeWorkerOptions (the
+	// 10-positional-parameter signature is gone — the second spawn
+	// site made it an accident magnet). The knob must survive as an
+	// options field, and the constructor must consume the struct.
+	re := regexp.MustCompile(`MaxInMemory\s+int`)
 	if !re.MatchString(src) {
-		t.Error("NewScancodeWorker constructor must take a maxInMemory int parameter so cmd/aveloxis/main.go can wire it from the config")
+		t.Error("ScancodeWorkerOptions must declare a MaxInMemory int field so both spawn sites can wire it from the config")
+	}
+	ctorRe := regexp.MustCompile(`func NewScancodeWorker\([^)]*opts ScancodeWorkerOptions\)`)
+	if !ctorRe.MatchString(src) {
+		t.Error("NewScancodeWorker must take a ScancodeWorkerOptions struct (v0.27.6) — a regrown positional-parameter list is the shape this test exists to prevent")
+	}
+	if !strings.Contains(src, "opts.MaxInMemory") {
+		t.Error("NewScancodeWorker must consume opts.MaxInMemory (with the non-positive clamp) — otherwise the v0.25.2 knob silently no-ops")
 	}
 }
 
 func TestRunOnePassesMaxInMemoryFromField(t *testing.T) {
-	srcBytes, err := os.ReadFile("scancode_worker.go")
+	workerBytes, err := os.ReadFile("scancode_worker.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := string(srcBytes)
+	policyBytes, err := os.ReadFile("scancode_policy.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := string(workerBytes)
+	policy := string(policyBytes)
 
 	// Negative pin: the pre-v0.25.2 hardcoded literal must be gone.
 	// Otherwise the config knob does nothing.
-	if strings.Contains(src, `"--max-in-memory", "5000"`) {
-		t.Error("scancode_worker.go still contains the hardcoded \"--max-in-memory\", \"5000\" pair — v0.25.2 must source the value from w.maxInMemory, not a literal. The config knob does nothing as long as the literal is here.")
+	for name, src := range map[string]string{"scancode_worker.go": worker, "scancode_policy.go": policy} {
+		if strings.Contains(src, `"--max-in-memory", "5000"`) {
+			t.Errorf("%s still contains the hardcoded \"--max-in-memory\", \"5000\" pair — v0.25.2 must source the value from w.maxInMemory, not a literal. The config knob does nothing as long as the literal is here.", name)
+		}
 	}
 
-	// Positive pin: the flag is built from the worker field. Match
-	// the `--max-in-memory` flag adjacent to a strconv.Itoa or
-	// fmt.Sprintf using w.maxInMemory.
-	if !strings.Contains(src, `"--max-in-memory"`) {
-		t.Error("scancode_worker.go must still pass --max-in-memory to scancode")
+	// Positive pin: the flag is built by the scancodeArgs helper
+	// (v0.27.6 — the arg list moved to scancode_policy.go so the
+	// --ignore glob handling is behaviorally testable) and the worker
+	// feeds it w.maxInMemory.
+	if !strings.Contains(policy, `"--max-in-memory"`) {
+		t.Error("scancodeArgs (scancode_policy.go) must still pass --max-in-memory to scancode")
 	}
-	if !strings.Contains(src, "w.maxInMemory") {
-		t.Error("runOne must reference w.maxInMemory when building the --max-in-memory flag — otherwise the value isn't operator-configurable")
+	if !strings.Contains(worker, "w.maxInMemory") {
+		t.Error("executeScan must reference w.maxInMemory when building the scancode args — otherwise the value isn't operator-configurable")
 	}
 }
 
 func TestSchedulerConfigHasScancodeMaxInMemory(t *testing.T) {
-	srcBytes, err := os.ReadFile("../scheduler/scheduler.go")
+	// v0.27.6: the accessor call moved from the scheduler spawn site
+	// into the shared collector.ScancodeOptionsFromConfig mapping
+	// (one mapping for both spawn sites). Pin the accessor there AND
+	// that the scheduler routes through the mapping.
+	optBytes, err := os.ReadFile("scancode_options.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := string(srcBytes)
-	// v0.25.37: the mirror field is gone — the scheduler reads
-	// cfg.Collection.ScancodeMaxInMemoryOrDefault() at the spawn site.
-	if !strings.Contains(src, "ScancodeMaxInMemoryOrDefault()") {
-		t.Error("the scancode spawn must read s.cfg.Collection.ScancodeMaxInMemoryOrDefault()")
+	if !strings.Contains(string(optBytes), "ScancodeMaxInMemoryOrDefault()") {
+		t.Error("ScancodeOptionsFromConfig must read c.ScancodeMaxInMemoryOrDefault()")
+	}
+	schedBytes, err := os.ReadFile("../scheduler/scheduler.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(schedBytes), "ScancodeOptionsFromConfig(") {
+		t.Error("the scheduler's scancode spawn must build options via collector.ScancodeOptionsFromConfig — a hand-rolled options literal there can drift from the `aveloxis scancode-worker` spawn site")
 	}
 }
 

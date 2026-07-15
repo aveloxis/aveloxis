@@ -76,6 +76,16 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     scancode_locked_pid     INTEGER,
     scancode_locked_boot_id TEXT,
     scancode_output_path    TEXT,
+    -- v0.27.6: hostname of the machine whose worker holds the lock.
+    -- With a dedicated scancode host (aveloxis scancode-worker) two
+    -- machines share this table; a (pid, boot_id) liveness check is
+    -- only meaningful on the machine that recorded it — a PID from
+    -- host A trivially collides with an unrelated process on host B.
+    -- recoverOrphans adjudicates liveness ONLY for own-host locks;
+    -- cross-host locks fall to the claim query's stale-lock age
+    -- window. NULL on rows locked by pre-v0.27.6 binaries (treated
+    -- as own-host for backward compatibility on single-host fleets).
+    scancode_locked_host    TEXT,
     -- v0.21.4: per-repo failure tracking for the ScancodeWorker
     -- backoff schedule. scancode_failed_attempts counts consecutive
     -- failures (reset to 0 on success). scancode_last_failed_at is
@@ -98,6 +108,16 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- Reset to 0 on successful scan (alongside the failure
     -- counter).
     scancode_timeout_attempts INTEGER DEFAULT 0,
+    -- v0.27.6: why the last scancode "run" was skipped without a scan.
+    -- '' = not skipped (a real scan ran, or never attempted).
+    -- 'generated-content' = the repo is overwhelmingly generated web
+    -- artifacts (HTML+CSS+JS >= 90% of language bytes AND > 5 GiB
+    -- total) — scanning it burns a multi-hour worker slot on
+    -- documentation output with no license signal (the pytorch/docs
+    -- / WHO/smart-html June 2026 spin loop). The skip stamps
+    -- scancode_last_run so the cadence gate applies normally; a
+    -- later successful REAL scan clears the reason back to ''.
+    scancode_skip_reason      TEXT DEFAULT '',
     -- v0.24.0: DistributionWorker state. Separate from scancode
     -- columns because the two subsystems run independently with
     -- different cadences and failure profiles. The DistributionWorker
@@ -208,6 +228,19 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributors (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_contributors_login
     ON aveloxis_data.contributors (cntrb_login) WHERE cntrb_login != '';
+
+-- v0.27.8 — serves GetContributorsForBreadth's
+-- `ORDER BY cntrb_last_breadth_at ASC NULLS FIRST LIMIT N` claim query.
+-- Declared ASC NULLS FIRST explicitly: Postgres's ASC default is NULLS
+-- LAST, and neither a forward nor a backward scan of a default-order
+-- index matches this ORDER BY — without the explicit ordering the
+-- planner full-sorts the contributors table (2.3M rows on the
+-- production fleet) every breadth cycle. Existing fleets get the
+-- CONCURRENTLY build from migrate.go; this plain form covers fresh
+-- installs (schema exec runs in a transaction, where CONCURRENTLY is
+-- not allowed).
+CREATE INDEX IF NOT EXISTS idx_contributors_last_breadth
+    ON aveloxis_data.contributors (cntrb_last_breadth_at ASC NULLS FIRST);
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_identities (
     identity_id    BIGSERIAL PRIMARY KEY,
@@ -1219,6 +1252,11 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_scorecard (
     name             TEXT DEFAULT '',
     score            TEXT DEFAULT '',
     scorecard_check_details JSONB,
+    -- v0.27.5: which execution mode produced this row. 'remote'
+    -- (--repo, ~18 checks) and 'local' (--local, ~11 checks) overall
+    -- scores are NOT comparable — different check sets. '' = pre-v0.27.5
+    -- scan (mode unrecorded; historically local-preferred).
+    scorecard_mode   TEXT DEFAULT '',
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
@@ -1256,12 +1294,25 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
+    -- v0.27.4 lifecycle: rows are never deleted; a complete scan that no
+    -- longer reports a (vuln_id, purl) pair stamps resolved_at, keeping
+    -- the historical record. NULL resolved_at = currently affected.
+    first_detected_at TIMESTAMPTZ DEFAULT NOW(),
+    last_seen_at      TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at       TIMESTAMPTZ,
     data_collection_date TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (repo_id, vuln_id, package_purl)
 );
 
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_repo_id
     ON aveloxis_data.repo_deps_vulnerabilities (repo_id);
+-- v0.27.4: serve the home tab's 90-day activity counts as tight
+-- per-repo index range probes (86,909-repo admin group sets).
+CREATE INDEX IF NOT EXISTS idx_issues_repo_created
+    ON aveloxis_data.issues (repo_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_created
+    ON aveloxis_data.pull_requests (repo_id, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_cve_id
     ON aveloxis_data.repo_deps_vulnerabilities (cve_id)
     WHERE cve_id != '';
@@ -1582,6 +1633,33 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor (
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
     data_collection_date TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================================
+-- Repo labor history (all previous scc snapshots, rotated on each
+-- analysis run)
+-- ============================================================
+-- v0.27.7: repo_labor becomes latest-snapshot-only, matching the house
+-- pattern (repo_info, repo_deps_scorecard, repo_distribution). Every
+-- scc analysis run replaces the current per-file snapshot via
+-- ReplaceRepoLaborSnapshot; prior rows rotate here. Pre-v0.27.7 the
+-- table grew unboundedly (production: 2.0M live rows / 29 GB) because
+-- every run INSERTed a fresh full snapshot and nothing was ever
+-- rotated or deleted.
+--
+-- The LIKE-INCLUDING-ALL clause keeps the PRIMARY KEY on repo_labor_id
+-- (and shares the parent's BIGSERIAL sequence, so rotated ids never
+-- collide in history). Per the v0.25.1 lesson, a parent's natural-key UNIQUE
+-- constraints must NOT survive into a history table (history holds
+-- many snapshots per logical key) — repo_labor was audited at v0.27.7
+-- and has NO unique constraints or unique indexes besides the PK, so
+-- unlike the distribution history tables there is no DROP CONSTRAINT
+-- companion here. If a UNIQUE is ever added to repo_labor, it must be
+-- dropped from this table by its auto-generated (63-char-truncated)
+-- name immediately below this CREATE; the integration tripwire
+-- TestRepoLaborHistoryHasNoNaturalKeyUniques fails if one leaks in.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor_history (
+    LIKE aveloxis_data.repo_labor INCLUDING ALL
 );
 
 -- ============================================================
@@ -1969,6 +2047,22 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repos (
     group_id       BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id) DEFERRABLE INITIALLY DEFERRED,
     PRIMARY KEY (group_id, repo_id)
 );
+
+-- v0.27.4: per-user starred repositories for the GUI home tab.
+-- v0.27.9: moved here from the repo_deps_vulnerabilities section —
+-- the block referenced aveloxis_ops.users ~700 lines before its
+-- CREATE, so the whole base-schema exec rolled back on a truly
+-- fresh database (populated scratch DBs masked it via IF NOT
+-- EXISTS). schema.sql must create every referenced table before
+-- any FK that points at it; TestSchemaCreatesTablesBeforeReferencingThem
+-- now enforces this file-wide.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
+    user_id    INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE,
+    repo_id    BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, repo_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_repo_stars_repo ON aveloxis_ops.user_repo_stars (repo_id);
 
 -- User org requests: tracks which orgs/groups a user added to a group,
 -- so the scheduler can periodically scan for new repos and add them.

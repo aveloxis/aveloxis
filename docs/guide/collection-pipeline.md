@@ -270,6 +270,8 @@ If `scc` is installed, runs `scc -f json --by-file` against the checkout. Per-fi
 - Total lines, code lines, comment lines, blank lines
 - Cyclomatic complexity
 
+Since v0.27.7, `repo_labor` holds only the **latest** snapshot per repo: each analysis run atomically rotates the previous per-file snapshot into `repo_labor_history` and inserts the fresh one in a single transaction. See `docs/architecture/analysis.md` ("Snapshot rotation and history") for the rotation semantics and the disk-reclaim operator note.
+
 If `scc` is not installed, this phase is silently skipped.
 
 ### ScanCode Toolkit (license and copyright detection)

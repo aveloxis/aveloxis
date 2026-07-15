@@ -50,6 +50,7 @@ var effectiveAccessors = map[string]func(c *CollectionConfig) any{
 	"BreadthIntervalMinutes":                      func(c *CollectionConfig) any { return c.BreadthIntervalDuration() },
 	"BreadthBatchSize":                            func(c *CollectionConfig) any { return c.BreadthBatchSizeOrDefault() },
 	"BreadthCooldownDays":                         func(c *CollectionConfig) any { return c.BreadthCooldownDuration() },
+	"BreadthFetchConcurrency":                     func(c *CollectionConfig) any { return c.BreadthFetchConcurrencyOrDefault() },
 	"DistributionTrackingIntervalDays":            func(c *CollectionConfig) any { return c.DistributionTrackingInterval() },
 	"DistributionTrackingWorkers":                 func(c *CollectionConfig) any { return c.DistributionTrackingWorkersOrDefault() },
 	"DistributionTrackingStartIntervalSec":        func(c *CollectionConfig) any { return c.DistributionTrackingStartInterval() },
@@ -63,6 +64,10 @@ var effectiveAccessors = map[string]func(c *CollectionConfig) any{
 	"ScancodeRunTimeoutHours":                     func(c *CollectionConfig) any { return c.ScancodeRunTimeout() },
 	"ScancodeRunTimeoutCapHours":                  func(c *CollectionConfig) any { return c.ScancodeRunTimeoutCap() },
 	"ScancodeMaxInMemory":                         func(c *CollectionConfig) any { return c.ScancodeMaxInMemoryOrDefault() },
+	"ScorecardTimeoutMinutes":                     func(c *CollectionConfig) any { return c.ScorecardTimeout() },
+	"ScorecardTokenCount":                         func(c *CollectionConfig) any { return c.ScorecardTokenCountOrDefault() },
+	"ScancodeTimeoutCapStrikes":                   func(c *CollectionConfig) any { return c.ScancodeTimeoutCapStrikesOrDefault() },
+	"ScancodeIgnoreGlobs":                         func(c *CollectionConfig) any { return c.ScancodeIgnoreGlobsOrDefault() },
 	"MatviewRebuildDay":                           func(c *CollectionConfig) any { return c.MatviewRebuildWeekday() },
 }
 

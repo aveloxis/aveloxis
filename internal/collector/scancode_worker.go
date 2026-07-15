@@ -15,21 +15,23 @@
 // per-job pipeline entirely. The new worker:
 //
 //   - Claims eligible repos via Postgres FOR UPDATE SKIP LOCKED so
-//     multiple aveloxis processes (or future shard splits) can
-//     coordinate without coordination overhead.
+//     multiple aveloxis processes (or the v0.27.6 dedicated
+//     `aveloxis scancode-worker` host) can coordinate without
+//     coordination overhead.
 //   - Re-clones each repo shallowly (git clone --depth 1) so it
 //     doesn't depend on the facade's bare clone — the two paths
 //     can run independently without lock-on-bare-clone hazards.
-//   - Persists the OS PID + kernel boot_id immediately after the
-//     scancode subprocess starts, so a crash (kill -9, OOM, host
-//     reboot) leaves recoverable state for the next startup.
+//   - Persists the OS PID + kernel boot_id + hostname immediately
+//     after the scancode subprocess starts, so a crash (kill -9, OOM,
+//     host reboot) leaves recoverable state for the next startup.
 //   - Honors a configurable 6-month default cadence (was 30 days
 //     hardcoded) because per-file license + copyright data
 //     changes rarely on the timescale we care about.
 //
 // See docs/architecture/scancode.md for the full architectural
 // write-up, the four-state recovery table, and the force-rerun
-// cookbook.
+// cookbook. docs/guide/dedicated-scancode-host.md covers running the
+// pool on its own machine.
 package collector
 
 import (
@@ -42,8 +44,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -61,9 +63,11 @@ const scancodeStderrTailBytes = 4096
 // v0.25.28: replaces the pre-fix unbounded bytes.Buffer that buffered the
 // ENTIRE stream in RAM — a corrupt host libmagic made a large repo emit 15+ GB
 // of warning spam, producing a multi-GB heap spike per failing repo AND a
-// 15 GB on-disk file. head shows the failure onset; tail shows the final
-// error / exit context. 1 MB + 256 KB retains all diagnostic value at a fixed
-// cost regardless of how much the subprocess spews.
+// 15 GB on-disk file (June 2026 observed artifacts up to 9.5 GB). head shows
+// the failure onset; tail shows the final error / exit context. 1 MB + 256 KB
+// retains all diagnostic value at a fixed cost regardless of how much the
+// subprocess spews — the on-disk repo_<id>_stderr.log can never exceed
+// ~1.3 MB plus the truncation marker (see headTailBuffer.Bytes).
 const (
 	scancodeFailHeadBytes = 1 << 20   // 1 MB
 	scancodeFailTailBytes = 256 << 10 // 256 KB
@@ -78,22 +82,22 @@ const (
 // large repos (Linux kernel mirrors ~500 MB shallow) without
 // allowing a wedged clone to consume a slot indefinitely.
 //
-// scancodeRunTimeout: 2 hours. The scancode binary's own
-// `--timeout 300` is per-file. Total wall-clock has no upstream
-// bound. 2 hours is generous for any realistic repo and prevents
-// the 2026-05-21 wedge (both worker slots stuck for 6+ hours).
-//
 // stalePidCheckInterval: 5 minutes. The in-flight cleanup
 // goroutine wakes on this cadence to clear NULL-PID lock states
 // (the v0.21.0 inconsistency window).
+//
+// scancodeHealthRecheckInterval: 15 minutes. While the toolchain is
+// BROKEN (preflight/remediation exhausted), the paused dispatcher
+// re-probes on this cadence and auto-resumes on a passing probe.
 const (
 	scancodeCloneTimeout = 30 * time.Minute
 	// scancodeRunTimeout removed in v0.23.8 — wall-clock timeout
 	// now lives on the ScancodeWorker as runTimeoutBase +
 	// runTimeoutCap, configurable via collection.scancode_run_timeout_*
 	// in aveloxis.json. See NewScancodeWorker.
-	stalePidCheckInterval = 5 * time.Minute
-	stalePidLockMaxAge    = 5 * time.Minute
+	stalePidCheckInterval         = 5 * time.Minute
+	stalePidLockMaxAge            = 5 * time.Minute
+	scancodeHealthRecheckInterval = 15 * time.Minute
 )
 
 // bootIDPath is the kernel-generated UUID that changes on every
@@ -106,27 +110,69 @@ const (
 // substitute that still detects "this is a new process".
 const bootIDPath = "/proc/sys/kernel/random/boot_id"
 
+// ScancodeWorkerOptions configures a ScancodeWorker. v0.27.6 replaces
+// NewScancodeWorker's 10-positional-parameter signature — the second
+// spawn site (`aveloxis scancode-worker`) made the positional form an
+// accident magnet. Zero values fall back to the documented defaults
+// (see NewScancodeWorker).
+type ScancodeWorkerOptions struct {
+	// Workers is the number of concurrent scancode runners. Default 2.
+	Workers int
+	// StartInterval is the minimum gap between consecutive successful
+	// claim starts (v0.21.3 pacing primitive). Default 90s.
+	StartInterval time.Duration
+	// Cadence is the minimum interval between successive scans of the
+	// same repo. Default 180 days.
+	Cadence time.Duration
+	// CloneDir is the parent directory for per-run shallow clones.
+	// Default /tmp/aveloxis-scancode.
+	CloneDir string
+	// ShutdownGrace caps how long Run waits for in-flight scans on
+	// stop. Default 0 = immediate kill (v0.23.7 contract).
+	ShutdownGrace time.Duration
+	// RunTimeoutBase / RunTimeoutCap drive the v0.23.8 adaptive
+	// per-job wall-clock timeout `min(base * 2^attempts, cap)`.
+	// Defaults 2h / 24h.
+	RunTimeoutBase time.Duration
+	RunTimeoutCap  time.Duration
+	// MaxInMemory is scancode's --max-in-memory cap. Default 5000.
+	MaxInMemory int
+	// TimeoutCapStrikes (v0.27.6) is the consecutive at-cap timeout
+	// count after which a repo is sidelined like the v0.21.4
+	// 10-strike failure path. Default 3.
+	TimeoutCapStrikes int
+	// IgnoreGlobs (v0.27.6) are operator path globs passed to
+	// scancode as repeated `--ignore <glob>` flags. Empty = none.
+	IgnoreGlobs []string
+}
+
 // ScancodeWorker is the v0.21.0 decoupled scancode runner.
 //
 // Lifecycle:
 //
 //  1. Run() probes for the scancode binary on PATH; if absent,
 //     logs once at INFO and returns (no goroutines spawned).
-//  2. recoverOrphans() runs once — examines every row with a
+//  2. preflight() runs the toolchain health probe, verifies the
+//     typecode-libmagic injection, and — on the corrupt-libmagic
+//     fingerprint — runs the v0.27.6 auto-remediation ladder. The
+//     resulting health state gates the dispatcher.
+//  3. recoverOrphans() runs once — examines every row with a
 //     non-null scancode_locked_at and applies the four-state
 //     recovery (reboot survivor / live orphan / recoverable corpse
-//     / lost run).
-//  3. dispatcher() ticks every startInterval seconds, attempts a
-//     claim, and feeds a free runner slot. The ticker (not a tight
-//     loop) is what paces clone-bandwidth bursts on operator
-//     restart.
-//  4. runner() goroutines (workerCount of them) consume jobs and
-//     call runOne(). Each runOne does: shallow clone, scancode
-//     subprocess, parse JSON output, ingest to the existing
-//     scancode_scans + scancode_file_results tables, clear lock.
-//  5. On ctx.Done(), the dispatcher exits immediately. Runners
-//     keep going until shutdownGrace elapses, at which point
-//     pending subprocesses are killed and Run() returns.
+//     / lost run). Cross-host locks are left for the owning host.
+//  4. The startup sweep removes stale repo_* clone dirs (no matching
+//     own-host lock), aged stderr logs, and leaked preflight temp
+//     dirs from the clone directory.
+//  5. dispatcher() claims eligible repos (pausing entirely while the
+//     toolchain health state is BROKEN) and feeds free runner slots,
+//     pacing consecutive starts by startInterval.
+//  6. runner() goroutines (workerCount of them) consume jobs and
+//     call runOne(). Each runOne does: generated-content skip check,
+//     shallow clone, scancode subprocess, outcome classification,
+//     ingest, completion/failure/timeout bookkeeping.
+//  7. On ctx.Done(), the dispatcher exits immediately. Runners
+//     keep going until shutdownGrace elapses, then the shutdown
+//     sweep clears all clone dirs and Run() returns.
 type ScancodeWorker struct {
 	store         *db.PostgresStore
 	logger        *slog.Logger
@@ -148,64 +194,126 @@ type ScancodeWorker struct {
 	// RAM raise this for faster monorepo scans (kernel-class repos
 	// hit the default's spill threshold within seconds).
 	maxInMemory int
+	// v0.27.6: consecutive at-cap timeout count that sidelines a
+	// repo (collection.scancode_timeout_cap_strikes, default 3).
+	timeoutCapStrikes int
+	// v0.27.6: operator --ignore globs for the scancode CLI.
+	ignoreGlobs []string
+	// v0.27.6: this machine's os.Hostname(), stamped into
+	// scancode_locked_host so a dedicated scancode host and the
+	// primary server can share the lock table. Empty when the
+	// hostname can't be resolved (liveness adjudication then falls
+	// back to pre-v0.27.6 single-host behavior).
+	hostname string
+	// v0.27.6: toolchain health gate. true = dispatcher claims
+	// normally; false = the preflight (or a mid-run re-probe)
+	// classified the toolchain BROKEN and the dispatcher claims
+	// NOTHING until a probe passes. Defaults to true (fail-open when
+	// the probe itself cannot run).
+	healthy atomic.Bool
+	// healthRecheck is scancodeHealthRecheckInterval, overridable in
+	// tests so the pause loop doesn't need 15 real minutes.
+	healthRecheck time.Duration
+	// typecodeEnv (v0.27.6) holds the discovered typecode-libmagic
+	// wheel pair. When set, EVERY scancode subprocess (the preflight
+	// probe and every real scan) carries TYPECODE_LIBMAGIC_PATH +
+	// TYPECODE_LIBMAGIC_DB_PATH so typecode can never cross-load a
+	// wheel .so against a foreign compiled magic DB — the July 2026
+	// chaoss.tv root cause. See scancode_remediate.go.
+	typecodeEnv atomic.Pointer[typecodeEnvPair]
 }
 
-// NewScancodeWorker constructs a worker. Most time-based fields fall
-// back to documented defaults when zero is passed.
+// setTypecodeEnvPair pins the discovered wheel pair for every
+// subsequent scancode subprocess.
+func (w *ScancodeWorker) setTypecodeEnvPair(pair typecodeEnvPair) {
+	w.typecodeEnv.Store(&pair)
+}
+
+// scancodeEnv builds the environment for a scancode subprocess: the
+// process environment plus — when discovery succeeded — the pinned
+// TYPECODE_LIBMAGIC_* pair. Every exec of the scancode binary in this
+// worker MUST source its Env from here (tripwired) so no scan can
+// silently fall back to typecode's broken plugin resolution.
+func (w *ScancodeWorker) scancodeEnv() []string {
+	env := os.Environ()
+	if pair := w.typecodeEnv.Load(); pair != nil {
+		env = append(env, pair.asEnv()...)
+	}
+	return env
+}
+
+// NewScancodeWorker constructs a worker from options. Zero-value
+// fields fall back to documented defaults.
 //
-// v0.23.8: runTimeoutBase + runTimeoutCap configure the adaptive
-// per-job wall-clock timeout. Pre-v0.23.8 these were the hardcoded
-// constant scancodeRunTimeout = 2*time.Hour; now caller-supplied.
-// Defaults: base 2h, cap 24h.
-//
-// v0.23.7-fix: shutdownGrace now defaults to 0 (immediate kill) when
-// the caller passes 0, matching the v0.23.7 contract that
+// v0.23.7-fix: ShutdownGrace 0 means 0 (immediate kill) — the zero
+// value is a real setting here, matching the v0.23.7 contract that
 // subprocesses outliving aveloxis can't deliver output anyway.
-// Pre-v0.23.7 the zero-input fallback was 30 min — that masked the
-// v0.23.7 config-default flip from 30 to 0.
-func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger,
-	workerCount int, startInterval, cadence time.Duration,
-	cloneDir string, shutdownGrace, runTimeoutBase, runTimeoutCap time.Duration,
-	maxInMemory int) *ScancodeWorker {
-	if workerCount <= 0 {
-		workerCount = 2
+func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger, opts ScancodeWorkerOptions) *ScancodeWorker {
+	if opts.Workers <= 0 {
+		opts.Workers = 2
 	}
-	if startInterval <= 0 {
-		startInterval = 90 * time.Second
+	if opts.StartInterval <= 0 {
+		opts.StartInterval = 90 * time.Second
 	}
-	if cadence <= 0 {
-		cadence = 180 * 24 * time.Hour
+	if opts.Cadence <= 0 {
+		opts.Cadence = 180 * 24 * time.Hour
 	}
-	if cloneDir == "" {
-		cloneDir = "/tmp/aveloxis-scancode"
+	if opts.CloneDir == "" {
+		opts.CloneDir = "/tmp/aveloxis-scancode"
 	}
-	// v0.23.7: shutdownGrace = 0 means immediate kill on stop.
+	// v0.23.7: ShutdownGrace = 0 means immediate kill on stop.
 	// Don't override.
-	if runTimeoutBase <= 0 {
-		runTimeoutBase = 2 * time.Hour
+	if opts.RunTimeoutBase <= 0 {
+		opts.RunTimeoutBase = 2 * time.Hour
 	}
-	if runTimeoutCap <= 0 {
-		runTimeoutCap = 24 * time.Hour
+	if opts.RunTimeoutCap <= 0 {
+		opts.RunTimeoutCap = 24 * time.Hour
 	}
-	// v0.25.2: clamp non-positive maxInMemory to the safe default
+	// v0.25.2: clamp non-positive MaxInMemory to the safe default
 	// even though the config accessor does the same — defense in
 	// depth so a direct call from tests or future code can't slip a
 	// bogus value through to the subprocess CLI argument.
-	if maxInMemory <= 0 {
-		maxInMemory = 5000
+	if opts.MaxInMemory <= 0 {
+		opts.MaxInMemory = 5000
 	}
-	return &ScancodeWorker{
-		store:          store,
-		logger:         logger,
-		workerCount:    workerCount,
-		startInterval:  startInterval,
-		cadence:        cadence,
-		cloneDir:       cloneDir,
-		shutdownGrace:  shutdownGrace,
-		runTimeoutBase: runTimeoutBase,
-		runTimeoutCap:  runTimeoutCap,
-		maxInMemory:    maxInMemory,
+	// v0.27.6: same defense-in-depth clamp as the config accessor —
+	// there is no "unlimited at-cap retries" setting.
+	if opts.TimeoutCapStrikes <= 0 {
+		opts.TimeoutCapStrikes = 3
 	}
+	hostname, _ := os.Hostname()
+	w := &ScancodeWorker{
+		store:             store,
+		logger:            logger,
+		workerCount:       opts.Workers,
+		startInterval:     opts.StartInterval,
+		cadence:           opts.Cadence,
+		cloneDir:          opts.CloneDir,
+		shutdownGrace:     opts.ShutdownGrace,
+		runTimeoutBase:    opts.RunTimeoutBase,
+		runTimeoutCap:     opts.RunTimeoutCap,
+		maxInMemory:       opts.MaxInMemory,
+		timeoutCapStrikes: opts.TimeoutCapStrikes,
+		ignoreGlobs:       opts.IgnoreGlobs,
+		hostname:          hostname,
+		healthRecheck:     scancodeHealthRecheckInterval,
+	}
+	w.healthy.Store(true)
+	return w
+}
+
+// staleLockWindow derives the claim query's silent-corpse fallback
+// window from the adaptive-timeout cap: runTimeoutCap + 2h, floored
+// at db.ScancodeStaleLockWindow (12h) by the store.
+//
+// v0.27.6 fix: the window used to be the bare 12h constant while the
+// v0.23.8 stretched timeouts legitimately ran to the 24h cap — any
+// scan past 12h had its lock treated as stale and a SECOND worker
+// claimed the same repo (confirmed interleaving in the June 2026
+// production logs). Deriving the window from the cap keeps it above
+// the longest legitimate scan no matter how operators tune the cap.
+func (w *ScancodeWorker) staleLockWindow() time.Duration {
+	return w.runTimeoutCap + 2*time.Hour
 }
 
 // Run starts the worker pool and blocks until ctx is done. After
@@ -236,12 +344,17 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 		"start_interval", w.startInterval.String(),
 		"cadence", w.cadence.String(),
 		"clone_dir", w.cloneDir,
-		"shutdown_grace", w.shutdownGrace.String())
+		"shutdown_grace", w.shutdownGrace.String(),
+		"stale_lock_window", w.staleLockWindow().String(),
+		"host", w.hostname)
 
-	// v0.25.x scancode health preflight: one scan of a tiny synthetic input to
-	// detect a system-level toolchain failure (corrupt libmagic, etc.) and
-	// record it in aveloxis_ops.aveloxis_status before the dispatcher starts.
-	// Awareness only — it does not disable scancode.
+	// Scancode health preflight: one scan of a tiny synthetic input to
+	// detect a system-level toolchain failure (corrupt libmagic, etc.),
+	// verify the typecode-libmagic injection, auto-remediate the
+	// corrupt-libmagic fingerprint (v0.27.6 ladder), and record the
+	// outcome in aveloxis_ops.aveloxis_status. The resulting health
+	// state GATES the dispatcher — see the dispatcher's comment for
+	// why the original awareness-only decision was revised.
 	w.preflight(ctx)
 
 	// One-shot recovery pass before the dispatcher starts claiming
@@ -250,6 +363,11 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	// either adopted (monitor goroutine spawned) or its lock
 	// cleared, so the dispatcher's claim query sees a clean state.
 	w.recoverOrphans(ctx)
+
+	// v0.27.6 startup sweep: reconcile the clone DIRECTORY against
+	// the (post-recovery) lock rows. runOne's defer only removes its
+	// clone on clean exits; hard kills leaked clone dirs forever.
+	w.sweepCloneDirAtStartup(ctx)
 
 	// v0.23.3: in-flight orphan recovery — periodic cleanup of
 	// stale NULL-PID lock rows (the v0.21.0 inconsistency state).
@@ -300,6 +418,13 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 		w.logger.Warn("scancode worker shutdown grace expired — outstanding scancode subprocesses will be killed on next syscall",
 			"grace", w.shutdownGrace.String())
 	}
+
+	// v0.27.6 shutdown sweep: remove ALL repo_* clone dirs and
+	// preflight temp dirs. A clone can't outlive the worker usefully
+	// — the subprocess that would consume it is dead — and the next
+	// startup re-clones from scratch. stderr diagnostics are kept
+	// (they age out via the startup sweep's 14-day window).
+	w.sweepCloneDirAtShutdown()
 }
 
 // dispatcher claims eligible repos and feeds them to runners.
@@ -331,6 +456,18 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 // — no eligible repos — the dispatcher sleeps for startInterval
 // before re-polling. Avoids hot-looping the DB when the fleet is
 // fully scanned and waiting for cadence windows to elapse.
+//
+// v0.27.6 health gating: while the toolchain health state is BROKEN
+// the dispatcher claims NOTHING — it parks in awaitHealthyToolchain,
+// re-probing every 15 minutes, and auto-resumes on a passing probe
+// (one WARN on entering the pause, one INFO on exit — the v0.25.0
+// distribution-dispatcher pattern). This deliberately REVISES the
+// v0.25.x "awareness-only" operator decision: on 2026-06-11 the
+// preflight logged SYSTEM-LEVEL FAILURE (corrupt libmagic) at
+// startup and this dispatcher then ran 2,473 scans on the broken
+// toolchain anyway, producing stderr artifacts up to 9.5 GB and
+// wedging every worker. Detection without gating just timestamps
+// the damage.
 func (w *ScancodeWorker) dispatcher(ctx context.Context, jobs chan<- db.ScancodeJob) {
 	// Zero value (Time{}) means "no gap required yet" — the first
 	// claim on startup happens immediately. Subsequent claims wait
@@ -340,6 +477,15 @@ func (w *ScancodeWorker) dispatcher(ctx context.Context, jobs chan<- db.Scancode
 	for {
 		if err := ctx.Err(); err != nil {
 			return
+		}
+
+		// v0.27.6 toolchain health gate — checked BEFORE every claim
+		// so a mid-run trip (future re-probes) also pauses claims.
+		if !w.healthy.Load() {
+			w.awaitHealthyToolchain(ctx)
+			if ctx.Err() != nil {
+				return
+			}
 		}
 
 		// Rate-limit gate. Sleeps until the minimum-gap window
@@ -353,7 +499,7 @@ func (w *ScancodeWorker) dispatcher(ctx context.Context, jobs chan<- db.Scancode
 			}
 		}
 
-		job, err := w.store.ClaimNextScancodeRepo(ctx, w.cadence)
+		job, err := w.store.ClaimNextScancodeRepo(ctx, w.cadence, w.staleLockWindow())
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -412,31 +558,33 @@ func (w *ScancodeWorker) runner(ctx context.Context, jobs <-chan db.ScancodeJob,
 	}
 }
 
-// runOne is the actual scan pipeline for one repo. Always clears
-// the scancode_locked_* columns on exit (success or failure) so the
-// row becomes eligible for the next claim cycle without waiting for
-// the 12-hour stale-lock fallback.
+// runOne is the scan pipeline for one repo, decomposed (v0.27.6)
+// into phase methods so policy insertions stay clean:
 //
-// Steps:
-//  1. mkdir <cloneDir>/repo_<id>_<unix_ts>
-//  2. git clone --depth 1 <repo_git> <tempDir>
-//  3. exec.CommandContext(ctx, "scancode", ...) with --json
-//     pointing at <tempDir>/results.json
-//  4. cmd.Start() — non-blocking; we need the PID NOW.
-//  5. store.RecordScancodeLockState(repoID, pid, bootID, outputPath)
-//     so the next aveloxis startup can decide what to do with this
-//     row if we crash before cmd.Wait() returns.
-//  6. cmd.Wait() — blocks until subprocess exits.
-//  7. Parse JSON output, call existing RunScanCode-equivalent
-//     ingest logic to write scancode_scans + scancode_file_results.
-//  8. store.MarkScancodeComplete on success, ClearScancodeLock on
-//     failure.
-//  9. defer os.RemoveAll(tempDir).
+//	skip check → prepareClone → executeScan → finishScan
 //
-// Errors at any step are logged (with repo identity) and route to
-// the ClearScancodeLock path. We never crash the runner on a
-// single repo's failure — the worker stays up.
+// Always clears the scancode_locked_* columns on exit (success,
+// skip, or failure) so the row becomes eligible for the next claim
+// cycle without waiting for the stale-lock fallback. Errors at any
+// phase are logged (with repo identity) and route to the failure-
+// recording path. We never crash the runner on a single repo's
+// failure — the worker stays up.
 func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
+	// v0.27.6 generated-content skip policy — decided from the
+	// claimed row's repos.languages breakdown BEFORE any clone I/O.
+	// pytorch/docs (~6 GB, 100% HTML) burned a 24h worker slot 27×;
+	// the skip costs one DB write instead.
+	if generatedContentSkip(job.Languages) {
+		w.logger.Info("scancode runOne: skipping generated-content repo without cloning",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+			"skip_reason", scancodeSkipReasonGeneratedContent)
+		if err := w.store.MarkScancodeSkipped(ctx, job.RepoID, scancodeSkipReasonGeneratedContent); err != nil {
+			w.logger.Warn("scancode runOne: MarkScancodeSkipped failed",
+				"repo_id", job.RepoID, "error", err)
+		}
+		return
+	}
+
 	tempDir := filepath.Join(w.cloneDir,
 		fmt.Sprintf("repo_%d_%d", job.RepoID, time.Now().UnixNano()))
 	defer func() {
@@ -446,11 +594,27 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		}
 	}()
 
+	if !w.prepareClone(ctx, job, tempDir) {
+		return
+	}
+
+	ex := w.executeScan(ctx, job, tempDir)
+	if ex == nil {
+		return
+	}
+
+	w.finishScan(ctx, job, ex)
+}
+
+// prepareClone creates the temp dir and shallow-clones the repo into
+// it. Returns false (with the failure recorded) when either step
+// fails.
+func (w *ScancodeWorker) prepareClone(ctx context.Context, job db.ScancodeJob, tempDir string) bool {
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
 		w.logger.Warn("scancode runOne mkdir failed",
 			"repo_id", job.RepoID, "error", err)
 		w.recordFailureBestEffort(ctx, job.RepoID)
-		return
+		return false
 	}
 
 	// Shallow clone — scancode only needs current file state, not
@@ -469,6 +633,7 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	// checkout, which fails the whole clone. Skipping smudge bypasses
 	// the entire chain. Also speeds up clones on every LFS-using
 	// repo (no payload fetch).
+	//
 	// v0.23.3: wall-clock timeout on the git clone. A shallow clone
 	// of any normal repo finishes in under 5 minutes; 30 minutes is
 	// a comfortable cap that lets pathological cases (1 GB repos
@@ -498,25 +663,44 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
 			"error", err, "git_output", string(out))
 		w.recordFailureBestEffort(ctx, job.RepoID)
-		return
+		return false
 	}
+	return true
+}
 
+// scanExecution is the material executeScan hands to finishScan: the
+// subprocess result plus the capture buffers the failure-artifact
+// writer and outcome classifier consume.
+type scanExecution struct {
+	pid              int
+	outputPath       string
+	effectiveTimeout time.Duration
+	waitErr          error
+	stderrTail       *tailBuffer
+	stdoutTail       *tailBuffer
+	stderrFull       *headTailBuffer
+	stdoutFull       *headTailBuffer
+}
+
+// executeScan builds and runs the scancode subprocess against the
+// cloned tree: adaptive-timeout computation, bounded output capture,
+// process-group setup, PID+boot_id+host lock-state persistence, and
+// the wait. Returns nil when the scan could not be started (failure
+// already recorded); otherwise returns the execution record with
+// waitErr carrying cmd.Wait()'s result for classification.
+func (w *ScancodeWorker) executeScan(ctx context.Context, job db.ScancodeJob, tempDir string) *scanExecution {
 	scancodePath, err := exec.LookPath("scancode")
 	if err != nil {
 		// Should never happen — Run() already checked. Defensive.
 		w.logger.Warn("scancode runOne: binary not on PATH at run time",
 			"repo_id", job.RepoID, "error", err)
 		w.recordFailureBestEffort(ctx, job.RepoID)
-		return
+		return nil
 	}
 
 	outputPath := filepath.Join(tempDir, "results.json")
 	procs := 2
 
-	// Build the subprocess. Mirrors the legacy RunScanCode flag set
-	// so the JSON output format is identical and the existing
-	// parser + ingest path (reused below) keeps working.
-	//
 	// v0.23.3: wall-clock timeout on the scancode subprocess (was
 	// hardcoded scancodeRunTimeout = 2h). The scancode binary takes
 	// --timeout 300 (per-FILE seconds), but nothing bounds total
@@ -557,20 +741,17 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	}
 	scanCtx, scanCancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer scanCancel()
+	// Flag set mirrors the legacy RunScanCode so the JSON output
+	// format is identical and the existing parser + ingest path
+	// keeps working. v0.27.6: operator scancode_ignore_globs append
+	// as --ignore flags (empty by default = byte-identical args).
 	cmd := exec.CommandContext(scanCtx, scancodePath,
-		"-clpi",
-		"--only-findings",
-		"--json", outputPath,
-		"--quiet",
-		"--timeout", "300",
-		"--processes", strconv.Itoa(procs),
-		// v0.25.2: --max-in-memory now sourced from
-		// CollectionConfig.ScancodeMaxInMemory (default 5000 matches
-		// pre-v0.25.2 behavior). NewScancodeWorker clamps non-positive
-		// inputs to the default so this can't pass a bogus value.
-		"--max-in-memory", strconv.Itoa(w.maxInMemory),
-		tempDir,
-	)
+		scancodeArgs(outputPath, tempDir, procs, w.maxInMemory, w.ignoreGlobs)...)
+	// v0.27.6: carry the pinned typecode-libmagic env pair (when
+	// discovered) so the scan uses the wheel's matched (.so, magic.mgc)
+	// — never the system fallback that produced the offset-invalid
+	// warning storms.
+	cmd.Env = w.scancodeEnv()
 
 	// Capture stdout + stderr. v0.23.3: we keep BOTH a bounded ring
 	// buffer (the tail, for quick triage in the log line) AND a
@@ -592,11 +773,11 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	cmd.Stdout = io.MultiWriter(stdoutTail, stdoutFull)
 
 	// v0.23.3: process group cleanup for the scancode subprocess.
-	// Same shape as the git clone above. Critical here because
-	// `scancode --processes 2` spawns a Python multiprocessing pool
-	// whose worker processes inherit our stderr/stdout fds. Without
-	// pgid kill, cmd.Wait() can block forever waiting for those
-	// inherited fds to close even when the lead scancode process
+	// Same shape as the git clone in prepareClone. Critical here
+	// because `scancode --processes 2` spawns a Python multiprocessing
+	// pool whose worker processes inherit our stderr/stdout fds.
+	// Without pgid kill, cmd.Wait() can block forever waiting for
+	// those inherited fds to close even when the lead scancode process
 	// has died — the 2026-05-21 wedge pattern. WaitDelay caps the
 	// blocking at 10 s as a safety net.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -618,7 +799,7 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		w.logger.Warn("scancode runOne: cmd.Start() failed",
 			"repo_id", job.RepoID, "error", err)
 		w.recordFailureBestEffort(ctx, job.RepoID)
-		return
+		return nil
 	}
 
 	pid := cmd.Process.Pid
@@ -632,8 +813,8 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	// git-lfs subprocess from the earlier clone phase) as orphans
 	// (PPID=1).
 	//
-	// The defer covers exactly that gap: when runOne returns
-	// (whether via early-return error path or normal completion),
+	// The defer covers exactly that gap: when executeScan returns
+	// (whether via early-return error path or after cmd.Wait),
 	// syscall.Kill with NEGATIVE pid targets the entire process
 	// group, picking up any survivors. Idempotent — syscall.Kill
 	// returns ESRCH on an already-dead group, which we ignore.
@@ -645,7 +826,7 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	defer syscall.Kill(-pid, syscall.SIGKILL)
 
 	bootID := readBootID()
-	if err := w.store.RecordScancodeLockState(ctx, job.RepoID, pid, bootID, outputPath); err != nil {
+	if err := w.store.RecordScancodeLockState(ctx, job.RepoID, pid, bootID, outputPath, w.hostname); err != nil {
 		// v0.23.3: abort on lock-state failure. The pre-v0.23.3
 		// "proceed anyway" path left rows with scancode_locked_at
 		// SET and scancode_locked_pid NULL — indistinguishable from
@@ -661,108 +842,149 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
 		_ = cmd.Wait() // reap; we don't care about its exit status
 		w.recordFailureBestEffort(ctx, job.RepoID)
-		return
+		return nil
 	}
 
 	w.logger.Info("running ScanCode",
 		"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
 		"path", tempDir, "pid", pid)
 
-	if err := cmd.Wait(); err != nil {
-		// v0.23.3: write a per-repo stderr file so the operator can
-		// `less /tmp/aveloxis-scancode/repo_<id>_stderr.log` instead of
-		// reading only the 4 KB log-line tail. v0.25.28: the capture is now
-		// bounded (head + tail) — a corrupt host libmagic can make a large
-		// repo emit 15+ GB, which the pre-fix unbounded bytes.Buffer held
-		// entirely in RAM. Best-effort: if the file write fails, the log
-		// line's stderr_tail is the fallback.
-		stderrBytes := stderrFull.Bytes()
-		stderrPath := filepath.Join(w.cloneDir, fmt.Sprintf("repo_%d_stderr.log", job.RepoID))
-		stderrWriteErr := os.WriteFile(stderrPath, stderrBytes, 0o644)
-		stdoutPath := ""
-		if stdoutFull.Total() > 0 {
-			stdoutPath = filepath.Join(w.cloneDir, fmt.Sprintf("repo_%d_stdout.log", job.RepoID))
-			_ = os.WriteFile(stdoutPath, stdoutFull.Bytes(), 0o644)
-		}
-		logArgs := []any{
-			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
-			"error", err, "pid", pid,
-			"full_stderr_at", stderrPath,
-			"stderr_bytes", stderrFull.Total(),
-			"stderr_tail", stderrTail.String(),
-		}
-		// v0.25.28: when the captured stderr is dominated by the libmagic
-		// corruption fingerprint, say so explicitly. This is NOT a per-repo or
-		// per-file problem — it's the host's magic database, the same condition
-		// the startup preflight records in aveloxis_ops.aveloxis_status. Surfacing
-		// it on the per-repo failure removes the "why does THIS repo choke?"
-		// confusion (answer: it's large enough that the per-file warning spam
-		// blows past the wall-clock timeout).
-		if countLibmagicWarnings(string(stderrBytes)) >= scancodePreflightRepeatN {
-			logArgs = append(logArgs,
-				"likely_cause", "corrupt host libmagic (offset-invalid warning spam) — not a per-repo issue; see aveloxis_ops.aveloxis_status('scancode') and the scancode preflight; repair the host with 'apt-get install --reinstall libmagic-mgc libmagic1 file' or 'aveloxis upgrade-tools'")
-		}
-		if stdoutPath != "" {
-			logArgs = append(logArgs, "full_stdout_at", stdoutPath)
-		}
-		if stderrWriteErr != nil {
-			logArgs = append(logArgs, "stderr_file_write_error", stderrWriteErr)
-		}
-		w.logger.Warn("scancode runOne: scancode subprocess failed", logArgs...)
+	waitErr := cmd.Wait()
 
+	return &scanExecution{
+		pid:              pid,
+		outputPath:       outputPath,
+		effectiveTimeout: effectiveTimeout,
+		waitErr:          waitErr,
+		stderrTail:       stderrTail,
+		stdoutTail:       stdoutTail,
+		stderrFull:       stderrFull,
+		stdoutFull:       stdoutFull,
+	}
+}
+
+// writeFailureArtifacts persists the bounded per-repo stderr/stdout
+// captures and emits the diagnostic WARN when the subprocess exited
+// non-zero. v0.23.3 behavior preserved verbatim: the artifacts are
+// written for EVERY non-zero exit, including runs later salvaged by
+// the v0.23.4 path — the operator may still want to see the per-file
+// errors.
+func (w *ScancodeWorker) writeFailureArtifacts(job db.ScancodeJob, ex *scanExecution) {
+	// v0.23.3: write a per-repo stderr file so the operator can
+	// `less /tmp/aveloxis-scancode/repo_<id>_stderr.log` instead of
+	// reading only the 4 KB log-line tail. v0.25.28: the capture is now
+	// bounded (head + tail) — a corrupt host libmagic can make a large
+	// repo emit 15+ GB, which the pre-fix unbounded bytes.Buffer held
+	// entirely in RAM. Best-effort: if the file write fails, the log
+	// line's stderr_tail is the fallback.
+	stderrBytes := ex.stderrFull.Bytes()
+	stderrPath := filepath.Join(w.cloneDir, fmt.Sprintf("repo_%d_stderr.log", job.RepoID))
+	stderrWriteErr := os.WriteFile(stderrPath, stderrBytes, 0o644)
+	stdoutPath := ""
+	if ex.stdoutFull.Total() > 0 {
+		stdoutPath = filepath.Join(w.cloneDir, fmt.Sprintf("repo_%d_stdout.log", job.RepoID))
+		_ = os.WriteFile(stdoutPath, ex.stdoutFull.Bytes(), 0o644)
+	}
+	logArgs := []any{
+		"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+		"error", ex.waitErr, "pid", ex.pid,
+		"full_stderr_at", stderrPath,
+		"stderr_bytes", ex.stderrFull.Total(),
+		"stderr_tail", ex.stderrTail.String(),
+	}
+	// v0.25.28: when the captured stderr is dominated by the libmagic
+	// corruption fingerprint, say so explicitly. This is NOT a per-repo or
+	// per-file problem — it's the host's magic database, the same condition
+	// the startup preflight records in aveloxis_ops.aveloxis_status. Surfacing
+	// it on the per-repo failure removes the "why does THIS repo choke?"
+	// confusion (answer: it's large enough that the per-file warning spam
+	// blows past the wall-clock timeout).
+	if countLibmagicWarnings(string(stderrBytes)) >= scancodePreflightRepeatN {
+		logArgs = append(logArgs,
+			"likely_cause", "corrupt host libmagic (offset-invalid warning spam) — not a per-repo issue; see aveloxis_ops.aveloxis_status('scancode') and the scancode preflight; repair the host with 'apt-get install --reinstall libmagic-mgc libmagic1 file' or 'aveloxis upgrade-tools'")
+	}
+	if stdoutPath != "" {
+		logArgs = append(logArgs, "full_stdout_at", stdoutPath)
+	}
+	if stderrWriteErr != nil {
+		logArgs = append(logArgs, "stderr_file_write_error", stderrWriteErr)
+	}
+	w.logger.Warn("scancode runOne: scancode subprocess failed", logArgs...)
+}
+
+// finishScan classifies the finished subprocess (via the v0.27.6
+// consolidated outcome classifier) and routes to the exact
+// pre-v0.27.6 bookkeeping:
+//
+//   - success / salvaged (v0.23.4) → ingest + MarkScancodeComplete
+//   - timeout (v0.23.8 "signal: killed") → RecordScancodeTimeout,
+//     never the 10-strike counter; the v0.27.6 at-cap strike
+//     sideline is the one addition
+//   - anything else → recordFailureBestEffort
+func (w *ScancodeWorker) finishScan(ctx context.Context, job db.ScancodeJob, ex *scanExecution) {
+	if ex.waitErr != nil {
+		w.writeFailureArtifacts(job, ex)
+	}
+
+	outcome := classifyScanOutcome(ex.waitErr, ex.outputPath,
+		ex.effectiveTimeout, w.runTimeoutBase, w.runTimeoutCap,
+		job.TimeoutAttempts, w.timeoutCapStrikes)
+
+	switch outcome.kind {
+	case outcomeTimeout:
+		// v0.23.8: distinguish wall-clock-timeout failures from
+		// genuine scancode failures. cmd.Cancel from scanCtx timeout
+		// fires `syscall.Kill(-pid, SIGKILL)`, and cmd.Wait() then
+		// returns an *exec.ExitError whose Error() string is exactly
+		// "signal: killed". Route to RecordScancodeTimeout
+		// (increments scancode_timeout_attempts so the next attempt
+		// gets a bigger timeout) rather than RecordScancodeFailure
+		// (which would advance the 10-strike sideline counter
+		// against a kernel-class repo that just needs more time).
+		w.logger.Info("scancode runOne: wall-clock timeout fired; row's next attempt will use a stretched timeout",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+			"prior_timeout_attempts", job.TimeoutAttempts,
+			"timeout_used", ex.effectiveTimeout.String(),
+			"at_cap_strikes", outcome.capStrikes)
+		if outcome.sideline {
+			// v0.27.6: N consecutive timeouts AT the cap — no bigger
+			// timeout is coming; sideline exactly like the v0.21.4
+			// 10-strike failure path (the June 2026 pytorch/docs /
+			// WHO/smart-html 27-claim spin loop ends here). The
+			// diagnostic trail stays in scancode_timeout_attempts.
+			w.logger.Warn("scancode runOne: sidelining repo after consecutive at-cap timeouts — cadence gate will exclude it",
+				"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+				"at_cap_strikes", outcome.capStrikes,
+				"strikes_threshold", w.timeoutCapStrikes,
+				"timeout_cap", w.runTimeoutCap.String())
+		}
+		if recErr := w.store.RecordScancodeTimeout(ctx, job.RepoID, outcome.sideline); recErr != nil {
+			w.logger.Warn("scancode runOne: RecordScancodeTimeout failed",
+				"repo_id", job.RepoID, "error", recErr)
+		}
+		return
+
+	case outcomeFailure:
+		w.recordFailureBestEffort(ctx, job.RepoID)
+		return
+
+	case outcomeSalvaged:
 		// v0.23.4: scancode-toolkit-mini with `--quiet` returns exit 1
 		// when any individual file fails to scan (e.g., a malformed
 		// PDF that pdfminer crashes on), but the JSON output is fully
-		// written with the successful scans intact. Pre-v0.23.4 this
-		// path called recordFailureBestEffort unconditionally,
-		// discarding usable scan data and advancing the
-		// scancode_failed_attempts counter toward the v0.21.4 10-strike
-		// sideline. Now: try to salvage the JSON; if it parses with
-		// files_count > 0, log a WARN with the per-file errors and
-		// fall through to the success path (ingest + MarkScancodeComplete).
-		// Only treat as a real failure if the JSON is missing or
-		// invalid (genuine scancode crash, or wall-clock-timeout
-		// SIGKILL'd subprocess before the output completed).
-		salvagedFilesCount, salvagedHeaderErrors, salvaged := salvageScancodeOutput(outputPath)
-		if !salvaged {
-			// v0.23.8: distinguish wall-clock-timeout failures from
-			// genuine scancode failures. cmd.Cancel from scanCtx
-			// timeout fires `syscall.Kill(-pid, SIGKILL)`, and
-			// cmd.Wait() then returns an *exec.ExitError whose
-			// Error() string is exactly "signal: killed". For that
-			// case route to RecordScancodeTimeout (increments
-			// scancode_timeout_attempts so the next attempt gets a
-			// bigger timeout) rather than RecordScancodeFailure
-			// (which would advance the 10-strike sideline counter
-			// against a kernel-class repo that just needs more time).
-			if err.Error() == "signal: killed" {
-				w.logger.Info("scancode runOne: wall-clock timeout fired; row's next attempt will use a stretched timeout",
-					"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
-					"prior_timeout_attempts", job.TimeoutAttempts,
-					"timeout_used", effectiveTimeout.String())
-				if recErr := w.store.RecordScancodeTimeout(ctx, job.RepoID); recErr != nil {
-					w.logger.Warn("scancode runOne: RecordScancodeTimeout failed",
-						"repo_id", job.RepoID, "error", recErr)
-				}
-				return
-			}
-			w.recordFailureBestEffort(ctx, job.RepoID)
-			return
-		}
+		// written with the successful scans intact. Treat as success:
+		// log the per-file errors and fall through to ingest.
 		w.logger.Warn("scancode runOne: salvaged scan output despite subprocess exit 1",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
-			"files_count", salvagedFilesCount,
-			"header_errors", salvagedHeaderErrors,
-			"pid", pid)
-		// Fall through to the ingest + MarkScancodeComplete path
-		// below. The unconditional `return` that ended this block
-		// pre-v0.23.4 is gone.
+			"files_count", outcome.salvagedFilesCount,
+			"header_errors", outcome.salvagedHeaderNotes,
+			"pid", ex.pid)
 	}
 
 	// Parse + ingest. The legacy parser in scancode.go takes a
 	// localPath and re-invokes the binary; here we already have
 	// the output file, so we parse it directly via the helper.
-	version, err := ingestScancodeOutput(ctx, w.store, job.RepoID, outputPath, w.logger)
+	version, err := ingestScancodeOutput(ctx, w.store, job.RepoID, ex.outputPath, w.logger)
 	if err != nil {
 		w.logger.Warn("scancode runOne: ingest failed",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
@@ -785,7 +1007,55 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 
 	w.logger.Info("scancode worker complete",
 		"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
-		"version", version, "pid", pid)
+		"version", version, "pid", ex.pid)
+}
+
+// sweepCloneDirAtStartup reconciles the clone directory against the
+// post-recovery lock rows (v0.27.6). A repo_* clone dir is kept ONLY
+// while a live lock row for THIS host references its repo (a live
+// orphan adopted by recoverOrphans may still be writing into it);
+// everything else is a leak from a hard kill. Failure-diagnostic
+// logs age out after scancodeStderrLogMaxAge; leaked preflight temp
+// dirs are removed unconditionally.
+func (w *ScancodeWorker) sweepCloneDirAtStartup(ctx context.Context) {
+	rows, err := w.store.ListLockedScancodeRows(ctx)
+	if err != nil {
+		w.logger.Warn("scancode startup sweep: ListLockedScancodeRows failed — skipping sweep",
+			"error", err)
+		return
+	}
+	keep := make(map[int64]bool, len(rows))
+	for _, r := range rows {
+		// Own-host locks protect their clone dirs. Empty-host locks
+		// (recorded by pre-v0.27.6 binaries) are treated as
+		// possibly-ours out of caution. Cross-host locks do NOT
+		// protect local dirs — a dir on OUR disk was created by OUR
+		// workers, and if another host now owns the repo's lock, our
+		// copy is stale by definition.
+		if r.LockedHost == "" || r.LockedHost == w.hostname {
+			keep[r.RepoID] = true
+		}
+	}
+	dirs, logs := sweepScancodeDir(w.logger, w.cloneDir,
+		func(repoID int64) bool { return keep[repoID] },
+		scancodeStderrLogMaxAge, time.Now())
+	if dirs+logs > 0 {
+		w.logger.Info("scancode startup sweep complete",
+			"removed_dirs", dirs, "removed_logs", logs, "clone_dir", w.cloneDir)
+	}
+}
+
+// sweepCloneDirAtShutdown removes ALL repo_* clone dirs and preflight
+// temp dirs (v0.27.6). Best-effort — races with runOne's own
+// RemoveAll defers are harmless (RemoveAll on a missing path is nil).
+// stderr diagnostics are deliberately kept; they age out via the
+// startup sweep.
+func (w *ScancodeWorker) sweepCloneDirAtShutdown() {
+	dirs, _ := sweepScancodeDir(w.logger, w.cloneDir, nil, 0, time.Now())
+	if dirs > 0 {
+		w.logger.Info("scancode shutdown sweep complete",
+			"removed_dirs", dirs, "clone_dir", w.cloneDir)
+	}
 }
 
 // clearLockBestEffort attempts to clear the lock and logs if it
@@ -795,9 +1065,10 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 // As of v0.21.4 this is used ONLY by the dispatcher's
 // ctx-canceled-after-claim cleanup — that's a clean release of a
 // row we claimed but never dispatched to a runner, not a failure
-// event. All repo-specific failure paths in runOne use
-// recordFailureBestEffort instead so the failure-counter +
-// last_failed_at columns get updated and the backoff gate applies.
+// event — and by the recovery paths. All repo-specific failure paths
+// in the runOne pipeline use recordFailureBestEffort instead so the
+// failure-counter + last_failed_at columns get updated and the
+// backoff gate applies.
 func (w *ScancodeWorker) clearLockBestEffort(ctx context.Context, repoID int64) {
 	// Try the live ctx first; fall back to background if canceled.
 	useCtx := ctx
@@ -849,6 +1120,15 @@ func (w *ScancodeWorker) recordFailureBestEffort(ctx context.Context, repoID int
 //  4. Lost run — boot_id matches, PID dead, no usable output.
 //     Clear lock.
 //
+// v0.27.6: the four-state decision only applies to locks whose
+// scancode_locked_host matches THIS machine (or is empty — a
+// pre-v0.27.6 row). A (pid, boot_id) pair recorded on another host
+// is meaningless here: PID 12345 on the dedicated scancode host
+// trivially collides with an unrelated process on the primary
+// server, and the boot_id files differ per machine. Cross-host
+// locks are left alone — the owning host's recovery pass (or the
+// claim query's derived stale-lock age window) handles them.
+//
 // Runs synchronously: the dispatcher does NOT start until this
 // returns. Live orphans (case 2) get a monitor goroutine that
 // outlives recoverOrphans, but those goroutines hold their lock
@@ -867,18 +1147,17 @@ func (w *ScancodeWorker) recordFailureBestEffort(ctx context.Context, repoID int
 // (ropensci/neotoma, locked for 6+ hours, NULL PID).
 //
 // v0.23.3 also changes runOne to ABORT the scan on
-// RecordScancodeLockState failure (see scancode_worker.go runOne)
-// so new occurrences shouldn't happen. But existing inconsistent
-// rows from pre-v0.23.3 runs need cleanup, and this loop is a
-// defense in depth for any failure path that might still produce
-// the state.
+// RecordScancodeLockState failure (see executeScan) so new
+// occurrences shouldn't happen. But existing inconsistent rows from
+// pre-v0.23.3 runs need cleanup, and this loop is a defense in depth
+// for any failure path that might still produce the state.
 //
 // Does NOT recover wedged workers (cmd.Wait() blocked indefinitely
 // on a live subprocess). That's prevented at the source by the
-// scancodeCloneTimeout and scancodeRunTimeout context-with-timeout
-// wraps around the cmd.CommandContext calls — runOne's
-// subprocesses now have a hard wall-clock cap of 30m / 2h
-// respectively, so worker slots can't stay consumed beyond that.
+// scancodeCloneTimeout and the adaptive run-timeout
+// context-with-timeout wraps around the cmd.CommandContext calls —
+// runOne's subprocesses have a hard wall-clock cap, so worker slots
+// can't stay consumed beyond it.
 func (w *ScancodeWorker) checkOwnLocks(ctx context.Context) {
 	ticker := time.NewTicker(stalePidCheckInterval)
 	defer ticker.Stop()
@@ -916,9 +1195,21 @@ func (w *ScancodeWorker) recoverOrphans(ctx context.Context) {
 
 	currentBootID := readBootID()
 	w.logger.Info("scancode recoverOrphans: examining locked rows",
-		"count", len(rows), "current_boot_id", currentBootID)
+		"count", len(rows), "current_boot_id", currentBootID, "host", w.hostname)
 
 	for _, r := range rows {
+		// v0.27.6: cross-host locks are not ours to adjudicate —
+		// (pid, boot_id) liveness only means something on the
+		// machine that recorded it. Leave the row for the owning
+		// host's recovery pass; the claim query's derived stale-lock
+		// age window is the fallback if that host never comes back.
+		if r.LockedHost != "" && w.hostname != "" && r.LockedHost != w.hostname {
+			w.logger.Info("scancode recover: cross-host lock — leaving for owning host (age-window fallback applies)",
+				"repo_id", r.RepoID, "owner", r.RepoOwner, "repo", r.RepoName,
+				"locked_host", r.LockedHost, "our_host", w.hostname)
+			continue
+		}
+
 		// State 1: reboot survivor.
 		if r.LockedBootID != "" && currentBootID != "" && r.LockedBootID != currentBootID {
 			w.logger.Info("scancode recover: reboot survivor — clearing lock",
@@ -1074,8 +1365,8 @@ func fileExistsAndNonEmpty(path string) bool {
 // salvageScancodeOutput (v0.23.4) parses just the headers of a
 // scancode JSON output file and returns (filesCount, perFileErrors,
 // ok) where ok=true means the JSON is valid and the scan produced
-// useful data (files_count > 0). The caller uses this from runOne's
-// cmd.Wait() error branch to distinguish:
+// useful data (files_count > 0). The outcome classifier uses this
+// from the cmd.Wait() error branch to distinguish:
 //
 //   - Per-file scancode errors with valid output: scancode-toolkit-mini
 //     with `--quiet` exits status 1 when ANY file fails to scan (e.g.,

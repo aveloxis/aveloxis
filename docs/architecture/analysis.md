@@ -166,6 +166,20 @@ Results are stored in `aveloxis_data.repo_labor`:
 | `code_complexity` | Cyclomatic complexity score |
 | `repo_url` | Git URL of the repo |
 
+### Snapshot rotation and history (v0.27.7)
+
+`repo_labor` is **latest-snapshot-only**, following the house history pattern (`repo_info`, `repo_deps_scorecard`, `repo_distribution`): the current table holds exactly one per-file snapshot per repo — the most recent successful scc run — and prior snapshots live in `aveloxis_data.repo_labor_history`.
+
+Each analysis run calls `ReplaceRepoLaborSnapshot`, which in **one transaction** rotates the repo's current rows into `repo_labor_history` and inserts the fresh per-file rows. Because rotation and insert are fused into a single store method, a caller cannot insert without rotating (the pre-v0.27.7 bug: every run stacked a full new snapshot and nothing was ever rotated or deleted — production reached 2.0M live rows / 29 GB, growing unboundedly). A failed insert rolls the rotation back too, so the previous snapshot stays current; scc failures return before the call, so a failed scan never rotates anything. A *successful* scan that finds zero source files still replaces — an empty current snapshot is the truth of the last observation.
+
+`repo_labor_history` is declared `LIKE aveloxis_data.repo_labor INCLUDING ALL`, keeping the primary key on `repo_labor_id` (ids come from the shared parent sequence, so rotated rows never collide). Per the v0.25.1 lesson, a parent's natural-key UNIQUE constraints must not survive into a history table — `repo_labor` has none (only the BIGSERIAL PK, audited at v0.27.7), and an integration tripwire fails the build if one ever leaks in.
+
+**One-shot migration.** The first `aveloxis migrate` after installing v0.27.7 moves every NON-latest snapshot into history, batched by keyset windows over the `repo_labor_id` primary key (the v0.26.6 bulk-backfill rule — no LIMIT-rescan loops, no per-batch global sorts). For each repo the cohort with the maximum `rl_analysis_date` stays; everything else moves. Legacy rows with `rl_analysis_date IS NULL` rotate to history as "oldest" whenever the repo has any dated snapshot; a repo whose rows are *all* NULL-dated keeps them (with no dates there is exactly one indistinguishable cohort, and it is by definition the latest). The migration is idempotent — a re-run moves nothing.
+
+**Operator note — disk reclaim.** Moving ~90% of a 29 GB table leaves dead tuples behind in `repo_labor`. Plain `VACUUM` makes the space reusable by new rows but does **not** return it to the operating system. To actually reclaim the disk, run `pg_repack` (online, preferred) or `VACUUM FULL aveloxis_data.repo_labor` (takes an ACCESS EXCLUSIVE lock — use a maintenance window) after the migration completes.
+
+**Downstream consumers are unchanged.** The `explorer_repo_files` / `explorer_repo_languages` materialized views and the COCOMO `labor_investment` snapshot query all filter to the latest `rl_analysis_date` per repo — exactly the cohort that stays in the current table. Analysts who want time-series questions ("how did this repo's LOC evolve?") query `repo_labor_history` directly.
+
 ### If scc is not installed
 
 The code complexity phase is silently skipped. No error is logged. The `repo_labor` table remains empty for repos analyzed without scc.

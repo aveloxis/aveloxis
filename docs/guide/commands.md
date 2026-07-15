@@ -141,6 +141,39 @@ reference.
 
 ---
 
+## `aveloxis scancode-worker`
+
+Runs ONLY the ScancodeWorker pool against the configured database (v0.27.6)
+— the dedicated-scancode-host deployment, following the `aveloxis api`
+single-purpose-process precedent. Scancode is the one subsystem whose
+resource profile (multi-GB shallow clones, CPU-pinned Python subprocesses,
+24-hour worst-case wall clocks) is nothing like the API-bound main pipeline;
+moving it to an adjacent machine isolates its disk/CPU blast radius while
+the shared tables (`FOR UPDATE SKIP LOCKED` claims + the
+`scancode_locked_host` column) provide all the coordination needed.
+
+```bash
+aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json
+```
+
+- **The primary server opts out** by setting `"scancode_workers": 0`
+  (an EXPLICIT 0 — an absent key keeps the default of 2) in its own
+  `aveloxis.json`.
+- **No API keys required** — scancode clones anonymously; this command
+  starts without any `worker_oauth` rows (unlike `aveloxis serve`).
+- **Does NOT run schema migrations** (the v0.21.5 contract: only `serve`
+  and `migrate` do). It checks the schema version at startup and logs an
+  ERROR pointing at `aveloxis migrate` when the DB is behind.
+- Writes its PID to `~/.aveloxis/aveloxis-scancode-worker.pid`.
+- All `collection.scancode_*` knobs apply (workers, cadence, clone dir,
+  adaptive timeouts, ignore globs, timeout-cap strikes).
+
+Full recipe — Postgres remote access, minimal config template, systemd
+unit, libmagic version-lock — in the
+[dedicated scancode host guide](dedicated-scancode-host.md).
+
+---
+
 ## `aveloxis test-mail`
 
 Sends a test email through the configured Gmail SMTP settings (v0.20.14).
@@ -326,10 +359,10 @@ Creates or updates the database schema.
 aveloxis migrate
 ```
 
-Creates 129 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 131 tables and 20 materialized views across three PostgreSQL schemas:
 
-- **`aveloxis_data`** (95 tables + 20 materialized views) -- all collected data
-- **`aveloxis_ops`** (30 tables) -- operational state
+- **`aveloxis_data`** (96 tables + 20 materialized views) -- all collected data
+- **`aveloxis_ops`** (31 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.
@@ -678,6 +711,67 @@ Exit code 1 on any FAIL-level difference. For a coarser whole-schema
 row-count comparison, see `aveloxis data-test`.
 
 ---
+
+## `aveloxis heal-vulnerabilities`
+
+One-shot healer for vulnerability rows stored before v0.27.4's
+two-phase OSV fetch (they carry `severity=UNKNOWN` and empty
+summaries — the querybatch endpoint only returns id stubs). Re-scans
+every repository that has vulnerability rows, filling severity, CVSS,
+summary, fix versions, aliases, and references from `/v1/vulns/{id}`.
+
+```bash
+aveloxis heal-vulnerabilities              # all repos with findings
+aveloxis heal-vulnerabilities --limit 50   # bounded canary run
+```
+
+Idempotent (prefer-nonempty upserts never downgrade filled data) and
+safe alongside a running `serve`. Without this command the same
+healing happens gradually as each repo's next scheduled collection
+cycle re-scans it.
+
+## `aveloxis run-scorecard`
+
+Bulk remote-primary OpenSSF Scorecard pass (v0.27.5). Walks every
+non-archived, at-least-once-collected **GitHub** repo and runs
+scorecard in remote mode (`--repo`, the full ~18-check set including
+Code-Review, Maintained, Contributors, Branch-Protection, CI-Tests,
+CII-Best-Practices, Signed-Releases), oldest-scorecard-first — repos
+that have never been scanned come first. Exists because the per-cycle
+collection phase historically ran local mode (~11 checks); this
+command upgrades the fleet's scorecard data without waiting for each
+repo's recollect cadence.
+
+```bash
+aveloxis run-scorecard                        # the whole backlog
+aveloxis run-scorecard --limit 50             # canary run
+aveloxis run-scorecard --older-than 180       # only stale/never-scanned repos
+aveloxis run-scorecard --workers 8            # default NumCPU/2, capped at NumCPU
+```
+
+Details:
+
+- **Refuses to start while `aveloxis serve` is running on this host**
+  (checked via the serve pidfile + process liveness) — the pass would
+  compete with the collection workers for the shared GitHub API
+  budget. Stop serve first: `aveloxis stop serve`. It also writes its
+  own pidfile (`~/.aveloxis/aveloxis-run-scorecard.pid`) so two bulk
+  passes can't overlap.
+- Uses the SAME invoke/persist code as the collection phase: the
+  comma-separated multi-token `GITHUB_TOKEN` built from the key pool
+  (`collection.scorecard_token_count`), the per-attempt wall-clock
+  timeout (`collection.scorecard_timeout_minutes`, default 15), and
+  the `scorecard_mode` marker on every stored row.
+- No analysis clone exists in this pass, so there is no local
+  backstop: a failed remote attempt is logged, counted, and skipped —
+  the repo's next collection cycle retries.
+- Progress prints every 100 repos: done/total, cumulative
+  `api_calls_used` (instrumented via `/rate_limit` on the first
+  token), elapsed, and ETA. Interrupting with Ctrl-C is safe; the
+  oldest-first ordering makes a re-run resume where it left off.
+- Requires GitHub API keys (`aveloxis add-key`). Does not run schema
+  migrations (v0.21.5 contract) — run `aveloxis migrate` first when
+  upgrading to v0.27.5 so the `scorecard_mode` column exists.
 
 ## `aveloxis staging-stats`
 

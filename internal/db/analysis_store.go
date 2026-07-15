@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -164,28 +165,88 @@ func (s *PostgresStore) InsertRepoLibyearBatch(ctx context.Context, repoID int64
 	return s.pool.SendBatch(ctx, batch).Close()
 }
 
-// InsertRepoLaborBatch inserts multiple code complexity records in a single round-trip.
-// A typical repo can have thousands of files, so batching provides a significant speedup.
-func (s *PostgresStore) InsertRepoLaborBatch(ctx context.Context, repoID int64, rows []*RepoLaborRow) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	batch := &pgx.Batch{}
-	for _, row := range rows {
-		batch.Queue(`
-			INSERT INTO aveloxis_data.repo_labor
-				(repo_id, repo_clone_date, rl_analysis_date, programming_language,
-				 file_path, file_name, total_lines, code_lines, comment_lines,
-				 blank_lines, code_complexity,
-				 tool_source, data_source, data_collection_date)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-				'aveloxis-scc', 'scc', NOW())
-			ON CONFLICT DO NOTHING`,
-			repoID, row.CloneDate, row.AnalysisDate, row.Language,
-			row.FilePath, row.FileName, row.TotalLines, row.CodeLines, row.CommentLines,
-			row.BlankLines, row.Complexity)
-	}
-	return s.pool.SendBatch(ctx, batch).Close()
+// ReplaceRepoLaborSnapshot atomically replaces a repo's current
+// repo_labor snapshot: rotates every existing row for the repo into
+// repo_labor_history and inserts the fresh per-file rows, all inside
+// ONE transaction. If any part fails, the whole replace rolls back —
+// the previous snapshot stays current, so a failed scc run can never
+// leave the table empty or half-written.
+//
+// This is the ONLY write path for repo_labor (v0.27.7). The
+// pre-v0.27.7 writers (InsertRepoLabor per-file, InsertRepoLaborBatch)
+// are deliberately REMOVED rather than kept alongside: a caller that
+// inserts without rotating re-creates the unbounded-growth bug this
+// release fixes (production hit 2.0M live rows / 29 GB with no
+// rotation ever). Fusing rotation and insert into one method makes
+// that misuse impossible — there is no separate rotation call to
+// forget, and it can never run more than once per analysis run.
+// TestRepoLaborWritersCannotSkipRotation pins this.
+//
+// An empty rows slice still rotates: the table is a snapshot of what
+// the last successful scan observed (house pattern, same as
+// MarkDistributionComplete), and a successful scc run that found zero
+// source files means the current truth is "no files". Callers must
+// NOT invoke this on scan FAILURE — errors upstream of the call are
+// the guard (scan errors never rotate anything).
+//
+// ON CONFLICT decision (v0.27.7): the removed writers carried a
+// blanket `ON CONFLICT DO NOTHING`. repo_labor has NO unique
+// constraint besides the BIGSERIAL primary key (audited v0.27.7), so
+// the clause was dead code — a freshly-nextval'd PK can never
+// conflict, and every "duplicate" file row was in fact inserted, which
+// is exactly how the table grew unboundedly. The clause is DROPPED
+// rather than scoped: there is no unique arbiter to scope it to, and
+// post-rotation a duplicate row within a single snapshot would be a
+// real bug (scc emitting the same file twice) that should surface
+// loudly, not be silently swallowed. If a natural-key UNIQUE
+// (repo_id, rl_analysis_date, file_path) is ever added — it needs a
+// CONCURRENTLY build plus a dedup pass on the 2M-row production
+// table, a follow-up beyond v0.27.7 — this insert should trip 23505
+// visibly. (The exception entry in TestBatchInsertsHaveOnConflict
+// documents the same decision from the test side.)
+func (s *PostgresStore) ReplaceRepoLaborSnapshot(ctx context.Context, repoID int64, rows []*RepoLaborRow) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+
+		// Rotation FIRST, in the same tx as the insert, exactly once.
+		if err := rotateRepoRowsToHistory(ctx, tx,
+			"aveloxis_data.repo_labor",
+			"aveloxis_data.repo_labor_history", repoID); err != nil {
+			return err
+		}
+
+		// Chunked batch sends inside the single tx keep the pgx.Batch
+		// bounded on monorepos (100K+ files) without giving up
+		// atomicity — a failure in any chunk rolls back the rotation
+		// too.
+		const chunkSize = 5000
+		for start := 0; start < len(rows); start += chunkSize {
+			end := min(start+chunkSize, len(rows))
+			batch := &pgx.Batch{}
+			for _, row := range rows[start:end] {
+				batch.Queue(`
+					INSERT INTO aveloxis_data.repo_labor
+						(repo_id, repo_clone_date, rl_analysis_date, programming_language,
+						 file_path, file_name, total_lines, code_lines, comment_lines,
+						 blank_lines, code_complexity,
+						 tool_source, data_source, data_collection_date)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+						'aveloxis-scc', 'scc', NOW())`,
+					repoID, row.CloneDate, row.AnalysisDate, row.Language,
+					row.FilePath, row.FileName, row.TotalLines, row.CodeLines, row.CommentLines,
+					row.BlankLines, row.Complexity)
+			}
+			if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+				return fmt.Errorf("insert repo_labor snapshot rows %d..%d: %w", start, end, err)
+			}
+		}
+
+		return tx.Commit(ctx)
+	})
 }
 
 // InsertRepoDependency inserts a dependency into repo_dependencies.
@@ -217,30 +278,28 @@ func (s *PostgresStore) InsertRepoLibyear(ctx context.Context, repoID int64, row
 }
 
 // InsertScorecardResult stores an OpenSSF Scorecard check result.
-func (s *PostgresStore) InsertScorecardResult(ctx context.Context, repoID int64, name, score string, detailsJSON []byte) error {
+//
+// mode records which execution mode produced the row (v0.27.5):
+// 'remote' (--repo, ~18 checks) or 'local' (--local, ~11 checks).
+// The two modes' overall scores are NOT comparable (different check
+// sets), so the marker travels with every check row AND the
+// __overall__ row. Empty string = mode unrecorded (pre-v0.27.5).
+func (s *PostgresStore) InsertScorecardResult(ctx context.Context, repoID int64, name, score string, detailsJSON []byte, mode string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_data.repo_deps_scorecard
-			(repo_id, name, score, scorecard_check_details,
+			(repo_id, name, score, scorecard_check_details, scorecard_mode,
 			 tool_source, data_source, data_collection_date)
-		VALUES ($1, $2, $3, $4,
+		VALUES ($1, $2, $3, $4, $5,
 			'aveloxis-scorecard', 'OpenSSF Scorecard', NOW())`,
-		repoID, name, score, detailsJSON)
+		repoID, name, score, detailsJSON, mode)
 	return err
 }
 
-// InsertRepoLabor inserts a code complexity record from scc output.
-func (s *PostgresStore) InsertRepoLabor(ctx context.Context, repoID int64, row *RepoLaborRow) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_data.repo_labor
-			(repo_id, repo_clone_date, rl_analysis_date, programming_language,
-			 file_path, file_name, total_lines, code_lines, comment_lines,
-			 blank_lines, code_complexity,
-			 tool_source, data_source, data_collection_date)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			'aveloxis-scc', 'scc', NOW())
-		ON CONFLICT DO NOTHING`,
-		repoID, row.CloneDate, row.AnalysisDate, row.Language,
-		row.FilePath, row.FileName, row.TotalLines, row.CodeLines, row.CommentLines,
-		row.BlankLines, row.Complexity)
-	return err
-}
+// InsertRepoLabor and InsertRepoLaborBatch were removed in v0.27.7.
+// Both inserted into repo_labor WITHOUT rotating the previous snapshot
+// to repo_labor_history, which is how production accumulated 2.0M live
+// rows / 29 GB of stacked snapshots. Use ReplaceRepoLaborSnapshot —
+// rotation + insert fused into one transaction so the rotation cannot
+// be skipped or double-applied. Do NOT reintroduce a bare repo_labor
+// writer; TestRepoLaborWritersCannotSkipRotation fails the build if
+// one appears.

@@ -39,52 +39,39 @@ import (
 
 func TestRunOneCapturesScancodeStderr(t *testing.T) {
 	src := readScancodeWorkerSource(t)
-	idx := strings.Index(src, "func (w *ScancodeWorker) runOne(")
-	if idx < 0 {
-		t.Fatal("cannot find runOne method")
-	}
-	tail := src[idx:]
-	endRel := strings.Index(tail[1:], "\nfunc ")
-	if endRel < 0 {
-		endRel = len(tail) - 1
-	}
-	body := tail[:1+endRel]
+	// v0.27.6: the subprocess phase of the runOne pipeline lives in
+	// executeScan; the failure log lives in writeFailureArtifacts.
+	body := scancodeMethodBody(t, src, "func (w *ScancodeWorker) executeScan(")
 
-	// The runOne body must assign something to cmd.Stderr before
+	// The executeScan body must assign something to cmd.Stderr before
 	// cmd.Start(). Without this, scancode subprocess output is
 	// discarded by Go's exec default and "exit status 1" failures
 	// are undiagnosable. Pin the literal `cmd.Stderr =` so a
 	// refactor that drops the capture fails the test.
 	if !strings.Contains(body, "cmd.Stderr =") {
-		t.Error("runOne must assign cmd.Stderr to a buffer before cmd.Start() so the subprocess's error output is captured. Without it, a scancode 'exit status 1' produces a log line with no information about WHY it failed — exactly the v0.21.4 diagnostic gap this fix closes.")
+		t.Error("executeScan must assign cmd.Stderr to a buffer before cmd.Start() so the subprocess's error output is captured. Without it, a scancode 'exit status 1' produces a log line with no information about WHY it failed — exactly the v0.21.4 diagnostic gap this fix closes.")
 	}
 
 	// Stdout capture is also needed because scancode --quiet still
 	// writes some progress to stdout, and some non-quiet error
 	// paths route to stdout instead of stderr.
 	if !strings.Contains(body, "cmd.Stdout =") {
-		t.Error("runOne must assign cmd.Stdout to a buffer alongside cmd.Stderr. Scancode's failure messages don't reliably route to one stream.")
+		t.Error("executeScan must assign cmd.Stdout to a buffer alongside cmd.Stderr. Scancode's failure messages don't reliably route to one stream.")
 	}
 
 	// The failure log must include the captured tail. Pin a stable
 	// keyword in the structured log call.
-	if !strings.Contains(body, "stderr_tail") && !strings.Contains(body, "stderr") {
-		t.Error("the cmd.Wait() failure log line must include a 'stderr_tail' (or at least 'stderr') key carrying the captured tail of subprocess output. Otherwise the capture is dead code.")
+	failBody := scancodeMethodBody(t, src, "func (w *ScancodeWorker) writeFailureArtifacts(")
+	if !strings.Contains(failBody, "stderr_tail") && !strings.Contains(failBody, "stderr") {
+		t.Error("the subprocess-failed log line (writeFailureArtifacts) must include a 'stderr_tail' (or at least 'stderr') key carrying the captured tail of subprocess output. Otherwise the capture is dead code.")
 	}
 }
 
 func TestRunOneCloneSkipsLFSSmudge(t *testing.T) {
 	src := readScancodeWorkerSource(t)
-	idx := strings.Index(src, "func (w *ScancodeWorker) runOne(")
-	if idx < 0 {
-		t.Fatal("cannot find runOne method")
-	}
-	tail := src[idx:]
-	endRel := strings.Index(tail[1:], "\nfunc ")
-	if endRel < 0 {
-		endRel = len(tail) - 1
-	}
-	body := tail[:1+endRel]
+	// v0.27.6: the clone phase of the runOne pipeline lives in
+	// prepareClone.
+	body := scancodeMethodBody(t, src, "func (w *ScancodeWorker) prepareClone(")
 
 	// The git clone command must set GIT_LFS_SKIP_SMUDGE=1 in its
 	// environment. Otherwise repos whose LFS quota is exhausted
@@ -114,30 +101,26 @@ func TestRunOneCloneSkipsLFSSmudge(t *testing.T) {
 // (headTailBuffer), and the failure path must surface the libmagic cause hint.
 func TestRunOneStderrCaptureIsBounded(t *testing.T) {
 	src := readScancodeWorkerSource(t)
-	idx := strings.Index(src, "func (w *ScancodeWorker) runOne(")
-	if idx < 0 {
-		t.Fatal("cannot find runOne method")
-	}
-	tail := src[idx:]
-	endRel := strings.Index(tail[1:], "\nfunc ")
-	if endRel < 0 {
-		endRel = len(tail) - 1
-	}
-	body := tail[:1+endRel]
+	// v0.27.6: the capture setup lives in executeScan, the failure-
+	// file write + libmagic hint in writeFailureArtifacts.
+	body := scancodeMethodBody(t, src, "func (w *ScancodeWorker) executeScan(")
 
 	// The per-repo failure capture must use the bounded headTailBuffer, NOT an
 	// unbounded bytes.Buffer. The unbounded buffer held 15+ GB in RAM per failing
 	// repo on a corrupt-libmagic host.
 	if !strings.Contains(body, "headTailBuffer{") {
-		t.Error("runOne must capture stderr/stdout for the per-repo failure file with a bounded headTailBuffer. A corrupt host libmagic makes large repos emit 15+ GB of warning spam; an unbounded bytes.Buffer holds all of it in RAM (multi-GB heap spike per failing repo) AND writes a 15 GB file to disk.")
+		t.Error("executeScan must capture stderr/stdout for the per-repo failure file with a bounded headTailBuffer. A corrupt host libmagic makes large repos emit 15+ GB of warning spam; an unbounded bytes.Buffer holds all of it in RAM (multi-GB heap spike per failing repo) AND writes a 15 GB file to disk.")
 	}
-	if strings.Contains(body, "&bytes.Buffer{}") {
-		t.Error("runOne must NOT use an unbounded &bytes.Buffer{} for the failure capture — that reintroduces the 2026-06-11 15 GB-in-RAM bug. Use headTailBuffer.")
+	failBody := scancodeMethodBody(t, src, "func (w *ScancodeWorker) writeFailureArtifacts(")
+	for name, b := range map[string]string{"executeScan": body, "writeFailureArtifacts": failBody} {
+		if strings.Contains(b, "&bytes.Buffer{}") {
+			t.Errorf("%s must NOT use an unbounded &bytes.Buffer{} for the failure capture — that reintroduces the 2026-06-11 15 GB-in-RAM bug. Use headTailBuffer.", name)
+		}
 	}
 
 	// The failure log must surface the libmagic cause hint so a flood of these
 	// failures isn't confusing — it's the host's magic DB, not a per-repo issue.
-	if !strings.Contains(body, "countLibmagicWarnings(") {
-		t.Error("the cmd.Wait() failure path must check countLibmagicWarnings(...) and, when the stderr is libmagic-dominated, log a likely_cause pointing at the host libmagic / aveloxis_status. Otherwise operators can't tell 'this repo is broken' from 'the host's magic DB is corrupt'.")
+	if !strings.Contains(failBody, "countLibmagicWarnings(") {
+		t.Error("the subprocess-failed path (writeFailureArtifacts) must check countLibmagicWarnings(...) and, when the stderr is libmagic-dominated, log a likely_cause pointing at the host libmagic / aveloxis_status. Otherwise operators can't tell 'this repo is broken' from 'the host's magic DB is corrupt'.")
 	}
 }

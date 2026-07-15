@@ -30,6 +30,21 @@ jobs:
           languages: go
           # Queries: security-extended includes more rules than default.
           queries: security-extended
+          # go/log-injection is a FALSE-POSITIVE CLASS for this codebase:
+          # every binary logs exclusively through log/slog's TextHandler,
+          # which quote-escapes attribute values — forged log lines are
+          # not constructible. 152 alerts were individually reviewed and
+          # bulk-dismissed with this rationale (2026-07-14, v0.27.3), and
+          # every new log line that includes any user-influenced string
+          # (repo URLs, logins, group names) re-triggers the rule. New
+          # log sites should still use the house scrub helpers
+          # (internal/api/logsafe.go, internal/web truncateForLog,
+          # internal/collector scrubLogValue) as defense-in-depth.
+          # REVISIT if a non-slog logging path is ever introduced.
+          config: |
+            query-filters:
+              - exclude:
+                  id: go/log-injection
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3

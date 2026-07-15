@@ -40,6 +40,7 @@
     "breadth_interval_minutes": 15,
     "breadth_batch_size": 2000,
     "breadth_cooldown_days": 7,
+    "breadth_fetch_concurrency": 8,
     "shutdown_grace_seconds": 10,
     "scancode_workers": 2,
     "scancode_start_interval_s": 90,
@@ -49,6 +50,10 @@
     "scancode_run_timeout_hours": 2,
     "scancode_run_timeout_cap_hours": 24,
     "scancode_max_in_memory": 5000,
+    "scorecard_timeout_minutes": 15,
+    "scorecard_token_count": 0,
+    "scancode_timeout_cap_strikes": 3,
+    "scancode_ignore_globs": [],
     "staging_retention_hours": 1,
     "phase_watchdog_minutes": 75,
     "distribution_tracking_enabled": false,
@@ -77,7 +82,8 @@
     "gitlab_client_id": "your-gitlab-oauth-app-client-id",
     "gitlab_client_secret": "your-gitlab-oauth-app-client-secret",
     "gitlab_base_url": "https://gitlab.com",
-    "api_internal_url": "http://127.0.0.1:8383"
+    "api_internal_url": "http://127.0.0.1:8383",
+    "spa_url": ""
   },
   "monitor": {
     "refresh_seconds": 60

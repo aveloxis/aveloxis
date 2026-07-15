@@ -202,6 +202,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/auth/gitlab", s.handleGitLabAuth)
 	mux.HandleFunc("/auth/gitlab/callback", s.handleGitLabCallback)
 	mux.HandleFunc("/logout", s.handleLogout)
+	// v0.27.4: alias under /auth/ so the SPA can reach logout through
+	// the same proxy prefix as the OAuth routes (nginx/dev-server only
+	// forward /auth/* and /api/*). Clears the session + oauth cookies;
+	// the SPA ignores the redirect and routes itself to login.html.
+	mux.HandleFunc("/auth/logout", s.handleLogout)
 	// v0.27.1: mints a DB-backed Bearer token for the separate-origin
 	// SPA (aveloxis-gui). The SPA completes OAuth on this origin (the
 	// session cookie), then exchanges it here for a token it sends as
@@ -419,6 +424,68 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
+// postLoginRedirect resolves where the OAuth callback should send the
+// browser. The SPA's login page passes ?next=<its own URL> when
+// initiating OAuth; handleGitHubAuth/handleGitLabAuth stash it in a
+// short-lived cookie, and the callback honors it ONLY when it is a
+// same-site relative path or sits under the operator-configured
+// web.spa_url origin — anything else (open-redirect attempts) falls
+// back to the server-rendered /dashboard.
+func (s *Server) postLoginRedirect(r *http.Request) string {
+	c, err := r.Cookie("oauth_next")
+	if err != nil || c.Value == "" {
+		return "/dashboard"
+	}
+	if target := safeNextTarget(c.Value, s.cfg.SPAURL); target != "" {
+		return target
+	}
+	s.logger.Warn("ignoring untrusted post-login next URL", "next", truncateForLog([]byte(c.Value), 120))
+	return "/dashboard"
+}
+
+// safeNextTarget validates a post-login redirect destination and
+// returns "" when it is untrusted. Extracted as a pure function
+// (v0.27.10) so the open-redirect matrix — including inputs Go's own
+// cookie transport would sanitize away — is directly testable.
+//
+// Relative paths only: browsers treat both "//host" AND "/\host" as
+// protocol-relative absolute URLs (backslash is normalized to slash),
+// so a bare leading-slash check is an open-redirect bypass
+// (CodeQL go/bad-redirect-check, fixed v0.27.10). Absolute URLs are
+// honored ONLY under the configured spa_url origin.
+func safeNextTarget(next, spaURL string) string {
+	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") &&
+		!strings.HasPrefix(next, `/\`) {
+		return next
+	}
+	if spa := strings.TrimSuffix(spaURL, "/"); spa != "" &&
+		(next == spa || strings.HasPrefix(next, spa+"/")) {
+		return next
+	}
+	return ""
+}
+
+// stashNext records a login flow's ?next= destination for the callback.
+func (s *Server) stashNext(w http.ResponseWriter, r *http.Request) {
+	if next := r.URL.Query().Get("next"); next != "" {
+		http.SetCookie(w, &http.Cookie{
+			Name: "oauth_next", Value: next, Path: "/",
+			MaxAge: 300, HttpOnly: true, Secure: !s.cfg.DevMode, SameSite: http.SameSiteLaxMode,
+		})
+	}
+}
+
+// clearNext expires the oauth_next cookie once consumed. The expiry
+// cookie carries the same attributes as stashNext's original — the
+// house rule (HttpOnly always; Secure unless dev_mode) applies to
+// every Set-Cookie we emit, deletions included (v0.27.10).
+func (s *Server) clearNext(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name: "oauth_next", Value: "", Path: "/",
+		MaxAge: -1, HttpOnly: true, Secure: !s.cfg.DevMode, SameSite: http.SameSiteLaxMode,
+	})
+}
+
 func (s *Server) handleGitHubAuth(w http.ResponseWriter, r *http.Request) {
 	if s.ghOAuth == nil {
 		http.Error(w, "GitHub OAuth not configured", http.StatusBadRequest)
@@ -426,6 +493,7 @@ func (s *Server) handleGitHubAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	state := generateToken()
 	http.SetCookie(w, s.oauthStateCookie(state))
+	s.stashNext(w, r)
 	http.Redirect(w, r, s.ghOAuth.AuthCodeURL(state), http.StatusFound)
 }
 
@@ -539,7 +607,9 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// Create session.
 	sessToken := s.createSession(userID, ghUser.Login, ghUser.AvatarURL, "github", isAdmin)
 	http.SetCookie(w, s.sessionCookie(sessToken))
-	http.Redirect(w, r, "/dashboard", http.StatusFound)
+	dest := s.postLoginRedirect(r)
+	s.clearNext(w)
+	http.Redirect(w, r, dest, http.StatusFound)
 }
 
 // fetchGitHubPrimaryEmail calls GitHub's /user/emails endpoint and
@@ -597,6 +667,7 @@ func (s *Server) handleGitLabAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	state := generateToken()
 	http.SetCookie(w, s.oauthStateCookie(state))
+	s.stashNext(w, r)
 	http.Redirect(w, r, s.glOAuth.AuthCodeURL(state), http.StatusFound)
 }
 
@@ -686,7 +757,9 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 
 	sessToken := s.createSession(userID, glUser.Username, glUser.AvatarURL, "gitlab", isAdmin)
 	http.SetCookie(w, s.sessionCookie(sessToken))
-	http.Redirect(w, r, "/dashboard", http.StatusFound)
+	dest := s.postLoginRedirect(r)
+	s.clearNext(w)
+	http.Redirect(w, r, dest, http.StatusFound)
 }
 
 // ============================================================

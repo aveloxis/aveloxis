@@ -1216,6 +1216,39 @@ type libyearDep struct {
 	Manager     string // "npm", "pypi"
 }
 
+// registryFetchMaxTime bounds every registry-lookup curl at 30 seconds
+// of wall clock (curl's --max-time). v0.27.5: the ~15 previously-bare
+// `curl -sf` sites in this file were the #2 subprocess-hang class in
+// production goroutine dumps — a registry that accepts the TCP
+// connection and then stalls held a collection worker indefinitely.
+const registryFetchMaxTime = "30"
+
+// fetchRegistryJSON is THE single curl choke point for package-registry
+// lookups (v0.27.5) — every libyear/license resolver in this file
+// routes through it so the --max-time cap can never be forgotten at a
+// new call site (a source-contract test pins that no bare "curl" exec
+// exists in this file outside this helper).
+//
+// Semantics match the pre-v0.27.5 per-site pattern exactly: `curl -sf
+// <url>` with stdout captured, non-2xx → error (-f), plus the new
+// wall-clock cap. extraArgs are appended before the URL for the rare
+// endpoint needing extra flags (e.g. Hackage's `-H "Accept:
+// application/json"`). Despite the name, the returned bytes are
+// whatever the endpoint served — Hackage's upload-time endpoints
+// return plain text and use this helper too.
+func fetchRegistryJSON(ctx context.Context, url string, extraArgs ...string) ([]byte, error) {
+	args := []string{"-sf", "--max-time", registryFetchMaxTime}
+	args = append(args, extraArgs...)
+	args = append(args, url)
+	cmd := exec.CommandContext(ctx, "curl", args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
 func parsePackageJSONVersions(path string) ([]libyearDep, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1393,11 +1426,9 @@ func resolveNPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 
 // resolvePyPILibyear checks PyPI for the latest version.
 func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	cmd := exec.CommandContext(ctx, "curl", "-sf",
+	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://pypi.org/pypi/%s/json", dep.Name))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var info struct {
@@ -1410,7 +1441,7 @@ func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, er
 			UploadTime string `json:"upload_time"`
 		} `json:"releases"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
 	}
 
@@ -1569,32 +1600,27 @@ func parseGemfileVersions(path string) []libyearDep {
 // resolveGoLibyear checks the Go proxy for module version dates.
 func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	// Go proxy API: https://proxy.golang.org/{module}/@v/{version}.info
-	latestCmd := exec.CommandContext(ctx, "curl", "-sf",
+	latestBody, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://proxy.golang.org/%s/@latest", dep.Name))
-	var latestOut bytes.Buffer
-	latestCmd.Stdout = &latestOut
-	if err := latestCmd.Run(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var latestInfo struct {
 		Version string `json:"Version"`
 		Time    string `json:"Time"`
 	}
-	if err := json.Unmarshal(latestOut.Bytes(), &latestInfo); err != nil {
+	if err := json.Unmarshal(latestBody, &latestInfo); err != nil {
 		return nil, err
 	}
 
 	currentDate := ""
 	if dep.Version != "" {
-		curCmd := exec.CommandContext(ctx, "curl", "-sf",
-			fmt.Sprintf("https://proxy.golang.org/%s/@v/v%s.info", dep.Name, dep.Version))
-		var curOut bytes.Buffer
-		curCmd.Stdout = &curOut
-		if err := curCmd.Run(); err == nil {
+		if curBody, err := fetchRegistryJSON(ctx,
+			fmt.Sprintf("https://proxy.golang.org/%s/@v/v%s.info", dep.Name, dep.Version)); err == nil {
 			var curInfo struct {
 				Time string `json:"Time"`
 			}
-			json.Unmarshal(curOut.Bytes(), &curInfo)
+			json.Unmarshal(curBody, &curInfo)
 			currentDate = curInfo.Time
 		}
 	}
@@ -1621,11 +1647,9 @@ func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, erro
 
 // resolveCargoLibyear checks crates.io for Rust crate versions.
 func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	cmd := exec.CommandContext(ctx, "curl", "-sf",
+	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://crates.io/api/v1/crates/%s", dep.Name))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var info struct {
@@ -1638,7 +1662,7 @@ func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 			License   string `json:"license"`
 		} `json:"versions"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
 	}
 
@@ -1680,11 +1704,9 @@ func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 
 // resolveRubyGemsLibyear checks rubygems.org for gem versions.
 func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	cmd := exec.CommandContext(ctx, "curl", "-sf",
+	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://rubygems.org/api/v1/versions/%s.json", dep.Name))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var versions []struct {
@@ -1692,7 +1714,7 @@ func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow
 		CreatedAt string   `json:"created_at"`
 		Licenses  []string `json:"licenses"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &versions); err != nil {
+	if err := json.Unmarshal(body, &versions); err != nil {
 		return nil, err
 	}
 
@@ -1849,11 +1871,9 @@ func fetchGoModuleLicense(ctx context.Context, modulePath string) string {
 	}
 	owner, repo := parts[0], parts[1]
 
-	cmd := exec.CommandContext(ctx, "curl", "-sf",
+	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://api.github.com/repos/%s/%s/license", owner, repo))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return ""
 	}
 	var info struct {
@@ -1861,7 +1881,7 @@ func fetchGoModuleLicense(ctx context.Context, modulePath string) string {
 			SpdxID string `json:"spdx_id"`
 		} `json:"license"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
 		return ""
 	}
 	if info.License.SpdxID == "" || info.License.SpdxID == "NOASSERTION" {
@@ -1897,13 +1917,14 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	}
 
 	now := time.Now()
+	var laborRows []*db.RepoLaborRow
 	for _, lang := range languages {
 		for _, file := range lang.Files {
 			relPath, relErr := filepath.Rel(workDir, file.Location)
 			if relErr != nil || relPath == "" {
 				relPath = file.Location
 			}
-			err := ac.store.InsertRepoLabor(ctx, repoID, &db.RepoLaborRow{
+			laborRows = append(laborRows, &db.RepoLaborRow{
 				CloneDate:    now,
 				AnalysisDate: now,
 				Language:     lang.Name,
@@ -1915,12 +1936,24 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 				BlankLines:   file.Blank,
 				Complexity:   file.Complexity,
 			})
-			if err != nil {
-				continue
-			}
-			result.LaborFiles++
 		}
 	}
+
+	// v0.27.7: ONE atomic snapshot replace per analysis run. The store
+	// rotates the previous snapshot to repo_labor_history and inserts
+	// the fresh rows in the SAME transaction — rotation can neither be
+	// skipped nor applied per-chunk, and a mid-insert failure rolls
+	// the rotation back too (the previous snapshot stays current).
+	// scc failures return above BEFORE this call, so a failed scan
+	// never rotates the previous snapshot away. A successful scan with
+	// zero source files still replaces (empty snapshot is the current
+	// truth). Do NOT revert to per-file inserts — that is the
+	// unbounded-growth bug (2.0M rows / 29 GB in production) that
+	// v0.27.7 fixed; TestScanSCCUsesAtomicSnapshotReplace pins this.
+	if err := ac.store.ReplaceRepoLaborSnapshot(ctx, repoID, laborRows); err != nil {
+		return fmt.Errorf("replacing repo_labor snapshot: %w", err)
+	}
+	result.LaborFiles += len(laborRows)
 
 	return nil
 }
@@ -2411,11 +2444,9 @@ func resolveMavenLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 		return nil, fmt.Errorf("invalid maven coordinate: %s", dep.Name)
 	}
 	groupID, artifactID := parts[0], parts[1]
-	cmd := exec.CommandContext(ctx, "curl", "-sf",
+	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://search.maven.org/solrsearch/select?q=g:%%22%s%%22+AND+a:%%22%s%%22&rows=1&wt=json", groupID, artifactID))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var info struct {
@@ -2426,7 +2457,7 @@ func resolveMavenLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 			} `json:"docs"`
 		} `json:"response"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
 	}
 	if len(info.Response.Docs) == 0 {
@@ -2450,11 +2481,9 @@ func resolveMavenLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 
 // resolvePackagistLibyear checks Packagist (PHP) for package versions.
 func resolvePackagistLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	cmd := exec.CommandContext(ctx, "curl", "-sf",
+	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://repo.packagist.org/p2/%s.json", dep.Name))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var info struct {
@@ -2464,7 +2493,7 @@ func resolvePackagistLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRo
 			License []string `json:"license"`
 		} `json:"packages"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
 	}
 	versions := info.Packages[dep.Name]
@@ -2502,11 +2531,9 @@ func resolvePackagistLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRo
 
 // resolveHexLibyear checks hex.pm (Elixir/Erlang) for package versions.
 func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	cmd := exec.CommandContext(ctx, "curl", "-sf",
+	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://hex.pm/api/packages/%s", dep.Name))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var info struct {
@@ -2518,7 +2545,7 @@ func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 			Licenses []string `json:"licenses"`
 		} `json:"meta"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
 	}
 	if len(info.Releases) == 0 {
@@ -2555,12 +2582,10 @@ func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 // resolveNuGetLibyear checks nuget.org for .NET package versions.
 func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	// NuGet registration API.
-	cmd := exec.CommandContext(ctx, "curl", "-sf",
+	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://api.nuget.org/v3/registration5-semver1/%s/index.json",
 			strings.ToLower(dep.Name)))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var info struct {
@@ -2575,7 +2600,7 @@ func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 			} `json:"items"`
 		} `json:"items"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
 	}
 
@@ -2686,11 +2711,9 @@ func parsePubspecVersions(content string) []libyearDep {
 
 // resolvePubDevLibyear checks pub.dev (Dart/Flutter) for package versions.
 func resolvePubDevLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	cmd := exec.CommandContext(ctx, "curl", "-sf",
+	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://pub.dev/api/packages/%s", dep.Name))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var info struct {
@@ -2703,7 +2726,7 @@ func resolvePubDevLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, 
 			Published string `json:"published"`
 		} `json:"versions"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
 	}
 	latestVersion := info.Latest.Version
@@ -2853,18 +2876,16 @@ func resolveSwiftPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 	owner, repo := parts[1], parts[2]
 
 	// Get latest release from GitHub API.
-	cmd := exec.CommandContext(ctx, "curl", "-sf",
+	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var release struct {
 		TagName     string `json:"tag_name"`
 		PublishedAt string `json:"published_at"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &release); err != nil {
+	if err := json.Unmarshal(body, &release); err != nil {
 		return nil, err
 	}
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
@@ -2942,18 +2963,19 @@ func extractFirstVersion(s string) string {
 
 // resolveHackageLibyear checks Hackage for Haskell package versions.
 func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	// Hackage preferred-versions API returns version list.
-	cmd := exec.CommandContext(ctx, "curl", "-sf", "-H", "Accept: application/json",
-		fmt.Sprintf("https://hackage.haskell.org/package/%s/preferred", dep.Name))
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	// Hackage preferred-versions API returns version list. This is the
+	// one registry endpoint that needs an Accept header (it serves HTML
+	// otherwise) — passed through fetchRegistryJSON's extraArgs.
+	body, err := fetchRegistryJSON(ctx,
+		fmt.Sprintf("https://hackage.haskell.org/package/%s/preferred", dep.Name),
+		"-H", "Accept: application/json")
+	if err != nil {
 		return nil, err
 	}
 	var info struct {
 		NormalVersion []string `json:"normal-version"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
 	}
 	if len(info.NormalVersion) == 0 {
@@ -2961,24 +2983,19 @@ func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 	}
 	latestVersion := info.NormalVersion[0] // First is the latest.
 
-	// Hackage doesn't return dates in this endpoint. Get upload time from package info.
+	// Hackage doesn't return dates in this endpoint. Get upload time from
+	// package info (plain-text responses, same curl choke point).
 	latestDate := ""
-	cmd2 := exec.CommandContext(ctx, "curl", "-sf",
-		fmt.Sprintf("https://hackage.haskell.org/package/%s-%s/upload-time", dep.Name, latestVersion))
-	var out2 bytes.Buffer
-	cmd2.Stdout = &out2
-	if err := cmd2.Run(); err == nil {
-		latestDate = strings.TrimSpace(out2.String())
+	if uploadBody, err := fetchRegistryJSON(ctx,
+		fmt.Sprintf("https://hackage.haskell.org/package/%s-%s/upload-time", dep.Name, latestVersion)); err == nil {
+		latestDate = strings.TrimSpace(string(uploadBody))
 	}
 
 	currentDate := ""
 	if dep.Version != "" {
-		cmd3 := exec.CommandContext(ctx, "curl", "-sf",
-			fmt.Sprintf("https://hackage.haskell.org/package/%s-%s/upload-time", dep.Name, dep.Version))
-		var out3 bytes.Buffer
-		cmd3.Stdout = &out3
-		if err := cmd3.Run(); err == nil {
-			currentDate = strings.TrimSpace(out3.String())
+		if uploadBody, err := fetchRegistryJSON(ctx,
+			fmt.Sprintf("https://hackage.haskell.org/package/%s-%s/upload-time", dep.Name, dep.Version)); err == nil {
+			currentDate = strings.TrimSpace(string(uploadBody))
 		}
 	}
 

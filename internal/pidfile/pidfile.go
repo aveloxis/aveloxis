@@ -8,11 +8,13 @@
 package pidfile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Dir returns the directory for PID and log files.
@@ -67,11 +69,28 @@ func Remove(path string) {
 }
 
 // IsRunning checks if the process with the given PID is still alive.
+//
+// v0.27.5 bug fix: the previous implementation called proc.Signal(nil),
+// which the os package rejects with "unsupported signal type" for EVERY
+// pid — IsRunning reported every process as dead since the function was
+// introduced. Consequences before the fix: `aveloxis start` could
+// double-start an already-running component (its "already running"
+// guard never fired), and `aveloxis stop` always logged "stale PID
+// file" and fell through to the pgrep fallback (which masked the bug).
+// The documented intent was always "send signal 0"; this makes the code
+// do that.
 func IsRunning(pid int) bool {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	// On Unix, FindProcess always succeeds. Send signal 0 to check if alive.
-	return proc.Signal(nil) == nil
+	// On Unix, FindProcess always succeeds. Send signal 0 to check if
+	// alive: nil error = alive; EPERM = alive but owned by another user
+	// (it EXISTS, which is what liveness means here); anything else
+	// (ESRCH, ErrProcessDone) = dead.
+	err = proc.Signal(syscall.Signal(0))
+	if err == nil {
+		return true
+	}
+	return errors.Is(err, syscall.EPERM)
 }

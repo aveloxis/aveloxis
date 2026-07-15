@@ -634,7 +634,7 @@ func (s *Server) handleStarsCount(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
-	count, name, err := s.store.LatestCount(r.Context(), repoID, "stars_count")
+	count, name, err := s.store.LatestCount(r.Context(), repoID, "star_count")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -687,11 +687,11 @@ func (s *Server) handleWatchers(w http.ResponseWriter, r *http.Request) {
 	}
 	// Watchers time series — same pattern as stars/forks but with watchers_count.
 	rows, err := s.store.Pool().Query(r.Context(), `
-		SELECT data_collection_date AS date, watchers_count AS value, r.repo_name
+		SELECT ri.data_collection_date AS date, ri.watcher_count AS value, r.repo_name
 		FROM aveloxis_data.repo_info ri
 		JOIN aveloxis_data.repos r ON ri.repo_id = r.repo_id
 		WHERE ri.repo_id = $1
-		ORDER BY data_collection_date`, repoID)
+		ORDER BY ri.data_collection_date`, repoID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -718,7 +718,7 @@ func (s *Server) handleWatchersCount(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
-	count, name, err := s.store.LatestCount(r.Context(), repoID, "watchers_count")
+	count, name, err := s.store.LatestCount(r.Context(), repoID, "watcher_count")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -86,6 +86,17 @@ func TestBatchInsertsHaveOnConflict(t *testing.T) {
 		"aveloxis_data.repo_sbom_scans":     true, // SBOMs accumulate per collection run
 		"aveloxis_data.repo_deps_scorecard": true, // uses RotateScorecardToHistory before insert
 		"aveloxis_data.repo_deps_libyear":   true, // uses RotateLibyearToHistory before insert
+		// v0.27.7: ReplaceRepoLaborSnapshot rotates the previous
+		// snapshot to repo_labor_history in the SAME transaction as
+		// the insert, so re-collection produces zero duplicates by
+		// construction. The pre-v0.27.7 blanket ON CONFLICT DO NOTHING
+		// was dead code anyway — repo_labor has no unique constraint
+		// besides its BIGSERIAL PK, so the clause never fired and
+		// every "duplicate" snapshot row was in fact inserted (the
+		// 29 GB unbounded-growth bug). Post-rotation, a within-snapshot
+		// duplicate would be a real bug that should surface as an
+		// error, not be silently swallowed.
+		"aveloxis_data.repo_labor": true,
 	}
 
 	for _, filename := range []string{"analysis_store.go", "breadth_store.go", "vulnerability_store.go"} {

@@ -54,6 +54,7 @@ func main() {
 		collectCmd(&cfgPath),
 		serveCmd(&cfgPath),
 		apiCmd(&cfgPath),
+		scancodeWorkerCmd(&cfgPath),
 		webCmd(&cfgPath),
 		startCmd(&cfgPath),
 		stopCmd(&cfgPath),
@@ -84,6 +85,8 @@ func main() {
 		dataTestCmd(&cfgPath),
 		testMailCmd(&cfgPath),
 		stagingStatsCmd(&cfgPath),
+		healVulnerabilitiesCmd(&cfgPath),
+		runScorecardCmd(&cfgPath),
 		distributionStatsCmd(&cfgPath),
 		versionCmd(),
 	)

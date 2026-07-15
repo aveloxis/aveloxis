@@ -17,9 +17,12 @@ package api
 
 import (
 	"encoding/json"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -328,12 +331,15 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Attach repo names — ids alone mean nothing to users (operator).
+	// Attach repo names — ids alone mean nothing to users (operator) —
+	// and the repo_info meta counts so gathered-vs-metadata pairs render
+	// side by side (operator, 2026-07-15).
 	ids := make([]int64, 0, len(jobs))
 	for _, j := range jobs {
 		ids = append(ids, j.RepoID)
 	}
 	repos, _ := s.store.GetReposBatch(r.Context(), ids)
+	stats, _ := s.store.GetRepoStatsBatch(r.Context(), ids)
 	type jobJSON struct {
 		RepoID        int64      `json:"repo_id"`
 		Repo          string     `json:"repo"`
@@ -345,6 +351,9 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		Issues        int        `json:"issues"`
 		PRs           int        `json:"prs"`
 		Commits       int        `json:"commits"`
+		MetaIssues    int        `json:"meta_issues"`
+		MetaPRs       int        `json:"meta_prs"`
+		MetaCommits   int        `json:"meta_commits"`
 	}
 	out := make([]jobJSON, 0, len(jobs))
 	for _, j := range jobs {
@@ -352,11 +361,140 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		if rp, ok := repos[j.RepoID]; ok && rp != nil {
 			label = rp.Owner + "/" + rp.Name
 		}
-		out = append(out, jobJSON{j.RepoID, label, j.Status, j.Priority, j.DueAt,
-			j.LastCollected, j.LastError, j.LastIssues, j.LastPRs, j.LastCommits})
+		row := jobJSON{RepoID: j.RepoID, Repo: label, Status: j.Status, Priority: j.Priority,
+			DueAt: j.DueAt, LastCollected: j.LastCollected, LastError: j.LastError,
+			Issues: j.LastIssues, PRs: j.LastPRs, Commits: j.LastCommits}
+		if st, ok := stats[j.RepoID]; ok && st != nil {
+			row.MetaIssues, row.MetaPRs, row.MetaCommits = st.MetadataIssues, st.MetadataPRs, st.MetadataCommits
+		}
+		out = append(out, row)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"jobs": out, "total": total, "page": page, "page_size": pageSize,
 	})
+}
+
+// --- v0.27.4: home tab (stars + activity) ---
+
+// handleStarRepo stars (PUT) or unstars (DELETE) a repo for the
+// signed-in user. Requires identity unconditionally — stars are
+// per-user state. The repo must be in the caller's scope.
+func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		return
+	}
+	// v0.27.4 (operator decision): starring an out-of-scope repo
+	// auto-adds it to the user's implicit "Starred" group instead of
+	// 403ing. Search only surfaces already-collected repos, so this
+	// can never trigger new collection — and approval exists to gate
+	// new collection (the 50,000-repo bulk-add case), never to gate
+	// access to data we already have. Unstar needs no scope at all.
+	addedToGroup := ""
+	if r.Method != http.MethodDelete && !info.IsAdmin && !info.Scope[repoID] {
+		gid, gerr := s.store.FindOrCreateStarredGroup(r.Context(), info.UserID)
+		if gerr == nil {
+			gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
+		}
+		if gerr != nil {
+			http.Error(w, "could not add repository to your Starred group", http.StatusInternalServerError)
+			return
+		}
+		addedToGroup = db.StarredGroupName
+		// Scope changed — the user's cached token validation must
+		// re-resolve so their next data request sees the repo.
+		s.auth.invalidateAll()
+	}
+	if r.Method == http.MethodDelete {
+		err = s.store.UnstarRepo(r.Context(), info.UserID, repoID)
+	} else {
+		err = s.store.StarRepo(r.Context(), info.UserID, repoID)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.homeCache.invalidate(info.UserID)
+	w.Header().Set("Content-Type", "application/json")
+	resp := map[string]any{"ok": true, "starred": r.Method != http.MethodDelete}
+	if addedToGroup != "" {
+		resp["added_to_group"] = addedToGroup
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleHomeRepos returns the signed-in user's home-tab repo list:
+// starred repos first (always shown), then the most active repos from
+// their own groups over the trailing 90 days.
+func (s *Server) handleHomeRepos(w http.ResponseWriter, r *http.Request) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if body, ok := s.homeCache.get(info.UserID); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "hit")
+		_, _ = w.Write(body)
+		return
+	}
+	repos, err := s.store.GetHomeRepos(r.Context(), info.UserID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	body, _ := json.Marshal(map[string]any{"repos": repos})
+	s.homeCache.set(info.UserID, body)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(body)
+}
+
+// homeReposCache bounds the cost of GetHomeRepos: ~5s cold on a
+// fleet-scale admin group set (86,909 repos), so navigating back to
+// the home tab shouldn't re-run it. Invalidated per-user on
+// star/unstar so toggles survive a reload within the TTL.
+type homeReposCache struct {
+	mu      sync.Mutex
+	entries map[int]homeCacheEntry
+}
+
+type homeCacheEntry struct {
+	body    []byte
+	expires time.Time
+}
+
+const homeReposCacheTTL = 5 * time.Minute
+
+func (c *homeReposCache) get(userID int) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[userID]
+	if !ok || time.Now().After(e.expires) {
+		return nil, false
+	}
+	return e.body, true
+}
+
+func (c *homeReposCache) set(userID int, body []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = map[int]homeCacheEntry{}
+	}
+	if len(c.entries) > 10000 {
+		c.entries = map[int]homeCacheEntry{}
+	}
+	c.entries[userID] = homeCacheEntry{body: body, expires: time.Now().Add(homeReposCacheTTL)}
+}
+
+func (c *homeReposCache) invalidate(userID int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, userID)
 }

@@ -260,9 +260,94 @@ func writeToolCheckTimestamp(logger *slog.Logger) {
 	}
 }
 
-// installScancode installs ScanCode Toolkit via pipx (preferred) or pip.
-// ScanCode is a Python tool, so Python 3.10+ must be available.
-// pipx is preferred because it creates an isolated virtual environment.
+// installScancode is the tool-registry entry point for scancode. It
+// delegates to ensureScancodeCurrent with the observed install state,
+// so ALL THREE historical call paths (install-tools, the monthly
+// CheckAndUpdateTools, and the upgrade-tools CLI) share one
+// install/upgrade/inject implementation. v0.27.6 — see
+// ensureScancodeCurrent for the divergence this unification fixes.
+func installScancode() error {
+	// Scancode depends on libmagic (native C library for file type detection).
+	// Install it if missing.
+	installLibmagicIfNeeded()
+
+	_, lookErr := exec.LookPath("scancode")
+	return ensureScancodeCurrent(lookErr == nil)
+}
+
+// EnsureScancodeCurrent is the ONE scancode install/upgrade/inject
+// path (v0.27.6 unification). Semantics:
+//
+//   - alreadyInstalled == false → `pipx install scancode-toolkit-mini`
+//     then inject typecode-libmagic (pip --user remains the fresh-
+//     install-only fallback for hosts without pipx);
+//   - alreadyInstalled == true  → `pipx upgrade scancode-toolkit-mini`
+//     then ALWAYS re-inject (pipx upgrade may rebuild the venv,
+//     dropping a prior injection). There is NO pip fallback and NO
+//     bare `pipx install` on this branch.
+//
+// Why: pre-v0.27.6, the monthly CheckAndUpdateTools path ran
+// installScancode's bare `pipx install` against an already-installed
+// package, which FAILS ("already seems to be installed" — pipx
+// install is not upgrade), so the injection inside the success branch
+// never re-ran; the code then fell through to a bare
+// `pip install --user`, creating a SECOND, UNINJECTED scancode that
+// could shadow the pipx venv's binary on PATH. The standalone
+// `aveloxis upgrade-tools` CLI did it correctly (pipx upgrade +
+// re-inject); the monthly path had silently diverged. Both now call
+// this helper, and a negative tripwire pins that the installed branch
+// never regrows a bare install.
+func EnsureScancodeCurrent(alreadyInstalled bool) error {
+	return ensureScancodeCurrent(alreadyInstalled)
+}
+
+func ensureScancodeCurrent(alreadyInstalled bool) error {
+	pipxPath, pipxErr := exec.LookPath("pipx")
+
+	if alreadyInstalled {
+		if pipxErr != nil {
+			return fmt.Errorf("scancode is installed but pipx is not on PATH — cannot upgrade in place. "+
+				"Install pipx, or upgrade manually: pipx upgrade %s && pipx inject %s typecode-libmagic",
+				scancodePipxPackage, scancodePipxPackage)
+		}
+		return pipxUpgradeScancode(pipxPath)
+	}
+
+	if pipxErr == nil {
+		if err := pipxFreshInstallScancode(pipxPath); err == nil {
+			return nil
+		}
+		// pipx failed on a FRESH install — fall through to pip.
+		fmt.Println("pipx install failed, trying pip...")
+	}
+	return pipInstallScancodeFresh()
+}
+
+// pipxUpgradeScancode is the installed-branch implementation:
+// `pipx upgrade` (never `pipx install`, which fails on an installed
+// package) followed by an UNCONDITIONAL typecode-libmagic re-inject
+// — pipx upgrade may have rebuilt the venv, losing a prior injection.
+// The re-inject failure is non-fatal (degraded-but-functional).
+func pipxUpgradeScancode(pipxPath string) error {
+	fmt.Printf("Upgrading %s via pipx...\n", scancodePipxPackage)
+	cmd := exec.Command(pipxPath, "upgrade", scancodePipxPackage)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pipx upgrade %s: %w (if scancode was installed via `pip install --user` rather than pipx, "+
+			"uninstall it and run `aveloxis install-tools` to move it into a pipx venv)",
+			scancodePipxPackage, err)
+	}
+	if err := injectTypecodeLibmagic(pipxPath, scancodePipxPackage); err != nil {
+		fmt.Printf("warning: typecode-libmagic re-injection failed: %v\n", err)
+		fmt.Println("  scancode upgrade succeeded; the libmagic UserWarning may continue to print.")
+		fmt.Println("  to retry: pipx inject scancode-toolkit-mini typecode-libmagic")
+	}
+	return nil
+}
+
+// pipxFreshInstallScancode installs scancode into a new pipx venv and
+// injects typecode-libmagic.
 //
 // We install scancode-toolkit-mini instead of the full scancode-toolkit to
 // avoid native C dependency issues (pyicu, intbitset) that require pkg-config,
@@ -270,46 +355,42 @@ func writeToolCheckTimestamp(logger *slog.Logger) {
 // has full license/copyright/package detection — it only omits advanced archive
 // extraction and Unicode normalization features we don't need (we scan
 // already-extracted code checkouts).
-func installScancode() error {
-	const pkg = "scancode-toolkit-mini"
-
-	// Scancode depends on libmagic (native C library for file type detection).
-	// Install it if missing.
-	installLibmagicIfNeeded()
-
-	// Try pipx first — creates an isolated venv automatically.
-	if pipxPath, err := exec.LookPath("pipx"); err == nil {
-		fmt.Printf("Installing %s via pipx...\n", pkg)
-		cmd := exec.Command(pipxPath, "install", pkg)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err == nil {
-			// v0.23.6: inject typecode-libmagic into the freshly-built
-			// venv. Without this, every scancode run emits the
-			// libmagic UserWarning that dominated the 2026-05-21
-			// stderr noise. Non-fatal: if injection fails (custom pipx
-			// configuration, network blocked, etc.) the install still
-			// succeeds — the warning continues to print but scancode
-			// still works.
-			if err := injectTypecodeLibmagic(pipxPath, pkg); err != nil {
-				fmt.Printf("warning: typecode-libmagic injection failed: %v\n", err)
-				fmt.Println("  scancode still works; the libmagic UserWarning will continue to print.")
-				fmt.Println("  to retry: pipx inject scancode-toolkit-mini typecode-libmagic")
-			}
-			return nil
-		}
-		// pipx failed — fall through to pip.
-		fmt.Println("pipx install failed, trying pip...")
+func pipxFreshInstallScancode(pipxPath string) error {
+	fmt.Printf("Installing %s via pipx...\n", scancodePipxPackage)
+	cmd := exec.Command(pipxPath, "install", scancodePipxPackage)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return err
 	}
+	// v0.23.6: inject typecode-libmagic into the freshly-built
+	// venv. Without this, every scancode run emits the
+	// libmagic UserWarning that dominated the 2026-05-21
+	// stderr noise. Non-fatal: if injection fails (custom pipx
+	// configuration, network blocked, etc.) the install still
+	// succeeds — the warning continues to print but scancode
+	// still works.
+	if err := injectTypecodeLibmagic(pipxPath, scancodePipxPackage); err != nil {
+		fmt.Printf("warning: typecode-libmagic injection failed: %v\n", err)
+		fmt.Println("  scancode still works; the libmagic UserWarning will continue to print.")
+		fmt.Println("  to retry: pipx inject scancode-toolkit-mini typecode-libmagic")
+	}
+	return nil
+}
 
-	// Fall back to pip install --user.
+// pipInstallScancodeFresh is the FRESH-INSTALL-ONLY pip fallback for
+// hosts without pipx. Deliberately unreachable from the installed
+// branch (v0.27.6): running it against a host that already has
+// scancode creates a second, uninjected copy that can shadow the pipx
+// venv's binary — the exact regression vector the monthly updater had.
+func pipInstallScancodeFresh() error {
 	for _, pip := range []string{"pip3", "pip"} {
 		pipPath, err := exec.LookPath(pip)
 		if err != nil {
 			continue
 		}
-		fmt.Printf("Installing %s via %s --user...\n", pkg, pip)
-		cmd := exec.Command(pipPath, "install", "--user", pkg)
+		fmt.Printf("Installing %s via %s --user...\n", scancodePipxPackage, pip)
+		cmd := exec.Command(pipPath, "install", "--user", scancodePipxPackage)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err == nil {
@@ -322,7 +403,7 @@ func installScancode() error {
 		}
 	}
 
-	return fmt.Errorf("scancode install failed: neither pipx nor pip found. Install Python 3.10+ and run: pipx install %s", pkg)
+	return fmt.Errorf("scancode install failed: neither pipx nor pip found. Install Python 3.10+ and run: pipx install %s", scancodePipxPackage)
 }
 
 // injectTypecodeLibmagic (v0.23.6) runs `pipx inject scancode-toolkit-mini

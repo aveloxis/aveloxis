@@ -31,6 +31,24 @@ func readScancodeWorkerSource(t *testing.T) string {
 	return string(data)
 }
 
+// scancodeMethodBody extracts one top-level func's body from src.
+// v0.27.6 decomposed runOne into phase methods (prepareClone /
+// executeScan / finishScan), so the per-behavior pins below anchor on
+// the phase that owns the behavior instead of one giant runOne slice.
+func scancodeMethodBody(t *testing.T, src, decl string) string {
+	t.Helper()
+	idx := strings.Index(src, decl)
+	if idx < 0 {
+		t.Fatalf("cannot find %q — the v0.27.6 runOne decomposition renamed or removed it", decl)
+	}
+	tail := src[idx:]
+	endRel := strings.Index(tail[1:], "\nfunc ")
+	if endRel < 0 {
+		endRel = len(tail) - 1
+	}
+	return tail[:1+endRel]
+}
+
 func TestScancodeWorkerHasRunMethod(t *testing.T) {
 	src := readScancodeWorkerSource(t)
 	if !strings.Contains(src, "func (w *ScancodeWorker) Run(ctx context.Context)") {
@@ -54,46 +72,36 @@ func TestScancodeWorkerCallsRecoverBeforeDispatcher(t *testing.T) {
 
 func TestRunOneSplitsStartFromWait(t *testing.T) {
 	src := readScancodeWorkerSource(t)
-	idx := strings.Index(src, "func (w *ScancodeWorker) runOne(")
-	if idx < 0 {
-		t.Fatal("cannot find runOne method")
-	}
-	tail := src[idx:]
-	endRel := strings.Index(tail[1:], "\nfunc ")
-	if endRel < 0 {
-		endRel = len(tail) - 1
-	}
-	body := tail[:1+endRel]
+	// v0.27.6: the subprocess phase of the runOne pipeline lives in
+	// executeScan.
+	body := scancodeMethodBody(t, src, "func (w *ScancodeWorker) executeScan(")
 
 	if !strings.Contains(body, "cmd.Start()") {
-		t.Error("runOne must call cmd.Start() (not cmd.Run()). We need the OS PID before the scan starts so we can persist it to scancode_locked_pid; cmd.Run() doesn't return until the subprocess exits.")
+		t.Error("executeScan must call cmd.Start() (not cmd.Run()). We need the OS PID before the scan starts so we can persist it to scancode_locked_pid; cmd.Run() doesn't return until the subprocess exits.")
 	}
 	if !strings.Contains(body, "cmd.Wait()") {
-		t.Error("runOne must call cmd.Wait() after cmd.Start() to wait for scan completion.")
+		t.Error("executeScan must call cmd.Wait() after cmd.Start() to wait for scan completion.")
 	}
 	if strings.Contains(body, "cmd.Run()") {
-		t.Error("runOne must NOT call cmd.Run() — use cmd.Start() + cmd.Wait() so the PID is captured before waiting. The split is what makes crash recovery work: if aveloxis crashes between Start() and Wait(), the recovery pass sees scancode_locked_pid and can decide whether to adopt or clear.")
+		t.Error("executeScan must NOT call cmd.Run() — use cmd.Start() + cmd.Wait() so the PID is captured before waiting. The split is what makes crash recovery work: if aveloxis crashes between Start() and Wait(), the recovery pass sees scancode_locked_pid and can decide whether to adopt or clear.")
 	}
 }
 
 func TestRunOnePersistsPidAndBootId(t *testing.T) {
 	src := readScancodeWorkerSource(t)
-	idx := strings.Index(src, "func (w *ScancodeWorker) runOne(")
-	if idx < 0 {
-		t.Fatal("cannot find runOne method")
-	}
-	tail := src[idx:]
-	endRel := strings.Index(tail[1:], "\nfunc ")
-	if endRel < 0 {
-		endRel = len(tail) - 1
-	}
-	body := tail[:1+endRel]
+	body := scancodeMethodBody(t, src, "func (w *ScancodeWorker) executeScan(")
 
-	// The runOne body must reach for store methods that persist
-	// PID + boot_id BEFORE Wait() starts. The actual method call
-	// is one of RecordScancodeLockState or SetScancodeLockState.
+	// The executeScan body must reach for store methods that persist
+	// PID + boot_id + host BEFORE Wait() starts.
 	if !strings.Contains(body, "RecordScancodeLockState(") {
-		t.Error("runOne must call store.RecordScancodeLockState(ctx, repoID, pid, bootID, outputPath) AFTER cmd.Start() but BEFORE cmd.Wait(). Without persisting the (pid, boot_id, output_path) tuple, a crash between Start and Wait leaves an orphan with no row-level state for the recovery pass to find.")
+		t.Error("executeScan must call store.RecordScancodeLockState(ctx, repoID, pid, bootID, outputPath, host) AFTER cmd.Start() but BEFORE cmd.Wait(). Without persisting the (pid, boot_id, output_path, host) tuple, a crash between Start and Wait leaves an orphan with no row-level state for the recovery pass to find.")
+	}
+	// v0.27.6: the lock state must carry this machine's hostname so a
+	// dedicated scancode host and the primary server can share the
+	// table — (pid, boot_id) liveness is only adjudicable on the
+	// machine that recorded it.
+	if !strings.Contains(body, "w.hostname") {
+		t.Error("executeScan must pass w.hostname into RecordScancodeLockState — without the host column, recoverOrphans on machine A would adjudicate PIDs recorded on machine B (trivial PID collisions).")
 	}
 }
 
@@ -277,6 +285,31 @@ func TestDispatcherClaimsAheadOfNextStartGate(t *testing.T) {
 	runBody := runTail[:1+runEnd]
 	if !strings.Contains(runBody, "make(chan db.ScancodeJob)") {
 		t.Error("Run must create the jobs channel as UNBUFFERED `make(chan db.ScancodeJob)`. A buffered channel would let the dispatcher over-claim past the worker pool size, locking more rows than runners can actually process.")
+	}
+}
+
+// TestRecoverOrphansSkipsCrossHostLocks (v0.27.6) pins the
+// dedicated-host safety rule: (pid, boot_id) liveness is only
+// adjudicable on the machine that recorded it — PID 12345 on the
+// scancode host trivially collides with an unrelated process on the
+// primary server. Cross-host locks must be LEFT for the owning host;
+// only the claim query's derived stale-lock age window may reclaim
+// them.
+func TestRecoverOrphansSkipsCrossHostLocks(t *testing.T) {
+	src := readScancodeWorkerSource(t)
+	body := scancodeMethodBody(t, src, "func (w *ScancodeWorker) recoverOrphans(")
+	crossHost := strings.Index(body, "r.LockedHost != w.hostname")
+	bootCheck := strings.Index(body, "r.LockedBootID != currentBootID")
+	if crossHost < 0 {
+		t.Fatal("recoverOrphans must compare each lock's LockedHost against w.hostname and SKIP cross-host locks — adjudicating another machine's PIDs clears locks for scans that are still running there")
+	}
+	if bootCheck >= 0 && crossHost > bootCheck {
+		t.Error("the cross-host skip must run BEFORE the (boot_id, pid) four-state decision — otherwise a cross-host lock is mis-handled as a reboot survivor (different machines always have different boot_ids)")
+	}
+	// Empty-host rows (locked by pre-v0.27.6 binaries) keep the
+	// legacy single-host adjudication.
+	if !strings.Contains(body, `r.LockedHost != ""`) {
+		t.Error("recoverOrphans must treat empty-host locks (pre-v0.27.6 rows) as own-host so single-host fleets keep their recovery behavior through the upgrade")
 	}
 }
 

@@ -1,3 +1,5 @@
+long-running-jobs/**
+scancode-logs-chaoss.tv/**
 *.err
 syslog
 *.json

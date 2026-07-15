@@ -26,12 +26,32 @@ import (
 )
 
 // fakeBreadthStore satisfies breadthStore without a database.
+//
+// v0.27.8: implements the batch-shaped interface (MarkBreadthAttemptedBatch,
+// InsertContributorRepoBatch). `attempted` accumulates the individual
+// cntrb_ids across batch calls so assertions stay per-contributor;
+// `markBatchCalls` counts the batch statements so tests can pin that
+// marking is actually batched (one UPDATE per chunk, not per row).
+// `ops` records the interleaving of inserts and marks for the
+// mark-only-after-durable-insert ordering pin.
 type fakeBreadthStore struct {
-	mu           sync.Mutex
-	contributors []db.BreadthContributor
-	attempted    []string
-	inserted     int
-	queried      bool
+	mu             sync.Mutex
+	contributors   []db.BreadthContributor
+	attempted      []string
+	inserted       int
+	insertedRows   []*db.ContributorRepoRow
+	markBatchCalls int
+	queried        bool
+	renames        []string // "cntrbID→newLogin"
+	ops            []string // "insert:<cntrbID>" / "mark:<cntrbID>" in call order
+
+	// getNewestErr, when set, is returned by GetNewestContributorRepoEvent —
+	// a fast way to synthesize per-contributor fetch failures (a real
+	// HTTP 5xx exhausts the client's full retry backoff per call).
+	getNewestErr error
+	// insertErrFor makes InsertContributorRepoBatch fail for batches
+	// containing this cntrb_id (ordering-contract tests).
+	insertErrFor string
 }
 
 func (f *fakeBreadthStore) GetContributorsForBreadth(ctx context.Context, limit int, cooldown time.Duration) ([]db.BreadthContributor, error) {
@@ -44,25 +64,48 @@ func (f *fakeBreadthStore) GetContributorsForBreadth(ctx context.Context, limit 
 	return f.contributors[:limit], nil
 }
 
-func (f *fakeBreadthStore) MarkBreadthAttempted(ctx context.Context, cntrbID string) error {
+func (f *fakeBreadthStore) MarkBreadthAttemptedBatch(ctx context.Context, cntrbIDs []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.attempted = append(f.attempted, cntrbID)
+	f.markBatchCalls++
+	f.attempted = append(f.attempted, cntrbIDs...)
+	for _, id := range cntrbIDs {
+		f.ops = append(f.ops, "mark:"+id)
+	}
 	return nil
 }
 
 func (f *fakeBreadthStore) RenameContributorGhLogin(ctx context.Context, cntrbID, newLogin string, ghUserID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renames = append(f.renames, cntrbID+"→"+newLogin)
 	return nil
 }
 
 func (f *fakeBreadthStore) GetNewestContributorRepoEvent(ctx context.Context, cntrbID string) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getNewestErr != nil {
+		return time.Time{}, f.getNewestErr
+	}
 	return time.Time{}, nil
 }
 
-func (f *fakeBreadthStore) InsertContributorRepo(ctx context.Context, row *db.ContributorRepoRow) error {
+func (f *fakeBreadthStore) InsertContributorRepoBatch(ctx context.Context, rows []*db.ContributorRepoRow) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.inserted++
+	if f.insertErrFor != "" {
+		for _, r := range rows {
+			if r.CntrbID == f.insertErrFor {
+				return fmt.Errorf("synthetic insert failure for %s", f.insertErrFor)
+			}
+		}
+	}
+	f.inserted += len(rows)
+	f.insertedRows = append(f.insertedRows, rows...)
+	for _, r := range rows {
+		f.ops = append(f.ops, "insert:"+r.CntrbID)
+	}
 	return nil
 }
 
@@ -97,17 +140,19 @@ func TestBreadthCircuitBreakerTripsAtThreshold(t *testing.T) {
 	worker := newBreadthTestWorker(t, store, http.NotFoundHandler())
 
 	transient := fmt.Errorf("events fetch: %w", platform.ErrTransient)
-	consecutive := 0
 	for i := 1; i < breadthCircuitBreakerThreshold; i++ {
-		if worker.noteContributorOutcome(transient, &consecutive, "u") {
+		if worker.noteContributorOutcome(transient, "u") {
 			t.Fatalf("breaker tripped early at %d consecutive failures (threshold %d)",
 				i, breadthCircuitBreakerThreshold)
 		}
 	}
-	if !worker.noteContributorOutcome(transient, &consecutive, "u") {
+	if !worker.noteContributorOutcome(transient, "u") {
 		t.Fatalf("breaker must trip at exactly %d consecutive failures", breadthCircuitBreakerThreshold)
 	}
-	if !worker.circuitOpenUntil.After(time.Now()) {
+	worker.mu.Lock()
+	openUntil := worker.circuitOpenUntil
+	worker.mu.Unlock()
+	if !openUntil.After(time.Now()) {
 		t.Fatal("circuitOpenUntil must be set in the future after a trip")
 	}
 
@@ -132,20 +177,25 @@ func TestBreadthCounterResetsOnSuccess(t *testing.T) {
 	worker := newBreadthTestWorker(t, store, http.NotFoundHandler())
 
 	transient := fmt.Errorf("events fetch: %w", platform.ErrTransient)
-	consecutive := 0
 	for range breadthCircuitBreakerThreshold - 1 {
-		worker.noteContributorOutcome(transient, &consecutive, "u")
+		worker.noteContributorOutcome(transient, "u")
 	}
-	worker.noteContributorOutcome(nil, &consecutive, "u") // success resets
+	worker.noteContributorOutcome(nil, "u") // success resets
+	worker.mu.Lock()
+	consecutive := worker.consecutive5xx
+	worker.mu.Unlock()
 	if consecutive != 0 {
 		t.Fatalf("success must reset the counter, got %d", consecutive)
 	}
 	for i := range breadthCircuitBreakerThreshold - 1 {
-		if worker.noteContributorOutcome(transient, &consecutive, "u") {
+		if worker.noteContributorOutcome(transient, "u") {
 			t.Fatalf("tripped at %d after reset — counter did not actually reset", i+1)
 		}
 	}
-	if !worker.circuitOpenUntil.IsZero() {
+	worker.mu.Lock()
+	stillClosed := worker.circuitOpenUntil.IsZero()
+	worker.mu.Unlock()
+	if !stillClosed {
 		t.Fatal("breaker must still be closed")
 	}
 }

@@ -101,6 +101,43 @@ func (s *PostgresStore) MarkBreadthAttempted(ctx context.Context, cntrbID string
 	return err
 }
 
+// breadthMarkChunkSize bounds how many cntrb_ids a single
+// MarkBreadthAttemptedBatch UPDATE carries. 500 keeps each statement's
+// array parameter and row-lock footprint small while still collapsing
+// a fleet-scale cycle (18K contributors) into ~36 statements instead
+// of 18,000.
+const breadthMarkChunkSize = 500
+
+// MarkBreadthAttemptedBatch stamps cntrb_last_breadth_at = NOW() for a
+// set of contributors in chunked multi-row UPDATEs (v0.27.8). Same
+// semantics as the single-row MarkBreadthAttempted — the unconditional
+// stamp is what drains the cooldown queue — but one statement per
+// breadthMarkChunkSize IDs instead of one per contributor. The
+// single-row method is kept for compatibility.
+//
+// ORDERING CONTRACT (v0.27.8): callers must invoke this only AFTER the
+// contributors' events are durably inserted into contributor_repo. A
+// crash between fetch and insert must leave the contributor UNMARKED so
+// the cooldown queue re-selects them next cycle (re-inserting is safe:
+// contributor_repo has ON CONFLICT DO NOTHING). The breadth worker's
+// coordinator loop enforces this by buffering IDs and flushing marks
+// strictly after the corresponding InsertContributorRepoBatch calls.
+func (s *PostgresStore) MarkBreadthAttemptedBatch(ctx context.Context, cntrbIDs []string) error {
+	for start := 0; start < len(cntrbIDs); start += breadthMarkChunkSize {
+		end := start + breadthMarkChunkSize
+		if end > len(cntrbIDs) {
+			end = len(cntrbIDs)
+		}
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE aveloxis_data.contributors
+			SET cntrb_last_breadth_at = NOW()
+			WHERE cntrb_id = ANY($1::uuid[])`, cntrbIDs[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // GetNewestContributorRepoEvent returns the most recent event timestamp
 // for a contributor in contributor_repo. Returns zero time if none exist.
 func (s *PostgresStore) GetNewestContributorRepoEvent(ctx context.Context, cntrbID string) (time.Time, error) {

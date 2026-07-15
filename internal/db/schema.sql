@@ -1306,15 +1306,6 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
 
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_repo_id
     ON aveloxis_data.repo_deps_vulnerabilities (repo_id);
--- v0.27.4: per-user starred repositories for the GUI home tab.
-CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
-    user_id    INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE,
-    repo_id    BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (user_id, repo_id)
-);
-CREATE INDEX IF NOT EXISTS idx_user_repo_stars_repo ON aveloxis_ops.user_repo_stars (repo_id);
-
 -- v0.27.4: serve the home tab's 90-day activity counts as tight
 -- per-repo index range probes (86,909-repo admin group sets).
 CREATE INDEX IF NOT EXISTS idx_issues_repo_created
@@ -2056,6 +2047,22 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repos (
     group_id       BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id) DEFERRABLE INITIALLY DEFERRED,
     PRIMARY KEY (group_id, repo_id)
 );
+
+-- v0.27.4: per-user starred repositories for the GUI home tab.
+-- v0.27.9: moved here from the repo_deps_vulnerabilities section —
+-- the block referenced aveloxis_ops.users ~700 lines before its
+-- CREATE, so the whole base-schema exec rolled back on a truly
+-- fresh database (populated scratch DBs masked it via IF NOT
+-- EXISTS). schema.sql must create every referenced table before
+-- any FK that points at it; TestSchemaCreatesTablesBeforeReferencingThem
+-- now enforces this file-wide.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
+    user_id    INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE,
+    repo_id    BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, repo_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_repo_stars_repo ON aveloxis_ops.user_repo_stars (repo_id);
 
 -- User org requests: tracks which orgs/groups a user added to a group,
 -- so the scheduler can periodically scan for new repos and add them.

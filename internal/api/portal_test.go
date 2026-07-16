@@ -29,6 +29,7 @@ func TestPortalAlwaysRequiresIdentity(t *testing.T) {
 
 	for _, h := range []http.HandlerFunc{
 		s.handleMe, s.handleGroupsList, s.handleGroupCreate,
+		s.handleGroupPendingAdds, // v0.27.20
 		s.handleAdminUsers, s.handleAdminPendingGroups,
 		s.handleAdminMonitorStats, s.handleAdminMonitorQueue,
 	} {
@@ -50,6 +51,8 @@ func TestAdminRoutesRejectNonAdmins(t *testing.T) {
 		s.handleAdminUsers, s.handleAdminPendingGroups,
 		s.handleAdminGroupDecision, s.handleAdminSetUserAdmin,
 		s.handleAdminMonitorStats, s.handleAdminMonitorQueue,
+		s.handleAdminPrioritizeRepo,
+		s.handleAdminAddRequests, s.handleAdminAddRequestDecision, // v0.27.20
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/api/v1/admin/x", nil)

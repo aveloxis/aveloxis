@@ -153,6 +153,26 @@ type WebConfig struct {
 	// server-rendered /dashboard. Empty (default) = only relative
 	// next paths are honored. v0.27.4.
 	SPAURL string `json:"spa_url"`
+
+	// AutoApproveAddLimit (v0.27.20 per-add approval, summary/15):
+	// when > 0, a non-admin batch of NOT-yet-tracked repo URLs whose
+	// size is at or under this limit is added and enqueued
+	// immediately (with an auto-approved audit request row) instead
+	// of waiting on an admin decision. 0 (the default) means every
+	// non-admin addition of new repos requires approval. Org
+	// registrations ALWAYS require approval regardless of this knob —
+	// an org is an unbounded mass add by definition. Already-tracked
+	// repos never need approval (they link instantly for everyone).
+	AutoApproveAddLimit int `json:"auto_approve_add_limit"`
+}
+
+// AutoApproveAddLimitValue returns the effective auto-approve limit:
+// the configured value, with negatives collapsed to 0 (fully gated).
+func (w WebConfig) AutoApproveAddLimitValue() int {
+	if w.AutoApproveAddLimit < 0 {
+		return 0
+	}
+	return w.AutoApproveAddLimit
 }
 
 // CollectionConfig controls collection behavior.

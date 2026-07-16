@@ -194,12 +194,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	// v0.27.12: operator vulnerability digest. Must be injected
 	// BEFORE Run starts (the ticker gate is evaluated at startup).
 	if cfg.Mail.OperatorEmail != "" {
-		sched.SetDigestMailer(digestMailerAdapter{mailer.New(mailer.Config{
-			GmailUser:        cfg.Mail.GmailUser,
-			GmailAppPassword: cfg.Mail.GmailAppPassword,
-			FromName:         cfg.Mail.FromName,
-			SiteURL:          cfg.Mail.SiteURL,
-		}, logger)})
+		sched.SetDigestMailer(digestMailerAdapter{mailer.New(mailerConfigFrom(cfg), logger)})
 	}
 	go sched.Run(ctx)
 
@@ -271,6 +266,10 @@ func runAPI(cfgPath, addr string) error {
 		CORSOrigins:    cfg.API.CORSOrigins,
 		TrustedProxy:   cfg.API.TrustedProxy,
 		RequireAuth:    cfg.API.RequireAuth,
+		// v0.27.20 per-add approval: add-request notifications +
+		// the auto-approve limit for the portal repo-add endpoint.
+		Mailer:              mailer.New(mailerConfigFrom(cfg), logger),
+		AutoApproveAddLimit: cfg.Web.AutoApproveAddLimitValue(),
 	})
 	if err != nil {
 		return fmt.Errorf("api middleware config: %w", err)
@@ -1216,12 +1215,7 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			ghKeys, _, _ := loadKeys(ctx, cfg, store, false, logger)
 
 			webServer := web.New(store, cfg.Web, ghKeys, logger).
-				WithMailer(mailer.New(mailer.Config{
-					GmailUser:        cfg.Mail.GmailUser,
-					GmailAppPassword: cfg.Mail.GmailAppPassword,
-					FromName:         cfg.Mail.FromName,
-					SiteURL:          cfg.Mail.SiteURL,
-				}, logger))
+				WithMailer(mailer.New(mailerConfigFrom(cfg), logger))
 			srv := &http.Server{Addr: cfg.Web.Addr, Handler: webServer.Handler()}
 
 			go func() {
@@ -1602,6 +1596,20 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 // digestMailerAdapter bridges *mailer.Mailer to the scheduler's
 // digestMailer role interface (v0.27.12). The mailer package stays
 // free of aveloxis imports, so the db→mailer item copy happens here.
+// mailerConfigFrom maps the aveloxis.json mail block onto the mailer
+// package's dependency-free Config (v0.27.20: single builder so every
+// process — serve digest, web, api — carries the same fields,
+// including OperatorEmail for add-request notifications).
+func mailerConfigFrom(cfg *config.Config) mailer.Config {
+	return mailer.Config{
+		GmailUser:        cfg.Mail.GmailUser,
+		GmailAppPassword: cfg.Mail.GmailAppPassword,
+		FromName:         cfg.Mail.FromName,
+		SiteURL:          cfg.Mail.SiteURL,
+		OperatorEmail:    cfg.Mail.OperatorEmail,
+	}
+}
+
 type digestMailerAdapter struct{ m *mailer.Mailer }
 
 func (a digestMailerAdapter) SendVulnerabilityDigest(to string, since time.Time, items []db.VulnDigestItem) error {

@@ -86,7 +86,8 @@
     "gitlab_client_secret": "your-gitlab-oauth-app-client-secret",
     "gitlab_base_url": "https://gitlab.com",
     "api_internal_url": "http://127.0.0.1:8383",
-    "spa_url": ""
+    "spa_url": "",
+    "auto_approve_add_limit": 0
   },
   "monitor": {
     "refresh_seconds": 60

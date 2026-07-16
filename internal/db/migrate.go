@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 //go:embed schema.sql
@@ -57,23 +59,41 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 			return fmt.Errorf("another aveloxis migration is in progress (advisory lock held); use without --no-wait to wait, or check pg_stat_activity for the holder")
 		}
 	} else {
-		// Blocking acquire. Log if it takes more than 5 seconds so
-		// the operator knows we're waiting on someone else.
-		acquireDone := make(chan struct{})
-		go func() {
-			t := time.NewTimer(5 * time.Second)
-			defer t.Stop()
-			select {
-			case <-acquireDone:
-			case <-t.C:
-				logger.Info("waiting for migration advisory lock — another aveloxis migration is in progress")
+		// Waiting acquire — via pg_try_advisory_lock POLLING, never the
+		// blocking pg_advisory_lock() call. A session blocked inside
+		// pg_advisory_lock() holds a transaction snapshot for the ENTIRE
+		// wait, and CREATE INDEX CONCURRENTLY in the lock HOLDER's
+		// migration waits for all older snapshots to go away before it
+		// can finish — a mutual deadlock Postgres cannot detect (the
+		// snapshot wait isn't a lock wait). Observed 2026-07-16 as
+		// paired 10-minute test-package hangs on a fresh CI database
+		// (PR #155: scheduler's migration stuck in
+		// ensureRepoGitCaseInsensitiveUnique's CIC while internal/db
+		// sat inside pg_advisory_lock), and equally possible in
+		// production when `aveloxis migrate` runs beside a serve
+		// startup-migrate. Between polls this session holds NO
+		// snapshot, so the holder's CIC completes and the lock frees.
+		logged := false
+		start := time.Now()
+		for {
+			var ok bool
+			if err := lockConn.QueryRow(ctx,
+				`SELECT pg_try_advisory_lock($1)`, MigrateAdvisoryLockID).Scan(&ok); err != nil {
+				return fmt.Errorf("acquire advisory lock: %w", err)
 			}
-		}()
-		if _, err := lockConn.Exec(ctx, `SELECT pg_advisory_lock($1)`, MigrateAdvisoryLockID); err != nil {
-			close(acquireDone)
-			return fmt.Errorf("acquire advisory lock: %w", err)
+			if ok {
+				break
+			}
+			if !logged && time.Since(start) > 5*time.Second {
+				logger.Info("waiting for migration advisory lock — another aveloxis migration is in progress")
+				logged = true
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("acquire advisory lock: %w", ctx.Err())
+			case <-time.After(time.Second):
+			}
 		}
-		close(acquireDone)
 	}
 	defer func() {
 		// Best-effort release. If this fails, the lock release happens
@@ -921,8 +941,13 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.user_groups", "approved_at", "TIMESTAMPTZ")
 	// Existing rows from pre-v0.19.0 deployments default to
 	// 'approved' so the upgrade doesn't suddenly hide groups that
-	// already exist. New rows from non-admins go to 'pending' via
-	// CreateUserGroup's branch.
+	// already exist. (v0.27.20: new groups always create 'approved';
+	// per-add approval replaced the pending-group flow.)
+
+	// v0.27.20: convert legacy pending groups into pending
+	// collection_add_requests, then flip the groups to 'approved' —
+	// the approval unit moved from the group to the addition.
+	migrateLegacyPendingGroups(ctx, pg, logger, &errs)
 
 	// v0.22.1: ensure every FK pointing at contributors(cntrb_id)
 	// has ON UPDATE CASCADE. Required for v0.22.2's
@@ -1321,6 +1346,89 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// a maintenance window (docs/architecture/analysis.md).
 	migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, &errs)
 
+	// v0.27.18 — natural-key backstop for repo_labor (the W3/v0.27.7
+	// follow-up). Post-rotation the table holds one snapshot per repo,
+	// so (repo_id, rl_analysis_date, file_path) is the natural key;
+	// the unique makes any future writer that bypasses
+	// ReplaceRepoLaborSnapshot fail LOUDLY instead of silently
+	// re-growing the table. Warn-only: created only when zero dup
+	// groups exist (the commits-dedup / uq_repos_repo_git_ci
+	// precedent), NOT in schema.sql. All-NULL-date repos keep multiple
+	// cohorts by design — NULLs are distinct in unique indexes, so
+	// they pass. The history table deliberately stays unique-free
+	// (TestRepoLaborHistoryHasNoNaturalKeyUniques pins that).
+	ensureRepoLaborNaturalKeyUnique(ctx, pg, logger)
+
+	// v0.27.15 — message-bridge metadata repairs: dedup
+	// pull_request_review_message_ref (its bare ON CONFLICT had no
+	// unique arbiter — 5.26M duplicate rows on production), create
+	// uq_pr_review_msg_ref AFTER the dedup, backfill data_source on
+	// all three bridges from the messages rows they point at, and
+	// backfill inline review comments (with full line metadata) from
+	// review_comments. All from in-database data — zero API calls.
+	// See msg_ref_metadata.go.
+	ensureMsgRefMetadata(ctx, pg, logger, &errs)
+
+	// v0.27.17 — repo_groups consolidation. The lazy 'Default'-group
+	// creation used a bare ON CONFLICT DO NOTHING with NO unique on
+	// rg_name, so the INSERT succeeded on EVERY UpsertRepo call with
+	// GroupID=0: production accumulated 93,912 'Default' groups (one
+	// per repo), making almost every repo its own singleton group in
+	// every repo_group_id rollup (dm_repo_group_*, rg-name metric
+	// routes, 8Knot). Consolidate per rg_name to the MIN id, repoint
+	// every FK table, hygiene-delete the dm_repo_group_* rows of the
+	// losers (rebuilt by the weekly aggregate pass), delete the loser
+	// groups, THEN create uq_repo_groups_rg_name (after dedup —
+	// schema-DDL-ordering rule: NOT in schema.sql). All idempotent.
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.17 repoint repos.repo_group_id to canonical group per rg_name",
+		`UPDATE aveloxis_data.repos r SET repo_group_id = c.canon
+		 FROM aveloxis_data.repo_groups g,
+		      (SELECT rg_name, MIN(repo_group_id) AS canon
+		       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+		 WHERE g.repo_group_id = r.repo_group_id
+		   AND g.rg_name = c.rg_name AND r.repo_group_id <> c.canon`)
+	for _, tbl := range []string{
+		"aveloxis_data.repo_groups_list_serve",
+		"aveloxis_data.email_message",
+		"aveloxis_data.email_message_ref",
+		"aveloxis_data.repo_group_insights",
+	} {
+		execMigrationStep(ctx, pg, logger, &errs,
+			"v0.27.17 repoint "+tbl+".repo_group_id to canonical group",
+			`UPDATE `+tbl+` t SET repo_group_id = c.canon
+			 FROM aveloxis_data.repo_groups g,
+			      (SELECT rg_name, MIN(repo_group_id) AS canon
+			       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+			 WHERE g.repo_group_id = t.repo_group_id
+			   AND g.rg_name = c.rg_name AND t.repo_group_id <> c.canon`)
+	}
+	for _, tbl := range []string{
+		"aveloxis_data.dm_repo_group_annual",
+		"aveloxis_data.dm_repo_group_monthly",
+		"aveloxis_data.dm_repo_group_weekly",
+	} {
+		execMigrationStep(ctx, pg, logger, &errs,
+			"v0.27.17 drop "+tbl+" rows of consolidated loser groups (weekly rebuild recomputes)",
+			`DELETE FROM `+tbl+` t
+			 WHERE EXISTS (
+			   SELECT 1 FROM aveloxis_data.repo_groups g
+			   JOIN (SELECT rg_name, MIN(repo_group_id) AS canon
+			         FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+			     ON c.rg_name = g.rg_name
+			   WHERE g.repo_group_id = t.repo_group_id AND g.repo_group_id <> c.canon)`)
+	}
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.17 delete consolidated loser repo_groups rows",
+		`DELETE FROM aveloxis_data.repo_groups g
+		 WHERE g.repo_group_id <> (
+		   SELECT MIN(g2.repo_group_id) FROM aveloxis_data.repo_groups g2
+		   WHERE g2.rg_name = g.rg_name)`)
+	execCreateIndexConcurrently(ctx, pg, logger, &errs,
+		"aveloxis_data", "uq_repo_groups_rg_name",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repo_groups_rg_name
+		 ON aveloxis_data.repo_groups (rg_name)`)
+
 	// v0.27.11 — vulnerability version-resolution accuracy. Every
 	// finding carries the raw manifest requirement and how the scanned
 	// version was chosen ('locked'/'exact'/'bounded-range'/
@@ -1596,10 +1704,40 @@ func checkBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 // by RunMigrations for ALTER TABLE / CREATE INDEX / etc. statements
 // where pre-v0.19.4 the err was discarded entirely.
 func execMigrationStep(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, label, sql string) {
-	if _, err := pg.pool.Exec(ctx, sql); err != nil {
-		logger.Error("schema migration error", "step", label, "error", err)
-		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+	// v0.27.18: bounded retry on deadlock (SQLSTATE 40P01). Migration
+	// DDL/DML can deadlock against ordinary concurrent statements —
+	// observed as the TestRunJobLifecycleEndToEnd flake when parallel
+	// test packages ran RunMigrations against the shared scratch DB
+	// (the v0.25.1 DROP CONSTRAINT step vs another package's in-flight
+	// queries), and equally possible in production when `aveloxis
+	// migrate` runs alongside a live serve. Postgres resolves a
+	// deadlock by killing ONE victim, so a retry of an idempotent step
+	// (every step's contract, v0.19.4) is safe and almost always
+	// succeeds. Non-deadlock errors still fail closed immediately.
+	const deadlockRetries = 3
+	var err error
+retry:
+	for attempt := 0; attempt <= deadlockRetries; attempt++ {
+		if _, err = pg.pool.Exec(ctx, sql); err == nil {
+			return
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "40P01" || attempt == deadlockRetries {
+			break
+		}
+		logger.Warn("schema migration step deadlocked — retrying (idempotent step, deadlock victim is safe to re-run)",
+			"step", label, "attempt", attempt+1)
+		select {
+		case <-ctx.Done():
+			// Abandon the backoff AND the retry loop (a bare break here
+			// would only exit the select — staticcheck SA4011); the
+			// deadlock error is recorded below.
+			break retry
+		case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+		}
 	}
+	logger.Error("schema migration error", "step", label, "error", err)
+	*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
 }
 
 // stampSchemaVersion writes the current ToolVersion into schema_meta.
@@ -2097,4 +2235,44 @@ func cleanupBadTimestamps(ctx context.Context, pg *PostgresStore, logger *slog.L
 		logger.Info("timestamp cleanup complete", "total_rows_fixed", totalFixed)
 	}
 	return nil
+}
+
+// ensureRepoLaborNaturalKeyUnique creates uq_repo_labor_natural_key
+// once the table is dup-free (v0.27.18). Warn-only: existing fleets
+// with residual duplicate groups get a WARN naming the recount query
+// instead of a failed migration.
+func ensureRepoLaborNaturalKeyUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+	var exists bool
+	if err := pg.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pg_indexes
+		 WHERE schemaname='aveloxis_data' AND indexname='uq_repo_labor_natural_key')`).Scan(&exists); err != nil {
+		logger.Warn("repo_labor unique: existence check failed — skipping", "error", err)
+		return
+	}
+	if exists {
+		return
+	}
+	var dupGroups int
+	if err := pg.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM aveloxis_data.repo_labor
+			WHERE rl_analysis_date IS NOT NULL
+			GROUP BY repo_id, rl_analysis_date, file_path
+			HAVING COUNT(*) > 1 LIMIT 1000) d`).Scan(&dupGroups); err != nil {
+		logger.Warn("repo_labor unique: dup probe failed — skipping", "error", err)
+		return
+	}
+	if dupGroups > 0 {
+		logger.Warn("repo_labor has duplicate natural-key groups — skipping uq_repo_labor_natural_key; investigate before the backstop can be created",
+			"dup_groups_sampled", dupGroups)
+		return
+	}
+	var errs []error
+	execCreateIndexConcurrently(ctx, pg, logger, &errs,
+		"aveloxis_data", "uq_repo_labor_natural_key",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repo_labor_natural_key
+		 ON aveloxis_data.repo_labor (repo_id, rl_analysis_date, file_path)`)
+	for _, e := range errs {
+		logger.Warn("repo_labor unique: build failed (warn-only — retried next migrate)", "error", e)
+	}
 }

@@ -16,14 +16,16 @@ package api
 // approval system.
 
 import (
+	"context"
 	"encoding/json"
-
-	"github.com/aveloxis/aveloxis/internal/db"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // requireUser demands a validated Bearer identity regardless of the
@@ -131,6 +133,24 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"group_id": id})
 }
 
+// parsePortalPage reads the v0.27.14 pagination params: page
+// (default 1) and page_size (default 50, capped at 100). Garbage,
+// zero, and negative inputs collapse to the defaults.
+func parsePortalPage(r *http.Request) (page, pageSize int) {
+	page, _ = strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ = strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
 func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 	info, ok := s.requireUser(w, r)
 	if !ok {
@@ -141,19 +161,49 @@ func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid group id", http.StatusBadRequest)
 		return
 	}
-	repos, err := s.store.GetPortalGroupReposForUser(r.Context(), info.UserID, groupID, info.IsAdmin)
+	page, pageSize := parsePortalPage(r)
+	repos, total, err := s.store.GetPortalGroupReposForUser(r.Context(), info.UserID, groupID, info.IsAdmin, pageSize, (page-1)*pageSize)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
+	// v0.27.14: annotate the PAGE (never the whole group) with ALL-TIME
+	// counts from the latest repo_info snapshot via the batched-stats
+	// cache, plus the caller's star state. OPERATOR DECISION: all-time
+	// totals, NOT the 90-day activity metric (the v0.27.4 nginx-timeout
+	// class at fleet scale).
+	ids := make([]int64, 0, len(repos))
+	for _, g := range repos {
+		ids = append(ids, g.RepoID)
+	}
+	stats, _ := s.store.GetRepoStatsBatch(r.Context(), ids)
+	starred, _ := s.store.GetUserStarredRepoIDs(r.Context(), info.UserID)
+	for i := range repos {
+		if st, ok := stats[repos[i].RepoID]; ok && st != nil {
+			repos[i].CommitsAllTime = st.MetadataCommits
+			repos[i].IssuesAllTime = st.MetadataIssues
+			repos[i].PRsAllTime = st.MetadataPRs
+		}
+		repos[i].Starred = starred[repos[i].RepoID]
+	}
+	if repos == nil {
+		repos = []db.PortalGroupRepo{}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"repos": repos})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"repos": repos, "total": total, "page": page, "page_size": pageSize,
+	})
 }
 
 // handleGroupAddRepo is the "request access / request collection"
 // affordance the compare picker's §2b classes point at. kind=repo
-// (default) or org. Ownership + the v0.19.0 pending-approval flow are
-// enforced inside the store methods.
+// (default) or org. Ownership is enforced inside the store methods.
+//
+// v0.27.20 (per-add approval, summary/15): already-tracked repos link
+// instantly; a non-admin's NOT-yet-tracked repo or org registration
+// creates a pending add-request instead of enqueueing — the response
+// carries pending_approval + request_id so the GUI can say "awaiting
+// administrator approval" rather than pretending collection started.
 func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 	info, ok := s.requireUser(w, r)
 	if !ok {
@@ -172,17 +222,194 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "body must be {\"url\": \"...\", \"kind\": \"repo\"|\"org\"}", http.StatusBadRequest)
 		return
 	}
+	resp := map[string]any{"ok": true}
 	if req.Kind == "org" {
-		err = s.store.AddOrgToGroup(r.Context(), info.UserID, groupID, strings.TrimSpace(req.URL))
+		out, oerr := s.store.AddOrgToGroup(r.Context(), info.UserID, groupID, strings.TrimSpace(req.URL))
+		err = oerr
+		if err == nil && !out.Registered {
+			resp["pending_approval"] = 1
+			resp["request_id"] = out.RequestID
+			s.notifyAddRequestSubmitted(out.RequestID)
+		}
 	} else {
-		err = s.store.AddRepoToGroup(r.Context(), info.UserID, groupID, strings.TrimSpace(req.URL))
+		out, aerr := s.store.AddReposToGroup(r.Context(), info.UserID, groupID,
+			[]string{strings.TrimSpace(req.URL)}, s.autoApproveAddLimit)
+		err = aerr
+		if err == nil {
+			resp["linked"] = out.Linked
+			resp["enqueued"] = out.Enqueued
+			if out.Pending > 0 {
+				resp["pending_approval"] = out.Pending
+				resp["request_id"] = out.RequestID
+				s.notifyAddRequestSubmitted(out.RequestID)
+			}
+		}
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleGroupPendingAdds lists the group's own awaiting-approval
+// content (v0.27.20) so the GUI's group page can show what's still in
+// review. Ownership-checked for non-admins.
+func (s *Server) handleGroupPendingAdds(w http.ResponseWriter, r *http.Request) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	groupID, err := strconv.ParseInt(r.PathValue("groupID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid group id", http.StatusBadRequest)
+		return
+	}
+	items, err := s.store.GetPendingAddItemsForUser(r.Context(), info.UserID, groupID, info.IsAdmin)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	type itemJSON struct {
+		RequestID int64     `json:"request_id"`
+		Kind      string    `json:"kind"`
+		URL       string    `json:"url"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	out := make([]itemJSON, 0, len(items))
+	for _, it := range items {
+		out = append(out, itemJSON{it.RequestID, it.Kind, it.URL, it.CreatedAt})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"pending": out})
+}
+
+// notifyAddRequestSubmitted emails the operator about a new pending
+// add-request (v0.27.20). Best-effort, in a goroutine; no-op without
+// a mailer or operator email.
+func (s *Server) notifyAddRequestSubmitted(requestID int64) {
+	if s.mailer == nil || s.mailer.OperatorEmail() == "" || requestID == 0 {
+		return
+	}
+	go func() {
+		defer safego.Recover(s.logger, "add-request-submitted-email")
+		pending, err := s.store.ListPendingAddRequests(context.Background())
+		if err != nil {
+			return
+		}
+		for _, req := range pending {
+			if req.RequestID != requestID {
+				continue
+			}
+			sample := req.SampleURLs
+			if req.Kind == "org" {
+				sample = []string{req.OrgURL}
+			}
+			if err := s.mailer.SendAddRequestSubmitted(s.mailer.OperatorEmail(),
+				req.UserLogin, req.GroupName, req.Kind, req.ItemCount, sample, req.RequestID); err != nil {
+				s.logger.Warn("failed to send add-request email", "request_id", requestID, "error", err)
+			}
+			return
+		}
+	}()
+}
+
+// handleAdminAddRequests lists the pending per-add approval queue
+// (v0.27.20) for the GUI's approvals page.
+func (s *Server) handleAdminAddRequests(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	pending, err := s.store.ListPendingAddRequests(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type reqJSON struct {
+		RequestID  int64     `json:"request_id"`
+		UserID     int       `json:"user_id"`
+		UserLogin  string    `json:"user_login"`
+		UserEmail  string    `json:"user_email"`
+		GroupID    int64     `json:"group_id"`
+		GroupName  string    `json:"group_name"`
+		Kind       string    `json:"kind"`
+		OrgURL     string    `json:"org_url,omitempty"`
+		ItemCount  int       `json:"item_count"`
+		SampleURLs []string  `json:"sample_urls,omitempty"`
+		CreatedAt  time.Time `json:"created_at"`
+	}
+	out := make([]reqJSON, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, reqJSON{p.RequestID, p.UserID, p.UserLogin, p.UserEmail,
+			p.GroupID, p.GroupName, p.Kind, p.OrgURL, p.ItemCount, p.SampleURLs, p.CreatedAt})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"pending": out})
+}
+
+// handleAdminAddRequestDecision approves/rejects one add-request.
+// Approval processing (UpsertRepo + enqueue + link per item) runs in
+// the background so a large batch doesn't block the admin's request;
+// re-approving resumes an interrupted pass (items are stamped as they
+// process). Org approvals register tracking here; the actual repo
+// scan happens on the scheduler's next refreshUserOrgs tick — the api
+// process deliberately has no platform API keys.
+func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Request) {
+	info, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	requestID, err := strconv.ParseInt(r.PathValue("requestID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid request id", http.StatusBadRequest)
+		return
+	}
+	var approve bool
+	switch r.PathValue("decision") {
+	case "approve":
+		approve = true
+	case "reject":
+		approve = false
+	default:
+		http.Error(w, "decision must be approve or reject", http.StatusBadRequest)
+		return
+	}
+	req, changed, err := s.store.DecideAddRequest(r.Context(), requestID, info.UserID, approve)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if changed {
+		if approve && req.Kind != "org" {
+			go func() {
+				defer safego.Recover(s.logger, "approved-add-request")
+				n, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
+				if err != nil {
+					s.logger.Warn("processing approved add-request failed — re-approving resumes it",
+						"request_id", req.RequestID, "processed", n, "error", err)
+					return
+				}
+				s.logger.Info("approved add-request processed", "request_id", req.RequestID, "repos", n)
+			}()
+		}
+		if s.mailer != nil && req.UserEmail != "" {
+			req := req
+			go func() {
+				defer safego.Recover(s.logger, "add-request-decided-email")
+				if err := s.mailer.SendAddRequestDecided(req.UserEmail, req.UserLogin,
+					req.GroupName, req.Kind, approve, req.ItemCount); err != nil {
+					s.logger.Warn("failed to send add-request decision email",
+						"request_id", req.RequestID, "error", err)
+				}
+			}()
+		}
+		// Approval changes the requester's repo scope — drop the
+		// token-validation cache so their next request sees it.
+		s.auth.invalidateAll()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "changed": changed})
 }
 
 // --- admin ---
@@ -284,7 +511,8 @@ func (s *Server) handleAdminGroupDecision(w http.ResponseWriter, r *http.Request
 		http.Error(w, "invalid group id", http.StatusBadRequest)
 		return
 	}
-	switch r.PathValue("decision") {
+	decision := r.PathValue("decision")
+	switch decision {
 	case "approve":
 		err = s.store.ApproveGroup(r.Context(), groupID, info.UserID)
 	case "reject":
@@ -296,6 +524,25 @@ func (s *Server) handleAdminGroupDecision(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// v0.27.20 parity fix: the web handler has emailed the requester
+	// on approval since v0.19.0; the portal path silently didn't.
+	if decision == "approve" && s.mailer != nil {
+		var requesterEmail, requesterLogin, groupName string
+		_ = s.store.Pool().QueryRow(r.Context(), `
+			SELECT COALESCE(u.email, ''), u.login_name, g.name
+			FROM aveloxis_ops.user_groups g
+			JOIN aveloxis_ops.users u ON u.user_id = g.user_id
+			WHERE g.group_id = $1`,
+			groupID).Scan(&requesterEmail, &requesterLogin, &groupName)
+		if requesterEmail != "" {
+			go func() {
+				defer safego.Recover(s.logger, "group-approved-email")
+				if err := s.mailer.SendGroupApproved(requesterEmail, requesterLogin, groupName, groupID); err != nil {
+					s.logger.Warn("failed to send group-approved email", "group_id", groupID, "error", err)
+				}
+			}()
+		}
 	}
 	// Approval changes the requester's repo scope — drop the
 	// token-validation cache so their next request sees it.
@@ -373,6 +620,31 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"jobs": out, "total": total, "page": page, "page_size": pageSize,
 	})
+}
+
+// handleAdminPrioritizeRepo (v0.27.14) is the SPA monitor's "Boost"
+// button: pure reuse of store.PrioritizeRepo — the identical call the
+// legacy :5555 monitor's POST /api/prioritize/{repoID} makes (push to
+// priority 0, due now, back to 'queued').
+func (s *Server) handleAdminPrioritizeRepo(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.PrioritizeRepo(r.Context(), repoID); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, "repo not found in queue", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "repo_id": repoID})
 }
 
 // --- v0.27.4: home tab (stars + activity) ---

@@ -130,14 +130,19 @@ func (s *PostgresStore) InsertRepoDependencyBatch(ctx context.Context, repoID in
 	if len(deps) == 0 {
 		return nil
 	}
+	// No ON CONFLICT (v0.27.17): repo_dependencies and repo_deps_libyear
+	// have NO unique arbiter, so the previous blanket ON CONFLICT DO
+	// NOTHING was dead code (the v0.27.7 repo_labor lesson). Write
+	// idempotency comes from snapshot-replace: RotateLibyearToHistory
+	// deletes the repo's current rows before every fresh insert, and a
+	// failed rotation now ABORTS the insert (analysis.go).
 	batch := &pgx.Batch{}
 	for _, d := range deps {
 		batch.Queue(`
 			INSERT INTO aveloxis_data.repo_dependencies
 				(repo_id, dep_name, dep_count, dep_language,
 				 tool_source, data_source, data_collection_date)
-			VALUES ($1, $2, $3, $4, 'aveloxis-analysis', 'file scan', NOW())
-			ON CONFLICT DO NOTHING`,
+			VALUES ($1, $2, $3, $4, 'aveloxis-analysis', 'file scan', NOW())`,
 			repoID, d.Name, d.Count, d.Language)
 	}
 	return s.pool.SendBatch(ctx, batch).Close()
@@ -156,8 +161,7 @@ func (s *PostgresStore) InsertRepoLibyearBatch(ctx context.Context, repoID int64
 				 current_version, latest_version, current_release_date, latest_release_date,
 				 libyear, license, purl, tool_source, data_source, data_collection_date)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-				'aveloxis-analysis', 'package registry', NOW())
-			ON CONFLICT DO NOTHING`,
+				'aveloxis-analysis', 'package registry', NOW())`,
 			repoID, row.Name, row.Requirement, row.Type, row.PackageManager,
 			row.CurrentVersion, row.LatestVersion, row.CurrentReleaseDate, row.LatestReleaseDate,
 			row.Libyear, row.License, row.Purl)
@@ -255,8 +259,7 @@ func (s *PostgresStore) InsertRepoDependency(ctx context.Context, repoID int64, 
 		INSERT INTO aveloxis_data.repo_dependencies
 			(repo_id, dep_name, dep_count, dep_language,
 			 tool_source, data_source, data_collection_date)
-		VALUES ($1, $2, $3, $4, 'aveloxis-analysis', 'file scan', NOW())
-		ON CONFLICT DO NOTHING`,
+		VALUES ($1, $2, $3, $4, 'aveloxis-analysis', 'file scan', NOW())`,
 		repoID, depName, depCount, depLanguage)
 	return err
 }
@@ -269,8 +272,7 @@ func (s *PostgresStore) InsertRepoLibyear(ctx context.Context, repoID int64, row
 			 current_version, latest_version, current_release_date, latest_release_date,
 			 libyear, license, purl, tool_source, data_source, data_collection_date)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-			'aveloxis-analysis', 'package registry', NOW())
-		ON CONFLICT DO NOTHING`,
+			'aveloxis-analysis', 'package registry', NOW())`,
 		repoID, row.Name, row.Requirement, row.Type, row.PackageManager,
 		row.CurrentVersion, row.LatestVersion, row.CurrentReleaseDate, row.LatestReleaseDate,
 		row.Libyear, row.License, row.Purl)

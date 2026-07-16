@@ -11,9 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/aveloxis/aveloxis/internal/model"
-	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // GetUserEmail returns the email column for the given user_id.
@@ -242,23 +239,22 @@ func (s *PostgresStore) IsUserAdmin(ctx context.Context, userID int) (bool, erro
 
 // CreateUserGroup creates a new group for a user. Returns group_id.
 //
-// v0.19.0: status branches on the creator's admin role. Admins'
-// groups auto-approve (status='approved') so admin operations don't
-// need to wait on the approval queue. Non-admins' groups go to
-// status='pending' and require admin review via ApproveGroup before
-// any of their repos enter collection_queue.
+// v0.27.20 (per-add approval, summary/15 Option A): every group is
+// created with status='approved'. Groups are just containers —
+// visibility was never gated (v0.27.4 scope rule), and the approval
+// unit moved from the group to the ADDITION of not-yet-tracked
+// content (AddReposToGroup / AddOrgToGroup create pending
+// collection_add_requests for non-admins). 'rejected' remains the
+// group-level abuse lever (RejectGroup blocks all future adds).
+// The v0.19.0 pending-group flow is retired; pre-existing pending
+// groups are converted to add-requests by migrateLegacyPendingGroups.
 func (s *PostgresStore) CreateUserGroup(ctx context.Context, userID int, name string) (int64, error) {
-	isAdmin, _ := s.IsUserAdmin(ctx, userID)
-	status := "pending"
-	if isAdmin {
-		status = "approved"
-	}
 	var groupID int64
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO aveloxis_ops.user_groups (user_id, name, status) VALUES ($1, $2, $3)
+		INSERT INTO aveloxis_ops.user_groups (user_id, name, status) VALUES ($1, $2, 'approved')
 		ON CONFLICT (user_id, name) DO UPDATE SET name = EXCLUDED.name
 		RETURNING group_id`,
-		userID, name, status).Scan(&groupID)
+		userID, name).Scan(&groupID)
 	return groupID, err
 }
 
@@ -398,110 +394,61 @@ func (s *PostgresStore) loadGroupOrgs(ctx context.Context, groupID int64) ([]Gro
 	return result, nil
 }
 
-// AddRepoToGroup adds a single repo URL to a user group. Creates the repo
-// in the repos table and queue if it doesn't exist.
-//
-// v0.19.0: gated on group status. If the group is 'pending' (non-admin
-// submission awaiting review), the repo is added to user_repos but
-// NOT enqueued — ApproveGroup is what eventually walks user_repos and
-// fills the queue. If the group is 'approved' (admin's own group, or
-// previously approved), the repo enqueues immediately as before.
-// 'rejected' groups refuse the add entirely.
+// AddRepoToGroup adds a single repo URL to a user group under the
+// v0.27.20 per-add approval rule — a thin single-URL wrapper over
+// AddReposToGroup with auto-approval disabled. Kept for the CLI
+// importers (which run as the bootstrap admin and therefore take the
+// direct path) and any caller that doesn't need the outcome counts;
+// web/portal handlers call AddReposToGroup directly for the
+// linked/pending split and the configured auto-approve limit.
 func (s *PostgresStore) AddRepoToGroup(ctx context.Context, userID int, groupID int64, repoURL string) error {
-	if err := s.verifyGroupOwned(ctx, userID, groupID); err != nil {
-		return err
-	}
-
-	// Look up group status to decide whether to enqueue or defer.
-	var status string
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(status, 'approved') FROM aveloxis_ops.user_groups WHERE group_id = $1`,
-		groupID).Scan(&status); err != nil {
-		return fmt.Errorf("look up group status: %w", err)
-	}
-	if status == "rejected" {
-		return fmt.Errorf("group has been rejected by an administrator")
-	}
-
-	// Resolve the URL to an existing repo first — case-insensitively for
-	// GitHub/GitLab (v0.25.32). When ANY user already tracks this
-	// repository (under any casing), the SHARED repo_id is linked into
-	// this group below and the existing collected data is immediately
-	// visible: no new repos row, no re-collection.
-	repoID, err := s.FindRepoByURL(ctx, repoURL)
-	if err != nil {
-		return fmt.Errorf("resolve repo URL: %w", err)
-	}
-	if repoID == 0 {
-		// New repo. Parse owner/name/platform via the shared parser.
-		// Unparseable URLs stay permissive (generic git, empty owner/name)
-		// to match the historical web-path behavior — ValidateRepoURL has
-		// already screened the input upstream.
-		newRepo := &model.Repo{GitURL: repoURL, Platform: model.PlatformGenericGit}
-		if ru, perr := platform.ParseAnyRepoURL(repoURL); perr == nil {
-			newRepo.Platform = ru.Platform
-			newRepo.Owner = ru.Owner
-			newRepo.Name = ru.Repo
-		}
-		// Existing repos are deliberately NOT routed through UpsertRepo:
-		// its ON CONFLICT DO UPDATE would clobber collected metadata
-		// (description, language, ...) with this minimal struct's empty
-		// fields. UpsertRepo runs only on this not-found branch.
-		repoID, err = s.UpsertRepo(ctx, newRepo)
-		if err != nil {
-			return err
-		}
-
-		// Enqueue for collection — only for approved groups.
-		// Pending groups defer enqueue to ApproveGroup; this is what
-		// gives the admin a chance to review submissions before they
-		// burn API quota.
-		if status == "approved" {
-			if err := s.EnqueueRepo(ctx, repoID, 100); err != nil {
-				return fmt.Errorf("enqueue repo: %w", err)
-			}
-		}
-	}
-
-	// Add to user_repos regardless of status — the user can build out
-	// the group's repo list while waiting for approval.
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_ops.user_repos (group_id, repo_id) VALUES ($1, $2)
-		ON CONFLICT DO NOTHING`, groupID, repoID)
+	_, err := s.AddReposToGroup(ctx, userID, groupID, []string{repoURL}, 0)
 	return err
 }
 
-// AddOrgToGroup registers an org for tracking. Immediately scans for repos
-// and adds them to the group.
-func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID int64, orgURL string) error {
+// AddOrgToGroup registers an org for tracking under the v0.27.20
+// per-add approval rule: an ADMIN's registration lands in
+// user_org_requests immediately (presence there = approved to scan;
+// the caller may fire an immediate scan); a non-admin's registration
+// creates a pending collection_add_requests row (kind='org') that an
+// admin must approve — org registrations are unbounded mass adds by
+// definition, so they ALWAYS pend regardless of auto_approve_add_limit.
+func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID int64, orgURL string) (OrgAddOutcome, error) {
+	var out OrgAddOutcome
 	if err := s.verifyGroupOwned(ctx, userID, groupID); err != nil {
-		return err
+		return out, err
+	}
+	status, err := s.GetGroupStatus(ctx, groupID)
+	if err != nil {
+		return out, fmt.Errorf("look up group status: %w", err)
+	}
+	if status == "rejected" {
+		return out, fmt.Errorf("group has been rejected by an administrator")
 	}
 
-	// Determine platform and org name via the shared parser (v0.25.32
-	// consolidation). Platform detection keeps the historical
-	// host-contains-"gitlab" heuristic; unparseable URLs keep an empty
-	// org name, matching the old inline split's permissiveness.
 	orgURL = strings.TrimSuffix(strings.TrimSpace(orgURL), "/")
-	platformName := "github"
-	orgName := ""
-	if host, org, perr := platform.ParseOrgURL(orgURL); perr == nil {
-		orgName = org
-		if strings.Contains(host, "gitlab") {
-			platformName = "gitlab"
+	isAdmin, _ := s.IsUserAdmin(ctx, userID)
+	if !isAdmin {
+		reqID, err := s.createAddRequest(ctx, userID, groupID, "org", orgURL, nil, "pending")
+		if err != nil {
+			return out, err
 		}
-	} else if strings.Contains(orgURL, "gitlab") {
-		platformName = "gitlab"
+		out.RequestID = reqID
+		return out, nil
 	}
 
-	// Insert org request.
-	_, err := s.pool.Exec(ctx, `
+	orgName, platformName := parseOrgURLMeta(orgURL)
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_ops.user_org_requests
 			(user_id, group_id, org_url, org_name, platform)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (group_id, org_url) DO NOTHING`,
 		userID, groupID, orgURL, orgName, platformName)
-	return err
+	if err != nil {
+		return out, err
+	}
+	out.Registered = true
+	return out, nil
 }
 
 // RemoveRepoFromGroup removes a repo from a user group.
@@ -610,10 +557,14 @@ func (s *PostgresStore) ListPendingGroups(ctx context.Context) ([]PendingGroup, 
 // approved group is a no-op (the queue INSERT uses ON CONFLICT DO
 // NOTHING).
 //
-// Org requests in the group don't need explicit handling here — the
-// scheduler's refreshOrgs ticker will pick them up on its next cycle
-// now that the group is approved (the org-scan path checks group
-// status before enqueueing the org's repos).
+// LEGACY (v0.19.0 → v0.27.20): new groups are always created
+// 'approved' now and non-admin additions pend on
+// collection_add_requests instead — see add_requests.go. This method
+// stays for the migration window (deciding any pre-conversion pending
+// group) and remains harmless afterwards. NOTE: org scans were NEVER
+// status-gated (the earlier claim here that they were was wrong —
+// audited 2026-07-16); under the per-add rule the gate is structural:
+// unapproved org registrations never reach user_org_requests at all.
 func (s *PostgresStore) ApproveGroup(ctx context.Context, groupID int64, adminID int) error {
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
@@ -652,14 +603,20 @@ func (s *PostgresStore) ApproveGroup(ctx context.Context, groupID int64, adminID
 	})
 }
 
-// RejectGroup flips a pending group to rejected. Repos in the group
-// are NOT deleted (the user might appeal); they simply never enter
-// collection_queue. The user's dashboard shows the rejection state.
+// RejectGroup flips a group to rejected. Repos in the group are NOT
+// deleted (the user might appeal); the group simply refuses all
+// future additions (AddReposToGroup / AddOrgToGroup error) and its
+// tracked orgs stop scanning (the v0.27.20 rejected-group gate in
+// scanOrgRepos / refreshUserOrgs).
+//
+// v0.27.20: applies to ANY non-rejected group, not just 'pending' —
+// with groups now created 'approved', this is the group-level abuse
+// lever, so it must work on approved groups too.
 func (s *PostgresStore) RejectGroup(ctx context.Context, groupID int64, adminID int) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.user_groups
 		SET status = 'rejected', approved_by = $2, approved_at = NOW()
-		WHERE group_id = $1 AND status = 'pending'`,
+		WHERE group_id = $1 AND status IS DISTINCT FROM 'rejected'`,
 		groupID, adminID)
 	return err
 }

@@ -232,13 +232,21 @@ func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, websi
 	if err == nil {
 		return id, nil
 	}
-	// Create new group.
+	// Create new group. rg_name is the identity key (v0.27.17 —
+	// uq_repo_groups_rg_name); on a concurrent create the arbiter
+	// fires, RETURNING yields no row, and we return the existing
+	// group by name (rg_type is metadata, not identity).
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.repo_groups (rg_name, rg_type, rg_website, rg_description)
 		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (rg_name) DO NOTHING
 		RETURNING repo_group_id`,
 		name, rgType, website, fmt.Sprintf("Auto-created from %s", website),
 	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = s.pool.QueryRow(ctx,
+			`SELECT repo_group_id FROM aveloxis_data.repo_groups WHERE rg_name = $1`, name).Scan(&id)
+	}
 	return id, err
 }
 
@@ -270,10 +278,17 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 		// Ensure a default repo group exists if no group is specified.
 		groupID := r.GroupID
 		if groupID == 0 {
+			// v0.27.17: the arbiter is NAMED. The previous bare
+			// ON CONFLICT had no unique to arbitrate against, so this
+			// INSERT succeeded on EVERY call — production accumulated
+			// 93,912 'Default' groups (one per repo), shattering every
+			// repo_group_id rollup. With uq_repo_groups_rg_name in
+			// place the conflict fires and the lookup below (dead code
+			// until now) finally runs.
 			err := s.pool.QueryRow(ctx, `
 				INSERT INTO aveloxis_data.repo_groups (rg_name, rg_description)
 				VALUES ('Default', 'Auto-created default repo group')
-				ON CONFLICT DO NOTHING
+				ON CONFLICT (rg_name) DO NOTHING
 				RETURNING repo_group_id`).Scan(&groupID)
 			if err != nil {
 				// ON CONFLICT DO NOTHING returns no rows — look it up.
@@ -880,12 +895,25 @@ func (s *PostgresStore) UpsertPRReview(ctx context.Context, review *model.PullRe
 			}
 
 			// Create bridge row linking review to message.
+			//
+			// v0.27.15: the arbiter (pr_review_id, msg_id) is NAMED. The
+			// previous bare ON CONFLICT DO NOTHING had no unique constraint
+			// to arbitrate against — dead code, exactly the v0.27.7
+			// repo_labor lesson — and every re-collection cycle duplicated
+			// this row (5.26M duplicate rows on production). The unique
+			// index uq_pr_review_msg_ref is created by the v0.27.15
+			// migration after dedup (schema-DDL-ordering rule: NOT in
+			// schema.sql). Review-BODY rows deliberately carry no line
+			// metadata — a review submission has no line anchor; inline
+			// comment rows (which do) are written by the review-comment
+			// upserts below.
 			_, err = tx.Exec(ctx, `
 				INSERT INTO aveloxis_data.pull_request_review_message_ref
-					(pr_review_id, repo_id, msg_id, pr_review_src_id, pr_review_msg_node_id)
-				VALUES ($1, $2, $3, $4, $5)
-				ON CONFLICT DO NOTHING`,
-				reviewID, review.RepoID, msgID, review.PlatformReviewID, review.NodeID)
+					(pr_review_id, repo_id, msg_id, pr_review_src_id, pr_review_msg_node_id, data_source)
+				VALUES ($1, $2, $3, $4, $5, $6)
+				ON CONFLICT (pr_review_id, msg_id) DO NOTHING`,
+				reviewID, review.RepoID, msgID, review.PlatformReviewID, review.NodeID,
+				review.Origin.DataSource)
 			if err != nil {
 				return err
 			}
@@ -1060,8 +1088,9 @@ func (s *PostgresStore) UpsertIssueMessageRef(ctx context.Context, ref *model.Is
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `
 			INSERT INTO aveloxis_data.issue_message_ref
-				(issue_id, repo_id, msg_id, platform_src_id, platform_node_id)
-			VALUES ($1,$2,$3,$4,$5)
+				(issue_id, repo_id, msg_id, platform_src_id, platform_node_id, data_source)
+			VALUES ($1,$2,$3,$4,$5,
+			        COALESCE((SELECT m.data_source FROM aveloxis_data.messages m WHERE m.msg_id = $3), ''))
 			ON CONFLICT (issue_id, msg_id) DO NOTHING`,
 			ref.IssueID, ref.RepoID, ref.MsgID, ref.PlatformSrcID, ref.PlatformNodeID,
 		)
@@ -1073,14 +1102,37 @@ func (s *PostgresStore) UpsertPRMessageRef(ctx context.Context, ref *model.PullR
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `
 			INSERT INTO aveloxis_data.pull_request_message_ref
-				(pull_request_id, repo_id, msg_id, platform_src_id, platform_node_id)
-			VALUES ($1,$2,$3,$4,$5)
+				(pull_request_id, repo_id, msg_id, platform_src_id, platform_node_id, data_source)
+			VALUES ($1,$2,$3,$4,$5,
+			        COALESCE((SELECT m.data_source FROM aveloxis_data.messages m WHERE m.msg_id = $3), ''))
 			ON CONFLICT (pull_request_id, msg_id) DO NOTHING`,
 			ref.PRID, ref.RepoID, ref.MsgID, ref.PlatformSrcID, ref.PlatformNodeID,
 		)
 		return err
 	})
 }
+
+// prReviewMsgRefFromCommentSQL writes the Augur-compat
+// pull_request_review_message_ref row for an INLINE review comment,
+// carrying the full line-anchoring metadata (v0.27.15 — these columns
+// were 100%% dark on production while review_comments held all the
+// data). $21 is the message's data_source. Arbiter (pr_review_id,
+// msg_id) is the uq_pr_review_msg_ref unique index created by the
+// v0.27.15 migration after dedup.
+const prReviewMsgRefFromCommentSQL = `
+	INSERT INTO aveloxis_data.pull_request_review_message_ref
+		(pr_review_id, repo_id, msg_id, pr_review_msg_src_id, pr_review_msg_node_id,
+		 pr_review_msg_diff_hunk, pr_review_msg_path, pr_review_msg_position,
+		 pr_review_msg_original_position, pr_review_msg_commit_id,
+		 pr_review_msg_original_commit_id, pr_review_msg_updated_at,
+		 pr_review_msg_html_url, pr_review_msg_author_association,
+		 pr_review_msg_start_line, pr_review_msg_original_start_line,
+		 pr_review_msg_start_side, pr_review_msg_line, pr_review_msg_original_line,
+		 pr_review_msg_side, data_source)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+	ON CONFLICT (pr_review_id, msg_id) DO UPDATE SET
+		pr_review_msg_diff_hunk = EXCLUDED.pr_review_msg_diff_hunk,
+		pr_review_msg_updated_at = EXCLUDED.pr_review_msg_updated_at`
 
 func (s *PostgresStore) UpsertReviewComment(ctx context.Context, c *model.ReviewComment) error {
 	return s.withRetry(ctx, func(ctx context.Context) error {
@@ -1101,7 +1153,35 @@ func (s *PostgresStore) UpsertReviewComment(ctx context.Context, c *model.Review
 			c.Side, c.StartLine, c.OriginalStartLine, c.StartSide,
 			c.AuthorAssociation, c.HTMLURL, NullTime(c.UpdatedAt),
 		)
-		return err
+		if err != nil {
+			return err
+		}
+		// v0.27.15: mirror the comment into the Augur-compat ref table
+		// with its full line metadata. Comments whose review is not in
+		// the DB (ReviewID 0) are skipped — the ref's pr_review_id is
+		// NOT NULL; the v0.27.15 backfill picks them up if the review
+		// arrives later. data_source comes from the message row (exact
+		// provenance). Both statements are idempotent, so a failure
+		// between them is healed by the caller's retry.
+		if c.ReviewID != 0 {
+			var ds string
+			if err := s.pool.QueryRow(ctx,
+				`SELECT COALESCE(data_source, '') FROM aveloxis_data.messages WHERE msg_id = $1`,
+				c.MsgID).Scan(&ds); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if _, err := s.pool.Exec(ctx, prReviewMsgRefFromCommentSQL,
+				c.ReviewID, c.RepoID, c.MsgID, c.PlatformSrcID, c.NodeID,
+				c.DiffHunk, c.Path, c.Position, c.OriginalPosition,
+				c.CommitID, c.OriginalCommitID, NullTime(c.UpdatedAt),
+				c.HTMLURL, c.AuthorAssociation,
+				c.StartLine, c.OriginalStartLine, c.StartSide,
+				c.Line, c.OriginalLine, c.Side, ds,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -1146,11 +1226,12 @@ func (s *PostgresStore) UpsertMessageBatch(ctx context.Context, msgs []platform.
 				m.IssueRef.MsgID = msgID
 				_, err = tx.Exec(ctx, `
 					INSERT INTO aveloxis_data.issue_message_ref
-						(issue_id, repo_id, msg_id, platform_src_id, platform_node_id)
-					VALUES ($1,$2,$3,$4,$5)
+						(issue_id, repo_id, msg_id, platform_src_id, platform_node_id, data_source)
+					VALUES ($1,$2,$3,$4,$5,$6)
 					ON CONFLICT (issue_id, msg_id) DO NOTHING`,
 					m.IssueRef.IssueID, m.IssueRef.RepoID, msgID,
 					m.IssueRef.PlatformSrcID, m.IssueRef.PlatformNodeID,
+					m.Message.Origin.DataSource,
 				)
 				if err != nil {
 					return err
@@ -1160,11 +1241,12 @@ func (s *PostgresStore) UpsertMessageBatch(ctx context.Context, msgs []platform.
 				m.PRRef.MsgID = msgID
 				_, err = tx.Exec(ctx, `
 					INSERT INTO aveloxis_data.pull_request_message_ref
-						(pull_request_id, repo_id, msg_id, platform_src_id, platform_node_id)
-					VALUES ($1,$2,$3,$4,$5)
+						(pull_request_id, repo_id, msg_id, platform_src_id, platform_node_id, data_source)
+					VALUES ($1,$2,$3,$4,$5,$6)
 					ON CONFLICT (pull_request_id, msg_id) DO NOTHING`,
 					m.PRRef.PRID, m.PRRef.RepoID, msgID,
 					m.PRRef.PlatformSrcID, m.PRRef.PlatformNodeID,
+					m.Message.Origin.DataSource,
 				)
 				if err != nil {
 					return err
@@ -1234,6 +1316,23 @@ func (s *PostgresStore) UpsertReviewCommentBatch(ctx context.Context, comments [
 			)
 			if err != nil {
 				return err
+			}
+
+			// v0.27.15: Augur-compat ref row with full line metadata
+			// (skipped when the review is not yet in the DB — the
+			// backfill migration catches those once it is).
+			if reviewID != nil {
+				if _, err := tx.Exec(ctx, prReviewMsgRefFromCommentSQL,
+					reviewID, rc.Comment.RepoID, msgID, rc.Comment.PlatformSrcID, rc.Comment.NodeID,
+					rc.Comment.DiffHunk, rc.Comment.Path, rc.Comment.Position, rc.Comment.OriginalPosition,
+					rc.Comment.CommitID, rc.Comment.OriginalCommitID, NullTime(rc.Comment.UpdatedAt),
+					rc.Comment.HTMLURL, rc.Comment.AuthorAssociation,
+					rc.Comment.StartLine, rc.Comment.OriginalStartLine, rc.Comment.StartSide,
+					rc.Comment.Line, rc.Comment.OriginalLine, rc.Comment.Side,
+					rc.Message.Origin.DataSource,
+				); err != nil {
+					return err
+				}
 			}
 		}
 

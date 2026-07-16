@@ -219,8 +219,9 @@ func (s *PostgresStore) FindIssueForThread(ctx context.Context, threadRoot strin
 // so per-repo issue analytics see the thread. Idempotent on (issue_id, msg_id).
 func (s *PostgresStore) BridgeEmailToIssue(ctx context.Context, issueID, repoID, msgID int64) error {
 	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_data.issue_message_ref (issue_id, repo_id, msg_id)
-		VALUES ($1, $2, $3)
+		INSERT INTO aveloxis_data.issue_message_ref (issue_id, repo_id, msg_id, data_source)
+		VALUES ($1, $2, $3,
+		        COALESCE((SELECT m.data_source FROM aveloxis_data.messages m WHERE m.msg_id = $3), ''))
 		ON CONFLICT (issue_id, msg_id) DO NOTHING`, issueID, repoID, msgID); err != nil {
 		return fmt.Errorf("bridge email to issue: %w", err)
 	}

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1049,8 +1050,15 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	// This ensures the main table always has the latest snapshot with current
 	// license values. Without rotation, old rows with empty licenses persist
 	// because ON CONFLICT DO NOTHING skips existing rows.
+	// v0.27.17: a failed rotation ABORTS this pass. The tables have no
+	// unique arbiter, so inserting on top of an un-rotated snapshot
+	// would duplicate every row (the old blanket ON CONFLICT DO
+	// NOTHING never protected against this — it was dead code). The
+	// next cycle retries with a fresh rotation.
 	if err := ac.store.RotateLibyearToHistory(ctx, repoID); err != nil {
-		ac.logger.Warn("failed to rotate libyear to history", "repo_id", repoID, "error", err)
+		ac.logger.Error("failed to rotate libyear to history — skipping libyear insert this cycle",
+			"repo_id", repoID, "error", err)
+		return fmt.Errorf("rotate libyear to history: %w", err)
 	}
 
 	var allDeps []libyearDep
@@ -1174,6 +1182,8 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	})
 
 	// Resolve each dependency against its package registry.
+	resolveFailures := map[string]int{}
+	resolveSample := map[string]error{}
 	for _, dep := range allDeps {
 		var lb *db.LibyearRow
 		var err error
@@ -1208,6 +1218,19 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		}
 
 		if err != nil || lb == nil {
+			// v0.27.19: the silent `continue` here hid TWO
+			// since-inception ecosystem outages (npm CLI missing on
+			// hosts; crates.io 403 on curl's default UA). Count per
+			// manager and surface an aggregate WARN below — a per-dep
+			// WARN would flood on big manifests, but silence is how
+			// this stayed invisible for the product's whole life.
+			if err != nil {
+				resolveFailures[dep.Manager]++
+				if resolveSample[dep.Manager] == nil {
+					resolveSample[dep.Manager] = err
+				}
+				ac.logger.Debug("libyear resolution failed", "dep", dep.Name, "manager", dep.Manager, "error", err)
+			}
 			continue
 		}
 		if err := ac.store.InsertRepoLibyear(ctx, repoID, lb); err != nil {
@@ -1215,6 +1238,12 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			continue
 		}
 		result.LibyearDeps++
+	}
+
+	for manager, n := range resolveFailures {
+		ac.logger.Warn("libyear resolution failures for ecosystem",
+			"repo_id", repoID, "manager", manager, "failed_deps", n,
+			"sample_error", resolveSample[manager])
 	}
 
 	return nil
@@ -1249,7 +1278,13 @@ const registryFetchMaxTime = "30"
 // whatever the endpoint served — Hackage's upload-time endpoints
 // return plain text and use this helper too.
 func fetchRegistryJSON(ctx context.Context, url string, extraArgs ...string) ([]byte, error) {
-	args := []string{"-sf", "--max-time", registryFetchMaxTime}
+	// crates.io REJECTS curl's default User-Agent with HTTP 403 (their
+	// crawler policy wants an identifying UA with a contact URL) —
+	// which silently zeroed EVERY cargo libyear row since inception.
+	// Other registries tolerate any UA; identifying ourselves is
+	// polite everywhere. v0.27.19.
+	args := []string{"-sf", "--max-time", registryFetchMaxTime,
+		"-A", "aveloxis/" + db.ToolVersion + " (+https://github.com/aveloxis/aveloxis)"}
 	args = append(args, extraArgs...)
 	args = append(args, url)
 	cmd := exec.CommandContext(ctx, "curl", args...)
@@ -1392,33 +1427,55 @@ func utf16BEToUTF8(data []byte) []byte {
 	return result
 }
 
+// npmRegistryBase is the npm registry root — a var so behavioral tests
+// can point it at an httptest server.
+var npmRegistryBase = "https://registry.npmjs.org"
+
 // resolveNPMLibyear checks the npm registry for the latest version.
+//
+// v0.27.19: plain HTTP against registry.npmjs.org. The previous
+// implementation shelled out to the `npm` CLI — which is not installed
+// on collection hosts (aveloxis install-tools ships scc/scorecard/
+// scancode only), so EVERY npm dependency failed "executable file not
+// found" and was silently dropped, since inception: zero npm rows ever
+// reached repo_deps_libyear, and therefore JavaScript dependencies
+// were never vulnerability-scanned (the vuln scan reads purls from
+// that table). Same defect class as the v0.24.1 deps.dev and v0.27.4
+// OSV bugs: no live-API canary. One is added alongside this fix.
+//
+// Scoped names (@babel/core) must be path-escaped (@babel%2Fcore) —
+// the deps.dev URL-encoding lesson.
 func resolveNPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	// Reject dep names starting with "-" to prevent argument injection.
-	// A malicious package.json key like "--registry=http://evil" would
-	// become an npm flag without this check.
-	if strings.HasPrefix(dep.Name, "-") {
-		return nil, fmt.Errorf("rejecting npm dep name starting with dash: %q", dep.Name)
-	}
-	// "--" separates npm flags from the package spec, preventing any
-	// remaining argument injection vectors.
-	cmd := exec.CommandContext(ctx, "npm", "view", "--", dep.Name, "version", "time", "license", "--json")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	body, err := fetchRegistryJSON(ctx, npmRegistryBase+"/"+url.PathEscape(dep.Name))
+	if err != nil {
 		return nil, err
 	}
 	var info struct {
-		Version string            `json:"version"`
+		DistTags struct {
+			Latest string `json:"latest"`
+		} `json:"dist-tags"`
 		Time    map[string]string `json:"time"`
-		License string            `json:"license"`
+		License json.RawMessage   `json:"license"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
+	}
+	info2 := struct{ Version, License string }{Version: info.DistTags.Latest}
+	// license is usually a string, but old packages use the object
+	// form {"type": "MIT", "url": ...}.
+	if len(info.License) > 0 {
+		if err := json.Unmarshal(info.License, &info2.License); err != nil {
+			var obj struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(info.License, &obj) == nil {
+				info2.License = obj.Type
+			}
+		}
 	}
 
 	currentDate := info.Time[dep.Version]
-	latestDate := info.Time[info.Version]
+	latestDate := info.Time[info2.Version]
 	libyear := calcLibyear(currentDate, latestDate)
 
 	return &db.LibyearRow{
@@ -1427,11 +1484,11 @@ func resolveNPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 		Type:               dep.Type,
 		PackageManager:     "npm",
 		CurrentVersion:     dep.Version,
-		LatestVersion:      info.Version,
+		LatestVersion:      info2.Version,
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latestDate,
 		Libyear:            libyear,
-		License:            info.License,
+		License:            info2.License,
 		Purl:               fmt.Sprintf("pkg:npm/%s@%s", dep.Name, dep.Version),
 	}, nil
 }

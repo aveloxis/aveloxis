@@ -12,6 +12,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -21,6 +22,113 @@ import (
 	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
+// notifyAddRequestSubmitted emails the operator that a new add-request
+// awaits review (v0.27.20). Best-effort in a goroutine — the user's
+// redirect never waits on SMTP. No-op without a mailer or operator
+// email.
+func (s *Server) notifyAddRequestSubmitted(requestID int64) {
+	if s.mailer == nil || s.mailer.OperatorEmail() == "" || requestID == 0 {
+		return
+	}
+	safego.Go(s.logger, "add-request-submitted-email", func() {
+		ctx := context.Background()
+		pending, err := s.store.ListPendingAddRequests(ctx)
+		if err != nil {
+			s.logger.Warn("add-request email: list failed", "error", err)
+			return
+		}
+		for _, req := range pending {
+			if req.RequestID != requestID {
+				continue
+			}
+			sample := req.SampleURLs
+			if req.Kind == "org" {
+				sample = []string{req.OrgURL}
+			}
+			if err := s.mailer.SendAddRequestSubmitted(s.mailer.OperatorEmail(),
+				req.UserLogin, req.GroupName, req.Kind, req.ItemCount, sample, req.RequestID); err != nil {
+				s.logger.Warn("failed to send add-request email", "request_id", requestID, "error", err)
+			}
+			return
+		}
+	})
+}
+
+// decideAddRequest is the shared web-side decision flow: flip the
+// request, notify the requester, and (on approval) run the item
+// processing / org scan in the background so a 50K-item approval
+// doesn't block the admin's redirect. Idempotent — a double click
+// finds the request already decided and does nothing.
+func (s *Server) decideAddRequest(ctx context.Context, requestID int64, adminID int, approve bool) error {
+	req, changed, err := s.store.DecideAddRequest(ctx, requestID, adminID, approve)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	if approve {
+		if req.Kind == "org" {
+			// Registration happened in DecideAddRequest; scan now,
+			// exactly like an admin's own org add.
+			safego.Go(s.logger, "approved-org-scan", func() {
+				s.scanOrgRepos(context.Background(), req.GroupID, req.OrgURL)
+			})
+		} else {
+			safego.Go(s.logger, "approved-add-request", func() {
+				n, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
+				if err != nil {
+					s.logger.Warn("processing approved add-request failed — re-approving resumes it",
+						"request_id", req.RequestID, "processed", n, "error", err)
+					return
+				}
+				s.logger.Info("approved add-request processed", "request_id", req.RequestID, "repos", n)
+			})
+		}
+	}
+	if s.mailer != nil && req.UserEmail != "" {
+		req := req
+		safego.Go(s.logger, "add-request-decided-email", func() {
+			if err := s.mailer.SendAddRequestDecided(req.UserEmail, req.UserLogin,
+				req.GroupName, req.Kind, approve, req.ItemCount); err != nil {
+				s.logger.Warn("failed to send add-request decision email",
+					"request_id", req.RequestID, "error", err)
+			}
+		})
+	}
+	return nil
+}
+
+func (s *Server) handleApproveAddRequest(w http.ResponseWriter, r *http.Request) {
+	sess := s.getSession(r)
+	requestID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid request id", http.StatusBadRequest)
+		return
+	}
+	if err := s.decideAddRequest(r.Context(), requestID, sess.UserID, true); err != nil {
+		s.logger.Warn("failed to approve add-request", "request_id", requestID, "error", err)
+		http.Error(w, "Failed to approve request: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin/groups/pending", http.StatusFound)
+}
+
+func (s *Server) handleRejectAddRequest(w http.ResponseWriter, r *http.Request) {
+	sess := s.getSession(r)
+	requestID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid request id", http.StatusBadRequest)
+		return
+	}
+	if err := s.decideAddRequest(r.Context(), requestID, sess.UserID, false); err != nil {
+		s.logger.Warn("failed to reject add-request", "request_id", requestID, "error", err)
+		http.Error(w, "Failed to reject request", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin/groups/pending", http.StatusFound)
+}
+
 func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request) {
 	pending, err := s.store.ListPendingGroups(r.Context())
 	if err != nil {
@@ -28,12 +136,22 @@ func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Failed to list pending groups", http.StatusInternalServerError)
 		return
 	}
+	// v0.27.20: the per-add approval queue shares this page. Legacy
+	// pending groups empty out after the migration; the additions
+	// table is the ongoing queue.
+	requests, err := s.store.ListPendingAddRequests(r.Context())
+	if err != nil {
+		s.logger.Warn("failed to list pending add-requests", "error", err)
+		http.Error(w, "Failed to list pending additions", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, `<!DOCTYPE html><html><head><title>Pending Groups</title>
+	fmt.Fprint(w, `<!DOCTYPE html><html><head><title>Approvals</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 2rem; background: #f5f5f5; color: #333; }
   h1 { margin-bottom: 0.5rem; }
+  h2 { margin-top: 2rem; }
   .sub { color: #666; margin-bottom: 1.5rem; }
   table { border-collapse: collapse; width: 100%; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
   th, td { padding: 0.6rem 0.8rem; text-align: left; border-bottom: 1px solid #eee; font-size: 0.9rem; }
@@ -43,14 +161,48 @@ func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request
   .reject { background: #dc2626; color: white; border-color: #b91c1c; }
   .empty { color: #6b7280; font-style: italic; padding: 2rem; text-align: center; }
   .navlinks a { margin-right: 1rem; }
+  .urls { color: #6b7280; font-size: 0.8rem; max-width: 28rem; word-break: break-all; }
 </style></head><body>
-<h1>Pending Groups</h1>
+<h1>Approvals</h1>
 <div class="sub navlinks">
   <a href="/dashboard">Back to dashboard</a>
   <a href="/admin/users">Users</a>
 </div>
+<h2>Pending additions</h2>
 `)
 
+	if len(requests) == 0 {
+		fmt.Fprint(w, `<div class="empty">No pending additions awaiting review.</div>`)
+	} else {
+		fmt.Fprint(w, `<table><tr><th>#</th><th>Requested by</th><th>Group</th><th>Kind</th><th>Items</th><th>Sample</th><th>Action</th></tr>`)
+		for _, q := range requests {
+			var sample string
+			count := q.ItemCount
+			if q.Kind == "org" {
+				sample = template.HTMLEscapeString(q.OrgURL)
+				count = 1
+			} else {
+				escaped := make([]string, 0, len(q.SampleURLs))
+				for _, u := range q.SampleURLs {
+					escaped = append(escaped, template.HTMLEscapeString(u))
+				}
+				sample = strings.Join(escaped, "<br>")
+			}
+			fmt.Fprintf(w, `<tr><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td class="urls">%s</td><td>
+<form method="POST" action="/admin/add-requests/%d/approve" style="display:inline"><button class="btn approve" type="submit">Approve</button></form>
+<form method="POST" action="/admin/add-requests/%d/reject" style="display:inline"><button class="btn reject" type="submit">Reject</button></form>
+</td></tr>`,
+				q.RequestID,
+				template.HTMLEscapeString(q.UserLogin),
+				template.HTMLEscapeString(q.GroupName),
+				template.HTMLEscapeString(q.Kind),
+				count, sample,
+				q.RequestID, q.RequestID)
+		}
+		fmt.Fprint(w, `</table>`)
+	}
+
+	fmt.Fprint(w, `<h2>Pending groups (legacy)</h2>`)
 	if len(pending) == 0 {
 		fmt.Fprint(w, `<div class="empty">No pending groups awaiting review.</div></body></html>`)
 		return

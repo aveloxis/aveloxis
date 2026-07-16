@@ -234,6 +234,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin/groups/pending", s.requireAdmin(s.handleAdminPendingGroups))
 	mux.HandleFunc("POST /admin/groups/{id}/approve", s.requireAdmin(s.handleApproveGroup))
 	mux.HandleFunc("POST /admin/groups/{id}/reject", s.requireAdmin(s.handleRejectGroup))
+	// v0.27.20 per-add approval queue (summary/15): decisions on
+	// non-admin additions of not-yet-tracked repos/orgs.
+	mux.HandleFunc("POST /admin/add-requests/{id}/approve", s.requireAdmin(s.handleApproveAddRequest))
+	mux.HandleFunc("POST /admin/add-requests/{id}/reject", s.requireAdmin(s.handleRejectAddRequest))
 	mux.HandleFunc("/admin/users", s.requireAdmin(s.handleAdminUsers))
 	mux.HandleFunc("POST /admin/users/{id}/admin", s.requireAdmin(s.handleSetUserAdmin))
 
@@ -1038,37 +1042,43 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if raw != "" && groupID > 0 {
-		added := 0
-		var errors []string
+		var urls []string
+		var invalid []string
 		for _, line := range strings.Split(raw, "\n") {
 			repoURL := strings.TrimSpace(line)
 			if repoURL == "" {
 				continue
 			}
-
 			// Validate the URL before adding.
 			v := ValidateRepoURL(repoURL)
 			if !v.Valid {
-				errors = append(errors, fmt.Sprintf("%s: %s", repoURL, v.Error))
+				invalid = append(invalid, fmt.Sprintf("%s: %s", repoURL, v.Error))
 				continue
 			}
-			// Use the cleaned-up URL.
-			repoURL = v.URL
+			urls = append(urls, v.URL)
+		}
 
-			if err := s.store.AddRepoToGroup(r.Context(), sess.UserID, groupID, repoURL); err != nil {
-				s.logger.Warn("failed to add repo to group", "url", repoURL, "error", err)
-				errors = append(errors, fmt.Sprintf("%s: %s", repoURL, err.Error()))
-				continue
+		// v0.27.20 per-add approval: the WHOLE paste is one call so any
+		// not-yet-tracked URLs from a non-admin become ONE pending
+		// add-request (one approval unit), while tracked repos link
+		// instantly. Admins keep the direct create+enqueue path.
+		if len(urls) > 0 {
+			out, err := s.store.AddReposToGroup(r.Context(), sess.UserID, groupID, urls,
+				s.cfg.AutoApproveAddLimitValue())
+			if err != nil {
+				s.logger.Warn("failed to add repos to group", "group_id", groupID, "error", err)
+			} else {
+				s.logger.Info("repo add", "group_id", groupID,
+					"linked", out.Linked, "enqueued", out.Enqueued, "pending_approval", out.Pending)
+				if out.Pending > 0 {
+					s.notifyAddRequestSubmitted(out.RequestID)
+					http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d", groupID, out.Pending), http.StatusFound)
+					return
+				}
 			}
-			added++
 		}
-		if added > 0 {
-			s.logger.Info("bulk repo add", "group_id", groupID, "added", added)
-		}
-		if len(errors) > 0 {
-			s.logger.Warn("some URLs were invalid", "errors", errors)
-			// TODO: flash message support — for now, errors are logged server-side.
-			// Invalid URLs are silently skipped; valid ones are added.
+		if len(invalid) > 0 {
+			s.logger.Warn("some URLs were invalid", "errors", invalid)
 		}
 	}
 	http.Redirect(w, r, fmt.Sprintf("/groups/%d", groupID), http.StatusFound)
@@ -1084,19 +1094,33 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 	orgURL := strings.TrimSpace(r.FormValue("org_url"))
 
 	if orgURL != "" && groupID > 0 {
-		if err := s.store.AddOrgToGroup(r.Context(), sess.UserID, groupID, orgURL); err != nil {
+		out, err := s.store.AddOrgToGroup(r.Context(), sess.UserID, groupID, orgURL)
+		switch {
+		case err != nil:
 			s.logger.Warn("failed to add org to group", "error", err)
+		case out.Registered:
+			// Admin registration: scan immediately, as before.
+			// Use a detached context — the HTTP request context gets canceled on redirect.
+			safego.Go(s.logger, "org-repo-scan", func() { s.scanOrgRepos(context.Background(), groupID, orgURL) })
+		default:
+			// v0.27.20: non-admin org registrations pend on an
+			// add-request — nothing scans until an admin approves.
+			s.notifyAddRequestSubmitted(out.RequestID)
+			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_pending=1", groupID), http.StatusFound)
+			return
 		}
-
-		// Immediately scan the org for repos and add them.
-		// Use a detached context — the HTTP request context gets canceled on redirect.
-		safego.Go(s.logger, "org-repo-scan", func() { s.scanOrgRepos(context.Background(), groupID, orgURL) })
 	}
 	http.Redirect(w, r, fmt.Sprintf("/groups/%d", groupID), http.StatusFound)
 }
 
 // scanOrgRepos fetches all repos from a GitHub org or user and adds them to the group + queue.
 // Handles both orgs (/orgs/{name}/repos) and users (/users/{name}/repos).
+//
+// v0.27.20 gate: a 'rejected' group's orgs never scan — RejectGroup is
+// the group-level abuse lever and must stop org-driven enqueue too.
+// (Registration itself is already approval-gated in AddOrgToGroup;
+// this is the belt for the lever. The pre-v0.27.20 claim that org
+// scans checked group status was FALSE — audited 2026-07-16.)
 func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string) {
 	orgURL = strings.TrimSuffix(strings.TrimSpace(orgURL), "/")
 	host, name, err := platform.ParseOrgURL(orgURL)
@@ -1106,6 +1130,11 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 	isGitHub := host == "github.com"
 
 	if !isGitHub || s.ghKeys == nil {
+		return
+	}
+
+	if status, err := s.store.GetGroupStatus(ctx, groupID); err == nil && status == "rejected" {
+		s.logger.Warn("org scan skipped — owning group is rejected", "group_id", groupID, "org", orgURL)
 		return
 	}
 

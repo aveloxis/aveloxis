@@ -223,7 +223,7 @@ func runLoadFoundationOrgs(cfgPath string, opts foundationOrgsOpts) error {
 			continue
 		}
 		for _, org := range sortedKeys(orgsByFoundation[f]) {
-			if err := store.AddOrgToGroup(ctx, opts.UserID, groupID, org); err != nil {
+			if _, err := store.AddOrgToGroup(ctx, opts.UserID, groupID, org); err != nil {
 				logger.Warn("failed to track org", "foundation", f, "org", org, "error", err)
 				failed++
 				continue

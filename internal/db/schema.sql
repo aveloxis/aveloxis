@@ -2184,6 +2184,42 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.email_confirmations (
 CREATE INDEX IF NOT EXISTS idx_email_confirmations_user
     ON aveloxis_ops.email_confirmations (user_id);
 
+-- v0.27.20 per-add approval (summary/15, Option A). The approval unit
+-- is the ADDITION of not-yet-tracked content, not the group: known
+-- (tracked) repos link into any group instantly; unknown repo URLs and
+-- org registrations by non-admins create a pending request an admin
+-- decides. URLs are stored as text — UpsertRepo runs at APPROVAL, so a
+-- rejected request leaves zero catalog residue. items.repo_id doubles
+-- as the processed marker, making an interrupted approval pass
+-- resumable (idempotent re-run processes only unstamped items).
+-- Placed after users + user_groups (create-before-reference rule).
+CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_add_requests (
+    request_id    BIGSERIAL PRIMARY KEY,
+    user_id       INT NOT NULL REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+    group_id      BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id) DEFERRABLE INITIALLY DEFERRED,
+    kind          TEXT NOT NULL DEFAULT 'repos',      -- 'repos' | 'org'
+    org_url       TEXT NOT NULL DEFAULT '',           -- kind='org' only
+    status        TEXT NOT NULL DEFAULT 'pending',    -- pending | approved | rejected
+    item_count    INT  NOT NULL DEFAULT 0,            -- denormalized for the admin list
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    decided_by    INT,                                 -- admin user_id; 0 = auto-approved
+    decided_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_add_requests_pending
+    ON aveloxis_ops.collection_add_requests (status) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_add_requests_group
+    ON aveloxis_ops.collection_add_requests (group_id);
+
+CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_add_request_items (
+    item_id     BIGSERIAL PRIMARY KEY,
+    request_id  BIGINT NOT NULL REFERENCES aveloxis_ops.collection_add_requests(request_id) DEFERRABLE INITIALLY DEFERRED,
+    repo_url    TEXT NOT NULL,
+    repo_id     BIGINT,          -- stamped when the approval pass processes the item (-1 = unprocessable URL)
+    UNIQUE (request_id, repo_url)
+);
+CREATE INDEX IF NOT EXISTS idx_add_request_items_request
+    ON aveloxis_ops.collection_add_request_items (request_id);
+
 CREATE TABLE IF NOT EXISTS aveloxis_ops.refresh_tokens (
     id                   TEXT PRIMARY KEY,
     user_session_token   TEXT NOT NULL UNIQUE REFERENCES aveloxis_ops.user_session_tokens(token) DEFERRABLE INITIALLY DEFERRED

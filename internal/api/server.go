@@ -24,6 +24,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/mailer"
 )
 
 // Server is the Aveloxis REST API server.
@@ -35,6 +36,12 @@ type Server struct {
 	auth      *authenticator // v0.27.1: Bearer sessions + repo scope
 	cmpCache  *compareCache  // v0.27.2: 60s TTL for hot compare responses
 	homeCache homeReposCache // v0.27.4: 5m per-user TTL — ~5s cold query on fleet-scale group sets
+
+	// v0.27.20 per-add approval: optional mailer for add-request
+	// notifications + the auto-approve limit for the portal repo-add
+	// endpoint. Both zero-valued when unconfigured.
+	mailer              *mailer.Mailer
+	autoApproveAddLimit int
 }
 
 // New creates an API server with default middleware options
@@ -50,7 +57,8 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 // request through the CORS + rate-limit middleware chain (v0.27.0 —
 // plan: summary/api-analytics-plan-2026-07-10.md).
 func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) (*Server, error) {
-	s := &Server{store: store, logger: logger, mux: http.NewServeMux()}
+	s := &Server{store: store, logger: logger, mux: http.NewServeMux(),
+		mailer: opts.Mailer, autoApproveAddLimit: opts.AutoApproveAddLimit}
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/v1/mailing-list/stats", s.handleMailingListStats)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/stats", s.handleRepoStats)
@@ -90,8 +98,14 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("POST /api/v1/admin/users/{userID}/admin", s.handleAdminSetUserAdmin)
 	s.mux.HandleFunc("GET /api/v1/admin/groups/pending", s.handleAdminPendingGroups)
 	s.mux.HandleFunc("POST /api/v1/admin/groups/{groupID}/{decision}", s.handleAdminGroupDecision)
+	// v0.27.20 per-add approval queue (summary/15).
+	s.mux.HandleFunc("GET /api/v1/groups/{groupID}/pending-adds", s.handleGroupPendingAdds)
+	s.mux.HandleFunc("GET /api/v1/admin/add-requests", s.handleAdminAddRequests)
+	s.mux.HandleFunc("POST /api/v1/admin/add-requests/{requestID}/{decision}", s.handleAdminAddRequestDecision)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/queue", s.handleAdminMonitorQueue)
+	// v0.27.14 — SPA monitor "Boost": pure reuse of store.PrioritizeRepo.
+	s.mux.HandleFunc("POST /api/v1/admin/monitor/queue/{repoID}/prioritize", s.handleAdminPrioritizeRepo)
 	// v0.27.4 — per-repo vulnerabilities + home-tab stars/activity.
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/vulnerabilities", s.handleRepoVulnerabilities)
 	s.mux.HandleFunc("PUT /api/v1/repos/{repoID}/star", s.handleStarRepo)

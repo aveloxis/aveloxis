@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 //go:embed schema.sql
@@ -1321,6 +1323,19 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// a maintenance window (docs/architecture/analysis.md).
 	migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, &errs)
 
+	// v0.27.18 — natural-key backstop for repo_labor (the W3/v0.27.7
+	// follow-up). Post-rotation the table holds one snapshot per repo,
+	// so (repo_id, rl_analysis_date, file_path) is the natural key;
+	// the unique makes any future writer that bypasses
+	// ReplaceRepoLaborSnapshot fail LOUDLY instead of silently
+	// re-growing the table. Warn-only: created only when zero dup
+	// groups exist (the commits-dedup / uq_repos_repo_git_ci
+	// precedent), NOT in schema.sql. All-NULL-date repos keep multiple
+	// cohorts by design — NULLs are distinct in unique indexes, so
+	// they pass. The history table deliberately stays unique-free
+	// (TestRepoLaborHistoryHasNoNaturalKeyUniques pins that).
+	ensureRepoLaborNaturalKeyUnique(ctx, pg, logger)
+
 	// v0.27.15 — message-bridge metadata repairs: dedup
 	// pull_request_review_message_ref (its bare ON CONFLICT had no
 	// unique arbiter — 5.26M duplicate rows on production), create
@@ -1666,10 +1681,36 @@ func checkBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 // by RunMigrations for ALTER TABLE / CREATE INDEX / etc. statements
 // where pre-v0.19.4 the err was discarded entirely.
 func execMigrationStep(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, label, sql string) {
-	if _, err := pg.pool.Exec(ctx, sql); err != nil {
-		logger.Error("schema migration error", "step", label, "error", err)
-		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+	// v0.27.18: bounded retry on deadlock (SQLSTATE 40P01). Migration
+	// DDL/DML can deadlock against ordinary concurrent statements —
+	// observed as the TestRunJobLifecycleEndToEnd flake when parallel
+	// test packages ran RunMigrations against the shared scratch DB
+	// (the v0.25.1 DROP CONSTRAINT step vs another package's in-flight
+	// queries), and equally possible in production when `aveloxis
+	// migrate` runs alongside a live serve. Postgres resolves a
+	// deadlock by killing ONE victim, so a retry of an idempotent step
+	// (every step's contract, v0.19.4) is safe and almost always
+	// succeeds. Non-deadlock errors still fail closed immediately.
+	const deadlockRetries = 3
+	var err error
+	for attempt := 0; attempt <= deadlockRetries; attempt++ {
+		if _, err = pg.pool.Exec(ctx, sql); err == nil {
+			return
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "40P01" || attempt == deadlockRetries {
+			break
+		}
+		logger.Warn("schema migration step deadlocked — retrying (idempotent step, deadlock victim is safe to re-run)",
+			"step", label, "attempt", attempt+1)
+		select {
+		case <-ctx.Done():
+			break
+		case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+		}
 	}
+	logger.Error("schema migration error", "step", label, "error", err)
+	*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
 }
 
 // stampSchemaVersion writes the current ToolVersion into schema_meta.
@@ -2167,4 +2208,44 @@ func cleanupBadTimestamps(ctx context.Context, pg *PostgresStore, logger *slog.L
 		logger.Info("timestamp cleanup complete", "total_rows_fixed", totalFixed)
 	}
 	return nil
+}
+
+// ensureRepoLaborNaturalKeyUnique creates uq_repo_labor_natural_key
+// once the table is dup-free (v0.27.18). Warn-only: existing fleets
+// with residual duplicate groups get a WARN naming the recount query
+// instead of a failed migration.
+func ensureRepoLaborNaturalKeyUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+	var exists bool
+	if err := pg.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pg_indexes
+		 WHERE schemaname='aveloxis_data' AND indexname='uq_repo_labor_natural_key')`).Scan(&exists); err != nil {
+		logger.Warn("repo_labor unique: existence check failed — skipping", "error", err)
+		return
+	}
+	if exists {
+		return
+	}
+	var dupGroups int
+	if err := pg.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM aveloxis_data.repo_labor
+			WHERE rl_analysis_date IS NOT NULL
+			GROUP BY repo_id, rl_analysis_date, file_path
+			HAVING COUNT(*) > 1 LIMIT 1000) d`).Scan(&dupGroups); err != nil {
+		logger.Warn("repo_labor unique: dup probe failed — skipping", "error", err)
+		return
+	}
+	if dupGroups > 0 {
+		logger.Warn("repo_labor has duplicate natural-key groups — skipping uq_repo_labor_natural_key; investigate before the backstop can be created",
+			"dup_groups_sampled", dupGroups)
+		return
+	}
+	var errs []error
+	execCreateIndexConcurrently(ctx, pg, logger, &errs,
+		"aveloxis_data", "uq_repo_labor_natural_key",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repo_labor_natural_key
+		 ON aveloxis_data.repo_labor (repo_id, rl_analysis_date, file_path)`)
+	for _, e := range errs {
+		logger.Warn("repo_labor unique: build failed (warn-only — retried next migrate)", "error", e)
+	}
 }

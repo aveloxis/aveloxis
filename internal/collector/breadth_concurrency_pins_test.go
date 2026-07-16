@@ -156,9 +156,15 @@ func TestSchedulerWiresBreadthFetchConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(data)
-	idx := strings.Index(src, "func (s *Scheduler) runBreadth(")
+	// v0.27.18: construction moved from runBreadth to Run (the worker
+	// is hoisted to a scheduler field so the circuit-breaker pause
+	// survives across ticks — per-tick construction was the W4-flagged
+	// bug). The knob wiring now lives at the single construction site;
+	// anchor there. The pin's intent is unchanged: the knob must reach
+	// the worker or it is dead config.
+	idx := strings.Index(src, "s.breadthWorker = collector.NewBreadthWorker(")
 	if idx < 0 {
-		t.Fatal("runBreadth not found")
+		t.Fatal("breadth worker construction site not found in scheduler.go")
 	}
 	tail := src[idx:]
 	if end := strings.Index(tail[1:], "\nfunc "); end >= 0 {

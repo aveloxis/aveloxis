@@ -101,6 +101,14 @@ type Scheduler struct {
 	// and is overridable in tests.
 	digestMailer    digestMailer
 	digestStampPath string
+
+	// breadthWorker is constructed ONCE and reused across ticks
+	// (v0.27.18). The pre-v0.27.18 runBreadth built a NEW
+	// BreadthWorker every tick, so the v0.22.12 circuit-breaker
+	// pause (circuitOpenUntil on the worker struct) never persisted
+	// across ticks — a GitHub-side 5xx storm re-tripped from scratch
+	// every 15 minutes instead of pausing for its full hour.
+	breadthWorker *collector.BreadthWorker
 }
 
 // SetDigestMailer injects the operator-notification mailer (v0.27.12).
@@ -282,6 +290,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// forever.
 	breadthTicker := time.NewTicker(s.cfg.Collection.BreadthIntervalDuration())
 	defer breadthTicker.Stop()
+	// v0.27.18: construct the breadth worker ONCE, here (not lazily in
+	// runBreadth, which runs in a per-tick goroutine — lazy init would
+	// race). The circuit-breaker pause lives on this struct and now
+	// survives across ticks.
+	if s.ghKeys != nil && s.breadthWorker == nil {
+		s.breadthWorker = collector.NewBreadthWorker(s.store, s.ghKeys, s.logger).
+			WithFetchConcurrency(s.cfg.Collection.BreadthFetchConcurrencyOrDefault())
+	}
 
 	// v0.21.0 — ScancodeWorker goroutine. Runs its own pool of N
 	// scancode runners (default 2, configurable via
@@ -1792,9 +1808,12 @@ func (s *Scheduler) runBreadth(ctx context.Context) {
 	if s.ghKeys == nil {
 		return
 	}
-	bw := collector.NewBreadthWorker(s.store, s.ghKeys, s.logger).
-		WithFetchConcurrency(s.cfg.Collection.BreadthFetchConcurrencyOrDefault())
-	result, err := bw.Run(ctx, s.cfg.Collection.BreadthBatchSizeOrDefault(), s.cfg.Collection.BreadthCooldownDuration())
+	if s.breadthWorker == nil {
+		// Run() constructs the worker at startup; nil here means the
+		// scheduler was built without keys or outside Run (tests).
+		return
+	}
+	result, err := s.breadthWorker.Run(ctx, s.cfg.Collection.BreadthBatchSizeOrDefault(), s.cfg.Collection.BreadthCooldownDuration())
 	if err != nil {
 		s.logger.Warn("breadth worker failed", "error", err)
 		return

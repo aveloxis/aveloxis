@@ -130,6 +130,20 @@ func TestRunMigrationsAcquiresAdvisoryLock(t *testing.T) {
 			"MigrateAdvisoryLockID for the lock id, so it stays stable " +
 			"across versions and is easy to find/change.")
 	}
+
+	// NEGATIVE pin (v0.27.20): the acquire must be pg_try_advisory_lock
+	// POLLING, never the blocking pg_advisory_lock() function. A session
+	// blocked inside pg_advisory_lock() holds a snapshot for the whole
+	// wait, which mutually deadlocks with the lock HOLDER's CREATE INDEX
+	// CONCURRENTLY (CIC waits for all older snapshots; Postgres cannot
+	// detect the cycle). Observed as paired 10-minute package hangs on
+	// the fresh CI database (PR #155, 2026-07-16).
+	if strings.Contains(src, "`SELECT pg_advisory_lock($1)`") {
+		t.Error("migrate.go must not call the BLOCKING pg_advisory_lock() — " +
+			"it deadlocks against a concurrent migration's CREATE INDEX " +
+			"CONCURRENTLY. Poll pg_try_advisory_lock instead (no snapshot " +
+			"held between polls).")
+	}
 }
 
 // TestMigrateCmdHasNoWaitFlag pins the operator-facing flag that

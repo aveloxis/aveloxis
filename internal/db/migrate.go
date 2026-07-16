@@ -59,23 +59,41 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 			return fmt.Errorf("another aveloxis migration is in progress (advisory lock held); use without --no-wait to wait, or check pg_stat_activity for the holder")
 		}
 	} else {
-		// Blocking acquire. Log if it takes more than 5 seconds so
-		// the operator knows we're waiting on someone else.
-		acquireDone := make(chan struct{})
-		go func() {
-			t := time.NewTimer(5 * time.Second)
-			defer t.Stop()
-			select {
-			case <-acquireDone:
-			case <-t.C:
-				logger.Info("waiting for migration advisory lock — another aveloxis migration is in progress")
+		// Waiting acquire — via pg_try_advisory_lock POLLING, never the
+		// blocking pg_advisory_lock() call. A session blocked inside
+		// pg_advisory_lock() holds a transaction snapshot for the ENTIRE
+		// wait, and CREATE INDEX CONCURRENTLY in the lock HOLDER's
+		// migration waits for all older snapshots to go away before it
+		// can finish — a mutual deadlock Postgres cannot detect (the
+		// snapshot wait isn't a lock wait). Observed 2026-07-16 as
+		// paired 10-minute test-package hangs on a fresh CI database
+		// (PR #155: scheduler's migration stuck in
+		// ensureRepoGitCaseInsensitiveUnique's CIC while internal/db
+		// sat inside pg_advisory_lock), and equally possible in
+		// production when `aveloxis migrate` runs beside a serve
+		// startup-migrate. Between polls this session holds NO
+		// snapshot, so the holder's CIC completes and the lock frees.
+		logged := false
+		start := time.Now()
+		for {
+			var ok bool
+			if err := lockConn.QueryRow(ctx,
+				`SELECT pg_try_advisory_lock($1)`, MigrateAdvisoryLockID).Scan(&ok); err != nil {
+				return fmt.Errorf("acquire advisory lock: %w", err)
 			}
-		}()
-		if _, err := lockConn.Exec(ctx, `SELECT pg_advisory_lock($1)`, MigrateAdvisoryLockID); err != nil {
-			close(acquireDone)
-			return fmt.Errorf("acquire advisory lock: %w", err)
+			if ok {
+				break
+			}
+			if !logged && time.Since(start) > 5*time.Second {
+				logger.Info("waiting for migration advisory lock — another aveloxis migration is in progress")
+				logged = true
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("acquire advisory lock: %w", ctx.Err())
+			case <-time.After(time.Second):
+			}
 		}
-		close(acquireDone)
 	}
 	defer func() {
 		// Best-effort release. If this fails, the lock release happens

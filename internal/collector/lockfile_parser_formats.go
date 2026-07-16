@@ -30,12 +30,16 @@ import (
 func parsePoetryStyleTOML(data []byte) ([]LockfileEntry, bool, error) {
 	var entries []LockfileEntry
 	inPackage := false
-	name, version := "", ""
+	name, version, category := "", "", ""
 	flush := func() {
 		if name != "" && version != "" {
-			entries = append(entries, LockfileEntry{Name: name, Version: version})
+			scope := ""
+			if category == "dev" {
+				scope = "dev"
+			}
+			entries = append(entries, LockfileEntry{Name: name, Version: version, Scope: scope})
 		}
-		name, version = "", ""
+		name, version, category = "", "", ""
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -59,6 +63,9 @@ func parsePoetryStyleTOML(data []byte) ([]LockfileEntry, bool, error) {
 		}
 		if v, ok := tomlStringValue(trimmed, "version"); ok {
 			version = v
+		}
+		if v, ok := tomlStringValue(trimmed, "category"); ok {
+			category = v
 		}
 	}
 	flush()

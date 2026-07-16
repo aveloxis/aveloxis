@@ -63,6 +63,10 @@ type vulnJSON struct {
 	// "≥3.0.0 declared — floor shown" for range-floor.
 	DeclaredRequirement string `json:"declared_requirement,omitempty"`
 	VersionResolution   string `json:"version_resolution,omitempty"`
+	// v0.27.21 C1: 'direct' | 'transitive' ('' = pre-C1 row, rendered
+	// as direct) + 'dev'/'runtime'/'' scope from the lockfile.
+	DependencyKind  string `json:"dependency_kind,omitempty"`
+	DependencyScope string `json:"dependency_scope,omitempty"`
 }
 
 // scannedVersionFromPurl derives the version a finding was scanned at
@@ -113,12 +117,25 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 	}
 	out := make([]vulnJSON, 0, len(rows))
 	current, resolved, critical := 0, 0, 0
+	// v0.27.21 C1 count split (CURRENT findings only): a repo with 3
+	// direct and 400 transitive findings must never read as "403
+	// vulnerabilities" — the GUI leads with direct. Pre-C1 rows
+	// ('' kind) count as direct (they were, by construction).
+	directCount, transitiveCount, devCount := 0, 0, 0
 	for _, v := range rows {
 		osvURL, cveURL := advisoryURLs(v.VulnID, v.CVEID)
 		if v.ResolvedAt == nil {
 			current++
 			if v.Severity == "CRITICAL" || v.CVSSScore >= 9.0 {
 				critical++
+			}
+			if v.DependencyKind == "transitive" {
+				transitiveCount++
+			} else {
+				directCount++
+			}
+			if v.DependencyScope == "dev" {
+				devCount++
 			}
 		} else {
 			resolved++
@@ -138,6 +155,8 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 			ResolvedAt:          v.ResolvedAt,
 			DeclaredRequirement: v.DeclaredRequirement,
 			VersionResolution:   v.VersionResolution,
+			DependencyKind:      v.DependencyKind,
+			DependencyScope:     v.DependencyScope,
 		})
 	}
 	// v0.27.11: repo-level lockfile certainty — derived at read time
@@ -156,6 +175,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 		"lockfile_certainty": certainty,
 		"counts": map[string]int{
 			"current": current, "resolved": resolved, "critical": critical,
+			"direct": directCount, "transitive": transitiveCount, "dev": devCount,
 		},
 	})
 }

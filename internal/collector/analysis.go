@@ -43,6 +43,13 @@ type AnalysisCollector struct {
 	// and the caller is responsible for cleanup (os.RemoveAll). This allows
 	// scorecard to run against the local clone before it is deleted.
 	RetainClone bool
+
+	// TransitiveLockfiles (v0.27.21 C1, collection.vuln_scan_transitive)
+	// stores the FULL lockfile entry set in repo_lockfile_packages
+	// (direct=FALSE rows = the transitive closure) instead of only the
+	// declared-dep resolutions. Read at the point of use in
+	// scanLockfiles; false = byte-identical pre-C1 row set.
+	TransitiveLockfiles bool
 }
 
 // NewAnalysisCollector creates an analysis collector.

@@ -62,7 +62,11 @@ func SeveritiesAtOrAbove(min string) []string {
 // first. Feeds the operator digest email (v0.27.12). The digest never
 // re-reports a finding: first_detected_at is stamped once at first
 // observation and the caller advances `since` monotonically.
-func (pg *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since time.Time, minSeverity string) ([]VulnDigestItem, error) {
+// v0.27.21: includeTransitive=false (the default) keeps
+// dependency_kind='transitive' findings out of the digest — the first
+// transitive-enabled cycles would otherwise blast a 50-item email of
+// utility-package findings. Direct and pre-C1 ('') rows always pass.
+func (pg *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since time.Time, minSeverity string, includeTransitive bool) ([]VulnDigestItem, error) {
 	rows, err := pg.pool.Query(ctx, `
 		SELECT v.repo_id, r.repo_owner, r.repo_name, v.vuln_id,
 		       COALESCE(v.severity, 'UNKNOWN'), COALESCE(v.package_purl, ''),
@@ -71,13 +75,14 @@ func (pg *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since 
 		JOIN aveloxis_data.repos r ON r.repo_id = v.repo_id
 		WHERE v.first_detected_at > $1
 		  AND v.resolved_at IS NULL
+		  AND ($3 OR COALESCE(v.dependency_kind, '') IS DISTINCT FROM 'transitive')
 		  AND UPPER(COALESCE(v.severity, 'UNKNOWN')) = ANY($2)
 		ORDER BY CASE UPPER(COALESCE(v.severity, 'UNKNOWN'))
 		           WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3
 		           WHEN 'MEDIUM' THEN 2 WHEN 'LOW' THEN 1 ELSE 0
 		         END DESC,
 		         r.repo_owner, r.repo_name, v.vuln_id`,
-		since, SeveritiesAtOrAbove(minSeverity))
+		since, SeveritiesAtOrAbove(minSeverity), includeTransitive)
 	if err != nil {
 		return nil, fmt.Errorf("query new vulnerability findings: %w", err)
 	}

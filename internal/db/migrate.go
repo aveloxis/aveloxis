@@ -1439,6 +1439,17 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_vulnerabilities", "declared_requirement", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_vulnerabilities", "version_resolution", "TEXT DEFAULT ''")
 
+	// v0.27.21 (Phase C1): direct/transitive classification on findings
+	// and on lockfile resolutions, plus the incident-response index
+	// ("who has package X@V anywhere in their tree").
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_vulnerabilities", "dependency_kind", "TEXT NOT NULL DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_deps_vulnerabilities", "dependency_scope", "TEXT NOT NULL DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_lockfile_packages", "direct", "BOOLEAN NOT NULL DEFAULT TRUE")
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repo_lockfile_packages", "dependency_scope", "TEXT NOT NULL DEFAULT ''")
+	execCreateIndexConcurrently(ctx, pg, logger, &errs, "aveloxis_data", "idx_lockfile_packages_pkg", `
+		CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lockfile_packages_pkg
+		ON aveloxis_data.repo_lockfile_packages (ecosystem, package_name, resolved_version)`)
+
 	// v0.27.11 — lockfile inventory + direct-dep resolutions. When a
 	// repo commits a lockfile, the resolved version of each direct
 	// dependency is KNOWN — the vulnerability scan uses that version

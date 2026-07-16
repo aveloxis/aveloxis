@@ -38,6 +38,11 @@ type LockfileEntry struct {
 	Name    string
 	Version string
 	Direct  bool
+	// Scope (v0.27.21 C1) — 'dev' when the format flags the entry as
+	// development-only (package-lock v2/3 `dev`, poetry `category`),
+	// '' otherwise (unknown/runtime). Refined per-format extraction is
+	// C2 scope (summary/13 R5).
+	Scope string
 }
 
 // LockfileResult is a parsed lockfile.
@@ -130,6 +135,7 @@ func parsePackageLockJSON(data []byte) ([]LockfileEntry, bool, error) {
 		Packages        map[string]struct {
 			Version         string            `json:"version"`
 			Link            bool              `json:"link"`
+			Dev             bool              `json:"dev"`
 			Dependencies    map[string]string `json:"dependencies"`
 			DevDependencies map[string]string `json:"devDependencies"`
 		} `json:"packages"`
@@ -164,7 +170,11 @@ func parsePackageLockJSON(data []byte) ([]LockfileEntry, bool, error) {
 			if name == "" {
 				continue
 			}
-			entries = append(entries, LockfileEntry{Name: name, Version: pkg.Version, Direct: direct[name]})
+			scope := ""
+			if pkg.Dev {
+				scope = "dev"
+			}
+			entries = append(entries, LockfileEntry{Name: name, Version: pkg.Version, Direct: direct[name], Scope: scope})
 		}
 		return entries, true, nil
 	}

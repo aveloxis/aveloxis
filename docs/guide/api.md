@@ -516,7 +516,18 @@ Token semantics:
   `cve_url` (app.opencve.io, only when a CVE id exists), plus
   `first_detected_at` / `last_seen_at` / `resolved_at` (absent =
   currently affected). The envelope's `counts` object has `current`,
-  `resolved`, and `critical` (current-only).
+  `resolved`, and `critical` (current-only), plus — v0.27.21 Phase
+  C1 — `direct`, `transitive`, and `dev` (all current-only; pre-C1
+  rows count as direct).
+
+  **Transitive findings (v0.27.21 Phase C1).** With
+  `collection.vuln_scan_transitive` enabled, findings from the full
+  lockfile closure carry `dependency_kind: "transitive"` (direct
+  declarations carry `"direct"`; `""` = pre-C1 row that heals on the
+  repo's next scan) and `dependency_scope: "dev"` when the lockfile
+  flags the entry as development-only. GUIs should lead with direct
+  findings — a repo with 3 direct and 400 transitive findings must
+  never headline "403 vulnerabilities".
 
   **Version-resolution accuracy (v0.27.11).** Each finding also
   carries `declared_requirement` — the raw manifest requirement

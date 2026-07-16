@@ -179,20 +179,22 @@ func TestSetUserAdminExists(t *testing.T) {
 }
 
 // TestAddRepoToGroupGatesOnApproval pins the deferred-enqueue
-// behavior: adding a repo to a pending group inserts user_repos but
-// must NOT insert into collection_queue. Approval is what triggers
-// collection.
+// behavior. v0.27.20 (per-add approval, summary/15 Option A): the
+// gate moved from the group to the ADDITION — a non-admin's
+// not-yet-tracked URLs land on a pending collection_add_requests row
+// and reach collection_queue only via ProcessApprovedAddRequest. The
+// group-status read survives as the 'rejected' abuse lever.
 func TestAddRepoToGroupGatesOnApproval(t *testing.T) {
-	src := mustReadStoreSource(t, "web_store.go")
-	body := extractBatchFunc(src, "AddRepoToGroup")
+	src := mustReadStoreSource(t, "add_requests.go")
+	body := extractBatchFunc(src, "AddReposToGroup")
 	if body == "" {
-		t.Fatal("could not locate AddRepoToGroup body")
+		t.Fatal("could not locate AddReposToGroup body")
 	}
-	// We expect a status check OR a comment referencing the gate. The
-	// exact form is flexible; the key is that the queue INSERT is no
-	// longer unconditional.
-	if !strings.Contains(body, "status") {
-		t.Error("AddRepoToGroup must check group status before enqueueing — pending groups defer enqueue to ApproveGroup. " +
-			"Reading the group's status is the simplest way to gate.")
+	if !strings.Contains(body, "GetGroupStatus") && !strings.Contains(body, "status") {
+		t.Error("AddReposToGroup must check group status — 'rejected' groups refuse all adds.")
+	}
+	if !strings.Contains(body, "createAddRequest") {
+		t.Error("AddReposToGroup must park a non-admin's not-yet-tracked URLs on an " +
+			"add-request — approval is what triggers collection (v0.27.20).")
 	}
 }

@@ -923,8 +923,13 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_ops.user_groups", "approved_at", "TIMESTAMPTZ")
 	// Existing rows from pre-v0.19.0 deployments default to
 	// 'approved' so the upgrade doesn't suddenly hide groups that
-	// already exist. New rows from non-admins go to 'pending' via
-	// CreateUserGroup's branch.
+	// already exist. (v0.27.20: new groups always create 'approved';
+	// per-add approval replaced the pending-group flow.)
+
+	// v0.27.20: convert legacy pending groups into pending
+	// collection_add_requests, then flip the groups to 'approved' —
+	// the approval unit moved from the group to the addition.
+	migrateLegacyPendingGroups(ctx, pg, logger, &errs)
 
 	// v0.22.1: ensure every FK pointing at contributors(cntrb_id)
 	// has ON UPDATE CASCADE. Required for v0.22.2's
@@ -1693,6 +1698,7 @@ func execMigrationStep(ctx context.Context, pg *PostgresStore, logger *slog.Logg
 	// succeeds. Non-deadlock errors still fail closed immediately.
 	const deadlockRetries = 3
 	var err error
+retry:
 	for attempt := 0; attempt <= deadlockRetries; attempt++ {
 		if _, err = pg.pool.Exec(ctx, sql); err == nil {
 			return
@@ -1705,7 +1711,10 @@ func execMigrationStep(ctx context.Context, pg *PostgresStore, logger *slog.Logg
 			"step", label, "attempt", attempt+1)
 		select {
 		case <-ctx.Done():
-			break
+			// Abandon the backoff AND the retry loop (a bare break here
+			// would only exit the select — staticcheck SA4011); the
+			// deadlock error is recorded below.
+			break retry
 		case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
 		}
 	}

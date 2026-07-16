@@ -1718,6 +1718,17 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context) {
 			continue
 		}
 
+		// v0.27.20 gate: a 'rejected' group's orgs never scan.
+		// Registration is approval-gated in AddOrgToGroup (presence in
+		// user_org_requests = approved), so this is the belt for the
+		// group-level abuse lever — RejectGroup must stop org-driven
+		// enqueue too, not just direct adds.
+		if status, serr := s.store.GetGroupStatus(ctx, groupID); serr == nil && status == "rejected" {
+			s.logger.Warn("org scan skipped — owning group is rejected",
+				"group_id", groupID, "org", org.OrgName)
+			continue
+		}
+
 		var repos []struct{ URL, Owner, Name string }
 		switch org.Platform {
 		case "github":

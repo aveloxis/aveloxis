@@ -30,6 +30,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/mailer"
 )
 
 // Options configures the public-API middleware chain.
@@ -41,6 +43,17 @@ type Options struct {
 	CORSOrigins    []string // origins allowed to call the API from a browser
 	TrustedProxy   string   // peer IP whose X-Forwarded-For is believed
 	RequireAuth    bool     // v0.27.1: gate all data endpoints behind Bearer sessions
+
+	// Mailer carries the transactional mailer for the v0.27.20
+	// add-request notifications (submission → operator, decision →
+	// requester). nil = notifications silently skipped, matching the
+	// web process's optional-mailer semantics.
+	Mailer *mailer.Mailer
+
+	// AutoApproveAddLimit is web.auto_approve_add_limit threaded into
+	// the portal's repo-add endpoint (0 = every non-admin new-repo add
+	// pends for approval).
+	AutoApproveAddLimit int
 }
 
 // DefaultExemptCIDRs is the "same box / same LAN" set.

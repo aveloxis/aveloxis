@@ -648,6 +648,28 @@ Admin-only:
   `approve` or `reject` —
   decide a pending group. Approval bulk-enqueues the group's repos
   for collection (same machinery as the server-rendered admin UI).
+  Legacy: new groups always create approved since v0.27.20; this
+  route remains for pre-conversion pending groups.
+- `GET /api/v1/groups/{groupID}/pending-adds` — the group's own
+  awaiting-approval content (v0.27.20): repo URLs from pending
+  add-requests plus pending org registrations, each with
+  `request_id`, `kind`, `url`, `created_at`. Ownership-checked for
+  non-admins. Envelope: `{pending: [...]}`.
+- `GET /api/v1/admin/add-requests` — the v0.27.20 per-add approval
+  queue: pending additions of not-yet-collected repos/orgs by
+  non-admins. Each entry carries the requester (`user_login`,
+  `user_email`), group, `kind` (`repos` | `org`), `item_count`,
+  up to 10 `sample_urls` (or `org_url` for org requests), and
+  `created_at`. Envelope: `{pending: [...]}`.
+- `POST /api/v1/admin/add-requests/{requestID}/{decision}` where
+  decision is `approve` or `reject` — decide one add-request.
+  Approving a `repos` request creates + enqueues + links each item
+  in the background (resumable — re-approving picks up unprocessed
+  items); approving an `org` request registers the org for tracking
+  (the scheduler's next org-scan tick collects its repos). The
+  requester is notified by email when a mailer is configured.
+  Response: `{ok: true, changed: bool}` — `changed=false` means the
+  request was already decided (idempotent double-click).
 - `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`.
 - `GET /api/v1/admin/monitor/queue?page=1&q=augur` — the collection
   queue, 100 rows per page, optional search. Each job carries the

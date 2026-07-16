@@ -82,9 +82,11 @@ func TestFindOrCreateComparisonsGroup(t *testing.T) {
 		t.Fatalf("Comparisons group must be reused: %d vs %d (err=%v)", g1, g2, err)
 	}
 
-	// v0.19.0 status rules apply verbatim: a non-admin's implicit group
-	// starts pending (approval gates future COLLECTION enqueues, never
-	// visibility — see GetUserRepoScope).
+	// v0.27.20 (per-add approval, Option A): every group creates
+	// 'approved' — groups are containers; approval attaches to
+	// ADDITIONS of not-yet-tracked content. Harmless for the implicit
+	// Comparisons/Starred groups, which only ever link
+	// already-collected repos and never enqueue.
 	var name, status string
 	if err := store.pool.QueryRow(ctx, `
 		SELECT name, COALESCE(status, 'approved') FROM aveloxis_ops.user_groups WHERE group_id = $1`,
@@ -94,8 +96,8 @@ func TestFindOrCreateComparisonsGroup(t *testing.T) {
 	if name != ComparisonsGroupName {
 		t.Errorf("group name = %q, want %q", name, ComparisonsGroupName)
 	}
-	if status != "pending" {
-		t.Errorf("non-admin Comparisons group must follow the normal v0.19.0 status rules (pending), got %q", status)
+	if status != "approved" {
+		t.Errorf("groups always create 'approved' under v0.27.20 Option A, got %q", status)
 	}
 
 	// It must not collide with the user's Starred group.

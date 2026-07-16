@@ -73,23 +73,26 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/mailing-list/stats":                        {},
 
 	// Portal (Bearer unconditionally).
-	"GET /api/v1/me":                      {auth: "user"},
-	"GET /api/v1/groups":                  {auth: "user"},
-	"POST /api/v1/groups":                 {auth: "user", body: `{"name":"smoke-extra-group"}`},
-	"GET /api/v1/groups/{groupID}/repos":  {auth: "user"},
-	"POST /api/v1/groups/{groupID}/repos": {auth: "user", body: `{"url":"https://github.com/_avsmoke/{repoName}","kind":"repo"}`},
-	"GET /api/v1/home/repos":              {auth: "user"},
-	"PUT /api/v1/repos/{repoID}/star":     {auth: "user"},
-	"DELETE /api/v1/repos/{repoID}/star":  {auth: "user", after: "PUT /api/v1/repos/{repoID}/star"},
+	"GET /api/v1/me":                            {auth: "user"},
+	"GET /api/v1/groups":                        {auth: "user"},
+	"POST /api/v1/groups":                       {auth: "user", body: `{"name":"smoke-extra-group"}`},
+	"GET /api/v1/groups/{groupID}/repos":        {auth: "user"},
+	"GET /api/v1/groups/{groupID}/pending-adds": {auth: "user"}, // v0.27.20
+	"POST /api/v1/groups/{groupID}/repos":       {auth: "user", body: `{"url":"https://github.com/_avsmoke/{repoName}","kind":"repo"}`},
+	"GET /api/v1/home/repos":                    {auth: "user"},
+	"PUT /api/v1/repos/{repoID}/star":           {auth: "user"},
+	"DELETE /api/v1/repos/{repoID}/star":        {auth: "user", after: "PUT /api/v1/repos/{repoID}/star"},
 
 	// Admin.
-	"GET /api/v1/admin/users":                              {auth: "admin"},
-	"GET /api/v1/admin/groups/pending":                     {auth: "admin"},
-	"GET /api/v1/admin/monitor/stats":                      {auth: "admin"},
-	"GET /api/v1/admin/monitor/queue":                      {auth: "admin"},
-	"POST /api/v1/admin/users/{userID}/admin":              {auth: "admin", body: `{"admin":true}`},
-	"POST /api/v1/admin/groups/{groupID}/{decision}":       {auth: "admin"},
-	"POST /api/v1/admin/monitor/queue/{repoID}/prioritize": {auth: "admin"}, // v0.27.14 Boost (fixture seeds the queue row)
+	"GET /api/v1/admin/users":                                {auth: "admin"},
+	"GET /api/v1/admin/groups/pending":                       {auth: "admin"},
+	"GET /api/v1/admin/monitor/stats":                        {auth: "admin"},
+	"GET /api/v1/admin/monitor/queue":                        {auth: "admin"},
+	"POST /api/v1/admin/users/{userID}/admin":                {auth: "admin", body: `{"admin":true}`},
+	"POST /api/v1/admin/groups/{groupID}/{decision}":         {auth: "admin"},
+	"POST /api/v1/admin/monitor/queue/{repoID}/prioritize":   {auth: "admin"}, // v0.27.14 Boost (fixture seeds the queue row)
+	"GET /api/v1/admin/add-requests":                         {auth: "admin"}, // v0.27.20 per-add approval queue
+	"POST /api/v1/admin/add-requests/{requestID}/{decision}": {auth: "admin"}, // v0.27.20 (fixture seeds the pending request)
 
 	// Augur-compat metric routes (metrics.go).
 	"GET /api/v1/owner/{owner}/repo/{repo}":                    {},
@@ -198,6 +201,7 @@ func TestEveryEndpointExecutes(t *testing.T) {
 		"{groupID}", fmt.Sprint(fx.groupID),
 		"{userID}", fmt.Sprint(fx.userID),
 		"{decision}", "approve",
+		"{requestID}", fmt.Sprint(fx.requestID),
 		"{owner}", fx.owner,
 		"{repo}", fx.repoName,
 		"{repoName}", fx.repoName,
@@ -270,13 +274,14 @@ func TestEveryEndpointExecutes(t *testing.T) {
 }
 
 type smokeFixture struct {
-	repoID   int64
-	groupID  int64
-	userID   int
-	owner    string
-	repoName string
-	rgName   string
-	tokens   map[string]string // "user" and "admin" bearer tokens
+	repoID    int64
+	groupID   int64
+	userID    int
+	owner     string
+	repoName  string
+	rgName    string
+	tokens    map[string]string // "user" and "admin" bearer tokens
+	requestID int64             // v0.27.20 pending add-request
 }
 
 // seedSmokeFixture creates the minimal graph the recipes need: a repo
@@ -345,6 +350,19 @@ func seedSmokeFixture(t *testing.T, ctx context.Context, store *db.PostgresStore
 	_, _ = pool.Exec(ctx, `INSERT INTO aveloxis_ops.user_repos (group_id, repo_id) VALUES ($1, $2)`,
 		fx.groupID, fx.repoID)
 
+	// v0.27.20: pending add-request feeding the admin approvals routes.
+	// The item URL is the already-tracked fixture repo so the approve
+	// decision's background processing creates no new rows.
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_ops.collection_add_requests (user_id, group_id, kind, status, item_count)
+		VALUES ($1, $2, 'repos', 'pending', 1) RETURNING request_id`,
+		fx.userID, fx.groupID).Scan(&fx.requestID); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = pool.Exec(ctx, `
+		INSERT INTO aveloxis_ops.collection_add_request_items (request_id, repo_url) VALUES ($1, $2)`,
+		fx.requestID, fmt.Sprintf("https://github.com/_avsmoke/%s", fx.repoName))
+
 	t.Cleanup(func() {
 		for _, q := range []string{
 			`DELETE FROM aveloxis_ops.user_repo_stars WHERE user_id = $1`,
@@ -352,6 +370,8 @@ func seedSmokeFixture(t *testing.T, ctx context.Context, store *db.PostgresStore
 		} {
 			_, _ = pool.Exec(ctx, q, fx.userID)
 		}
+		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_request_items WHERE request_id IN (SELECT request_id FROM aveloxis_ops.collection_add_requests WHERE user_id = $1)`, fx.userID)
+		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_requests WHERE user_id = $1`, fx.userID)
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id = $1)`, fx.userID)
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id = $1`, fx.userID)
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, fx.userID)

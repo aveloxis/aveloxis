@@ -36,6 +36,22 @@ type Config struct {
 	GmailAppPassword string `json:"gmail_app_password"`
 	FromName         string `json:"from_name"`
 	SiteURL          string `json:"site_url"`
+
+	// OperatorEmail is where fleet-level operator notifications go
+	// (v0.27.12 vuln digest; v0.27.20 add-request submissions).
+	// Populated from config.MailConfig.OperatorEmail by main.go;
+	// empty = those notifications are silently skipped.
+	OperatorEmail string `json:"operator_email"`
+}
+
+// OperatorEmail exposes the configured operator address so callers
+// (web/api handlers) can address operator notifications without
+// carrying the config block themselves.
+func (m *Mailer) OperatorEmail() string {
+	if m == nil {
+		return ""
+	}
+	return m.cfg.OperatorEmail
 }
 
 // Mailer sends transactional emails. Construct via New.
@@ -230,6 +246,73 @@ View your group: %s
 
 — Aveloxis
 `, login, groupName, link)
+	return m.Send(toEmail, subject, body)
+}
+
+// addRequestSampleMax bounds the URL listing in the operator's
+// new-add-request email — a 50K-URL paste must not produce a
+// megabyte email. The total count is always stated. Presentation
+// bound only.
+const addRequestSampleMax = 15
+
+// SendAddRequestSubmitted notifies the operator that a non-admin
+// submitted new (not-yet-tracked) content for approval (v0.27.20
+// per-add approval). kind is "repos" or "org"; sample carries item
+// URLs (or the org URL). No-op when to is empty.
+func (m *Mailer) SendAddRequestSubmitted(to, requesterLogin, groupName, kind string, count int, sample []string, requestID int64) error {
+	if to == "" {
+		return nil
+	}
+	what := fmt.Sprintf("%d new repositories", count)
+	if kind == "org" {
+		what = "an organization"
+	}
+	subject := fmt.Sprintf("Aveloxis: %s requested collection of %s", requesterLogin, what)
+	if len(sample) > addRequestSampleMax {
+		sample = sample[:addRequestSampleMax]
+	}
+	siteURL := strings.TrimRight(m.cfg.SiteURL, "/")
+	link := "(your Aveloxis site URL)/admin/groups/pending"
+	if siteURL != "" {
+		link = siteURL + "/admin/groups/pending"
+	}
+	body := fmt.Sprintf(`User %s asked to add %s to their group '%s'
+(request #%d). None of it is currently collected, so collection will
+not start until an administrator approves the request.
+
+%s
+
+Review pending additions: %s
+
+— Aveloxis
+`, requesterLogin, what, groupName, requestID, strings.Join(sample, "\n"), link)
+	return m.Send(to, subject, body)
+}
+
+// SendAddRequestDecided notifies the requesting user of the admin's
+// decision on their add-request (v0.27.20). No-op when toEmail is
+// empty (user without an email on file).
+func (m *Mailer) SendAddRequestDecided(toEmail, login, groupName, kind string, approved bool, count int) error {
+	if toEmail == "" {
+		return nil
+	}
+	what := fmt.Sprintf("%d repositories", count)
+	if kind == "org" {
+		what = "the organization you requested"
+	}
+	var subject, verdict string
+	if approved {
+		subject = fmt.Sprintf("Your Aveloxis addition to '%s' was approved", groupName)
+		verdict = fmt.Sprintf(`An administrator approved adding %s to your group '%s'.
+Collection has been queued — first results typically appear within an
+hour; large repositories take longer.`, what, groupName)
+	} else {
+		subject = fmt.Sprintf("Your Aveloxis addition to '%s' was declined", groupName)
+		verdict = fmt.Sprintf(`An administrator declined adding %s to your group '%s'.
+Nothing was collected. If you believe this is a mistake, contact the
+site operator.`, what, groupName)
+	}
+	body := fmt.Sprintf("Hello %s,\n\n%s\n\n— Aveloxis\n", login, verdict)
 	return m.Send(toEmail, subject, body)
 }
 

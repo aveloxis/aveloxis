@@ -441,6 +441,17 @@ collected.
   — temporal metrics; window defaults to the trailing 3 years; bucket
   week (default) or month; buckets are densified (aligned x-axes).
   Responses are cached 60s per (user, query).
+  - **Per-entity window clamp (v0.27.24):** each entity's series is
+    densified from `max(since, its first activity)` — the least of
+    first issue, first PR, first commit, and the forge's repo
+    creation date — so young repositories chart from when their data
+    starts instead of padding zeros back to the window start. Each
+    series entry carries `data_start` (`YYYY-MM-DD`, omitted when the
+    entity has no dateable activity). Series in one response may
+    therefore have **different lengths**: consumers must align them
+    by bucket value, not array position. The clamp is per-entity, not
+    per-metric — a repo whose issues begin a year after its commits
+    shows that year as real flat zeros.
   - **`metric=contributor_retention`** (v0.27.16) additionally accepts
     `retention_threshold=N` (N ≥ 1, default **4** — 8Knot's
     "Contributions Required" default): contributors with ≥ N total

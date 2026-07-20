@@ -32,10 +32,11 @@ type Server struct {
 	store     *db.PostgresStore
 	logger    *slog.Logger
 	mux       *http.ServeMux
-	limiter   *rateLimiter   // v0.27.0: nil only when construction failed
-	auth      *authenticator // v0.27.1: Bearer sessions + repo scope
-	cmpCache  *compareCache  // v0.27.2: 60s TTL for hot compare responses
-	homeCache homeReposCache // v0.27.4: 5m per-user TTL — ~5s cold query on fleet-scale group sets
+	limiter   *rateLimiter        // v0.27.0: nil only when construction failed
+	auth      *authenticator      // v0.27.1: Bearer sessions + repo scope
+	cmpCache  *compareCache       // v0.27.2: 60s TTL for hot compare responses
+	faCache   *firstActivityCache // v0.27.24: per-entity first-activity floors (process lifetime)
+	homeCache homeReposCache      // v0.27.4: 5m per-user TTL — ~5s cold query on fleet-scale group sets
 
 	// v0.27.20 per-add approval: optional mailer for add-request
 	// notifications + the auto-approve limit for the portal repo-add
@@ -120,6 +121,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.limiter = rl
 	s.auth = newAuthenticator(store, opts.RequireAuth)
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
+	s.faCache = &firstActivityCache{m: map[string]time.Time{}}
 	return s, nil
 }
 

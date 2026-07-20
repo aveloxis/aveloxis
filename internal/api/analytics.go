@@ -313,6 +313,60 @@ type compareSeries struct {
 	// omitted for single-series metrics. Points then holds the
 	// per-bucket total so single-series consumers keep rendering.
 	Parts map[string][]db.WeeklyPoint `json:"parts,omitempty"`
+	// DataStart (v0.27.24) is the entity's first-activity date
+	// (YYYY-MM-DD): the LEAST of first issue/PR/commit and the
+	// forge's repo creation date. The series is densified from
+	// max(requested since, DataStart's bucket) so young repos'
+	// charts begin when their data begins instead of padding
+	// fabricated zeros back to the window start (which also biased
+	// client-side trend fits and the velocity z-mean). Omitted when
+	// the entity has no dateable activity.
+	DataStart string `json:"data_start,omitempty"`
+}
+
+// firstActivityCache memoizes per-entity first-activity floors for
+// the LIFETIME of the process — first activity is immutable once
+// known (history does not grow backward). The one soft staleness: an
+// org entity whose newly-collected repo carries OLDER history keeps
+// its later floor until restart, which only delays the clamp — it
+// never hides data inside the window. Negative results (no activity
+// yet) are NOT cached, so a repo's first collection unclamps
+// immediately.
+type firstActivityCache struct {
+	mu sync.Mutex
+	m  map[string]time.Time
+}
+
+func (c *firstActivityCache) get(key string) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t, ok := c.m[key]
+	return t, ok
+}
+
+func (c *firstActivityCache) put(key string, t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.m) > 10000 {
+		c.m = map[string]time.Time{} // bounded like compareCache
+	}
+	c.m[key] = t
+}
+
+// entityFirstActivity resolves the floor for a resolved repo-id set,
+// consulting the cache first. Errors fail OPEN (no clamp — today's
+// pre-v0.27.24 behavior) at the caller.
+func (s *Server) entityFirstActivity(ctx context.Context, ids []int64) (time.Time, bool, error) {
+	key := fmt.Sprint(ids) // resolveEntityRepos returns ORDER BY repo_id — stable
+	if t, ok := s.faCache.get(key); ok {
+		return t, true, nil
+	}
+	t, ok, err := s.store.FirstActivityAt(ctx, ids)
+	if err != nil || !ok {
+		return time.Time{}, false, err
+	}
+	s.faCache.put(key, t)
+	return t, true, nil
 }
 
 // compareCache is a small TTL cache for hot compare responses.
@@ -414,17 +468,43 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 		if addedGroup != "" {
 			added = append(added, map[string]string{"entity": e.Label, "group": addedGroup})
 		}
+		// v0.27.24: clamp this ENTITY's window start to its first
+		// activity so young repos' series begin when their data
+		// begins instead of padding fabricated zeros back to the
+		// requested window start. The clamp is per-entity (not
+		// per-metric) ON PURPOSE: a repo whose issues start a year
+		// after its commits must show that year as REAL flat zeros —
+		// only buckets before the repo existed at all are phantom.
+		// Downstream this also un-biases the composite metrics
+		// (project_velocity's z-mean, burstiness's activity window)
+		// and the GUI's OLS trend fits, all of which previously
+		// consumed the padded head as data. Floor-lookup errors fail
+		// OPEN to the unclamped window (pre-v0.27.24 behavior).
+		entitySince := since
+		dataStart := ""
+		if fa, ok, err := s.entityFirstActivity(r.Context(), ids); err != nil {
+			s.logger.Warn("first-activity floor lookup failed — serving unclamped window",
+				"entity", logSafe(e.Label), "error", logSafe(err.Error()))
+		} else if ok {
+			dataStart = fa.Format("2006-01-02")
+			// Truncate to the bucket grid so the first bucket is the
+			// one CONTAINING the first activity (fillBuckets and the
+			// SQL date_trunc share this alignment).
+			if fb := truncBucket(fa, bucket); fb.After(entitySince) {
+				entitySince = fb
+			}
+		}
 		// v0.27.16: routed through metricSeriesAndParts (retention.go)
 		// so multi-series metrics deliver named component series;
 		// single-series metrics behave exactly as before (densified
 		// points, nil parts).
-		points, parts, err := s.metricSeriesAndParts(r, ids, metric, bucket, since, until, retentionThreshold)
+		points, parts, err := s.metricSeriesAndParts(r, ids, metric, bucket, entitySince, until, retentionThreshold)
 		if err != nil {
 			s.logger.Error("compare series failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error()))
 			http.Error(w, "series computation failed", http.StatusInternalServerError)
 			return
 		}
-		series = append(series, compareSeries{Entity: e, Points: points, Parts: parts})
+		series = append(series, compareSeries{Entity: e, Points: points, Parts: parts, DataStart: dataStart})
 	}
 
 	resp := map[string]any{

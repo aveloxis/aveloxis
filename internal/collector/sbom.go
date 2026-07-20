@@ -8,6 +8,7 @@ package collector
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed" // spdx_license_ids.txt (v0.27.23)
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -159,6 +160,25 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 		}
 	}
 
+	// v0.27.23: when ScanCode evidence contributed to this document,
+	// record the toolkit version that produced it. The external tools
+	// are installed unpinned and auto-updated monthly, so without this
+	// two SBOMs of the same commit could differ with nothing in the
+	// document explaining why.
+	toolComponents := []cdxToolComponent{{
+		Type:    "application",
+		Name:    "aveloxis",
+		Version: db.ToolVersion,
+		Author:  "Augur Labs",
+	}}
+	if scanData != nil && scanData.ScancodeVersion != "" {
+		toolComponents = append(toolComponents, cdxToolComponent{
+			Type:    "application",
+			Name:    "scancode-toolkit-mini",
+			Version: scanData.ScancodeVersion,
+		})
+	}
+
 	bom := cycloneDX{
 		BOMFormat:    "CycloneDX",
 		SpecVersion:  "1.5",
@@ -166,14 +186,7 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 		Version:      1,
 		Metadata: cdxMetadata{
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Tools: cdxTools{
-				Components: []cdxToolComponent{{
-					Type:    "application",
-					Name:    "aveloxis",
-					Version: db.ToolVersion,
-					Author:  "Augur Labs",
-				}},
-			},
+			Tools:     cdxTools{Components: toolComponents},
 			Component: rootComp,
 		},
 	}
@@ -291,6 +304,12 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 			Creators: []string{"Tool: aveloxis-" + db.ToolVersion},
 		},
 	}
+	// v0.27.23: same provenance rule as CycloneDX — name the ScanCode
+	// version whenever its evidence shaped licenseConcluded/copyright.
+	if scanData != nil && scanData.ScancodeVersion != "" {
+		doc.CreationInfo.Creators = append(doc.CreationInfo.Creators,
+			"Tool: scancode-toolkit-mini-"+scanData.ScancodeVersion)
+	}
 
 	// Root package for the repo itself.
 	// LicenseDeclared = from GitHub/GitLab API (what the repo claims).
@@ -382,33 +401,31 @@ func isSPDXLicense(license string) bool {
 	return ok
 }
 
-// spdxLicenses is a set of commonly-used SPDX license identifiers.
-// This is not exhaustive but covers the licenses most frequently seen in
-// package registries. A full list can be generated from spdx.org/licenses.
-var spdxLicenses = map[string]bool{
-	"0BSD": true, "AAL": true, "AFL-3.0": true, "AGPL-3.0-only": true,
-	"AGPL-3.0-or-later": true, "Apache-2.0": true, "Artistic-2.0": true,
-	"BlueOak-1.0.0": true, "BSD-2-Clause": true, "BSD-3-Clause": true,
-	"BSL-1.0": true, "CAL-1.0": true, "CAL-1.0-Combined-Work-Exception": true,
-	"CC-BY-4.0": true, "CC-BY-SA-4.0": true, "CC0-1.0": true,
-	"CPAL-1.0": true, "ECL-2.0": true, "EFL-2.0": true, "Entessa": true,
-	"EUPL-1.1": true, "EUPL-1.2": true, "GPL-2.0-only": true,
-	"GPL-2.0-or-later": true, "GPL-3.0-only": true, "GPL-3.0-or-later": true,
-	"ISC": true, "LGPL-2.1-only": true, "LGPL-2.1-or-later": true,
-	"LGPL-3.0-only": true, "LGPL-3.0-or-later": true, "LiLiQ-P-1.1": true,
-	"LiLiQ-R-1.1": true, "LiLiQ-Rplus-1.1": true, "MIT": true,
-	"MIT-0": true, "MPL-2.0": true, "MS-PL": true, "MS-RL": true,
-	"MulanPSL-2.0": true, "NCSA": true, "Nokia": true, "OFL-1.1": true,
-	"OSL-3.0": true, "PostgreSQL": true, "QPL-1.0": true, "RPL-1.1": true,
-	"RPL-1.5": true, "RPSL-1.0": true, "RSCPL": true, "SimPL-2.0": true,
-	"SISSL": true, "Sleepycat": true, "SPL-1.0": true, "UCL-1.0": true,
-	"Unicode-DFS-2016": true, "Unlicense": true, "UPL-1.0": true,
-	"VSL-1.0": true, "W3C": true, "Watcom-1.0": true, "Xnet": true,
-	"Zlib": true, "ZPL-2.0": true, "ZPL-2.1": true,
-	// Common deprecated IDs still seen in registries:
-	"GPL-2.0": true, "GPL-3.0": true, "LGPL-2.0": true, "LGPL-2.1": true,
-	"LGPL-3.0": true, "AGPL-3.0": true,
-}
+// spdxLicenseIDsRaw is the official SPDX license identifier list,
+// embedded at compile time (v0.27.23). It replaces a hand-maintained
+// ~70-entry allowlist that drifted monotonically from the real list
+// (733 identifiers) — valid-but-unlisted ids were demoted from
+// license.id to license.name, which downstream policy engines don't
+// match on. Refresh procedure is in the file's header comment; the
+// //go:embed follows the v0.25.4 NumFocus-catalog precedent (data
+// ships inside the binary, no network at runtime).
+//
+//go:embed spdx_license_ids.txt
+var spdxLicenseIDsRaw string
+
+// spdxLicenses is the parsed identifier set. Lines starting with '#'
+// are header comments in the generated file.
+var spdxLicenses = func() map[string]bool {
+	set := make(map[string]bool, 800)
+	for line := range strings.SplitSeq(spdxLicenseIDsRaw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		set[line] = true
+	}
+	return set
+}()
 
 // StoreSBOM saves the generated SBOM JSON to repo_sbom_scans.
 func StoreSBOM(ctx context.Context, store *db.PostgresStore, repoID int64, sbomJSON []byte) error {

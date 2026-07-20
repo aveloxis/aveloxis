@@ -22,6 +22,18 @@ A tripwire test (`scripts/spdx_coverage_test.go`) walks the repo and fails CI if
 
 Build-tag-prefixed files (`//go:build ...`) — none currently in the repo — would need special handling; ask before adding one.
 
+## Embedded SPDX license identifier list
+
+`internal/collector/spdx_license_ids.txt` is the official SPDX license
+identifier list (spdx/license-list-data), embedded into the binary via
+`//go:embed` and consulted by SBOM generation to decide `license.id` vs
+`license.name`. It is a **generated file — never hand-edit it**. The refresh
+one-liner lives in the file's own header comment; after refreshing, re-prepend
+the header, update its fetch date, and run
+`go test ./internal/collector/ -run TestSPDXList` — a ≥700-entry floor tripwire
+catches truncated downloads. Deprecated identifiers are deliberately included
+(registries still emit `GPL-2.0`-style ids).
+
 ## Package layout
 
 Within `internal/`:

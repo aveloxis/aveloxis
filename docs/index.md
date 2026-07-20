@@ -9,7 +9,7 @@ Aveloxis is a high-performance open source community health data collection plat
 - **Postgres-backed queue** — no Redis, RabbitMQ, or Celery. Multiple instances share the same queue via `SKIP LOCKED`
 - **Git commit analysis** — bare clones + `git log --numstat` for per-file commit data, parent tracking, and Facade aggregates
 - **Contributor resolution** — resolves git commit emails to GitHub users via noreply parsing, Commits API, and Search API
-- **Dependency & complexity analysis** — scans 15 ecosystems, calculates libyear across 12 package registries, runs scc for code complexity
+- **Dependency & complexity analysis** — scans 14 ecosystems, calculates libyear across 12 package registries, runs scc for code complexity
 - **Vulnerability scanning** — OSV.dev batch API for CVE/GHSA lookup across all dependencies
 - **SBOM generation** — CycloneDX 1.5 + SPDX 2.3 with license capture from 12 registries
 - **Interactive visualizations** — weekly time-series charts, cross-project comparison with Z-score normalization, dependency license analysis

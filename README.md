@@ -786,7 +786,7 @@ For repos with **>10,000 commits** (detected from repo_info metadata), steps 3-5
 
 **Phase 4 — Analysis (on-demand full clone):** A temporary full checkout is created from the bare clone (local, no network). Five analysis phases run against it, then the checkout is retained for scorecard before deletion:
 
-1. **Dependency scanning** (`repo_dependencies`): walks the checkout for manifest files across 15 ecosystems — JavaScript (package.json), Python (requirements.txt, pyproject.toml, Pipfile), Go (go.mod), Rust (Cargo.toml), Ruby (Gemfile), Java/Kotlin (pom.xml, build.gradle, build.gradle.kts), PHP (composer.json), Elixir (mix.exs), Swift (Package.swift), Dart (pubspec.yaml), Scala (build.sbt), .NET (packages.config), Haskell (package.yaml), C/C++ (Makefile, CMakeLists.txt). Extracts dependency names and counts.
+1. **Dependency scanning** (`repo_dependencies`): walks the checkout for manifest files across 14 ecosystems — JavaScript (package.json), Python (requirements.txt, pyproject.toml, Pipfile), Go (go.mod), Rust (Cargo.toml), Ruby (Gemfile), Java/Kotlin (pom.xml, build.gradle, build.gradle.kts), PHP (composer.json), Elixir (mix.exs), Swift (Package.swift), Dart (pubspec.yaml), Scala (build.sbt), .NET (packages.config), Haskell (package.yaml), C/C++ (Makefile, CMakeLists.txt). Extracts dependency names and counts.
 2. **Libyear** (`repo_deps_libyear`): for each versioned dependency, queries its package registry (npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM/GitHub) to compare the current version against the latest. Calculates libyear = (latest_release_date - current_release_date) / 365.
 3. **Code complexity** (`repo_labor`): if `scc` is installed, runs `scc -f json --by-file` to get per-file metrics — programming language, total lines, code lines, comment lines, blank lines, and complexity. Install via `aveloxis install-tools`.
 4. **ScanCode license/copyright detection** (`aveloxis_scan.scancode_file_results`): if `scancode` is installed, runs `scancode -clpi --only-findings --json` to detect per-file licenses (SPDX expressions), copyrights, holders, and packages. **Only runs every 30 days** per repo — license/copyright data changes infrequently. Results stored in dedicated `aveloxis_scan` schema with history rotation. Install via `pipx install scancode-toolkit-mini` (requires Python 3.10+).
@@ -1050,7 +1050,7 @@ Both platforms collect the same data types. Most fields have full parity; known 
 | Commits (git) | `git clone --bare` + `git log --all --numstat` | Same | `commits` + `commit_parents` + `commit_messages` |
 | Facade Aggregates | Computed from commits table | Same | `dm_repo_annual/monthly/weekly` |
 | Commit Author Resolution | Noreply parse + Commits API + Search API (GitHub only) | N/A (GitLab identity from API) | `contributors` + `contributor_aliases` |
-| Dependencies | File scan: 15 ecosystems (package.json, go.mod, pom.xml, Cargo.toml, etc.) | Same | `repo_dependencies` |
+| Dependencies | File scan: 14 ecosystems (package.json, go.mod, pom.xml, Cargo.toml, etc.) | Same | `repo_dependencies` |
 | Libyear | 12 registries (npm, PyPI, Go, Cargo, RubyGems, Maven, Packagist, Hex, NuGet, pub.dev, Hackage, SwiftPM) | Same | `repo_deps_libyear` |
 | Code Complexity | `scc --by-file` (if installed) | Same | `repo_labor` |
 | OpenSSF Scorecard | `scorecard --local` (if installed) | Same (works on any git URL) | `repo_deps_scorecard` (latest) + `repo_deps_scorecard_history` |
@@ -1107,7 +1107,7 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 | Contributor model | `gh_*`/`gl_*` columns mixed on one table | Separate `contributor_identities` table |
 | DB write pattern | Individual upserts during collection | JSONB staging → bulk batch processing (`pgx.Batch` for deps, libyear, labor, breadth). Significantly lower database contention for the contributors table. |
 | Repo redirect handling | Not proactively handled | Prelim phase detects renames/transfers, deduplicates, updates URLs + bulk-fixes all stored URLs regularly |
-| Dependency scanning | Custom Python parsers for 12 languages | Go parsers for 15 ecosystems, on-demand full clone |
+| Dependency scanning | Custom Python parsers for 12 languages | Go parsers for 14 ecosystems, on-demand full clone |
 | Libyear | npm + PyPI only | 12 registries: npm, PyPI, Go, Cargo, RubyGems, Maven, Packagist, Hex, NuGet, pub.dev, Hackage, SwiftPM |
 | Code complexity (scc) | Requires manual scc install + separate worker | `aveloxis install-tools` + automatic per-repo analysis |
 | OpenSSF Scorecard | Runs `scorecard` binary against GitHub repos. | Runs `scorecard` binary against GitHub AND GitLab repos. Results in `repo_deps_scorecard` with history. |
@@ -1232,7 +1232,6 @@ aveloxis/
   go.sum                  # Go dependency checksums
   aveloxis.example.json   # Example configuration file
   aveloxis.docker.json    # Docker-specific configuration (uses docker service names)
-  install-scorecard.sh    # Manual scorecard binary installation script
 ```
 
 ## Testing
@@ -1256,7 +1255,7 @@ The test suite has **561 tests** across **75 test files** in 12 packages (all pa
 
 | Package | Tests | Coverage |
 |---|---|---|
-| `internal/collector` | 344 | Dependency parsers (15 ecosystems), libyear, SBOM generation (CycloneDX + SPDX), vulnerability scanning (CVSS, OSV), facade git log parsing, git URL security validation, commit resolution, prelim URL handling, noreply/bot email detection, breadth worker, SCC complexity, scorecard |
+| `internal/collector` | 344 | Dependency parsers (14 ecosystems), libyear, SBOM generation (CycloneDX + SPDX), vulnerability scanning (CVSS, OSV), facade git log parsing, git URL security validation, commit resolution, prelim URL handling, noreply/bot email detection, breadth worker, SCC complexity, scorecard |
 | `internal/db` | 61 | Queue jobs, staging, GithubUUID (incl. overflow detection), text sanitization, affiliations, batch operations, repo stats, vulnerability store, SBOM store, timeseries, licenses |
 | `internal/api` | 40 | All REST endpoints (health, stats, SBOM, timeseries, licenses, search) + all Augur-compatible metric endpoints (issues, PRs, commits, contributors, stars, forks, watchers, deps, releases, complexity), parameter validation, route registration |
 | `internal/platform` | 39 | Key pool (round-robin, exhaustion, reset wait, empty pool, invalidated keys), HTTP client (pagination, query params, retry-after), URL parsing (GitHub, GitLab, nested subgroups, self-hosted) |

@@ -111,6 +111,26 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 				directFlagged++
 			}
 			if !declared[lockfileMatchKey(res.Ecosystem, e.Name)] {
+				// v0.27.21 C1: with vuln_scan_transitive on, the FULL
+				// entry set is stored (direct=FALSE rows are the
+				// transitive closure the vuln scan targets). Knob off:
+				// pre-C1 behavior — declared-matched rows only.
+				if !ac.TransitiveLockfiles {
+					continue
+				}
+				key := e.Name + "@" + e.Version
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				packages = append(packages, &db.RepoLockfilePackage{
+					Ecosystem:       res.Ecosystem,
+					PackageName:     e.Name,
+					ResolvedVersion: e.Version,
+					LockfilePath:    pl.Path,
+					Direct:          false,
+					Scope:           e.Scope,
+				})
 				continue
 			}
 			key := e.Name + "@" + e.Version
@@ -124,6 +144,10 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 				PackageName:     e.Name,
 				ResolvedVersion: e.Version,
 				LockfilePath:    pl.Path,
+				// Stored 'direct' means "resolution of a repo-level
+				// declared dependency" — exactly the pre-C1 row set.
+				Direct: true,
+				Scope:  e.Scope,
 			})
 		}
 		// direct_count: what the format itself flags as direct when it

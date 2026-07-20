@@ -102,7 +102,7 @@ func TestVulnScanAccuracyEndToEnd(t *testing.T) {
 	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID,
 		[]*db.RepoLockfileInfo{{Ecosystem: "pypi", LockfilePath: "poetry.lock",
 			LockfileKind: "poetry.lock", EntryCount: 12, DirectCount: 1}},
-		[]*db.RepoLockfilePackage{{Ecosystem: "pypi", PackageName: "flask",
+		[]*db.RepoLockfilePackage{{Ecosystem: "pypi", PackageName: "flask", Direct: true,
 			ResolvedVersion: "2.5.0", LockfilePath: "poetry.lock"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestVulnScanAccuracyEndToEnd(t *testing.T) {
 	osvVulnURLBase = srv.URL + "/v1/vulns/"
 	t.Cleanup(func() { osvBatchURL, osvVulnURLBase = oldBatch, oldVulns })
 
-	result, err := ScanVulnerabilities(ctx, store, repoID, logger)
+	result, err := ScanVulnerabilities(ctx, store, repoID, logger, nil, false)
 	if err != nil {
 		t.Fatalf("ScanVulnerabilities: %v", err)
 	}

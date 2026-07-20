@@ -109,6 +109,12 @@ type Scheduler struct {
 	// across ticks — a GitHub-side 5xx storm re-tripped from scratch
 	// every 15 minutes instead of pausing for its full hour.
 	breadthWorker *collector.BreadthWorker
+
+	// osvCache (v0.27.21 C0) is the process-wide OSV answer cache
+	// shared by every vulnerability scan — the politeness layer the
+	// Phase C plan requires before any transitive rollout, and an
+	// immediate ~5×/~94× traffic cut on the direct workload.
+	osvCache *collector.OSVCache
 }
 
 // SetDigestMailer injects the operator-notification mailer (v0.27.12).
@@ -294,6 +300,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// runBreadth, which runs in a per-tick goroutine — lazy init would
 	// race). The circuit-breaker pause lives on this struct and now
 	// survives across ticks.
+	if s.osvCache == nil {
+		s.osvCache = collector.NewOSVCache()
+	}
 	if s.ghKeys != nil && s.breadthWorker == nil {
 		s.breadthWorker = collector.NewBreadthWorker(s.store, s.ghKeys, s.logger).
 			WithFetchConcurrency(s.cfg.Collection.BreadthFetchConcurrencyOrDefault())
@@ -900,7 +909,8 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 
 	// Phase 7: Vulnerability scanning via OSV.dev.
 	// Uses purls from libyear data to query for known CVEs.
-	vulnResult, vulnErr := collector.ScanVulnerabilities(ctx, s.store, job.RepoID, s.logger)
+	vulnResult, vulnErr := collector.ScanVulnerabilities(ctx, s.store, job.RepoID, s.logger,
+		s.osvCache, s.cfg.Collection.VulnScanTransitive)
 	if vulnErr != nil {
 		s.logger.Warn("vulnerability scan failed", "repo_id", job.RepoID, "error", vulnErr)
 	} else if vulnResult != nil && vulnResult.VulnsFound > 0 {
@@ -1098,6 +1108,9 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	var analysisResult *collector.AnalysisResult
 	ac := collector.NewAnalysisCollector(s.store, s.logger, s.cfg.Collection.RepoCloneDir)
 	ac.RetainClone = true
+	// v0.27.21 C1: store the full lockfile closure when transitive
+	// scanning is on (read at point of use — the v0.25.37 rule).
+	ac.TransitiveLockfiles = s.cfg.Collection.VulnScanTransitive
 	aResult, aErr := ac.AnalyzeRepo(ctx, repoID)
 	if aErr != nil {
 		s.logger.Warn("analysis failed", "repo_id", repoID, "error", aErr)

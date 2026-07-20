@@ -102,6 +102,28 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			"old_repo_id", repo.ID, "old_url", repo.GitURL,
 			"new_repo_id", existingID, "new_url", finalURL)
 
+		// v0.27.22 self-heal: an add-by-old-name should silently land
+		// the user on the collected repo they meant. For a
+		// NEVER-COLLECTED duplicate, repoint its user_repos +
+		// user_repo_stars links onto the winner and delete the
+		// dataless row (queue/status/staging included). healed=false =
+		// the duplicate has collected data (or unexpected children) —
+		// that's a deliberate-consolidation problem, so fall back to
+		// the legacy skip+dequeue and leave both rows.
+		healed, healErr := store.HealRenamedDuplicate(ctx, repo.ID, existingID)
+		switch {
+		case healErr != nil:
+			logger.Warn("prelim: rename-duplicate heal failed — falling back to dequeue",
+				"old_repo_id", repo.ID, "new_repo_id", existingID, "error", healErr)
+		case healed:
+			logger.Info("prelim: rename-duplicate healed — user links repointed to the collected repo",
+				"old_repo_id", repo.ID, "new_repo_id", existingID, "new_url", finalURL)
+			return result, nil // duplicate row is gone; nothing to dequeue
+		default:
+			logger.Warn("prelim: duplicate retained — it has collected data; consolidation is a manual decision",
+				"old_repo_id", repo.ID, "new_repo_id", existingID)
+		}
+
 		// Remove the old entry from the queue so we don't keep checking it.
 		if err := store.DequeueRepo(ctx, repo.ID); err != nil {
 			logger.Warn("prelim: failed to dequeue duplicate repo", "repo_id", repo.ID, "error", err)

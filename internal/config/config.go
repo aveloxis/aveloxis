@@ -510,6 +510,16 @@ type CollectionConfig struct {
 	// value can't reach the scancode subprocess.
 	ScancodeMaxInMemory int `json:"scancode_max_in_memory"`
 
+	// VulnScanTransitive (v0.27.21 Phase C1, summary/14): scan the
+	// FULL transitive closure each committed lockfile enumerates, not
+	// just declared direct dependencies. Default false (opt-in): the
+	// findings-volume and OSV-load multipliers are canary-validated
+	// before any fleet rollout. Requires nothing else — the C0 OSV
+	// cache is always active. Transitive findings carry
+	// dependency_kind='transitive' and are excluded from the operator
+	// digest unless mail.vuln_digest_include_transitive is set.
+	VulnScanTransitive bool `json:"vuln_scan_transitive"`
+
 	// ScorecardTimeoutMinutes is the per-ATTEMPT wall-clock cap for a
 	// single OpenSSF Scorecard invocation (v0.27.5). Default 15
 	// minutes when unset. The remote-primary phase applies it to the
@@ -1084,6 +1094,12 @@ type MailConfig struct {
 	// Empty (the default) disables operator notifications entirely;
 	// the digest ticker never starts.
 	OperatorEmail string `json:"operator_email"`
+
+	// VulnDigestIncludeTransitive (v0.27.21): include
+	// dependency_kind='transitive' findings in the operator digest.
+	// Default false — the first transitive-enabled cycles would
+	// otherwise blast a 50-item email of utility-package findings.
+	VulnDigestIncludeTransitive bool `json:"vuln_digest_include_transitive"`
 
 	// VulnDigestMinSeverity is the severity floor for the digest:
 	// CRITICAL, HIGH (default — admits CRITICAL+HIGH), MEDIUM, LOW,

@@ -167,11 +167,11 @@ func TestLockfileSnapshotRoundTrip(t *testing.T) {
 		{Ecosystem: "pypi", LockfilePath: "svc/poetry.lock", LockfileKind: "poetry.lock", EntryCount: 40, DirectCount: 3},
 	}
 	pkgs := []*RepoLockfilePackage{
-		{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "4.19.2", LockfilePath: "package-lock.json"},
-		{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "2.3.3", LockfilePath: "svc/poetry.lock"},
+		{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "4.19.2", LockfilePath: "package-lock.json", Direct: true},
+		{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "2.3.3", LockfilePath: "svc/poetry.lock", Direct: true},
 		// Same package at a DIFFERENT version in a second lockfile is
 		// legitimate (two apps in a monorepo) — both must survive.
-		{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "3.0.0", LockfilePath: "svc2/poetry.lock"},
+		{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "3.0.0", LockfilePath: "svc2/poetry.lock", Direct: true},
 	}
 	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, inv, pkgs); err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestLockfileSnapshotRoundTrip(t *testing.T) {
 	// Snapshot-replace: a second, smaller snapshot removes the old rows.
 	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID,
 		[]*RepoLockfileInfo{{Ecosystem: "npm", LockfilePath: "package-lock.json", LockfileKind: "package-lock.json", EntryCount: 5, DirectCount: 1}},
-		[]*RepoLockfilePackage{{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "5.0.0", LockfilePath: "package-lock.json"}},
+		[]*RepoLockfilePackage{{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "5.0.0", LockfilePath: "package-lock.json", Direct: true}},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -323,8 +323,8 @@ func TestLockfileCertaintyDerivation(t *testing.T) {
 			{Ecosystem: "pypi", LockfilePath: "poetry.lock", LockfileKind: "poetry.lock", EntryCount: 10, DirectCount: 1},
 		},
 		[]*RepoLockfilePackage{
-			{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "4.19.2", LockfilePath: "package-lock.json"},
-			{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "2.3.3", LockfilePath: "poetry.lock"},
+			{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "4.19.2", LockfilePath: "package-lock.json", Direct: true},
+			{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "2.3.3", LockfilePath: "poetry.lock", Direct: true},
 		}); err != nil {
 		t.Fatal(err)
 	}

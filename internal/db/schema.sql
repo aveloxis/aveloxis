@@ -1311,6 +1311,10 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
     -- the classification must track the current manifest).
     declared_requirement TEXT DEFAULT '',
     version_resolution   TEXT DEFAULT '',
+    -- v0.27.21 C1: 'direct' | 'transitive' ('' = pre-C1 row) +
+    -- 'dev'/'runtime'/'' scope from the lockfile.
+    dependency_kind  TEXT NOT NULL DEFAULT '',
+    dependency_scope TEXT NOT NULL DEFAULT '',
     data_collection_date TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (repo_id, vuln_id, package_purl)
 );
@@ -1391,12 +1395,22 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfile_packages (
     package_name     TEXT NOT NULL,
     resolved_version TEXT NOT NULL,
     lockfile_path    TEXT NOT NULL,
+    -- v0.27.21 C1: TRUE = resolution of a declared direct dependency
+    -- (the only rows written with vuln_scan_transitive off); FALSE =
+    -- transitive entry. dependency_scope is 'dev'/'runtime'/''
+    -- (unknown) where the lockfile format flags it.
+    direct           BOOLEAN NOT NULL DEFAULT TRUE,
+    dependency_scope TEXT NOT NULL DEFAULT '',
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
     data_collection_date TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (repo_id, lockfile_path, package_name, resolved_version)
 );
+-- v0.27.21: the incident-response query — "who has package X@V
+-- ANYWHERE in their tree, right now" — in one indexed lookup.
+CREATE INDEX IF NOT EXISTS idx_lockfile_packages_pkg
+    ON aveloxis_data.repo_lockfile_packages (ecosystem, package_name, resolved_version);
 
 CREATE INDEX IF NOT EXISTS idx_repo_lockfile_packages_repo_id
     ON aveloxis_data.repo_lockfile_packages (repo_id);

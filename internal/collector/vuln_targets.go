@@ -30,6 +30,51 @@ type vulnScanTarget struct {
 	Dep         db.VulnScanDep
 	Requirement string
 	Resolution  string
+	// Kind (v0.27.21 C1) is 'direct' or 'transitive'; Scope is
+	// 'dev' / 'runtime' / '' (unknown) carried from the lockfile
+	// row for transitive targets.
+	Kind  string
+	Scope string
+}
+
+// dependency_kind values carried onto findings (v0.27.21 C1).
+const (
+	dependencyKindDirect     = "direct"
+	dependencyKindTransitive = "transitive"
+)
+
+// purlEcosystemTypes maps our package-manager strings to purl types
+// for TRANSITIVE lockfile targets (direct deps carry purls built by
+// the libyear writers; this mapping deliberately mirrors those
+// writers' formats so cross-kind dedup works). maven names arrive as
+// "group:artifact" and become pkg:maven/group/artifact@v.
+var purlEcosystemTypes = map[string]string{
+	"npm":      "npm",
+	"pypi":     "pypi",
+	"go":       "golang",
+	"cargo":    "cargo",
+	"gem":      "gem",
+	"maven":    "maven",
+	"composer": "composer",
+	"hex":      "hex",
+	"nuget":    "nuget",
+	"pub":      "pub",
+	"swift":    "swift",
+	"haskell":  "hackage",
+}
+
+// purlForPackage builds a purl for a transitive lockfile resolution.
+// Returns "" for unmapped ecosystems (the target is skipped — honest
+// omission beats a malformed purl OSV can't match).
+func purlForPackage(ecosystem, name, version string) string {
+	typ, ok := purlEcosystemTypes[ecosystem]
+	if !ok || name == "" || version == "" {
+		return ""
+	}
+	if typ == "maven" {
+		name = strings.Replace(name, ":", "/", 1)
+	}
+	return "pkg:" + typ + "/" + name + "@" + version
 }
 
 // isSelfDependency reports whether a declared dependency names one of
@@ -63,6 +108,7 @@ func vulnScanTargets(dep db.VulnScanDep, locked map[string][]string) []vulnScanT
 			Purl: dep.Purl, Dep: dep,
 			Requirement: dep.Requirement,
 			Resolution:  resolutionLocked,
+			Kind:        dependencyKindDirect,
 		}}
 	}
 	if versions := locked[lockfileMatchKey(dep.PackageManager, dep.Name)]; len(versions) > 0 {
@@ -72,6 +118,7 @@ func vulnScanTargets(dep db.VulnScanDep, locked map[string][]string) []vulnScanT
 				Purl: purlWithVersion(dep.Purl, v), Dep: dep,
 				Requirement: dep.Requirement,
 				Resolution:  resolutionLocked,
+				Kind:        dependencyKindDirect,
 			})
 		}
 		return targets
@@ -80,6 +127,7 @@ func vulnScanTargets(dep db.VulnScanDep, locked map[string][]string) []vulnScanT
 		Purl: dep.Purl, Dep: dep,
 		Requirement: dep.Requirement,
 		Resolution:  classifyRequirement(dep.Requirement, dep.CurrentVersion),
+		Kind:        dependencyKindDirect,
 	}}
 }
 

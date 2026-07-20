@@ -54,7 +54,8 @@ func (s *Scheduler) runVulnDigest(ctx context.Context) {
 		return
 	}
 
-	items, err := s.store.GetNewVulnerabilityFindings(ctx, since, s.cfg.Mail.VulnDigestMinSeverityOrDefault())
+	items, err := s.store.GetNewVulnerabilityFindings(ctx, since,
+		s.cfg.Mail.VulnDigestMinSeverityOrDefault(), s.cfg.Mail.VulnDigestIncludeTransitive)
 	if err != nil {
 		s.logger.Warn("vuln digest: query failed", "error", err)
 		return

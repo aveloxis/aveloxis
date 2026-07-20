@@ -133,6 +133,13 @@ type RepoLockfilePackage struct {
 	PackageName     string
 	ResolvedVersion string
 	LockfilePath    string
+	// Direct (v0.27.21 C1) — TRUE for resolutions of the repo's
+	// declared direct dependencies (the only rows written pre-C1 and
+	// with vuln_scan_transitive off); FALSE for transitive entries.
+	Direct bool
+	// Scope — 'dev' / 'runtime' / '' (unknown), carried from formats
+	// that flag it (package-lock v2/3 dev, poetry category).
+	Scope string
 }
 
 // ReplaceRepoLockfileSnapshot atomically replaces a repo's lockfile
@@ -186,10 +193,11 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 			batch.Queue(`
 				INSERT INTO aveloxis_data.repo_lockfile_packages
 					(repo_id, ecosystem, package_name, resolved_version,
-					 lockfile_path, data_source, data_collection_date)
-				VALUES ($1, $2, $3, $4, $5, 'analysis', NOW())
+					 lockfile_path, direct, dependency_scope, data_source, data_collection_date)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, 'analysis', NOW())
 				ON CONFLICT (repo_id, lockfile_path, package_name, resolved_version) DO NOTHING`,
-				repoID, p.Ecosystem, p.PackageName, p.ResolvedVersion, p.LockfilePath)
+				repoID, p.Ecosystem, p.PackageName, p.ResolvedVersion, p.LockfilePath,
+				p.Direct, p.Scope)
 		}
 		if batch.Len() > 0 {
 			if err := tx.SendBatch(ctx, batch).Close(); err != nil {
@@ -205,11 +213,13 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 // reading the TABLE (not a fresh parse) is what lets
 // `aveloxis heal-vulnerabilities`, which runs scans without an
 // analysis pass, benefit from lockfile accuracy too.
+// v0.27.21: filters to direct=TRUE — with transitive storage on, a
+// transitive entry must never reclassify a DECLARED dep as 'locked'.
 func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT ecosystem, package_name, resolved_version, lockfile_path
 		FROM aveloxis_data.repo_lockfile_packages
-		WHERE repo_id = $1
+		WHERE repo_id = $1 AND COALESCE(direct, TRUE)
 		ORDER BY package_name, resolved_version`, repoID)
 	if err != nil {
 		return nil, err
@@ -219,6 +229,37 @@ func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64)
 	for rows.Next() {
 		var p RepoLockfilePackage
 		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// GetRepoTransitivePackages returns the repo's stored TRANSITIVE
+// lockfile resolutions (v0.27.21 C1) — the rows the vulnerability
+// scan turns into dependency_kind='transitive' purls when
+// collection.vuln_scan_transitive is on. Distinct per (ecosystem,
+// package, version): a package appearing in several lockfiles scans
+// once, and the scope keeps any non-dev observation (” or 'runtime'
+// beats 'dev' — a package pulled in by BOTH a dev tool and a runtime
+// dependency is runtime exposure).
+func (s *PostgresStore) GetRepoTransitivePackages(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT ecosystem, package_name, resolved_version,
+		       MIN(CASE WHEN COALESCE(dependency_scope, '') = 'dev' THEN 'dev' ELSE '' END)
+		FROM aveloxis_data.repo_lockfile_packages
+		WHERE repo_id = $1 AND NOT COALESCE(direct, TRUE)
+		GROUP BY ecosystem, package_name, resolved_version
+		ORDER BY package_name, resolved_version`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RepoLockfilePackage
+	for rows.Next() {
+		var p RepoLockfilePackage
+		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.Scope); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

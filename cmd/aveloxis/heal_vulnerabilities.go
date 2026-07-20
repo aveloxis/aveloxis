@@ -49,9 +49,13 @@ func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 				ids = ids[:limit]
 			}
 			fmt.Printf("healing %d repos (OSV detail fetch per distinct finding)\n", len(ids))
+			// v0.27.21 C0: one per-invocation OSV cache — across a fleet
+			// heal the same GHSAs and purls repeat enormously (measured
+			// 94× id convergence), so this is most of the wall-clock.
+			cache := collector.NewOSVCache()
 			healed, failed := 0, 0
 			for i, id := range ids {
-				if _, err := collector.ScanVulnerabilities(ctx, store, id, logger); err != nil {
+				if _, err := collector.ScanVulnerabilities(ctx, store, id, logger, cache, cfg.Collection.VulnScanTransitive); err != nil {
 					failed++
 					fmt.Printf("repo %d FAILED: %v\n", id, err)
 				} else {

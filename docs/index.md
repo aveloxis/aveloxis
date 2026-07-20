@@ -55,6 +55,7 @@ architecture/contributor-resolution
 architecture/facade-commits
 architecture/analysis
 architecture/scancode
+architecture/vulnerability-and-sbom
 architecture/distribution
 architecture/mailing-list
 architecture/materialized-views

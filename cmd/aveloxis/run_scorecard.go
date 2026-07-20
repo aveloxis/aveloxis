@@ -31,6 +31,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
@@ -132,7 +133,7 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// v0.21.5: store.Migrate(ctx) intentionally NOT called here —

@@ -473,6 +473,22 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_gh_login
 		ON aveloxis_data.contributors (gh_login) WHERE gh_login != ''`)
 
+	// v0.27.25 — expression index for BackfillCommitAuthorIDs' Fix H
+	// case-insensitive join. The v0.19.9 index above indexes gh_login,
+	// NOT LOWER(gh_login) — it cannot serve
+	// `LOWER(username) = LOWER(gh_login)`, and with no expression
+	// statistics the planner estimated an 86M-row join. The live cost:
+	// a 2-day-2-hour orphaned run of the backfill on aveloxis_large
+	// (2026-07-20), against a documented expectation of tens of
+	// minutes. v0.20.12's own comment named this index as "the next
+	// step" if the join profiled as a bottleneck. Same partial
+	// predicate as its sibling: the email-only cohort (gh_login = '')
+	// is excluded, matching the query's v0.27.25 `!= ''` guards.
+	execCreateIndexConcurrently(ctx, pg, logger, &errs,
+		"aveloxis_data", "idx_contributors_gh_login_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_gh_login_lower
+		ON aveloxis_data.contributors (LOWER(gh_login)) WHERE gh_login != ''`)
+
 	// v0.21.0 — ScancodeWorker claim-query index.
 	//
 	// The worker runs a claim query roughly every

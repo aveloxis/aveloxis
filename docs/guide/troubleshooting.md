@@ -1356,6 +1356,32 @@ case-sensitive.
 
 ## Orphaned postgres backend after `aveloxis stop serve`
 
+> **Fixed at the root in v0.27.25.** The cause was that `aveloxis stop` sends
+> SIGTERM but every process registered its shutdown handler for SIGINT only —
+> so the graceful-shutdown path (statement cancellation, lock release, pool
+> close) never ran on the stop command, and any in-flight statement became an
+> orphan. From v0.27.25, stop cancels in-flight statements **server-side**
+> within milliseconds and releases queue locks before exiting; orphans should
+> no longer form. The same release added `!= ''` join guards and the
+> `LOWER(gh_login)` expression index to `BackfillCommitAuthorIDs`, taking the
+> worst observed case (a 2-day orphaned run on a mega-repo) down to minutes.
+>
+> This runbook remains for **pre-v0.27.25 binaries** and for termination
+> paths no signal handler can help with (SIGKILL, OOM-kill, power loss).
+>
+> **Is it safe to terminate the backfill UPDATE specifically?** Yes —
+> transactionally. It is a single atomic statement: `pg_terminate_backend`
+> rolls it back completely, and its `cmt_ght_author_id IS NULL` predicate
+> means the next collection cycle simply redoes the work. Two nuances worth
+> knowing before you kill it: (1) if left alone, a finished orphan **commits
+> its work** — the implicit transaction commits at statement completion even
+> though the client is dead, so killing discards real progress; (2) every
+> already-updated row becomes a dead tuple on rollback, so repeatedly killing
+> the same repo's backfill bloats the commits table and can prevent a
+> mega-repo's backfill from ever completing. On a post-v0.27.25 schema the
+> re-run costs minutes, so killing is cheap; on older schemas, prefer letting
+> a nearly-done orphan finish if nothing urgent is blocked behind it.
+
 **Symptom:** After stopping serve and starting it again (or running `aveloxis migrate`), the new process appears to hang. Specifically:
 
 - Migration never finishes — `aveloxis migrate` sits silent, no progress logs.

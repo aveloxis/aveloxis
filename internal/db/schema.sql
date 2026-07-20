@@ -242,6 +242,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_contributors_login
 CREATE INDEX IF NOT EXISTS idx_contributors_last_breadth
     ON aveloxis_data.contributors (cntrb_last_breadth_at ASC NULLS FIRST);
 
+-- v0.27.25 — serves BackfillCommitAuthorIDs' case-insensitive join
+-- (LOWER(username) = LOWER(gh_login)). The v0.19.9 gh_login index
+-- cannot serve the LOWER() form, and without expression statistics
+-- the planner misestimated the join by ~4 orders of magnitude — a
+-- live backfill ran 2+ days orphaned on aveloxis_large. Partial:
+-- the email-only cohort (gh_login = '') is excluded, matching the
+-- query's `!= ''` guards. Existing fleets get the CONCURRENTLY build
+-- from migrate.go; this plain form covers fresh installs.
+CREATE INDEX IF NOT EXISTS idx_contributors_gh_login_lower
+    ON aveloxis_data.contributors (LOWER(gh_login)) WHERE gh_login != '';
+
 CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_identities (
     identity_id    BIGSERIAL PRIMARY KEY,
     cntrb_id       UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,

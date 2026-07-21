@@ -1,0 +1,427 @@
+{
+ "crate": {
+  "id": "serde",
+  "name": "serde",
+  "updated_at": "2026-07-18T23:05:13.266456Z",
+  "versions": [
+   2817185,
+   1748414,
+   1746112,
+   1739049
+  ],
+  "keywords": [
+   "no_std",
+   "serde",
+   "serialization"
+  ],
+  "categories": [
+   "encoding",
+   "no-std",
+   "no-std::no-alloc"
+  ],
+  "badges": [],
+  "created_at": "2014-12-05T20:20:39.487502Z",
+  "downloads": 1180413172,
+  "recent_downloads": 238576859,
+  "default_version": "1.0.229",
+  "num_versions": 316,
+  "yanked": false,
+  "max_version": "1.0.229",
+  "newest_version": "1.0.229",
+  "max_stable_version": "1.0.229",
+  "description": "A generic serialization/deserialization framework",
+  "homepage": "https://serde.rs",
+  "documentation": "https://docs.rs/serde",
+  "repository": "https://github.com/serde-rs/serde",
+  "links": {
+   "version_downloads": "/api/v1/crates/serde/downloads",
+   "versions": null,
+   "owners": "/api/v1/crates/serde/owners",
+   "owner_team": "/api/v1/crates/serde/owner_team",
+   "owner_user": "/api/v1/crates/serde/owner_user",
+   "reverse_dependencies": "/api/v1/crates/serde/reverse_dependencies"
+  },
+  "exact_match": false,
+  "trustpub_only": false
+ },
+ "versions": [
+  {
+   "id": 2817185,
+   "crate": "serde",
+   "num": "1.0.229",
+   "dl_path": "/api/v1/crates/serde/1.0.229/download",
+   "readme_path": "/api/v1/crates/serde/1.0.229/readme",
+   "updated_at": "2026-07-18T23:05:13.266456Z",
+   "created_at": "2026-07-18T23:05:13.266456Z",
+   "downloads": 1861059,
+   "features": {
+    "alloc": [
+     "serde_core/alloc"
+    ],
+    "default": [
+     "std"
+    ],
+    "derive": [
+     "serde_derive"
+    ],
+    "rc": [
+     "serde_core/rc"
+    ],
+    "std": [
+     "serde_core/std"
+    ],
+    "unstable": [
+     "serde_core/unstable"
+    ]
+   },
+   "yanked": false,
+   "yank_message": null,
+   "lib_links": null,
+   "license": "MIT OR Apache-2.0",
+   "links": {
+    "dependencies": "/api/v1/crates/serde/1.0.229/dependencies",
+    "version_downloads": "/api/v1/crates/serde/1.0.229/downloads",
+    "authors": "/api/v1/crates/serde/1.0.229/authors"
+   },
+   "crate_size": 83669,
+   "published_by": {
+    "id": 3618,
+    "login": "dtolnay",
+    "name": "David Tolnay",
+    "avatar": "https://avatars.githubusercontent.com/u/1940490?v=4",
+    "url": "https://github.com/dtolnay",
+    "created_at": "2012-07-09T03:55:40Z"
+   },
+   "audit_actions": [
+    {
+     "action": "publish",
+     "user": {
+      "id": 3618,
+      "login": "dtolnay",
+      "name": "David Tolnay",
+      "avatar": "https://avatars.githubusercontent.com/u/1940490?v=4",
+      "url": "https://github.com/dtolnay",
+      "created_at": "2012-07-09T03:55:40Z"
+     },
+     "time": "2026-07-18T23:05:13.266456Z"
+    }
+   ],
+   "checksum": "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba",
+   "rust_version": "1.56",
+   "has_lib": true,
+   "bin_names": [],
+   "edition": "2021",
+   "description": "A generic serialization/deserialization framework",
+   "homepage": "https://serde.rs",
+   "documentation": "https://docs.rs/serde",
+   "repository": "https://github.com/serde-rs/serde",
+   "trustpub_data": null,
+   "linecounts": {
+    "languages": {
+     "Rust": {
+      "code_lines": 11574,
+      "comment_lines": 302,
+      "files": 25
+     }
+    },
+    "total_code_lines": 11574,
+    "total_comment_lines": 302
+   }
+  },
+  {
+   "id": 1748414,
+   "crate": "serde",
+   "num": "1.0.228",
+   "dl_path": "/api/v1/crates/serde/1.0.228/download",
+   "readme_path": "/api/v1/crates/serde/1.0.228/readme",
+   "updated_at": "2025-09-27T16:51:35.265429Z",
+   "created_at": "2025-09-27T16:51:35.265429Z",
+   "downloads": 361189523,
+   "features": {
+    "alloc": [
+     "serde_core/alloc"
+    ],
+    "default": [
+     "std"
+    ],
+    "derive": [
+     "serde_derive"
+    ],
+    "rc": [
+     "serde_core/rc"
+    ],
+    "std": [
+     "serde_core/std"
+    ],
+    "unstable": [
+     "serde_core/unstable"
+    ]
+   },
+   "yanked": false,
+   "yank_message": null,
+   "lib_links": null,
+   "license": "MIT OR Apache-2.0",
+   "links": {
+    "dependencies": "/api/v1/crates/serde/1.0.228/dependencies",
+    "version_downloads": "/api/v1/crates/serde/1.0.228/downloads",
+    "authors": "/api/v1/crates/serde/1.0.228/authors"
+   },
+   "crate_size": 83652,
+   "published_by": {
+    "id": 3618,
+    "login": "dtolnay",
+    "name": "David Tolnay",
+    "avatar": "https://avatars.githubusercontent.com/u/1940490?v=4",
+    "url": "https://github.com/dtolnay",
+    "created_at": "2012-07-09T03:55:40Z"
+   },
+   "audit_actions": [
+    {
+     "action": "publish",
+     "user": {
+      "id": 3618,
+      "login": "dtolnay",
+      "name": "David Tolnay",
+      "avatar": "https://avatars.githubusercontent.com/u/1940490?v=4",
+      "url": "https://github.com/dtolnay",
+      "created_at": "2012-07-09T03:55:40Z"
+     },
+     "time": "2025-09-27T16:51:35.265429Z"
+    }
+   ],
+   "checksum": "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e",
+   "rust_version": "1.56",
+   "has_lib": true,
+   "bin_names": [],
+   "edition": "2021",
+   "description": "A generic serialization/deserialization framework",
+   "homepage": "https://serde.rs",
+   "documentation": "https://docs.rs/serde",
+   "repository": "https://github.com/serde-rs/serde",
+   "trustpub_data": null,
+   "linecounts": {
+    "languages": {
+     "Rust": {
+      "code_lines": 11574,
+      "comment_lines": 302,
+      "files": 25
+     }
+    },
+    "total_code_lines": 11574,
+    "total_comment_lines": 302
+   }
+  },
+  {
+   "id": 1746112,
+   "crate": "serde",
+   "num": "1.0.227",
+   "dl_path": "/api/v1/crates/serde/1.0.227/download",
+   "readme_path": "/api/v1/crates/serde/1.0.227/readme",
+   "updated_at": "2025-09-25T23:43:08.742811Z",
+   "created_at": "2025-09-25T23:43:08.742811Z",
+   "downloads": 1686570,
+   "features": {
+    "alloc": [
+     "serde_core/alloc"
+    ],
+    "default": [
+     "std"
+    ],
+    "derive": [
+     "serde_derive"
+    ],
+    "rc": [
+     "serde_core/rc"
+    ],
+    "std": [
+     "serde_core/std"
+    ],
+    "unstable": [
+     "serde_core/unstable"
+    ]
+   },
+   "yanked": false,
+   "yank_message": null,
+   "lib_links": null,
+   "license": "MIT OR Apache-2.0",
+   "links": {
+    "dependencies": "/api/v1/crates/serde/1.0.227/dependencies",
+    "version_downloads": "/api/v1/crates/serde/1.0.227/downloads",
+    "authors": "/api/v1/crates/serde/1.0.227/authors"
+   },
+   "crate_size": 83643,
+   "published_by": {
+    "id": 3618,
+    "login": "dtolnay",
+    "name": "David Tolnay",
+    "avatar": "https://avatars.githubusercontent.com/u/1940490?v=4",
+    "url": "https://github.com/dtolnay",
+    "created_at": "2012-07-09T03:55:40Z"
+   },
+   "audit_actions": [
+    {
+     "action": "publish",
+     "user": {
+      "id": 3618,
+      "login": "dtolnay",
+      "name": "David Tolnay",
+      "avatar": "https://avatars.githubusercontent.com/u/1940490?v=4",
+      "url": "https://github.com/dtolnay",
+      "created_at": "2012-07-09T03:55:40Z"
+     },
+     "time": "2025-09-25T23:43:08.742811Z"
+    }
+   ],
+   "checksum": "80ece43fc6fbed4eb5392ab50c07334d3e577cbf40997ee896fe7af40bba4245",
+   "rust_version": "1.56",
+   "has_lib": true,
+   "bin_names": [],
+   "edition": "2021",
+   "description": "A generic serialization/deserialization framework",
+   "homepage": "https://serde.rs",
+   "documentation": "https://docs.rs/serde",
+   "repository": "https://github.com/serde-rs/serde",
+   "trustpub_data": null,
+   "linecounts": {
+    "languages": {
+     "Rust": {
+      "code_lines": 11573,
+      "comment_lines": 302,
+      "files": 25
+     }
+    },
+    "total_code_lines": 11573,
+    "total_comment_lines": 302
+   }
+  },
+  {
+   "id": 1739049,
+   "crate": "serde",
+   "num": "1.0.226",
+   "dl_path": "/api/v1/crates/serde/1.0.226/download",
+   "readme_path": "/api/v1/crates/serde/1.0.226/readme",
+   "updated_at": "2025-09-20T23:37:58.558002Z",
+   "created_at": "2025-09-20T23:37:58.558002Z",
+   "downloads": 6335707,
+   "features": {
+    "alloc": [
+     "serde_core/alloc"
+    ],
+    "default": [
+     "std"
+    ],
+    "derive": [
+     "serde_derive"
+    ],
+    "rc": [
+     "serde_core/rc"
+    ],
+    "std": [
+     "serde_core/std"
+    ],
+    "unstable": [
+     "serde_core/unstable"
+    ]
+   },
+   "yanked": false,
+   "yank_message": null,
+   "lib_links": null,
+   "license": "MIT OR Apache-2.0",
+   "links": {
+    "dependencies": "/api/v1/crates/serde/1.0.226/dependencies",
+    "version_downloads": "/api/v1/crates/serde/1.0.226/downloads",
+    "authors": "/api/v1/crates/serde/1.0.226/authors"
+   },
+   "crate_size": 28484,
+   "published_by": {
+    "id": 3618,
+    "login": "dtolnay",
+    "name": "David Tolnay",
+    "avatar": "https://avatars.githubusercontent.com/u/1940490?v=4",
+    "url": "https://github.com/dtolnay",
+    "created_at": "2012-07-09T03:55:40Z"
+   },
+   "audit_actions": [
+    {
+     "action": "publish",
+     "user": {
+      "id": 3618,
+      "login": "dtolnay",
+      "name": "David Tolnay",
+      "avatar": "https://avatars.githubusercontent.com/u/1940490?v=4",
+      "url": "https://github.com/dtolnay",
+      "created_at": "2012-07-09T03:55:40Z"
+     },
+     "time": "2025-09-20T23:37:58.558002Z"
+    }
+   ],
+   "checksum": "0dca6411025b24b60bfa7ec1fe1f8e710ac09782dca409ee8237ba74b51295fd",
+   "rust_version": "1.56",
+   "has_lib": true,
+   "bin_names": [],
+   "edition": "2021",
+   "description": "A generic serialization/deserialization framework",
+   "homepage": "https://serde.rs",
+   "documentation": "https://docs.rs/serde",
+   "repository": "https://github.com/serde-rs/serde",
+   "trustpub_data": null,
+   "linecounts": {
+    "languages": {
+     "Rust": {
+      "code_lines": 4343,
+      "comment_lines": 156,
+      "files": 6
+     }
+    },
+    "total_code_lines": 4343,
+    "total_comment_lines": 156
+   }
+  }
+ ],
+ "keywords": [
+  {
+   "id": "no_std",
+   "keyword": "no_std",
+   "created_at": "2015-06-20T04:34:42.753830Z",
+   "crates_cnt": 2263
+  },
+  {
+   "id": "serde",
+   "keyword": "serde",
+   "created_at": "2015-08-10T17:10:09.021436Z",
+   "crates_cnt": 1450
+  },
+  {
+   "id": "serialization",
+   "keyword": "serialization",
+   "created_at": "2014-11-20T20:14:31.726180Z",
+   "crates_cnt": 1414
+  }
+ ],
+ "categories": [
+  {
+   "id": "encoding",
+   "category": "Encoding",
+   "slug": "encoding",
+   "description": "Encoding and/or decoding data from one data format to another.",
+   "created_at": "2017-01-17T19:13:05.112025Z",
+   "crates_cnt": 6103
+  },
+  {
+   "id": "no-std",
+   "category": "No standard library",
+   "slug": "no-std",
+   "description": "Crates that are able to function without the Rust standard library.",
+   "created_at": "2017-02-10T01:52:09.447906Z",
+   "crates_cnt": 11837
+  },
+  {
+   "id": "no-std::no-alloc",
+   "category": "No dynamic allocation",
+   "slug": "no-std::no-alloc",
+   "description": "Crates that are able to function without the Rust alloc crate.",
+   "created_at": "2023-01-23T10:07:45.986892Z",
+   "crates_cnt": 1338
+  }
+ ]
+}

@@ -1,0 +1,17 @@
+{
+  "_source": "Derived from github.com/package-url/purl-spec test-suite-data.json (canonical cases relevant to aveloxis's 12 purl types) + PURL-TYPES.md normalization rules. Fetched/verified 2026-07-21. These are SPEC values, not captured from our implementation — the point of the fixture.",
+  "cases": [
+    {"type": "pypi",     "name": "Flask_SQLAlchemy",  "version": "2.5.1",  "canonical": "pkg:pypi/flask-sqlalchemy@2.5.1"},
+    {"type": "pypi",     "name": "Pillow",            "version": "8.0.0",  "canonical": "pkg:pypi/pillow@8.0.0"},
+    {"type": "pypi",     "name": "numpy",             "version": "",       "canonical": "pkg:pypi/numpy"},
+    {"type": "npm",      "name": "@babel/traverse",   "version": "7.22.0", "canonical": "pkg:npm/%40babel/traverse@7.22.0"},
+    {"type": "npm",      "name": "lodash",            "version": "4.17.21","canonical": "pkg:npm/lodash@4.17.21"},
+    {"type": "golang",   "name": "github.com/Masterminds/semver", "version": "v3.2.0", "canonical": "pkg:golang/github.com/masterminds/semver@v3.2.0"},
+    {"type": "maven",    "name": "org.apache.commons/commons-lang3", "version": "3.12.0", "canonical": "pkg:maven/org.apache.commons/commons-lang3@3.12.0"},
+    {"type": "gem",      "name": "rails",             "version": "7.0.0",  "canonical": "pkg:gem/rails@7.0.0"},
+    {"type": "cargo",    "name": "serde",             "version": "1.0.0",  "canonical": "pkg:cargo/serde@1.0.0"},
+    {"type": "composer", "name": "Symfony/Console",   "version": "6.0.0",  "canonical": "pkg:composer/symfony/console@6.0.0"},
+    {"type": "nuget",    "name": "Newtonsoft.Json",   "version": "13.0.1", "canonical": "pkg:nuget/newtonsoft.json@13.0.1"},
+    {"type": "hex",      "name": "phoenix",           "version": "1.7.0",  "canonical": "pkg:hex/phoenix@1.7.0"}
+  ]
+}

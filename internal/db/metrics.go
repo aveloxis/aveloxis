@@ -153,7 +153,7 @@ type MetricRow struct {
 // IssuesNew returns count of new issues opened per period.
 func (s *PostgresStore) IssuesNew(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
-		SELECT date_trunc($1, i.created_at::DATE) AS date, COUNT(i.issue_id) AS value, r.repo_name
+		SELECT date_trunc($1, (i.created_at AT TIME ZONE 'UTC')::DATE) AS date, COUNT(i.issue_id) AS value, r.repo_name
 		FROM aveloxis_data.issues i
 		JOIN aveloxis_data.repos r ON i.repo_id = r.repo_id
 		WHERE i.repo_id = $2
@@ -166,7 +166,7 @@ func (s *PostgresStore) IssuesNew(ctx context.Context, repoID int64, period stri
 // IssuesClosed returns count of closed issues per period.
 func (s *PostgresStore) IssuesClosed(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
-		SELECT date_trunc($1, i.closed_at::DATE) AS date, COUNT(i.issue_id) AS value, r.repo_name
+		SELECT date_trunc($1, (i.closed_at AT TIME ZONE 'UTC')::DATE) AS date, COUNT(i.issue_id) AS value, r.repo_name
 		FROM aveloxis_data.issues i
 		JOIN aveloxis_data.repos r ON i.repo_id = r.repo_id
 		WHERE i.repo_id = $2
@@ -180,7 +180,7 @@ func (s *PostgresStore) IssuesClosed(ctx context.Context, repoID int64, period s
 // IssuesActive returns count of issues with events per period.
 func (s *PostgresStore) IssuesActive(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
-		SELECT date_trunc($1, ie.created_at::DATE) AS date, COUNT(DISTINCT i.issue_id) AS value, r.repo_name
+		SELECT date_trunc($1, (ie.created_at AT TIME ZONE 'UTC')::DATE) AS date, COUNT(DISTINCT i.issue_id) AS value, r.repo_name
 		FROM aveloxis_data.issues i
 		JOIN aveloxis_data.issue_events ie ON i.issue_id = ie.issue_id
 		JOIN aveloxis_data.repos r ON i.repo_id = r.repo_id
@@ -301,7 +301,7 @@ func (s *PostgresStore) AbandonedIssues(ctx context.Context, repoID int64) ([]ma
 // PRsNew returns count of new pull requests per period.
 func (s *PostgresStore) PRsNew(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
-		SELECT date_trunc($1, p.created_at::DATE) AS date, COUNT(*) AS value, r.repo_name
+		SELECT date_trunc($1, (p.created_at AT TIME ZONE 'UTC')::DATE) AS date, COUNT(*) AS value, r.repo_name
 		FROM aveloxis_data.pull_requests p
 		JOIN aveloxis_data.repos r ON p.repo_id = r.repo_id
 		WHERE p.repo_id = $2
@@ -313,7 +313,7 @@ func (s *PostgresStore) PRsNew(ctx context.Context, repoID int64, period string,
 // ReviewsAccepted returns merged PRs per period.
 func (s *PostgresStore) ReviewsAccepted(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
-		SELECT date_trunc($1, p.merged_at::DATE) AS date, COUNT(*) AS value, r.repo_name
+		SELECT date_trunc($1, (p.merged_at AT TIME ZONE 'UTC')::DATE) AS date, COUNT(*) AS value, r.repo_name
 		FROM aveloxis_data.pull_requests p
 		JOIN aveloxis_data.repos r ON p.repo_id = r.repo_id
 		WHERE p.repo_id = $2
@@ -326,7 +326,7 @@ func (s *PostgresStore) ReviewsAccepted(ctx context.Context, repoID int64, perio
 // ReviewsDeclined returns closed (not merged) PRs per period.
 func (s *PostgresStore) ReviewsDeclined(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
-		SELECT date_trunc($1, p.closed_at::DATE) AS date, COUNT(*) AS value, r.repo_name
+		SELECT date_trunc($1, (p.closed_at AT TIME ZONE 'UTC')::DATE) AS date, COUNT(*) AS value, r.repo_name
 		FROM aveloxis_data.pull_requests p
 		JOIN aveloxis_data.repos r ON p.repo_id = r.repo_id
 		WHERE p.repo_id = $2
@@ -517,7 +517,7 @@ func (s *PostgresStore) ContributorsNew(ctx context.Context, repoID int64, perio
 			WHERE repo_id = $2 AND cmt_ght_author_id IS NOT NULL
 			GROUP BY cmt_ght_author_id, repo_id
 			UNION ALL
-			SELECT reporter_id, MIN(created_at::DATE), repo_id
+			SELECT reporter_id, MIN((created_at AT TIME ZONE 'UTC')::DATE), repo_id
 			FROM aveloxis_data.issues
 			WHERE repo_id = $2 AND reporter_id IS NOT NULL AND pull_request IS NULL
 			GROUP BY reporter_id, repo_id
@@ -708,7 +708,7 @@ func (s *PostgresStore) Deps(ctx context.Context, repoID int64) ([]DepRow, error
 // RepoMessages returns message counts per period.
 func (s *PostgresStore) RepoMessages(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
 	return s.timeSeriesMetric(ctx, `
-		SELECT date_trunc($1, msg_timestamp::DATE) AS date, COUNT(*) AS value, r.repo_name
+		SELECT date_trunc($1, (msg_timestamp AT TIME ZONE 'UTC')::DATE) AS date, COUNT(*) AS value, r.repo_name
 		FROM aveloxis_data.messages m
 		JOIN aveloxis_data.repos r ON m.repo_id = r.repo_id
 		WHERE m.repo_id = $2

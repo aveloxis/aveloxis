@@ -140,10 +140,15 @@ func TestPyPIClassifierFallback(t *testing.T) {
 	if idx < 0 {
 		t.Fatal("cannot find resolvePyPILibyear")
 	}
-	fnBody := code[idx : idx+1500]
+	// Window widened v0.27.30: the PEP 639 license_expression support
+	// (and its doc comment) grew the function past the old 1500 chars.
+	fnBody := code[idx:min(idx+3000, len(code))]
 
 	if !strings.Contains(fnBody, "Classifiers") || !strings.Contains(fnBody, "parsePyPIClassifierLicense") {
 		t.Error("resolvePyPILibyear must fall back to classifier-based license when info.license is empty")
+	}
+	if !strings.Contains(fnBody, "LicenseExpression") {
+		t.Error("resolvePyPILibyear must read PEP 639 license_expression FIRST — modern PyPI packages (flask 3.x) leave both the legacy field and classifiers empty")
 	}
 }
 

@@ -57,6 +57,18 @@ jobs:
       # localhost because GitHub Actions exposes service container
       # ports via the runner's loopback interface.
       AVELOXIS_TEST_DB: postgres://aveloxis_test:aveloxis_test@localhost:5432/aveloxis_test?sslmode=disable
+      # v0.27.29 — run the ENTIRE integration tier under a non-UTC
+      # timezone. The 2026-07-10 flat-line bug (date_trunc in a
+      # non-UTC session vs a UTC grid → every chart value silently
+      # zero) could never reproduce in CI because CI ran UTC; the
+      # 2026-07-21 audit found the same class latent in metrics.go's
+      # ::DATE casts. TZ makes Go's time.Local non-UTC and PGTZ makes
+      # every postgres session non-UTC, so ANY Go↔SQL timezone
+      # disagreement in ANY integration test now fails loudly here
+      # instead of shipping. America/Chicago = the operator's zone,
+      # where the original bug was live.
+      TZ: America/Chicago
+      PGTZ: America/Chicago
 
     steps:
       - uses: actions/checkout@v4

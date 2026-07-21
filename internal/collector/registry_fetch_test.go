@@ -20,10 +20,18 @@ import (
 	"testing"
 )
 
-// TestNoBareCurlWithoutMaxTime pins the choke point: analysis.go may
-// contain exactly ONE `exec.CommandContext(ctx, "curl", ...)` call —
-// inside fetchRegistryJSON — and that helper must apply --max-time.
-func TestNoBareCurlWithoutMaxTime(t *testing.T) {
+// TestRegistryFetchIsBoundedAndCurlFree pins the choke point in its
+// v0.27.30 net/http form. The two invariants are transport-agnostic
+// and both have production incidents behind them:
+//   - ZERO curl exec sites in analysis.go: the transport moved to
+//     net/http so every resolver's base URL is testable (7 registries
+//     previously had NO coverage because curl-bound URLs were
+//     unreachable by httptest). A curl reappearing means someone
+//     bypassed the choke point.
+//   - The shared client declares an explicit Timeout: bare unbounded
+//     fetches were the #2 subprocess-hang class in production
+//     goroutine dumps (v0.27.5).
+func TestRegistryFetchIsBoundedAndCurlFree(t *testing.T) {
 	src, err := os.ReadFile("analysis.go")
 	if err != nil {
 		t.Fatal(err)
@@ -41,25 +49,11 @@ func TestNoBareCurlWithoutMaxTime(t *testing.T) {
 	}
 	stripped := sb.String()
 
-	count := strings.Count(stripped, `"curl"`)
-	if count != 1 {
-		t.Errorf(`analysis.go contains %d exec sites referencing "curl"; want exactly 1 `+
-			`(inside fetchRegistryJSON). Every registry lookup must route through the `+
-			`helper so the --max-time cap can never be forgotten — bare curls were the `+
-			`#2 subprocess-hang class in production goroutine dumps.`, count)
+	if count := strings.Count(stripped, `"curl"`); count != 0 {
+		t.Errorf("analysis.go contains %d curl exec references; want 0 — registry lookups route through fetchRegistryJSON's net/http client (v0.27.30)", count)
 	}
-
-	// The helper itself must apply the wall-clock cap.
-	idx := strings.Index(code, "func fetchRegistryJSON(")
-	if idx < 0 {
-		t.Fatal("analysis.go must declare fetchRegistryJSON — the single curl choke point")
-	}
-	body := code[idx:]
-	if next := strings.Index(body[1:], "\nfunc "); next > 0 {
-		body = body[:next+1]
-	}
-	if !strings.Contains(body, "--max-time") {
-		t.Error("fetchRegistryJSON must pass --max-time to curl — the unbounded-hang fix IS the point of the helper")
+	if !strings.Contains(code, "registryHTTPClient = &http.Client{Timeout:") {
+		t.Error("registryHTTPClient must declare an explicit Timeout — unbounded fetches were the #2 production hang class")
 	}
 }
 

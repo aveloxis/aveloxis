@@ -133,7 +133,10 @@ func TestScanRoutesThroughCache(t *testing.T) {
 func TestPurlForPackageMapping(t *testing.T) {
 	cases := []struct{ eco, name, ver, want string }{
 		{"npm", "lodash", "4.17.21", "pkg:npm/lodash@4.17.21"},
-		{"npm", "@babel/core", "7.0.0", "pkg:npm/@babel/core@7.0.0"},
+		// v0.27.29: spec-canonical — npm scope '@' percent-encodes to
+		// %40 (purl-spec test-suite case). The pre-v0.27.29 pin
+		// asserted the bare '@' form back at the implementation.
+		{"npm", "@babel/core", "7.0.0", "pkg:npm/%40babel/core@7.0.0"},
 		{"pypi", "flask", "2.5.0", "pkg:pypi/flask@2.5.0"},
 		{"cargo", "serde", "1.0.0", "pkg:cargo/serde@1.0.0"},
 		{"gem", "rails", "7.0.0", "pkg:gem/rails@7.0.0"},

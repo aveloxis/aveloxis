@@ -20,7 +20,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -1264,13 +1266,6 @@ type libyearDep struct {
 	Manager     string // "npm", "pypi"
 }
 
-// registryFetchMaxTime bounds every registry-lookup curl at 30 seconds
-// of wall clock (curl's --max-time). v0.27.5: the ~15 previously-bare
-// `curl -sf` sites in this file were the #2 subprocess-hang class in
-// production goroutine dumps — a registry that accepts the TCP
-// connection and then stalls held a collection worker indefinitely.
-const registryFetchMaxTime = "30"
-
 // fetchRegistryJSON is THE single curl choke point for package-registry
 // lookups (v0.27.5) — every libyear/license resolver in this file
 // routes through it so the --max-time cap can never be forgotten at a
@@ -1284,23 +1279,42 @@ const registryFetchMaxTime = "30"
 // application/json"`). Despite the name, the returned bytes are
 // whatever the endpoint served — Hackage's upload-time endpoints
 // return plain text and use this helper too.
-func fetchRegistryJSON(ctx context.Context, url string, extraArgs ...string) ([]byte, error) {
-	// crates.io REJECTS curl's default User-Agent with HTTP 403 (their
-	// crawler policy wants an identifying UA with a contact URL) —
-	// which silently zeroed EVERY cargo libyear row since inception.
-	// Other registries tolerate any UA; identifying ourselves is
-	// polite everywhere. v0.27.19.
-	args := []string{"-sf", "--max-time", registryFetchMaxTime,
-		"-A", "aveloxis/" + db.ToolVersion + " (+https://github.com/aveloxis/aveloxis)"}
-	args = append(args, extraArgs...)
-	args = append(args, url)
-	cmd := exec.CommandContext(ctx, "curl", args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+// registryHTTPClient bounds every registry lookup at 30s — the same
+// budget the curl-era --max-time carried (v0.27.5's #2 hang class).
+var registryHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+// fetchRegistryJSON fetches a registry URL over net/http (v0.27.30 —
+// converted from curl so every resolver's base URL is injectable for
+// behavioral tests and live canaries; 7 registries previously had
+// ZERO test coverage because their URLs were unreachable by httptest).
+// headers are optional "Key: Value" pairs (Hackage needs Accept).
+//
+// crates.io REJECTS anonymous default User-Agents with HTTP 403
+// (their crawler policy wants an identifying UA with a contact URL) —
+// which silently zeroed EVERY cargo libyear row since inception.
+// Other registries tolerate any UA; identifying ourselves is polite
+// everywhere. v0.27.19.
+func fetchRegistryJSON(ctx context.Context, url string, headers ...string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
 		return nil, err
 	}
-	return out.Bytes(), nil
+	req.Header.Set("User-Agent", "aveloxis/"+db.ToolVersion+" (+https://github.com/aveloxis/aveloxis)")
+	for _, h := range headers {
+		if k, v, ok := strings.Cut(h, ": "); ok {
+			req.Header.Set(k, v)
+		}
+	}
+	resp, err := registryHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		// Mirror curl -f: non-2xx is an error, body discarded.
+		return nil, fmt.Errorf("registry %s: HTTP %d", url, resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 func parsePackageJSONVersions(path string) ([]libyearDep, error) {
@@ -1438,6 +1452,26 @@ func utf16BEToUTF8(data []byte) []byte {
 // can point it at an httptest server.
 var npmRegistryBase = "https://registry.npmjs.org"
 
+// Registry base URLs — vars so behavioral tests and live canaries can
+// point each resolver at an httptest server (v0.27.30; npm led the
+// way in v0.27.19). Before this, 7 of the 12 registries had ZERO test
+// coverage of any kind: their URLs were hardcoded through curl and
+// structurally unreachable by tests — the audit's G2 gap, the exact
+// preconditions of the npm/cargo whole-ecosystem outages.
+var (
+	pypiRegistryBase      = "https://pypi.org"
+	goProxyBase           = "https://proxy.golang.org"
+	cratesRegistryBase    = "https://crates.io"
+	rubygemsRegistryBase  = "https://rubygems.org"
+	mavenSearchBase       = "https://search.maven.org"
+	packagistRegistryBase = "https://repo.packagist.org"
+	hexRegistryBase       = "https://hex.pm"
+	nugetRegistryBase     = "https://api.nuget.org"
+	pubDevRegistryBase    = "https://pub.dev"
+	hackageRegistryBase   = "https://hackage.haskell.org"
+	githubAPIBase         = "https://api.github.com"
+)
+
 // resolveNPMLibyear checks the npm registry for the latest version.
 //
 // v0.27.19: plain HTTP against registry.npmjs.org. The previous
@@ -1496,22 +1530,29 @@ func resolveNPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 		LatestReleaseDate:  latestDate,
 		Libyear:            libyear,
 		License:            info2.License,
-		Purl:               fmt.Sprintf("pkg:npm/%s@%s", dep.Name, dep.Version),
+		Purl:               buildPurl("npm", dep.Name, dep.Version),
 	}, nil
 }
 
 // resolvePyPILibyear checks PyPI for the latest version.
 func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://pypi.org/pypi/%s/json", dep.Name))
+		fmt.Sprintf(pypiRegistryBase+"/pypi/%s/json", dep.Name))
 	if err != nil {
 		return nil, err
 	}
 	var info struct {
 		Info struct {
-			Version     string   `json:"version"`
-			License     string   `json:"license"`
-			Classifiers []string `json:"classifiers"`
+			Version string `json:"version"`
+			License string `json:"license"`
+			// PEP 639 (live on PyPI since 2024): modern packages set
+			// license_expression (an SPDX expression) and leave the
+			// legacy license field AND the trove classifiers empty —
+			// flask 3.x live-verified 2026-07-21. The v0.27.30 PyPI
+			// canary caught this on its FIRST run: without this field
+			// every PEP-639 package silently loses license data.
+			LicenseExpression string   `json:"license_expression"`
+			Classifiers       []string `json:"classifiers"`
 		} `json:"info"`
 		Releases map[string][]struct {
 			UploadTime string `json:"upload_time"`
@@ -1535,7 +1576,12 @@ func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, er
 	// info.license. Fall back to classifier parsing when the license field
 	// is empty or a sentinel value. This was causing 35.7% of PyPI deps
 	// to have empty license data.
-	license := info.Info.License
+	// Precedence: PEP 639 license_expression (already SPDX) wins;
+	// then the legacy free-text field; then trove classifiers.
+	license := info.Info.LicenseExpression
+	if license == "" {
+		license = info.Info.License
+	}
 	if license == "" || strings.EqualFold(license, "UNKNOWN") {
 		license = parsePyPIClassifierLicense(info.Info.Classifiers)
 	}
@@ -1546,7 +1592,7 @@ func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, er
 		Type:               dep.Type,
 		PackageManager:     "pypi",
 		License:            license,
-		Purl:               fmt.Sprintf("pkg:pypi/%s@%s", dep.Name, dep.Version),
+		Purl:               buildPurl("pypi", dep.Name, dep.Version),
 		CurrentVersion:     dep.Version,
 		LatestVersion:      info.Info.Version,
 		CurrentReleaseDate: currentDate,
@@ -1677,7 +1723,7 @@ func parseGemfileVersions(path string) []libyearDep {
 func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	// Go proxy API: https://proxy.golang.org/{module}/@v/{version}.info
 	latestBody, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://proxy.golang.org/%s/@latest", dep.Name))
+		fmt.Sprintf(goProxyBase+"/%s/@latest", dep.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -1692,7 +1738,7 @@ func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, erro
 	currentDate := ""
 	if dep.Version != "" {
 		if curBody, err := fetchRegistryJSON(ctx,
-			fmt.Sprintf("https://proxy.golang.org/%s/@v/v%s.info", dep.Name, dep.Version)); err == nil {
+			fmt.Sprintf(goProxyBase+"/%s/@v/v%s.info", dep.Name, dep.Version)); err == nil {
 			var curInfo struct {
 				Time string `json:"Time"`
 			}
@@ -1717,14 +1763,14 @@ func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, erro
 		LatestReleaseDate:  latestInfo.Time,
 		Libyear:            calcLibyear(currentDate, latestInfo.Time),
 		License:            license,
-		Purl:               fmt.Sprintf("pkg:golang/%s@%s", dep.Name, dep.Version),
+		Purl:               buildPurl("golang", dep.Name, dep.Version),
 	}, nil
 }
 
 // resolveCargoLibyear checks crates.io for Rust crate versions.
 func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://crates.io/api/v1/crates/%s", dep.Name))
+		fmt.Sprintf(cratesRegistryBase+"/api/v1/crates/%s", dep.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -1770,7 +1816,7 @@ func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 		PackageManager:     "cargo",
 		CurrentVersion:     dep.Version,
 		License:            license,
-		Purl:               fmt.Sprintf("pkg:cargo/%s@%s", dep.Name, dep.Version),
+		Purl:               buildPurl("cargo", dep.Name, dep.Version),
 		LatestVersion:      info.Crate.NewestVersion,
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latestDate,
@@ -1781,7 +1827,7 @@ func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 // resolveRubyGemsLibyear checks rubygems.org for gem versions.
 func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://rubygems.org/api/v1/versions/%s.json", dep.Name))
+		fmt.Sprintf(rubygemsRegistryBase+"/api/v1/versions/%s.json", dep.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -1828,7 +1874,7 @@ func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
 		License:            license,
-		Purl:               fmt.Sprintf("pkg:gem/%s@%s", dep.Name, dep.Version),
+		Purl:               buildPurl("gem", dep.Name, dep.Version),
 		PackageManager:     "rubygems",
 		CurrentVersion:     dep.Version,
 		LatestVersion:      latestVersion,
@@ -1948,7 +1994,7 @@ func fetchGoModuleLicense(ctx context.Context, modulePath string) string {
 	owner, repo := parts[0], parts[1]
 
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://api.github.com/repos/%s/%s/license", owner, repo))
+		fmt.Sprintf(githubAPIBase+"/repos/%s/%s/license", owner, repo))
 	if err != nil {
 		return ""
 	}
@@ -2521,7 +2567,7 @@ func resolveMavenLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 	}
 	groupID, artifactID := parts[0], parts[1]
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://search.maven.org/solrsearch/select?q=g:%%22%s%%22+AND+a:%%22%s%%22&rows=1&wt=json", groupID, artifactID))
+		fmt.Sprintf(mavenSearchBase+"/solrsearch/select?q=g:%%22%s%%22+AND+a:%%22%s%%22&rows=1&wt=json", groupID, artifactID))
 	if err != nil {
 		return nil, err
 	}
@@ -2551,14 +2597,14 @@ func resolveMavenLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 		LatestVersion:     latestVersion,
 		LatestReleaseDate: latestDate,
 		Libyear:           0, // No current release date from Maven search API.
-		Purl:              fmt.Sprintf("pkg:maven/%s/%s@%s", groupID, artifactID, dep.Version),
+		Purl:              buildPurl("maven", groupID+"/"+artifactID, dep.Version),
 	}, nil
 }
 
 // resolvePackagistLibyear checks Packagist (PHP) for package versions.
 func resolvePackagistLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://repo.packagist.org/p2/%s.json", dep.Name))
+		fmt.Sprintf(packagistRegistryBase+"/p2/%s.json", dep.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -2601,14 +2647,14 @@ func resolvePackagistLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRo
 		LatestReleaseDate:  latest.Time,
 		Libyear:            calcLibyear(currentDate, latest.Time),
 		License:            license,
-		Purl:               fmt.Sprintf("pkg:composer/%s@%s", dep.Name, dep.Version),
+		Purl:               buildPurl("composer", dep.Name, dep.Version),
 	}, nil
 }
 
 // resolveHexLibyear checks hex.pm (Elixir/Erlang) for package versions.
 func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://hex.pm/api/packages/%s", dep.Name))
+		fmt.Sprintf(hexRegistryBase+"/api/packages/%s", dep.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -2651,7 +2697,7 @@ func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 		LatestReleaseDate:  latest.InsertedAt,
 		Libyear:            calcLibyear(currentDate, latest.InsertedAt),
 		License:            license,
-		Purl:               fmt.Sprintf("pkg:hex/%s@%s", dep.Name, dep.Version),
+		Purl:               buildPurl("hex", dep.Name, dep.Version),
 	}, nil
 }
 
@@ -2659,7 +2705,7 @@ func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	// NuGet registration API.
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://api.nuget.org/v3/registration5-semver1/%s/index.json",
+		fmt.Sprintf(nugetRegistryBase+"/v3/registration5-semver1/%s/index.json",
 			strings.ToLower(dep.Name)))
 	if err != nil {
 		return nil, err
@@ -2708,7 +2754,7 @@ func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 		LatestReleaseDate:  latestDate,
 		Libyear:            calcLibyear(currentDate, latestDate),
 		License:            license,
-		Purl:               fmt.Sprintf("pkg:nuget/%s@%s", dep.Name, dep.Version),
+		Purl:               buildPurl("nuget", dep.Name, dep.Version),
 	}, nil
 }
 
@@ -2788,7 +2834,7 @@ func parsePubspecVersions(content string) []libyearDep {
 // resolvePubDevLibyear checks pub.dev (Dart/Flutter) for package versions.
 func resolvePubDevLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://pub.dev/api/packages/%s", dep.Name))
+		fmt.Sprintf(pubDevRegistryBase+"/api/packages/%s", dep.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -2824,7 +2870,7 @@ func resolvePubDevLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, 
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latestDate,
 		Libyear:            calcLibyear(currentDate, latestDate),
-		Purl:               fmt.Sprintf("pkg:pub/%s@%s", dep.Name, dep.Version),
+		Purl:               buildPurl("pub", dep.Name, dep.Version),
 	}, nil
 }
 
@@ -2953,7 +2999,7 @@ func resolveSwiftPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 
 	// Get latest release from GitHub API.
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo))
+		fmt.Sprintf(githubAPIBase+"/repos/%s/%s/releases/latest", owner, repo))
 	if err != nil {
 		return nil, err
 	}
@@ -2975,7 +3021,7 @@ func resolveSwiftPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 		LatestVersion:     latestVersion,
 		LatestReleaseDate: release.PublishedAt,
 		Libyear:           0, // No current release date without per-tag API call.
-		Purl:              fmt.Sprintf("pkg:swift/%s/%s@%s", owner, repo, dep.Version),
+		Purl:              buildPurl("swift", owner+"/"+repo, dep.Version),
 	}, nil
 }
 
@@ -3043,8 +3089,8 @@ func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 	// one registry endpoint that needs an Accept header (it serves HTML
 	// otherwise) — passed through fetchRegistryJSON's extraArgs.
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://hackage.haskell.org/package/%s/preferred", dep.Name),
-		"-H", "Accept: application/json")
+		fmt.Sprintf(hackageRegistryBase+"/package/%s/preferred", dep.Name),
+		"Accept: application/json")
 	if err != nil {
 		return nil, err
 	}
@@ -3063,14 +3109,14 @@ func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 	// package info (plain-text responses, same curl choke point).
 	latestDate := ""
 	if uploadBody, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf("https://hackage.haskell.org/package/%s-%s/upload-time", dep.Name, latestVersion)); err == nil {
+		fmt.Sprintf(hackageRegistryBase+"/package/%s-%s/upload-time", dep.Name, latestVersion)); err == nil {
 		latestDate = strings.TrimSpace(string(uploadBody))
 	}
 
 	currentDate := ""
 	if dep.Version != "" {
 		if uploadBody, err := fetchRegistryJSON(ctx,
-			fmt.Sprintf("https://hackage.haskell.org/package/%s-%s/upload-time", dep.Name, dep.Version)); err == nil {
+			fmt.Sprintf(hackageRegistryBase+"/package/%s-%s/upload-time", dep.Name, dep.Version)); err == nil {
 			currentDate = strings.TrimSpace(string(uploadBody))
 		}
 	}
@@ -3085,7 +3131,7 @@ func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latestDate,
 		Libyear:            calcLibyear(currentDate, latestDate),
-		Purl:               fmt.Sprintf("pkg:hackage/%s@%s", dep.Name, dep.Version),
+		Purl:               buildPurl("hackage", dep.Name, dep.Version),
 	}, nil
 }
 

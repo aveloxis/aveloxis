@@ -37,11 +37,51 @@ type vulnScanTarget struct {
 	Scope string
 }
 
-// dependency_kind values carried onto findings (v0.27.21 C1).
+// dependency_kind values carried onto findings (v0.27.21 C1;
+// 'self' added v0.27.29 — advisories against the repo's OWN
+// published packages, version-unconstrained).
 const (
 	dependencyKindDirect     = "direct"
 	dependencyKindTransitive = "transitive"
+	dependencyKindSelf       = "self"
 )
+
+// selfAdvisoryPurlTypes maps the DISTRIBUTION subsystem's ecosystem
+// strings (deps.dev/ecosyste.ms/manifest flavors — a different
+// vocabulary than the libyear package managers in purlEcosystemTypes)
+// to purl types. Unmapped ecosystems (conda, cran, julia, cpp…) are
+// honestly omitted, same posture as purlForPackage.
+var selfAdvisoryPurlTypes = map[string]string{
+	"npm":      "npm",
+	"pypi":     "pypi",
+	"go":       "golang",
+	"cargo":    "cargo",
+	"rubygems": "gem",
+	"gem":      "gem",
+	"maven":    "maven",
+	"composer": "composer",
+	"elixir":   "hex",
+	"hex":      "hex",
+	"nuget":    "nuget",
+	"dart":     "pub",
+	"pub":      "pub",
+	"swift":    "swift",
+	"haskell":  "hackage",
+}
+
+// selfAdvisoryPurl builds a VERSIONLESS purl for self-advisory
+// scanning — OSV returns every advisory for the package (verified
+// live 2026-07-21: pkg:pypi/numpy → 16 stubs from querybatch).
+func selfAdvisoryPurl(ecosystem, name string) string {
+	typ, ok := selfAdvisoryPurlTypes[strings.ToLower(ecosystem)]
+	if !ok || name == "" {
+		return ""
+	}
+	if typ == "maven" {
+		name = strings.Replace(name, ":", "/", 1)
+	}
+	return buildPurl(typ, name, "") // v0.27.29: spec-canonical, versionless
+}
 
 // purlEcosystemTypes maps our package-manager strings to purl types
 // for TRANSITIVE lockfile targets (direct deps carry purls built by
@@ -74,7 +114,7 @@ func purlForPackage(ecosystem, name, version string) string {
 	if typ == "maven" {
 		name = strings.Replace(name, ":", "/", 1)
 	}
-	return "pkg:" + typ + "/" + name + "@" + version
+	return buildPurl(typ, name, version) // v0.27.29: spec-canonical
 }
 
 // isSelfDependency reports whether a declared dependency names one of

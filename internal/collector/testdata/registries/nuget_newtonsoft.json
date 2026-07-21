@@ -1,0 +1,424 @@
+{
+ "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json",
+ "@type": [
+  "catalog:CatalogRoot",
+  "PackageRegistration",
+  "catalog:Permalink"
+ ],
+ "commitId": "05ea48b3-2b35-400a-9670-f3ec23da985e",
+ "commitTimeStamp": "2026-04-10T00:15:25.1492389+00:00",
+ "count": 2,
+ "items": [
+  {
+   "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json#page/3.5.8/12.0.1-beta2",
+   "@type": "catalog:CatalogPage",
+   "commitId": "05ea48b3-2b35-400a-9670-f3ec23da985e",
+   "commitTimeStamp": "2026-04-10T00:15:25.1492389+00:00",
+   "count": 64,
+   "items": [
+    {
+     "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/3.5.8.json",
+     "@type": "Package",
+     "commitId": "2c2253e1-8881-429a-8548-08dabd1ae4c8",
+     "commitTimeStamp": "2022-12-08T16:44:02.0217374+00:00",
+     "catalogEntry": {
+      "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.3.5.8.json",
+      "@type": "PackageDetails",
+      "authors": "James Newton-King",
+      "description": "Json.NET is a popular high-performance JSON framework for .NET",
+      "iconUrl": "",
+      "id": "Newtonsoft.Json",
+      "language": "en-US",
+      "licenseExpression": "",
+      "licenseUrl": "",
+      "listed": true,
+      "minClientVersion": "",
+      "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/3.5.8/newtonsoft.json.3.5.8.nupkg",
+      "projectUrl": "",
+      "published": "2011-01-08T22:12:57.713+00:00",
+      "requireLicenseAcceptance": false,
+      "summary": "Json.NET is a popular high-performance JSON framework for .NET",
+      "tags": [
+       ""
+      ],
+      "title": "",
+      "version": "3.5.8"
+     },
+     "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/3.5.8/newtonsoft.json.3.5.8.nupkg",
+     "registration": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json"
+    },
+    {
+     "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/4.0.1.json",
+     "@type": "Package",
+     "commitId": "2c2253e1-8881-429a-8548-08dabd1ae4c8",
+     "commitTimeStamp": "2022-12-08T16:44:02.0217374+00:00",
+     "catalogEntry": {
+      "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.4.0.1.json",
+      "@type": "PackageDetails",
+      "authors": "James Newton-King",
+      "description": "Json.NET is a popular high-performance JSON framework for .NET",
+      "iconUrl": "",
+      "id": "Newtonsoft.Json",
+      "language": "en-US",
+      "licenseExpression": "",
+      "licenseUrl": "",
+      "listed": true,
+      "minClientVersion": "",
+      "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/4.0.1/newtonsoft.json.4.0.1.nupkg",
+      "projectUrl": "http://james.newtonking.com/projects/json-net.aspx",
+      "published": "2011-04-22T01:18:06.287+00:00",
+      "requireLicenseAcceptance": false,
+      "summary": "",
+      "tags": [
+       "json"
+      ],
+      "title": "Json.NET",
+      "version": "4.0.1"
+     },
+     "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/4.0.1/newtonsoft.json.4.0.1.nupkg",
+     "registration": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json"
+    },
+    {
+     "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/4.0.2.json",
+     "@type": "Package",
+     "commitId": "2c2253e1-8881-429a-8548-08dabd1ae4c8",
+     "commitTimeStamp": "2022-12-08T16:44:02.0217374+00:00",
+     "catalogEntry": {
+      "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.4.0.2.json",
+      "@type": "PackageDetails",
+      "authors": "James Newton-King",
+      "description": "Json.NET is a popular high-performance JSON framework for .NET",
+      "iconUrl": "",
+      "id": "Newtonsoft.Json",
+      "language": "en-US",
+      "licenseExpression": "",
+      "licenseUrl": "",
+      "listed": true,
+      "minClientVersion": "",
+      "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/4.0.2/newtonsoft.json.4.0.2.nupkg",
+      "projectUrl": "http://james.newtonking.com/projects/json-net.aspx",
+      "published": "2011-04-23T04:49:46.677+00:00",
+      "requireLicenseAcceptance": false,
+      "summary": "",
+      "tags": [
+       "json"
+      ],
+      "title": "Json.NET",
+      "version": "4.0.2"
+     },
+     "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/4.0.2/newtonsoft.json.4.0.2.nupkg",
+     "registration": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json"
+    },
+    {
+     "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/4.0.3.json",
+     "@type": "Package",
+     "commitId": "2c2253e1-8881-429a-8548-08dabd1ae4c8",
+     "commitTimeStamp": "2022-12-08T16:44:02.0217374+00:00",
+     "catalogEntry": {
+      "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.4.0.3.json",
+      "@type": "PackageDetails",
+      "authors": "James Newton-King",
+      "description": "Json.NET is a popular high-performance JSON framework for .NET",
+      "iconUrl": "",
+      "id": "Newtonsoft.Json",
+      "language": "en-US",
+      "licenseExpression": "",
+      "licenseUrl": "",
+      "listed": true,
+      "minClientVersion": "",
+      "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/4.0.3/newtonsoft.json.4.0.3.nupkg",
+      "projectUrl": "http://james.newtonking.com/projects/json-net.aspx",
+      "published": "2011-10-02T02:29:53.283+00:00",
+      "requireLicenseAcceptance": false,
+      "summary": "",
+      "tags": [
+       "json"
+      ],
+      "title": "Json.NET",
+      "version": "4.0.3"
+     },
+     "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/4.0.3/newtonsoft.json.4.0.3.nupkg",
+     "registration": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json"
+    }
+   ],
+   "parent": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json",
+   "lower": "3.5.8",
+   "upper": "12.0.1-beta2"
+  },
+  {
+   "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json#page/12.0.1/13.0.5-beta1",
+   "@type": "catalog:CatalogPage",
+   "commitId": "05ea48b3-2b35-400a-9670-f3ec23da985e",
+   "commitTimeStamp": "2026-04-10T00:15:25.1492389+00:00",
+   "count": 20,
+   "items": [
+    {
+     "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/12.0.1.json",
+     "@type": "Package",
+     "commitId": "2c2253e1-8881-429a-8548-08dabd1ae4c8",
+     "commitTimeStamp": "2022-12-08T16:44:02.0217374+00:00",
+     "catalogEntry": {
+      "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.1.json",
+      "@type": "PackageDetails",
+      "authors": "James Newton-King",
+      "dependencyGroups": [
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.1.json#dependencygroup/.netframework2.0",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework2.0"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.1.json#dependencygroup/.netframework3.5",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework3.5"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.1.json#dependencygroup/.netframework4.0",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework4.0"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.1.json#dependencygroup/.netframework4.5",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework4.5"
+       }
+      ],
+      "description": "Json.NET is a popular high-performance JSON framework for .NET",
+      "iconUrl": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.1/icon",
+      "id": "Newtonsoft.Json",
+      "language": "",
+      "licenseExpression": "MIT",
+      "licenseUrl": "https://www.nuget.org/packages/Newtonsoft.Json/12.0.1/license",
+      "listed": true,
+      "minClientVersion": "2.12",
+      "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.1/newtonsoft.json.12.0.1.nupkg",
+      "projectUrl": "https://www.newtonsoft.com/json",
+      "published": "2018-11-27T18:11:37.08+00:00",
+      "requireLicenseAcceptance": false,
+      "summary": "",
+      "tags": [
+       "json"
+      ],
+      "title": "Json.NET",
+      "version": "12.0.1"
+     },
+     "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.1/newtonsoft.json.12.0.1.nupkg",
+     "registration": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json"
+    },
+    {
+     "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/12.0.2-beta1.json",
+     "@type": "Package",
+     "commitId": "2c2253e1-8881-429a-8548-08dabd1ae4c8",
+     "commitTimeStamp": "2022-12-08T16:44:02.0217374+00:00",
+     "catalogEntry": {
+      "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta1.json",
+      "@type": "PackageDetails",
+      "authors": "James Newton-King",
+      "dependencyGroups": [
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta1.json#dependencygroup/.netframework2.0",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework2.0"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta1.json#dependencygroup/.netframework3.5",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework3.5"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta1.json#dependencygroup/.netframework4.0",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework4.0"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta1.json#dependencygroup/.netframework4.5",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework4.5"
+       }
+      ],
+      "description": "Json.NET is a popular high-performance JSON framework for .NET",
+      "iconUrl": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.2-beta1/icon",
+      "id": "Newtonsoft.Json",
+      "language": "",
+      "licenseExpression": "MIT",
+      "licenseUrl": "https://www.nuget.org/packages/Newtonsoft.Json/12.0.2-beta1/license",
+      "listed": false,
+      "minClientVersion": "2.12",
+      "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.2-beta1/newtonsoft.json.12.0.2-beta1.nupkg",
+      "projectUrl": "https://www.newtonsoft.com/json",
+      "published": "1900-01-01T00:00:00+00:00",
+      "requireLicenseAcceptance": false,
+      "summary": "",
+      "tags": [
+       "json"
+      ],
+      "title": "Json.NET",
+      "version": "12.0.2-beta1"
+     },
+     "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.2-beta1/newtonsoft.json.12.0.2-beta1.nupkg",
+     "registration": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json"
+    },
+    {
+     "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/12.0.2-beta2.json",
+     "@type": "Package",
+     "commitId": "2c2253e1-8881-429a-8548-08dabd1ae4c8",
+     "commitTimeStamp": "2022-12-08T16:44:02.0217374+00:00",
+     "catalogEntry": {
+      "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta2.json",
+      "@type": "PackageDetails",
+      "authors": "James Newton-King",
+      "dependencyGroups": [
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta2.json#dependencygroup/.netframework2.0",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework2.0"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta2.json#dependencygroup/.netframework3.5",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework3.5"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta2.json#dependencygroup/.netframework4.0",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework4.0"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta2.json#dependencygroup/.netframework4.5",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework4.5"
+       }
+      ],
+      "description": "Json.NET is a popular high-performance JSON framework for .NET",
+      "iconUrl": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.2-beta2/icon",
+      "id": "Newtonsoft.Json",
+      "language": "",
+      "licenseExpression": "MIT",
+      "licenseUrl": "https://www.nuget.org/packages/Newtonsoft.Json/12.0.2-beta2/license",
+      "listed": false,
+      "minClientVersion": "2.12",
+      "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.2-beta2/newtonsoft.json.12.0.2-beta2.nupkg",
+      "projectUrl": "https://www.newtonsoft.com/json",
+      "published": "1900-01-01T00:00:00+00:00",
+      "requireLicenseAcceptance": false,
+      "summary": "",
+      "tags": [
+       "json"
+      ],
+      "title": "Json.NET",
+      "version": "12.0.2-beta2"
+     },
+     "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.2-beta2/newtonsoft.json.12.0.2-beta2.nupkg",
+     "registration": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json"
+    },
+    {
+     "@id": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/12.0.2-beta3.json",
+     "@type": "Package",
+     "commitId": "2c2253e1-8881-429a-8548-08dabd1ae4c8",
+     "commitTimeStamp": "2022-12-08T16:44:02.0217374+00:00",
+     "catalogEntry": {
+      "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta3.json",
+      "@type": "PackageDetails",
+      "authors": "James Newton-King",
+      "dependencyGroups": [
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta3.json#dependencygroup/.netframework2.0",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework2.0"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta3.json#dependencygroup/.netframework3.5",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework3.5"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta3.json#dependencygroup/.netframework4.0",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework4.0"
+       },
+       {
+        "@id": "https://api.nuget.org/v3/catalog0/data/2022.12.08.16.43.03/newtonsoft.json.12.0.2-beta3.json#dependencygroup/.netframework4.5",
+        "@type": "PackageDependencyGroup",
+        "targetFramework": ".NETFramework4.5"
+       }
+      ],
+      "description": "Json.NET is a popular high-performance JSON framework for .NET",
+      "iconUrl": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.2-beta3/icon",
+      "id": "Newtonsoft.Json",
+      "language": "",
+      "licenseExpression": "MIT",
+      "licenseUrl": "https://www.nuget.org/packages/Newtonsoft.Json/12.0.2-beta3/license",
+      "listed": false,
+      "minClientVersion": "2.12",
+      "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.2-beta3/newtonsoft.json.12.0.2-beta3.nupkg",
+      "projectUrl": "https://www.newtonsoft.com/json",
+      "published": "1900-01-01T00:00:00+00:00",
+      "requireLicenseAcceptance": false,
+      "summary": "",
+      "tags": [
+       "json"
+      ],
+      "title": "Json.NET",
+      "version": "12.0.2-beta3"
+     },
+     "packageContent": "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/12.0.2-beta3/newtonsoft.json.12.0.2-beta3.nupkg",
+     "registration": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json"
+    }
+   ],
+   "parent": "https://api.nuget.org/v3/registration5-semver1/newtonsoft.json/index.json",
+   "lower": "12.0.1",
+   "upper": "13.0.5-beta1"
+  }
+ ],
+ "@context": {
+  "@vocab": "http://schema.nuget.org/schema#",
+  "catalog": "http://schema.nuget.org/catalog#",
+  "xsd": "http://www.w3.org/2001/XMLSchema#",
+  "items": {
+   "@id": "catalog:item",
+   "@container": "@set"
+  },
+  "commitTimeStamp": {
+   "@id": "catalog:commitTimeStamp",
+   "@type": "xsd:dateTime"
+  },
+  "commitId": {
+   "@id": "catalog:commitId"
+  },
+  "count": {
+   "@id": "catalog:count"
+  },
+  "parent": {
+   "@id": "catalog:parent",
+   "@type": "@id"
+  },
+  "tags": {
+   "@id": "tag",
+   "@container": "@set"
+  },
+  "reasons": {
+   "@container": "@set"
+  },
+  "packageTargetFrameworks": {
+   "@id": "packageTargetFramework",
+   "@container": "@set"
+  },
+  "dependencyGroups": {
+   "@id": "dependencyGroup",
+   "@container": "@set"
+  },
+  "dependencies": {
+   "@id": "dependency",
+   "@container": "@set"
+  },
+  "packageContent": {
+   "@type": "@id"
+  },
+  "published": {
+   "@type": "xsd:dateTime"
+  },
+  "registration": {
+   "@type": "@id"
+  }
+ }
+}

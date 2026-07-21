@@ -39,3 +39,27 @@ func TestHealVulnerabilitiesCmdRegistered(t *testing.T) {
 		t.Error("v0.21.5 contract: non-server CLIs must NOT call store.Migrate")
 	}
 }
+
+// TestHealVulnerabilitiesAllFlagReachesZeroFindingRepos (v0.27.32):
+// the --all flag must route selection through CollectedRepoIDs.
+// Without it, heal's cohort is ReposWithVulnerabilities — which
+// structurally cannot reach a repo with ZERO findings, the exact
+// numpy-class cohort the v0.27.29 self-advisory scan exists for.
+func TestHealVulnerabilitiesAllFlagReachesZeroFindingRepos(t *testing.T) {
+	data, err := os.ReadFile("heal_vulnerabilities.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"all"`) || !strings.Contains(s, "scanAll") {
+		t.Error("heal-vulnerabilities must register an --all flag")
+	}
+	if !strings.Contains(s, "CollectedRepoIDs") {
+		t.Error("--all must select via store.CollectedRepoIDs — the default cohort can never reach zero-finding repos")
+	}
+	// The default path must REMAIN ReposWithVulnerabilities: --all is
+	// opt-in because a fleet-wide scan is a deliberate operator action.
+	if !strings.Contains(s, "ReposWithVulnerabilities") {
+		t.Error("default (no --all) cohort must remain ReposWithVulnerabilities")
+	}
+}

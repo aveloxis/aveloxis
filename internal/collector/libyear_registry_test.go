@@ -107,9 +107,11 @@ func TestRegistryFetchSendsUserAgent(t *testing.T) {
 	if idx < 0 {
 		t.Fatal("fetchRegistryJSON not found")
 	}
-	body := s[idx : idx+900]
-	if !strings.Contains(body, `"-A", "aveloxis/"`) {
-		t.Error("fetchRegistryJSON must send an identifying User-Agent — crates.io rejects curl's default UA with 403")
+	// v0.27.30: the transport moved curl → net/http; the invariant
+	// (identifying UA on every registry request) is transport-agnostic.
+	body := s[idx : idx+1200]
+	if !strings.Contains(body, `req.Header.Set("User-Agent", "aveloxis/"`) {
+		t.Error("fetchRegistryJSON must send an identifying User-Agent — crates.io rejects anonymous default UAs with 403 (zeroed ALL cargo rows since inception)")
 	}
 }
 

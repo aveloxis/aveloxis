@@ -51,14 +51,24 @@ func TestDocsEcosystemCountsMatchCode(t *testing.T) {
 	}
 
 	phrase := regexp.MustCompile(`(\d+) ecosystems`)
-	for _, doc := range []string{
-		"../../CLAUDE.md",
-		"../../README.md",
-		"../../docs/index.md",
-		"../../docs/architecture/vulnerability-and-sbom.md",
+	// required=false marks docs that are OPTIONAL because they are
+	// gitignored (CLAUDE.md is the private operator file, .gitignore:43)
+	// and therefore ABSENT from CI checkouts — the v0.27.26 CI failure:
+	// hard-requiring it broke every CI run while passing locally. The
+	// house docs-count tripwires (TestDocsTableCountsMatchSchema) omit
+	// CLAUDE.md for the same reason; this test checks it when present
+	// (dev machines) so local drift is still caught.
+	for doc, required := range map[string]bool{
+		"../../CLAUDE.md":     false,
+		"../../README.md":     true,
+		"../../docs/index.md": true,
+		"../../docs/architecture/vulnerability-and-sbom.md": true,
 	} {
 		data, err := os.ReadFile(doc)
 		if err != nil {
+			if os.IsNotExist(err) && !required {
+				continue // gitignored local-only doc; absent in CI
+			}
 			t.Errorf("%s: %v", doc, err)
 			continue
 		}

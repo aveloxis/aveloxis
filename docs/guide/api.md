@@ -104,6 +104,10 @@ Returns a summary of dependency licenses with counts and OSI compliance status.
 
 OSI compliance is checked against a built-in list of 30+ known OSI-approved SPDX identifiers.
 
+| Parameter | Values | Default | Description |
+|---|---|---|---|
+| `scope` | `all`, `runtime` | `all` | v0.27.46: `runtime` filters to runtime-scope dependencies — the license-compliance-relevant set (dev/test/build/optional/peer tooling excluded). Unclassified deps count as runtime. The envelope echoes the effective `scope`. The GUI defaults its VIEW to runtime with an All toggle. |
+
 ### Repository Search
 
 ```
@@ -131,6 +135,8 @@ Generates and downloads a Software Bill of Materials in CycloneDX 1.5 or SPDX 2.
 | Parameter | Values | Default | Description |
 |---|---|---|---|
 | `format` | `cyclonedx`, `spdx` | `cyclonedx` | SBOM format |
+| `scope` | `all`, `runtime` | `all` | v0.27.46: `runtime` filters components to runtime-scope dependencies (the shipped surface). The default full document carries every scope, distinguished per-component — CycloneDX via the component `scope` field (required/optional/excluded), SPDX via typed dependency relationships (`DEV_DEPENDENCY_OF`, `TEST_DEPENDENCY_OF`, `BUILD_DEPENDENCY_OF`, `OPTIONAL_DEPENDENCY_OF`, `PROVIDED_DEPENDENCY_OF` for npm peers). Filtered downloads gain a `-runtime` filename marker. |
+| `vulns` | `1` | absent | Annotate with the repo's CURRENT (unresolved) findings. CycloneDX: native 1.5 `vulnerabilities` array (`affects.ref` = component purl). SPDX (v0.27.46 — previously a 400): package-level `externalRefs` with `referenceCategory: SECURITY`, `referenceType: advisory` linking each finding's OSV advisory — the SPDX 2.3-conformant vehicle. Filenames gain `-with-vulns`. |
 
 Returns JSON with `Content-Disposition: attachment` header for download.
 
@@ -529,16 +535,20 @@ Token semantics:
   currently affected). The envelope's `counts` object has `current`,
   `resolved`, and `critical` (current-only), plus — v0.27.21 Phase
   C1 — `direct`, `transitive`, and `dev` (all current-only; pre-C1
-  rows count as direct).
+  rows count as direct), and — v0.27.46 — `runtime` (current
+  findings on runtime-scope dependencies: `current - dev`, the
+  headline GUIs should lead with).
 
   **Transitive findings (v0.27.21 Phase C1).** With
   `collection.vuln_scan_transitive` enabled, findings from the full
   lockfile closure carry `dependency_kind: "transitive"` (direct
   declarations carry `"direct"`; `""` = pre-C1 row that heals on the
-  repo's next scan) and `dependency_scope: "dev"` when the lockfile
-  flags the entry as development-only. GUIs should lead with direct
-  findings — a repo with 3 direct and 400 transitive findings must
-  never headline "403 vulnerabilities".
+  repo's next scan) and a `dependency_scope` when the lockfile flags
+  the entry's scope. Since v0.27.46 DIRECT findings carry
+  `dependency_scope` too, stamped from the manifest's own scope
+  (`dev`/`test`/`build`/`optional`/`peer`; `""` = runtime). GUIs
+  should lead with direct findings — a repo with 3 direct and 400
+  transitive findings must never headline "403 vulnerabilities".
 
   **Version-resolution accuracy (v0.27.11).** Each finding also
   carries `declared_requirement` — the raw manifest requirement
@@ -582,11 +592,11 @@ Token semantics:
   carries no version) — pair it with the version-resolution class
   when rendering, since a range-declared dependency is scanned at its
   floor, not necessarily the installed version.
-- `GET /api/v1/repos/{repoID}/sbom?format=cyclonedx&vulns=1` — the
-  CURRENT SBOM with a native CycloneDX 1.5 `vulnerabilities` array
-  covering the repo's unresolved findings (`affects.ref` = component
-  purl). Rejected with 400 for `format=spdx` (SPDX has no equivalent
-  section).
+- `GET /api/v1/repos/{repoID}/sbom?vulns=1` — the CURRENT SBOM
+  annotated with the repo's unresolved findings. CycloneDX: native
+  1.5 `vulnerabilities` array (`affects.ref` = component purl). SPDX
+  (since v0.27.46): package-level SECURITY/advisory `externalRefs` —
+  the 2.3-conformant vehicle (the old 400 is gone).
 - `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
   `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
   dependency-analysis phase has not recorded anything for this repo
@@ -656,6 +666,19 @@ Per-user:
   compare picker's three-class results point at: already-collected
   repos link instantly; new repos in a pending group wait for admin
   approval before collection starts.
+  Bulk paste (2026-07-21): the body also accepts
+  `{"urls": ["...", "..."], "kind": "repo"}` — every URL lands in ONE
+  batched add (one approval unit per v0.27.20). `urls` wins when both
+  fields are present; the single-`url` body remains accepted. The
+  response carries `submitted` plus the outcome counts
+  `{linked, enqueued, pending_approval?, request_id?}`. Orgs stay one
+  per request — a multi-URL `kind: "org"` body is a 400.
+- `GET /api/v1/groups/{groupID}/orgs` — the organizations tracked in
+  the group (2026-07-21; read-only — registration goes through the
+  POST above with `kind: "org"`). Envelope:
+  `{orgs: [{org_request_id, url, name, platform, last_scanned?}]}`.
+  `last_scanned` is omitted until the scheduler's org scan first
+  visits the org. Ownership-checked for non-admins (403 otherwise).
 
 Admin-only:
 

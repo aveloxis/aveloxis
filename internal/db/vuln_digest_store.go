@@ -66,7 +66,12 @@ func SeveritiesAtOrAbove(min string) []string {
 // dependency_kind='transitive' findings out of the digest — the first
 // transitive-enabled cycles would otherwise blast a 50-item email of
 // utility-package findings. Direct and pre-C1 (”) rows always pass.
-func (s *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since time.Time, minSeverity string, includeTransitive bool) ([]VulnDigestItem, error) {
+// v0.27.46 (summary/19 P3, decision #1): includeDev=false (the
+// default) additionally keeps non-runtime-scope findings
+// (dev/test/build/optional/peer) out — the P2 Python expansion would
+// otherwise flood the digest with dev-tooling findings the week the
+// knob flips on. Runtime-scope ('' or unrecognized) rows always pass.
+func (s *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since time.Time, minSeverity string, includeTransitive, includeDev bool) ([]VulnDigestItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT v.repo_id, r.repo_owner, r.repo_name, v.vuln_id,
 		       COALESCE(v.severity, 'UNKNOWN'), COALESCE(v.package_purl, ''),
@@ -76,6 +81,7 @@ func (s *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since t
 		WHERE v.first_detected_at > $1
 		  AND v.resolved_at IS NULL
 		  AND ($3 OR COALESCE(v.dependency_kind, '') IS DISTINCT FROM 'transitive')
+		  AND ($4 OR COALESCE(v.dependency_scope, '') NOT IN ('dev','test','build','optional','peer'))
 		  -- v0.27.29: self-advisories (the repo's OWN releases,
 		  -- versionless) never digest — they're historical record,
 		  -- not new dependency exposure for the operator to act on.
@@ -86,7 +92,7 @@ func (s *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since t
 		           WHEN 'MEDIUM' THEN 2 WHEN 'LOW' THEN 1 ELSE 0
 		         END DESC,
 		         r.repo_owner, r.repo_name, v.vuln_id`,
-		since, SeveritiesAtOrAbove(minSeverity), includeTransitive)
+		since, SeveritiesAtOrAbove(minSeverity), includeTransitive, includeDev)
 	if err != nil {
 		return nil, fmt.Errorf("query new vulnerability findings: %w", err)
 	}

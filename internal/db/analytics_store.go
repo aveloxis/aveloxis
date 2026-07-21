@@ -177,23 +177,42 @@ func (s *PostgresStore) LaborInvestmentSnapshot(ctx context.Context, repoIDs []i
 // UpstreamDependenciesSnapshot: direct-dependency count + median
 // libyear staleness from the latest libyear pass.
 func (s *PostgresStore) UpstreamDependenciesSnapshot(ctx context.Context, repoIDs []int64) (SnapshotValue, error) {
-	var count float64
-	var median *float64
+	// v0.27.46 (summary/19 P3, decision #4 — regulatory alignment
+	// over 8Knot compatibility): the HEADLINE count + median cover
+	// runtime-scope deps only; dev/test/build/optional/peer split out
+	// into detail companions. Staleness of pinned dev tooling is a
+	// weaker signal than staleness of shipped deps, and the P2 Python
+	// expansion would otherwise discontinuously jump every Python
+	// repo's headline the week the knob flips on. DOCUMENTED SEMANTIC
+	// BUMP: pre-v0.27.46 the headline counted all deps.
+	var runtimeCount, devCount float64
+	var runtimeMedian, devMedian *float64
 	var asOf *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(*)::float,
-		       percentile_cont(0.5) WITHIN GROUP (ORDER BY libyear),
+		SELECT COUNT(*) FILTER (WHERE COALESCE(type, '') NOT IN ('dev','test','build','optional','peer'))::float,
+		       COUNT(*) FILTER (WHERE COALESCE(type, '') IN ('dev','test','build','optional','peer'))::float,
+		       percentile_cont(0.5) WITHIN GROUP (ORDER BY libyear)
+		           FILTER (WHERE COALESCE(type, '') NOT IN ('dev','test','build','optional','peer')),
+		       percentile_cont(0.5) WITHIN GROUP (ORDER BY libyear)
+		           FILTER (WHERE COALESCE(type, '') IN ('dev','test','build','optional','peer')),
 		       MAX(data_collection_date)
 		FROM aveloxis_data.repo_deps_libyear
-		WHERE repo_id = ANY($1) AND libyear IS NOT NULL`, repoIDs).Scan(&count, &median, &asOf)
+		WHERE repo_id = ANY($1) AND libyear IS NOT NULL`, repoIDs).
+		Scan(&runtimeCount, &devCount, &runtimeMedian, &devMedian, &asOf)
 	if err != nil {
 		return SnapshotValue{}, err
 	}
-	d := map[string]any{}
-	if median != nil {
-		d["median_libyear"] = *median
+	d := map[string]any{
+		"total_count": runtimeCount + devCount,
+		"dev_count":   devCount,
 	}
-	return SnapshotValue{Value: count, AsOf: asOf, Detail: d}, nil
+	if runtimeMedian != nil {
+		d["median_libyear"] = *runtimeMedian
+	}
+	if devMedian != nil {
+		d["dev_median_libyear"] = *devMedian
+	}
+	return SnapshotValue{Value: runtimeCount, AsOf: asOf, Detail: d}, nil
 }
 
 // LicenseCoverageSnapshot: % of scanned source files carrying a

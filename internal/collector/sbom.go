@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/google/uuid"
 )
 
@@ -35,6 +36,20 @@ const (
 // If ScanCode data is not available (tool not installed, or no scan yet),
 // the SBOM is still generated with registry-only license data.
 func GenerateSBOM(ctx context.Context, store *db.PostgresStore, repoID int64, format SBOMFormat) ([]byte, error) {
+	return GenerateSBOMWithOptions(ctx, store, repoID, format, SBOMOptions{})
+}
+
+// SBOMOptions controls SBOM generation (v0.27.46, summary/19 P3).
+type SBOMOptions struct {
+	// RuntimeOnly filters the component set to runtime-scope
+	// dependencies (?scope=runtime — decision #3: the full scoped
+	// document is the default; the runtime filter serves consumers
+	// who want only the shipped surface).
+	RuntimeOnly bool
+}
+
+// GenerateSBOMWithOptions is GenerateSBOM with scope filtering.
+func GenerateSBOMWithOptions(ctx context.Context, store *db.PostgresStore, repoID int64, format SBOMFormat, opts SBOMOptions) ([]byte, error) {
 	repo, err := store.GetRepoForSBOM(ctx, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("repo %d not found: %w", repoID, err)
@@ -43,6 +58,16 @@ func GenerateSBOM(ctx context.Context, store *db.PostgresStore, repoID int64, fo
 	deps, err := store.GetRepoLibyearDeps(ctx, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("loading dependencies: %w", err)
+	}
+
+	if opts.RuntimeOnly {
+		kept := deps[:0]
+		for _, d := range deps {
+			if model.IsRuntimeScope(d.Type) {
+				kept = append(kept, d)
+			}
+		}
+		deps = kept
 	}
 
 	// ScanCode enrichment: concluded license + copyrights from source analysis.
@@ -222,13 +247,10 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 			Purl:    dep.Purl,
 			BOMRef:  dep.Purl,
 		}
-		// CycloneDX scope describes runtime inclusion:
-		// "required" = production, "excluded" = dev/test.
-		if dep.Type == "dev" {
-			comp.Scope = "excluded"
-		} else {
-			comp.Scope = "required"
-		}
+		// CycloneDX scope describes runtime inclusion (v0.27.46:
+		// mapping centralized in model — required for runtime,
+		// optional for optional/peer, excluded for dev/test/build).
+		comp.Scope = model.CycloneDXScopeForScope(dep.Type)
 		if dep.License != "" {
 			comp.Licenses = makeCDXLicenses(dep.License)
 		}
@@ -476,11 +498,21 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 		}
 		doc.Packages = append(doc.Packages, pkg)
 
-		doc.Relationships = append(doc.Relationships, spdxRelation{
+		// v0.27.46 (summary/19 P3): SPDX 2.3 typed dependency
+		// relationships. Non-runtime scopes use the inverted forms
+		// (pkg DEV_DEPENDENCY_OF root, etc.); runtime keeps the
+		// baseline root DEPENDS_ON pkg. Mapping lives in model so
+		// this file never branches on literal scope values.
+		relType, inverted := model.SPDXRelationshipForScope(dep.Type)
+		rel := spdxRelation{
 			SpdxElementId:      "SPDXRef-RootPackage",
-			RelationshipType:   "DEPENDS_ON",
+			RelationshipType:   relType,
 			RelatedSpdxElement: pkgID,
-		})
+		}
+		if inverted {
+			rel.SpdxElementId, rel.RelatedSpdxElement = pkgID, "SPDXRef-RootPackage"
+		}
+		doc.Relationships = append(doc.Relationships, rel)
 	}
 
 	// Document describes root package.

@@ -20,11 +20,13 @@ func TestGetRepoLicensesQueryNormalizesEmptyToUnknown(t *testing.T) {
 	src := string(data)
 
 	// Find GetRepoLicenses function.
-	idx := strings.Index(src, "func (s *PostgresStore) GetRepoLicenses")
+	// v0.27.46: the SQL moved into GetRepoLicensesScoped (GetRepoLicenses
+	// is a thin shim); the TRIM/Unknown contract rides with it.
+	idx := strings.Index(src, "func (s *PostgresStore) GetRepoLicensesScoped")
 	if idx < 0 {
-		t.Fatal("cannot find GetRepoLicenses function")
+		t.Fatal("cannot find GetRepoLicensesScoped function")
 	}
-	fn := src[idx : idx+600]
+	fn := src[idx : idx+1200]
 
 	// Must handle whitespace-only licenses (TRIM), not just exact empty string.
 	if !strings.Contains(fn, "TRIM") {

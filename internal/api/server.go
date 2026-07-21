@@ -94,6 +94,10 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("POST /api/v1/groups", s.handleGroupCreate)
 	s.mux.HandleFunc("GET /api/v1/groups/{groupID}/repos", s.handleGroupRepos)
 	s.mux.HandleFunc("POST /api/v1/groups/{groupID}/repos", s.handleGroupAddRepo)
+	// 2026-07-21 — the group page's "Organizations tracked in this
+	// group" section (read-only; registration stays on the POST above
+	// with kind=org).
+	s.mux.HandleFunc("GET /api/v1/groups/{groupID}/orgs", s.handleGroupOrgs)
 	s.mux.HandleFunc("GET /api/v1/admin/users", s.handleAdminUsers)
 	s.mux.HandleFunc("POST /api/v1/admin/users/{userID}/admin", s.handleAdminSetUserAdmin)
 	s.mux.HandleFunc("GET /api/v1/admin/groups/pending", s.handleAdminPendingGroups)
@@ -223,31 +227,49 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	withVulns := r.URL.Query().Get("vulns") == "1"
-	if withVulns && format != "cyclonedx" {
-		http.Error(w, "vulns=1 is only supported for format=cyclonedx (CycloneDX has a native vulnerabilities section)", http.StatusBadRequest)
+
+	// v0.27.46 (summary/19 P3, decision #3): the full scoped document
+	// is the default; ?scope=runtime filters to the shipped surface.
+	var sbomOpts collector.SBOMOptions
+	switch scope := r.URL.Query().Get("scope"); scope {
+	case "", "all":
+	case "runtime":
+		sbomOpts.RuntimeOnly = true
+		filename = strings.Replace(filename, ".cdx.json", "-runtime.cdx.json", 1)
+		filename = strings.Replace(filename, ".spdx.json", "-runtime.spdx.json", 1)
+	default:
+		http.Error(w, "scope must be 'all' or 'runtime'", http.StatusBadRequest)
 		return
 	}
 
-	data, err := collector.GenerateSBOM(r.Context(), s.store, repoID, sbomFormat)
+	data, err := collector.GenerateSBOMWithOptions(r.Context(), s.store, repoID, sbomFormat, sbomOpts)
 	if err != nil {
 		http.Error(w, "SBOM generation failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// v0.27.4: annotate the CURRENT SBOM with the repo's unresolved
-	// findings (CycloneDX 1.5 vulnerabilities array; affects.ref =
-	// component purl/bom-ref).
+	// findings. CycloneDX gets its native 1.5 vulnerabilities array
+	// (affects.ref = component purl/bom-ref); SPDX (v0.27.46) gets
+	// package-level SECURITY/advisory externalRefs — the 2.3 spec's
+	// conformant vehicle, replacing the old 400.
 	if withVulns {
 		vulns, verr := s.store.GetRepoVulnerabilities(r.Context(), repoID)
 		if verr != nil {
 			http.Error(w, "vulnerability lookup failed", http.StatusInternalServerError)
 			return
 		}
-		if data, err = annotateCycloneDXWithVulns(data, vulns); err != nil {
+		if sbomFormat == collector.FormatCycloneDX {
+			data, err = annotateCycloneDXWithVulns(data, vulns)
+		} else {
+			data, err = annotateSPDXWithVulns(data, vulns)
+		}
+		if err != nil {
 			http.Error(w, "SBOM annotation failed", http.StatusInternalServerError)
 			return
 		}
-		filename = fmt.Sprintf("sbom-repo-%d-with-vulns.cdx.json", repoID)
+		filename = strings.Replace(filename, ".cdx.json", "-with-vulns.cdx.json", 1)
+		filename = strings.Replace(filename, ".spdx.json", "-with-vulns.spdx.json", 1)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -324,7 +346,20 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
-	licenses, err := s.store.GetRepoLicenses(r.Context(), repoID)
+	// v0.27.46 (summary/19 P3, decision #8): ?scope=runtime filters
+	// to runtime-scope deps — the compliance-relevant set. Default is
+	// all deps (pre-v0.27.46 behavior); the GUI defaults its VIEW to
+	// runtime via this parameter.
+	runtimeOnly := false
+	switch scope := r.URL.Query().Get("scope"); scope {
+	case "", "all":
+	case "runtime":
+		runtimeOnly = true
+	default:
+		http.Error(w, "scope must be 'all' or 'runtime'", http.StatusBadRequest)
+		return
+	}
+	licenses, err := s.store.GetRepoLicensesScoped(r.Context(), repoID, runtimeOnly)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -334,6 +369,7 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 	scanned, _ := s.store.HasDependencyData(r.Context(), repoID)
 	jsonResponse(w, map[string]any{
 		"scanned":  scanned,
+		"scope":    map[bool]string{true: "runtime", false: "all"}[runtimeOnly],
 		"licenses": licenses,
 	})
 }

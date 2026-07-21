@@ -36,6 +36,11 @@ type VulnScanDep struct {
 	PackageManager string
 	Purl           string
 	Requirement    string
+	// Type is the dependency scope from repo_deps_libyear.type
+	// (v0.27.46, summary/19 P3) — stamped onto direct findings'
+	// dependency_scope so runtime/dev splits work for direct deps,
+	// not just transitives.
+	Type string
 }
 
 // GetRepoDepsForVulnScan returns the repo's dependencies with the raw
@@ -46,7 +51,7 @@ type VulnScanDep struct {
 func (s *PostgresStore) GetRepoDepsForVulnScan(ctx context.Context, repoID int64) ([]VulnScanDep, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT name, current_version, package_manager,
-			COALESCE(purl, ''), COALESCE(requirement, '')
+			COALESCE(purl, ''), COALESCE(requirement, ''), COALESCE(type, '')
 		FROM aveloxis_data.repo_deps_libyear
 		WHERE repo_id = $1
 		ORDER BY name`, repoID)
@@ -57,7 +62,7 @@ func (s *PostgresStore) GetRepoDepsForVulnScan(ctx context.Context, repoID int64
 	var deps []VulnScanDep
 	for rows.Next() {
 		var d VulnScanDep
-		if err := rows.Scan(&d.Name, &d.CurrentVersion, &d.PackageManager, &d.Purl, &d.Requirement); err != nil {
+		if err := rows.Scan(&d.Name, &d.CurrentVersion, &d.PackageManager, &d.Purl, &d.Requirement, &d.Type); err != nil {
 			return nil, err
 		}
 		deps = append(deps, d)
@@ -247,7 +252,7 @@ func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64)
 func (s *PostgresStore) GetRepoTransitivePackages(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT ecosystem, package_name, resolved_version,
-		       MIN(CASE WHEN COALESCE(dependency_scope, '') = 'dev' THEN 'dev' ELSE '' END)
+		       MIN(CASE WHEN COALESCE(dependency_scope, '') IN ('dev','test','build','optional','peer') THEN dependency_scope ELSE '' END)
 		FROM aveloxis_data.repo_lockfile_packages
 		WHERE repo_id = $1 AND NOT COALESCE(direct, TRUE)
 		GROUP BY ecosystem, package_name, resolved_version

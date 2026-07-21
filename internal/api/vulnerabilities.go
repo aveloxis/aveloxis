@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 type vulnJSON struct {
@@ -143,7 +144,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 				} else {
 					directCount++
 				}
-				if v.DependencyScope == "dev" {
+				if !model.IsRuntimeScope(v.DependencyScope) {
 					devCount++
 				}
 			}
@@ -185,7 +186,10 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 		"counts": map[string]int{
 			"current": current, "resolved": resolved, "critical": critical,
 			"direct": directCount, "transitive": transitiveCount, "dev": devCount,
-			"self": selfCount,
+			// v0.27.46: runtime = current findings on runtime-scope
+			// deps (the headline the GUI leads with).
+			"runtime": current - devCount,
+			"self":    selfCount,
 		},
 	})
 }
@@ -231,6 +235,74 @@ func annotateCycloneDXWithVulns(sbom []byte, vulns []*db.VulnerabilityRow) ([]by
 		entries = append(entries, entry)
 	}
 	doc["vulnerabilities"] = entries
+	return json.MarshalIndent(doc, "", "  ")
+}
+
+// annotateSPDXWithVulns attaches the repo's CURRENT (unresolved)
+// findings to a generated SPDX 2.3 document as package-level
+// externalRefs (referenceCategory SECURITY, referenceType advisory —
+// the spec's conformant vehicle; SPDX 2.3 has no native vulnerability
+// section, which is why ?vulns=1 used to 400 for spdx). Findings
+// match their package by purl first, then by package name; findings
+// matching no package are skipped (an SPDX externalRef must hang off
+// a real package — there is no dangling-ref form). Self-advisories
+// and resolved-historical findings are excluded, mirroring the
+// CycloneDX annotation. SPDX 3.0's security profile is the eventual
+// richer home.
+func annotateSPDXWithVulns(sbom []byte, vulns []*db.VulnerabilityRow) ([]byte, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(sbom, &doc); err != nil {
+		return nil, err
+	}
+	byPurl := map[string][]*db.VulnerabilityRow{}
+	byName := map[string][]*db.VulnerabilityRow{}
+	for _, v := range vulns {
+		if v.ResolvedAt != nil || v.DependencyKind == "self" {
+			continue
+		}
+		if v.PackagePurl != "" {
+			byPurl[v.PackagePurl] = append(byPurl[v.PackagePurl], v)
+		}
+		if v.PackageName != "" {
+			byName[v.PackageName] = append(byName[v.PackageName], v)
+		}
+	}
+	pkgs, _ := doc["packages"].([]any)
+	for _, p := range pkgs {
+		pkg, ok := p.(map[string]any)
+		if !ok || pkg["SPDXID"] == "SPDXRef-RootPackage" {
+			continue
+		}
+		refs, _ := pkg["externalRefs"].([]any)
+		purl := ""
+		for _, r := range refs {
+			if ref, ok := r.(map[string]any); ok && ref["referenceType"] == "purl" {
+				purl, _ = ref["referenceLocator"].(string)
+			}
+		}
+		matched := byPurl[purl]
+		if len(matched) == 0 {
+			if name, _ := pkg["name"].(string); name != "" {
+				matched = byName[name]
+			}
+		}
+		seen := map[string]bool{}
+		for _, v := range matched {
+			osvURL, _ := advisoryURLs(v.VulnID, v.CVEID)
+			if osvURL == "" || seen[osvURL] {
+				continue
+			}
+			seen[osvURL] = true
+			refs = append(refs, map[string]any{
+				"referenceCategory": "SECURITY",
+				"referenceType":     "advisory",
+				"referenceLocator":  osvURL,
+			})
+		}
+		if len(refs) > 0 {
+			pkg["externalRefs"] = refs
+		}
+	}
 	return json.MarshalIndent(doc, "", "  ")
 }
 

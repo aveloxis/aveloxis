@@ -520,6 +520,32 @@ type CollectionConfig struct {
 	// digest unless mail.vuln_digest_include_transitive is set.
 	VulnScanTransitive bool `json:"vuln_scan_transitive"`
 
+	// DevBuildDeps (v0.27.45, summary/19 P2): expand Python dependency
+	// collection to the dev/test/build/optional manifest families —
+	// requirements-variant files (requirements-dev.txt,
+	// test_requirements.txt, requirements/*.txt), pyproject
+	// [build-system].requires / [project.optional-dependencies] /
+	// PEP 735 [dependency-groups] / poetry groups, Pipfile
+	// [dev-packages], setup.py tests_require + extras_require, and
+	// setup.cfg [options.extras_require]. Default false (opt-in): this
+	// is the findings-volume driver — Python dev tooling is
+	// stale-pin-dense, so vulnerability counts jump when it flips on.
+	// Canary on a small database before fleet enablement (the
+	// v0.27.19 npm/cargo first-wave lesson). The Go test-only relabel
+	// and the P1 scope relabels are NOT behind this knob (they add no
+	// rows).
+	DevBuildDeps bool `json:"dev_build_deps"`
+
+	// GitHubActionsDeps (v0.27.47, summary/19 P4): inventory workflow
+	// `uses:` action references as build-scope dependencies
+	// (manager='githubactions', libyear NULL) and scan them against
+	// OSV's "GitHub Actions" ecosystem (versionless query +
+	// client-side ref evaluation — OSV's Actions advisories carry no
+	// purl and no version comparator). Its own knob rather than
+	// riding dev_build_deps: a new ecosystem, not a scope refinement.
+	// Default false until the small-DB canary sizes the wave.
+	GitHubActionsDeps bool `json:"github_actions_deps"`
+
 	// SkipLargestPercent (v0.27.35): TEMPORARY throughput lever —
 	// exclude the fleet's top-N% repos (by forge-reported commit count
 	// OR PR count, either qualifies) from collection claims so a
@@ -1111,6 +1137,13 @@ type MailConfig struct {
 	// Default false — the first transitive-enabled cycles would
 	// otherwise blast a 50-item email of utility-package findings.
 	VulnDigestIncludeTransitive bool `json:"vuln_digest_include_transitive"`
+
+	// VulnDigestIncludeDev (v0.27.46, summary/19 P3 — decision #1):
+	// include findings on non-runtime-scope dependencies
+	// (dev/test/build/optional/peer) in the operator digest. Default
+	// false so the P2 Python dev-tooling expansion never floods the
+	// email; runtime-scope findings always digest.
+	VulnDigestIncludeDev bool `json:"vuln_digest_include_dev"`
 
 	// VulnDigestMinSeverity is the severity floor for the digest:
 	// CRITICAL, HIGH (default — admits CRITICAL+HIGH), MEDIUM, LOW,

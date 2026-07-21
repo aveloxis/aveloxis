@@ -30,6 +30,7 @@ func TestPortalAlwaysRequiresIdentity(t *testing.T) {
 	for _, h := range []http.HandlerFunc{
 		s.handleMe, s.handleGroupsList, s.handleGroupCreate,
 		s.handleGroupPendingAdds, // v0.27.20
+		s.handleGroupOrgs,        // 2026-07-21 tracked-orgs listing
 		s.handleAdminUsers, s.handleAdminPendingGroups,
 		s.handleAdminMonitorStats, s.handleAdminMonitorQueue,
 	} {
@@ -139,6 +140,7 @@ func TestPortalRoutesRegistered(t *testing.T) {
 		`"POST /api/v1/groups"`,
 		`"GET /api/v1/groups/{groupID}/repos"`,
 		`"POST /api/v1/groups/{groupID}/repos"`,
+		`"GET /api/v1/groups/{groupID}/orgs"`, // 2026-07-21 tracked-orgs listing
 		`"GET /api/v1/admin/users"`,
 		`"POST /api/v1/admin/users/{userID}/admin"`,
 		`"GET /api/v1/admin/groups/pending"`,

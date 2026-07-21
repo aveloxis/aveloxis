@@ -71,6 +71,33 @@ func TestGetPortalGroupReposForUserOwnership(t *testing.T) {
 	if _, _, err := store.GetPortalGroupReposForUser(ctx, strangerID, groupID, true, 50, 0); err != nil {
 		t.Errorf("admin must be able to read any group: %v", err)
 	}
+
+	// 2026-07-21 — GetPortalGroupOrgsForUser shares the exact same
+	// ownership gate, plus a seeded round-trip so the org listing's
+	// SQL executes against the real schema.
+	orgURL := fmt.Sprintf("https://github.com/_avportal_org_%d", suffix)
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO aveloxis_ops.user_org_requests (user_id, group_id, org_url, org_name, platform)
+		VALUES ($1, $2, $3, $4, 'github')
+		ON CONFLICT (group_id, org_url) DO NOTHING`,
+		ownerID, groupID, orgURL, fmt.Sprintf("_avportal_org_%d", suffix)); err != nil {
+		t.Fatalf("seed org request: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_org_requests WHERE group_id = $1`, groupID)
+	})
+	orgs, err := store.GetPortalGroupOrgsForUser(ctx, ownerID, groupID, false)
+	if err != nil {
+		t.Errorf("owner must be able to read own group's orgs: %v", err)
+	} else if len(orgs) != 1 || orgs[0].OrgURL != orgURL {
+		t.Errorf("owner org listing: want the 1 seeded org (%s), got %+v", orgURL, orgs)
+	}
+	if _, err := store.GetPortalGroupOrgsForUser(ctx, strangerID, groupID, false); err == nil {
+		t.Error("non-owner non-admin must NOT be able to read another user's group orgs")
+	}
+	if orgs, err := store.GetPortalGroupOrgsForUser(ctx, strangerID, groupID, true); err != nil || len(orgs) != 1 {
+		t.Errorf("admin must be able to read any group's orgs: err=%v orgs=%d", err, len(orgs))
+	}
 }
 
 // TestGetPortalGroupReposPagination pins the v0.27.14 envelope

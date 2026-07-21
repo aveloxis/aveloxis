@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // AnalysisCollector runs file-content analysis on repos.
@@ -52,6 +53,19 @@ type AnalysisCollector struct {
 	// declared-dep resolutions. Read at the point of use in
 	// scanLockfiles; false = byte-identical pre-C1 row set.
 	TransitiveLockfiles bool
+
+	// DevBuildDeps (v0.27.45, summary/19 P2, collection.dev_build_deps)
+	// expands Python dependency collection to the dev/test/build/
+	// optional manifest families (requirements-variant files, pyproject
+	// build-system/optional/PEP 735/poetry groups, Pipfile
+	// dev-packages, setup.py/cfg extras). Default FALSE — the
+	// findings-volume driver; false = the pre-v0.27.45 walk row set.
+	DevBuildDeps bool
+
+	// GitHubActionsDeps (v0.27.47, summary/19 P4,
+	// collection.github_actions_deps) inventories workflow `uses:`
+	// references as build-scope deps. Default FALSE.
+	GitHubActionsDeps bool
 }
 
 // NewAnalysisCollector creates an analysis collector.
@@ -1025,8 +1039,18 @@ func parseDirectoryPackagesPropsVersions(content string) []libyearDep {
 		}
 		name := extractXMLAttr(line, "Include")
 		version := extractXMLAttr(line, "Version")
+		// v0.27.44 (summary/19 P1): PrivateAssets="all" marks a
+		// build/analyzer-only package that never flows to consumers
+		// or the runtime output → build. Only the attribute form is
+		// visible to this line-based parser; the child-element form
+		// (<PrivateAssets>all</PrivateAssets>) spans lines and is a
+		// documented limitation.
+		scope := "runtime"
+		if strings.EqualFold(extractXMLAttr(line, "PrivateAssets"), "all") {
+			scope = model.ScopeBuild
+		}
 		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "nuget"})
+			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "nuget"})
 		}
 	}
 	return deps
@@ -1105,21 +1129,33 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			if data, err := os.ReadFile(path); err == nil {
 				deps := parsePyprojectVersionsFromContent(string(data))
 				allDeps = append(allDeps, deps...)
+				if ac.DevBuildDeps {
+					allDeps = append(allDeps, parsePyprojectDevBuildVersions(string(data))...)
+				}
 			}
 		case "setup.py":
 			if data, err := os.ReadFile(path); err == nil {
 				deps := parseSetupPyVersions(string(data))
 				allDeps = append(allDeps, deps...)
+				if ac.DevBuildDeps {
+					allDeps = append(allDeps, parseSetupPyDevBuildVersions(string(data))...)
+				}
 			}
 		case "Pipfile":
 			if data, err := os.ReadFile(path); err == nil {
 				deps := parsePipfileVersions(string(data))
 				allDeps = append(allDeps, deps...)
+				if ac.DevBuildDeps {
+					allDeps = append(allDeps, parsePipfileDevPackages(string(data))...)
+				}
 			}
 		case "setup.cfg":
 			if data, err := os.ReadFile(path); err == nil {
 				deps := parseSetupCfgVersions(string(data))
 				allDeps = append(allDeps, deps...)
+				if ac.DevBuildDeps {
+					allDeps = append(allDeps, parseSetupCfgExtrasVersions(string(data))...)
+				}
 			}
 		case "go.mod":
 			deps := parseGoModVersions(path)
@@ -1182,6 +1218,21 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 				allDeps = append(allDeps, deps...)
 			}
 		default:
+			// v0.27.45 (summary/19 P2): requirements-variant files
+			// (requirements-dev.txt, test_requirements.txt,
+			// requirements/*.txt) with filename-token scope.
+			if ac.DevBuildDeps {
+				if scope, ok := requirementsFileScope(base, path); ok {
+					allDeps = append(allDeps, parseRequirementsTxtVersionsScoped(path, scope)...)
+				}
+			}
+			// v0.27.47 (summary/19 P4): GitHub Actions workflow
+			// `uses:` references → build-scope deps.
+			if ac.GitHubActionsDeps && isWorkflowPath(path) {
+				if data, err := os.ReadFile(path); err == nil {
+					allDeps = append(allDeps, parseWorkflowUses(string(data))...)
+				}
+			}
 			// Extension-based matching (e.g., *.csproj).
 			if strings.HasSuffix(base, ".csproj") {
 				if data, err := os.ReadFile(path); err == nil {
@@ -1194,6 +1245,11 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	}); err != nil {
 		ac.logger.Warn("libyear manifest walk failed — dependency scan may be incomplete", "dir", workDir, "error", err)
 	}
+
+	// v0.27.45 (summary/19 P2, Go C1): relabel go.mod deps whose
+	// packages are imported ONLY from _test.go files as test-scope.
+	// Ungated — relabel only, adds no rows.
+	allDeps = classifyGoModTestOnlyDeps(workDir, allDeps)
 
 	// Resolve each dependency against its package registry.
 	resolveFailures := map[string]int{}
@@ -1227,6 +1283,18 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			lb, err = resolveHackageLibyear(ctx, dep)
 		case "swiftpm":
 			lb, err = resolveSwiftPMLibyear(ctx, dep)
+		case "githubactions":
+			// v0.27.47: Actions have no registry timeline — store the
+			// inventory row directly with libyear NULL (NoLibyear).
+			// The upstream-dependencies snapshot filters libyear IS
+			// NOT NULL, so actions never inflate the headline.
+			lb = &db.LibyearRow{
+				Name: dep.Name, Requirement: dep.Requirement,
+				Type: dep.Type, PackageManager: dep.Manager,
+				CurrentVersion: dep.Version,
+				Purl:           buildPurl("githubactions", dep.Name, dep.Version),
+				NoLibyear:      true,
+			}
 		default:
 			continue
 		}
@@ -1343,11 +1411,15 @@ func parsePackageJSONVersions(path string) ([]libyearDep, error) {
 	for name, version := range pkg.DevDependencies {
 		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: "dev", Manager: "npm"})
 	}
+	// v0.27.44 (summary/19 P1): peer/optional carry their OWN scopes —
+	// they were conflated with runtime. Peer deps are expectations the
+	// CONSUMER satisfies (not vendored by this package); optional deps
+	// may be absent at runtime.
 	for name, version := range pkg.PeerDependencies {
-		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: "runtime", Manager: "npm"})
+		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: model.ScopePeer, Manager: "npm"})
 	}
 	for name, version := range pkg.OptionalDependencies {
-		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: "runtime", Manager: "npm"})
+		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: model.ScopeOptional, Manager: "npm"})
 	}
 	return deps, nil
 }
@@ -1370,6 +1442,15 @@ func parseRequirementsTxtVersions(path string) []libyearDep {
 				name = strings.TrimSpace(line[:idx])
 				version = strings.TrimSpace(line[idx+len(sep):])
 				break
+			}
+		}
+		// Strip PEP 508 extras from the name (anyio[trio] → anyio) —
+		// the local-canary catch, 2026-07-21: extras-suffixed names
+		// produced 404ing registry URLs and unmatchable purls, so
+		// those deps silently got no libyear and no OSV coverage.
+		if idx := strings.Index(name, "["); idx > 0 {
+			if end := strings.Index(name, "]"); end > idx {
+				name = strings.TrimSpace(name[:idx] + name[end+1:])
 			}
 		}
 		if name != "" {
@@ -1662,10 +1743,23 @@ func parseCargoVersions(path string) []libyearDep {
 	content := string(data)
 	var deps []libyearDep
 	inDeps := false
+	// v0.27.44 (summary/19 P1): the parser already read all three
+	// sections but conflated them as runtime. Cargo semantics:
+	// [dev-dependencies] = tests/examples/benches, [build-dependencies]
+	// = build scripts.
+	sectionScope := "runtime"
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "[dependencies]" || trimmed == "[dev-dependencies]" || trimmed == "[build-dependencies]" {
 			inDeps = true
+			switch trimmed {
+			case "[dev-dependencies]":
+				sectionScope = model.ScopeDev
+			case "[build-dependencies]":
+				sectionScope = model.ScopeBuild
+			default:
+				sectionScope = "runtime"
+			}
 			continue
 		}
 		if strings.HasPrefix(trimmed, "[") {
@@ -1688,7 +1782,7 @@ func parseCargoVersions(path string) []libyearDep {
 			}
 			version = cleanVersion(version)
 			if name != "" {
-				deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: "runtime", Manager: "cargo"})
+				deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: sectionScope, Manager: "cargo"})
 			}
 		}
 	}
@@ -1702,8 +1796,21 @@ func parseGemfileVersions(path string) []libyearDep {
 		return nil
 	}
 	var deps []libyearDep
+	// v0.27.44 (summary/19 P1): Bundler group blocks + inline group:
+	// options were conflated as runtime. :test → test; :development
+	// (and any other non-default group) → dev. Nested groups keep the
+	// innermost classification; "end" pops the stack.
+	var groupStack []string
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "group ") {
+			groupStack = append(groupStack, gemGroupScope(line))
+			continue
+		}
+		if line == "end" && len(groupStack) > 0 {
+			groupStack = groupStack[:len(groupStack)-1]
+			continue
+		}
 		if !strings.HasPrefix(line, "gem ") {
 			continue
 		}
@@ -1717,11 +1824,48 @@ func parseGemfileVersions(path string) []libyearDep {
 		if len(parts) >= 2 {
 			version = cleanVersion(strings.Trim(strings.TrimSpace(parts[1]), "\"' "))
 		}
+		scope := "runtime"
+		if len(groupStack) > 0 {
+			scope = groupStack[len(groupStack)-1]
+		}
+		if inlineGroup := gemInlineGroupScope(line); inlineGroup != "" {
+			scope = inlineGroup
+		}
 		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "rubygems"})
+			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "rubygems"})
 		}
 	}
 	return deps
+}
+
+// gemGroupScope classifies a Bundler `group :x[, :y] do` line: any
+// mention of :test → test; any other named group (development, ci,
+// lint, ...) → dev. A group line is by definition non-default.
+func gemGroupScope(line string) string {
+	if strings.Contains(line, ":test") {
+		return model.ScopeTest
+	}
+	return model.ScopeDev
+}
+
+// gemInlineGroupScope classifies `gem 'x', group: :test` /
+// `groups: [:development, :test]` inline options; "" = no group option.
+func gemInlineGroupScope(line string) string {
+	if !strings.Contains(line, "group") {
+		return ""
+	}
+	idx := strings.Index(line, "group")
+	tail := line[idx:]
+	if !strings.Contains(tail, ":") {
+		return ""
+	}
+	if strings.Contains(tail, ":test") {
+		return model.ScopeTest
+	}
+	if strings.Contains(tail, ":development") || strings.Contains(tail, ":dev") {
+		return model.ScopeDev
+	}
+	return ""
 }
 
 // resolveGoLibyear checks the Go proxy for module version dates.
@@ -2300,8 +2444,18 @@ func parseCsprojVersions(content string) []libyearDep {
 		}
 		name := extractXMLAttr(line, "Include")
 		version := extractXMLAttr(line, "Version")
+		// v0.27.44 (summary/19 P1): PrivateAssets="all" marks a
+		// build/analyzer-only package that never flows to consumers
+		// or the runtime output → build. Only the attribute form is
+		// visible to this line-based parser; the child-element form
+		// (<PrivateAssets>all</PrivateAssets>) spans lines and is a
+		// documented limitation.
+		scope := "runtime"
+		if strings.EqualFold(extractXMLAttr(line, "PrivateAssets"), "all") {
+			scope = model.ScopeBuild
+		}
 		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "nuget"})
+			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "nuget"})
 		}
 	}
 	return deps
@@ -2444,9 +2598,19 @@ func parsePomXMLVersions(content string) []libyearDep {
 		groupID := extractXMLValue(block, "groupId")
 		artifactID := extractXMLValue(block, "artifactId")
 		version := extractXMLValue(block, "version")
+		// v0.27.44 (summary/19 P1): Maven's own scope element.
+		// test → test; provided = compile-time-only, supplied by the
+		// runtime container → build. compile/runtime/absent → runtime.
+		depScope := "runtime"
+		switch extractXMLValue(block, "scope") {
+		case "test":
+			depScope = model.ScopeTest
+		case "provided":
+			depScope = model.ScopeBuild
+		}
 		if groupID != "" && artifactID != "" {
 			name := groupID + ":" + artifactID
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: name + ":" + version, Type: "runtime", Manager: "maven"})
+			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: name + ":" + version, Type: depScope, Manager: "maven"})
 		}
 	}
 	return deps
@@ -2504,8 +2668,22 @@ func parseMixExsVersions(content string) []libyearDep {
 		// Extract version from second part, stripping quotes and braces.
 		versionPart := strings.Trim(strings.TrimSpace(parts[1]), "\"'}] ")
 		version := cleanVersion(versionPart)
+		// v0.27.44 (summary/19 P1): Mix's only: option restricts a dep
+		// to specific envs. only: :test → test; anything mentioning
+		// :dev → dev (only: [:dev, :test] is a dev-tooling dep that
+		// also runs in test). No only: → runtime.
+		scope := "runtime"
+		if onlyIdx := strings.Index(line, "only:"); onlyIdx >= 0 {
+			onlyPart := line[onlyIdx:]
+			switch {
+			case strings.Contains(onlyPart, ":dev"):
+				scope = model.ScopeDev
+			case strings.Contains(onlyPart, ":test"):
+				scope = model.ScopeTest
+			}
+		}
 		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "hex"})
+			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "hex"})
 		}
 	}
 	return deps
@@ -2536,8 +2714,14 @@ func parseNuGetPackagesConfigVersions(content string) []libyearDep {
 				version = rest[:end]
 			}
 		}
+		// v0.27.44 (summary/19 P1): developmentDependency="true" is the
+		// legacy packages.config marker for build-only packages.
+		scope := "runtime"
+		if strings.Contains(lower, `developmentdependency="true"`) {
+			scope = model.ScopeBuild
+		}
 		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "nuget"})
+			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "nuget"})
 		}
 	}
 	return deps
@@ -2557,7 +2741,20 @@ func parseBuildSbtVersions(content string) []libyearDep {
 			name := parts[3]
 			version := parts[5]
 			fullName := org + ":" + name
-			deps = append(deps, libyearDep{Name: fullName, Version: version, Requirement: line, Type: "runtime", Manager: "maven"})
+			// v0.27.44 (summary/19 P1): sbt configuration after the
+			// version — `% Test` (or the quoted "test" form) → test;
+			// `% Provided` mirrors Maven provided → build;
+			// `% Optional` → optional. No configuration → runtime.
+			scope := "runtime"
+			switch {
+			case strings.Contains(line, "% Test") || strings.Contains(line, `% "test"`):
+				scope = model.ScopeTest
+			case strings.Contains(line, "% Provided") || strings.Contains(line, `% "provided"`):
+				scope = model.ScopeBuild
+			case strings.Contains(line, "% Optional") || strings.Contains(line, `% "optional"`):
+				scope = model.ScopeOptional
+			}
+			deps = append(deps, libyearDep{Name: fullName, Version: version, Requirement: line, Type: scope, Manager: "maven"})
 		}
 	}
 	return deps
@@ -3043,8 +3240,21 @@ func resolveSwiftPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 func parseHaskellPackageYamlVersions(content string) []libyearDep {
 	var deps []libyearDep
 	inDeps := false
+	// v0.27.44 (summary/19 P1): a dependencies: block nested under a
+	// top-level tests: or benchmarks: section is test-only. The
+	// section tracker watches unindented `key:` lines; library:,
+	// executables:, and the top level stay runtime.
+	sectionScope := "runtime"
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && strings.HasSuffix(trimmed, ":") {
+			switch strings.TrimSuffix(trimmed, ":") {
+			case "tests", "benchmarks":
+				sectionScope = model.ScopeTest
+			default:
+				sectionScope = "runtime"
+			}
+		}
 		if trimmed == "dependencies:" {
 			inDeps = true
 			continue
@@ -3061,7 +3271,7 @@ func parseHaskellPackageYamlVersions(content string) []libyearDep {
 				version = extractFirstVersion(rest)
 			}
 			if name != "" {
-				deps = append(deps, libyearDep{Name: name, Version: version, Requirement: dep, Type: "runtime", Manager: "hackage"})
+				deps = append(deps, libyearDep{Name: name, Version: version, Requirement: dep, Type: sectionScope, Manager: "hackage"})
 			}
 		} else if inDeps && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
 			inDeps = false

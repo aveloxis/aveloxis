@@ -25,6 +25,12 @@ type LibyearRow struct {
 	Libyear            float64
 	License            string // SPDX license identifier (e.g., "MIT", "Apache-2.0")
 	Purl               string // Package URL (e.g., "pkg:npm/express@4.18.0")
+	// NoLibyear (v0.27.47, summary/19 P4) stores libyear as NULL —
+	// for ecosystems with no registry timeline (GitHub Actions). A
+	// fabricated 0.0 would read as "perfectly fresh" and leak into
+	// the upstream-dependencies snapshot, which filters libyear IS
+	// NOT NULL.
+	NoLibyear bool
 }
 
 // RepoLaborRow is a row for the repo_labor table.
@@ -271,11 +277,13 @@ func (s *PostgresStore) InsertRepoLibyear(ctx context.Context, repoID int64, row
 			(repo_id, name, requirement, type, package_manager,
 			 current_version, latest_version, current_release_date, latest_release_date,
 			 libyear, license, purl, tool_source, data_source, data_collection_date)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+			CASE WHEN $13::bool THEN NULL::float8 ELSE $10::float8 END,
+			$11, $12,
 			'aveloxis-analysis', 'package registry', NOW())`,
 		repoID, row.Name, row.Requirement, row.Type, row.PackageManager,
 		row.CurrentVersion, row.LatestVersion, row.CurrentReleaseDate, row.LatestReleaseDate,
-		row.Libyear, row.License, row.Purl)
+		row.Libyear, row.License, row.Purl, row.NoLibyear)
 	return err
 }
 

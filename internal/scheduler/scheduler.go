@@ -1223,6 +1223,8 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	// v0.27.21 C1: store the full lockfile closure when transitive
 	// scanning is on (read at point of use — the v0.25.37 rule).
 	ac.TransitiveLockfiles = s.cfg.Collection.VulnScanTransitive
+	ac.DevBuildDeps = s.cfg.Collection.DevBuildDeps
+	ac.GitHubActionsDeps = s.cfg.Collection.GitHubActionsDeps
 	aResult, aErr := ac.AnalyzeRepo(ctx, repoID)
 	if aErr != nil {
 		s.logger.Warn("analysis failed", "repo_id", repoID, "error", aErr)

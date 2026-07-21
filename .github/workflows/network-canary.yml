@@ -42,6 +42,7 @@ jobs:
           # were silently dark for the product's whole life. An
           # unscheduled canary provides no protection.
           go test ./internal/collector/ -run TestLiveOSVContract -count=1 -v
+          go test ./internal/collector/ -run TestLiveOSVGitHubActionsContract -count=1 -v
           go test ./internal/collector/ -run TestLiveNPMRegistryForLodash -count=1 -v
           go test ./internal/collector/ -run TestLiveCratesIOForSerde -count=1 -v
           # v0.27.30 — audit Phase 2: registries that previously had NO

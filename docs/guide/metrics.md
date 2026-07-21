@@ -101,8 +101,8 @@ changes with the chart's zoom level.
 ## Upstream Code Dependencies {#upstream_dependencies}
 
 - **id**: `upstream_dependencies` · **kind**: snapshot · **unit**: dependencies
-- **Our definition**: Count of direct manifest dependencies with resolvable releases; detail carries median libyear staleness.
-- **Improvement on CHAOSS**: Pairs the raw count with median libyear so 'many but fresh' and 'few but rotten' are distinguishable.
+- **Our definition**: Count of direct RUNTIME-scope manifest dependencies with resolvable releases; detail carries median libyear staleness plus total_count/dev_count/dev_median_libyear companions for the non-runtime (dev/test/build/optional/peer) split.
+- **Improvement on CHAOSS**: Pairs the raw count with median libyear so 'many but fresh' and 'few but rotten' are distinguishable; the headline covers shipped (runtime) dependencies since v0.27.46 so dev-tooling expansion never inflates it.
 - **CHAOSS nominal**: https://chaoss.community/kb/metric-upstream-code-dependencies/
 
 ## License Coverage {#license_coverage}

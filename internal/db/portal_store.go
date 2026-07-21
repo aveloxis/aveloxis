@@ -76,3 +76,23 @@ func (s *PostgresStore) GetPortalGroupReposForUser(ctx context.Context, userID i
 	}
 	return out, total, rows.Err()
 }
+
+// GetPortalGroupOrgsForUser lists a group's tracked organizations
+// (aveloxis_ops.user_org_requests — presence there means approved to
+// scan, per the v0.27.20 rule), enforcing the same ownership gate as
+// GetPortalGroupReposForUser: non-admin callers may only read their
+// own groups. Read-only; delegates to loadGroupOrgs (the web GUI's
+// loader, web_store.go) so the two surfaces can never disagree on
+// what a "tracked org" is. Added 2026-07-21 — the SPA group page
+// listed only repositories, leaving tracked orgs invisible.
+func (s *PostgresStore) GetPortalGroupOrgsForUser(ctx context.Context, userID int, groupID int64, isAdmin bool) ([]GroupOrg, error) {
+	if !isAdmin {
+		var owner int
+		err := s.pool.QueryRow(ctx,
+			`SELECT user_id FROM aveloxis_ops.user_groups WHERE group_id = $1`, groupID).Scan(&owner)
+		if err != nil || owner != userID {
+			return nil, fmt.Errorf("group %d is not yours", groupID)
+		}
+	}
+	return s.loadGroupOrgs(ctx, groupID)
+}

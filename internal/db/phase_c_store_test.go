@@ -64,12 +64,19 @@ func TestLockedVersionsExcludeTransitives(t *testing.T) {
 	if !strings.Contains(s, "WHERE repo_id = $1 AND NOT COALESCE(direct, TRUE)") {
 		t.Error("GetRepoTransitivePackages must select ONLY direct=FALSE rows")
 	}
-	// Scope aggregation: 'dev' only when EVERY occurrence is dev — a
-	// package pulled in by both a dev tool and a runtime dep is
-	// runtime exposure.
-	if !strings.Contains(s, "THEN 'dev' ELSE '' END") {
-		t.Error("transitive scope aggregation must fold non-dev occurrences to '' " +
-			"(any non-dev observation wins)")
+	// Scope aggregation: a non-runtime scope survives only when EVERY
+	// occurrence is non-runtime — a package pulled in by both a dev
+	// tool and a runtime dep is runtime exposure. v0.27.44
+	// (summary/19 P0) generalized the fold from dev-only to the full
+	// non-runtime vocabulary; MIN picks '' (runtime) whenever any
+	// runtime occurrence exists because '' sorts before every scope.
+	if !strings.Contains(s, "THEN dependency_scope ELSE '' END") {
+		t.Error("transitive scope aggregation must fold runtime occurrences to '' " +
+			"(any runtime observation wins)")
+	}
+	if !strings.Contains(s, "IN ('dev','test','build','optional','peer')") {
+		t.Error("transitive scope aggregation must recognize the full non-runtime " +
+			"scope vocabulary (model.NonRuntimeScopes), not just 'dev'")
 	}
 }
 

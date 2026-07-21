@@ -77,11 +77,15 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/groups":                        {auth: "user"},
 	"POST /api/v1/groups":                       {auth: "user", body: `{"name":"smoke-extra-group"}`},
 	"GET /api/v1/groups/{groupID}/repos":        {auth: "user"},
+	"GET /api/v1/groups/{groupID}/orgs":         {auth: "user"}, // 2026-07-21 tracked-orgs section
 	"GET /api/v1/groups/{groupID}/pending-adds": {auth: "user"}, // v0.27.20
-	"POST /api/v1/groups/{groupID}/repos":       {auth: "user", body: `{"url":"https://github.com/_avsmoke/{repoName}","kind":"repo"}`},
-	"GET /api/v1/home/repos":                    {auth: "user"},
-	"PUT /api/v1/repos/{repoID}/star":           {auth: "user"},
-	"DELETE /api/v1/repos/{repoID}/star":        {auth: "user", after: "PUT /api/v1/repos/{repoID}/star"},
+	// The urls-array body exercises the 2026-07-21 bulk-add path (the
+	// legacy single-url body is a parse-layer fallback into the same
+	// code, pinned by portal_bulk_add_test.go).
+	"POST /api/v1/groups/{groupID}/repos": {auth: "user", body: `{"urls":["https://github.com/_avsmoke/{repoName}"],"kind":"repo"}`},
+	"GET /api/v1/home/repos":              {auth: "user"},
+	"PUT /api/v1/repos/{repoID}/star":     {auth: "user"},
+	"DELETE /api/v1/repos/{repoID}/star":  {auth: "user", after: "PUT /api/v1/repos/{repoID}/star"},
 
 	// Admin.
 	"GET /api/v1/admin/users":                                {auth: "admin"},

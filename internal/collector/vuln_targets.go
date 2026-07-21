@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // vulnScanTarget is one purl to scan, with the classification the
@@ -35,6 +36,14 @@ type vulnScanTarget struct {
 	// row for transitive targets.
 	Kind  string
 	Scope string
+	// OSVQueryName/OSVQueryEcosystem (v0.27.47, summary/19 P4):
+	// when set, the batch query for this target uses the
+	// {name, ecosystem} form instead of the purl — OSV's "GitHub
+	// Actions" advisories carry no purl, and its API has no version
+	// comparator for the ecosystem, so the query is VERSIONLESS and
+	// the pinned ref is evaluated client-side (actionRefAffected).
+	OSVQueryName      string
+	OSVQueryEcosystem string
 }
 
 // dependency_kind values carried onto findings (v0.27.21 C1;
@@ -143,12 +152,31 @@ func vulnScanTargets(dep db.VulnScanDep, locked map[string][]string) []vulnScanT
 	if dep.Purl == "" {
 		return nil
 	}
+	// v0.27.46 (summary/19 P3): direct targets carry the dep's scope
+	// so findings' dependency_scope works for direct deps too.
+	// StoredScope keeps the '' = runtime column convention.
+	scope := model.StoredScope(dep.Type)
+	if dep.PackageManager == "githubactions" {
+		// v0.27.47 (summary/19 P4): versionless {name, ecosystem}
+		// query + client-side ref evaluation. Resolution classifies
+		// the PIN (SHA=locked, dotted tag=exact, floating=unpinned).
+		return []vulnScanTarget{{
+			Purl: dep.Purl, Dep: dep,
+			Requirement:       dep.Requirement,
+			Resolution:        classifyActionRef(dep.CurrentVersion),
+			Kind:              dependencyKindDirect,
+			Scope:             scope,
+			OSVQueryName:      dep.Name,
+			OSVQueryEcosystem: "GitHub Actions",
+		}}
+	}
 	if dep.PackageManager == "go" {
 		return []vulnScanTarget{{
 			Purl: dep.Purl, Dep: dep,
 			Requirement: dep.Requirement,
 			Resolution:  resolutionLocked,
 			Kind:        dependencyKindDirect,
+			Scope:       scope,
 		}}
 	}
 	if versions := locked[lockfileMatchKey(dep.PackageManager, dep.Name)]; len(versions) > 0 {
@@ -159,6 +187,7 @@ func vulnScanTargets(dep db.VulnScanDep, locked map[string][]string) []vulnScanT
 				Requirement: dep.Requirement,
 				Resolution:  resolutionLocked,
 				Kind:        dependencyKindDirect,
+				Scope:       scope,
 			})
 		}
 		return targets
@@ -168,6 +197,7 @@ func vulnScanTargets(dep db.VulnScanDep, locked map[string][]string) []vulnScanT
 		Requirement: dep.Requirement,
 		Resolution:  classifyRequirement(dep.Requirement, dep.CurrentVersion),
 		Kind:        dependencyKindDirect,
+		Scope:       scope,
 	}}
 }
 

@@ -191,6 +191,43 @@ func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleGroupOrgs lists the organizations tracked in a group
+// (operator report 2026-07-21: the SPA group page showed only
+// repositories — a group's tracked orgs were invisible even though
+// the backend has carried them in aveloxis_ops.user_org_requests
+// since v0.19.x). Display-only read; ownership-checked for
+// non-admins exactly like the repos listing. Org REGISTRATION stays
+// on POST /groups/{id}/repos with kind=org.
+func (s *Server) handleGroupOrgs(w http.ResponseWriter, r *http.Request) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	groupID, err := strconv.ParseInt(r.PathValue("groupID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid group id", http.StatusBadRequest)
+		return
+	}
+	orgs, err := s.store.GetPortalGroupOrgsForUser(r.Context(), info.UserID, groupID, info.IsAdmin)
+	if err != nil {
+		// Ownership refusal (the dominant case) — mirror handleGroupRepos.
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	type orgJSON struct {
+		OrgRequestID int64      `json:"org_request_id"`
+		URL          string     `json:"url"`
+		Name         string     `json:"name"`
+		Platform     string     `json:"platform"`
+		LastScanned  *time.Time `json:"last_scanned,omitempty"`
+	}
+	out := make([]orgJSON, 0, len(orgs))
+	for _, o := range orgs {
+		out = append(out, orgJSON{o.OrgRequestID, o.OrgURL, o.OrgName, o.Platform, o.LastScanned})
+	}
+	jsonResponse(w, map[string]any{"orgs": out})
+}
+
 // handleGroupAddRepo is the "request access / request collection"
 // affordance the compare picker's §2b classes point at. kind=repo
 // (default) or org. Ownership is enforced inside the store methods.
@@ -200,6 +237,12 @@ func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 // creates a pending add-request instead of enqueueing — the response
 // carries pending_approval + request_id so the GUI can say "awaiting
 // administrator approval" rather than pretending collection started.
+//
+// 2026-07-21 bulk paste: the body also accepts {"urls": ["...", ...]}
+// so a newline-separated paste lands in ONE AddReposToGroup call (one
+// approval unit, per v0.27.20) instead of N sequential requests. The
+// legacy single-url body stays accepted — `urls` wins when present.
+// Orgs remain one per request: an org is already an unbounded add.
 func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 	info, ok := s.requireUser(w, r)
 	if !ok {
@@ -211,16 +254,37 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		URL  string `json:"url"`
-		Kind string `json:"kind"`
+		URL  string   `json:"url"`
+		URLs []string `json:"urls"`
+		Kind string   `json:"kind"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.URL) == "" {
-		http.Error(w, "body must be {\"url\": \"...\", \"kind\": \"repo\"|\"org\"}", http.StatusBadRequest)
+	const bodyShape = "body must be {\"url\": \"...\"} or {\"urls\": [\"...\", ...]}, plus \"kind\": \"repo\"|\"org\""
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, bodyShape, http.StatusBadRequest)
 		return
 	}
-	resp := map[string]any{"ok": true}
+	urls := make([]string, 0, len(req.URLs)+1)
+	for _, u := range req.URLs {
+		if u = strings.TrimSpace(u); u != "" {
+			urls = append(urls, u)
+		}
+	}
+	if len(urls) == 0 {
+		if u := strings.TrimSpace(req.URL); u != "" {
+			urls = append(urls, u)
+		}
+	}
+	if len(urls) == 0 {
+		http.Error(w, bodyShape, http.StatusBadRequest)
+		return
+	}
+	resp := map[string]any{"ok": true, "submitted": len(urls)}
 	if req.Kind == "org" {
-		out, oerr := s.store.AddOrgToGroup(r.Context(), info.UserID, groupID, strings.TrimSpace(req.URL))
+		if len(urls) > 1 {
+			http.Error(w, "add organizations one at a time — bulk paste is for repositories", http.StatusBadRequest)
+			return
+		}
+		out, oerr := s.store.AddOrgToGroup(r.Context(), info.UserID, groupID, urls[0])
 		err = oerr
 		if err == nil && !out.Registered {
 			resp["pending_approval"] = 1
@@ -229,7 +293,7 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		out, aerr := s.store.AddReposToGroup(r.Context(), info.UserID, groupID,
-			[]string{strings.TrimSpace(req.URL)}, s.autoApproveAddLimit)
+			urls, s.autoApproveAddLimit)
 		err = aerr
 		if err == nil {
 			resp["linked"] = out.Linked

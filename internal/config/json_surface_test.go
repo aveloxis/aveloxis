@@ -45,6 +45,8 @@ var frozenCollectionKeys = []string{
 	"scancode_run_timeout_cap_hours",
 	"scancode_max_in_memory",
 	"vuln_scan_transitive", // v0.27.21 Phase C1 (deliberate addition)
+	"dev_build_deps",       // v0.27.45 summary/19 P2 (deliberate addition)
+	"github_actions_deps",  // v0.27.47 summary/19 P4 (deliberate addition)
 	"skip_largest_percent", // v0.27.35 large-repo skip (deliberate addition)
 	"scorecard_timeout_minutes",
 	"scorecard_token_count",

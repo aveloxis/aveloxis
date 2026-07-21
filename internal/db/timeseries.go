@@ -161,13 +161,30 @@ func normalizeLicense(license string) string {
 // license (empty, whitespace, or sentinel values like NOASSERTION) are
 // grouped under "Unknown".
 func (s *PostgresStore) GetRepoLicenses(ctx context.Context, repoID int64) ([]LicenseCount, error) {
+	return s.GetRepoLicensesScoped(ctx, repoID, false)
+}
+
+// GetRepoLicensesScoped is GetRepoLicenses with an optional
+// runtime-scope filter (v0.27.46, summary/19 P3 — decision #8:
+// license COMPLIANCE obligations attach overwhelmingly to distributed
+// runtime deps; dev tooling licenses are informational). runtimeOnly
+// excludes rows whose type is a known non-runtime scope; '' and
+// unrecognized values count as runtime (the IsRuntimeScope semantic,
+// expressed in SQL).
+func (s *PostgresStore) GetRepoLicensesScoped(ctx context.Context, repoID int64, runtimeOnly bool) ([]LicenseCount, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT COALESCE(NULLIF(TRIM(license), ''), 'Unknown') AS lic,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.repo_deps_libyear
 		WHERE repo_id = $1
+		  AND ($2 = FALSE OR COALESCE(type, '') NOT IN ('dev','test','build','optional','peer'))
+		  -- v0.27.47: GitHub Actions rows carry no license data —
+		  -- counting them as 'Unknown' would pollute the compliance
+		  -- view in the All scope (runtime already excludes them via
+		  -- type='build').
+		  AND package_manager <> 'githubactions'
 		GROUP BY lic
-		ORDER BY cnt DESC`, repoID)
+		ORDER BY cnt DESC`, repoID, runtimeOnly)
 	if err != nil {
 		return nil, err
 	}

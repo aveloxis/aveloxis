@@ -107,6 +107,23 @@ Every release candidate passes, in order (v0.27.43, summary/18 Phase
 8. **Network canaries** — network-canary.yml, weekly: live-API
    contract checks (OSV, registries, GraphQL parity fields,
    tool-binary versions).
+9. **The local knob canary** (`TestLocalDevBuildDepsCanary`,
+   internal/collector/local_canary_test.go) — before flipping any
+   collection knob that changes dependency or findings volume, run
+   the 22-repo profile harness against a dedicated scratch DB. It
+   drives the real clone→analysis→scan machinery, needs NO GitHub
+   API keys, and reports the baseline-vs-knobs-on delta per
+   ecosystem (optional `AVELOXIS_CANARY_TRANSITIVE=1` third phase):
+
+   ```bash
+   createdb aveloxis_canary19
+   AVELOXIS_CANARY_DB="postgres://…/aveloxis_canary19?sslmode=prefer"      go test ./internal/collector/ -run TestLocalDevBuildDepsCanary -v -timeout 180m
+   ```
+
+   Its first run (2026-07-21) caught three real integration bugs
+   the fixture suites could not see — treat "the parsers are
+   fixture-tested" as necessary but NOT sufficient for a
+   volume-knob flip.
 
 ## TDD discipline
 

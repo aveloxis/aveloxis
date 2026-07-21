@@ -631,8 +631,10 @@ Flags:
 
 | Format | Contents |
 |---|---|
-| **CycloneDX 1.5** | bomFormat, specVersion, tool metadata (aveloxis), root component with `evidence.licenses` (concluded from ScanCode source analysis) and `evidence.copyright` (detected holders), all dependencies as library components with purl, version, license, scope (required/optional) |
-| **SPDX 2.3** | CC0-1.0 data license, root package with `licenseConcluded` from ScanCode source analysis (vs. `licenseDeclared` from registry), `copyrightText` from detected holders, all dependencies as packages with purl external refs, `DEPENDS_ON` relationships |
+| **CycloneDX 1.5** | bomFormat, specVersion, tool metadata (aveloxis), root component with `evidence.licenses` (concluded from ScanCode source analysis) and `evidence.copyright` (detected holders), all dependencies as library components with purl, version, license, and a scope that follows the dependency's real role (runtime → `required`, optional/peer → `optional`, dev/test/build → `excluded`) |
+| **SPDX 2.3** | CC0-1.0 data license, root package with `licenseConcluded` from ScanCode source analysis (vs. `licenseDeclared` from registry), `copyrightText` from detected holders, all dependencies as packages with purl external refs, and scope-typed relationships (`DEPENDS_ON` for runtime; `DEV_`/`TEST_`/`BUILD_`/`OPTIONAL_DEPENDENCY_OF` and `PROVIDED_DEPENDENCY_OF` for the rest) |
+
+Both formats support `?scope=runtime` (only the shipped surface) and `?vulns=1` (annotate with the repo's current unresolved findings — CycloneDX via its native vulnerabilities array, SPDX via SECURITY/advisory external references).
 
 **License capture** from 12 package registries:
 
@@ -810,7 +812,7 @@ For each resolved commit author:
 
 **Phase 7 — SBOM Generation:** Both CycloneDX 1.5 and SPDX 2.3 SBOMs are generated from the `repo_deps_libyear` data and stored in `repo_sbom_scans` with format metadata. SBOMs include dependency names, versions, licenses, and package URLs from all 12 registries. Available for download via the web GUI or REST API.
 
-**Phase 8 — Vulnerability Scanning (OSV.dev):** All dependencies with package URLs (purls) are batch-queried against the [OSV.dev](https://osv.dev) API to identify known vulnerabilities. OSV aggregates data from NVD (CVEs), GitHub Advisory Database (GHSA), PyPI advisories, RustSec, Go Vulnerability Database, and OSS-Fuzz — providing comprehensive coverage across all supported ecosystems. Results are stored in `repo_deps_vulnerabilities` with:
+**Phase 8 — Vulnerability Scanning (OSV.dev):** All dependencies with package URLs (purls) are batch-queried against the [OSV.dev](https://osv.dev) API to identify known vulnerabilities. Findings carry three distinguishing labels: `dependency_kind` (a problem in the project's own releases, in a direct dependency, or anywhere in the transitive lockfile closure), `dependency_scope` (shipped runtime code vs dev/test/build tooling), and `version_resolution` (whether the exact affected version is known or only a declared range floor — a finding is never presented as more certain than the evidence supports). OSV aggregates data from NVD (CVEs), GitHub Advisory Database (GHSA), PyPI advisories, RustSec, Go Vulnerability Database, and OSS-Fuzz — providing comprehensive coverage across all supported ecosystems. Results are stored in `repo_deps_vulnerabilities` with:
 - Vulnerability ID (GHSA, PYSEC, RUSTSEC, GO, etc.) and CVE cross-reference
 - CVSS severity and score (approximated from vector)
 - Affected and fixed version ranges

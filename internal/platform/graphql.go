@@ -134,6 +134,12 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 
 		resp, err := c.inner.Do(req)
 		if err != nil {
+			// v0.27.28: cancellation bails quietly before the
+			// "retrying" WARN — same contract as httpclient.Get.
+			if ctx.Err() != nil {
+				c.logger.Debug("graphql request aborted by context cancellation", "url", url)
+				return ctx.Err()
+			}
 			c.logger.Warn("graphql request failed, retrying",
 				"url", url, "query", query, "attempt", attempt+1, "error", err)
 			select {

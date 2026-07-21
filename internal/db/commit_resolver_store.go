@@ -301,11 +301,25 @@ func (s *PostgresStore) FindContributorIDByLogin(ctx context.Context, login stri
 // live aveloxis_large DB showed 1,919 additional commits recoverable
 // under the case-insensitive comparison.
 //
-// Note: this side of the JOIN is fine without an index because gh_login
-// has the partial unique index from v0.19.9; the LOWER expression on
-// the inner table is a small cost vs the upper-table scan that already
-// happens anyway. If profiling shows this becomes a bottleneck, an
-// expression index on LOWER(gh_login) is the next step.
+// v0.27.25 — two fixes after a live 2-day-2-hour orphaned run of this
+// statement on aveloxis_large (2026-07-20 diagnostic):
+//
+//  1. BOTH sides now exclude empty strings. Postgres ” = ” is TRUE
+//     (the v0.25.6 explorer_new_contributors lesson), and production
+//     carries 10,636 contributors with gh_login = ” — a repo whose
+//     unresolved commits include ”-username rows cross-products
+//     against all of them inside the join.
+//  2. The v0.20.12 note below said an expression index on
+//     LOWER(gh_login) was "the next step" if this profiled as a
+//     bottleneck. Two days is that profile:
+//     idx_contributors_gh_login_lower (migrate.go, CONCURRENTLY) now
+//     serves the join and gives the planner expression statistics
+//     (the unindexed form estimated an 86M-row join from 7K commits).
+//
+// Safe to cancel at any point: single atomic statement, and the
+// cmt_ght_author_id IS NULL predicate makes the next pass redo only
+// what didn't land. With SIGTERM wired (v0.27.25), `aveloxis stop`
+// cancels this statement server-side instead of orphaning it.
 func (s *PostgresStore) BackfillCommitAuthorIDs(ctx context.Context, repoID int64) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.commits c
@@ -314,7 +328,9 @@ func (s *PostgresStore) BackfillCommitAuthorIDs(ctx context.Context, repoID int6
 		WHERE c.repo_id = $1
 		  AND LOWER(c.cmt_author_platform_username) = LOWER(cn.gh_login)
 		  AND c.cmt_ght_author_id IS NULL
-		  AND c.cmt_author_platform_username IS NOT NULL`,
+		  AND c.cmt_author_platform_username IS NOT NULL
+		  AND c.cmt_author_platform_username != ''
+		  AND cn.gh_login != ''`,
 		repoID)
 	if err != nil {
 		return 0, err

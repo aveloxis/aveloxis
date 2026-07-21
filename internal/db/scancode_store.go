@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -129,12 +130,32 @@ func (s *PostgresStore) InsertScancodeFileResultBatch(ctx context.Context, repoI
 type ScancodeForSBOM struct {
 	ConcludedLicenseSPDX string   // aggregated SPDX expression (e.g., "Apache-2.0 AND MIT")
 	Copyrights           []string // distinct copyright holders
+	// ScancodeVersion is the toolkit version of the scan that produced
+	// this evidence (v0.27.23). Recorded in the SBOM's tool metadata so
+	// the document says WHICH scanner version concluded the licenses —
+	// load-bearing for attestability because the external tools are
+	// installed unpinned and auto-updated monthly. Empty when the
+	// version wasn't recorded (very old scans).
+	ScancodeVersion string
 }
 
 // GetScancodeForSBOM returns aggregated scancode data for SBOM enrichment:
 // the concluded license expression and copyright holders for the repo's source.
 func (s *PostgresStore) GetScancodeForSBOM(ctx context.Context, repoID int64) (*ScancodeForSBOM, error) {
 	result := &ScancodeForSBOM{}
+
+	// v0.27.23: the version of the latest scan — provenance for the
+	// evidence fields below. No rows = repo never scanned = empty
+	// version; any other error surfaces.
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(scancode_version, '')
+		FROM aveloxis_scan.scancode_scans
+		WHERE repo_id = $1
+		ORDER BY data_collection_date DESC
+		LIMIT 1`, repoID).Scan(&result.ScancodeVersion)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return result, err
+	}
 
 	// Get distinct SPDX license expressions from source files.
 	rows, err := s.pool.Query(ctx, `

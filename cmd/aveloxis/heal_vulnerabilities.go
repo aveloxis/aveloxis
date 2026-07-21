@@ -25,6 +25,7 @@ import (
 
 func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 	var limit int
+	var rescoreOnly bool
 	cmd := &cobra.Command{
 		Use:   "heal-vulnerabilities",
 		Short: "Re-scan every repo with vulnerability rows to fill severity/summary details (OSV two-phase fetch)",
@@ -40,6 +41,20 @@ func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 				return err
 			}
 			defer store.Close()
+
+			// v0.27.23 --rescore-only: recompute cvss_score in place from
+			// each row's STORED vector (no OSV traffic at all). This is
+			// the fleet-wide healer for pre-v0.27.23 scores, which came
+			// from a six-bucket approximation rather than the CVSS
+			// formula. One UPDATE per distinct vector; idempotent.
+			if rescoreOnly {
+				updated, err := collector.RescoreStoredVulnerabilities(ctx, store, logger)
+				if err != nil {
+					return fmt.Errorf("rescore: %w", err)
+				}
+				fmt.Printf("heal-vulnerabilities --rescore-only: %d rows updated\n", updated)
+				return nil
+			}
 
 			ids, err := store.ReposWithVulnerabilities(ctx)
 			if err != nil {
@@ -73,5 +88,7 @@ func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&limit, "limit", 0, "cap repos healed this run (0 = all)")
+	cmd.Flags().BoolVar(&rescoreOnly, "rescore-only", false,
+		"recompute cvss_score from each row's stored vector (no OSV traffic); heals pre-v0.27.23 approximated scores in one pass")
 	return cmd
 }

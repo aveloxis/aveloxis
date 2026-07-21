@@ -152,7 +152,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	uninstallDump := installGoroutineDumpHandler(logger, defaultGoroutineDumpDir())
 	defer uninstallDump()
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// Scale the database connection pool to the worker count so collection
@@ -246,7 +246,7 @@ func runAPI(cfgPath, addr string) error {
 	pidfile.Write(pidPath, os.Getpid())
 	defer pidfile.Remove(pidPath)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-api"), logger)
@@ -316,7 +316,7 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)
@@ -1196,7 +1196,7 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			pidfile.Write(webPidPath, os.Getpid())
 			defer pidfile.Remove(webPidPath)
 
-			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
 			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-web"), logger)

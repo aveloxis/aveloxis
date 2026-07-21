@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -67,7 +68,7 @@ func runScancodeWorker(cfgPath string) error {
 	pidfile.Write(pidPath, os.Getpid())
 	defer pidfile.Remove(pidPath)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-scancode-worker"), logger)

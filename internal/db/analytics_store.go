@@ -236,3 +236,47 @@ func (s *PostgresStore) SearchOrgs(ctx context.Context, query string, limit int)
 	}
 	return out, rows.Err()
 }
+
+// FirstActivityAt returns the earliest known activity across a repo
+// set (v0.27.24): the LEAST of first issue, first PR, first commit
+// (author timestamp), and the forge's repo creation date. It is the
+// per-entity floor the compare endpoint clamps chart windows to, so a
+// young repo's series starts when its data starts instead of at the
+// requested window's beginning.
+//
+// ok=false means the set has no dateable activity at all (nothing
+// collected yet) — callers fall back to the unclamped window.
+//
+// Fail-safe by construction: a repo with imported ancient history (or
+// a bogus 1970 git timestamp) yields a floor BEFORE the window start,
+// making the clamp a no-op — never hidden data inside the window.
+// Postgres LEAST ignores NULL operands.
+//
+// Cost note: the issues/PR MINs ride idx_issues_repo_created /
+// idx_pull_requests_repo_created; the commits MIN has no serving
+// index and scans the repo's per-file rows. The API layer memoizes
+// per entity for the process lifetime (first activity is immutable —
+// history does not grow backward), so the cost is paid once per
+// entity per process. Deliberately NO index was added for this: a
+// once-per-process aggregate does not justify permanent write
+// amplification on the fleet's largest table.
+func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
+	if len(repoIDs) == 0 {
+		return time.Time{}, false, nil
+	}
+	var fa *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT LEAST(
+			(SELECT MIN(created_at) FROM aveloxis_data.issues WHERE repo_id = ANY($1)),
+			(SELECT MIN(created_at) FROM aveloxis_data.pull_requests WHERE repo_id = ANY($1)),
+			(SELECT MIN(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = ANY($1)),
+			(SELECT MIN(created_at) FROM aveloxis_data.repos WHERE repo_id = ANY($1))
+		)`, repoIDs).Scan(&fa)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if fa == nil {
+		return time.Time{}, false, nil
+	}
+	return fa.UTC(), true, nil
+}

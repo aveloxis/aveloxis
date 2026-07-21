@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -82,7 +83,7 @@ func runMigrateCntrbIDs(cfgPath string, dryRun bool, batchSize, limit int, skipP
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)

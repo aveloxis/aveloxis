@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -48,7 +49,7 @@ func backfillIdentitiesCmd(cfgPath *string) *cobra.Command {
 			cfg := loadConfig(*cfgPath, bootLog)
 			logger := newLogger(cfg)
 
-			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
 			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)

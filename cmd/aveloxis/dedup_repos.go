@@ -31,6 +31,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -91,7 +92,7 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// v0.21.5: store.Migrate(ctx) intentionally NOT called here — only

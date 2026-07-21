@@ -107,9 +107,15 @@ func (c *Client) fetchPRBatchWithSubdivide(ctx context.Context, owner, repo stri
 	case platform.ClassTransient, platform.ClassRateLimit:
 		// Retryable: try subdivision below.
 	default:
-		// ClassFatal, ClassAuth, ClassSkip, ClassOK, ClassNotModified
-		// all bubble immediately. The OK/NotModified cases shouldn't
-		// occur on err != nil but guard anyway.
+		// ClassFatal, ClassAuth, ClassSkip, ClassCanceled, ClassOK,
+		// ClassNotModified all bubble immediately. ClassCanceled
+		// (v0.27.28) matters here specifically: cancellation used to
+		// classify Transient, so every `aveloxis stop` drove all
+		// in-flight batches through the full 10→5→2→1 cascade and
+		// fired the size-1 REST fallback against a dead context — 85
+		// of each in one minute of the 2026-07-21 shutdown. The
+		// OK/NotModified cases shouldn't occur on err != nil but
+		// guard anyway.
 		return nil, err
 	}
 

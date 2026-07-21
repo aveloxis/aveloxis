@@ -103,15 +103,20 @@ func TestClassifyError_UnknownIsFatal(t *testing.T) {
 	}
 }
 
-// TestClassifyError_ContextCanceledIsTransient — when the scheduler cancels
-// a job context (shutdown, stale lock recovery), in-flight calls return
-// context.Canceled or context.DeadlineExceeded. These shouldn't be ClassFatal
-// — they mean "abort cleanly", which the runJob layer already handles.
-// Mapping to ClassTransient lets retry loops give up immediately without
-// logging a spurious "fatal error" at ERROR level.
-func TestClassifyError_ContextCanceledIsTransient(t *testing.T) {
-	if got := ClassifyError(context.Canceled); got != ClassTransient {
-		t.Errorf("context.Canceled should classify as ClassTransient, got %v", got)
+// TestClassifyError_ContextCancellationSplit — v0.27.28 CORRECTED
+// contract. The original phase-0 test here pinned cancellation as
+// ClassTransient ("abort cleanly without spurious ERROR logs") —
+// both sides agreeing on the wrong answer, the v0.21.1 lesson:
+// Transient tells subdivision (v0.20.8) and the size-1 REST fallback
+// (v0.20.20) to RETRY, so once v0.27.25 made `aveloxis stop`
+// actually cancel contexts, every shutdown fought itself (85
+// subdivision cascades + 85 doomed REST fallbacks in one minute of
+// the 2026-07-21 production log). Cancellation is now its own
+// terminal class; DeadlineExceeded stays Transient because a
+// timed-out request IS legitimately retryable.
+func TestClassifyError_ContextCancellationSplit(t *testing.T) {
+	if got := ClassifyError(context.Canceled); got != ClassCanceled {
+		t.Errorf("context.Canceled should classify as ClassCanceled, got %v", got)
 	}
 	if got := ClassifyError(context.DeadlineExceeded); got != ClassTransient {
 		t.Errorf("context.DeadlineExceeded should classify as ClassTransient, got %v", got)

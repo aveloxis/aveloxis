@@ -746,6 +746,34 @@ The scheduler also logs a startup gauge (`non-archived repos with no
 collection_queue row`) pointing here whenever the count is non-zero.
 Re-run until stranded = 0; healed repos drop out of the set.
 
+## `aveloxis data-verify`
+
+The standing data-verification program (v0.27.43): runs the read-only
+invariant probe battery against the configured database and exits 1 on
+any FAIL — suitable for gating releases and cron runs. Probes:
+structural invariants (case-duplicate repos, Default-group singleton,
+stranded repos, stale >24h locks, cross-kind message corruption with
+migration-state awareness), sampled count-integrity (cached queue
+counts vs actual rows, gathered vs forge metadata at the gap
+detector's 5% line, batch-vs-single stats agreement), and fill rates
+(report-only unless floors are set).
+
+```bash
+aveloxis data-verify                          # full battery, human report
+aveloxis data-verify --json                   # automation form
+aveloxis data-verify --sample 500             # wider drift/equality sample
+aveloxis data-verify --ground-truth 10        # ALSO re-fetch live GitHub
+                                              # metadata for 10 sampled repos
+                                              # and compare (needs API keys)
+aveloxis data-verify --min-identity-fill 95   # optional floors → WARN below
+```
+
+Severities: FAIL = a code-enforced invariant is broken (exit 1);
+WARN = known-and-healing state or operator-attention signal (pending
+heal worklist, stranded repos, schema behind the binary — each WARN
+names its fix command); OK = verified. Safe against production: every
+probe is read-only and bounded.
+
 ## `aveloxis heal-messages`
 
 Repairs message rows corrupted by the pre-v0.27.38 cross-kind ID

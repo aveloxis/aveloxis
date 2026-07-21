@@ -33,5 +33,13 @@ func TestNoDefaultClientInGitHubPackage(t *testing.T) {
 		if strings.Contains(string(src), "http.DefaultClient") {
 			t.Errorf("%s uses http.DefaultClient — no timeout, invisible to the KeyPool and the error taxonomy; route through the shared HTTPClient", name)
 		}
+		// Phase 5c tripwire (5): no bespoke GraphQL path. The single
+		// choke point HTTPClient.GraphQL owns the endpoint, the errors
+		// array, retries, and key accounting — a hardcoded endpoint
+		// means a second path that will skip all of that (the v0.18.1
+		// graphqlRequest survivor pattern, deleted in v0.27.37).
+		if strings.Contains(string(src), "api.github.com/graphql") {
+			t.Errorf("%s hardcodes the GraphQL endpoint — all GraphQL traffic must ride HTTPClient.GraphQL", name)
+		}
 	}
 }

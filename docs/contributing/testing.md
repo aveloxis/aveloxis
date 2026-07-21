@@ -83,6 +83,29 @@ Related tripwire: `TestNoInlineScanNilConditionals` (internal/db) bans the
 `rows.Scan(...) == nil` inline-condition form, which silently drops rows on
 scan failure and is invisible to errcheck because the value IS used.
 
+## The standing gate list (definition of done)
+
+Every release candidate passes, in order (v0.27.43, summary/18 Phase
+5d — each tier's CI home named):
+
+1. **Unit** — `go test ./...` (test.yml, with `-race`).
+2. **go vet** — lint.yml.
+3. **staticcheck** — lint.yml, blocking since v0.25.36.
+4. **golangci-lint** — lint.yml, blocking since v0.27.36, version-pinned.
+5. **Cascade integration** — `AVELOXIS_TEST_DB=<scratch> go test ./...`
+   (integration.yml: Postgres service, `-race`, TZ=America/Chicago).
+6. **Fresh-empty-DB gate** — required whenever schema.sql or
+   migrate.go change: create an empty database, run the db+collector
+   suites against it (proves from-scratch migration ordering; the
+   v0.27.9 lesson).
+7. **`aveloxis data-verify`** — for release candidates, against a
+   scratch or production database: the invariant probe battery
+   (structural, count-integrity, fill rates; `--ground-truth N` for
+   live-forge comparison). FAIL exits 1.
+8. **Network canaries** — network-canary.yml, weekly: live-API
+   contract checks (OSV, registries, GraphQL parity fields,
+   tool-binary versions).
+
 ## TDD discipline
 
 The contract:

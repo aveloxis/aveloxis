@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -94,6 +95,20 @@ type Scheduler struct {
 	// connection-error storm + reconnect deadlock pile-up into a clean
 	// pause/resume. Starts true (the DB was reachable at startup).
 	dbHealthy atomic.Bool
+
+	// apiClaimsPaused tracks the v0.27.34 API-outage claim pause for
+	// transition-only logging (the pool logs trip/recovery; this logs
+	// the scheduler-side effect exactly once per state change).
+	apiClaimsPaused atomic.Bool
+
+	// v0.27.35 large-repo skip (collection.skip_largest_percent): the
+	// cached top-N% repo_id set excluded from claims, refreshed lazily
+	// on a 6-hour horizon (fleet composition changes on collection
+	// cadence — days — so anything fresher buys nothing). Guarded by
+	// largeSkipMu; empty slice = disabled or nothing qualifies.
+	largeSkipMu        sync.Mutex
+	largeSkipIDs       []int64
+	largeSkipRefreshed time.Time
 
 	// digestMailer + digestStampPath drive the v0.27.12 operator
 	// vulnerability digest. mailer is injected via SetDigestMailer
@@ -680,6 +695,43 @@ func (s *Scheduler) runAffiliationsPopulation(ctx context.Context) {
 // Returns immediately without claiming when MatviewRebuildActive is set —
 // the weekly refresh wants a quiet window, so no new jobs start while it
 // runs. Existing in-flight jobs finish normally; this only gates claims.
+// largeRepoExclusions returns the cached "skip the largest repos"
+// id set (v0.27.35). Zero-cost when the knob is off. The 6-hour
+// refresh horizon is derived, not magic: membership in the top 0.5%
+// only changes as repos are re-measured on their multi-day collection
+// cadence. Errors keep the previous set (fail-open to stale rather
+// than un-skipping the monsters mid-storm).
+func (s *Scheduler) largeRepoExclusions(ctx context.Context) []int64 {
+	fraction := s.cfg.Collection.SkipLargestFraction()
+	if fraction == 0 {
+		return nil
+	}
+	s.largeSkipMu.Lock()
+	defer s.largeSkipMu.Unlock()
+	if time.Since(s.largeSkipRefreshed) < 6*time.Hour && s.largeSkipIDs != nil {
+		return s.largeSkipIDs
+	}
+	ids, commitTh, prTh, err := s.store.LargestRepoIDs(ctx, fraction)
+	if err != nil {
+		s.logger.Warn("large-repo skip: refresh failed — keeping previous set",
+			"error", err, "previous_count", len(s.largeSkipIDs))
+		return s.largeSkipIDs
+	}
+	if ids == nil {
+		ids = []int64{}
+	}
+	s.largeSkipIDs = ids
+	s.largeSkipRefreshed = time.Now()
+	// Effective-value log: the thresholds actually in force, not the
+	// configured percent.
+	s.logger.Info("large-repo skip ACTIVE — excluding largest repos from collection claims",
+		"skip_largest_percent", s.cfg.Collection.SkipLargestPercent,
+		"repos_excluded", len(ids),
+		"commit_count_threshold", int64(commitTh),
+		"pr_count_threshold", int64(prTh))
+	return ids
+}
+
 func (s *Scheduler) fillWorkerSlots(ctx context.Context, sem chan struct{}) {
 	if MatviewRebuildActive.Load() {
 		return
@@ -691,6 +743,27 @@ func (s *Scheduler) fillWorkerSlots(ctx context.Context, sem chan struct{}) {
 	if !s.dbHealthy.Load() {
 		return
 	}
+	// v0.27.34 GitHub-outage circuit breaker: during a hard API outage
+	// (fleet-wide consecutive 5xx, no successes — see
+	// platform.APIOutageThreshold) stop CLAIMING new work instead of
+	// letting every worker burn a ~5-minute retry budget against a dead
+	// gateway (the 2026-07-21 incident: 160 exhausted requests over a
+	// 2-hour 502 storm). In-flight jobs keep their own retry/backoff —
+	// their first success reopens the breaker instantly. Deliberate
+	// simplification: the queue claim isn't platform-filtered, so a
+	// GitHub outage also pauses the (tiny) GitLab share of the fleet;
+	// splitting claims by platform isn't worth the complexity.
+	if !s.ghKeys.APIHealthy() {
+		if s.apiClaimsPaused.CompareAndSwap(false, true) {
+			s.logger.Warn("pausing new collection claims — GitHub API-outage circuit breaker is open")
+		}
+		return
+	}
+	if s.apiClaimsPaused.CompareAndSwap(true, false) {
+		s.logger.Info("resuming collection claims — GitHub API-outage circuit breaker closed")
+	}
+	// v0.27.35: compute once per fill cycle (cached 6h internally).
+	excludeLargest := s.largeRepoExclusions(ctx)
 	claimed := 0
 	for {
 		// Check if extra parallelSlots from large-repo collection have pushed
@@ -706,7 +779,7 @@ func (s *Scheduler) fillWorkerSlots(ctx context.Context, sem chan struct{}) {
 		select {
 		case sem <- struct{}{}:
 			// Got a worker slot — try to claim a job.
-			job, err := s.store.DequeueNext(ctx, s.workerID)
+			job, err := s.store.DequeueNext(ctx, s.workerID, excludeLargest)
 			if err != nil {
 				s.logger.Error("failed to dequeue", "error", err)
 				<-sem

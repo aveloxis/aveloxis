@@ -260,6 +260,9 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 
 		case resp.StatusCode >= 500 && resp.StatusCode < 600:
 			_ = resp.Body.Close()
+			// v0.27.34: feed the fleet-level API-outage breaker (the
+			// 2026-07-21 storm was 1,044/1,045 GraphQL 502s).
+			c.keys.NoteServerError()
 			wait := jitteredBackoff(attempt)
 			c.logger.Warn("graphql server error, retrying with backoff",
 				"url", url, "query", query, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)

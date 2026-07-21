@@ -49,7 +49,39 @@ type KeyPool struct {
 	rrIndex int // round-robin counter
 	buffer  int // stop using a key when remaining drops to this
 	logger  *slog.Logger
+
+	// ── v0.27.34 fleet-level API-outage circuit breaker ────────────
+	// Every HTTPClient (REST + GraphQL) for a platform shares this
+	// pool, so it is the one place that observes the platform's 5xx
+	// behavior fleet-wide. consecutive5xx counts 5xx ATTEMPTS with no
+	// intervening success; at APIOutageThreshold the breaker opens
+	// (apiPauseUntil) and the scheduler stops CLAIMING new work —
+	// in-flight jobs keep their own retry/backoff, and the moment any
+	// of them gets a non-5xx response the breaker closes instantly.
+	// Motivated by the 2026-07-21 GitHub incident: a 2-hour 502 storm
+	// let dozens of workers each burn a ~5-minute retry budget against
+	// a dead gateway (160 exhausted requests); per-request backoff can
+	// never outlast an incident longer than its own budget.
+	consecutive5xx int
+	apiPauseUntil  time.Time
+	apiTripped     bool // for transition-only logging
 }
+
+// API-outage breaker tuning. Consecutive-without-success is the
+// deliberate signal: during the measured 2026-07-21 storm 58% of
+// retries still succeeded, and a brownout like that should keep
+// grinding through per-request backoff — only a HARD outage (nothing
+// succeeding across the whole fleet) should pause claims. At 25
+// consecutive failed attempts (2–3 requests' full retry cycles, well
+// past the breadth worker's per-contributor threshold of 20) a
+// healthy-but-degraded API is statistically excluded. The pause is a
+// probe window, not a sentence: claims resume after it elapses (and
+// re-trip within a couple of probe jobs if the outage persists), and
+// ANY success ends it immediately.
+const (
+	APIOutageThreshold = 25
+	APIOutagePause     = 10 * time.Minute
+)
 
 // DefaultBuffer is the number of requests to reserve on each key as a safety
 // margin. With concurrent workers, a small buffer prevents 403s from workers
@@ -208,6 +240,14 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	// quarantine threshold. Done for every resource bucket (core/search/graphql).
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		key.authStrikes = 0
+		// v0.27.34: any success closes the API-outage breaker instantly.
+		if kp.apiTripped {
+			kp.logger.Info("API-outage circuit breaker: recovered — resuming collection claims",
+				"consecutive_5xx_at_recovery", kp.consecutive5xx)
+		}
+		kp.consecutive5xx = 0
+		kp.apiPauseUntil = time.Time{}
+		kp.apiTripped = false
 	}
 
 	// Only update the key's core rate-limit tracking from core (or unknown) responses.
@@ -340,6 +380,46 @@ func (kp *KeyPool) RecordAuthSuccess(key *APIKey) {
 	kp.mu.Lock()
 	defer kp.mu.Unlock()
 	key.authStrikes = 0
+}
+
+// NoteServerError records one 5xx attempt for the platform
+// (v0.27.34 API-outage breaker). Called from both the REST and
+// GraphQL retry loops. At APIOutageThreshold consecutive failures the
+// breaker opens; while errors keep arriving at/above the threshold
+// the pause keeps extending, so a long outage stays paused without
+// any timer management — recovery is driven purely by the first
+// successful response (UpdateFromResponse) or by traffic stopping
+// long enough for the probe window to elapse.
+func (kp *KeyPool) NoteServerError() {
+	if kp == nil {
+		return
+	}
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	kp.consecutive5xx++
+	if kp.consecutive5xx < APIOutageThreshold {
+		return
+	}
+	kp.apiPauseUntil = time.Now().Add(APIOutagePause)
+	if !kp.apiTripped {
+		kp.apiTripped = true
+		kp.logger.Warn("API-outage circuit breaker TRIPPED — pausing new collection claims (in-flight jobs keep retrying; any success reopens instantly)",
+			"consecutive_5xx", kp.consecutive5xx,
+			"threshold", APIOutageThreshold,
+			"probe_window", APIOutagePause)
+	}
+}
+
+// APIHealthy reports whether the platform's API-outage breaker is
+// closed. The scheduler consults this before claiming new work; a
+// nil pool (keyless deployments) is always healthy.
+func (kp *KeyPool) APIHealthy() bool {
+	if kp == nil {
+		return true
+	}
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	return time.Now().After(kp.apiPauseUntil)
 }
 
 // usableLocked counts keys usable at time now: not permanently invalid and not

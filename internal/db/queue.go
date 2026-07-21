@@ -90,7 +90,16 @@ func (s *PostgresStore) PrioritizeRepo(ctx context.Context, repoID int64) error 
 // atomically learn the flag state at dequeue time and apply it when
 // computing since. Skipping it would open a race where the flag is set
 // between dequeue and collection start.
-func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string) (*QueueJob, error) {
+// excludeRepoIDs (v0.27.35, collection.skip_largest_percent) removes
+// specific repos from claim eligibility — the scheduler passes the
+// cached "largest repos" set so fleet throughput isn't monopolized by
+// a handful of monsters. ALWAYS pass a non-nil slice: `= ANY(NULL)`
+// yields NULL and would poison the predicate (the v0.27.4 lesson);
+// an empty slice makes the exclusion a no-op.
+func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string, excludeRepoIDs []int64) (*QueueJob, error) {
+	if excludeRepoIDs == nil {
+		excludeRepoIDs = []int64{}
+	}
 	var job QueueJob
 	err := s.pool.QueryRow(ctx, `
 		UPDATE aveloxis_ops.collection_queue
@@ -98,12 +107,13 @@ func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string) (*Queu
 		WHERE repo_id = (
 			SELECT repo_id FROM aveloxis_ops.collection_queue
 			WHERE status = 'queued' AND due_at <= NOW()
+			  AND NOT (repo_id = ANY($2::bigint[]))
 			ORDER BY priority, due_at
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
 		)
 		RETURNING repo_id, priority, status, due_at, locked_by, locked_at, last_collected, force_full_collect`,
-		workerID,
+		workerID, excludeRepoIDs,
 	).Scan(&job.RepoID, &job.Priority, &job.Status, &job.DueAt, &job.LockedBy, &job.LockedAt, &job.LastCollected, &job.ForceFullCollect)
 
 	if errors.Is(err, pgx.ErrNoRows) {

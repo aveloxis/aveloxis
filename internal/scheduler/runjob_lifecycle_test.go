@@ -94,7 +94,7 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 
 	// Claim — the same call fillWorkerSlots makes. The row must be
 	// locked to THIS worker while the job runs.
-	job, err := store.DequeueNext(ctx, s.workerID)
+	job, err := store.DequeueNext(ctx, s.workerID, nil)
 	if err != nil {
 		t.Fatalf("DequeueNext: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 		// Another row in the scratch queue may sort first; walk until ours.
 		for job != nil && job.RepoID != repoID {
 			store.CompleteJob(ctx, job.RepoID, false, time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "released by runjob lifecycle test")
-			job, err = store.DequeueNext(ctx, s.workerID)
+			job, err = store.DequeueNext(ctx, s.workerID, nil)
 			if err != nil {
 				t.Fatalf("DequeueNext: %v", err)
 			}

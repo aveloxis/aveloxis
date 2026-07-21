@@ -564,6 +564,10 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			// making the incident look like an uncategorized error rather
 			// than a transient 5xx.
 			resp.Body.Close()
+			// v0.27.34: feed the fleet-level API-outage breaker — a hard
+			// outage (consecutive 5xx with no success anywhere) pauses
+			// new collection claims scheduler-side.
+			c.keys.NoteServerError()
 			backoff := time.Duration(1<<min(attempt, 6)) * time.Second // 1s, 2s, 4s, 8s, 16s, 32s, 64s
 			jitter := time.Duration(rand.IntN(int(backoff/2) + 1))
 			wait := backoff + jitter

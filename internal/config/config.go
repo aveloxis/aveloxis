@@ -520,6 +520,17 @@ type CollectionConfig struct {
 	// digest unless mail.vuln_digest_include_transitive is set.
 	VulnScanTransitive bool `json:"vuln_scan_transitive"`
 
+	// SkipLargestPercent (v0.27.35): TEMPORARY throughput lever —
+	// exclude the fleet's top-N% repos (by forge-reported commit count
+	// OR PR count, either qualifies) from collection claims so a
+	// handful of kernel/pytorch-class monsters can't occupy every
+	// worker slot and hold back the rest of the fleet. 0 (default) =
+	// disabled. Skipped repos stay 'queued', overdue, and untouched —
+	// remove the knob (and restart serve) and they collect normally.
+	// NOTE: this is an absolute gate while enabled: a monitor "Boost"
+	// cannot override it for a skipped repo.
+	SkipLargestPercent float64 `json:"skip_largest_percent"`
+
 	// ScorecardTimeoutMinutes is the per-ATTEMPT wall-clock cap for a
 	// single OpenSSF Scorecard invocation (v0.27.5). Default 15
 	// minutes when unset. The remote-primary phase applies it to the
@@ -1317,4 +1328,16 @@ func (a APIConfig) ExemptCIDRsOrDefault() []string {
 		return []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
 	}
 	return a.ExemptCIDRs
+}
+
+// SkipLargestFraction converts collection.skip_largest_percent into
+// the (0,1) fraction LargestRepoIDs consumes. Out-of-range values
+// (negative, or >= 100 — certainly a misconfiguration) disable the
+// skip entirely; 0 = disabled. The scheduler logs the EFFECTIVE
+// threshold values at refresh time, per the effective-value rule.
+func (c CollectionConfig) SkipLargestFraction() float64 {
+	if c.SkipLargestPercent <= 0 || c.SkipLargestPercent >= 100 {
+		return 0
+	}
+	return c.SkipLargestPercent / 100
 }

@@ -215,10 +215,13 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 	switch format {
 	case "cyclonedx":
 		sbomFormat = collector.FormatCycloneDX
-		filename = fmt.Sprintf("sbom-repo-%d-cyclonedx.json", repoID)
+		// *.cdx.json is CycloneDX's recognized filename convention.
+		filename = fmt.Sprintf("sbom-repo-%d.cdx.json", repoID)
 	case "spdx":
 		sbomFormat = collector.FormatSPDX
-		filename = fmt.Sprintf("sbom-repo-%d-spdx.json", repoID)
+		// *.spdx.json is the SPDX 2.3 §4.4 suggested naming convention
+		// ("easy to recognize in a file system without opening the file").
+		filename = fmt.Sprintf("sbom-repo-%d.spdx.json", repoID)
 	default:
 		http.Error(w, "format must be 'cyclonedx' or 'spdx'", http.StatusBadRequest)
 		return
@@ -249,7 +252,7 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "SBOM annotation failed", http.StatusInternalServerError)
 			return
 		}
-		filename = fmt.Sprintf("sbom-repo-%d-cyclonedx-with-vulns.json", repoID)
+		filename = fmt.Sprintf("sbom-repo-%d-with-vulns.cdx.json", repoID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -311,8 +311,8 @@ func TestVersionStampedV0256(t *testing.T) {
 	// three VALUE-checking tripwires added — example-config effective
 	// defaults, commands-doc coverage, schema-count pins).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.27.32"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.27.32\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.27.35"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.27.35\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

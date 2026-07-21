@@ -376,9 +376,16 @@ type spdxCreation struct {
 }
 
 type spdxPackage struct {
-	SPDXID           string            `json:"SPDXID"`
-	Name             string            `json:"name"`
-	VersionInfo      string            `json:"versionInfo,omitempty"`
+	SPDXID      string `json:"SPDXID"`
+	Name        string `json:"name"`
+	VersionInfo string `json:"versionInfo,omitempty"`
+	// FilesAnalyzed is ALWAYS emitted (no omitempty) and always false
+	// (v0.27.33): SPDX 2.3 §7.8 defaults an OMITTED filesAnalyzed to
+	// true, and §7.9 then makes packageVerificationCode MANDATORY. We
+	// never analyze package files (no files section, no verification
+	// code), so omitting the field silently made every package
+	// non-conformant. Declaring false is the honest, conformant state.
+	FilesAnalyzed    bool              `json:"filesAnalyzed"`
 	DownloadLocation string            `json:"downloadLocation"`
 	LicenseConcluded string            `json:"licenseConcluded"`
 	LicenseDeclared  string            `json:"licenseDeclared"`

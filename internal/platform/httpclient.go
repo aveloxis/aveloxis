@@ -139,6 +139,13 @@ type HTTPClient struct {
 	// per unique endpoint path hit during a collection cycle).
 	etagMu    sync.RWMutex
 	etagCache map[string]string
+	// maxETagEntries bounds etagCache (v0.27.40, summary/18 Phase 3).
+	// Keys include query strings, and incremental-collection URLs carry
+	// per-cycle since= values and page numbers — mostly write-once,
+	// never-hit-again entries. Unbounded, a weeks-long serve over 100K
+	// repos accumulates millions of dead entries. When full, the cache
+	// is RESET (map re-alloc): crude but O(1), and the cost of a lost
+	// ETag is one non-304 response, not correctness.
 
 	// onPermanentRedirect is invoked whenever Get observes a 301 or 308
 	// response it's about to follow. The callback receives the from URL
@@ -225,6 +232,11 @@ const maxRetries = 10
 // maxPageReadRetries bounds per-page BODY-read retries in paginate
 // (v0.27.37, Phase 1g) — same budget as Fix C's GraphQL read retries.
 const maxPageReadRetries = 3
+
+// maxETagEntries caps the per-client ETag cache (see the etagCache
+// field comment). Sized generously above the fleet's ~100K-repo hot
+// set of stable (query-less) endpoint paths.
+const maxETagEntries = 500_000
 
 // ctxKeyBypassETag is a context value key used by WithoutETag to
 // suppress the ETag conditional layer on a single Get call. Distinct
@@ -355,6 +367,9 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		if !skipETag {
 			if etag := resp.Header.Get("ETag"); etag != "" && resp.StatusCode == http.StatusOK {
 				c.etagMu.Lock()
+				if len(c.etagCache) >= maxETagEntries {
+					c.etagCache = make(map[string]string, 1024)
+				}
 				c.etagCache[path] = etag
 				c.etagMu.Unlock()
 			}
@@ -696,6 +711,13 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				// cleanly with whatever pages we've already
 				// yielded — no error surfaced to the caller.
 				if errors.Is(err, ErrPaginationLimitExceeded) {
+					// v0.27.39: the result set is TRUNCATED at the
+					// platform's hard cap. Callers that treat the
+					// listing as a complete universe (gap fill's
+					// expected-numbers enumeration) would otherwise
+					// silently under-detect — leave a loud trace.
+					c.logger.Warn("pagination ended at the platform's hard result cap — result set is TRUNCATED",
+						"path", currentPath)
 					return
 				}
 				var zero T

@@ -159,7 +159,9 @@ func bearerToken(r *http.Request) string {
 func writeAuthError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	// Deliberate manual encode: WriteHeader already ran (non-200), so
+	// jsonResponse's header set would be ineffective here.
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 // authorizeRepo enforces §2b on a repo-scoped handler: unauthenticated
@@ -176,7 +178,8 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
-	json.NewEncoder(w).Encode(map[string]any{
+	// Deliberate manual encode: non-200 status already written.
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error":   "repo_out_of_scope",
 		"repo_id": repoID,
 		"hint":    "add this repository to one of your groups to request access",

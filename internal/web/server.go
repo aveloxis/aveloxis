@@ -154,8 +154,8 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 			}
 			return s[:n] + "..."
 		},
-		"dict": func(values ...interface{}) map[string]interface{} {
-			m := make(map[string]interface{})
+		"dict": func(values ...any) map[string]any {
+			m := make(map[string]any)
 			for i := 0; i < len(values)-1; i += 2 {
 				m[values[i].(string)] = values[i+1]
 			}
@@ -413,7 +413,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// from user A to user B without manually clearing cookies in
 	// DevTools. The /logout handler does the cookie/session cleanup;
 	// this template flag just makes the affordance discoverable.
-	s.render(w, "login", map[string]interface{}{
+	s.render(w, "login", map[string]any{
 		"HasGitHub":  s.ghOAuth != nil,
 		"HasGitLab":  s.glOAuth != nil,
 		"HasSession": s.getSession(r) != nil,
@@ -1027,7 +1027,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		pageWindow = append(pageWindow, i)
 	}
 
-	s.render(w, "group", map[string]interface{}{
+	s.render(w, "group", map[string]any{
 		"Session":    sess,
 		"Group":      group,
 		"Page":       page,
@@ -1278,7 +1278,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	// Get the user's groups and their repos for the search dropdown.
 	groups, _ := s.store.GetUserGroups(r.Context(), sess.UserID)
 
-	s.render(w, "compare", map[string]interface{}{
+	s.render(w, "compare", map[string]any{
 		"Session": sess,
 		"Groups":  groups,
 		"RepoIDs": r.URL.Query().Get("repos"),
@@ -1356,7 +1356,7 @@ func (s *Server) handleRepoDetail(w http.ResponseWriter, r *http.Request, sess *
 	// Get stats.
 	stats, _ := s.store.GetRepoStats(r.Context(), repoID)
 
-	s.render(w, "repo_detail", map[string]interface{}{
+	s.render(w, "repo_detail", map[string]any{
 		"Session": sess,
 		"Group":   group,
 		"Repo":    repo,
@@ -1492,7 +1492,7 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 
-	s.render(w, "monitor", map[string]interface{}{
+	s.render(w, "monitor", map[string]any{
 		"Session":    sess,
 		"Stats":      stats,
 		"Jobs":       rows,

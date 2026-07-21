@@ -84,6 +84,9 @@ func NewOSVCache() *OSVCache {
 
 // GetQuery returns the cached vuln-ID list for a purl. ok=false on
 // miss or expiry (expired entries are dropped on read).
+// The returned slice is SHARED with the cache and every concurrent
+// scan — READ-ONLY by contract (v0.27.40): mutating it is a data race
+// AND cross-scan cache poisoning.
 func (c *OSVCache) GetQuery(purl string) (ids []string, ok bool) {
 	if c == nil {
 		return nil, false
@@ -116,6 +119,9 @@ func (c *OSVCache) PutQuery(purl string, ids []string) {
 }
 
 // GetDetail returns the cached detail for a vuln ID.
+// The returned pointer is SHARED with the cache and every concurrent
+// scan — READ-ONLY by contract (v0.27.40): an in-place normalization
+// here becomes a data race plus cross-scan cache poisoning.
 func (c *OSVCache) GetDetail(id string) (*osvVuln, bool) {
 	if c == nil {
 		return nil, false

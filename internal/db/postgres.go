@@ -717,7 +717,23 @@ func (s *PostgresStore) UpsertIssueLabels(ctx context.Context, issueID, repoID i
 				l.Text, l.Description, l.Color, l.Origin.DataSource,
 			)
 		}
-		return s.pool.SendBatch(ctx, batch).Close()
+		if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
+			return err
+		}
+		// v0.27.39 (summary/18 Phase 2): reconcile removals. The caller
+		// delivers the item's COMPLETE current label set (GraphQL
+		// first:100 + pagination; REST full iterators), so anything
+		// absent from it was removed upstream. Callers skip empty sets
+		// (a failed child fetch must never delete), so removal-to-ZERO
+		// is a documented residual until a completeness flag exists.
+		names := make([]string, 0, len(labels))
+		for _, l := range labels {
+			names = append(names, l.Text)
+		}
+		_, err := s.pool.Exec(ctx, `
+			DELETE FROM aveloxis_data.issue_labels
+			WHERE issue_id = $1 AND NOT (label_text = ANY($2::text[]))`, issueID, names)
+		return err
 	})
 }
 
@@ -734,7 +750,18 @@ func (s *PostgresStore) UpsertIssueAssignees(ctx context.Context, issueID, repoI
 				issueID, repoID, a.ContributorID, a.PlatformSrcID, a.PlatformNodeID, a.Origin.DataSource,
 			)
 		}
-		return s.pool.SendBatch(ctx, batch).Close()
+		if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
+			return err
+		}
+		// v0.27.39: reconcile removed assignees (see UpsertIssueLabels).
+		ids := make([]int64, 0, len(assignees))
+		for _, a := range assignees {
+			ids = append(ids, a.PlatformSrcID)
+		}
+		_, err := s.pool.Exec(ctx, `
+			DELETE FROM aveloxis_data.issue_assignees
+			WHERE issue_id = $1 AND NOT (platform_assignee_id = ANY($2::bigint[]))`, issueID, ids)
+		return err
 	})
 }
 
@@ -797,7 +824,18 @@ func (s *PostgresStore) UpsertPRLabels(ctx context.Context, prID, repoID int64, 
 				l.Name, l.Description, l.Color, l.IsDefault, l.Origin.DataSource,
 			)
 		}
-		return s.pool.SendBatch(ctx, batch).Close()
+		if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
+			return err
+		}
+		// v0.27.39: reconcile removed labels (see UpsertIssueLabels).
+		names := make([]string, 0, len(labels))
+		for _, l := range labels {
+			names = append(names, l.Name)
+		}
+		_, err := s.pool.Exec(ctx, `
+			DELETE FROM aveloxis_data.pull_request_labels
+			WHERE pull_request_id = $1 AND NOT (label_name = ANY($2::text[]))`, prID, names)
+		return err
 	})
 }
 
@@ -814,7 +852,18 @@ func (s *PostgresStore) UpsertPRAssignees(ctx context.Context, prID, repoID int6
 				prID, repoID, a.ContributorID, a.PlatformSrcID, a.Origin.DataSource,
 			)
 		}
-		return s.pool.SendBatch(ctx, batch).Close()
+		if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
+			return err
+		}
+		// v0.27.39: reconcile unassigned assignees (see UpsertIssueLabels).
+		ids := make([]int64, 0, len(assignees))
+		for _, a := range assignees {
+			ids = append(ids, a.PlatformSrcID)
+		}
+		_, err := s.pool.Exec(ctx, `
+			DELETE FROM aveloxis_data.pull_request_assignees
+			WHERE pull_request_id = $1 AND NOT (platform_assignee_id = ANY($2::bigint[]))`, prID, ids)
+		return err
 	})
 }
 
@@ -831,7 +880,19 @@ func (s *PostgresStore) UpsertPRReviewers(ctx context.Context, prID, repoID int6
 				prID, repoID, r.ContributorID, r.PlatformSrcID, r.Origin.DataSource,
 			)
 		}
-		return s.pool.SendBatch(ctx, batch).Close()
+		if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
+			return err
+		}
+		// v0.27.39: reconcile withdrawn review requests (see
+		// UpsertIssueLabels).
+		ids := make([]int64, 0, len(reviewers))
+		for _, r := range reviewers {
+			ids = append(ids, r.PlatformSrcID)
+		}
+		_, err := s.pool.Exec(ctx, `
+			DELETE FROM aveloxis_data.pull_request_reviewers
+			WHERE pull_request_id = $1 AND NOT (platform_reviewer_id = ANY($2::bigint[]))`, prID, ids)
+		return err
 	})
 }
 

@@ -706,3 +706,27 @@ Admin-only:
   exact same `PrioritizeRepo` store call the legacy :5555 monitor's
   `/api/prioritize/{repoID}` makes. 404 when the repo has no queue
   row; 400 for a non-numeric id. Returns `{ok: true, repo_id}`.
+
+
+## Window-boundary semantics (v0.27.39)
+
+Two deliberate boundary behaviors that differ between endpoint
+families — documented so cross-referencing them is not mistaken for a
+data bug:
+
+- **`until` inclusivity differs**: `/repos/{id}/timeseries` treats
+  `until` as INCLUSIVE (the named day's data appears — the handler
+  shifts by +1 day internally); `/compare` treats the parsed date's
+  midnight as EXCLUSIVE. Changing either would break existing
+  consumers, so the divergence is documented rather than converged.
+- **`/compare` ends at the last COMPLETE bucket** (v0.27.39): the
+  in-progress week/month is never served as a data point — pre-fix it
+  made every active repo's final point droop and painted phantom
+  anomaly dots on trend charts. Request an explicit `until` inside a
+  bucket and the series still ends at that bucket's start.
+- **Commit bucketing differs by family** (deliberate, v0.27.29): the
+  Augur-compat metric routes bucket commits by the AUTHOR-LOCAL date
+  (`cmt_author_date`, Augur's historical semantic); `/compare` and
+  `/timeseries` bucket by UTC (`cmt_author_timestamp AT TIME ZONE
+  'UTC'`). The same commit can land in adjacent days/weeks across the
+  two families at bucket edges; both answers are internally correct.

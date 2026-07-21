@@ -39,9 +39,11 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 	defer rows.Close()
 
 	var candidates []affiliationCandidate
+	scanFailures := 0
 	for rows.Next() {
 		var c affiliationCandidate
 		if err := rows.Scan(&c.Email, &c.Company); err != nil {
+			scanFailures++
 			continue
 		}
 		candidates = append(candidates, c)
@@ -81,6 +83,8 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 	// some contributors' GitHub profile fields contained binary
 	// content that rode through to cntrb_company.
 	count := 0
+	upsertFailures := 0
+	var lastUpsertErr error
 	for domain, company := range affMap {
 		domain = safeUTF8(domain)
 		company = safeUTF8(company)
@@ -97,9 +101,20 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 				ca_last_used = NOW()`,
 			domain, company)
 		if err != nil {
+			upsertFailures++
+			lastUpsertErr = err
 			continue
 		}
 		count++
+	}
+	// v0.27.39 (summary/18 Phase 2): the log-less continue is how two
+	// whole-ecosystem outages stayed invisible for years (v0.27.19
+	// lesson) — one aggregate WARN per run, never silence.
+	if scanFailures > 0 || upsertFailures > 0 {
+		s.logger.Warn("affiliation population had failures",
+			"scan_failures", scanFailures,
+			"upsert_failures", upsertFailures,
+			"sample_error", lastUpsertErr)
 	}
 	return count, nil
 }

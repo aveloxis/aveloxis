@@ -18,7 +18,10 @@ import (
 func TestSafegoAdoptionAtAuditedSites(t *testing.T) {
 	// file -> minimum number of safego call sites expected.
 	expectations := map[string]int{
-		"../scheduler/scheduler.go":           15, // 12 named tasks + 3 closures (job, heartbeat, matview)
+		// v0.27.40: four ticker arms route through singleFlight, which
+		// wraps safego.Go internally — recovery preserved, direct
+		// call-site count lower (was 15).
+		"../scheduler/scheduler.go":           12,
 		"../scheduler/mailinglist_wiring.go":  4,
 		"../scheduler/distribution_wiring.go": 1,
 		"../scheduler/long_jobs_watchdog.go":  1,

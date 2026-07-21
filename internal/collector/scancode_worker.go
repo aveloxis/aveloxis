@@ -554,7 +554,9 @@ func (w *ScancodeWorker) dispatcher(ctx context.Context, jobs chan<- db.Scancode
 			// could accept. Best-effort release of the lock so
 			// the next aveloxis startup's recoverOrphans pass
 			// doesn't have to deal with a phantom claim.
-			_ = w.store.ClearScancodeLock(context.Background(), job.RepoID)
+			relCtx, relCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_ = w.store.ClearScancodeLock(relCtx, job.RepoID)
+			relCancel()
 			return
 		}
 	}
@@ -1082,10 +1084,13 @@ func (w *ScancodeWorker) sweepCloneDirAtShutdown() {
 // failure-counter + last_failed_at columns get updated and the
 // backoff gate applies.
 func (w *ScancodeWorker) clearLockBestEffort(ctx context.Context, repoID int64) {
-	// Try the live ctx first; fall back to background if canceled.
+	// Try the live ctx first; fall back to a BOUNDED background ctx if
+	// canceled (v0.27.40: a hung DB at shutdown must not block forever).
 	useCtx := ctx
 	if ctx.Err() != nil {
-		useCtx = context.Background()
+		var cancel context.CancelFunc
+		useCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 	}
 	if err := w.store.ClearScancodeLock(useCtx, repoID); err != nil {
 		w.logger.Warn("scancode runOne: ClearScancodeLock failed",
@@ -1105,7 +1110,10 @@ func (w *ScancodeWorker) clearLockBestEffort(ctx context.Context, repoID int64) 
 func (w *ScancodeWorker) recordFailureBestEffort(ctx context.Context, repoID int64) {
 	useCtx := ctx
 	if ctx.Err() != nil {
-		useCtx = context.Background()
+		// v0.27.40: bounded fallback — see clearLockBestEffort.
+		var cancel context.CancelFunc
+		useCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 	}
 	if err := w.store.RecordScancodeFailure(useCtx, repoID); err != nil {
 		w.logger.Warn("scancode runOne: RecordScancodeFailure failed",

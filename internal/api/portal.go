@@ -67,8 +67,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	jsonResponse(w, map[string]any{
 		"user_id":  info.UserID,
 		"is_admin": info.IsAdmin,
 		"scope_repo_count": func() int {
@@ -108,8 +107,7 @@ func (s *Server) handleGroupsList(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, groupJSON{g.GroupID, g.Name, status, g.RepoCount, g.Favorited})
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"groups": out})
+	jsonResponse(w, map[string]any{"groups": out})
 }
 
 func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
@@ -129,8 +127,7 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"group_id": id})
+	jsonResponse(w, map[string]any{"group_id": id})
 }
 
 // parsePortalPage reads the v0.27.14 pagination params: page
@@ -189,8 +186,7 @@ func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 	if repos == nil {
 		repos = []db.PortalGroupRepo{}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	jsonResponse(w, map[string]any{
 		"repos": repos, "total": total, "page": page, "page_size": pageSize,
 	})
 }
@@ -249,8 +245,7 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	jsonResponse(w, resp)
 }
 
 // handleGroupPendingAdds lists the group's own awaiting-approval
@@ -281,8 +276,7 @@ func (s *Server) handleGroupPendingAdds(w http.ResponseWriter, r *http.Request) 
 	for _, it := range items {
 		out = append(out, itemJSON{it.RequestID, it.Kind, it.URL, it.CreatedAt})
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"pending": out})
+	jsonResponse(w, map[string]any{"pending": out})
 }
 
 // notifyAddRequestSubmitted emails the operator about a new pending
@@ -344,8 +338,7 @@ func (s *Server) handleAdminAddRequests(w http.ResponseWriter, r *http.Request) 
 		out = append(out, reqJSON{p.RequestID, p.UserID, p.UserLogin, p.UserEmail,
 			p.GroupID, p.GroupName, p.Kind, p.OrgURL, p.ItemCount, p.SampleURLs, p.CreatedAt})
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"pending": out})
+	jsonResponse(w, map[string]any{"pending": out})
 }
 
 // handleAdminAddRequestDecision approves/rejects one add-request.
@@ -408,8 +401,7 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 		// token-validation cache so their next request sees it.
 		s.auth.invalidateAll()
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "changed": changed})
+	jsonResponse(w, map[string]any{"ok": true, "changed": changed})
 }
 
 // --- admin ---
@@ -435,8 +427,7 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	for _, u := range users {
 		out = append(out, userJSON{u.UserID, u.Login, u.Email, u.Provider, u.IsAdmin, u.CreatedAt})
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"users": out})
+	jsonResponse(w, map[string]any{"users": out})
 }
 
 func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request) {
@@ -470,8 +461,7 @@ func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request)
 	// Role changed — drop the token-validation cache so the target's
 	// own /me reflects the new role immediately, not after the TTL.
 	s.auth.invalidateAll()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	jsonResponse(w, map[string]any{"ok": true})
 }
 
 func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request) {
@@ -497,8 +487,7 @@ func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request
 	for _, p := range pending {
 		out = append(out, pendingJSON{p.GroupID, p.Name, p.UserID, p.UserLogin, p.UserEmail, p.RepoCount, p.OrgRequests, p.CreatedAt})
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"pending": out})
+	jsonResponse(w, map[string]any{"pending": out})
 }
 
 func (s *Server) handleAdminGroupDecision(w http.ResponseWriter, r *http.Request) {
@@ -547,8 +536,7 @@ func (s *Server) handleAdminGroupDecision(w http.ResponseWriter, r *http.Request
 	// Approval changes the requester's repo scope — drop the
 	// token-validation cache so their next request sees it.
 	s.auth.invalidateAll()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	jsonResponse(w, map[string]any{"ok": true})
 }
 
 func (s *Server) handleAdminMonitorStats(w http.ResponseWriter, r *http.Request) {
@@ -560,8 +548,7 @@ func (s *Server) handleAdminMonitorStats(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"queue": stats})
+	jsonResponse(w, map[string]any{"queue": stats})
 }
 
 func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request) {
@@ -616,8 +603,7 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		}
 		out = append(out, row)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	jsonResponse(w, map[string]any{
 		"jobs": out, "total": total, "page": page, "page_size": pageSize,
 	})
 }
@@ -643,8 +629,7 @@ func (s *Server) handleAdminPrioritizeRepo(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "repo_id": repoID})
+	jsonResponse(w, map[string]any{"ok": true, "repo_id": repoID})
 }
 
 // --- v0.27.4: home tab (stars + activity) ---
@@ -693,12 +678,11 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.homeCache.invalidate(info.UserID)
-	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]any{"ok": true, "starred": r.Method != http.MethodDelete}
 	if addedToGroup != "" {
 		resp["added_to_group"] = addedToGroup
 	}
-	_ = json.NewEncoder(w).Encode(resp)
+	jsonResponse(w, resp)
 }
 
 // handleHomeRepos returns the signed-in user's home-tab repo list:

@@ -60,9 +60,15 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 		logger.Warn("prelim: repo no longer exists, sidelining permanently",
 			"url", repo.GitURL, "status", statusCode, "repo_id", repo.ID)
 
-		// Mark as archived so queries can filter it out.
+		// Mark as archived so queries can filter it out. v0.27.39:
+		// dequeuing WITHOUT the archive succeeding mints a stranded
+		// row (non-archived, queue-less, invisible forever — the
+		// reconcile-repos class). If archiving fails, keep the queue
+		// row; the next cycle retries both.
 		if err := store.ArchiveRepo(ctx, repo.ID); err != nil {
-			logger.Warn("prelim: failed to archive repo", "repo_id", repo.ID, "error", err)
+			logger.Warn("prelim: failed to archive dead repo — keeping queue row so the next cycle retries",
+				"repo_id", repo.ID, "error", err)
+			return result, nil
 		}
 		// Remove from queue entirely — this repo will never be collected again
 		// unless manually re-added.
@@ -157,6 +163,14 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 }
 
 // resolveRedirects follows HTTP redirects and returns the final URL and status.
+// ResolveRedirectTarget resolves a repo URL's redirect chain and
+// returns (finalURL, statusCode). Exported for v0.27.39's
+// reconcile-repos, which classifies stranded repos by live redirect
+// (the same signal prelim uses at collection time).
+func ResolveRedirectTarget(ctx context.Context, repoURL string) (string, int, error) {
+	return resolveRedirects(ctx, repoURL)
+}
+
 func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) {
 	client := &http.Client{
 		Timeout: 15 * time.Second,

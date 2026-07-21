@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -1031,7 +1032,8 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		var topName string
 		var topVal float64
 		for name, pct := range langRaw {
-			languages[name] = int(pct * 100)
+			// v0.27.39: round, don't floor — 84.999% is 8500, not 8499.
+			languages[name] = int(math.Round(pct * 100))
 			if pct > topVal {
 				topVal = pct
 				topName = name

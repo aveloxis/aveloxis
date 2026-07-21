@@ -132,7 +132,7 @@ func parsePeriod(r *http.Request) string {
 	}
 }
 
-func jsonResponse(w http.ResponseWriter, data interface{}) {
+func jsonResponse(w http.ResponseWriter, data any) {
 	// CORS is handled centrally by the v0.27.x middleware chain
 	// (ratelimit.go cors) — per-handler headers here would bypass the
 	// cors_origins allowlist.
@@ -644,7 +644,7 @@ func (s *Server) handleStarsCount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]interface{}{"repo_name": name, "stars": count})
+	jsonResponse(w, map[string]any{"repo_name": name, "stars": count})
 }
 
 func (s *Server) handleForks(w http.ResponseWriter, r *http.Request) {
@@ -678,7 +678,7 @@ func (s *Server) handleForkCount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]interface{}{"repo_name": name, "forks": count})
+	jsonResponse(w, map[string]any{"repo_name": name, "forks": count})
 }
 
 func (s *Server) handleWatchers(w http.ResponseWriter, r *http.Request) {
@@ -702,7 +702,7 @@ func (s *Server) handleWatchers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	var result []map[string]interface{}
+	var result []map[string]any
 	for rows.Next() {
 		var date time.Time
 		var value int
@@ -711,7 +711,7 @@ func (s *Server) handleWatchers(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
 		}
-		result = append(result, map[string]interface{}{"date": date, "watchers": value, "repo_name": name})
+		result = append(result, map[string]any{"date": date, "watchers": value, "repo_name": name})
 	}
 	if err := rows.Err(); err != nil {
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -734,7 +734,7 @@ func (s *Server) handleWatchersCount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]interface{}{"repo_name": name, "watchers": count})
+	jsonResponse(w, map[string]any{"repo_name": name, "watchers": count})
 }
 
 func (s *Server) handleLanguages(w http.ResponseWriter, r *http.Request) {
@@ -751,7 +751,7 @@ func (s *Server) handleLanguages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]interface{}{"repo_id": repoID, "primary_language": lang})
+	jsonResponse(w, map[string]any{"repo_id": repoID, "primary_language": lang})
 }
 
 // ============================================================

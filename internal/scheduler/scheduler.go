@@ -101,6 +101,13 @@ type Scheduler struct {
 	// the scheduler-side effect exactly once per state change).
 	apiClaimsPaused atomic.Bool
 
+	// v0.27.40 single-flight guards for the ticker-fired background
+	// tasks (see singleFlight).
+	enrichmentActive   atomic.Bool
+	searchActive       atomic.Bool
+	affiliationsActive atomic.Bool
+	breadthActive      atomic.Bool
+
 	// v0.27.35 large-repo skip (collection.skip_largest_percent): the
 	// cached top-N% repo_id set excluded from claims, refreshed lazily
 	// on a 6-hour horizon (fleet composition changes on collection
@@ -260,6 +267,19 @@ func (s *Scheduler) Run(ctx context.Context) {
 	} else if realigned > 0 {
 		s.logger.Info("realigned queue due_at from current days_until_recollect",
 			"rows_updated", realigned, "recollect_after", s.cfg.Collection.RecollectAfterDuration())
+	}
+
+	// v0.27.39 (summary/18 Phase 2): stranded-repo gauge. Non-archived
+	// repos with no queue row are invisible to the scheduler forever
+	// (rename-duplicate leftovers from prelim's skip+dequeue, plus
+	// lost enqueues). Observation only — consolidating a data-bearing
+	// duplicate is a deliberate operator action (reconcile-repos), and
+	// auto-enqueueing a rename duplicate would re-collect a duplicate.
+	if stranded, serr := s.store.CountStrandedRepos(ctx); serr != nil {
+		s.logger.Warn("stranded-repo gauge failed", "error", serr)
+	} else if stranded > 0 {
+		s.logger.Warn("non-archived repos with no collection_queue row — invisible to the scheduler",
+			"count", stranded, "action", "aveloxis reconcile-repos --dry-run")
 	}
 
 	// Identify the leftover-staging drain set and lock-park those repos
@@ -502,7 +522,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			safego.Go(s.logger, "user-org-refresh", func() { s.refreshUserOrgs(ctx) })
 
 		case <-breadthTicker.C:
-			safego.Go(s.logger, "contributor-breadth", func() { s.runBreadth(ctx) })
+			s.singleFlight(&s.breadthActive, "contributor-breadth", func() { s.runBreadth(ctx) })
 
 		case <-matviewCheckTicker.C:
 			now := time.Now()
@@ -523,16 +543,16 @@ func (s *Scheduler) Run(ctx context.Context) {
 			safego.Go(s.logger, "staging-cleanup", func() { s.runStagingCleanup(ctx) })
 
 		case <-enrichTicker.C:
-			safego.Go(s.logger, "contributor-enrichment", func() { s.runEnrichment(ctx) })
+			s.singleFlight(&s.enrichmentActive, "contributor-enrichment", func() { s.runEnrichment(ctx) })
 
 		case <-vulnDigestC:
 			safego.Go(s.logger, "vuln-digest", func() { s.runVulnDigest(ctx) })
 
 		case <-searchResolveTicker.C:
-			safego.Go(s.logger, "search-resolve", func() { s.runSearchResolve(ctx) })
+			s.singleFlight(&s.searchActive, "search-resolve", func() { s.runSearchResolve(ctx) })
 
 		case <-affiliationsTicker.C:
-			safego.Go(s.logger, "affiliations-population", func() { s.runAffiliationsPopulation(ctx) })
+			s.singleFlight(&s.affiliationsActive, "affiliations-population", func() { s.runAffiliationsPopulation(ctx) })
 
 		case <-pollTicker.C:
 			s.fillWorkerSlots(ctx, sem)
@@ -587,6 +607,25 @@ func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 // At default 100 candidates per hour, the task uses ~1.7 search
 // requests per minute — comfortable headroom against the 30/min
 // per-token budget.
+// singleFlight launches task under safego unless a prior run of the
+// SAME task is still in flight (v0.27.40, summary/18 Phase 3). The
+// scheduler's ticker arms previously spawned a fresh goroutine every
+// tick regardless — a slow pass overlapped its successor, double-
+// spending API budget (enrichment: up to 14K REST calls/pass) and
+// quietly breaking the v0.19.7 "periodic SINGLETON writer" property
+// on affiliations. The guard is per-task CAS; a skipped tick logs at
+// Debug and the work happens on the next free tick.
+func (s *Scheduler) singleFlight(active *atomic.Bool, name string, task func()) {
+	if !active.CompareAndSwap(false, true) {
+		s.logger.Debug("background task still running — skipping this tick", "task", name)
+		return
+	}
+	safego.Go(s.logger, name, func() {
+		defer active.Store(false)
+		task()
+	})
+}
+
 func (s *Scheduler) runSearchResolve(ctx context.Context) {
 	if s.ghClient == nil {
 		return

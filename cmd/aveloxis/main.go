@@ -90,6 +90,7 @@ func main() {
 		distributionStatsCmd(&cfgPath),
 		versionCmd(),
 		healMessagesCmd(&cfgPath),
+		reconcileReposCmd(&cfgPath),
 	)
 
 	if err := root.Execute(); err != nil {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -496,8 +497,12 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 				yield(platform.MessageWithRef{}, err)
 				return
 			}
-			// Determine if this is an issue or PR comment by checking issue_url.
-			isPR := strings.Contains(raw.IssueURL, "/pull/") || strings.Contains(raw.HTMLURL, "/pull/")
+			// Determine if this is an issue or PR comment from the html
+			// URL's PATH SEGMENTS. v0.27.39: the old substring match on
+			// "/pull/" misclassified every comment in a repo literally
+			// named "pull" (owner/pull) — PRRef with an issue number →
+			// parent lookup fails → comment dropped.
+			isPR := urlPathHasSegment(raw.IssueURL, "pull") || urlPathHasSegment(raw.HTMLURL, "pull")
 
 			msg := model.Message{
 				PlatformMsgID: raw.ID,
@@ -1211,4 +1216,18 @@ func (c *Client) FetchPRByNumber(ctx context.Context, owner, repo string, number
 		},
 	}
 	return pr, nil
+}
+
+// urlPathHasSegment reports whether the URL's path contains the exact
+// segment (e.g. the "pull" in /owner/repo/pull/123 — but NOT a repo
+// named "pull" at /owner/pull/issues/5, where "pull" is the repo-name
+// segment, position 2). GitHub html URLs are /{owner}/{repo}/{kind}/...
+// so the kind is always the THIRD path segment.
+func urlPathHasSegment(rawURL, segment string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	return len(parts) >= 3 && parts[2] == segment
 }

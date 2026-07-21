@@ -718,6 +718,34 @@ row-count comparison, see `aveloxis data-test`.
 
 ---
 
+## `aveloxis reconcile-repos`
+
+Heals the stranded-repo class: non-archived `repos` rows with no
+`collection_queue` row — invisible to the scheduler forever. Production
+audit (2026-07-21) root-caused the cohort to GitHub renames + prelim's
+duplicate skip+dequeue (which dequeues without archiving), plus a
+smaller lost-enqueue share. Each stranded repo is classified by a LIVE
+redirect check:
+
+- dead upstream (404/410) → archived (the outcome prelim applies)
+- redirects to a **tracked** repo → dataless duplicates heal onto the
+  winner (`HealRenamedDuplicate`); data-bearing duplicates consolidate
+  through the dedup-repos per-pair machinery (repoints + leaves-first
+  deletes)
+- redirects to an **untracked** URL → re-enqueued (prelim renames it
+  in place on the next cycle — rename detection is prelim's job)
+- alive at its own URL → re-enqueued (a lost queue row)
+
+```bash
+aveloxis reconcile-repos --dry-run   # per-repo classification, no writes
+aveloxis reconcile-repos --limit 50  # canary
+aveloxis reconcile-repos             # everything
+```
+
+The scheduler also logs a startup gauge (`non-archived repos with no
+collection_queue row`) pointing here whenever the count is non-zero.
+Re-run until stranded = 0; healed repos drop out of the set.
+
 ## `aveloxis heal-messages`
 
 Repairs message rows corrupted by the pre-v0.27.38 cross-kind ID

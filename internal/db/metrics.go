@@ -266,7 +266,7 @@ func (s *PostgresStore) AverageIssueResolutionTime(ctx context.Context, repoID i
 }
 
 // AbandonedIssues returns open issues not updated for 1+ year.
-func (s *PostgresStore) AbandonedIssues(ctx context.Context, repoID int64) ([]map[string]interface{}, error) {
+func (s *PostgresStore) AbandonedIssues(ctx context.Context, repoID int64) ([]map[string]any, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT issue_id, updated_at
 		FROM aveloxis_data.issues
@@ -279,14 +279,14 @@ func (s *PostgresStore) AbandonedIssues(ctx context.Context, repoID int64) ([]ma
 		return nil, err
 	}
 	defer rows.Close()
-	var result []map[string]interface{}
+	var result []map[string]any
 	for rows.Next() {
 		var issueID int64
 		var updatedAt time.Time
 		if err := rows.Scan(&issueID, &updatedAt); err != nil {
 			return nil, err
 		}
-		result = append(result, map[string]interface{}{
+		result = append(result, map[string]any{
 			"issue_id":   issueID,
 			"updated_at": updatedAt,
 		})
@@ -831,7 +831,7 @@ func (s *PostgresStore) ProjectLanguages(ctx context.Context, repoID int64) ([]C
 // Helper: generic time-series metric query
 // ============================================================
 
-func (s *PostgresStore) timeSeriesMetric(ctx context.Context, query string, args ...interface{}) ([]MetricRow, error) {
+func (s *PostgresStore) timeSeriesMetric(ctx context.Context, query string, args ...any) ([]MetricRow, error) {
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err

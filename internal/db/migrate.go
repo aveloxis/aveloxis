@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -138,7 +139,37 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 
 	// Set tool_version column defaults to the current version so new inserts
 	// automatically get the right value without every INSERT needing to specify it.
-	setToolVersionDefaults(ctx, pg)
+	// v0.27.37 (summary/18 Phase 1b): GitLab conversation comments
+	// were silently dropped on the main collection path since
+	// inception (client refs carried no parent number). The forward
+	// fix makes new cycles collect them, but incremental cycles are
+	// since-filtered — only a FULL pass re-walks comment history.
+	// One-shot: flag every collected GitLab repo for force-full.
+	// Self-disabling: once flagged (or after the full pass clears the
+	// flag on success), the filter matches nothing.
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
+		UPDATE aveloxis_ops.collection_queue q
+		SET force_full_collect = TRUE
+		FROM aveloxis_data.repos r
+		WHERE r.repo_id = q.repo_id
+		  AND r.platform_id = 2
+		  AND q.last_collected IS NOT NULL
+		  AND q.force_full_collect = FALSE`)
+
+	// v0.27.38 (summary/18 Phase 1a): messages msg_kind — see
+	// msg_kind_migration.go for the full sequence + rationale.
+	addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.messages", "msg_kind", "SMALLINT NOT NULL DEFAULT 0")
+	execMigrationStep(ctx, pg, logger, &errs,
+		"v0.27.38 create message_heal_worklist", `
+		CREATE TABLE IF NOT EXISTS aveloxis_ops.message_heal_worklist (
+			msg_id      BIGINT PRIMARY KEY,
+			captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			healed_at   TIMESTAMPTZ
+		)`)
+	migrateMessageKinds(ctx, pg, logger, &errs)
+
+	setToolVersionDefaults(ctx, pg, logger)
 
 	// Backfill tool_version on rows that were inserted before defaults were set.
 	// After the first run this is a no-op (zero rows matched).
@@ -1828,7 +1859,7 @@ func (s *PostgresStore) CheckSchemaVersion(ctx context.Context, logger *slog.Log
 // automatically get the correct value without needing it in every INSERT list.
 // Only alters tables whose default doesn't already match, so on most startups
 // this is a no-op.
-func setToolVersionDefaults(ctx context.Context, pg *PostgresStore) {
+func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
 	expectedDefault := fmt.Sprintf("'%s'::text", ToolVersion)
 	rows, err := pg.pool.Query(ctx, `
 		SELECT table_schema || '.' || table_name
@@ -1838,16 +1869,26 @@ func setToolVersionDefaults(ctx context.Context, pg *PostgresStore) {
 		  AND (column_default IS NULL OR column_default != $1)`,
 		expectedDefault)
 	if err != nil {
+		// Best-effort by design (stale defaults only mean new rows
+		// stamp the previous version), but never silent (v0.27.36).
+		logger.Warn("tool_version default sweep: query failed", "error", err)
 		return
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var table string
-		if rows.Scan(&table) == nil {
-			pg.pool.Exec(ctx, fmt.Sprintf(
-				`ALTER TABLE %s ALTER COLUMN tool_version SET DEFAULT '%s'`,
-				table, ToolVersion))
+		if err := rows.Scan(&table); err != nil {
+			logger.Warn("tool_version default sweep: scan failed", "error", err)
+			continue
 		}
+		if _, err := pg.pool.Exec(ctx, fmt.Sprintf(
+			`ALTER TABLE %s ALTER COLUMN tool_version SET DEFAULT '%s'`,
+			table, ToolVersion)); err != nil {
+			logger.Warn("tool_version default sweep: alter failed", "table", table, "error", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		logger.Warn("tool_version default sweep: iteration failed", "error", err)
 	}
 }
 
@@ -1914,25 +1955,31 @@ func backfillToolVersion(ctx context.Context, pg *PostgresStore, logger *slog.Lo
 func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
 	// Check if the unique index already exists — if so, dedup was already done.
 	var exists bool
-	pg.pool.QueryRow(ctx, `
+	if err := pg.pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM pg_indexes
 			WHERE schemaname = 'aveloxis_data' AND indexname = 'idx_commits_repo_hash_file'
-		)`).Scan(&exists)
+		)`).Scan(&exists); err != nil {
+		logger.Warn("commit-dedup gate: index probe failed — skipping dedup this run", "error", err)
+		return
+	}
 	if exists {
 		return // already cleaned up
 	}
 
 	// Count duplicates to decide if we need to clean up.
 	var dupCount int
-	pg.pool.QueryRow(ctx, `
+	if err := pg.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM (
 			SELECT cmt_commit_hash, cmt_filename, repo_id
 			FROM aveloxis_data.commits
 			GROUP BY cmt_commit_hash, cmt_filename, repo_id
 			HAVING COUNT(*) > 1
 			LIMIT 1
-		) sub`).Scan(&dupCount)
+		) sub`).Scan(&dupCount); err != nil {
+		logger.Warn("commit-dedup gate: duplicate probe failed — skipping dedup this run", "error", err)
+		return
+	}
 
 	if dupCount > 0 {
 		logger.Info("deduplicating commits table (one-time migration)")
@@ -1956,16 +2003,21 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 	// commits table while the scheduler is running. deduplicateCommits
 	// itself is warn-only (this isn't through the err-collector), so
 	// keep that behavior here too.
+	// ErrNoRows = the index doesn't exist at all — nothing to drop.
 	var existsInvalid bool
-	pg.pool.QueryRow(ctx, `
+	if err := pg.pool.QueryRow(ctx, `
 		SELECT NOT i.indisvalid
 		FROM pg_index i
 		JOIN pg_class c ON c.oid = i.indexrelid
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'idx_commits_repo_hash_file'`).Scan(&existsInvalid)
+		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'idx_commits_repo_hash_file'`).Scan(&existsInvalid); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		logger.Warn("invalid-index probe failed for idx_commits_repo_hash_file", "error", err)
+	}
 	if existsInvalid {
 		logger.Warn("dropping invalid idx_commits_repo_hash_file from prior interrupted CONCURRENT build")
-		pg.pool.Exec(ctx, `DROP INDEX IF EXISTS aveloxis_data.idx_commits_repo_hash_file`)
+		if _, err := pg.pool.Exec(ctx, `DROP INDEX IF EXISTS aveloxis_data.idx_commits_repo_hash_file`); err != nil {
+			logger.Warn("dropping invalid idx_commits_repo_hash_file failed", "error", err)
+		}
 	}
 	_, err := pg.pool.Exec(ctx, `
 		CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_commits_repo_hash_file
@@ -1998,13 +2050,17 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 // dedup-repos drains creates it.
 func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
 	// Fast path: a VALID index already exists — nothing to do.
+	// ErrNoRows = the index doesn't exist yet; other errors are logged
+	// and we fall through (the dup-count gate below fails safe).
 	var existsValid bool
-	pg.pool.QueryRow(ctx, `
+	if err := pg.pool.QueryRow(ctx, `
 		SELECT i.indisvalid
 		FROM pg_index i
 		JOIN pg_class c ON c.oid = i.indexrelid
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'uq_repos_repo_git_ci'`).Scan(&existsValid)
+		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'uq_repos_repo_git_ci'`).Scan(&existsValid); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		logger.Warn("uq_repos_repo_git_ci validity probe failed", "error", err)
+	}
 	if existsValid {
 		return
 	}
@@ -2032,16 +2088,21 @@ func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, 
 
 	// Drop an INVALID leftover from a prior interrupted CONCURRENTLY
 	// build, then create. Same recovery shape as deduplicateCommits.
+	// ErrNoRows = the index doesn't exist at all — nothing to drop.
 	var existsInvalid bool
-	pg.pool.QueryRow(ctx, `
+	if err := pg.pool.QueryRow(ctx, `
 		SELECT NOT i.indisvalid
 		FROM pg_index i
 		JOIN pg_class c ON c.oid = i.indexrelid
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'uq_repos_repo_git_ci'`).Scan(&existsInvalid)
+		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'uq_repos_repo_git_ci'`).Scan(&existsInvalid); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		logger.Warn("invalid-index probe failed for uq_repos_repo_git_ci", "error", err)
+	}
 	if existsInvalid {
 		logger.Warn("dropping invalid uq_repos_repo_git_ci from prior interrupted CONCURRENT build")
-		pg.pool.Exec(ctx, `DROP INDEX IF EXISTS aveloxis_data.uq_repos_repo_git_ci`)
+		if _, err := pg.pool.Exec(ctx, `DROP INDEX IF EXISTS aveloxis_data.uq_repos_repo_git_ci`); err != nil {
+			logger.Warn("dropping invalid uq_repos_repo_git_ci failed", "error", err)
+		}
 	}
 	if _, err := pg.pool.Exec(ctx, `
 		CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repos_repo_git_ci

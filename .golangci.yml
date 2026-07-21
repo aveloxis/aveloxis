@@ -44,17 +44,36 @@ linters:
         - (*net.UDPConn).Close
         - (net.Conn).Close
         - (*os.File).Close
+        - (*compress/gzip.Reader).Close
+        # pgx BatchResults.Close: the per-statement errors already
+        # surfaced via results.Exec(); the Close error adds nothing.
+        - (github.com/jackc/pgx/v5.BatchResults).Close
+        # Rollback in the error path / defer is the pgx idiom — the
+        # original error is what matters; a rollback failure on top of
+        # it is unactionable (the tx dies with the connection).
+        - (github.com/jackc/pgx/v5.Tx).Rollback
         # Logging: we don't check Write errors on stderr/stdout.
         - fmt.Fprintf
         - fmt.Fprint
         - fmt.Fprintln
         - (*bytes.Buffer).Write
         - (io.Writer).Write
+        # Writing a response body after headers are sent has no
+        # recovery path — a failed write means the client went away.
+        # Same for JSON-encoding directly to the ResponseWriter.
+        - (net/http.ResponseWriter).Write
+        - (*encoding/json.Encoder).Encode
+        # The v0.23.7 straggler-kill defers: SIGKILL to a process group
+        # that may already be gone. ESRCH is the expected common case,
+        # and the literal `defer syscall.Kill(-pid, ...)` form is
+        # pinned by source-contract tests.
+        - syscall.Kill
     staticcheck:
       checks:
         - all
         # Style suggestions we don't enforce yet — they create wide diffs
         # against working code without finding bugs.
+        - "-QF1001"
         - "-QF1002"
         - "-QF1003"
         - "-QF1008"

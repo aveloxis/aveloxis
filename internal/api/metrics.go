@@ -410,11 +410,16 @@ func (s *Server) handleClosedIssuesCount(w http.ResponseWriter, r *http.Request)
 	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
+	// v0.27.36: a DB error must be a 500, never {"closed_count": 0}
+	// served as real data (summary/18 Phase 0b).
 	var count int
-	s.store.Pool().QueryRow(r.Context(), `
+	if err := s.store.Pool().QueryRow(r.Context(), `
 		SELECT COUNT(issue_id)
 		FROM aveloxis_data.issues
-		WHERE repo_id = $1 AND issue_state = 'closed' AND pull_request IS NULL`, repoID).Scan(&count)
+		WHERE repo_id = $1 AND issue_state = 'closed' AND pull_request IS NULL`, repoID).Scan(&count); err != nil {
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
 	jsonResponse(w, map[string]int{"closed_count": count})
 }
 
@@ -702,9 +707,15 @@ func (s *Server) handleWatchers(w http.ResponseWriter, r *http.Request) {
 		var date time.Time
 		var value int
 		var name string
-		if err := rows.Scan(&date, &value, &name); err == nil {
-			result = append(result, map[string]interface{}{"date": date, "watchers": value, "repo_name": name})
+		if err := rows.Scan(&date, &value, &name); err != nil {
+			http.Error(w, "query failed", http.StatusInternalServerError)
+			return
 		}
+		result = append(result, map[string]interface{}{"date": date, "watchers": value, "repo_name": name})
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
 	}
 	jsonResponse(w, result)
 }

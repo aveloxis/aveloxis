@@ -396,13 +396,24 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
+// render executes a template and logs failures. v0.27.36 (summary/18
+// Phase 0a): the bare ExecuteTemplate calls discarded render errors, so
+// a template failure mid-render produced a truncated page with no log
+// signal. Headers are already sent by the time a body-write fails, so
+// logging is the only possible action — but it must happen.
+func (s *Server) render(w http.ResponseWriter, name string, data any) {
+	if err := s.tmpl.ExecuteTemplate(w, name, data); err != nil {
+		s.logger.Error("template render failed", "template", name, "error", err)
+	}
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// v0.20.13: surface a "Sign out" button on the login page when
 	// the visitor already has an active session. Use case: switching
 	// from user A to user B without manually clearing cookies in
 	// DevTools. The /logout handler does the cookie/session cleanup;
 	// this template flag just makes the affordance discoverable.
-	s.tmpl.ExecuteTemplate(w, "login", map[string]interface{}{
+	s.render(w, "login", map[string]interface{}{
 		"HasGitHub":  s.ghOAuth != nil,
 		"HasGitLab":  s.glOAuth != nil,
 		"HasSession": s.getSession(r) != nil,
@@ -802,7 +813,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.tmpl.ExecuteTemplate(w, "dashboard", map[string]any{
+	s.render(w, "dashboard", map[string]any{
 		"Session":      sess,
 		"Groups":       groups,
 		"PendingOnly":  pendingOnly,
@@ -821,7 +832,7 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		email := strings.TrimSpace(r.FormValue("email"))
 		if email == "" || !strings.Contains(email, "@") {
-			s.tmpl.ExecuteTemplate(w, "account_email", map[string]any{
+			s.render(w, "account_email", map[string]any{
 				"Session": sess,
 				"Error":   "Please enter a valid email address.",
 			})
@@ -832,7 +843,7 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 		// after the user clicks through.
 		if err := s.store.SetUserPendingEmail(r.Context(), sess.UserID, email); err != nil {
 			s.logger.Warn("failed to set pending email", "user_id", sess.UserID, "error", err)
-			s.tmpl.ExecuteTemplate(w, "account_email", map[string]any{
+			s.render(w, "account_email", map[string]any{
 				"Session": sess,
 				"Error":   "Could not save email. Try again.",
 			})
@@ -841,7 +852,7 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 		token, err := s.store.CreateEmailConfirmation(r.Context(), sess.UserID, email)
 		if err != nil {
 			s.logger.Warn("failed to create email confirmation", "user_id", sess.UserID, "error", err)
-			s.tmpl.ExecuteTemplate(w, "account_email", map[string]any{
+			s.render(w, "account_email", map[string]any{
 				"Session": sess,
 				"Error":   "Could not generate confirmation. Try again.",
 			})
@@ -878,7 +889,7 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 		return
 	}
-	s.tmpl.ExecuteTemplate(w, "account_email", map[string]any{
+	s.render(w, "account_email", map[string]any{
 		"Session": sess,
 	})
 }
@@ -1016,7 +1027,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		pageWindow = append(pageWindow, i)
 	}
 
-	s.tmpl.ExecuteTemplate(w, "group", map[string]interface{}{
+	s.render(w, "group", map[string]interface{}{
 		"Session":    sess,
 		"Group":      group,
 		"Page":       page,
@@ -1159,8 +1170,11 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 			path := fmt.Sprintf("%s?per_page=100&type=all&page=%d", basePath, page)
 			resp, err := httpClient.Get(ctx, path)
 			if err != nil {
-				// 404 means this isn't an org — try the /users/ path.
-				if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "forbidden") {
+				// 404/403 means this isn't an org (or isn't visible) —
+				// try the /users/ path. v0.27.36: sentinel-classified via
+				// the phase-0 taxonomy instead of error-string matching
+				// (summary/18 Phase 0c — the Fix C/Fix J wiring-gap class).
+				if platform.ClassifyError(err) == platform.ClassSkip {
 					break
 				}
 				s.logger.Warn("scan API error", "name", name, "error", err)
@@ -1173,7 +1187,12 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 					Login string `json:"login"`
 				} `json:"owner"`
 			}
-			json.NewDecoder(resp.Body).Decode(&items)
+			if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+				resp.Body.Close()
+				// A decode failure must not read as "no repos found".
+				s.logger.Warn("org scan: decoding repo page failed", "name", name, "page", page, "error", err)
+				break
+			}
 			resp.Body.Close()
 
 			if len(items) == 0 {
@@ -1183,10 +1202,20 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 
 			for _, item := range items {
 				// Check if repo already exists in our database.
-				repoID, _ := s.store.FindRepoByURL(ctx, item.HTMLURL)
+				// v0.27.36: a lookup ERROR is not "doesn't exist" — falling
+				// through to the create path on a transient DB error would
+				// mint duplicate rows. Skip the item; the periodic org
+				// refresh retries it next scan.
+				repoID, err := s.store.FindRepoByURL(ctx, item.HTMLURL)
+				if err != nil {
+					s.logger.Warn("org scan: repo lookup failed", "url", item.HTMLURL, "error", err)
+					continue
+				}
 				if repoID > 0 {
 					// Already exists — just add the user_repos reference.
-					s.store.AddRepoToGroupByID(ctx, groupID, repoID)
+					if err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
+						s.logger.Warn("org scan: linking existing repo failed", "repo_id", repoID, "error", err)
+					}
 					alreadyExisted++
 					added++
 				} else {
@@ -1198,10 +1227,18 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 						Owner:    item.Owner.Login,
 					})
 					if err != nil {
+						s.logger.Warn("org scan: upserting new repo failed", "url", item.HTMLURL, "error", err)
 						continue
 					}
-					s.store.EnqueueRepo(ctx, repoID, 100)
-					s.store.AddRepoToGroupByID(ctx, groupID, repoID)
+					// A silently failed enqueue strands a catalog row with no
+					// queue row — a suspected origin of the reconciliation
+					// gap found in the 2026-07-21 audit (summary/18 Phase 2).
+					if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
+						s.logger.Warn("org scan: enqueue failed", "repo_id", repoID, "url", item.HTMLURL, "error", err)
+					}
+					if err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
+						s.logger.Warn("org scan: linking new repo failed", "repo_id", repoID, "error", err)
+					}
 					newlyQueued++
 					added++
 				}
@@ -1241,7 +1278,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	// Get the user's groups and their repos for the search dropdown.
 	groups, _ := s.store.GetUserGroups(r.Context(), sess.UserID)
 
-	s.tmpl.ExecuteTemplate(w, "compare", map[string]interface{}{
+	s.render(w, "compare", map[string]interface{}{
 		"Session": sess,
 		"Groups":  groups,
 		"RepoIDs": r.URL.Query().Get("repos"),
@@ -1319,7 +1356,7 @@ func (s *Server) handleRepoDetail(w http.ResponseWriter, r *http.Request, sess *
 	// Get stats.
 	stats, _ := s.store.GetRepoStats(r.Context(), repoID)
 
-	s.tmpl.ExecuteTemplate(w, "repo_detail", map[string]interface{}{
+	s.render(w, "repo_detail", map[string]interface{}{
 		"Session": sess,
 		"Group":   group,
 		"Repo":    repo,
@@ -1455,7 +1492,7 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 
-	s.tmpl.ExecuteTemplate(w, "monitor", map[string]interface{}{
+	s.render(w, "monitor", map[string]interface{}{
 		"Session":    sess,
 		"Stats":      stats,
 		"Jobs":       rows,

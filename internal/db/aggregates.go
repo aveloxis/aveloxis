@@ -259,9 +259,10 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 	var repoIDs []int64
 	for rows.Next() {
 		var id int64
-		if rows.Scan(&id) == nil {
-			repoIDs = append(repoIDs, id)
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("scanning repo id: %w", err)
 		}
+		repoIDs = append(repoIDs, id)
 	}
 	if err := rows.Err(); err != nil {
 		return err

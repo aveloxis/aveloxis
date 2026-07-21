@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -872,22 +873,14 @@ func (s *PostgresStore) UpsertPRReview(ctx context.Context, review *model.PullRe
 		// are "APPROVED" or "CHANGES_REQUESTED" with no body text.
 		if review.Body != "" {
 			var msgID int64
-			// Use the platform_review_id as the platform_msg_id with a review-specific
-			// offset to avoid collisions with issue/PR comment message IDs.
-			// Assumption: review IDs don't overlap with comment IDs on the same platform.
-			err = tx.QueryRow(ctx, `
-				INSERT INTO aveloxis_data.messages
-					(repo_id, platform_msg_id, platform_id, node_id,
-					 cntrb_id, msg_text, msg_timestamp, data_source)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-				ON CONFLICT (platform_msg_id, platform_id) DO UPDATE SET
-					msg_text = EXCLUDED.msg_text,
-					cntrb_id = COALESCE(EXCLUDED.cntrb_id, messages.cntrb_id),
-					tool_version = EXCLUDED.tool_version,
-					data_collection_date = NOW()
-				RETURNING msg_id`,
+			// v0.27.38 (summary/18 Phase 1a): platform_review_id is a
+			// SEPARATE GitHub id sequence from comment ids — the old
+			// comment here planned an offset that was never built, and
+			// production accumulated 198,237 cross-kind collisions.
+			// msg_kind in the arbiter is the real fix.
+			err = tx.QueryRow(ctx, upsertMessageSQL,
 				review.RepoID, review.PlatformReviewID, int16(review.PlatformID),
-				review.NodeID, review.ContributorID, review.Body,
+				MsgKindReviewBody, review.NodeID, review.ContributorID, review.Body,
 				NullTime(review.SubmittedAt), review.Origin.DataSource,
 			).Scan(&msgID)
 			if err != nil {
@@ -1066,19 +1059,10 @@ func (s *PostgresStore) UpsertPREvent(ctx context.Context, event *model.PullRequ
 func (s *PostgresStore) UpsertMessage(ctx context.Context, msg *model.Message) (int64, error) {
 	var id int64
 	err := s.withRetry(ctx, func(ctx context.Context) error {
-		return s.pool.QueryRow(ctx, `
-			INSERT INTO aveloxis_data.messages
-				(repo_id, platform_msg_id, platform_id, node_id,
-				 cntrb_id, msg_text, msg_timestamp, data_source)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-			ON CONFLICT (platform_msg_id, platform_id) DO UPDATE SET
-				msg_text = EXCLUDED.msg_text,
-				cntrb_id = COALESCE(EXCLUDED.cntrb_id, messages.cntrb_id),
-				tool_version = EXCLUDED.tool_version,
-				data_collection_date = NOW()
-			RETURNING msg_id`,
-			msg.RepoID, msg.PlatformMsgID, int16(msg.PlatformID), msg.NodeID,
-			msg.ContributorID, msg.Text, NullTime(msg.Timestamp), msg.Origin.DataSource,
+		return s.pool.QueryRow(ctx, upsertMessageSQL,
+			msg.RepoID, msg.PlatformMsgID, int16(msg.PlatformID), MsgKindComment,
+			msg.NodeID, msg.ContributorID, msg.Text, NullTime(msg.Timestamp),
+			msg.Origin.DataSource,
 		).Scan(&id)
 	})
 	return id, err
@@ -1203,20 +1187,10 @@ func (s *PostgresStore) UpsertMessageBatch(ctx context.Context, msgs []platform.
 
 		for _, m := range msgs {
 			var msgID int64
-			err := tx.QueryRow(ctx, `
-				INSERT INTO aveloxis_data.messages
-					(repo_id, platform_msg_id, platform_id, node_id,
-					 cntrb_id, msg_text, msg_timestamp, data_source)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-				ON CONFLICT (platform_msg_id, platform_id) DO UPDATE SET
-					msg_text = EXCLUDED.msg_text,
-					cntrb_id = COALESCE(EXCLUDED.cntrb_id, messages.cntrb_id),
-					tool_version = EXCLUDED.tool_version,
-					data_collection_date = NOW()
-				RETURNING msg_id`,
+			err := tx.QueryRow(ctx, upsertMessageSQL,
 				m.Message.RepoID, m.Message.PlatformMsgID, int16(m.Message.PlatformID),
-				m.Message.NodeID, m.Message.ContributorID, m.Message.Text, NullTime(m.Message.Timestamp),
-				m.Message.Origin.DataSource,
+				MsgKindComment, m.Message.NodeID, m.Message.ContributorID, m.Message.Text,
+				NullTime(m.Message.Timestamp), m.Message.Origin.DataSource,
 			).Scan(&msgID)
 			if err != nil {
 				return err
@@ -1268,20 +1242,10 @@ func (s *PostgresStore) UpsertReviewCommentBatch(ctx context.Context, comments [
 
 		for _, rc := range comments {
 			var msgID int64
-			err := tx.QueryRow(ctx, `
-				INSERT INTO aveloxis_data.messages
-					(repo_id, platform_msg_id, platform_id, node_id,
-					 cntrb_id, msg_text, msg_timestamp, data_source)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-				ON CONFLICT (platform_msg_id, platform_id) DO UPDATE SET
-					msg_text = EXCLUDED.msg_text,
-					cntrb_id = COALESCE(EXCLUDED.cntrb_id, messages.cntrb_id),
-					tool_version = EXCLUDED.tool_version,
-					data_collection_date = NOW()
-				RETURNING msg_id`,
+			err := tx.QueryRow(ctx, upsertMessageSQL,
 				rc.Message.RepoID, rc.Message.PlatformMsgID, int16(rc.Message.PlatformID),
-				rc.Message.NodeID, rc.Message.ContributorID, rc.Message.Text, NullTime(rc.Message.Timestamp),
-				rc.Message.Origin.DataSource,
+				MsgKindReviewComment, rc.Message.NodeID, rc.Message.ContributorID,
+				rc.Message.Text, NullTime(rc.Message.Timestamp), rc.Message.Origin.DataSource,
 			).Scan(&msgID)
 			if err != nil {
 				return err
@@ -1733,8 +1697,16 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 				// Backfill denormalized gh_*/gl_* columns on the contributors row
 				// from the identity data. This keeps the old Augur columns populated
 				// for backward-compatible queries.
+				// v0.27.36 (summary/18 Phase 0c): the backfill Execs
+				// were `_, _ =` discards — the v0.20.11 regression. A
+				// failed UPDATE aborts the savepoint scope, so the
+				// unconditional RELEASE below then failed with a
+				// misleading error that poisoned the WHOLE batch.
+				// Capture the error and contain it like every other
+				// sub-statement in this loop.
+				var backfillErr error
 				if ident.Platform == model.PlatformGitHub && ident.UserID > 0 {
-					_, _ = tx.Exec(ctx, `
+					_, backfillErr = tx.Exec(ctx, `
 						UPDATE aveloxis_data.contributors SET
 							gh_user_id = COALESCE(gh_user_id, $2),
 							gh_login = COALESCE(NULLIF(gh_login,''), $3),
@@ -1757,7 +1729,7 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 						WHERE cntrb_id = $1::uuid`,
 						cntrb_id, ident.UserID, ident.Login, ident.NodeID,
 						ident.AvatarURL, ident.URL,
-						ident.Type, fmt.Sprintf("%v", ident.IsAdmin),
+						ident.Type, strconv.FormatBool(ident.IsAdmin),
 						ident.GravatarID, ident.FollowersURL, ident.FollowingURL,
 						ident.GistsURL, ident.StarredURL, ident.SubscriptionsURL,
 						ident.OrganizationsURL, ident.ReposURL, ident.EventsURL,
@@ -1769,7 +1741,7 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 					// "deactivated") was previously parsed from JSON in
 					// glUser.State / glMember.State but never plumbed
 					// through to contributors.gl_state.
-					_, _ = tx.Exec(ctx, `
+					_, backfillErr = tx.Exec(ctx, `
 						UPDATE aveloxis_data.contributors SET
 							gl_id = COALESCE(gl_id, $2),
 							gl_username = COALESCE(NULLIF(gl_username,''), $3),
@@ -1781,6 +1753,16 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 						cntrb_id, ident.UserID, ident.Login, ident.AvatarURL,
 						ident.URL, ident.Name, ident.State,
 					)
+				}
+				if backfillErr != nil {
+					if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+identSP); rbErr != nil {
+						return rbErr
+					}
+					captureErr("identity_denorm_backfill", login, backfillErr)
+					if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+						return relErr
+					}
+					continue
 				}
 
 				// v0.22.13: identity savepoint released after the

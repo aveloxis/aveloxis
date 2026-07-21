@@ -5,11 +5,9 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"iter"
 	"log/slog"
-	"net/http"
 	"strings"
 	"time"
 
@@ -848,15 +846,31 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	// Use GraphQL to get complete repo metadata in one call.
 	// The REST API doesn't return PR/issue/commit counts, community profile files,
 	// or separate open/closed/merged PR counts. Matches Augur's GraphQL approach.
+	// v0.27.37 (summary/18 Phase 1d): routed through the shared
+	// HTTPClient.GraphQL — timeout, retry, key rotation/accounting,
+	// Fix C read-retries, and errors-array classification all apply.
+	// The bespoke graphqlRequest this replaced ran on the timeout-less
+	// default HTTP client, had NO `errors` field on its envelope, and
+	// decoded 200-with-errors responses ({"data":{"repository":null},
+	// "errors":[...]}) into an ALL-ZERO RepoInfo — which Phase 0 then
+	// stored, rotating the previous good snapshot to history and
+	// disarming gap detection (metadata==0 → no gap).
 	query := repoInfoGraphQL(owner, repo)
-	var result graphQLRepoInfoResponse
-	err := c.graphqlRequest(ctx, query, &result)
-	if err != nil {
+	var result struct {
+		Repository *graphQLRepo `json:"repository"`
+	}
+	if err := c.http.GraphQL(ctx, query, nil, &result); err != nil {
 		// Fall back to REST API if GraphQL fails.
 		return c.fetchRepoInfoREST(ctx, owner, repo)
 	}
+	if result.Repository == nil || result.Repository.NameWithOwner == "" {
+		// Null/empty repository with a 200 (SAML gate, partial outage
+		// with only per-path errors) — a zeroed snapshot must never be
+		// stored. REST is the honest source here.
+		return c.fetchRepoInfoREST(ctx, owner, repo)
+	}
 
-	r := result.Data.Repository
+	r := *result.Repository
 	license := ""
 	if r.LicenseInfo != nil {
 		license = r.LicenseInfo.Name
@@ -1014,39 +1028,6 @@ func repoInfoGraphQL(owner, repo string) string {
     securityPolicy: object(expression: "HEAD:SECURITY.md") { ... on Blob { text } }
   }
 }`, owner, repo)
-}
-
-// graphqlRequest sends a query to the GitHub GraphQL API.
-func (c *Client) graphqlRequest(ctx context.Context, query string, result interface{}) error {
-	body := fmt.Sprintf(`{"query": %q}`, query)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.github.com/graphql", strings.NewReader(body))
-	if err != nil {
-		return err
-	}
-	key, err := c.http.Keys().GetKey(ctx)
-	if err != nil {
-		return err
-	}
-	// GraphQL requires "bearer" token format.
-	req.Header.Set("Authorization", "bearer "+key.Token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GraphQL request failed: status %d", resp.StatusCode)
-	}
-	return json.NewDecoder(resp.Body).Decode(result)
-}
-
-type graphQLRepoInfoResponse struct {
-	Data struct {
-		Repository graphQLRepo `json:"repository"`
-	} `json:"data"`
 }
 
 type graphQLRepo struct {

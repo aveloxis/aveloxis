@@ -32,7 +32,8 @@ type parsedLockfile struct {
 // vendor/node_modules/.git skipped.
 func collectLockfiles(workDir string, logger *slog.Logger) []parsedLockfile {
 	var out []parsedLockfile
-	filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
+	// v0.27.36: a root-stat failure means zero lockfiles with no signal.
+	walkErr := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -75,6 +76,9 @@ func collectLockfiles(workDir string, logger *slog.Logger) []parsedLockfile {
 		out = append(out, parsedLockfile{Path: rel, Result: res})
 		return nil
 	})
+	if walkErr != nil {
+		logger.Warn("lockfile walk failed — lockfile inventory may be incomplete", "dir", workDir, "error", walkErr)
+	}
 	return out
 }
 

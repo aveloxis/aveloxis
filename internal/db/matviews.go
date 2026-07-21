@@ -33,11 +33,13 @@ func CreateMaterializedViews(ctx context.Context, pg *PostgresStore, logger *slo
 // CreateMaterializedViews which drops and recreates every time.
 func CreateMaterializedViewsIfNotExist(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
 	var exists bool
-	pg.pool.QueryRow(ctx, `
+	if err := pg.pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM pg_matviews
 			WHERE schemaname = 'aveloxis_data' AND matviewname = 'api_get_all_repo_prs'
-		)`).Scan(&exists)
+		)`).Scan(&exists); err != nil {
+		return fmt.Errorf("probing for existing matviews: %w", err)
+	}
 	if exists {
 		logger.Info("materialized views already exist, skipping creation on startup (use 'aveloxis refresh-views' or wait for scheduled rebuild)")
 		return nil

@@ -65,7 +65,9 @@ func runScancodeWorker(cfgPath string) error {
 	logger := newLogger(cfg)
 
 	pidPath := pidfile.Path("scancode-worker")
-	pidfile.Write(pidPath, os.Getpid())
+	if err := pidfile.Write(pidPath, os.Getpid()); err != nil {
+		logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", pidPath, "error", err)
+	}
 	defer pidfile.Remove(pidPath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

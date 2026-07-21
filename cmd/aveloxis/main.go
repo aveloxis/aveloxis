@@ -89,6 +89,7 @@ func main() {
 		runScorecardCmd(&cfgPath),
 		distributionStatsCmd(&cfgPath),
 		versionCmd(),
+		healMessagesCmd(&cfgPath),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -141,7 +142,9 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 
 	// Write PID file so 'aveloxis stop serve' can find us.
 	pidPath := pidfile.Path("serve")
-	pidfile.Write(pidPath, os.Getpid())
+	if err := pidfile.Write(pidPath, os.Getpid()); err != nil {
+		logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", pidPath, "error", err)
+	}
 	defer pidfile.Remove(pidPath)
 
 	// v0.22.4 item 8 — register SIGUSR1 handler so operators can
@@ -196,7 +199,17 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	if cfg.Mail.OperatorEmail != "" {
 		sched.SetDigestMailer(digestMailerAdapter{mailer.New(mailerConfigFrom(cfg), logger)})
 	}
-	go sched.Run(ctx)
+	// v0.27.36 (summary/18 Part 3b): the scheduler goroutine is
+	// JOINED on shutdown. Pre-fix, runServe returned as soon as
+	// ctx cancelled and the deferred store.Close() raced the
+	// scheduler's own drain → releaseOurLocks → Close sequence —
+	// silently undoing the v0.20.0/v0.27.25 graceful-shutdown work
+	// (the residual "stuck in 'collecting' after stop" source).
+	schedDone := make(chan struct{})
+	go func() {
+		defer close(schedDone)
+		sched.Run(ctx)
+	}()
 
 	// Start monitor.
 	// v0.23.0: refresh cadence is operator-configurable via
@@ -214,7 +227,21 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	}()
 
 	<-ctx.Done()
-	srv.Shutdown(context.Background())
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("monitor server shutdown", "error", err)
+	}
+	// Wait for the scheduler's graceful shutdown (worker drain, lock
+	// release, its own pool close) before the deferred store.Close()
+	// runs. Bounded: the scheduler's drain is already capped by
+	// shutdown_grace_seconds; the margin here is a backstop against a
+	// wedged DB call in the drain path itself.
+	select {
+	case <-schedDone:
+	case <-time.After(cfg.Collection.ShutdownGraceDuration() + 30*time.Second):
+		logger.Warn("scheduler did not finish shutdown within grace + margin — exiting anyway")
+	}
 	return nil
 }
 
@@ -243,7 +270,9 @@ func runAPI(cfgPath, addr string) error {
 	logger := newLogger(cfg)
 
 	pidPath := pidfile.Path("api")
-	pidfile.Write(pidPath, os.Getpid())
+	if err := pidfile.Write(pidPath, os.Getpid()); err != nil {
+		logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", pidPath, "error", err)
+	}
 	defer pidfile.Remove(pidPath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -284,7 +313,11 @@ func runAPI(cfgPath, addr string) error {
 	}()
 
 	<-ctx.Done()
-	srv.Shutdown(context.Background())
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("server shutdown", "error", err)
+	}
 	return nil
 }
 
@@ -1193,7 +1226,9 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			logger := newLogger(cfg)
 
 			webPidPath := pidfile.Path("web")
-			pidfile.Write(webPidPath, os.Getpid())
+			if err := pidfile.Write(webPidPath, os.Getpid()); err != nil {
+				logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", webPidPath, "error", err)
+			}
 			defer pidfile.Remove(webPidPath)
 
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -1226,7 +1261,11 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			}()
 
 			<-ctx.Done()
-			srv.Shutdown(context.Background())
+			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancelShutdown()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				logger.Warn("web server shutdown", "error", err)
+			}
 			return nil
 		},
 	}
@@ -1313,7 +1352,7 @@ func startComponent(component, cfgPath string) error {
 	}
 
 	// Release the child — we don't wait for it.
-	proc.Process.Release()
+	_ = proc.Process.Release()
 	logFile.Close()
 
 	fmt.Printf("Started %s (PID %d), logging to %s\n", component, pid, logPath)

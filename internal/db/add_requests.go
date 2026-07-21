@@ -282,9 +282,11 @@ func (s *PostgresStore) ListPendingAddRequests(ctx context.Context) ([]AddReques
 		}
 		for sample.Next() {
 			var u string
-			if sample.Scan(&u) == nil {
-				out[i].SampleURLs = append(out[i].SampleURLs, u)
+			if err := sample.Scan(&u); err != nil {
+				sample.Close()
+				return nil, err
 			}
+			out[i].SampleURLs = append(out[i].SampleURLs, u)
 		}
 		sample.Close()
 	}
@@ -508,16 +510,32 @@ func migrateLegacyPendingGroups(ctx context.Context, pg *PostgresStore, logger *
 		var urls []string
 		for urlRows.Next() {
 			var u string
-			if urlRows.Scan(&u) == nil && u != "" {
+			if err := urlRows.Scan(&u); err != nil {
+				urlRows.Close()
+				*errs = append(*errs, fmt.Errorf("v0.27.20 legacy pending groups: group %d url scan: %w", p.groupID, err))
+				return
+			}
+			if u != "" {
 				urls = append(urls, u)
 			}
 		}
+		if err := urlRows.Err(); err != nil {
+			urlRows.Close()
+			*errs = append(*errs, fmt.Errorf("v0.27.20 legacy pending groups: group %d url iteration: %w", p.groupID, err))
+			return
+		}
 		urlRows.Close()
 
+		// v0.27.36: a failed EXISTS probe must not read as "not yet
+		// converted" — that re-converted groups into duplicate pending
+		// requests on the next migrate run (summary/18 Phase 0c).
 		var alreadyConverted bool
-		_ = pg.pool.QueryRow(ctx, `
+		if err := pg.pool.QueryRow(ctx, `
 			SELECT EXISTS (SELECT 1 FROM aveloxis_ops.collection_add_requests WHERE group_id = $1)`,
-			p.groupID).Scan(&alreadyConverted)
+			p.groupID).Scan(&alreadyConverted); err != nil {
+			*errs = append(*errs, fmt.Errorf("v0.27.20 legacy pending groups: group %d converted-probe: %w", p.groupID, err))
+			return
+		}
 		if len(urls) > 0 && !alreadyConverted {
 			if _, err := pg.createAddRequest(ctx, p.userID, p.groupID, "repos", "", urls, "pending"); err != nil {
 				*errs = append(*errs, fmt.Errorf("v0.27.20 legacy pending groups: convert group %d: %w", p.groupID, err))

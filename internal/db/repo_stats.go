@@ -5,7 +5,11 @@ package db
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // RepoStats holds gathered (actual row counts) and metadata (from repo_info API snapshot)
@@ -19,8 +23,8 @@ type RepoStats struct {
 	MetadataPRs     int   `json:"metadata_prs"`     // pr_count from repo_info (GitHub API reported total)
 	MetadataIssues  int   `json:"metadata_issues"`  // issues_count from repo_info
 	MetadataCommits int   `json:"metadata_commits"` // commit_count from repo_info
-	Vulnerabilities int   `json:"vulnerabilities"`  // total known CVEs from OSV.dev scan
-	CriticalVulns   int   `json:"critical_vulns"`   // critical/high severity CVEs
+	Vulnerabilities int   `json:"vulnerabilities"`  // current (unresolved, non-self) CVEs from OSV.dev scan
+	CriticalVulns   int   `json:"critical_vulns"`   // current CVEs with severity CRITICAL or cvss_score >= 9.0
 }
 
 // SearchRepoResult is a minimal repo record for search results.
@@ -50,9 +54,10 @@ func (s *PostgresStore) SearchRepos(ctx context.Context, query string, limit int
 	var result []SearchRepoResult
 	for rows.Next() {
 		var r SearchRepoResult
-		if rows.Scan(&r.ID, &r.Owner, &r.Name) == nil {
-			result = append(result, r)
+		if err := rows.Scan(&r.ID, &r.Owner, &r.Name); err != nil {
+			return nil, err
 		}
+		result = append(result, r)
 	}
 	return result, rows.Err()
 }
@@ -60,28 +65,48 @@ func (s *PostgresStore) SearchRepos(ctx context.Context, query string, limit int
 // GetRepoStats returns gathered vs metadata counts for a single repo.
 // Gathered counts come from actual rows in the data tables.
 // Metadata counts come from the most recent repo_info snapshot (GitHub/GitLab API totals).
+//
+// v0.27.36: every query error propagates. The pre-fix structure
+// discarded all Scan errors, so a DB failure served all-zero stats as
+// if they were real (summary/18 Phase 0b). A missing repo_info
+// snapshot (never-collected repo) is legitimate and yields zero
+// metadata counts — that is the only tolerated no-row case.
 func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoStats, error) {
 	st := &RepoStats{RepoID: repoID}
 
-	// Gathered counts — actual rows in data tables.
-	s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1`, repoID).Scan(&st.GatheredPRs)
-	s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1`, repoID).Scan(&st.GatheredIssues)
+	// Gathered counts — actual rows in data tables. COUNT(*) always
+	// returns a row, so any error here is a real failure.
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1`, repoID).Scan(&st.GatheredPRs); err != nil {
+		return nil, fmt.Errorf("gathered PR count: %w", err)
+	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1`, repoID).Scan(&st.GatheredIssues); err != nil {
+		return nil, fmt.Errorf("gathered issue count: %w", err)
+	}
 	// commits table has one row per file per commit, so count distinct hashes.
-	s.pool.QueryRow(ctx,
-		`SELECT COUNT(DISTINCT cmt_commit_hash) FROM aveloxis_data.commits WHERE repo_id = $1`, repoID).Scan(&st.GatheredCommits)
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(DISTINCT cmt_commit_hash) FROM aveloxis_data.commits WHERE repo_id = $1`, repoID).Scan(&st.GatheredCommits); err != nil {
+		return nil, fmt.Errorf("gathered commit count: %w", err)
+	}
 
 	// Metadata counts — from the most recent repo_info snapshot.
-	s.pool.QueryRow(ctx, `
+	// ErrNoRows = never collected; zeros are the honest answer.
+	err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(pr_count, 0), COALESCE(issues_count, 0), COALESCE(commit_count, 0)
 		FROM aveloxis_data.repo_info
 		WHERE repo_id = $1
 		ORDER BY data_collection_date DESC
 		LIMIT 1`, repoID).Scan(&st.MetadataPRs, &st.MetadataIssues, &st.MetadataCommits)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("metadata counts: %w", err)
+	}
 
 	// Vulnerability counts from OSV.dev scan.
-	st.Vulnerabilities, st.CriticalVulns, _ = s.CountRepoVulnerabilities(ctx, repoID)
+	st.Vulnerabilities, st.CriticalVulns, err = s.CountRepoVulnerabilities(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("vulnerability counts: %w", err)
+	}
 
 	return st, nil
 }
@@ -100,6 +125,14 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 // scoped subquery filtered by `WHERE repo_id = ANY($1)` so the GROUP
 // BY only touches relevant rows. Total: two queries instead of five,
 // no million-row scans.
+//
+// v0.27.36: (a) query/scan errors propagate instead of silently
+// serving zeros; (b) the vulnerability counts apply the SAME
+// predicates as CountRepoVulnerabilities — `resolved_at IS NULL AND
+// COALESCE(dependency_kind, ”) <> 'self'` — so the batch endpoint can
+// never disagree with the single-repo endpoint again (summary/18
+// Phase 1e; the pre-fix batch counted resolved + self rows and
+// reported systematically higher, ever-growing totals).
 func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) (map[int64]*RepoStats, error) {
 	result := make(map[int64]*RepoStats, len(repoIDs))
 	if len(repoIDs) == 0 {
@@ -132,43 +165,56 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 		    LIMIT 1
 		) ri ON TRUE
 		WHERE q.repo_id = ANY($1)`, repoIDs)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var id int64
-			var gIssues, gPRs, gCommits, mPRs, mIssues, mCommits int
-			if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &mPRs, &mIssues, &mCommits); err != nil {
-				continue
-			}
-			if st, ok := result[id]; ok {
-				st.GatheredIssues = gIssues
-				st.GatheredPRs = gPRs
-				st.GatheredCommits = gCommits
-				st.MetadataPRs = mPRs
-				st.MetadataIssues = mIssues
-				st.MetadataCommits = mCommits
-			}
+	if err != nil {
+		return nil, fmt.Errorf("batch gathered/metadata counts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var gIssues, gPRs, gCommits, mPRs, mIssues, mCommits int
+		if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &mPRs, &mIssues, &mCommits); err != nil {
+			return nil, fmt.Errorf("batch stats scan: %w", err)
 		}
+		if st, ok := result[id]; ok {
+			st.GatheredIssues = gIssues
+			st.GatheredPRs = gPRs
+			st.GatheredCommits = gCommits
+			st.MetadataPRs = mPRs
+			st.MetadataIssues = mIssues
+			st.MetadataCommits = mCommits
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("batch stats iteration: %w", err)
 	}
 
 	// Vulnerability counts. Scoped subquery: only scans rows whose
-	// repo_id is in the requested set, so this stays cheap.
+	// repo_id is in the requested set, so this stays cheap. Predicates
+	// mirror CountRepoVulnerabilities exactly (see doc comment above).
 	rows5, err := s.pool.Query(ctx, `
 		SELECT repo_id, COUNT(*), COUNT(*) FILTER (WHERE severity = 'CRITICAL' OR cvss_score >= 9.0)
 		FROM aveloxis_data.repo_deps_vulnerabilities
 		WHERE repo_id = ANY($1)
+		  AND resolved_at IS NULL
+		  AND COALESCE(dependency_kind, '') <> 'self'
 		GROUP BY repo_id`, repoIDs)
-	if err == nil {
-		defer rows5.Close()
-		for rows5.Next() {
-			var id int64
-			var total, critical int
-			rows5.Scan(&id, &total, &critical)
-			if st, ok := result[id]; ok {
-				st.Vulnerabilities = total
-				st.CriticalVulns = critical
-			}
+	if err != nil {
+		return nil, fmt.Errorf("batch vulnerability counts: %w", err)
+	}
+	defer rows5.Close()
+	for rows5.Next() {
+		var id int64
+		var total, critical int
+		if err := rows5.Scan(&id, &total, &critical); err != nil {
+			return nil, fmt.Errorf("batch vulnerability scan: %w", err)
 		}
+		if st, ok := result[id]; ok {
+			st.Vulnerabilities = total
+			st.CriticalVulns = critical
+		}
+	}
+	if err := rows5.Err(); err != nil {
+		return nil, fmt.Errorf("batch vulnerability iteration: %w", err)
 	}
 
 	return result, nil

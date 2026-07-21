@@ -863,6 +863,13 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.messages (
     rgls_id          BIGINT,
     platform_msg_id  BIGINT NOT NULL,
     platform_id      SMALLINT NOT NULL REFERENCES aveloxis_data.platforms(platform_id) DEFERRABLE INITIALLY DEFERRED,
+    -- v0.27.38: entity-kind discriminator (see internal/db/message_kinds.go).
+    -- GitHub's IssueComment / PullRequestReviewComment / PullRequestReview
+    -- ids are three independent sequences; without the kind in the key,
+    -- collisions silently overwrote text cross-kind (198,237 rows on
+    -- production). 0=legacy-unclassified 1=conversation 2=inline review
+    -- 3=review body 4=email projection.
+    msg_kind         SMALLINT NOT NULL DEFAULT 0,
     node_id          TEXT DEFAULT '',
     msg_text         TEXT DEFAULT '',
     msg_timestamp    TIMESTAMPTZ,
@@ -873,7 +880,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.messages (
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
     data_collection_date TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (platform_msg_id, platform_id)
+    UNIQUE (platform_msg_id, platform_id, msg_kind)
 );
 
 -- ============================================================
@@ -2242,7 +2249,19 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_add_request_items (
     repo_id     BIGINT,          -- stamped when the approval pass processes the item (-1 = unprocessable URL)
     UNIQUE (request_id, repo_url)
 );
-CREATE INDEX IF NOT EXISTS idx_add_request_items_request
+
+
+-- v0.27.38 (summary/18 Phase 1a): worklist of messages rows that were
+-- claimed by MORE THAN ONE kind-class under the old two-column arbiter
+-- (cross-kind ID collisions — the later writer overwrote the earlier
+-- kind's text). `aveloxis heal-messages` refetches both parents per
+-- row, deletes the stale cross-kind bridge links, and stamps healed_at.
+-- No FK on msg_id on purpose: the worklist is bookkeeping, not data.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.message_heal_worklist (
+    msg_id      BIGINT PRIMARY KEY,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    healed_at   TIMESTAMPTZ
+);CREATE INDEX IF NOT EXISTS idx_add_request_items_request
     ON aveloxis_ops.collection_add_request_items (request_id);
 
 CREATE TABLE IF NOT EXISTS aveloxis_ops.refresh_tokens (

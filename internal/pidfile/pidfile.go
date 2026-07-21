@@ -25,7 +25,9 @@ func Dir() string {
 		home = "/tmp"
 	}
 	dir := filepath.Join(home, ".aveloxis")
-	os.MkdirAll(dir, 0o755)
+	// Best-effort: if this fails, the subsequent Write surfaces a clear
+	// error against the missing directory.
+	_ = os.MkdirAll(dir, 0o755)
 	return dir
 }
 
@@ -63,9 +65,10 @@ func Read(path string) (int, error) {
 	return pid, nil
 }
 
-// Remove deletes a PID file. No error if it doesn't exist.
+// Remove deletes a PID file. Best-effort by contract: a stale PID file
+// is handled by the liveness check on the next start.
 func Remove(path string) {
-	os.Remove(path)
+	_ = os.Remove(path)
 }
 
 // IsRunning checks if the process with the given PID is still alive.

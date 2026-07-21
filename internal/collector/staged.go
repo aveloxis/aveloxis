@@ -1095,6 +1095,13 @@ type Processor struct {
 	resolver *db.ContributorResolver
 	logger   *slog.Logger
 	errors   int // count of individual row processing failures
+	// unresolvableRefs counts messages whose parent could not be
+	// resolved (no number, no id). v0.27.37 (summary/18 Phase 1b):
+	// this skip path silently dropped EVERY GitLab conversation
+	// comment on the main path for the product's whole life because
+	// the client never set the parent number — one aggregate WARN per
+	// repo makes the class impossible to lose silently again.
+	unresolvableRefs int
 }
 
 // NewProcessor creates a staging processor.
@@ -1176,6 +1183,10 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 		p.logger.Warn("failed to update final processing status", "repo_id", repoID, "error", err)
 	}
 
+	if p.unresolvableRefs > 0 {
+		p.logger.Warn("messages skipped: parent reference unresolvable (no number, no id) — a platform client is emitting refs the processor cannot link",
+			"repo_id", repoID, "skipped", p.unresolvableRefs)
+	}
 	p.logger.Info("processing complete", "repo_id", repoID, "errors", p.errors)
 	return nil
 }
@@ -1435,7 +1446,8 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 				}
 				msg.IssueRef.IssueID = dbID
 			} else {
-				return nil // no way to resolve parent — skip
+				p.unresolvableRefs++
+				return nil // no way to resolve parent — skip (counted; WARN at repo end)
 			}
 		}
 		if msg.PRRef != nil {
@@ -1451,7 +1463,8 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 				}
 				msg.PRRef.PRID = dbID
 			} else {
-				return nil // no way to resolve parent — skip
+				p.unresolvableRefs++
+				return nil // no way to resolve parent — skip (counted; WARN at repo end)
 			}
 		}
 		return p.store.UpsertMessageBatch(ctx, []platform.MessageWithRef{msg})

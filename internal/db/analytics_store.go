@@ -71,6 +71,13 @@ var metricSeriesSQL = map[string]string{
 			SELECT created_at, cntrb_id FROM aveloxis_data.pull_request_events WHERE repo_id = ANY($1) AND cntrb_id IS NOT NULL
 		) u
 		WHERE ts >= $2 AND ts < $3
+		  -- v0.27.37 (Phase 1f): the catalog definition promises
+		  -- soft-deleted merge-loser identities are excluded; the SQL
+		  -- now actually does it (child FKs still point at loser
+		  -- cntrb_ids, so without this a merged person counted twice).
+		  AND NOT EXISTS (
+			SELECT 1 FROM aveloxis_data.contributors c
+			WHERE c.cntrb_id = u.cntrb AND COALESCE(c.cntrb_deleted, 0) <> 0)
 		GROUP BY 1 ORDER BY 1`,
 	"change_requests": `
 		SELECT date_trunc('%s', created_at AT TIME ZONE 'UTC'), COUNT(*)::float
@@ -99,8 +106,13 @@ var metricSeriesSQL = map[string]string{
 		GROUP BY 1 ORDER BY 1`,
 	"committers": `
 		SELECT date_trunc('%s', cmt_author_timestamp AT TIME ZONE 'UTC'), COUNT(DISTINCT cmt_ght_author_id)::float
-		FROM aveloxis_data.commits
+		FROM aveloxis_data.commits co
 		WHERE repo_id = ANY($1) AND cmt_ght_author_id IS NOT NULL AND cmt_author_timestamp >= $2 AND cmt_author_timestamp < $3
+		  -- v0.27.37 (Phase 1f): exclude soft-deleted merge losers,
+		  -- matching the contributors metric and the catalog text.
+		  AND NOT EXISTS (
+			SELECT 1 FROM aveloxis_data.contributors c
+			WHERE c.cntrb_id = co.cmt_ght_author_id AND COALESCE(c.cntrb_deleted, 0) <> 0)
 		GROUP BY 1 ORDER BY 1`,
 }
 

@@ -66,8 +66,8 @@ func SeveritiesAtOrAbove(min string) []string {
 // dependency_kind='transitive' findings out of the digest — the first
 // transitive-enabled cycles would otherwise blast a 50-item email of
 // utility-package findings. Direct and pre-C1 (”) rows always pass.
-func (pg *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since time.Time, minSeverity string, includeTransitive bool) ([]VulnDigestItem, error) {
-	rows, err := pg.pool.Query(ctx, `
+func (s *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since time.Time, minSeverity string, includeTransitive bool) ([]VulnDigestItem, error) {
+	rows, err := s.pool.Query(ctx, `
 		SELECT v.repo_id, r.repo_owner, r.repo_name, v.vuln_id,
 		       COALESCE(v.severity, 'UNKNOWN'), COALESCE(v.package_purl, ''),
 		       COALESCE(v.summary, ''), v.first_detected_at

@@ -194,8 +194,8 @@ func TestMailingListProjectionDuplicates(t *testing.T) {
 	for _, d := range dups {
 		if d.RepoID == repoID && d.ExternalKey == "DUP-1" {
 			sawDup = true
-			if d.SyntheticIssue >= 0 == false {
-				// synthetic must be the negative-platform_issue_id row; sanity: ids differ
+			if d.SyntheticIssue < 0 {
+				t.Error("synthetic issue id must be a real (non-negative) local serial")
 			}
 			if d.SyntheticIssue == d.NativeIssue {
 				t.Error("duplicate must reference two distinct issues")

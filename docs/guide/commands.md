@@ -359,10 +359,10 @@ Creates or updates the database schema.
 aveloxis migrate
 ```
 
-Creates 136 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 137 tables and 20 materialized views across three PostgreSQL schemas:
 
 - **`aveloxis_data`** (98 tables + 20 materialized views) -- all collected data
-- **`aveloxis_ops`** (34 tables) -- operational state
+- **`aveloxis_ops`** (35 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.
@@ -717,6 +717,34 @@ Exit code 1 on any FAIL-level difference. For a coarser whole-schema
 row-count comparison, see `aveloxis data-test`.
 
 ---
+
+## `aveloxis heal-messages`
+
+Repairs message rows corrupted by the pre-v0.27.38 cross-kind ID
+collision (issue/PR conversation comments, inline review comments, and
+review bodies share overlapping GitHub ID sequences; under the old
+two-column arbiter the later writer silently overwrote the earlier
+kind's text — 198,237 rows on the production fleet). The v0.27.38
+migration captures the affected rows into
+`aveloxis_ops.message_heal_worklist`; this command consumes it.
+
+Each pass refetches the claiming parents' comments per-item
+(parent-deduplicated — API cost is per distinct issue/PR, not per
+collision), re-creates the correct rows under the kinded arbiter,
+deletes the stale cross-kind bridge links, and stamps `healed_at`.
+Failed parents leave their rows pending; re-run until "nothing
+pending".
+
+```bash
+aveloxis heal-messages --dry-run       # plan: pending rows, distinct parents
+aveloxis heal-messages --limit 1000    # canary pass
+aveloxis heal-messages                 # everything pending
+```
+
+Flags: `--limit` (0 = all pending), `--dry-run`, `--augur-keys`.
+Requires GitHub API keys (this healer refetches). Safe with serve
+stopped; after a fleet restart, run it once the force-full wave
+crests so it doesn't compete with collection for the key pool.
 
 ## `aveloxis heal-vulnerabilities`
 

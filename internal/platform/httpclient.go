@@ -222,6 +222,10 @@ func (c *HTTPClient) OnPermanentRedirect(hook func(from, to string)) {
 
 const maxRetries = 10
 
+// maxPageReadRetries bounds per-page BODY-read retries in paginate
+// (v0.27.37, Phase 1g) — same budget as Fix C's GraphQL read retries.
+const maxPageReadRetries = 3
+
 // ctxKeyBypassETag is a context value key used by WithoutETag to
 // suppress the ETag conditional layer on a single Get call. Distinct
 // type per Go context-key convention so other packages can't collide
@@ -248,6 +252,19 @@ func WithoutETag(ctx context.Context) context.Context {
 func bypassETag(ctx context.Context) bool {
 	v, _ := ctx.Value(ctxKeyBypassETag{}).(bool)
 	return v
+}
+
+// forgetETag drops the cached ETag for a path. Load-bearing for the
+// v0.27.37 page-read retry: Get caches the ETag at HEADER time, before
+// the body is read, so after a mid-body failure the cache holds an
+// ETag for content we never stored. Replaying it on the retry (or on
+// the NEXT collection cycle) would yield 304 → paginate ends cleanly →
+// silent truncation. Forgetting the entry makes the re-fetch
+// unconditional and lets the retry's own response repopulate the cache.
+func (c *HTTPClient) forgetETag(path string) {
+	c.etagMu.Lock()
+	delete(c.etagCache, path)
+	c.etagMu.Unlock()
 }
 
 // Get performs a single authenticated GET request with retries and rate-limit handling.
@@ -643,6 +660,7 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 	return func(yield func(T, error) bool) {
 		currentPath := ensurePerPage(path)
 		basePath := currentPath
+		pageReadRetries := 0
 
 		for currentPath != "" {
 			resp, err := c.Get(ctx, currentPath)
@@ -650,6 +668,14 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				// 304 Not Modified means the data hasn't changed since our last
 				// request (ETag match). This is not an error — just means zero new items.
 				if errors.Is(err, ErrNotModified) {
+					if currentPath != basePath {
+						// A 304 MID-pagination is unusual (per-page ETag matched
+						// on page N≥2 while earlier pages changed) and ends the
+						// iteration with pages 1..N-1 only — leave a trace so a
+						// truncation here is diagnosable (summary/18 audit).
+						c.logger.Debug("304 on a non-first page ended pagination early",
+							"path", currentPath)
+					}
 					return // no new data, stop pagination
 				}
 				// 204 No Content (v0.20.6) is the legitimate empty-result
@@ -677,14 +703,37 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				return
 			}
 
+			// v0.27.37 (summary/18 Phase 1g): the body decode runs
+			// OUTSIDE Get's retry loop, so a mid-body RST_STREAM/
+			// CANCEL from GitHub's edge used to surface here as a
+			// terminal "decoding page" error and kill the whole job.
+			// On force-full walks of the fleet's largest repos
+			// (~10-15K sequential pages) that compounded to
+			// near-certain failure per attempt — pytorch-class repos
+			// could never complete. Retryable read failures now
+			// re-fetch the SAME page on a fresh stream, after
+			// forgetting the header-time-cached ETag (see forgetETag —
+			// without that the retry gets 304 and truncates silently).
 			var page []T
-			if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
-				resp.Body.Close()
+			decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+			resp.Body.Close()
+			if decodeErr != nil {
+				if isRetryableReadError(decodeErr) && pageReadRetries < maxPageReadRetries {
+					pageReadRetries++
+					c.forgetETag(currentPath)
+					c.logger.Warn("page body read failed, retrying on a fresh stream",
+						"path", currentPath, "attempt", pageReadRetries, "error", decodeErr)
+					continue
+				}
 				var zero T
-				yield(zero, fmt.Errorf("decoding page: %w", err))
+				if isRetryableReadError(decodeErr) {
+					yield(zero, fmt.Errorf("decoding page after %d read retries: %w: %w", maxPageReadRetries, decodeErr, ErrTransient))
+				} else {
+					yield(zero, fmt.Errorf("decoding page: %w", decodeErr))
+				}
 				return
 			}
-			resp.Body.Close()
+			pageReadRetries = 0
 
 			for _, item := range page {
 				if !yield(item, nil) {

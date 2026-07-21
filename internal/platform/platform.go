@@ -298,7 +298,6 @@ type ContributorCollector interface {
 	EnrichContributor(ctx context.Context, login string) (*model.Contributor, error)
 }
 
-// MessageWithRef pairs a message with its parent reference (issue or PR).
 // RepoEvent is one event from a repo-wide event feed, tagged as either
 // an issue event or a PR event. Exactly one field is non-nil.
 type RepoEvent struct {

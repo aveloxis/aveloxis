@@ -99,7 +99,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 				"path", path,
 				"existing_url", existingURL,
 				"expected_url", gitURL)
-			os.RemoveAll(path)
+			_ = os.RemoveAll(path)
 			return f.freshClone(ctx, gitURL, path)
 		}
 
@@ -114,7 +114,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		if err := cmd.Run(); err != nil {
 			f.logger.Warn("fetch failed, re-cloning",
 				"path", path, "error", err, "stderr", stderr.String())
-			os.RemoveAll(path)
+			_ = os.RemoveAll(path)
 			return f.freshClone(ctx, gitURL, path)
 		}
 
@@ -129,7 +129,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 	// If the directory exists but isn't a valid repo (interrupted clone), remove it.
 	if _, err := os.Stat(path); err == nil {
 		f.logger.Warn("removing corrupt/incomplete clone directory", "path", path)
-		os.RemoveAll(path)
+		_ = os.RemoveAll(path)
 	}
 
 	return f.freshClone(ctx, gitURL, path)

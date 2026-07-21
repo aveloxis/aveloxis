@@ -173,7 +173,10 @@ func (s *PostgresStore) GetScancodeForSBOM(ctx context.Context, repoID int64) (*
 	var licenses []string
 	for rows.Next() {
 		var lic string
-		if rows.Scan(&lic) == nil && lic != "" {
+		if err := rows.Scan(&lic); err != nil {
+			return nil, err
+		}
+		if lic != "" {
 			licenses = append(licenses, lic)
 		}
 	}
@@ -201,7 +204,10 @@ func (s *PostgresStore) GetScancodeForSBOM(ctx context.Context, repoID int64) (*
 
 	for holderRows.Next() {
 		var holder string
-		if holderRows.Scan(&holder) == nil && holder != "" {
+		if err := holderRows.Scan(&holder); err != nil {
+			return nil, err
+		}
+		if holder != "" {
 			result.Copyrights = append(result.Copyrights, holder)
 		}
 	}
@@ -235,10 +241,10 @@ func (s *PostgresStore) GetScancodeSourceLicenses(ctx context.Context, repoID in
 	for rows.Next() {
 		var lic string
 		var cnt int
-		if rows.Scan(&lic, &cnt) == nil {
-			normalized := normalizeLicense(lic)
-			counts[normalized] += cnt
+		if err := rows.Scan(&lic, &cnt); err != nil {
+			return nil, err
 		}
+		counts[normalizeLicense(lic)] += cnt
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -286,7 +292,10 @@ func (s *PostgresStore) GetScancodeCopyrights(ctx context.Context, repoID int64)
 	var result []ScancodeSourceCopyright
 	for rows.Next() {
 		var c ScancodeSourceCopyright
-		if rows.Scan(&c.Holder, &c.FileCount) == nil && c.Holder != "" {
+		if err := rows.Scan(&c.Holder, &c.FileCount); err != nil {
+			return nil, err
+		}
+		if c.Holder != "" {
 			result = append(result, c)
 		}
 	}

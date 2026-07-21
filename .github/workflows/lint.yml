@@ -35,3 +35,14 @@ jobs:
         # Blocking since v0.25.36 — the codebase is staticcheck-clean and
         # SA-class findings (e.g. SA4010 dead append) are bug-shaped.
         run: staticcheck ./...
+
+      # golangci-lint is the third blocking tier (v0.27.36, summary/18
+      # Phase 0a): errcheck + govet + ineffassign + staticcheck + unused
+      # per .golangci.yml, which carries the exclusion philosophy. The
+      # version is PINNED so a new linter release can't break builds by
+      # surprise — bump it deliberately, run locally first.
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+          args: --timeout 10m

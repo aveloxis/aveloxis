@@ -26,9 +26,10 @@ import (
 func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 	var limit int
 	var rescoreOnly bool
+	var scanAll bool
 	cmd := &cobra.Command{
 		Use:   "heal-vulnerabilities",
-		Short: "Re-scan every repo with vulnerability rows to fill severity/summary details (OSV two-phase fetch)",
+		Short: "Re-scan every repo with vulnerability rows to fill severity/summary details (OSV two-phase fetch); --all scans every collected repo",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)
@@ -56,9 +57,23 @@ func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 				return nil
 			}
 
-			ids, err := store.ReposWithVulnerabilities(ctx)
-			if err != nil {
-				return fmt.Errorf("listing repos with vulnerabilities: %w", err)
+			// v0.27.32 --all: iterate every COLLECTED repo, not just
+			// repos that already have findings. ReposWithVulnerabilities
+			// structurally cannot reach zero-finding repos — the exact
+			// numpy-class cohort the v0.27.29 self-advisory scan exists
+			// for. Priority-run recipe: `aveloxis stop serve`, run this
+			// with --all, then resume regular collection.
+			var ids []int64
+			if scanAll {
+				ids, err = store.CollectedRepoIDs(ctx)
+				if err != nil {
+					return fmt.Errorf("listing collected repos: %w", err)
+				}
+			} else {
+				ids, err = store.ReposWithVulnerabilities(ctx)
+				if err != nil {
+					return fmt.Errorf("listing repos with vulnerabilities: %w", err)
+				}
 			}
 			if limit > 0 && len(ids) > limit {
 				ids = ids[:limit]
@@ -90,5 +105,7 @@ func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 0, "cap repos healed this run (0 = all)")
 	cmd.Flags().BoolVar(&rescoreOnly, "rescore-only", false,
 		"recompute cvss_score from each row's stored vector (no OSV traffic); heals pre-v0.27.23 approximated scores in one pass")
+	cmd.Flags().BoolVar(&scanAll, "all", false,
+		"scan EVERY collected repo, including repos with zero findings — required to backfill v0.27.29 self-advisories for publisher repos (numpy-class) that heal's default cohort can never reach")
 	return cmd
 }

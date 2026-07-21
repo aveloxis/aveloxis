@@ -303,3 +303,45 @@ func TestBackfillGitLabCommitCountPatchesOnlyZeroLatestRow(t *testing.T) {
 		t.Errorf("latest commit_count = %d, want the API's 5 untouched", count)
 	}
 }
+
+// TestCollectedRepoIDsCohort (v0.27.32) — the heal-vulnerabilities
+// --all cohort: collected + non-archived repos IN, uncollected and
+// archived repos OUT. Behavioral against the real schema, per the
+// ground-truth rule.
+func TestCollectedRepoIDsCohort(t *testing.T) {
+	store, ctx := retentionConnect(t)
+	defer store.Close()
+
+	collected := newRetentionSeed(ctx, t, store)
+	collected.enqueueCollected()
+	uncollected := newRetentionSeed(ctx, t, store)
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO aveloxis_ops.collection_queue (repo_id, status)
+		VALUES ($1, 'queued') ON CONFLICT (repo_id) DO NOTHING`, uncollected.repoID); err != nil {
+		t.Fatal(err)
+	}
+	archived := newRetentionSeed(ctx, t, store)
+	archived.enqueueCollected()
+	if _, err := store.pool.Exec(ctx, `
+		UPDATE aveloxis_data.repos SET repo_archived = TRUE WHERE repo_id = $1`, archived.repoID); err != nil {
+		t.Fatal(err)
+	}
+
+	ids, err := store.CollectedRepoIDs(ctx)
+	if err != nil {
+		t.Fatalf("CollectedRepoIDs: %v", err)
+	}
+	in := map[int64]bool{}
+	for _, id := range ids {
+		in[id] = true
+	}
+	if !in[collected.repoID] {
+		t.Error("collected non-archived repo missing from the --all cohort")
+	}
+	if in[uncollected.repoID] {
+		t.Error("never-collected repo present — scanning it wastes OSV budget on repos with no data")
+	}
+	if in[archived.repoID] {
+		t.Error("archived repo present — dead repos are excluded from the fleet everywhere else")
+	}
+}

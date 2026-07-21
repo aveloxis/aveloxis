@@ -95,14 +95,16 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 		add("case-duplicate repos", "OK", "0 duplicate groups")
 	}
 
-	// Exactly one Default repo_group (v0.27.17 consolidation).
+	// AT MOST one Default repo_group (v0.27.17 consolidation). Zero is
+	// legitimate — the group is lazily created on first collection, so
+	// a fresh database (CI!) has none; only DUPLICATES are the bug.
 	if err := s.pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM aveloxis_data.repo_groups WHERE rg_name = 'Default'`).Scan(&n); err != nil {
 		probeErr("default repo_group singleton", err)
-	} else if n != 1 {
-		add("default repo_group singleton", "FAIL", "%d 'Default' groups (want exactly 1) — the v0.27.17 lazy-creation bug shape", n)
+	} else if n > 1 {
+		add("default repo_group singleton", "FAIL", "%d 'Default' groups (want at most 1) — the v0.27.17 lazy-creation bug shape", n)
 	} else {
-		add("default repo_group singleton", "OK", "exactly 1 Default group")
+		add("default repo_group singleton", "OK", "%d Default group(s)", n)
 	}
 
 	// Stale 'collecting' rows: locks older than 24h mean an orphaned

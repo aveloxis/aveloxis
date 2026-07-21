@@ -98,10 +98,12 @@ Every release candidate passes, in order (v0.27.43, summary/18 Phase
    migrate.go change: create an empty database, run the db+collector
    suites against it (proves from-scratch migration ordering; the
    v0.27.9 lesson).
-7. **`aveloxis data-verify`** — for release candidates, against a
-   scratch or production database: the invariant probe battery
-   (structural, count-integrity, fill rates; `--ground-truth N` for
-   live-forge comparison). FAIL exits 1.
+7. **`aveloxis data-verify`** — runs automatically at the end of the
+   integration workflow against the CI database (smoke-tests the
+   battery AND catches fixture residue from the test suite); run it
+   manually against a scratch or production database for release
+   candidates (`--ground-truth N` adds live-forge comparison, needs
+   API keys — never in CI). FAIL exits 1.
 8. **Network canaries** — network-canary.yml, weekly: live-API
    contract checks (OSV, registries, GraphQL parity fields,
    tool-binary versions).

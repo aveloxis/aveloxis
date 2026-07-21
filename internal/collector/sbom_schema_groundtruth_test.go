@@ -243,6 +243,22 @@ func TestSPDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 				t.Errorf("package %d (%v) missing/empty schema-required field %q", i, pm["name"], field)
 			}
 		}
+		// SPDX 2.3 §7.8/§7.9 conditional cardinality — prose the JSON
+		// schema cannot express: filesAnalyzed defaults to TRUE when
+		// omitted, and true-or-omitted makes packageVerificationCode
+		// MANDATORY. Since we never analyze package files, every
+		// package must explicitly declare filesAnalyzed=false (or, if
+		// that ever changes, carry a verification code).
+		fa, present := pm["filesAnalyzed"]
+		if !present {
+			if _, hasVC := pm["packageVerificationCode"]; !hasVC {
+				t.Errorf("package %d (%v) omits filesAnalyzed (defaults TRUE per §7.8) without a packageVerificationCode (§7.9 mandatory) — non-conformant", i, pm["name"])
+			}
+		} else if fa == true {
+			if _, hasVC := pm["packageVerificationCode"]; !hasVC {
+				t.Errorf("package %d (%v) claims filesAnalyzed=true without a packageVerificationCode", i, pm["name"])
+			}
+		}
 	}
 
 	relReq := requiredList(t, dig(schema, "properties", "relationships", "items"), "relationships.items")

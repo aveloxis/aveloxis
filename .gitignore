@@ -5,6 +5,9 @@ syslog
 *.json
 # ... but committed test fixtures named like real lockfiles must stay trackable
 !internal/collector/testdata/lockfiles/*.json
+# v0.27.29: purl-spec canonical cases fixture
+!internal/collector/testdata/*.json
+!internal/collector/testdata/registries/*.json
 *code-workspace
 db.config.json
 aveloxis.chaoss.tv.json
@@ -67,3 +70,4 @@ go.work.sum
 aveloxis-shadow-graphql.json
 aveloxis-shadow-rest.json
 aveloxis.nsa.json
+!internal/collector/testdata/sbom_schemas/*.json

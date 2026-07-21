@@ -56,8 +56,15 @@ func TestGoDepsAreLockedByConstruction(t *testing.T) {
 }
 
 func TestLockedVersionsWinOverFloor(t *testing.T) {
+	// v0.27.29: the stored purl is SPEC-CANONICAL (lowercase,
+	// '_'→'-') — the pre-v0.27.29 version of this test pinned
+	// "pkg:pypi/Flask_SQLAlchemy" as correct, the wrong-answer-tests
+	// audit's headline instance. The display Name keeps the
+	// manifest's spelling; only the purl canonicalizes. Pre-existing
+	// DB rows with non-canonical purls heal at each repo's next
+	// analysis pass.
 	dep := db.VulnScanDep{Name: "Flask_SQLAlchemy", CurrentVersion: "2.0",
-		PackageManager: "pypi", Purl: "pkg:pypi/Flask_SQLAlchemy@2.0",
+		PackageManager: "pypi", Purl: "pkg:pypi/flask-sqlalchemy@2.0",
 		Requirement: "Flask_SQLAlchemy>=2.0"}
 	locked := map[string][]string{
 		// PEP 503 folding on both sides: the lockfile spelled it
@@ -77,8 +84,8 @@ func TestLockedVersionsWinOverFloor(t *testing.T) {
 		}
 	}
 	got := map[string]bool{targets[0].Purl: true, targets[1].Purl: true}
-	if !got["pkg:pypi/Flask_SQLAlchemy@2.5.1"] || !got["pkg:pypi/Flask_SQLAlchemy@3.1.1"] {
-		t.Errorf("locked purls must substitute the resolved versions: %v", got)
+	if !got["pkg:pypi/flask-sqlalchemy@2.5.1"] || !got["pkg:pypi/flask-sqlalchemy@3.1.1"] {
+		t.Errorf("locked purls must substitute the resolved versions onto the canonical purl: %v", got)
 	}
 }
 

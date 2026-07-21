@@ -50,7 +50,7 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 
 	// Weekly commits (from the commits table — one row per file, so count distinct hashes).
 	rows, err := s.pool.Query(ctx, `
-		SELECT date_trunc('week', cmt_author_timestamp) AS week_start,
+		SELECT date_trunc('week', cmt_author_timestamp AT TIME ZONE 'UTC') AS week_start,
 			COUNT(DISTINCT cmt_commit_hash) AS cnt
 		FROM aveloxis_data.commits
 		WHERE repo_id = $1 AND cmt_author_timestamp >= $2 AND cmt_author_timestamp < $3
@@ -69,7 +69,7 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 
 	// Weekly PRs opened.
 	rows2, err := s.pool.Query(ctx, `
-		SELECT date_trunc('week', created_at) AS week_start,
+		SELECT date_trunc('week', created_at AT TIME ZONE 'UTC') AS week_start,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.pull_requests
 		WHERE repo_id = $1 AND created_at >= $2 AND created_at < $3
@@ -88,7 +88,7 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 
 	// Weekly PRs merged.
 	rows3, err := s.pool.Query(ctx, `
-		SELECT date_trunc('week', merged_at) AS week_start,
+		SELECT date_trunc('week', merged_at AT TIME ZONE 'UTC') AS week_start,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.pull_requests
 		WHERE repo_id = $1 AND merged_at >= $2 AND merged_at < $3
@@ -107,7 +107,7 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 
 	// Weekly issues opened.
 	rows4, err := s.pool.Query(ctx, `
-		SELECT date_trunc('week', created_at) AS week_start,
+		SELECT date_trunc('week', created_at AT TIME ZONE 'UTC') AS week_start,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.issues
 		WHERE repo_id = $1 AND created_at >= $2 AND created_at < $3

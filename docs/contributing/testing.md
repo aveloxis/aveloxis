@@ -106,6 +106,39 @@ Source-contract tests can give false confidence:
 
 If you write a source-contract test for SQL that references a column from a different table, **also** write an integration test that runs the migration against a fresh database. The combination catches both refactor-rename drift (source-contract) and column-name typos (integration).
 
+## Where expected values come from
+
+The 2026-07-21 audit (`summary/17-wrong-answer-tests-audit.md`) found a recurring failure shape across the suite: **both-sides-agree-on-the-wrong-answer tests** — tests whose expected values were derived from the implementation under test, so implementation and expectation could be wrong *together* and the test would pass forever. Three shipped bugs came from this shape: the v0.21.0 backfill column name, the purl non-canonical encodings (pinned as correct by their own tests), and the PEP 639 license drift (every mock fixture predated the ecosystem change).
+
+The rule: **every expected value in a test must trace to an authority that is not the code under test.** In descending order of strength:
+
+1. **The specification itself** — committed as a fixture the test reads at run time, so refreshing the fixture refreshes the constraints. Examples: `internal/collector/testdata/purl_spec_cases.json` (purl-spec canonical cases), `testdata/sbom_schemas/` (official CycloneDX 1.5 + SPDX 2.3 JSON schemas — the SBOM test reads the schemas' own `required` lists and enums), `spdx_license_ids.txt` (the official SPDX id list).
+2. **The reference implementation's source** — when compatibility with another system is the claim, fetch that system's actual code and hand-derive vectors from it. Example: `augur_uuid_groundtruth_test.go` derives its UUID strings from chaoss/augur's `AugurUUID.py` byte rules, with one vector corroborated by a real production row.
+3. **Hand computation from published formulas** — work the arithmetic in the test's comment so a reviewer can check it. Example: the COCOMO test's `ln(100)·1.0997 → e^x → ×2.94 ≈ 465.3` derivation.
+4. **Real Postgres** — for SQL semantics (`date_trunc` bucketing, `ON CONFLICT` arbiters, FK behavior), the database is the ground truth; seed known rows and assert exact values. Never assert what a query "should" return by reading its SQL.
+5. **Captured real responses** — fixtures fetched from the live API and committed verbatim (trimmed, never reshaped). Example: `testdata/registries/*.json`. Pair them with a network-gated live canary so drift between the frozen fixture and the living API surfaces weekly instead of never.
+
+Self-authored mock responses are the *weakest* form of expected value — acceptable only for shapes you control end-to-end (our own JSON envelopes), never for third-party API responses, spec formats, or SQL semantics.
+
+**Negative controls keep ground-truth tests honest.** A test that validates against an external authority should, where practical, also prove it can still *see* the bug class it guards — e.g. the bucket-alignment test asserts the pre-fix bare `date_trunc` form actually diverges under a non-UTC session; if it stops diverging, the test complains that its own detection power died.
+
+### REGRESSION-PIN labeling
+
+Some tests deliberately pin **current behavior** rather than independently-derived correctness — freezing output before a refactor, pinning a quirk we've decided to keep. These are legitimate, but they must not masquerade as correctness tests. Label them:
+
+```go
+// REGRESSION-PIN: expected values captured from the v0.27.x output,
+// NOT independently derived. This test detects CHANGE, not
+// correctness — if it fails after an intentional behavior change,
+// re-capture; if it fails unexpectedly, investigate.
+```
+
+An unlabeled test asserting exact values is implicitly claiming those values are *right*, not merely *current*. Reviewers hold it to the ground-truth rule above.
+
+### The review question
+
+For every new test, ask: **"Could this test pass if the code were wrong in the way that matters?"** If the expected value came from running the code, the answer is yes — and the test is a change-detector at best. Trace the expectation to one of the five authorities above, or label it REGRESSION-PIN.
+
 ## The behavioral test pattern
 
 Tests that exercise actual code through its public API:

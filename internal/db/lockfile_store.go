@@ -372,3 +372,61 @@ func (s *PostgresStore) GetRepoLockfileCertainty(ctx context.Context, repoID int
 	}
 	return out, nil
 }
+
+// SelfAdvisoryPackage is one of the repo's OWN published packages,
+// eligible for version-unconstrained advisory scanning (v0.27.29).
+type SelfAdvisoryPackage struct {
+	Ecosystem   string // repo_distribution.ecosystem / manifest_type flavor
+	PackageName string // lowercased
+}
+
+// GetRepoSelfAdvisoryPackages returns the repo's own published
+// packages for SELF-ADVISORY scanning (v0.27.29 — the numpy/numpy
+// face-validity fix: a repo with no dependencies showed zero
+// vulnerabilities even though OSV carries 16 advisories for the
+// package it publishes, because the scan covered dependencies only).
+//
+// DELIBERATELY NARROWER than GetRepoSelfPackageNames (the exclusion
+// set above): deps.dev's reverse lookup returns every package that
+// merely CLAIMS the repo URL — numpy's rows include intel-numpy,
+// mmwave, and numpydoc — and attaching those packages' advisories to
+// this repo would be wrong. Broad is correct for EXCLUDING deps from
+// the scan (over-exclusion is conservative); precise is required for
+// ATTRIBUTING advisories (over-attribution is misinformation). Two
+// precise sources only:
+//
+//  1. The repo's OWN manifests' declared package names (authoritative
+//     — the repo says what it publishes), with the manifest's
+//     ecosystem type.
+//  2. Registry evidence whose package name exactly matches the repo's
+//     name variants (the v0.27.11 4-variant heuristic).
+func (s *PostgresStore) GetRepoSelfAdvisoryPackages(ctx context.Context, repoID int64) ([]SelfAdvisoryPackage, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT m.manifest_type, LOWER(m.package_name_declared)
+		FROM aveloxis_data.repo_distribution_manifest m
+		WHERE m.repo_id = $1 AND m.package_name_declared <> ''
+		UNION
+		SELECT DISTINCT d.ecosystem, LOWER(d.package_name)
+		FROM aveloxis_data.repo_distribution d
+		JOIN aveloxis_data.repos r ON r.repo_id = d.repo_id
+		WHERE d.repo_id = $1 AND d.package_name <> ''
+		  AND LOWER(d.package_name) IN (
+			LOWER(r.repo_name),
+			LOWER(REPLACE(r.repo_name, '_', '-')),
+			LOWER(r.repo_owner || '-' || r.repo_name),
+			LOWER(REPLACE(r.repo_owner || '-' || r.repo_name, '_', '-')))`,
+		repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SelfAdvisoryPackage
+	for rows.Next() {
+		var p SelfAdvisoryPackage
+		if err := rows.Scan(&p.Ecosystem, &p.PackageName); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

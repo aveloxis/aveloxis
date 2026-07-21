@@ -24,7 +24,71 @@ jobs:
       - name: Run network-gated canaries
         env:
           AVELOXIS_TEST_NETWORK: "1"
+          # v0.27.30: the audit found the commit-search canary had been
+          # silently SKIPPING every week — the workflow never passed a
+          # token. Configure these repo secrets to make the token-gated
+          # canaries (GitHub REST + GraphQL, GitLab) actually run;
+          # without them those tests skip, visibly, in the -v output.
+          AVELOXIS_TEST_GITHUB_TOKEN: ${{ secrets.AVELOXIS_TEST_GITHUB_TOKEN }}
+          AVELOXIS_TEST_GITLAB_TOKEN: ${{ secrets.AVELOXIS_TEST_GITLAB_TOKEN }}
         run: |
           go test ./internal/platform/depsdev/ -run TestLiveDepsDevReverseLookupForSeaborn -count=1 -v
           go test ./internal/platform/github/ -run TestSearchCommitByAuthorEmailLive -count=1 -v
           go test ./internal/mailinglist/ -run TestPonyMailLiveCanary -count=1 -v
+          # v0.27.29 — the 2026-07-21 audit found these three canaries
+          # EXISTED but were never scheduled: OSV.dev (the entire
+          # vulnerability signal), npm, and crates.io — the last two
+          # written for v0.27.19 precisely because those ecosystems
+          # were silently dark for the product's whole life. An
+          # unscheduled canary provides no protection.
+          go test ./internal/collector/ -run TestLiveOSVContract -count=1 -v
+          go test ./internal/collector/ -run TestLiveNPMRegistryForLodash -count=1 -v
+          go test ./internal/collector/ -run TestLiveCratesIOForSerde -count=1 -v
+          # v0.27.30 — audit Phase 2: registries that previously had NO
+          # live coverage (PyPI's first run caught the PEP 639
+          # license_expression drift within an hour of existing),
+          # ecosyste.ms, GitLab, and the GraphQL parity-fields canary
+          # (the Label-databaseId class — our field assumptions vs
+          # GitHub's actual schema).
+          go test ./internal/collector/ -run TestLivePyPIForFlask -count=1 -v
+          go test ./internal/collector/ -run TestLiveGoProxyForCobra -count=1 -v
+          go test ./internal/collector/ -run TestLiveMavenForCommonsLang -count=1 -v
+          go test ./internal/platform/ecosystems/ -run TestLiveEcosystemsLookupForSeaborn -count=1 -v
+          go test ./internal/platform/gitlab/ -run TestLiveGitLabRepoInfoForGitLabRunner -count=1 -v
+          go test ./internal/platform/github/ -run TestLiveGraphQLListingAndPRBatchParityFields -count=1 -v
+
+  # v0.27.30 — REAL-BINARY tool canaries (audit G1: scancode is the
+  # likeliest next silent-dark incident — unpinned monthly auto-upgrade
+  # + self-authored parse fixtures + zero-findings-without-error). The
+  # job installs the CURRENT latest of each tool (deliberately: that is
+  # exactly what production's monthly updater will install) and runs
+  # the installed binaries through our REAL parse structs. A new tool
+  # version failing the allowlist is the alert doing its job: eyeball
+  # the run, extend the allowlist in tool_output_canary_test.go.
+  tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install analysis tools (latest — matching production's updater)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q pipx libmagic1
+          pipx install scancode-toolkit-mini
+          pipx inject scancode-toolkit-mini typecode-libmagic
+          go install github.com/boyter/scc/v3@latest
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      - name: Run tool-output canaries
+        env:
+          AVELOXIS_TEST_TOOLS: "1"
+        run: |
+          go test ./internal/collector/ -run TestLiveScancodeOutputShape -count=1 -v -timeout 15m
+          go test ./internal/collector/ -run TestLiveSCCOutputShape -count=1 -v
+          # scorecard's release-tarball install is exercised by
+          # `aveloxis install-tools` in production; here the canary
+          # skips if absent — the scancode + scc coverage is the
+          # automatic-upgrade risk this job exists for.
+          go test ./internal/collector/ -run TestLiveScorecardOutputShape -count=1 -v

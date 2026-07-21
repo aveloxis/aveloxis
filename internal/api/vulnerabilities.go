@@ -122,20 +122,30 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 	// vulnerabilities" — the GUI leads with direct. Pre-C1 rows
 	// ('' kind) count as direct (they were, by construction).
 	directCount, transitiveCount, devCount := 0, 0, 0
+	// v0.27.29: kind='self' = advisories against the repo's OWN
+	// published releases (versionless — the numpy fix). They are
+	// lifecycle-current forever, so they get their own counter and
+	// stay OUT of current/critical/direct — a project's historical
+	// advisories must never read as live dependency exposure.
+	selfCount := 0
 	for _, v := range rows {
 		osvURL, cveURL := advisoryURLs(v.VulnID, v.CVEID)
 		if v.ResolvedAt == nil {
-			current++
-			if v.Severity == "CRITICAL" || v.CVSSScore >= 9.0 {
-				critical++
-			}
-			if v.DependencyKind == "transitive" {
-				transitiveCount++
+			if v.DependencyKind == "self" {
+				selfCount++
 			} else {
-				directCount++
-			}
-			if v.DependencyScope == "dev" {
-				devCount++
+				current++
+				if v.Severity == "CRITICAL" || v.CVSSScore >= 9.0 {
+					critical++
+				}
+				if v.DependencyKind == "transitive" {
+					transitiveCount++
+				} else {
+					directCount++
+				}
+				if v.DependencyScope == "dev" {
+					devCount++
+				}
 			}
 		} else {
 			resolved++
@@ -176,6 +186,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 		"counts": map[string]int{
 			"current": current, "resolved": resolved, "critical": critical,
 			"direct": directCount, "transitive": transitiveCount, "dev": devCount,
+			"self": selfCount,
 		},
 	})
 }
@@ -193,6 +204,13 @@ func annotateCycloneDXWithVulns(sbom []byte, vulns []*db.VulnerabilityRow) ([]by
 	entries := make([]map[string]any, 0, len(vulns))
 	for _, v := range vulns {
 		if v.ResolvedAt != nil {
+			continue
+		}
+		// v0.27.29: self-advisories describe the repo's OWN releases,
+		// not this SBOM's dependency components — their versionless
+		// purls match no component bom-ref, so affects.ref would
+		// dangle. The SBOM vulnerability array stays dependency-only.
+		if v.DependencyKind == "self" {
 			continue
 		}
 		osvURL, _ := advisoryURLs(v.VulnID, v.CVEID)

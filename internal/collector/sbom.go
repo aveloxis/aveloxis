@@ -104,11 +104,20 @@ type cdxComponent struct {
 	Evidence  *cdxEvidence `json:"evidence,omitempty"`
 }
 
+// cdxLicense models CycloneDX 1.5's licenseChoice: EITHER a license
+// object (id or name) OR an expression — never both. v0.27.29 added
+// the expression arm: before it, ScanCode's compound expressions
+// ("MIT AND Apache-2.0") failed isSPDXLicense and fell into
+// license.name as machine-unreadable free text, invisible to policy
+// engines.
 type cdxLicense struct {
-	License struct {
-		ID   string `json:"id,omitempty"`
-		Name string `json:"name,omitempty"`
-	} `json:"license"`
+	License    *cdxLicenseObj `json:"license,omitempty"`
+	Expression string         `json:"expression,omitempty"`
+}
+
+type cdxLicenseObj struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 // cdxEvidence holds CycloneDX 1.5 evidence for concluded (detected) data.
@@ -130,7 +139,7 @@ type cdxDependency struct {
 }
 
 func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.ScancodeForSBOM) ([]byte, error) {
-	rootRef := fmt.Sprintf("pkg:generic/%s/%s", repo.Owner, repo.Name)
+	rootRef := buildPurl("generic", repo.Owner+"/"+repo.Name, "") // v0.27.29: one purl builder everywhere
 	rootComp := &cdxComponent{
 		Type:   "application",
 		Name:   repo.Name,
@@ -141,7 +150,7 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	if scanData != nil {
 		if scanData.ConcludedLicenseSPDX != "" {
 			rootComp.Evidence = &cdxEvidence{
-				Licenses: []cdxLicense{makeCDXLicense(scanData.ConcludedLicenseSPDX)},
+				Licenses: makeCDXLicenses(scanData.ConcludedLicenseSPDX),
 			}
 		}
 		if len(scanData.Copyrights) > 0 {
@@ -191,10 +200,21 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 		},
 	}
 
-	// Track dep bom-refs for the dependencies graph.
+	// Track dep bom-refs for the dependencies graph. v0.27.29:
+	// bom-ref must be UNIQUE per the CycloneDX spec — two manifests
+	// declaring the same package+version yield the same purl and are
+	// emitted as ONE component (the audit's 1d finding: nothing
+	// previously guarded against colliding refs).
 	var depRefs []string
+	seenRefs := map[string]bool{}
 
 	for _, dep := range deps {
+		if dep.Purl != "" && seenRefs[dep.Purl] {
+			continue
+		}
+		if dep.Purl != "" {
+			seenRefs[dep.Purl] = true
+		}
 		comp := cdxComponent{
 			Type:    "library",
 			Name:    dep.Name,
@@ -210,7 +230,7 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 			comp.Scope = "required"
 		}
 		if dep.License != "" {
-			comp.Licenses = []cdxLicense{makeCDXLicense(dep.License)}
+			comp.Licenses = makeCDXLicenses(dep.License)
 		}
 		bom.Components = append(bom.Components, comp)
 
@@ -235,16 +255,104 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	return json.MarshalIndent(bom, "", "  ")
 }
 
+// v0.27.29 — multi-license emission semantics (the wrong-answer-tests
+// audit's " AND " finding):
+//
+//   - REGISTRY license lists arrive stored as "A AND B" (the
+//     analysis-phase joiner), but a registry listing two licenses
+//     almost always means DUAL-LICENSING — a choice. Asserting AND
+//     (the consumer must satisfy both) inverts the legal obligation.
+//   - CycloneDX: emitted as MULTIPLE licenses[] entries — the spec's
+//     honest "relationship unstated" form; each element still gets
+//     id-vs-name treatment individually.
+//   - SPDX licenseDeclared: each part normalized via
+//     db.NormalizeLicenseToSPDX ("Apache 2.0" → Apache-2.0), then
+//     validated against the embedded official id list; all-valid
+//     multi-license joins with OR (dual-licensing alternatives), any
+//     unmappable part → NOASSERTION (SPDX requires a parseable
+//     expression, NOASSERTION, or NONE — free text is grammar-invalid).
+//   - ScanCode's OWN expressions pass through untouched: the toolkit
+//     emits valid SPDX expressions by construction, and its
+//     whole-tree AND is semantically CORRECT (different files under
+//     different licenses = conjunction). CDX carries compounds in the
+//     expression field.
+//
+// Storage semantics (repo_deps_libyear.license keeping " AND " as the
+// list separator) are deliberately unchanged tonight — flagged in the
+// v0.27.29 changelog for operator review, since changing the stored
+// form touches the license table display fleet-wide.
+
+// makeCDXLicenses expands a stored license string into CycloneDX
+// entries: one per " AND "-separated element (registry list), or a
+// single expression entry when the string is a genuine SPDX compound
+// from ScanCode (contains an operator and every token validates).
+func makeCDXLicenses(raw string) []cdxLicense {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, " AND ")
+	if len(parts) == 1 {
+		return []cdxLicense{makeCDXLicense(raw)}
+	}
+	if allValidSPDXIDs(parts) {
+		// A parseable compound — CDX's expression field is the
+		// machine-readable home for it.
+		return []cdxLicense{{Expression: raw}}
+	}
+	out := make([]cdxLicense, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, makeCDXLicense(strings.TrimSpace(p)))
+	}
+	return out
+}
+
+func allValidSPDXIDs(parts []string) bool {
+	for _, p := range parts {
+		if !isSPDXLicense(strings.TrimSpace(p)) {
+			return false
+		}
+	}
+	return len(parts) > 0
+}
+
+// spdxDeclaredLicense renders a stored license string as a VALID SPDX
+// licenseDeclared value: a single id, an OR-joined expression of
+// normalized ids, or NOASSERTION. Never free text.
+func spdxDeclaredLicense(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "NOASSERTION"
+	}
+	parts := strings.Split(raw, " AND ")
+	ids := make([]string, 0, len(parts))
+	for _, p := range parts {
+		n := db.NormalizeLicenseToSPDX(strings.TrimSpace(p))
+		if !isSPDXLicense(n) {
+			return "NOASSERTION"
+		}
+		ids = append(ids, n)
+	}
+	if len(ids) == 1 {
+		return ids[0]
+	}
+	return "(" + strings.Join(ids, " OR ") + ")"
+}
+
 // makeCDXLicense creates a CycloneDX license entry, using the id field for
 // recognized SPDX identifiers and the name field for non-standard strings.
 func makeCDXLicense(license string) cdxLicense {
-	l := cdxLicense{}
+	obj := &cdxLicenseObj{}
 	if isSPDXLicense(license) {
-		l.License.ID = license
+		obj.ID = license
+	} else if n := db.NormalizeLicenseToSPDX(license); isSPDXLicense(n) {
+		// v0.27.29: registry synonyms ("Apache 2.0") normalize to
+		// their SPDX id instead of demoting to free-text name.
+		obj.ID = n
 	} else {
-		l.License.Name = license
+		obj.Name = license
 	}
-	return l
+	return cdxLicense{License: obj}
 }
 
 // ============================================================
@@ -314,7 +422,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 	// Root package for the repo itself.
 	// LicenseDeclared = from GitHub/GitLab API (what the repo claims).
 	// LicenseConcluded = from ScanCode source analysis (what's actually detected).
-	concludedLicense := orNoAssertion(repo.License)
+	concludedLicense := spdxDeclaredLicense(repo.License) // v0.27.29: valid expression or NOASSERTION, never free text
 	copyrightText := "NOASSERTION"
 	if scanData != nil {
 		if scanData.ConcludedLicenseSPDX != "" {
@@ -329,7 +437,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 		Name:             repo.Name,
 		DownloadLocation: repo.GitURL,
 		LicenseConcluded: concludedLicense,
-		LicenseDeclared:  orNoAssertion(repo.License),
+		LicenseDeclared:  spdxDeclaredLicense(repo.License),
 		CopyrightText:    copyrightText,
 	}
 	doc.Packages = append(doc.Packages, rootPkg)
@@ -338,7 +446,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 		// Stable package ID based on a hash of the name+version, not loop index.
 		// This ensures IDs don't change when the dep list is reordered.
 		pkgID := spdxPackageID(dep.Name, dep.CurrentVersion)
-		declared := orNoAssertion(dep.License)
+		declared := spdxDeclaredLicense(dep.License) // v0.27.29
 
 		pkg := spdxPackage{
 			SPDXID:      pkgID,

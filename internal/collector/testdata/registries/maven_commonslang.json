@@ -1,0 +1,50 @@
+{
+ "responseHeader": {
+  "status": 0,
+  "QTime": 1,
+  "params": {
+   "q": "g:\"org.apache.commons\" AND a:\"commons-lang3\"",
+   "core": "",
+   "indent": "off",
+   "spellcheck": "true",
+   "fl": "id,g,a,latestVersion,p,ec,repositoryId,text,timestamp,versionCount",
+   "start": "",
+   "spellcheck.count": "5",
+   "sort": "score desc,timestamp desc,g asc,a asc",
+   "rows": "1",
+   "wt": "json",
+   "version": "2.2"
+  }
+ },
+ "response": {
+  "numFound": 1,
+  "start": 0,
+  "docs": [
+   {
+    "id": "org.apache.commons:commons-lang3",
+    "g": "org.apache.commons",
+    "a": "commons-lang3",
+    "latestVersion": "3.20.0",
+    "repositoryId": "central",
+    "p": "jar",
+    "timestamp": 1762978087000,
+    "versionCount": 26,
+    "text": [
+     "org.apache.commons",
+     "commons-lang3",
+     "-sources.jar",
+     "-cyclonedx.json"
+    ],
+    "ec": [
+     "-sources.jar",
+     "-cyclonedx.json",
+     "-cyclonedx.xml",
+     ".spdx.json"
+    ]
+   }
+  ]
+ },
+ "spellcheck": {
+  "suggestions": []
+ }
+}

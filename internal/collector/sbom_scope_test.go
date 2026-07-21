@@ -10,6 +10,7 @@ package collector
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -187,5 +188,80 @@ func TestVulnScanTargetsCarryScope(t *testing.T) {
 		if tgt.Scope != "" {
 			t.Errorf("runtime dep target scope %q, want '' (StoredScope column convention)", tgt.Scope)
 		}
+	}
+}
+
+// TestMergeDirectTargetRuntimeWinsCollision pins the local-canary
+// catch (2026-07-21, pipenv/setuptools): when the same purl is
+// reachable from a non-runtime AND a runtime declaration, the target
+// scope must fold to runtime (”) regardless of iteration order — a
+// non-runtime first-writer was re-stamping runtime findings off the
+// headline and out of the digest.
+func TestMergeDirectTargetRuntimeWinsCollision(t *testing.T) {
+	m := map[string]vulnScanTarget{}
+	var purls []string
+	buildFirst := vulnScanTarget{Purl: "pkg:pypi/setuptools@67", Scope: model.ScopeBuild}
+	runtimeSecond := vulnScanTarget{Purl: "pkg:pypi/setuptools@67", Scope: ""}
+	purls = mergeDirectTarget(m, purls, buildFirst)
+	purls = mergeDirectTarget(m, purls, runtimeSecond)
+	if len(purls) != 1 {
+		t.Fatalf("collision must not duplicate the purl list, got %d", len(purls))
+	}
+	if got := m["pkg:pypi/setuptools@67"].Scope; got != "" {
+		t.Errorf("runtime declaration must win the scope fold, got %q", got)
+	}
+	// Reverse order: runtime first stays runtime.
+	m2 := map[string]vulnScanTarget{}
+	purls2 := mergeDirectTarget(m2, nil, runtimeSecond)
+	purls2 = mergeDirectTarget(m2, purls2, buildFirst)
+	if len(purls2) != 1 || m2["pkg:pypi/setuptools@67"].Scope != "" {
+		t.Error("runtime-first must stay runtime on later non-runtime collision")
+	}
+	// Two non-runtime declarations keep the first scope (no runtime
+	// evidence — nothing to fold toward).
+	m3 := map[string]vulnScanTarget{}
+	dev := vulnScanTarget{Purl: "pkg:npm/x@1", Scope: model.ScopeDev}
+	test := vulnScanTarget{Purl: "pkg:npm/x@1", Scope: model.ScopeTest}
+	_ = mergeDirectTarget(m3, nil, dev)
+	_ = mergeDirectTarget(m3, nil, test)
+	if got := m3["pkg:npm/x@1"].Scope; got != model.ScopeDev {
+		t.Errorf("non-runtime collision keeps the first scope, got %q", got)
+	}
+}
+
+// TestOSVBatchChunking pins the local-canary catch #3 (2026-07-21):
+// OSV caps querybatch at 1000 queries; react-router's pnpm transitive
+// closure exceeded it and the whole scan 400'd ("too many queries").
+// The miss path must chunk at osvBatchMaxQueries.
+func TestOSVBatchChunking(t *testing.T) {
+	if got := chunkStrings(nil, 1000); got != nil {
+		t.Errorf("empty list must produce no chunks, got %v", got)
+	}
+	small := []string{"a", "b", "c"}
+	if got := chunkStrings(small, 1000); len(got) != 1 || len(got[0]) != 3 {
+		t.Errorf("under-cap list must be one chunk, got %v", got)
+	}
+	big := make([]string, 2500)
+	for i := range big {
+		big[i] = fmt.Sprintf("pkg:npm/p%d@1", i)
+	}
+	chunks := chunkStrings(big, 1000)
+	if len(chunks) != 3 {
+		t.Fatalf("2500 purls at cap 1000 must be 3 chunks, got %d", len(chunks))
+	}
+	if len(chunks[0]) != 1000 || len(chunks[1]) != 1000 || len(chunks[2]) != 500 {
+		t.Errorf("chunk sizes wrong: %d/%d/%d", len(chunks[0]), len(chunks[1]), len(chunks[2]))
+	}
+	// Order preserved end-to-end (results map back positionally).
+	if chunks[2][499] != "pkg:npm/p2499@1" {
+		t.Errorf("chunking must preserve order, last = %s", chunks[2][499])
+	}
+	// The scan's miss path must actually use the cap.
+	src, err := os.ReadFile("vulnerability.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "chunkStrings(missPurls, osvBatchMaxQueries)") {
+		t.Error("ScanVulnerabilities' miss path must chunk at osvBatchMaxQueries — OSV 400s beyond 1000 queries per batch")
 	}
 }

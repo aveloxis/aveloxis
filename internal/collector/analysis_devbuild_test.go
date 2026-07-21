@@ -346,3 +346,24 @@ func indexFrom(s, sub string, from int) int {
 func containsGuard(s string) bool {
 	return strings.Contains(s, "ac.DevBuildDeps")
 }
+
+// TestRequirementsExtrasStripped pins the local-canary catch
+// (2026-07-21): PEP 508 extras must never survive into the dep name —
+// anyio[trio] 404s every registry and matches no OSV purl.
+func TestRequirementsExtrasStripped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "requirements.txt")
+	if err := os.WriteFile(path, []byte("anyio[trio]==4.0.0\nhttpx[http2,brotli]>=0.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps := parseRequirementsTxtVersions(path)
+	if len(deps) != 2 {
+		t.Fatalf("want 2 deps, got %d", len(deps))
+	}
+	if deps[0].Name != "anyio" || deps[0].Version != "4.0.0" {
+		t.Errorf("extras must strip: got name=%q version=%q, want anyio 4.0.0", deps[0].Name, deps[0].Version)
+	}
+	if deps[1].Name != "httpx" {
+		t.Errorf("multi-extras must strip: got %q, want httpx", deps[1].Name)
+	}
+}

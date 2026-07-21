@@ -1444,6 +1444,15 @@ func parseRequirementsTxtVersions(path string) []libyearDep {
 				break
 			}
 		}
+		// Strip PEP 508 extras from the name (anyio[trio] → anyio) —
+		// the local-canary catch, 2026-07-21: extras-suffixed names
+		// produced 404ing registry URLs and unmatchable purls, so
+		// those deps silently got no libyear and no OSV coverage.
+		if idx := strings.Index(name, "["); idx > 0 {
+			if end := strings.Index(name, "]"); end > idx {
+				name = strings.TrimSpace(name[:idx] + name[end+1:])
+			}
+		}
 		if name != "" {
 			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "pypi"})
 		}

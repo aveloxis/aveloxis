@@ -585,6 +585,12 @@ PID files are written to `~/.aveloxis/aveloxis-{serve,web,api}.pid`. If a compon
 
 Log files are opened in append mode — existing content is preserved across restarts.
 
+Note: `start` does NOT survive a reboot. For production hosts that should
+come back automatically after a restart, run the three processes under
+systemd instead — see [Running Aveloxis as a Service](running-as-a-service.md).
+Pick one manager per host: once the systemd units own the processes,
+`aveloxis start`/`stop` must not be used there.
+
 ---
 
 ## `aveloxis stop`

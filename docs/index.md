@@ -38,6 +38,7 @@ guide/api
 guide/visualizations
 guide/collection-pipeline
 guide/monitoring
+guide/running-as-a-service
 guide/dedicated-scancode-host
 guide/ci-cd
 guide/data-test

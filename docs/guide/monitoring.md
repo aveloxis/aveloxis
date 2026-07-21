@@ -184,31 +184,14 @@ Or redirect:
 aveloxis serve --monitor :5555 > aveloxis.log 2>&1 &
 ```
 
-For production deployments, consider using a process manager like `systemd` that captures output automatically:
-
-```ini
-# /etc/systemd/system/aveloxis.service
-[Unit]
-Description=Aveloxis Collection Service
-After=postgresql.service
-
-[Service]
-Type=simple
-User=aveloxis
-WorkingDirectory=/opt/aveloxis
-ExecStart=/usr/local/bin/aveloxis serve --workers 4 --monitor :5555
-ExecStop=/usr/local/bin/aveloxis stop
-Restart=on-failure
-RestartSec=30
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Logs can then be viewed with:
+For production deployments, run all three processes under systemd — units,
+boot persistence, the graceful-shutdown prerequisite (v0.27.25+), and the
+PATH gotcha for the external tools are covered in
+[Running Aveloxis as a Service](running-as-a-service.md). Under systemd,
+logs go to the journal:
 
 ```bash
-journalctl -u aveloxis -f
+journalctl -u aveloxis@serve -f
 ```
 
 ---

@@ -40,11 +40,20 @@ const (
 	ClassSkip
 
 	// ClassTransient is a temporary failure: 5xx, connection reset, DNS
-	// blip, context cancellation. httpclient.Get's internal retry loop
-	// absorbs most of these — callers only see them when the retry budget
-	// was exhausted, or when the context itself was cancelled (scheduler
-	// shutdown, stale-lock recovery). Mapping to Transient rather than
-	// Fatal keeps shutdown logs free of spurious ERROR lines.
+	// blip, request deadline. httpclient.Get's internal retry loop
+	// absorbs most of these — callers only see them when the retry
+	// budget was exhausted.
+	//
+	// Context CANCELLATION is deliberately NOT in this class as of
+	// v0.27.28 — see ClassCanceled. The original phase-0 mapping of
+	// cancellation to Transient existed "to keep shutdown logs free of
+	// spurious ERROR lines", which was harmless until v0.20.8's batch
+	// subdivision and v0.20.20's REST fallback started keying RETRY
+	// behavior off this class: once v0.27.25 made `aveloxis stop`
+	// actually cancel contexts, every shutdown triggered subdivision
+	// cascades (10→5→2→1) and doomed size-1 REST fallbacks against a
+	// dead context — 85 of each in one minute in the 2026-07-21
+	// production log.
 	ClassTransient
 
 	// ClassRateLimit is a rate-limit signal. Like ClassTransient, these are
@@ -59,6 +68,18 @@ const (
 	// jobs and stop" since no amount of retry will help without operator
 	// intervention (new/refreshed tokens).
 	ClassAuth
+
+	// ClassCanceled (v0.27.28) means the CONTEXT was cancelled — the
+	// operator (or a parent scope) asked this work to stop. It is a
+	// terminal condition, never a failure of the remote: NEVER retry,
+	// NEVER subdivide, NEVER fall back to another protocol — every
+	// follow-up call inherits the same dead context and fails
+	// instantly. Callers should treat it like Fatal for control flow
+	// but log it quietly (Info/Debug): "we were told to stop" is not
+	// an error. context.DeadlineExceeded is deliberately EXCLUDED —
+	// a timed-out request is legitimately retryable (Transient); a
+	// cancelled one never is.
+	ClassCanceled
 
 	// ClassFatal is the safe default for any error the classifier doesn't
 	// recognize: JSON parse failures, database errors, unknown 4xx status
@@ -82,6 +103,8 @@ func (c ErrorClass) String() string {
 		return "rate-limit"
 	case ClassAuth:
 		return "auth"
+	case ClassCanceled:
+		return "canceled"
 	case ClassFatal:
 		return "fatal"
 	default:
@@ -143,7 +166,14 @@ func ClassifyError(err error) ErrorClass {
 		return ce.Class()
 	}
 
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	// v0.27.28: cancellation and deadline diverge on purpose. A
+	// cancelled context is terminal (ClassCanceled — no retry, no
+	// subdivision, no fallback; the 2026-07-21 shutdown cascade). A
+	// deadline-exceeded request timed out and is retry-worthy.
+	if errors.Is(err, context.Canceled) {
+		return ClassCanceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
 		return ClassTransient
 	}
 

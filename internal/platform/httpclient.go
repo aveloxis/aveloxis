@@ -294,6 +294,16 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 
 		resp, err := c.inner.Do(req)
 		if err != nil {
+			// v0.27.28: a cancelled context is not a retryable failure —
+			// bail BEFORE the "retrying" WARN. Pre-fix, every request
+			// in flight at `aveloxis stop` logged a retry it would
+			// never make (87 misleading WARNs in one minute of the
+			// 2026-07-21 shutdown). Debug, not Warn: "we were told to
+			// stop" is not an error.
+			if ctx.Err() != nil {
+				c.logger.Debug("HTTP request aborted by context cancellation", "url", url)
+				return nil, ctx.Err()
+			}
 			c.logger.Warn("HTTP request failed, retrying",
 				"url", url, "attempt", attempt+1, "error", err)
 			// Context-aware sleep: a cancelled job wakes immediately

@@ -24,6 +24,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -1134,7 +1135,16 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 		if err := p.store.ProcessStaged(ctx, repoID, entityType, processBatchSize, func(rows []db.StagedRow) error {
 			return p.processBatch(ctx, repoID, platID, entityType, rows)
 		}); err != nil {
-			p.logger.Error("failed to process entity type", "type", entityType, "error", err)
+			// v0.27.28: cancellation is the shutdown asking us to stop
+			// mid-flush — expected, resumable (staging rows stay
+			// unprocessed and drain on restart), and not an ERROR.
+			// These two lines were the only ERROR-level entries in the
+			// 2026-07-21 shutdown's 600-line noise burst.
+			if errors.Is(err, context.Canceled) {
+				p.logger.Info("entity processing aborted by shutdown", "type", entityType)
+			} else {
+				p.logger.Error("failed to process entity type", "type", entityType, "error", err)
+			}
 			return err
 		}
 	}

@@ -77,10 +77,11 @@ func TestRepoNameGitCleanupMigrationPresent(t *testing.T) {
 			"pre-existing rows keep producing 404s on API collection")
 	}
 
-	// Must be wired into RunMigrations.
-	runIdx := strings.Index(code, "func RunMigrations(")
+	// Must be wired into the migration flow. v0.27.42: RunMigrations
+	// is a stage driver; the call lives in migrateStage4DedupAndIndexes.
+	runIdx := strings.Index(code, "func migrateStage4DedupAndIndexes(")
 	if runIdx < 0 {
-		t.Fatal("cannot find RunMigrations")
+		t.Fatal("cannot find migrateStage4DedupAndIndexes")
 	}
 	runBody := code[runIdx:]
 	end := strings.Index(runBody, "\n}\n")

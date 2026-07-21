@@ -16,7 +16,7 @@ import (
 // them in different orders and deadlock (40P01). A revert to `range merged`
 // for the insert loop reintroduces the deadlock storm on aveloxis_large.
 func TestUpsertContributorBatchSortsForDeterministicLockOrder(t *testing.T) {
-	body := extractFunctionBody(t, "postgres.go", "UpsertContributorBatch")
+	body := extractContributorBatchBodies(t)
 
 	if !strings.Contains(body, "sort.Strings(logins)") {
 		t.Error("UpsertContributorBatch must sort logins before the insert loop so concurrent workers acquire contributor locks in the same order (deadlock avoidance)")

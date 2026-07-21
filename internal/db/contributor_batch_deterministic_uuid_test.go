@@ -53,7 +53,10 @@ func TestUpsertContributorBatchSuppliesDeterministicCntrbID(t *testing.T) {
 
 	// Extract the UpsertContributorBatch function body so we don't
 	// false-match unrelated INSERTs elsewhere in the file.
-	startMarker := "func (s *PostgresStore) UpsertContributorBatch("
+	// v0.27.42: the per-contributor INSERT machinery lives in the
+	// extracted upsertOneContributor (summary/18 Phase 4) — the
+	// contracts pinned here moved with it.
+	startMarker := "func (s *PostgresStore) upsertOneContributor("
 	startIdx := strings.Index(code, startMarker)
 	if startIdx < 0 {
 		t.Fatalf("could not find UpsertContributorBatch in postgres.go")
@@ -114,9 +117,10 @@ func TestUpsertContributorBatchPreservesExistingCntrbIDOnConflict(t *testing.T) 
 		t.Fatal(err)
 	}
 	code := string(src)
-	startIdx := strings.Index(code, "func (s *PostgresStore) UpsertContributorBatch(")
+	// v0.27.42: the INSERT + DO UPDATE moved to upsertOneContributor.
+	startIdx := strings.Index(code, "func (s *PostgresStore) upsertOneContributor(")
 	if startIdx < 0 {
-		t.Fatal("UpsertContributorBatch not found")
+		t.Fatal("upsertOneContributor not found")
 	}
 	body := code[startIdx:]
 	if endIdx := strings.Index(body[1:], "\nfunc "); endIdx > 0 {

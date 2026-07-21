@@ -142,7 +142,7 @@ func TestMigrateAddsDistributionColumns(t *testing.T) {
 		"distribution_last_failed_at":  "TIMESTAMPTZ",
 	}
 	for col, typ := range columnTypes {
-		needle := `addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "` + col + `", "` + typ + `"`
+		needle := `addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "` + col + `", "` + typ + `"`
 		if !strings.Contains(src, needle) {
 			t.Errorf("migrate.go must call addColumnIfMissing for aveloxis_data.repos.%s (%s). Operators upgrading from <v0.24.0 need the column added automatically; missing it breaks DistributionWorker startup", col, typ)
 		}

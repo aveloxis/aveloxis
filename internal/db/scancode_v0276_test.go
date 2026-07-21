@@ -72,7 +72,7 @@ func TestMigrateAddsV0276ScancodeColumns(t *testing.T) {
 		"scancode_locked_host": "TEXT",
 		"scancode_skip_reason": "TEXT DEFAULT ''",
 	} {
-		needle := `addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "` + col + `", "` + typ + `"`
+		needle := `addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "` + col + `", "` + typ + `"`
 		if !strings.Contains(src, needle) {
 			t.Errorf("migrate.go must add aveloxis_data.repos.%s (%s) for upgrading fleets", col, typ)
 		}

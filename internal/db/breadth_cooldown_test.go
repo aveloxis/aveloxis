@@ -39,7 +39,7 @@ func TestMigrateAddsCntrbLastBreadthAtColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	needle := `addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "cntrb_last_breadth_at"`
+	needle := `addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "cntrb_last_breadth_at"`
 	if !strings.Contains(string(data), needle) {
 		t.Errorf("migrate.go must call addColumnIfMissing for aveloxis_data.contributors.cntrb_last_breadth_at — operators upgrading from <v0.20.17 need the column added automatically")
 	}

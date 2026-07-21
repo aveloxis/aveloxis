@@ -63,7 +63,7 @@ func TestMsgKindMigrationWiredAndOrdered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(mig), "migrateMessageKinds(ctx, pg, logger, &errs)") {
+	if !strings.Contains(string(mig), "migrateMessageKinds(ctx, pg, logger, errs)") {
 		t.Fatal("RunMigrations must invoke migrateMessageKinds")
 	}
 	src, err := os.ReadFile("msg_kind_migration.go")

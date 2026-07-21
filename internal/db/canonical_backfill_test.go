@@ -28,7 +28,7 @@ func TestUpsertContributorBatchUpdatesCanonical(t *testing.T) {
 	}
 	src := string(data)
 
-	fnIdx := strings.Index(src, "func (s *PostgresStore) UpsertContributorBatch(")
+	fnIdx := strings.Index(src, "func (s *PostgresStore) upsertOneContributor(")
 	if fnIdx < 0 {
 		t.Fatal("cannot find UpsertContributorBatch")
 	}

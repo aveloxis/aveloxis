@@ -90,8 +90,14 @@ func TestOAuthFlowCarriesNext(t *testing.T) {
 	if strings.Count(s, "s.stashNext(w, r)") < 2 {
 		t.Error("both handleGitHubAuth and handleGitLabAuth must stash the ?next= destination")
 	}
-	if strings.Count(s, "s.postLoginRedirect(r)") < 2 {
-		t.Error("both OAuth callbacks must resolve their redirect via postLoginRedirect")
+	// v0.27.42: both callbacks route through completeOAuthLogin, the
+	// single home of the postLoginRedirect call — one call site + two
+	// handoffs is the deduplicated equivalent of the old two-site pin.
+	if strings.Count(s, "s.postLoginRedirect(r)") < 1 {
+		t.Error("completeOAuthLogin must resolve the redirect via postLoginRedirect")
+	}
+	if strings.Count(s, "s.completeOAuthLogin(w, r,") < 2 {
+		t.Error("both OAuth callbacks must hand off to completeOAuthLogin")
 	}
 }
 

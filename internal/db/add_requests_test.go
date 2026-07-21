@@ -95,7 +95,7 @@ func TestMigrationConvertsLegacyPendingGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(mig), "migrateLegacyPendingGroups(ctx, pg, logger, &errs)") {
+	if !strings.Contains(string(mig), "migrateLegacyPendingGroups(ctx, pg, logger, errs)") {
 		t.Error("RunMigrations must invoke migrateLegacyPendingGroups")
 	}
 	// Free function (not a PostgresStore method) — extract manually.

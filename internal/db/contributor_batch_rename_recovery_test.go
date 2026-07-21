@@ -38,7 +38,7 @@ import (
 // brackets each contributor in SAVEPOINT/RELEASE so a single failure
 // does not poison the rest of the batch.
 func TestUpsertContributorBatchUsesSavepoint(t *testing.T) {
-	body := extractFunctionBody(t, "postgres.go", "UpsertContributorBatch")
+	body := extractContributorBatchBodies(t)
 
 	if !strings.Contains(body, "SAVEPOINT") {
 		t.Error("UpsertContributorBatch must use SAVEPOINT to isolate per-contributor " +
@@ -68,7 +68,7 @@ func TestUpsertContributorBatchUsesSavepoint(t *testing.T) {
 //   - desiredCntrbID was non-NULL (we computed a deterministic UUID
 //     from gh_user_id, so the colliding row IS the same person)
 func TestUpsertContributorBatchRecoversFromPkeyRenameCollision(t *testing.T) {
-	body := extractFunctionBody(t, "postgres.go", "UpsertContributorBatch")
+	body := extractContributorBatchBodies(t)
 
 	if !strings.Contains(body, "pgconn.PgError") {
 		t.Error("UpsertContributorBatch must inspect the typed pgconn.PgError to distinguish " +
@@ -127,7 +127,7 @@ func TestUpsertContributorBatchRecoversFromPkeyRenameCollision(t *testing.T) {
 // cntrb_login is the durable audit trail of the original observation
 // and MUST NOT be updated on rename. Only gh_login changes.
 func TestUpsertContributorBatchRenameRecoveryPreservesCntrbLogin(t *testing.T) {
-	body := extractFunctionBody(t, "postgres.go", "UpsertContributorBatch")
+	body := extractContributorBatchBodies(t)
 
 	// Find the rename-recovery UPDATE block specifically. It's
 	// distinguished from the gh_*/gl_* backfill UPDATE by also
@@ -167,7 +167,7 @@ func TestUpsertContributorBatchRenameRecoveryPreservesCntrbLogin(t *testing.T) {
 // unique constraint is violated in some corner case the ON CONFLICT
 // doesn't catch) doesn't poison the rest of the batch either.
 func TestUpsertContributorBatchSavepointsPerIdentity(t *testing.T) {
-	body := extractFunctionBody(t, "postgres.go", "UpsertContributorBatch")
+	body := extractContributorBatchBodies(t)
 
 	// Find the identity insert loop. It's the for-range over the
 	// identity slice that calls contributor_identities INSERT.

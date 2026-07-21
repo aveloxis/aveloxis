@@ -375,253 +375,9 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			}
 		}
 
-		switch {
-		case resp.StatusCode == http.StatusOK:
-			return resp, nil
-		case resp.StatusCode == http.StatusNoContent:
-			// 204: legitimate "empty result" response. GitHub returns
-			// 204 for /contributors on empty or 5000+-contributor
-			// repos. Pre-v0.20.6 this fell into the default retry arm
-			// and burned the full 10-retry budget per call. Return
-			// ErrNoContent so the pagination engine completes the
-			// iteration with zero items.
-			resp.Body.Close()
-			return nil, ErrNoContent
-		case resp.StatusCode == http.StatusNotModified:
-			// 304: data hasn't changed since our last request.
-			// This does NOT count against GitHub's rate limit.
-			resp.Body.Close()
-			return nil, ErrNotModified
-		case resp.StatusCode == http.StatusNotFound:
-			resp.Body.Close()
-			return nil, fmt.Errorf("%w: %s", ErrNotFound, url)
-		case resp.StatusCode == http.StatusGone:
-			// 410 — the resource existed but was deliberately removed (e.g.,
-			// a deleted GitHub issue). Never retryable; distinct from 404 so
-			// callers can tell "never existed / can't see it" apart from
-			// "existed and was deleted". isOptionalEndpointSkip treats
-			// ErrGone like ErrNotFound so the containing job continues.
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			c.logger.Warn("resource is gone (410)",
-				"url", url, "body_snippet", truncateBody(string(body), 200))
-			return nil, fmt.Errorf("%w: %s", ErrGone, url)
-		case resp.StatusCode == http.StatusMovedPermanently ||
-			resp.StatusCode == http.StatusFound ||
-			resp.StatusCode == http.StatusTemporaryRedirect ||
-			resp.StatusCode == http.StatusPermanentRedirect:
-			// 301/302/307/308 — follow the Location header. GitHub uses 301
-			// for permanent repo rename/transfer (the prelim phase updates
-			// repo_git separately via resolveRedirects); 302/307 for
-			// temporary redirects; 308 is the strict permanent variant. In
-			// all cases the contract is: re-issue the request against the
-			// URL in the Location header.
-			location := resp.Header.Get("Location")
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if location == "" {
-				// GitHub returns 3xx with no Location when it cannot determine
-				// the target (observed for individual issues that were moved
-				// during a rename where the issue numbering doesn't line up).
-				// The body often contains {"message":"Moved Permanently","url":""}.
-				// Nothing useful to retry — surface as ErrGone so callers skip.
-				c.logger.Warn("redirect with empty Location header — treating as gone",
-					"url", url, "status", resp.StatusCode,
-					"body_snippet", truncateBody(string(body), 200))
-				return nil, fmt.Errorf("%w: %s (redirect with empty Location)", ErrGone, url)
-			}
-			if redirectHops >= maxRedirectHops {
-				c.logger.Warn("redirect hop cap exceeded — treating as gone",
-					"url", url, "status", resp.StatusCode,
-					"location", location, "hops", redirectHops)
-				return nil, fmt.Errorf("%w: %s (redirect loop or chain longer than %d)",
-					ErrGone, url, maxRedirectHops)
-			}
-			redirectHops++
-			// Resolve relative Location (most GitHub Location headers are
-			// absolute, but RFC 7231 permits relative).
-			newURL := location
-			if !strings.HasPrefix(newURL, "http://") && !strings.HasPrefix(newURL, "https://") {
-				newURL = c.baseURL + location
-			}
-			c.logger.Info("following redirect",
-				"from", url, "to", newURL,
-				"status", resp.StatusCode, "hop", redirectHops)
-
-			// Notify the permanent-redirect hook on 301/308 only. 302/307
-			// are temporary and must not mutate durable state.
-			if resp.StatusCode == http.StatusMovedPermanently ||
-				resp.StatusCode == http.StatusPermanentRedirect {
-				c.redirectMu.RLock()
-				hook := c.onPermanentRedirect
-				c.redirectMu.RUnlock()
-				if hook != nil {
-					hook(url, newURL)
-				}
-			}
-
-			url = newURL
-			// Do not count this iteration against the retry budget — a
-			// redirect is not a retry. Decrement attempt so the outer
-			// `for attempt := range maxRetries` loop gives us a fresh slot.
-			// (range-int loops don't let us modify the iterator; instead we
-			// just `continue` and accept at most maxRetries hops total,
-			// which is fine because maxRedirectHops=5 < maxRetries=10.)
-			continue
-		case resp.StatusCode == http.StatusUnauthorized:
-			// 401 = bad credentials — but GitHub's auth backend returns this
-			// transiently for valid tokens during incidents, so a single 401
-			// must NOT kill the key. RecordAuthFailure quarantines only after
-			// several consecutive failures (any success resets the count), and
-			// even then the key auto-recovers after a cooldown. Either way we
-			// just rotate to the next key on the next loop iteration.
-			resp.Body.Close()
-			c.keys.RecordAuthFailure(key)
-			continue
-		case resp.StatusCode == http.StatusBadRequest:
-			// 400 = malformed request. GitHub returns HTML "Whoa there!" for
-			// invalid queries (e.g., bad search syntax). Not retryable.
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			c.logger.Warn("bad request (not retrying)",
-				"url", url, "status", 400, "body_snippet", truncateBody(string(body), 200))
-			return nil, fmt.Errorf("bad request: %s", url)
-		case resp.StatusCode == http.StatusUnprocessableEntity:
-			// 422 = validation failed. Not retryable for the same
-			// request shape. v0.20.19 (Fix K) carves out one
-			// subtype: GitHub's hard pagination cap (~1000
-			// results on /releases and similar) returns 422 with
-			// a body containing "Only the first 1000 are
-			// available" or "Only the first 1000 results are
-			// available." That's end-of-data, not a fatal
-			// validation problem — the paginator should stop
-			// cleanly via the ClassSkip path.
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			bodyStr := string(body)
-			if strings.Contains(bodyStr, "Only the first 1000") {
-				c.logger.Info("pagination limit reached (GitHub serves at most 1000 results)",
-					"url", url, "body_snippet", truncateBody(bodyStr, 200))
-				return nil, fmt.Errorf("%w: %s", ErrPaginationLimitExceeded, url)
-			}
-			c.logger.Warn("unprocessable entity (not retrying)",
-				"url", url, "status", 422, "body_snippet", truncateBody(bodyStr, 200))
-			return nil, fmt.Errorf("unprocessable entity: %s", url)
-		case resp.StatusCode == http.StatusForbidden:
-			// 403 can mean rate limit, secondary rate limit, or resource not
-			// accessible. Header signals are authoritative — they carry the
-			// reset timing that retry-after plumbing relies on, so they are
-			// always consulted first. Body inspection is the fallback net
-			// for cases where a proxy strips the headers, GitHub's response
-			// shape changes, or an unauthenticated request leaks through
-			// (the "for <IP>" body shape).
-			if resp.Header.Get("Retry-After") != "" {
-				resp.Body.Close()
-				wait := parseRetryAfter(resp)
-				c.logger.Info("secondary rate limit", "url", url, "wait", wait)
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(wait):
-				}
-				continue
-			}
-			if resp.Header.Get("X-RateLimit-Remaining") == "0" {
-				resp.Body.Close()
-				resource := resp.Header.Get("X-RateLimit-Resource")
-				if resource == "" {
-					resource = "core"
-				}
-				resetStr := resp.Header.Get("X-RateLimit-Reset")
-				c.logger.Info("rate limit exhausted",
-					"url", url, "resource", resource, "reset", resetStr)
-				continue
-			}
-			// Headers said nothing definitive. Read the body and check whether
-			// the message text reveals a rate limit anyway.
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if isAnonymousRateLimitBody(body) {
-				// Unauthenticated request reached us. Every code path that
-				// builds an HTTPClient call goes through GetKey() — getting
-				// this body shape means a key was unset, the wrong client
-				// was used, or a proxy stripped the Authorization header.
-				// Log at ERROR so on-call sees the regression, then back off
-				// like a regular rate limit so we don't hot-loop on the bug.
-				c.logger.Error("403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
-					"url", url,
-					"body_snippet", truncateBody(string(body), 240))
-				wait := jitteredBackoff(attempt)
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(wait):
-				}
-				continue
-			}
-			if isRateLimitBody(body) {
-				c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
-					"url", url,
-					"body_snippet", truncateBody(string(body), 240))
-				wait := jitteredBackoff(attempt)
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(wait):
-				}
-				continue
-			}
-			// 403 for other reasons (private repo, no permission) — not a key problem.
-			return nil, fmt.Errorf("%w: %s (not a rate limit — may be a private repo or insufficient scope)", ErrForbidden, url)
-		case resp.StatusCode == http.StatusTooManyRequests:
-			resp.Body.Close()
-			wait := parseRetryAfter(resp)
-			c.logger.Info("rate limited", "url", url, "wait", wait)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(wait):
-			}
-			continue
-		case resp.StatusCode == http.StatusInternalServerError ||
-			resp.StatusCode == http.StatusBadGateway ||
-			resp.StatusCode == http.StatusServiceUnavailable ||
-			resp.StatusCode == http.StatusGatewayTimeout:
-			// 500/502/503/504 — server/gateway error. These are transient.
-			// 500 was added to this branch in v0.22.12 after a 2026-05-18
-			// production incident where GitHub returned 500 with empty
-			// body (upstream proxy hiccup) on ~1,400 /users/<login>/events
-			// requests. Previously 500 fell into the default arm with
-			// linear backoff and the generic "unexpected status" log line,
-			// making the incident look like an uncategorized error rather
-			// than a transient 5xx.
-			resp.Body.Close()
-			// v0.27.34: feed the fleet-level API-outage breaker — a hard
-			// outage (consecutive 5xx with no success anywhere) pauses
-			// new collection claims scheduler-side.
-			c.keys.NoteServerError()
-			backoff := time.Duration(1<<min(attempt, 6)) * time.Second // 1s, 2s, 4s, 8s, 16s, 32s, 64s
-			jitter := time.Duration(rand.IntN(int(backoff/2) + 1))
-			wait := backoff + jitter
-			c.logger.Warn("server error, retrying with backoff",
-				"url", url, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(wait):
-			}
-			continue
-		default:
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			c.logger.Warn("unexpected status",
-				"url", url, "status", resp.StatusCode, "body_snippet", truncateBody(string(body), 200), "attempt", attempt+1)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
-			}
-			continue
+		verdict, out, err := c.handleResponse(ctx, resp, &url, path, attempt, &redirectHops, key)
+		if verdict == respDone {
+			return out, err
 		}
 	}
 
@@ -631,6 +387,279 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 	// decisions (e.g. fetchPRBatchWithSubdivide subdivides
 	// the batch on transient classifications).
 	return nil, fmt.Errorf("exhausted %d retries for %s: %w", maxRetries, url, ErrTransient)
+}
+
+// respAction is handleResponse's verdict for one attempt.
+type respAction int
+
+const (
+	// respDone: Get returns (resp, err) as-is.
+	respDone respAction = iota
+	// respRetry: continue the attempt loop (backoff sleeps, key
+	// rotation, and redirect URL rewrites have already happened
+	// inside handleResponse).
+	respRetry
+)
+
+// handleResponse classifies one HTTP response and performs the arm's
+// side effects (body drain/close, backoff sleeps, key bookkeeping,
+// redirect URL rewrite via urlp, redirect-hop accounting via hopsp).
+// Extracted verbatim from the former 351-line Get (v0.27.42,
+// summary/18 Phase 4); behavior identical — the case arms below are
+// the accumulated production knowledge of five versions of retry
+// hardening and every line is load-bearing.
+func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, urlp *string, path string, attempt int, hopsp *int, key *APIKey) (respAction, *http.Response, error) {
+	url := *urlp
+	_ = url
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return respDone, resp, nil
+	case resp.StatusCode == http.StatusNoContent:
+		// 204: legitimate "empty result" response. GitHub returns
+		// 204 for /contributors on empty or 5000+-contributor
+		// repos. Pre-v0.20.6 this fell into the default retry arm
+		// and burned the full 10-retry budget per call. Return
+		// ErrNoContent so the pagination engine completes the
+		// iteration with zero items.
+		resp.Body.Close()
+		return respDone, nil, ErrNoContent
+	case resp.StatusCode == http.StatusNotModified:
+		// 304: data hasn't changed since our last request.
+		// This does NOT count against GitHub's rate limit.
+		resp.Body.Close()
+		return respDone, nil, ErrNotModified
+	case resp.StatusCode == http.StatusNotFound:
+		resp.Body.Close()
+		return respDone, nil, fmt.Errorf("%w: %s", ErrNotFound, url)
+	case resp.StatusCode == http.StatusGone:
+		// 410 — the resource existed but was deliberately removed (e.g.,
+		// a deleted GitHub issue). Never retryable; distinct from 404 so
+		// callers can tell "never existed / can't see it" apart from
+		// "existed and was deleted". isOptionalEndpointSkip treats
+		// ErrGone like ErrNotFound so the containing job continues.
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		c.logger.Warn("resource is gone (410)",
+			"url", url, "body_snippet", truncateBody(string(body), 200))
+		return respDone, nil, fmt.Errorf("%w: %s", ErrGone, url)
+	case resp.StatusCode == http.StatusMovedPermanently ||
+		resp.StatusCode == http.StatusFound ||
+		resp.StatusCode == http.StatusTemporaryRedirect ||
+		resp.StatusCode == http.StatusPermanentRedirect:
+		// 301/302/307/308 — follow the Location header. GitHub uses 301
+		// for permanent repo rename/transfer (the prelim phase updates
+		// repo_git separately via resolveRedirects); 302/307 for
+		// temporary redirects; 308 is the strict permanent variant. In
+		// all cases the contract is: re-issue the request against the
+		// URL in the Location header.
+		location := resp.Header.Get("Location")
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if location == "" {
+			// GitHub returns 3xx with no Location when it cannot determine
+			// the target (observed for individual issues that were moved
+			// during a rename where the issue numbering doesn't line up).
+			// The body often contains {"message":"Moved Permanently","url":""}.
+			// Nothing useful to retry — surface as ErrGone so callers skip.
+			c.logger.Warn("redirect with empty Location header — treating as gone",
+				"url", url, "status", resp.StatusCode,
+				"body_snippet", truncateBody(string(body), 200))
+			return respDone, nil, fmt.Errorf("%w: %s (redirect with empty Location)", ErrGone, url)
+		}
+		if *hopsp >= maxRedirectHops {
+			c.logger.Warn("redirect hop cap exceeded — treating as gone",
+				"url", url, "status", resp.StatusCode,
+				"location", location, "hops", *hopsp)
+			return respDone, nil, fmt.Errorf("%w: %s (redirect loop or chain longer than %d)",
+				ErrGone, url, maxRedirectHops)
+		}
+		*hopsp++
+		// Resolve relative Location (most GitHub Location headers are
+		// absolute, but RFC 7231 permits relative).
+		newURL := location
+		if !strings.HasPrefix(newURL, "http://") && !strings.HasPrefix(newURL, "https://") {
+			newURL = c.baseURL + location
+		}
+		c.logger.Info("following redirect",
+			"from", url, "to", newURL,
+			"status", resp.StatusCode, "hop", *hopsp)
+
+		// Notify the permanent-redirect hook on 301/308 only. 302/307
+		// are temporary and must not mutate durable state.
+		if resp.StatusCode == http.StatusMovedPermanently ||
+			resp.StatusCode == http.StatusPermanentRedirect {
+			c.redirectMu.RLock()
+			hook := c.onPermanentRedirect
+			c.redirectMu.RUnlock()
+			if hook != nil {
+				hook(url, newURL)
+			}
+		}
+
+		url = newURL
+		*urlp = url
+		// Do not count this iteration against the retry budget — a
+		// redirect is not a retry. Decrement attempt so the outer
+		// `for attempt := range maxRetries` loop gives us a fresh slot.
+		// (range-int loops don't let us modify the iterator; instead we
+		// just `continue` and accept at most maxRetries hops total,
+		// which is fine because maxRedirectHops=5 < maxRetries=10.)
+		return respRetry, nil, nil
+	case resp.StatusCode == http.StatusUnauthorized:
+		// 401 = bad credentials — but GitHub's auth backend returns this
+		// transiently for valid tokens during incidents, so a single 401
+		// must NOT kill the key. RecordAuthFailure quarantines only after
+		// several consecutive failures (any success resets the count), and
+		// even then the key auto-recovers after a cooldown. Either way we
+		// just rotate to the next key on the next loop iteration.
+		resp.Body.Close()
+		c.keys.RecordAuthFailure(key)
+		return respRetry, nil, nil
+	case resp.StatusCode == http.StatusBadRequest:
+		// 400 = malformed request. GitHub returns HTML "Whoa there!" for
+		// invalid queries (e.g., bad search syntax). Not retryable.
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		c.logger.Warn("bad request (not retrying)",
+			"url", url, "status", 400, "body_snippet", truncateBody(string(body), 200))
+		return respDone, nil, fmt.Errorf("bad request: %s", url)
+	case resp.StatusCode == http.StatusUnprocessableEntity:
+		// 422 = validation failed. Not retryable for the same
+		// request shape. v0.20.19 (Fix K) carves out one
+		// subtype: GitHub's hard pagination cap (~1000
+		// results on /releases and similar) returns 422 with
+		// a body containing "Only the first 1000 are
+		// available" or "Only the first 1000 results are
+		// available." That's end-of-data, not a fatal
+		// validation problem — the paginator should stop
+		// cleanly via the ClassSkip path.
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		bodyStr := string(body)
+		if strings.Contains(bodyStr, "Only the first 1000") {
+			c.logger.Info("pagination limit reached (GitHub serves at most 1000 results)",
+				"url", url, "body_snippet", truncateBody(bodyStr, 200))
+			return respDone, nil, fmt.Errorf("%w: %s", ErrPaginationLimitExceeded, url)
+		}
+		c.logger.Warn("unprocessable entity (not retrying)",
+			"url", url, "status", 422, "body_snippet", truncateBody(bodyStr, 200))
+		return respDone, nil, fmt.Errorf("unprocessable entity: %s", url)
+	case resp.StatusCode == http.StatusForbidden:
+		// 403 can mean rate limit, secondary rate limit, or resource not
+		// accessible. Header signals are authoritative — they carry the
+		// reset timing that retry-after plumbing relies on, so they are
+		// always consulted first. Body inspection is the fallback net
+		// for cases where a proxy strips the headers, GitHub's response
+		// shape changes, or an unauthenticated request leaks through
+		// (the "for <IP>" body shape).
+		if resp.Header.Get("Retry-After") != "" {
+			resp.Body.Close()
+			wait := parseRetryAfter(resp)
+			c.logger.Info("secondary rate limit", "url", url, "wait", wait)
+			select {
+			case <-ctx.Done():
+				return respDone, nil, ctx.Err()
+			case <-time.After(wait):
+			}
+			return respRetry, nil, nil
+		}
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			resp.Body.Close()
+			resource := resp.Header.Get("X-RateLimit-Resource")
+			if resource == "" {
+				resource = "core"
+			}
+			resetStr := resp.Header.Get("X-RateLimit-Reset")
+			c.logger.Info("rate limit exhausted",
+				"url", url, "resource", resource, "reset", resetStr)
+			return respRetry, nil, nil
+		}
+		// Headers said nothing definitive. Read the body and check whether
+		// the message text reveals a rate limit anyway.
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if isAnonymousRateLimitBody(body) {
+			// Unauthenticated request reached us. Every code path that
+			// builds an HTTPClient call goes through GetKey() — getting
+			// this body shape means a key was unset, the wrong client
+			// was used, or a proxy stripped the Authorization header.
+			// Log at ERROR so on-call sees the regression, then back off
+			// like a regular rate limit so we don't hot-loop on the bug.
+			c.logger.Error("403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
+				"url", url,
+				"body_snippet", truncateBody(string(body), 240))
+			wait := jitteredBackoff(attempt)
+			select {
+			case <-ctx.Done():
+				return respDone, nil, ctx.Err()
+			case <-time.After(wait):
+			}
+			return respRetry, nil, nil
+		}
+		if isRateLimitBody(body) {
+			c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
+				"url", url,
+				"body_snippet", truncateBody(string(body), 240))
+			wait := jitteredBackoff(attempt)
+			select {
+			case <-ctx.Done():
+				return respDone, nil, ctx.Err()
+			case <-time.After(wait):
+			}
+			return respRetry, nil, nil
+		}
+		// 403 for other reasons (private repo, no permission) — not a key problem.
+		return respDone, nil, fmt.Errorf("%w: %s (not a rate limit — may be a private repo or insufficient scope)", ErrForbidden, url)
+	case resp.StatusCode == http.StatusTooManyRequests:
+		resp.Body.Close()
+		wait := parseRetryAfter(resp)
+		c.logger.Info("rate limited", "url", url, "wait", wait)
+		select {
+		case <-ctx.Done():
+			return respDone, nil, ctx.Err()
+		case <-time.After(wait):
+		}
+		return respRetry, nil, nil
+	case resp.StatusCode == http.StatusInternalServerError ||
+		resp.StatusCode == http.StatusBadGateway ||
+		resp.StatusCode == http.StatusServiceUnavailable ||
+		resp.StatusCode == http.StatusGatewayTimeout:
+		// 500/502/503/504 — server/gateway error. These are transient.
+		// 500 was added to this branch in v0.22.12 after a 2026-05-18
+		// production incident where GitHub returned 500 with empty
+		// body (upstream proxy hiccup) on ~1,400 /users/<login>/events
+		// requests. Previously 500 fell into the default arm with
+		// linear backoff and the generic "unexpected status" log line,
+		// making the incident look like an uncategorized error rather
+		// than a transient 5xx.
+		resp.Body.Close()
+		// v0.27.34: feed the fleet-level API-outage breaker — a hard
+		// outage (consecutive 5xx with no success anywhere) pauses
+		// new collection claims scheduler-side.
+		c.keys.NoteServerError()
+		backoff := time.Duration(1<<min(attempt, 6)) * time.Second // 1s, 2s, 4s, 8s, 16s, 32s, 64s
+		jitter := time.Duration(rand.IntN(int(backoff/2) + 1))
+		wait := backoff + jitter
+		c.logger.Warn("server error, retrying with backoff",
+			"url", url, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
+		select {
+		case <-ctx.Done():
+			return respDone, nil, ctx.Err()
+		case <-time.After(wait):
+		}
+		return respRetry, nil, nil
+	default:
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		c.logger.Warn("unexpected status",
+			"url", url, "status", resp.StatusCode, "body_snippet", truncateBody(string(body), 200), "attempt", attempt+1)
+		select {
+		case <-ctx.Done():
+			return respDone, nil, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+		}
+		return respRetry, nil, nil
+	}
 }
 
 // GetJSON performs a GET and decodes the response JSON into dest.

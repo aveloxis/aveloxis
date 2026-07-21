@@ -153,7 +153,7 @@ func TestRecordContributorLoginObservationExists(t *testing.T) {
 }
 
 func TestUpsertContributorBatchRecordsLoginHistory(t *testing.T) {
-	body := extractFunctionBody(t, "postgres.go", "UpsertContributorBatch")
+	body := extractContributorBatchBodies(t)
 	if !strings.Contains(body, "recordLoginObservation") &&
 		!strings.Contains(body, "contributor_login_history") {
 		t.Error("UpsertContributorBatch must call recordLoginObservation (or " +

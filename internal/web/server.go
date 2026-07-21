@@ -581,16 +581,9 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create or find user. v0.19.0: UpsertOAuthUser auto-promotes the
-	// first-ever user to admin so a fresh deployment can review
-	// subsequent submissions.
-	wasNewUser := false
-	preCount := 0
-	_ = s.store.Pool().QueryRow(r.Context(),
-		`SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1`, ghUser.Login).Scan(&preCount)
-	wasNewUser = preCount == 0
-
-	userID, err := s.store.UpsertOAuthUser(r.Context(), db.OAuthUserInfo{
+	// v0.19.0: UpsertOAuthUser auto-promotes the first-ever user to
+	// admin so a fresh deployment can review subsequent submissions.
+	s.completeOAuthLogin(w, r, db.OAuthUserInfo{
 		Login:     ghUser.Login,
 		Email:     ghUser.Email,
 		Name:      ghUser.Name,
@@ -598,7 +591,24 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		GHUserID:  ghUser.ID,
 		GHLogin:   ghUser.Login,
 		Provider:  "github",
-	})
+	}, "GitHub")
+}
+
+// completeOAuthLogin is the shared tail of both OAuth callbacks
+// (v0.27.42, summary/18 Phase 4 — the two callbacks previously
+// duplicated this sequence line for line): first-signup detection,
+// user upsert, fresh admin flag, welcome email, session creation, and
+// the post-login redirect.
+func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info db.OAuthUserInfo, providerLabel string) {
+	// First-signup probe. Best-effort tolerated (v0.27.36 review): a
+	// failed COUNT only risks a duplicate welcome email.
+	wasNewUser := false
+	preCount := 0
+	_ = s.store.Pool().QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1`, info.Login).Scan(&preCount)
+	wasNewUser = preCount == 0
+
+	userID, err := s.store.UpsertOAuthUser(r.Context(), info)
 	if err != nil {
 		s.logger.Error("failed to upsert OAuth user", "error", err)
 		http.Error(w, "Failed to create user", http.StatusInternalServerError)
@@ -613,14 +623,13 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// Send welcome email on first signup. No-op if mailer
 	// unconfigured. Failures here don't block login — the email is a
 	// nice-to-have, not a gate.
-	if wasNewUser && s.mailer != nil && ghUser.Email != "" {
-		if err := s.mailer.SendWelcome(ghUser.Email, ghUser.Login, "GitHub"); err != nil {
-			s.logger.Warn("failed to send welcome email", "login", truncateForLog([]byte(ghUser.Login), 100), "error", err)
+	if wasNewUser && s.mailer != nil && info.Email != "" {
+		if err := s.mailer.SendWelcome(info.Email, info.Login, providerLabel); err != nil {
+			s.logger.Warn("failed to send welcome email", "login", truncateForLog([]byte(info.Login), 100), "error", err)
 		}
 	}
 
-	// Create session.
-	sessToken := s.createSession(userID, ghUser.Login, ghUser.AvatarURL, "github", isAdmin)
+	sessToken := s.createSession(userID, info.Login, info.AvatarURL, info.Provider, isAdmin)
 	http.SetCookie(w, s.sessionCookie(sessToken))
 	dest := s.postLoginRedirect(r)
 	s.clearNext(w)
@@ -742,13 +751,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wasNewUser := false
-	preCount := 0
-	_ = s.store.Pool().QueryRow(r.Context(),
-		`SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1`, glUser.Username).Scan(&preCount)
-	wasNewUser = preCount == 0
-
-	userID, err := s.store.UpsertOAuthUser(r.Context(), db.OAuthUserInfo{
+	s.completeOAuthLogin(w, r, db.OAuthUserInfo{
 		Login:      glUser.Username,
 		Email:      glUser.Email,
 		Name:       glUser.Name,
@@ -756,25 +759,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		GLUserID:   glUser.ID,
 		GLUsername: glUser.Username,
 		Provider:   "gitlab",
-	})
-	if err != nil {
-		s.logger.Error("failed to upsert OAuth user", "error", err)
-		http.Error(w, "Failed to create user", http.StatusInternalServerError)
-		return
-	}
-	isAdmin, _ := s.store.IsUserAdmin(r.Context(), userID)
-
-	if wasNewUser && s.mailer != nil && glUser.Email != "" {
-		if err := s.mailer.SendWelcome(glUser.Email, glUser.Username, "GitLab"); err != nil {
-			s.logger.Warn("failed to send welcome email", "login", truncateForLog([]byte(glUser.Username), 100), "error", err)
-		}
-	}
-
-	sessToken := s.createSession(userID, glUser.Username, glUser.AvatarURL, "gitlab", isAdmin)
-	http.SetCookie(w, s.sessionCookie(sessToken))
-	dest := s.postLoginRedirect(r)
-	s.clearNext(w)
-	http.Redirect(w, r, dest, http.StatusFound)
+	}, "GitLab")
 }
 
 // ============================================================

@@ -264,7 +264,9 @@ func (w *Worker) dispatcher(ctx context.Context, jobs chan<- *db.DistributionJob
 		case <-ctx.Done():
 			// ctx canceled while waiting for a runner: release the
 			// claim so the row becomes immediately re-claimable.
-			_ = w.store.RecordDistributionFailure(context.Background(), job)
+			relCtx, relCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_ = w.store.RecordDistributionFailure(relCtx, job)
+			relCancel()
 			return
 		case jobs <- job:
 			// Stamp the next-start deadline AFTER the handoff so

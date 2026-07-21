@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -31,25 +32,32 @@ type TimeSeriesResult struct {
 // between `since` and `until` (inclusive lower, exclusive upper).
 // A zero `until` is treated as "no upper bound" (queries up to the latest data).
 // Uses date_trunc('week', timestamp) for consistent Monday-aligned weeks.
+//
+// v0.27.36: every query/scan error propagates. The pre-fix structure
+// swallowed all four query errors and always returned nil, so a DB
+// failure rendered as an empty chart indistinguishable from a genuinely
+// inactive repo (summary/18 Phase 0b).
 func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, since, until time.Time) (*TimeSeriesResult, error) {
 	result := &TimeSeriesResult{RepoID: repoID}
 
 	// Get repo name for labels.
-	s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(ctx,
 		`SELECT repo_name, repo_owner FROM aveloxis_data.repos WHERE repo_id = $1`,
-		repoID).Scan(&result.RepoName, &result.RepoOwner)
+		repoID).Scan(&result.RepoName, &result.RepoOwner); err != nil {
+		return nil, fmt.Errorf("time series repo lookup: %w", err)
+	}
 
 	// A zero `until` is represented as a far-future timestamp so the SQL
 	// queries can remain parameterized identically regardless of whether the
 	// caller specified an upper bound.
-	hasUntil := !until.IsZero()
 	upper := until
-	if !hasUntil {
+	if until.IsZero() {
 		upper = time.Now().AddDate(100, 0, 0)
 	}
 
+	var err error
 	// Weekly commits (from the commits table — one row per file, so count distinct hashes).
-	rows, err := s.pool.Query(ctx, `
+	result.Commits, err = s.weeklySeries(ctx, `
 		SELECT date_trunc('week', cmt_author_timestamp AT TIME ZONE 'UTC') AS week_start,
 			COUNT(DISTINCT cmt_commit_hash) AS cnt
 		FROM aveloxis_data.commits
@@ -57,18 +65,11 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 		  AND cmt_author_timestamp IS NOT NULL
 		GROUP BY week_start
 		ORDER BY week_start`, repoID, since, upper)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var dp WeeklyDataPoint
-			if rows.Scan(&dp.WeekStart, &dp.Count) == nil {
-				result.Commits = append(result.Commits, dp)
-			}
-		}
+	if err != nil {
+		return nil, fmt.Errorf("weekly commits: %w", err)
 	}
 
-	// Weekly PRs opened.
-	rows2, err := s.pool.Query(ctx, `
+	result.PRsOpened, err = s.weeklySeries(ctx, `
 		SELECT date_trunc('week', created_at AT TIME ZONE 'UTC') AS week_start,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.pull_requests
@@ -76,18 +77,11 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 		  AND created_at IS NOT NULL
 		GROUP BY week_start
 		ORDER BY week_start`, repoID, since, upper)
-	if err == nil {
-		defer rows2.Close()
-		for rows2.Next() {
-			var dp WeeklyDataPoint
-			if rows2.Scan(&dp.WeekStart, &dp.Count) == nil {
-				result.PRsOpened = append(result.PRsOpened, dp)
-			}
-		}
+	if err != nil {
+		return nil, fmt.Errorf("weekly PRs opened: %w", err)
 	}
 
-	// Weekly PRs merged.
-	rows3, err := s.pool.Query(ctx, `
+	result.PRsMerged, err = s.weeklySeries(ctx, `
 		SELECT date_trunc('week', merged_at AT TIME ZONE 'UTC') AS week_start,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.pull_requests
@@ -95,18 +89,11 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 		  AND merged_at IS NOT NULL
 		GROUP BY week_start
 		ORDER BY week_start`, repoID, since, upper)
-	if err == nil {
-		defer rows3.Close()
-		for rows3.Next() {
-			var dp WeeklyDataPoint
-			if rows3.Scan(&dp.WeekStart, &dp.Count) == nil {
-				result.PRsMerged = append(result.PRsMerged, dp)
-			}
-		}
+	if err != nil {
+		return nil, fmt.Errorf("weekly PRs merged: %w", err)
 	}
 
-	// Weekly issues opened.
-	rows4, err := s.pool.Query(ctx, `
+	result.Issues, err = s.weeklySeries(ctx, `
 		SELECT date_trunc('week', created_at AT TIME ZONE 'UTC') AS week_start,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.issues
@@ -114,17 +101,30 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 		  AND created_at IS NOT NULL
 		GROUP BY week_start
 		ORDER BY week_start`, repoID, since, upper)
-	if err == nil {
-		defer rows4.Close()
-		for rows4.Next() {
-			var dp WeeklyDataPoint
-			if rows4.Scan(&dp.WeekStart, &dp.Count) == nil {
-				result.Issues = append(result.Issues, dp)
-			}
-		}
+	if err != nil {
+		return nil, fmt.Errorf("weekly issues: %w", err)
 	}
 
 	return result, nil
+}
+
+// weeklySeries runs one weekly-bucketed aggregate query and scans the
+// points, surfacing every query, scan, and iteration error.
+func (s *PostgresStore) weeklySeries(ctx context.Context, query string, repoID int64, since, upper time.Time) ([]WeeklyDataPoint, error) {
+	rows, err := s.pool.Query(ctx, query, repoID, since, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WeeklyDataPoint
+	for rows.Next() {
+		var dp WeeklyDataPoint
+		if err := rows.Scan(&dp.WeekStart, &dp.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, dp)
+	}
+	return out, rows.Err()
 }
 
 // LicenseCount is a single license with its count and OSI compliance status.
@@ -179,10 +179,10 @@ func (s *PostgresStore) GetRepoLicenses(ctx context.Context, repoID int64) ([]Li
 	for rows.Next() {
 		var lic string
 		var cnt int
-		if rows.Scan(&lic, &cnt) == nil {
-			normalized := normalizeLicense(lic)
-			counts[normalized] += cnt
+		if err := rows.Scan(&lic, &cnt); err != nil {
+			return nil, err
 		}
+		counts[normalizeLicense(lic)] += cnt
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

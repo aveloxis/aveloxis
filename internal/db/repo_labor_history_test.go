@@ -82,7 +82,7 @@ func TestMigrationCreatesRepoLaborHistoryAndRotates(t *testing.T) {
 		"LIKE aveloxis_data.repo_labor INCLUDING ALL",
 		// The one-shot rotation must be invoked from RunMigrations
 		// with the error collector so failures fail-closed.
-		"migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, &errs)",
+		"migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, errs)",
 	} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("migrate.go missing v0.27.7 needle: %q", needle)
@@ -93,7 +93,7 @@ func TestMigrationCreatesRepoLaborHistoryAndRotates(t *testing.T) {
 	// correlated MAX served by idx_repo_labor_repo_id_analysis_date;
 	// the index build must appear before the rotation call.
 	idxPos := strings.Index(src, `"idx_repo_labor_repo_id_analysis_date"`)
-	rotPos := strings.Index(src, "migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, &errs)")
+	rotPos := strings.Index(src, "migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, errs)")
 	if idxPos < 0 || rotPos < 0 {
 		t.Fatal("could not locate both the index build and the rotation call in migrate.go")
 	}

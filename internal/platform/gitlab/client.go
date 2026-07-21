@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -560,6 +561,11 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 					Message: msg,
 					IssueRef: &model.IssueMessageRef{
 						PlatformSrcID: note.ID,
+						// v0.27.37 (summary/18 Phase 1b): the parent
+						// NUMBER is what the processor resolves by —
+						// without it every comment was silently
+						// skipped ("no way to resolve parent").
+						PlatformIssueNumber: int(issue.IID),
 					},
 				}
 				if !yield(ref, nil) {
@@ -606,6 +612,8 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 					Message: msg,
 					PRRef: &model.PullRequestMessageRef{
 						PlatformSrcID: note.ID,
+						// v0.27.37 (Phase 1b): see the issue-notes twin.
+						PlatformPRNumber: int(mr.IID),
 					},
 				}
 				if !yield(ref, nil) {
@@ -1024,7 +1032,8 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		var topName string
 		var topVal float64
 		for name, pct := range langRaw {
-			languages[name] = int(pct * 100)
+			// v0.27.39: round, don't floor — 84.999% is 8500, not 8499.
+			languages[name] = int(math.Round(pct * 100))
 			if pct > topVal {
 				topVal = pct
 				topName = name

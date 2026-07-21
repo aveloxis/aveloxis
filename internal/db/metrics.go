@@ -266,27 +266,27 @@ func (s *PostgresStore) AverageIssueResolutionTime(ctx context.Context, repoID i
 }
 
 // AbandonedIssues returns open issues not updated for 1+ year.
-func (s *PostgresStore) AbandonedIssues(ctx context.Context, repoID int64) ([]map[string]interface{}, error) {
+func (s *PostgresStore) AbandonedIssues(ctx context.Context, repoID int64) ([]map[string]any, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT issue_id, updated_at
 		FROM aveloxis_data.issues
 		WHERE repo_id = $1
 		AND issue_state = 'open'
 		AND pull_request IS NULL
-		AND EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM updated_at) >= 1
+		AND updated_at < NOW() - INTERVAL '1 year'
 		ORDER BY updated_at`, repoID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var result []map[string]interface{}
+	var result []map[string]any
 	for rows.Next() {
 		var issueID int64
 		var updatedAt time.Time
 		if err := rows.Scan(&issueID, &updatedAt); err != nil {
 			return nil, err
 		}
-		result = append(result, map[string]interface{}{
+		result = append(result, map[string]any{
 			"issue_id":   issueID,
 			"updated_at": updatedAt,
 		})
@@ -379,9 +379,16 @@ func (s *PostgresStore) ReviewDuration(ctx context.Context, repoID int64, begin,
 
 // Committers returns count of unique committers per period.
 func (s *PostgresStore) Committers(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
+	// v0.27.37 (summary/18 Phase 1f + the Phase 2 committers merge):
+	// count IDENTITIES, not raw emails. Raw-email counting collapsed
+	// the ~5.6M empty-email commit rows into ONE phantom committer and
+	// counted one human with N emails N times — and disagreed with the
+	// identity-based /compare committers metric for the same repo.
+	// cmt_ght_author_id (~92% fleet coverage) leads; unresolved
+	// commits fall back to their non-empty email so nobody vanishes.
 	return s.timeSeriesMetric(ctx, `
 		SELECT date_trunc($1, cmt_author_date::DATE) AS date,
-		       COUNT(DISTINCT cmt_author_email) AS value,
+		       COUNT(DISTINCT COALESCE(cmt_ght_author_id::text, NULLIF(cmt_author_email, ''))) AS value,
 		       r.repo_name
 		FROM aveloxis_data.commits c
 		JOIN aveloxis_data.repos r ON c.repo_id = r.repo_id
@@ -488,6 +495,24 @@ func (s *PostgresStore) Contributors(ctx context.Context, repoID int64, begin, e
 			WHERE repo_id = $1 AND author_id IS NOT NULL
 			AND created_at BETWEEN $2 AND $3
 			GROUP BY author_id, repo_id
+			UNION ALL
+			-- Issue conversation comments (v0.27.37 Phase 1f: these
+			-- fields were hardcoded 0 while the JSON exposed them —
+			-- every consumer saw "0 comments" for every contributor)
+			SELECT m.cntrb_id, 0, 0, 0, COUNT(*), 0, imr.repo_id
+			FROM aveloxis_data.issue_message_ref imr
+			JOIN aveloxis_data.messages m ON m.msg_id = imr.msg_id
+			WHERE imr.repo_id = $1 AND m.cntrb_id IS NOT NULL
+			AND m.msg_timestamp BETWEEN $2 AND $3
+			GROUP BY m.cntrb_id, imr.repo_id
+			UNION ALL
+			-- PR conversation comments
+			SELECT m.cntrb_id, 0, 0, 0, 0, COUNT(*), pmr.repo_id
+			FROM aveloxis_data.pull_request_message_ref pmr
+			JOIN aveloxis_data.messages m ON m.msg_id = pmr.msg_id
+			WHERE pmr.repo_id = $1 AND m.cntrb_id IS NOT NULL
+			AND m.msg_timestamp BETWEEN $2 AND $3
+			GROUP BY m.cntrb_id, pmr.repo_id
 		) a
 		JOIN aveloxis_data.repos r ON a.repo_id = r.repo_id
 		GROUP BY cntrb_id, r.repo_name
@@ -509,18 +534,27 @@ func (s *PostgresStore) Contributors(ctx context.Context, repoID int64, begin, e
 
 // ContributorsNew returns count of new contributors per period.
 func (s *PostgresStore) ContributorsNew(ctx context.Context, repoID int64, period string, begin, end time.Time) ([]MetricRow, error) {
+	// v0.27.37 (Phase 1f): one row per PERSON — the inner UNION yields
+	// per-source first appearances, and the middle GROUP BY cntrb_id
+	// takes the earliest across sources. Pre-fix the union fed the
+	// bucket count directly, so a contributor whose first commit AND
+	// first issue both fell in the window counted as TWO new people.
 	return s.timeSeriesMetric(ctx, `
 		SELECT date_trunc($1, first_seen::DATE) AS date, COUNT(*) AS value, r.repo_name
 		FROM (
-			SELECT cmt_ght_author_id AS cntrb_id, MIN(cmt_author_date::DATE) AS first_seen, repo_id
-			FROM aveloxis_data.commits
-			WHERE repo_id = $2 AND cmt_ght_author_id IS NOT NULL
-			GROUP BY cmt_ght_author_id, repo_id
-			UNION ALL
-			SELECT reporter_id, MIN((created_at AT TIME ZONE 'UTC')::DATE), repo_id
-			FROM aveloxis_data.issues
-			WHERE repo_id = $2 AND reporter_id IS NOT NULL AND pull_request IS NULL
-			GROUP BY reporter_id, repo_id
+			SELECT cntrb_id, MIN(first_seen) AS first_seen, repo_id
+			FROM (
+				SELECT cmt_ght_author_id AS cntrb_id, MIN(cmt_author_date::DATE) AS first_seen, repo_id
+				FROM aveloxis_data.commits
+				WHERE repo_id = $2 AND cmt_ght_author_id IS NOT NULL
+				GROUP BY cmt_ght_author_id, repo_id
+				UNION ALL
+				SELECT reporter_id, MIN((created_at AT TIME ZONE 'UTC')::DATE), repo_id
+				FROM aveloxis_data.issues
+				WHERE repo_id = $2 AND reporter_id IS NOT NULL AND pull_request IS NULL
+				GROUP BY reporter_id, repo_id
+			) per_source
+			GROUP BY cntrb_id, repo_id
 		) first_appearances
 		JOIN aveloxis_data.repos r ON first_appearances.repo_id = r.repo_id
 		WHERE first_seen BETWEEN $3 AND $4
@@ -535,11 +569,19 @@ func (s *PostgresStore) ContributorsNew(ctx context.Context, repoID int64, perio
 // StarsTimeSeries returns star count over time from repo_info snapshots.
 func (s *PostgresStore) StarsTimeSeries(ctx context.Context, repoID int64) ([]MetricRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT ri.data_collection_date AS date, ri.star_count AS value, r.repo_name
-		FROM aveloxis_data.repo_info ri
-		JOIN aveloxis_data.repos r ON ri.repo_id = r.repo_id
-		WHERE ri.repo_id = $1
-		ORDER BY ri.data_collection_date`, repoID)
+		SELECT snap.date, snap.value, r.repo_name
+		FROM (
+			-- v0.27.37 (Phase 1f): the history pattern keeps only the
+			-- LATEST snapshot in repo_info — without the history union
+			-- this "time series" returned exactly one point.
+			SELECT data_collection_date AS date, star_count AS value, repo_id
+			FROM aveloxis_data.repo_info WHERE repo_id = $1
+			UNION ALL
+			SELECT data_collection_date, star_count, repo_id
+			FROM aveloxis_data.repo_info_history WHERE repo_id = $1
+		) snap
+		JOIN aveloxis_data.repos r ON snap.repo_id = r.repo_id
+		ORDER BY snap.date`, repoID)
 	if err != nil {
 		return nil, err
 	}
@@ -558,11 +600,18 @@ func (s *PostgresStore) StarsTimeSeries(ctx context.Context, repoID int64) ([]Me
 // ForksTimeSeries returns fork count over time from repo_info snapshots.
 func (s *PostgresStore) ForksTimeSeries(ctx context.Context, repoID int64) ([]MetricRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT ri.data_collection_date AS date, ri.fork_count AS value, r.repo_name
-		FROM aveloxis_data.repo_info ri
-		JOIN aveloxis_data.repos r ON ri.repo_id = r.repo_id
-		WHERE ri.repo_id = $1
-		ORDER BY ri.data_collection_date`, repoID)
+		SELECT snap.date, snap.value, r.repo_name
+		FROM (
+			-- v0.27.37 (Phase 1f): see StarsTimeSeries — history union
+			-- or this is a one-point "series".
+			SELECT data_collection_date AS date, fork_count AS value, repo_id
+			FROM aveloxis_data.repo_info WHERE repo_id = $1
+			UNION ALL
+			SELECT data_collection_date, fork_count, repo_id
+			FROM aveloxis_data.repo_info_history WHERE repo_id = $1
+		) snap
+		JOIN aveloxis_data.repos r ON snap.repo_id = r.repo_id
+		ORDER BY snap.date`, repoID)
 	if err != nil {
 		return nil, err
 	}
@@ -782,7 +831,7 @@ func (s *PostgresStore) ProjectLanguages(ctx context.Context, repoID int64) ([]C
 // Helper: generic time-series metric query
 // ============================================================
 
-func (s *PostgresStore) timeSeriesMetric(ctx context.Context, query string, args ...interface{}) ([]MetricRow, error) {
+func (s *PostgresStore) timeSeriesMetric(ctx context.Context, query string, args ...any) ([]MetricRow, error) {
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err

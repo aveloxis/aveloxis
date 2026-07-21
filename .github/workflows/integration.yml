@@ -100,3 +100,25 @@ jobs:
       # goroutine-heavy paths actually run.
       - name: Run full suite with integration tier enabled
         run: go test -race -count=1 ./...
+
+      # v0.27.43 (summary/18 Phase 5a): run the data-verify invariant
+      # battery against the CI database AFTER the full suite. Two jobs
+      # in one: (a) the battery itself is smoke-tested end-to-end
+      # (build → connect → probe → report) on every PR, and (b) any
+      # integration test that leaks invariant-violating residue
+      # (stranded repos, duplicate Default groups, cross-kind message
+      # rows outside the worklist) fails the build here instead of
+      # silently accumulating, as it did on long-lived scratch DBs.
+      # The production and --ground-truth probes deliberately do NOT
+      # run in CI (no prod credentials in Actions; ground truth needs
+      # API keys + a DB with collected repos) — those are host-side
+      # cron territory.
+      - name: Run data-verify against the CI database
+        run: |
+          go build -o /tmp/aveloxis ./cmd/aveloxis
+          cat > /tmp/ci-verify.json <<'CFG'
+          {"database": {"host": "localhost", "port": 5432,
+            "dbname": "aveloxis_test", "user": "aveloxis_test",
+            "password": "aveloxis_test", "sslmode": "disable"}}
+          CFG
+          /tmp/aveloxis data-verify -c /tmp/ci-verify.json

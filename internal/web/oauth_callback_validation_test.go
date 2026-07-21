@@ -112,9 +112,12 @@ func TestGitLabCallbackRejectsEmptyUsername(t *testing.T) {
 	if body == "" {
 		t.Fatal("could not locate handleGitLabCallback function body")
 	}
-	upsertIdx := strings.Index(body, "UpsertOAuthUser")
+	// v0.27.42: the callback hands off to completeOAuthLogin (the
+	// shared tail that calls UpsertOAuthUser) — the invariant is now
+	// "empty-username check BEFORE the handoff".
+	upsertIdx := strings.Index(body, "completeOAuthLogin")
 	if upsertIdx < 0 {
-		t.Fatal("handleGitLabCallback must call UpsertOAuthUser somewhere in its body")
+		t.Fatal("handleGitLabCallback must hand off to completeOAuthLogin (which performs UpsertOAuthUser)")
 	}
 	preUpsert := body[:upsertIdx]
 	hasCheck := strings.Contains(preUpsert, `glUser.Username == ""`) ||

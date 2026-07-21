@@ -178,8 +178,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 		s.logger.Warn("lockfile certainty lookup failed", "repo_id", repoID, "error", cerr)
 		certainty = &db.LockfileCertainty{Overall: "none", Ecosystems: []db.LockfileEcosystemCertainty{}}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	jsonResponse(w, map[string]any{
 		"repo_id":            repoID,
 		"vulnerabilities":    out,
 		"lockfile_certainty": certainty,
@@ -220,7 +219,7 @@ func annotateCycloneDXWithVulns(sbom []byte, vulns []*db.VulnerabilityRow) ([]by
 			"ratings": []map[string]any{{
 				"score":    v.CVSSScore,
 				"severity": cdxSeverity(v.Severity),
-				"method":   "CVSSv31",
+				"method":   cvssMethodFromVector(v.CVSSVector),
 				"vector":   v.CVSSVector,
 			}},
 			"description": v.Summary,
@@ -277,6 +276,25 @@ func (s *Server) handleRepoScorecard(w http.ResponseWriter, r *http.Request) {
 	if !asOf.IsZero() {
 		resp["as_of"] = asOf
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	jsonResponse(w, resp)
+}
+
+// cvssMethodFromVector derives the CycloneDX rating method from the
+// stored vector's prefix. v0.27.39 (summary/18 Phase 2 + the operator's
+// standards-conformance direction): the method was hardcoded "CVSSv31"
+// even when the score was computed from a v3.0 or v2 vector — wrong
+// provenance in the exported document.
+func cvssMethodFromVector(vector string) string {
+	switch {
+	case strings.HasPrefix(vector, "CVSS:3.1"):
+		return "CVSSv31"
+	case strings.HasPrefix(vector, "CVSS:3.0"):
+		return "CVSSv3"
+	case strings.HasPrefix(vector, "CVSS:4"):
+		return "CVSSv4"
+	case strings.HasPrefix(vector, "AV:"): // v2 vectors have no CVSS: prefix
+		return "CVSSv2"
+	default:
+		return "other"
+	}
 }

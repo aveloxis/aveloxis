@@ -94,7 +94,7 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	workDir := filepath.Join(ac.tempDir, fmt.Sprintf("repo_%d_%d", repoID, time.Now().UnixNano()))
 	if !ac.RetainClone {
 		defer func() {
-			os.RemoveAll(workDir)
+			_ = os.RemoveAll(workDir)
 			ac.logger.Info("removed temporary analysis clone", "path", workDir)
 		}()
 	}
@@ -1072,7 +1072,10 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 
 	var allDeps []libyearDep
 
-	filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
+	// v0.27.36: a root-stat failure makes Walk return without visiting
+	// anything — silently producing ZERO dependencies for the repo.
+	// Per-entry errors are still skipped inside the callback.
+	if err := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -1188,7 +1191,9 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		ac.logger.Warn("libyear manifest walk failed — dependency scan may be incomplete", "dir", workDir, "error", err)
+	}
 
 	// Resolve each dependency against its package registry.
 	resolveFailures := map[string]int{}
@@ -1742,8 +1747,12 @@ func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, erro
 			var curInfo struct {
 				Time string `json:"Time"`
 			}
-			json.Unmarshal(curBody, &curInfo)
-			currentDate = curInfo.Time
+			// Best-effort: an unparseable proxy response leaves
+			// currentDate empty and the resolver-level failure
+			// counters (v0.27.19) account for the miss.
+			if uerr := json.Unmarshal(curBody, &curInfo); uerr == nil {
+				currentDate = curInfo.Time
+			}
 		}
 	}
 

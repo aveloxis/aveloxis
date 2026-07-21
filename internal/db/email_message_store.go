@@ -103,16 +103,17 @@ func (s *PostgresStore) UpsertMailingListMessageBody(ctx context.Context, repoID
 	var id int64
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.messages
-			(repo_id, platform_msg_id, platform_id, node_id, cntrb_id,
+			(repo_id, platform_msg_id, platform_id, msg_kind, node_id, cntrb_id,
 			 msg_text, msg_timestamp, msg_sender_email, tool_source, tool_version, data_source)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		ON CONFLICT (platform_msg_id, platform_id) DO UPDATE SET
+		VALUES ($1, $2, $3, $12, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (platform_msg_id, platform_id, msg_kind) DO UPDATE SET
 			msg_text = EXCLUDED.msg_text,
 			cntrb_id = COALESCE(EXCLUDED.cntrb_id, aveloxis_data.messages.cntrb_id),
 			data_collection_date = NOW()
 		RETURNING msg_id`,
 		repoID, messageIDToPlatformMsgID(messageID), MailingListPlatformID, messageID, cntrbID,
 		body, NullTime(sentAt), senderEmail, MailingListToolSource, ToolVersion, listAddress,
+		MsgKindEmail,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert mailing-list message body %q: %w", messageID, err)

@@ -125,8 +125,15 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 		// and would also flip admin TRUE — that's fine for a fresh
 		// deployment (multiple admins from a near-simultaneous
 		// initial-batch signup is a non-issue).
+		// v0.27.36 (summary/18 Phase 0c): FAIL CLOSED. The pre-fix
+		// discarded this error, so a transient DB failure left
+		// existingCount == 0 and granted admin to an arbitrary later
+		// signup. On error we refuse the signup entirely — the user
+		// retries once the DB is healthy and gets the correct answer.
 		var existingCount int
-		_ = s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_ops.users`).Scan(&existingCount)
+		if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_ops.users`).Scan(&existingCount); err != nil {
+			return 0, fmt.Errorf("counting users for first-admin bootstrap: %w", err)
+		}
 		isFirstUser := existingCount == 0
 
 		err = s.pool.QueryRow(ctx, `
@@ -475,7 +482,9 @@ func (s *PostgresStore) GetOrgRequests(ctx context.Context) ([]GroupOrg, error) 
 	var orgs []GroupOrg
 	for rows.Next() {
 		var o GroupOrg
-		rows.Scan(&o.OrgRequestID, &o.OrgURL, &o.OrgName, &o.Platform, &o.LastScanned)
+		if err := rows.Scan(&o.OrgRequestID, &o.OrgURL, &o.OrgName, &o.Platform, &o.LastScanned); err != nil {
+			return nil, err
+		}
 		orgs = append(orgs, o)
 	}
 	return orgs, rows.Err()

@@ -153,7 +153,7 @@ func (w *ScancodeWorker) probeScancodeHealth(ctx context.Context) (status, detai
 		w.logger.Warn("scancode preflight: could not create temp dir; skipping health check", "error", err)
 		return "", "", false
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	// One trivial file with a recognizable license/copyright line so scancode
 	// has something to do — but the libmagic load (where the corruption surfaces)
 	// happens regardless of content.

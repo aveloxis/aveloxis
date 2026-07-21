@@ -246,7 +246,10 @@ func (r *ContributorResolver) GetThinContributorLogins(ctx context.Context, limi
 	var logins []string
 	for rows.Next() {
 		var login string
-		if rows.Scan(&login) == nil && login != "" {
+		if err := rows.Scan(&login); err != nil {
+			return nil, err
+		}
+		if login != "" {
 			logins = append(logins, login)
 		}
 	}

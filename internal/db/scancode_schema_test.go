@@ -69,7 +69,7 @@ func TestMigrateAddsScancodeColumns(t *testing.T) {
 		"scancode_output_path":    "TEXT",
 	}
 	for col, typ := range columnTypes {
-		needle := `addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "` + col + `", "` + typ + `"`
+		needle := `addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "` + col + `", "` + typ + `"`
 		if !strings.Contains(src, needle) {
 			t.Errorf("migrate.go must call addColumnIfMissing for aveloxis_data.repos.%s (%s). Operators upgrading from <v0.21.0 need the column added automatically; missing it would break ScancodeWorker startup", col, typ)
 		}

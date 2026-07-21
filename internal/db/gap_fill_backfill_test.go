@@ -59,22 +59,26 @@ func TestBackfillIsIdempotent(t *testing.T) {
 	}
 	src := string(data)
 
-	// Locate the backfill block by anchoring on the UPDATE.
-	idx := strings.Index(src, "UPDATE aveloxis_ops.collection_queue\n\t\tSET force_full_collect = TRUE")
+	// Locate the backfill block by its step LABEL — other migrations
+	// (v0.27.37's GitLab comment heal) also SET force_full_collect, so
+	// anchoring on the SQL shape alone matches the wrong step.
+	idx := strings.Index(src, "v0.20.5 backfill force_full_collect for repos with PR gap")
 	if idx < 0 {
-		// More forgiving anchor for whitespace variation.
-		idx = strings.Index(src, "SET force_full_collect = TRUE")
-		if idx < 0 {
-			t.Fatal("cannot locate backfill UPDATE in migrate.go")
-		}
+		t.Fatal("cannot locate the v0.20.5 backfill step label in migrate.go")
 	}
-	// Scan forward to the end of the SQL string literal (closing backtick).
+	// The label sits OUTSIDE the SQL literal, so capture between the
+	// opening and closing backticks that follow it.
 	tail := src[idx:]
-	end := strings.Index(tail, "`")
-	if end < 0 {
+	open := strings.Index(tail, "`")
+	if open < 0 {
+		t.Fatal("cannot locate start of backfill SQL literal")
+	}
+	rest := tail[open+1:]
+	close := strings.Index(rest, "`")
+	if close < 0 {
 		t.Fatal("cannot locate end of backfill SQL literal")
 	}
-	sqlBlock := tail[:end]
+	sqlBlock := rest[:close]
 
 	// The WHERE clause must include the gap threshold AND skip rows
 	// where the flag is already set. Two separate signals together
@@ -104,9 +108,9 @@ func TestBackfillUsesLatestRepoInfoRow(t *testing.T) {
 	}
 	src := string(data)
 
-	idx := strings.Index(src, "SET force_full_collect = TRUE")
+	idx := strings.Index(src, "v0.20.5 backfill force_full_collect for repos with PR gap")
 	if idx < 0 {
-		t.Fatal("cannot locate backfill UPDATE")
+		t.Fatal("cannot locate the v0.20.5 backfill step label")
 	}
 	// Look backward and forward within a window for the latest-row
 	// selector — typically `DISTINCT ON (repo_id) ... ORDER BY repo_id,

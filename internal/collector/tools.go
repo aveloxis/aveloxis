@@ -153,7 +153,7 @@ func installScorecardBinary() error {
 			if err != nil {
 				return fmt.Errorf("creating temp file: %w", err)
 			}
-			defer os.Remove(tmp.Name())
+			defer func() { _ = os.Remove(tmp.Name()) }()
 
 			if _, err := io.Copy(tmp, tr); err != nil {
 				tmp.Close()

@@ -21,7 +21,7 @@ import (
 // Fix C (v0.18.23): mid-body stream-CANCEL and unexpected-EOF errors are
 // retryable in principle (a fresh stream often succeeds) but were being
 // returned as terminal errors by HTTPClient.GraphQL. This test file pins
-// both the helper (isRetryableGraphQLReadError) and the integrated retry
+// both the helper (isRetryableReadError) and the integrated retry
 // loop behavior.
 
 // TestIsRetryableGraphQLReadError covers the error classification used
@@ -87,9 +87,9 @@ func TestIsRetryableGraphQLReadError(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isRetryableGraphQLReadError(tc.err)
+			got := isRetryableReadError(tc.err)
 			if got != tc.want {
-				t.Errorf("isRetryableGraphQLReadError(%v) = %v, want %v", tc.err, got, tc.want)
+				t.Errorf("isRetryableReadError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}

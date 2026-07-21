@@ -14,7 +14,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -133,8 +132,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": db.ToolVersion})
+	jsonResponse(w, map[string]string{"status": "ok", "version": db.ToolVersion})
 }
 
 // handleMailingListStats (v0.25.7, #11) surfaces the mailing-list collection
@@ -145,8 +143,7 @@ func (s *Server) handleMailingListStats(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(st)
+	jsonResponse(w, st)
 }
 
 func (s *Server) handleRepoStats(w http.ResponseWriter, r *http.Request) {
@@ -163,8 +160,7 @@ func (s *Server) handleRepoStats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	jsonResponse(w, stats)
 }
 
 func (s *Server) handleRepoStatsBatch(w http.ResponseWriter, r *http.Request) {
@@ -190,8 +186,7 @@ func (s *Server) handleRepoStatsBatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	jsonResponse(w, stats)
 }
 
 // handleSBOMDownload generates and returns an SBOM for a repo.
@@ -294,11 +289,7 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	// Allow cross-origin for the web GUI (different port).
-	// Allow cross-origin only from localhost origins (web GUI on different port).
-	// Wildcard "*" was removed because it exposes data to any website the operator visits.
-	json.NewEncoder(w).Encode(ts)
+	jsonResponse(w, ts)
 }
 
 func (s *Server) handleRepoSearch(w http.ResponseWriter, r *http.Request) {
@@ -321,8 +312,7 @@ func (s *Server) handleRepoSearch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(repos)
+	jsonResponse(w, repos)
 }
 
 func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
@@ -342,8 +332,7 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 	// v0.27.4: `scanned` lets the GUI distinguish "dependency analysis
 	// hasn't run yet" from "this repository declares no dependencies".
 	scanned, _ := s.store.HasDependencyData(r.Context(), repoID)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	jsonResponse(w, map[string]any{
 		"scanned":  scanned,
 		"licenses": licenses,
 	})
@@ -397,10 +386,7 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 		ScancodeVersion: scancodeVer,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	// Allow cross-origin only from localhost origins (web GUI on different port).
-	// Wildcard "*" was removed because it exposes data to any website the operator visits.
-	json.NewEncoder(w).Encode(resp)
+	jsonResponse(w, resp)
 }
 
 // handleScancodeFiles returns per-file scancode data for the sortable web GUI table.
@@ -421,8 +407,5 @@ func (s *Server) handleScancodeFiles(w http.ResponseWriter, r *http.Request) {
 	if files == nil {
 		files = []db.ScancodeFileEntry{}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	// Allow cross-origin only from localhost origins (web GUI on different port).
-	// Wildcard "*" was removed because it exposes data to any website the operator visits.
-	json.NewEncoder(w).Encode(files)
+	jsonResponse(w, files)
 }

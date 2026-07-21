@@ -58,7 +58,7 @@ func TestMigrateAddsGhStateColumn(t *testing.T) {
 	}
 	src := string(data)
 
-	needle := `addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.contributors", "gh_state"`
+	needle := `addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_state"`
 	if !strings.Contains(src, needle) {
 		t.Errorf("migrate.go must call addColumnIfMissing for aveloxis_data.contributors.gh_state — operators upgrading from <v0.20.12 need the column added automatically. Pattern matches the gl_state precedent.")
 	}

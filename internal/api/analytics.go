@@ -302,6 +302,14 @@ func compareWindow(r *http.Request) (since, until time.Time, bucket string, err 
 	if bucket != "week" && bucket != "month" {
 		return since, until, "", fmt.Errorf("bucket must be week or month")
 	}
+	// v0.27.39 (summary/18 Phase 2): the window ends at the last
+	// COMPLETE bucket. Serving the in-progress week/month as a full
+	// point made every active repo's final point droop, biased the
+	// GUI's OLS trend negative, and painted phantom anomaly dots on
+	// "today". Truncating until to its bucket start means every
+	// emitted bucket is fully covered by the query window ([since,
+	// until) is exclusive on the right).
+	until = truncBucket(until, bucket)
 	return since, until, bucket, nil
 }
 
@@ -725,8 +733,7 @@ func (s *Server) handleCompareSnapshot(w http.ResponseWriter, r *http.Request) {
 	if len(added) > 0 {
 		resp["added_to_group"] = added
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	jsonResponse(w, resp)
 }
 
 // handleEntitiesSearch returns picker results in the three §2b
@@ -797,8 +804,7 @@ func (s *Server) handleEntitiesSearch(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	jsonResponse(w, map[string]any{
 		"repos": repoResults, "orgs": orgResults, "uncollected": uncollected,
 	})
 }

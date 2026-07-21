@@ -56,6 +56,58 @@ aveloxis data-test \
 
 This is documented in [`docs/guide/data-test.md`](../guide/data-test.md). You don't run it during normal feature work — it's the operator-side gate before a release.
 
+## Static analysis — the three blocking linters (v0.27.36)
+
+Every change must pass all three before it ships; CI (`lint.yml`) blocks on
+each:
+
+1. **`go vet ./...`** — the official analyzer; always compatible with the
+   toolchain.
+2. **`staticcheck ./...`** — blocking since v0.25.36; SA-class findings are
+   bug-shaped.
+3. **`golangci-lint run`** — blocking since v0.27.36. Configured in
+   `.golangci.yml` (errcheck, govet, ineffassign, staticcheck, unused) with a
+   documented exclusion philosophy: catch real bugs, don't drown signal in
+   noise. The CI version is PINNED (bump deliberately, run locally first).
+
+The exclusion rules in `.golangci.yml` are contracts, not conveniences —
+each carries a rationale comment (e.g. `syscall.Kill` in the straggler-kill
+defers expects ESRCH; `Tx.Rollback` in error paths is the pgx idiom; JSON
+encoding to a ResponseWriter has no recovery once headers are sent). Adding
+an exclusion requires the same justification in a comment. Discarding an
+error WITHOUT an exclusion match requires an explicit `_ =` plus a comment
+saying why best-effort is correct there — the audit history (summary/18)
+shows silent error-dropping is this codebase's most repeated incident class.
+
+Related tripwire: `TestNoInlineScanNilConditionals` (internal/db) bans the
+`rows.Scan(...) == nil` inline-condition form, which silently drops rows on
+scan failure and is invisible to errcheck because the value IS used.
+
+## The standing gate list (definition of done)
+
+Every release candidate passes, in order (v0.27.43, summary/18 Phase
+5d — each tier's CI home named):
+
+1. **Unit** — `go test ./...` (test.yml, with `-race`).
+2. **go vet** — lint.yml.
+3. **staticcheck** — lint.yml, blocking since v0.25.36.
+4. **golangci-lint** — lint.yml, blocking since v0.27.36, version-pinned.
+5. **Cascade integration** — `AVELOXIS_TEST_DB=<scratch> go test ./...`
+   (integration.yml: Postgres service, `-race`, TZ=America/Chicago).
+6. **Fresh-empty-DB gate** — required whenever schema.sql or
+   migrate.go change: create an empty database, run the db+collector
+   suites against it (proves from-scratch migration ordering; the
+   v0.27.9 lesson).
+7. **`aveloxis data-verify`** — runs automatically at the end of the
+   integration workflow against the CI database (smoke-tests the
+   battery AND catches fixture residue from the test suite); run it
+   manually against a scratch or production database for release
+   candidates (`--ground-truth N` adds live-forge comparison, needs
+   API keys — never in CI). FAIL exits 1.
+8. **Network canaries** — network-canary.yml, weekly: live-API
+   contract checks (OSV, registries, GraphQL parity fields,
+   tool-binary versions).
+
 ## TDD discipline
 
 The contract:

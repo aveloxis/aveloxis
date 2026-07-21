@@ -107,7 +107,7 @@ func TestMigrationDropsHistoryUniqueConstraintsOnExistingFleets(t *testing.T) {
 
 	for _, needle := range []string{
 		// Must use execMigrationStep (fail-closed contract).
-		"execMigrationStep(ctx, pg, logger, &errs",
+		"execMigrationStep(ctx, pg, logger, errs",
 		"ALTER TABLE aveloxis_data.repo_distribution_history",
 		"DROP CONSTRAINT IF EXISTS repo_distribution_history_repo_id_ecosystem_package_name_so_key",
 		"ALTER TABLE aveloxis_data.repo_distribution_manifest_history",

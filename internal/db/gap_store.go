@@ -22,9 +22,10 @@ func (s *PostgresStore) GetCollectedIssueNumbers(ctx context.Context, repoID int
 	var numbers []int
 	for rows.Next() {
 		var n int
-		if rows.Scan(&n) == nil {
-			numbers = append(numbers, n)
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
 		}
+		numbers = append(numbers, n)
 	}
 	sort.Ints(numbers)
 	return numbers, rows.Err()
@@ -44,9 +45,10 @@ func (s *PostgresStore) GetCollectedPRNumbers(ctx context.Context, repoID int64)
 	var numbers []int
 	for rows.Next() {
 		var n int
-		if rows.Scan(&n) == nil {
-			numbers = append(numbers, n)
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
 		}
+		numbers = append(numbers, n)
 	}
 	sort.Ints(numbers)
 	return numbers, rows.Err()
@@ -81,9 +83,10 @@ func (s *PostgresStore) GetOpenIssueNumbers(ctx context.Context, repoID int64) (
 	var numbers []int
 	for rows.Next() {
 		var n int
-		if rows.Scan(&n) == nil {
-			numbers = append(numbers, n)
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
 		}
+		numbers = append(numbers, n)
 	}
 	return numbers, rows.Err()
 }
@@ -103,9 +106,10 @@ func (s *PostgresStore) GetOpenPRNumbers(ctx context.Context, repoID int64) ([]i
 	var numbers []int
 	for rows.Next() {
 		var n int
-		if rows.Scan(&n) == nil {
-			numbers = append(numbers, n)
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
 		}
+		numbers = append(numbers, n)
 	}
 	return numbers, rows.Err()
 }

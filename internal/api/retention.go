@@ -34,14 +34,19 @@ const retentionMetricID = "contributor_retention"
 // Operator-adjustable per request via ?retention_threshold=N.
 const defaultRetentionThreshold = 4
 
-func init() {
+// Registered via a package-level var (v0.27.41, summary/18 Phase 4):
+// the codebase's ONLY init() made catalog order file-name-dependent if
+// a second registration-style init() ever appeared. Var initialization
+// is dependency-ordered and explicit.
+var _ = func() bool {
 	metricCatalog = append(metricCatalog, metricDef(retentionMetricID,
 		"Contributor Retention (Drive-by vs Repeat)",
 		"Each contributor in the entity's repo set is classified by their TOTAL contribution count over all collected history (distinct commits, issues opened, change requests opened, reviews, and conversation comments): below the threshold = drive-by, at/above = repeat (?retention_threshold, default 4, mirroring 8Knot's Contributions Required input). Contributors bucket by the month of their FIRST contribution; the series counts drive-by vs repeat per bucket. Bots and soft-deleted merge-loser identities are excluded.",
 		"contributors", "temporal",
 		"https://chaoss.community/kb/metric-new-contributors/",
 		"Splits every new-contributor cohort into drive-by vs repeat by eventual total engagement (an 8Knot port), computed live from base tables over resolved platform identities — so one chart answers both 'how many arrived' and 'how many stayed'."))
-}
+	return true
+}()
 
 // parseRetentionThreshold reads ?retention_threshold (default 4).
 // Rejects non-integer and sub-1 values with an error the handler

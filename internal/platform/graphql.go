@@ -195,7 +195,7 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 				// query fails fast instead of grinding through the full
 				// 10-retry budget with exponential backoff. Genuine
 				// decode/wire-format errors still return immediately.
-				if isRetryableGraphQLReadError(readErr) && readRetries < maxReadRetries {
+				if isRetryableReadError(readErr) && readRetries < maxReadRetries {
 					readRetries++
 					// Use a short linear wait (1s, 2s, 3s) for body-read
 					// retries, not the exponential jitteredBackoff —
@@ -423,14 +423,16 @@ func joinErrs(msgs []string) string {
 // from GraphQL" vs REST. For now the classes are enough.
 var ErrNotGraphQLClassified = errors.New("graphql: not classified")
 
-// isRetryableGraphQLReadError classifies an error returned by io.ReadAll
-// on a 200-OK GraphQL response body. Added in v0.18.23 (Fix C) after
-// production logs showed GitHub's edge RST_STREAM'ing mid-body responses
-// to expensive batch queries on large repos. The pre-Fix-C code returned
-// these as terminal errors, fooling the scheduler into recording
-// `last_error` on repos that merely needed a retry on a fresh stream.
+
+// isRetryableReadError classifies an error surfaced while READING or
+// DECODING a 200-OK response body — GraphQL (io.ReadAll) and REST
+// pagination (json.Decoder) alike. v0.27.37 (summary/18 Phase 1g)
+// promoted it from isRetryableGraphQLReadError: the identical failure
+// (GitHub's edge RST_STREAM/CANCEL mid-body) was killing whole
+// collection jobs on the repo-wide REST walks, which is why
+// pytorch-class repos could never complete a force-full cycle.
 //
-// We recognize four shapes:
+// We recognize these shapes:
 //
 //   - http2.StreamError — the HTTP/2 transport surfaces RST_STREAM frames
 //     as this concrete type. CANCEL and INTERNAL_ERROR are the codes
@@ -442,10 +444,10 @@ var ErrNotGraphQLClassified = errors.New("graphql: not classified")
 //     / "unexpected EOF" in the error message. Belt and braces for
 //     wrapped/translated errors that don't preserve As-compatible types.
 //
-// Not retryable: decode failures, context cancellation (ctx path handles
-// that separately), nil. Keeping the substring list tight avoids the
-// classic "retry everything" failure mode.
-func isRetryableGraphQLReadError(err error) bool {
+// Not retryable: decode failures on intact bodies, context cancellation
+// (ctx path handles that separately), nil. Keeping the substring list
+// tight avoids the classic "retry everything" failure mode.
+func isRetryableReadError(err error) bool {
 	if err == nil {
 		return false
 	}

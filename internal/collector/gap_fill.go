@@ -22,6 +22,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -73,6 +74,14 @@ func NewGapFillerWithMode(store *db.PostgresStore, client platform.Client, logge
 // Called after each collection pass completes. Returns the number of items filled.
 func (gf *GapFiller) AssessAndFillGaps(ctx context.Context, repoID int64, owner, repo string, metaIssues, metaPRs int64) (int, error) {
 	totalFilled := 0
+	// v0.27.37 (summary/18 Phase 1c): fill errors are COLLECTED and
+	// returned. Pre-fix they were Warn'd and dropped, which made the
+	// v0.20.5 force_full_collect recovery unreachable for the exact
+	// failure class it exists for — a repo whose fill kept failing
+	// looped incompletely forever with no last_error. Partial fills
+	// are already staged before the error propagates (v0.20.9), so
+	// returning the error costs no data.
+	var fillErrs []error
 
 	// Check issue gaps.
 	collectedIssues, err := gf.store.GetCollectedIssueNumbers(ctx, repoID)
@@ -102,6 +111,7 @@ func (gf *GapFiller) AssessAndFillGaps(ctx context.Context, repoID int64, owner,
 				filled, err := gf.fillIssueGaps(ctx, repoID, owner, repo, toFetch)
 				if err != nil {
 					gf.logger.Warn("issue gap fill error", "error", err)
+					fillErrs = append(fillErrs, fmt.Errorf("issue gap fill: %w", err))
 				}
 				totalFilled += filled
 			}
@@ -135,6 +145,7 @@ func (gf *GapFiller) AssessAndFillGaps(ctx context.Context, repoID int64, owner,
 				filled, err := gf.fillPRGaps(ctx, repoID, owner, repo, toFetch)
 				if err != nil {
 					gf.logger.Warn("PR gap fill error", "error", err)
+					fillErrs = append(fillErrs, fmt.Errorf("PR gap fill: %w", err))
 				}
 				totalFilled += filled
 			}
@@ -144,7 +155,7 @@ func (gf *GapFiller) AssessAndFillGaps(ctx context.Context, repoID int64, owner,
 	if totalFilled > 0 {
 		gf.logger.Info("gap fill complete", "repo_id", repoID, "total_filled", totalFilled)
 	}
-	return totalFilled, nil
+	return totalFilled, errors.Join(fillErrs...)
 }
 
 // listAPIIssueNumbers iterates the platform's issue listing to extract all

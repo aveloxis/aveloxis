@@ -4,7 +4,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -74,8 +73,7 @@ func (s *Server) handleRepoContributors(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(contribs)
+	jsonResponse(w, contribs)
 }
 
 // handleRepoContributionsCoverage returns the enrichment-state
@@ -107,8 +105,7 @@ func (s *Server) handleRepoContributionsCoverage(w http.ResponseWriter, r *http.
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(cov)
+	jsonResponse(w, cov)
 }
 
 // handleRepoAffiliations returns the per-affiliation contributor count
@@ -135,6 +132,5 @@ func (s *Server) handleRepoAffiliations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(counts)
+	jsonResponse(w, counts)
 }

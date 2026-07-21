@@ -138,12 +138,10 @@ func TestScrubArgsInPlaceLeavesNonStringTypesAlone(t *testing.T) {
 	if args[5] != nil {
 		t.Errorf("nil must pass through")
 	}
-	// A nil *string must not crash, must remain nil-valued.
-	if args[6] == nil {
-		// args[6] holds a typed nil pointer; the interface itself is
-		// non-nil but the pointer it wraps is nil. Both shapes are
-		// acceptable as long as we didn't panic above.
-	}
+	// A nil *string must not crash. args[6] holds a typed nil pointer;
+	// the interface itself is non-nil but the pointer it wraps is nil —
+	// both shapes are acceptable as long as the tracer didn't panic.
+	_ = args[6]
 }
 
 func TestScrubArgsInPlaceMutatesCallerSlice(t *testing.T) {

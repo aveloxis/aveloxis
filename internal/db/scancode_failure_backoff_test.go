@@ -74,7 +74,7 @@ func TestMigrateAddsScancodeFailureColumns(t *testing.T) {
 		"scancode_last_failed_at":  "TIMESTAMPTZ",
 	}
 	for col, typ := range columnTypes {
-		needle := `addColumnIfMissing(ctx, pg, logger, &errs, "aveloxis_data.repos", "` + col + `", "` + typ + `"`
+		needle := `addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "` + col + `", "` + typ + `"`
 		if !strings.Contains(src, needle) {
 			t.Errorf("migrate.go must call addColumnIfMissing for aveloxis_data.repos.%s (%s). Without this, upgrading instances would crash the v0.21.4 ScancodeWorker when it tries to update the column", col, typ)
 		}

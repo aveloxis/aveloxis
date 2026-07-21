@@ -142,57 +142,68 @@ func (sc *StagedCollector) WithIssueChildMode(mode string) *StagedCollector {
 	return sc
 }
 
+// CollectionModes bundles the per-instance collection-path selections
+// (v0.27.42, summary/18 Phase 4 — replaces the four-constructor ladder
+// that grew one positional parameter per phase). Zero value = the
+// safest defaults: REST everywhere, single-goroutine, default shard
+// size. Unknown strings collapse to those defaults in
+// NewStagedCollectorWithOptions, so a misspelled config fails safe.
+type CollectionModes struct {
+	PRChildMode    string // "rest" (default) | "graphql"
+	ListingMode    string // "rest" (default) | "graphql"
+	ThreadingMode  string // "single" (default) | "sharded"
+	IssueChildMode string // "rest" (default) | "graphql"
+	ShardSize      int    // <= 0 → defaultShardSize
+}
+
 // NewStagedCollector creates a staged collector in the fully-default
 // mode: REST per-PR child waterfall, REST issue/PR listing,
 // single-goroutine PR batch execution.
 func NewStagedCollector(client platform.Client, store *db.PostgresStore, logger *slog.Logger) *StagedCollector {
-	return NewStagedCollectorWithAllModes(client, store, logger, "rest", "rest", "single", defaultShardSize)
+	return NewStagedCollectorWithOptions(client, store, logger, CollectionModes{})
 }
 
-// NewStagedCollectorWithMode is the phase-1 single-field constructor
-// that sets pr_child_mode only. Preserved for backward compatibility.
-func NewStagedCollectorWithMode(client platform.Client, store *db.PostgresStore, logger *slog.Logger, mode string) *StagedCollector {
-	return NewStagedCollectorWithAllModes(client, store, logger, mode, "rest", "single", defaultShardSize)
-}
-
-// NewStagedCollectorWithModes is the phase-2 two-field constructor
-// (prChildMode + listingMode). Preserved for backward compatibility.
-func NewStagedCollectorWithModes(client platform.Client, store *db.PostgresStore, logger *slog.Logger, prChildMode, listingMode string) *StagedCollector {
-	return NewStagedCollectorWithAllModes(client, store, logger, prChildMode, listingMode, "single", defaultShardSize)
-}
-
-// NewStagedCollectorWithAllModes is the explicit dual-mode-plus-
-// threading constructor added in phase 3. prChildMode selects the
-// REST vs GraphQL per-PR child path. listingMode selects the unified
-// vs split issue/PR listing path. threadingMode selects single-
-// goroutine vs sharded PR batch execution. shardSize sets the
-// item-count threshold above which sharded mode fans out.
-//
-// Unknown string modes collapse to their safest defaults (rest,
-// rest, single). shardSize <= 0 collapses to defaultShardSize.
+// NewStagedCollectorWithAllModes is the legacy positional constructor
+// (phases 1–3). Prefer NewStagedCollectorWithOptions; kept because the
+// mode semantics are pinned by a broad test surface.
 func NewStagedCollectorWithAllModes(client platform.Client, store *db.PostgresStore, logger *slog.Logger, prChildMode, listingMode, threadingMode string, shardSize int) *StagedCollector {
-	if prChildMode != "graphql" {
-		prChildMode = "rest"
+	return NewStagedCollectorWithOptions(client, store, logger, CollectionModes{
+		PRChildMode:   prChildMode,
+		ListingMode:   listingMode,
+		ThreadingMode: threadingMode,
+		ShardSize:     shardSize,
+	})
+}
+
+// NewStagedCollectorWithOptions is THE constructor. Unknown string
+// modes collapse to their safest defaults (rest, rest, single, rest);
+// ShardSize <= 0 collapses to defaultShardSize.
+func NewStagedCollectorWithOptions(client platform.Client, store *db.PostgresStore, logger *slog.Logger, m CollectionModes) *StagedCollector {
+	if m.PRChildMode != "graphql" {
+		m.PRChildMode = "rest"
 	}
-	if listingMode != "graphql" {
-		listingMode = "rest"
+	if m.ListingMode != "graphql" {
+		m.ListingMode = "rest"
 	}
-	if threadingMode != "sharded" {
-		threadingMode = "single"
+	if m.ThreadingMode != "sharded" {
+		m.ThreadingMode = "single"
 	}
-	if shardSize <= 0 {
-		shardSize = defaultShardSize
+	if m.IssueChildMode != "graphql" {
+		m.IssueChildMode = "rest"
+	}
+	if m.ShardSize <= 0 {
+		m.ShardSize = defaultShardSize
 	}
 	return &StagedCollector{
 		client:         client,
 		store:          store,
 		logger:         logger,
 		platID:         int16(client.Platform()),
-		prChildMode:    prChildMode,
-		listingMode:    listingMode,
-		threadingMode:  threadingMode,
-		shardSize:      shardSize,
-		issueChildMode: "rest", // phase 5 — opt in via WithIssueChildMode
+		prChildMode:    m.PRChildMode,
+		listingMode:    m.ListingMode,
+		threadingMode:  m.ThreadingMode,
+		shardSize:      m.ShardSize,
+		issueChildMode: m.IssueChildMode,
 	}
 }
 
@@ -1095,6 +1106,13 @@ type Processor struct {
 	resolver *db.ContributorResolver
 	logger   *slog.Logger
 	errors   int // count of individual row processing failures
+	// unresolvableRefs counts messages whose parent could not be
+	// resolved (no number, no id). v0.27.37 (summary/18 Phase 1b):
+	// this skip path silently dropped EVERY GitLab conversation
+	// comment on the main path for the product's whole life because
+	// the client never set the parent number — one aggregate WARN per
+	// repo makes the class impossible to lose silently again.
+	unresolvableRefs int
 }
 
 // NewProcessor creates a staging processor.
@@ -1176,6 +1194,10 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 		p.logger.Warn("failed to update final processing status", "repo_id", repoID, "error", err)
 	}
 
+	if p.unresolvableRefs > 0 {
+		p.logger.Warn("messages skipped: parent reference unresolvable (no number, no id) — a platform client is emitting refs the processor cannot link",
+			"repo_id", repoID, "skipped", p.unresolvableRefs)
+	}
 	p.logger.Info("processing complete", "repo_id", repoID, "errors", p.errors)
 	return nil
 }
@@ -1235,275 +1257,329 @@ func (p *Processor) resolveUser(ctx context.Context, platID int16, ref model.Use
 }
 
 func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, entityType string, payload json.RawMessage) error {
+	// v0.27.42 (summary/18 Phase 4): pure dispatcher — one method per
+	// entity type, extracted verbatim from the former 272-line switch.
 	switch entityType {
 	case EntityContributor:
-		// Should not reach here — contributors are batched in processBatch.
-		// Fallback just in case.
-		var c model.Contributor
-		if err := json.Unmarshal(payload, &c); err != nil {
-			return err
-		}
-		return p.store.UpsertContributor(ctx, &c)
-
+		return p.processStagedContributor(ctx, repoID, platID, payload)
 	case EntityIssue:
-		var env stagedIssue
-		if err := json.Unmarshal(payload, &env); err != nil {
-			return err
-		}
-		issue := &env.Issue
-		issue.RepoID = repoID
-		issue.ReporterID = p.resolveUser(ctx, platID, issue.ReporterRef)
-		issue.ClosedByID = p.resolveUser(ctx, platID, issue.ClosedByRef)
-
-		issueID, err := p.store.UpsertIssue(ctx, issue)
-		if err != nil {
-			return err
-		}
-
-		// Process bundled children using the parent's DB ID.
-		if len(env.Labels) > 0 {
-			if err := p.store.UpsertIssueLabels(ctx, issueID, repoID, env.Labels); err != nil {
-				p.logger.Warn("failed to upsert issue labels", "issue_id", issueID, "error", err)
-			}
-		}
-		if len(env.Assignees) > 0 {
-			// v0.26.5: resolve each assignee's identity into cntrb_id —
-			// the same contract as reporter/author above. Before this,
-			// issue_assignees.cntrb_id was 0% populated since inception.
-			for i := range env.Assignees {
-				env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
-			}
-			if err := p.store.UpsertIssueAssignees(ctx, issueID, repoID, env.Assignees); err != nil {
-				p.logger.Warn("failed to upsert issue assignees", "issue_id", issueID, "error", err)
-			}
-		}
-		return nil
-
+		return p.processStagedIssue(ctx, repoID, platID, payload)
 	case EntityPullRequest:
-		var env stagedPR
-		if err := json.Unmarshal(payload, &env); err != nil {
-			return err
-		}
-		pr := &env.PR
-		pr.RepoID = repoID
-		pr.AuthorID = p.resolveUser(ctx, platID, pr.AuthorRef)
-
-		prID, err := p.store.UpsertPullRequest(ctx, pr)
-		if err != nil {
-			return err
-		}
-
-		// Process all bundled children using the parent's DB ID.
-		if len(env.Labels) > 0 {
-			if err := p.store.UpsertPRLabels(ctx, prID, repoID, env.Labels); err != nil {
-				p.logger.Warn("failed to upsert PR labels", "pr_id", prID, "error", err)
-			}
-		}
-		if len(env.Assignees) > 0 {
-			for i := range env.Assignees {
-				env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
-			}
-			if err := p.store.UpsertPRAssignees(ctx, prID, repoID, env.Assignees); err != nil {
-				p.logger.Warn("failed to upsert PR assignees", "pr_id", prID, "error", err)
-			}
-		}
-		if len(env.Reviewers) > 0 {
-			for i := range env.Reviewers {
-				env.Reviewers[i].ContributorID = p.resolveUser(ctx, platID, env.Reviewers[i].UserRef)
-			}
-			if err := p.store.UpsertPRReviewers(ctx, prID, repoID, env.Reviewers); err != nil {
-				p.logger.Warn("failed to upsert PR reviewers", "pr_id", prID, "error", err)
-			}
-		}
-		for _, review := range env.Reviews {
-			review.PRID = prID
-			review.RepoID = repoID
-			review.ContributorID = p.resolveUser(ctx, platID, review.AuthorRef)
-			if err := p.store.UpsertPRReview(ctx, &review); err != nil {
-				p.logger.Warn("failed to upsert PR review", "pr_id", prID, "error", err)
-			}
-		}
-		for _, commit := range env.Commits {
-			commit.PRID = prID
-			commit.RepoID = repoID
-			commit.AuthorID = p.resolveUser(ctx, platID, commit.AuthorRef)
-			if err := p.store.UpsertPRCommit(ctx, &commit); err != nil {
-				p.logger.Warn("failed to upsert PR commit", "pr_id", prID, "error", err)
-			}
-		}
-		for _, file := range env.Files {
-			file.PRID = prID
-			file.RepoID = repoID
-			if err := p.store.UpsertPRFile(ctx, &file); err != nil {
-				p.logger.Warn("failed to upsert PR file", "pr_id", prID, "error", err)
-			}
-		}
-		var headMetaID, baseMetaID int64
-		if env.MetaHead != nil {
-			env.MetaHead.PRID = prID
-			env.MetaHead.RepoID = repoID
-			var metaErr error
-			env.MetaHead.AuthorID = p.resolveUser(ctx, platID, env.MetaHead.AuthorRef)
-			headMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaHead)
-			if metaErr != nil {
-				p.logger.Warn("failed to upsert PR meta (head)", "pr_id", prID, "error", metaErr)
-			}
-		}
-		if env.MetaBase != nil {
-			env.MetaBase.PRID = prID
-			env.MetaBase.RepoID = repoID
-			var metaErr error
-			env.MetaBase.AuthorID = p.resolveUser(ctx, platID, env.MetaBase.AuthorRef)
-			baseMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaBase)
-			if metaErr != nil {
-				p.logger.Warn("failed to upsert PR meta (base)", "pr_id", prID, "error", metaErr)
-			}
-		}
-		// Insert fork repo details linked to their corresponding meta rows.
-		if env.RepoHead != nil && headMetaID != 0 {
-			env.RepoHead.MetaID = headMetaID
-			if err := p.store.UpsertPRRepo(ctx, env.RepoHead); err != nil {
-				p.logger.Warn("failed to upsert PR repo (head)", "pr_id", prID, "error", err)
-			}
-		}
-		if env.RepoBase != nil && baseMetaID != 0 {
-			env.RepoBase.MetaID = baseMetaID
-			if err := p.store.UpsertPRRepo(ctx, env.RepoBase); err != nil {
-				p.logger.Warn("failed to upsert PR repo (base)", "pr_id", prID, "error", err)
-			}
-		}
-		return nil
-
+		return p.processStagedPR(ctx, repoID, platID, payload)
 	case EntityIssueEvent:
-		var event model.IssueEvent
-		if err := json.Unmarshal(payload, &event); err != nil {
-			return err
-		}
-		event.RepoID = repoID
-		// Resolve platform issue number to DB issue_id.
-		if event.PlatformIssueID != 0 {
-			dbID, err := p.store.FindIssueDBID(ctx, repoID, event.PlatformIssueID)
-			if err != nil || dbID == 0 {
-				return nil // parent issue not in DB — skip silently
-			}
-			event.IssueID = dbID
-		}
-		if event.IssueID == 0 {
-			return nil // no parent issue — skip
-		}
-		event.ContributorID = p.resolveUser(ctx, platID, event.ActorRef)
-		return p.store.UpsertIssueEvent(ctx, &event)
-
+		return p.processStagedIssueEvent(ctx, repoID, platID, payload)
 	case EntityPREvent:
-		var event model.PullRequestEvent
-		if err := json.Unmarshal(payload, &event); err != nil {
-			return err
-		}
-		event.RepoID = repoID
-		// Resolve platform PR number to DB pull_request_id.
-		if event.PlatformPRID != 0 {
-			dbID, err := p.store.FindPRDBID(ctx, repoID, event.PlatformPRID)
-			if err != nil || dbID == 0 {
-				return nil // parent PR not in DB — skip silently
-			}
-			event.PRID = dbID
-		}
-		if event.PRID == 0 {
-			return nil // no parent PR — skip
-		}
-		event.ContributorID = p.resolveUser(ctx, platID, event.ActorRef)
-		return p.store.UpsertPREvent(ctx, &event)
-
+		return p.processStagedPREvent(ctx, repoID, platID, payload)
 	case EntityMessage:
-		var msg platform.MessageWithRef
-		if err := json.Unmarshal(payload, &msg); err != nil {
-			return err
-		}
-		msg.Message.RepoID = repoID
-		msg.Message.ContributorID = p.resolveUser(ctx, platID, msg.Message.AuthorRef)
-		// Resolve platform issue/PR numbers to DB IDs for message refs.
-		if msg.IssueRef != nil {
-			msg.IssueRef.RepoID = repoID
-			num := int64(msg.IssueRef.PlatformIssueNumber)
-			if num == 0 {
-				num = msg.IssueRef.IssueID // fallback to IssueID if set
-			}
-			if num != 0 {
-				dbID, err := p.store.FindIssueDBID(ctx, repoID, num)
-				if err != nil || dbID == 0 {
-					return nil // parent issue not in DB — skip
-				}
-				msg.IssueRef.IssueID = dbID
-			} else {
-				return nil // no way to resolve parent — skip
-			}
-		}
-		if msg.PRRef != nil {
-			msg.PRRef.RepoID = repoID
-			num := int64(msg.PRRef.PlatformPRNumber)
-			if num == 0 {
-				num = msg.PRRef.PRID // fallback
-			}
-			if num != 0 {
-				dbID, err := p.store.FindPRDBID(ctx, repoID, num)
-				if err != nil || dbID == 0 {
-					return nil // parent PR not in DB — skip
-				}
-				msg.PRRef.PRID = dbID
-			} else {
-				return nil // no way to resolve parent — skip
-			}
-		}
-		return p.store.UpsertMessageBatch(ctx, []platform.MessageWithRef{msg})
-
+		return p.processStagedMessage(ctx, repoID, platID, payload)
 	case EntityReviewComment:
-		var rc platform.ReviewCommentWithRef
-		if err := json.Unmarshal(payload, &rc); err != nil {
-			return err
-		}
-		rc.Message.RepoID = repoID
-		rc.Comment.RepoID = repoID
-		rc.Message.ContributorID = p.resolveUser(ctx, platID, rc.Message.AuthorRef)
-		// Resolve platform review ID to DB pr_review_id — repo-scoped
-		// (v0.25.33): the parent review must belong to this repo, or a
-		// case-variant duplicate pair gets cross-linked bridge rows.
-		if rc.Comment.PlatformReviewID != 0 {
-			dbID, err := p.store.FindReviewDBID(ctx, repoID, rc.Comment.PlatformReviewID)
-			if err == nil && dbID != 0 {
-				rc.Comment.ReviewID = dbID
-			}
-		}
-		return p.store.UpsertReviewCommentBatch(ctx, []platform.ReviewCommentWithRef{rc})
-
+		return p.processStagedReviewComment(ctx, repoID, platID, payload)
 	case EntityRelease:
-		var rel model.Release
-		if err := json.Unmarshal(payload, &rel); err != nil {
-			return err
-		}
-		rel.RepoID = repoID
-		return p.store.UpsertRelease(ctx, &rel)
-
+		return p.processStagedRelease(ctx, repoID, platID, payload)
 	case EntityRepoInfo:
-		var info model.RepoInfo
-		if err := json.Unmarshal(payload, &info); err != nil {
-			return err
-		}
-		info.RepoID = repoID
-		// Rotate previous snapshot to history before inserting the latest.
-		if err := p.store.RotateRepoInfoToHistory(ctx, repoID); err != nil {
-			p.logger.Warn("failed to rotate repo info to history", "repo_id", repoID, "error", err)
-		}
-		return p.store.InsertRepoInfo(ctx, &info)
-
+		return p.processStagedRepoInfo(ctx, repoID, platID, payload)
 	case EntityCloneStats:
-		var clone model.RepoClone
-		if err := json.Unmarshal(payload, &clone); err != nil {
-			return err
-		}
-		clone.RepoID = repoID
-		return p.store.UpsertRepoClone(ctx, &clone)
-
+		return p.processStagedCloneStats(ctx, repoID, platID, payload)
 	default:
 		return fmt.Errorf("unknown entity type: %s", entityType)
 	}
+}
+
+// processStagedContributor handles one staged EntityContributor row (v0.27.42 — extracted from
+// the former 272-line processOne switch; behavior identical).
+func (p *Processor) processStagedContributor(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	// Should not reach here — contributors are batched in processBatch.
+	// Fallback just in case.
+	var c model.Contributor
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return err
+	}
+	return p.store.UpsertContributor(ctx, &c)
+}
+
+// processStagedIssue handles one staged EntityIssue row (v0.27.42 — extracted from
+// the former 272-line processOne switch; behavior identical).
+func (p *Processor) processStagedIssue(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	var env stagedIssue
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return err
+	}
+	issue := &env.Issue
+	issue.RepoID = repoID
+	issue.ReporterID = p.resolveUser(ctx, platID, issue.ReporterRef)
+	issue.ClosedByID = p.resolveUser(ctx, platID, issue.ClosedByRef)
+
+	issueID, err := p.store.UpsertIssue(ctx, issue)
+	if err != nil {
+		return err
+	}
+
+	// Process bundled children using the parent's DB ID.
+	if len(env.Labels) > 0 {
+		if err := p.store.UpsertIssueLabels(ctx, issueID, repoID, env.Labels); err != nil {
+			p.logger.Warn("failed to upsert issue labels", "issue_id", issueID, "error", err)
+		}
+	}
+	if len(env.Assignees) > 0 {
+		// v0.26.5: resolve each assignee's identity into cntrb_id —
+		// the same contract as reporter/author above. Before this,
+		// issue_assignees.cntrb_id was 0% populated since inception.
+		for i := range env.Assignees {
+			env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
+		}
+		if err := p.store.UpsertIssueAssignees(ctx, issueID, repoID, env.Assignees); err != nil {
+			p.logger.Warn("failed to upsert issue assignees", "issue_id", issueID, "error", err)
+		}
+	}
+	return nil
+}
+
+// processStagedPR handles one staged EntityPullRequest row (v0.27.42 — extracted from
+// the former 272-line processOne switch; behavior identical).
+func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	var env stagedPR
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return err
+	}
+	pr := &env.PR
+	pr.RepoID = repoID
+	pr.AuthorID = p.resolveUser(ctx, platID, pr.AuthorRef)
+
+	prID, err := p.store.UpsertPullRequest(ctx, pr)
+	if err != nil {
+		return err
+	}
+
+	// Process all bundled children using the parent's DB ID.
+	if len(env.Labels) > 0 {
+		if err := p.store.UpsertPRLabels(ctx, prID, repoID, env.Labels); err != nil {
+			p.logger.Warn("failed to upsert PR labels", "pr_id", prID, "error", err)
+		}
+	}
+	if len(env.Assignees) > 0 {
+		for i := range env.Assignees {
+			env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
+		}
+		if err := p.store.UpsertPRAssignees(ctx, prID, repoID, env.Assignees); err != nil {
+			p.logger.Warn("failed to upsert PR assignees", "pr_id", prID, "error", err)
+		}
+	}
+	if len(env.Reviewers) > 0 {
+		for i := range env.Reviewers {
+			env.Reviewers[i].ContributorID = p.resolveUser(ctx, platID, env.Reviewers[i].UserRef)
+		}
+		if err := p.store.UpsertPRReviewers(ctx, prID, repoID, env.Reviewers); err != nil {
+			p.logger.Warn("failed to upsert PR reviewers", "pr_id", prID, "error", err)
+		}
+	}
+	for _, review := range env.Reviews {
+		review.PRID = prID
+		review.RepoID = repoID
+		review.ContributorID = p.resolveUser(ctx, platID, review.AuthorRef)
+		if err := p.store.UpsertPRReview(ctx, &review); err != nil {
+			p.logger.Warn("failed to upsert PR review", "pr_id", prID, "error", err)
+		}
+	}
+	for _, commit := range env.Commits {
+		commit.PRID = prID
+		commit.RepoID = repoID
+		commit.AuthorID = p.resolveUser(ctx, platID, commit.AuthorRef)
+		if err := p.store.UpsertPRCommit(ctx, &commit); err != nil {
+			p.logger.Warn("failed to upsert PR commit", "pr_id", prID, "error", err)
+		}
+	}
+	for _, file := range env.Files {
+		file.PRID = prID
+		file.RepoID = repoID
+		if err := p.store.UpsertPRFile(ctx, &file); err != nil {
+			p.logger.Warn("failed to upsert PR file", "pr_id", prID, "error", err)
+		}
+	}
+	var headMetaID, baseMetaID int64
+	if env.MetaHead != nil {
+		env.MetaHead.PRID = prID
+		env.MetaHead.RepoID = repoID
+		var metaErr error
+		env.MetaHead.AuthorID = p.resolveUser(ctx, platID, env.MetaHead.AuthorRef)
+		headMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaHead)
+		if metaErr != nil {
+			p.logger.Warn("failed to upsert PR meta (head)", "pr_id", prID, "error", metaErr)
+		}
+	}
+	if env.MetaBase != nil {
+		env.MetaBase.PRID = prID
+		env.MetaBase.RepoID = repoID
+		var metaErr error
+		env.MetaBase.AuthorID = p.resolveUser(ctx, platID, env.MetaBase.AuthorRef)
+		baseMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaBase)
+		if metaErr != nil {
+			p.logger.Warn("failed to upsert PR meta (base)", "pr_id", prID, "error", metaErr)
+		}
+	}
+	// Insert fork repo details linked to their corresponding meta rows.
+	if env.RepoHead != nil && headMetaID != 0 {
+		env.RepoHead.MetaID = headMetaID
+		if err := p.store.UpsertPRRepo(ctx, env.RepoHead); err != nil {
+			p.logger.Warn("failed to upsert PR repo (head)", "pr_id", prID, "error", err)
+		}
+	}
+	if env.RepoBase != nil && baseMetaID != 0 {
+		env.RepoBase.MetaID = baseMetaID
+		if err := p.store.UpsertPRRepo(ctx, env.RepoBase); err != nil {
+			p.logger.Warn("failed to upsert PR repo (base)", "pr_id", prID, "error", err)
+		}
+	}
+	return nil
+}
+
+// processStagedIssueEvent handles one staged EntityIssueEvent row (v0.27.42 — extracted from
+// the former 272-line processOne switch; behavior identical).
+func (p *Processor) processStagedIssueEvent(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	var event model.IssueEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return err
+	}
+	event.RepoID = repoID
+	// Resolve platform issue number to DB issue_id.
+	if event.PlatformIssueID != 0 {
+		dbID, err := p.store.FindIssueDBID(ctx, repoID, event.PlatformIssueID)
+		if err != nil || dbID == 0 {
+			return nil // parent issue not in DB — skip silently
+		}
+		event.IssueID = dbID
+	}
+	if event.IssueID == 0 {
+		return nil // no parent issue — skip
+	}
+	event.ContributorID = p.resolveUser(ctx, platID, event.ActorRef)
+	return p.store.UpsertIssueEvent(ctx, &event)
+}
+
+// processStagedPREvent handles one staged EntityPREvent row (v0.27.42 — extracted from
+// the former 272-line processOne switch; behavior identical).
+func (p *Processor) processStagedPREvent(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	var event model.PullRequestEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return err
+	}
+	event.RepoID = repoID
+	// Resolve platform PR number to DB pull_request_id.
+	if event.PlatformPRID != 0 {
+		dbID, err := p.store.FindPRDBID(ctx, repoID, event.PlatformPRID)
+		if err != nil || dbID == 0 {
+			return nil // parent PR not in DB — skip silently
+		}
+		event.PRID = dbID
+	}
+	if event.PRID == 0 {
+		return nil // no parent PR — skip
+	}
+	event.ContributorID = p.resolveUser(ctx, platID, event.ActorRef)
+	return p.store.UpsertPREvent(ctx, &event)
+}
+
+// processStagedMessage handles one staged EntityMessage row (v0.27.42 — extracted from
+// the former 272-line processOne switch; behavior identical).
+func (p *Processor) processStagedMessage(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	var msg platform.MessageWithRef
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return err
+	}
+	msg.Message.RepoID = repoID
+	msg.Message.ContributorID = p.resolveUser(ctx, platID, msg.Message.AuthorRef)
+	// Resolve platform issue/PR numbers to DB IDs for message refs.
+	if msg.IssueRef != nil {
+		msg.IssueRef.RepoID = repoID
+		num := int64(msg.IssueRef.PlatformIssueNumber)
+		if num == 0 {
+			num = msg.IssueRef.IssueID // fallback to IssueID if set
+		}
+		if num != 0 {
+			dbID, err := p.store.FindIssueDBID(ctx, repoID, num)
+			if err != nil || dbID == 0 {
+				return nil // parent issue not in DB — skip
+			}
+			msg.IssueRef.IssueID = dbID
+		} else {
+			p.unresolvableRefs++
+			return nil // no way to resolve parent — skip (counted; WARN at repo end)
+		}
+	}
+	if msg.PRRef != nil {
+		msg.PRRef.RepoID = repoID
+		num := int64(msg.PRRef.PlatformPRNumber)
+		if num == 0 {
+			num = msg.PRRef.PRID // fallback
+		}
+		if num != 0 {
+			dbID, err := p.store.FindPRDBID(ctx, repoID, num)
+			if err != nil || dbID == 0 {
+				return nil // parent PR not in DB — skip
+			}
+			msg.PRRef.PRID = dbID
+		} else {
+			p.unresolvableRefs++
+			return nil // no way to resolve parent — skip (counted; WARN at repo end)
+		}
+	}
+	return p.store.UpsertMessageBatch(ctx, []platform.MessageWithRef{msg})
+}
+
+// processStagedReviewComment handles one staged EntityReviewComment row (v0.27.42 — extracted from
+// the former 272-line processOne switch; behavior identical).
+func (p *Processor) processStagedReviewComment(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	var rc platform.ReviewCommentWithRef
+	if err := json.Unmarshal(payload, &rc); err != nil {
+		return err
+	}
+	rc.Message.RepoID = repoID
+	rc.Comment.RepoID = repoID
+	rc.Message.ContributorID = p.resolveUser(ctx, platID, rc.Message.AuthorRef)
+	// Resolve platform review ID to DB pr_review_id — repo-scoped
+	// (v0.25.33): the parent review must belong to this repo, or a
+	// case-variant duplicate pair gets cross-linked bridge rows.
+	if rc.Comment.PlatformReviewID != 0 {
+		dbID, err := p.store.FindReviewDBID(ctx, repoID, rc.Comment.PlatformReviewID)
+		if err == nil && dbID != 0 {
+			rc.Comment.ReviewID = dbID
+		}
+	}
+	return p.store.UpsertReviewCommentBatch(ctx, []platform.ReviewCommentWithRef{rc})
+}
+
+// processStagedRelease handles one staged EntityRelease row (v0.27.42 — extracted from
+// the former 272-line processOne switch; behavior identical).
+func (p *Processor) processStagedRelease(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	var rel model.Release
+	if err := json.Unmarshal(payload, &rel); err != nil {
+		return err
+	}
+	rel.RepoID = repoID
+	return p.store.UpsertRelease(ctx, &rel)
+}
+
+// processStagedRepoInfo handles one staged EntityRepoInfo row (v0.27.42 — extracted from
+// the former 272-line processOne switch; behavior identical).
+func (p *Processor) processStagedRepoInfo(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	var info model.RepoInfo
+	if err := json.Unmarshal(payload, &info); err != nil {
+		return err
+	}
+	info.RepoID = repoID
+	// Rotate previous snapshot to history before inserting the latest.
+	if err := p.store.RotateRepoInfoToHistory(ctx, repoID); err != nil {
+		p.logger.Warn("failed to rotate repo info to history", "repo_id", repoID, "error", err)
+	}
+	return p.store.InsertRepoInfo(ctx, &info)
+}
+
+// processStagedCloneStats handles one staged EntityCloneStats row (v0.27.42 — extracted from
+// the former 272-line processOne switch; behavior identical).
+func (p *Processor) processStagedCloneStats(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	var clone model.RepoClone
+	if err := json.Unmarshal(payload, &clone); err != nil {
+		return err
+	}
+	clone.RepoID = repoID
+	return p.store.UpsertRepoClone(ctx, &clone)
 }

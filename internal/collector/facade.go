@@ -99,7 +99,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 				"path", path,
 				"existing_url", existingURL,
 				"expected_url", gitURL)
-			os.RemoveAll(path)
+			_ = os.RemoveAll(path)
 			return f.freshClone(ctx, gitURL, path)
 		}
 
@@ -114,7 +114,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		if err := cmd.Run(); err != nil {
 			f.logger.Warn("fetch failed, re-cloning",
 				"path", path, "error", err, "stderr", stderr.String())
-			os.RemoveAll(path)
+			_ = os.RemoveAll(path)
 			return f.freshClone(ctx, gitURL, path)
 		}
 
@@ -129,7 +129,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 	// If the directory exists but isn't a valid repo (interrupted clone), remove it.
 	if _, err := os.Stat(path); err == nil {
 		f.logger.Warn("removing corrupt/incomplete clone directory", "path", path)
-		os.RemoveAll(path)
+		_ = os.RemoveAll(path)
 	}
 
 	return f.freshClone(ctx, gitURL, path)
@@ -463,6 +463,13 @@ func parseNumstatLine(c *parsedCommit, line string) {
 // — that bug was the source of the v0.19.11 dashboard mis-display.
 // See `summary/04-refactoring-plan.md` for the diagnosis.
 func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, batch []*parsedCommit, result *FacadeResult) error {
+	unparseableTimestamps := 0
+	defer func() {
+		if unparseableTimestamps > 0 {
+			f.logger.Warn("commits with unparseable author dates — NULL timestamps exclude them from every time-bucketed series",
+				"repo_id", repoID, "count", unparseableTimestamps)
+		}
+	}()
 	for _, pc := range batch {
 		now := time.Now()
 		// If there are no per-file entries, insert a single row for the commit.
@@ -475,6 +482,14 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 		authorAff := f.affiliations.Resolve(ctx, pc.AuthorEmail)
 		committerAff := f.affiliations.Resolve(ctx, pc.CommitterEmail)
 
+		if parseTimestamp(pc.AuthorDate) == nil && pc.AuthorDate != "" {
+			// v0.27.39 (summary/18 Phase 2): an unparseable author date
+			// silently NULLs cmt_author_timestamp — the commit then
+			// vanishes from every timestamp-bucketed series while still
+			// counting in COUNT(DISTINCT hash) stats, so charts and
+			// tiles disagree with no trace.
+			unparseableTimestamps++
+		}
 		commitInserted := false
 		for _, file := range files {
 			commit := &model.Commit{

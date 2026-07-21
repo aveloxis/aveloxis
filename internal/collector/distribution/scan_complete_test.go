@@ -230,10 +230,6 @@ func TestCompositeScannerReturnsIncompleteOnEcosystemsCircuitOpen(t *testing.T) 
 	if complete {
 		t.Error("scan with ecosyste.ms circuit open must return complete=false — the source was not consulted; row must re-collect when breaker closes")
 	}
-	if !scanner.Healthy() {
-		// Healthy() should also report false while the breaker is open.
-		// (Asserted separately, but confirm here for completeness.)
-	}
 	if scanner.Healthy() {
 		t.Error("Healthy() must return false while ecosyste.ms breaker is open")
 	}

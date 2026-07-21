@@ -87,7 +87,7 @@ func TestPaginate_204YieldsZeroItems(t *testing.T) {
 	seq := PaginateGitHub[fakeContributor](context.Background(), client, "/repos/x/y/contributors")
 	count := 0
 	var lastErr error
-	var fn func() = func() {
+	fn := func() {
 		next, stop := iter.Pull2(seq)
 		defer stop()
 		for {

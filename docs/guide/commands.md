@@ -359,10 +359,10 @@ Creates or updates the database schema.
 aveloxis migrate
 ```
 
-Creates 136 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 137 tables and 20 materialized views across three PostgreSQL schemas:
 
 - **`aveloxis_data`** (98 tables + 20 materialized views) -- all collected data
-- **`aveloxis_ops`** (34 tables) -- operational state
+- **`aveloxis_ops`** (35 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.
@@ -717,6 +717,90 @@ Exit code 1 on any FAIL-level difference. For a coarser whole-schema
 row-count comparison, see `aveloxis data-test`.
 
 ---
+
+## `aveloxis reconcile-repos`
+
+Heals the stranded-repo class: non-archived `repos` rows with no
+`collection_queue` row — invisible to the scheduler forever. Production
+audit (2026-07-21) root-caused the cohort to GitHub renames + prelim's
+duplicate skip+dequeue (which dequeues without archiving), plus a
+smaller lost-enqueue share. Each stranded repo is classified by a LIVE
+redirect check:
+
+- dead upstream (404/410) → archived (the outcome prelim applies)
+- redirects to a **tracked** repo → dataless duplicates heal onto the
+  winner (`HealRenamedDuplicate`); data-bearing duplicates consolidate
+  through the dedup-repos per-pair machinery (repoints + leaves-first
+  deletes)
+- redirects to an **untracked** URL → re-enqueued (prelim renames it
+  in place on the next cycle — rename detection is prelim's job)
+- alive at its own URL → re-enqueued (a lost queue row)
+
+```bash
+aveloxis reconcile-repos --dry-run   # per-repo classification, no writes
+aveloxis reconcile-repos --limit 50  # canary
+aveloxis reconcile-repos             # everything
+```
+
+The scheduler also logs a startup gauge (`non-archived repos with no
+collection_queue row`) pointing here whenever the count is non-zero.
+Re-run until stranded = 0; healed repos drop out of the set.
+
+## `aveloxis data-verify`
+
+The standing data-verification program (v0.27.43): runs the read-only
+invariant probe battery against the configured database and exits 1 on
+any FAIL — suitable for gating releases and cron runs. Probes:
+structural invariants (case-duplicate repos, Default-group singleton,
+stranded repos, stale >24h locks, cross-kind message corruption with
+migration-state awareness), sampled count-integrity (cached queue
+counts vs actual rows, gathered vs forge metadata at the gap
+detector's 5% line, batch-vs-single stats agreement), and fill rates
+(report-only unless floors are set).
+
+```bash
+aveloxis data-verify                          # full battery, human report
+aveloxis data-verify --json                   # automation form
+aveloxis data-verify --sample 500             # wider drift/equality sample
+aveloxis data-verify --ground-truth 10        # ALSO re-fetch live GitHub
+                                              # metadata for 10 sampled repos
+                                              # and compare (needs API keys)
+aveloxis data-verify --min-identity-fill 95   # optional floors → WARN below
+```
+
+Severities: FAIL = a code-enforced invariant is broken (exit 1);
+WARN = known-and-healing state or operator-attention signal (pending
+heal worklist, stranded repos, schema behind the binary — each WARN
+names its fix command); OK = verified. Safe against production: every
+probe is read-only and bounded.
+
+## `aveloxis heal-messages`
+
+Repairs message rows corrupted by the pre-v0.27.38 cross-kind ID
+collision (issue/PR conversation comments, inline review comments, and
+review bodies share overlapping GitHub ID sequences; under the old
+two-column arbiter the later writer silently overwrote the earlier
+kind's text — 198,237 rows on the production fleet). The v0.27.38
+migration captures the affected rows into
+`aveloxis_ops.message_heal_worklist`; this command consumes it.
+
+Each pass refetches the claiming parents' comments per-item
+(parent-deduplicated — API cost is per distinct issue/PR, not per
+collision), re-creates the correct rows under the kinded arbiter,
+deletes the stale cross-kind bridge links, and stamps `healed_at`.
+Failed parents leave their rows pending; re-run until "nothing
+pending".
+
+```bash
+aveloxis heal-messages --dry-run       # plan: pending rows, distinct parents
+aveloxis heal-messages --limit 1000    # canary pass
+aveloxis heal-messages                 # everything pending
+```
+
+Flags: `--limit` (0 = all pending), `--dry-run`, `--augur-keys`.
+Requires GitHub API keys (this healer refetches). Safe with serve
+stopped; after a fleet restart, run it once the force-full wave
+crests so it doesn't compete with collection for the key pool.
 
 ## `aveloxis heal-vulnerabilities`
 

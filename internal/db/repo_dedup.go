@@ -442,8 +442,22 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		// every bridge row (ANY repo_id) from a loser review to the
 		// winner's copy of the same review; delete the leftovers with no
 		// winner equivalent. No bridge may still reference a loser
-		// review when Step 4 deletes them. Neither table has a unique
-		// key involving pr_review_id, so the remaps cannot conflict.
+		// review when Step 4 deletes them.
+		//
+		// v0.27.49 COLLISION GUARD: the original v0.25.33 note said
+		// "neither table has a unique key involving pr_review_id, so
+		// the remaps cannot conflict" — TRUE then, FALSE since
+		// v0.27.15 created uq_pr_review_msg_ref (pr_review_id,
+		// msg_id). Both copies of a duplicated repo share the SAME
+		// messages rows (UNIQUE platform_msg_id/platform_id/msg_kind),
+		// so the winner usually ALREADY holds the (winner_review,
+		// msg) link the remap would create → 23505 (the 2026-07-22
+		// reconcile-repos failure wave). The msg_ref remap now skips
+		// rows whose winner-equivalent link exists; the blanket
+		// delete below removes them (the winner already has that
+		// link — dropping the loser's copy loses nothing).
+		// review_comments' uniques don't involve pr_review_id, so its
+		// remap stays unguarded.
 		{"remap cross-repo review_comments", `
 			UPDATE aveloxis_data.review_comments rc SET pr_review_id = wr.pr_review_id
 			FROM aveloxis_data.pull_request_reviews lr
@@ -458,7 +472,10 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 			FROM aveloxis_data.pull_request_reviews lr
 			JOIN aveloxis_data.pull_request_reviews wr
 			  ON wr.repo_id = $2 AND wr.platform_review_id = lr.platform_review_id
-			WHERE mr.pr_review_id = lr.pr_review_id AND lr.repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
+			WHERE mr.pr_review_id = lr.pr_review_id AND lr.repo_id = $1
+			  AND NOT EXISTS (
+			      SELECT 1 FROM aveloxis_data.pull_request_review_message_ref x
+			      WHERE x.pr_review_id = wr.pr_review_id AND x.msg_id = mr.msg_id)`, []any{pair.LoserID, pair.WinnerID}},
 		{"delete unmappable pull_request_review_message_ref cross-links", `
 			DELETE FROM aveloxis_data.pull_request_review_message_ref WHERE pr_review_id IN
 			(SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1)`, []any{pair.LoserID}},

@@ -127,9 +127,30 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 				fmt.Printf("  heal (dataless dup): %s -> repo %d (dup %d)\n", sr.GitURL, winnerID, sr.RepoID)
 				if !dryRun {
 					healed, herr := store.HealRenamedDuplicate(ctx, sr.RepoID, winnerID)
-					if herr != nil || !healed {
-						logger.Warn("reconcile: heal failed — skipping", "repo_id", sr.RepoID, "healed", healed, "error", herr)
+					if herr != nil {
+						logger.Warn("reconcile: heal failed — skipping", "repo_id", sr.RepoID, "error", herr)
 						skipped++
+						continue
+					}
+					if !healed {
+						// v0.27.49: healed=false with no error means the
+						// "dataless" dup (last_collected NULL) actually has
+						// residual child rows — the heal's FK fail-safe
+						// refused the delete (the 2026-07-22 apache/baremaps
+						// class). The consolidation machinery handles
+						// children properly; fall back to it instead of
+						// stranding the row for the next run.
+						logger.Info("reconcile: heal refused (residual children) — falling back to consolidation", "repo_id", sr.RepoID)
+						var winnerGit string
+						if wr, gerr := store.GetRepoByID(ctx, winnerID); gerr == nil {
+							winnerGit = wr.GitURL
+						}
+						if derr := db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {
+							logger.Warn("reconcile: fallback consolidation failed — skipping", "repo_id", sr.RepoID, "error", derr)
+							skipped++
+							continue
+						}
+						consolidated++
 						continue
 					}
 				}

@@ -185,3 +185,24 @@ func TestMetadataCallersPassForgeArchived(t *testing.T) {
 		}
 	}
 }
+
+// TestScopeRuntimeWordBackfillMigration pins the v0.27.51 backfill:
+// ” → 'runtime' on direct/transitive findings, self rows untouched
+// (scope vocabulary does not apply to a project's own advisories).
+func TestScopeRuntimeWordBackfillMigration(t *testing.T) {
+	src, err := os.ReadFile("migrate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+	for _, needle := range []string{
+		"v0.27.51 backfill dependency_scope '' -> 'runtime' on dependency findings",
+		"SET dependency_scope = 'runtime'",
+		"COALESCE(dependency_scope, '') = ''",
+		"COALESCE(dependency_kind, '') <> 'self'",
+	} {
+		if !strings.Contains(code, needle) {
+			t.Errorf("migrate.go missing v0.27.51 backfill needle %q", needle)
+		}
+	}
+}

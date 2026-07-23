@@ -1691,6 +1691,24 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		 ) latest
 		 WHERE r.repo_id = latest.repo_id
 		   AND COALESCE(r.repo_archived, FALSE) IS DISTINCT FROM (latest.status = 'Archived')`)
+
+	// v0.27.51: dependency_scope stores the WORD 'runtime' instead of
+	// '' (operator decision — '' was uninterpretable for direct table
+	// readers). Backfill every ''-scope direct/transitive finding:
+	// under the presentation contract '' already READ as runtime
+	// everywhere (IsRuntimeScope), so this is a spelling change, not a
+	// semantic one — and it is SELF-CORRECTING for legacy rows whose
+	// dep is really non-runtime: the upsert refreshes scope
+	// unconditionally on each repo's next scan, overwriting the
+	// backfilled 'runtime' with the fine value. kind='self' rows
+	// deliberately stay '' — scope vocabulary does not apply to a
+	// project's own advisories. Idempotent by predicate.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.51 backfill dependency_scope '' -> 'runtime' on dependency findings",
+		`UPDATE aveloxis_data.repo_deps_vulnerabilities
+		 SET dependency_scope = 'runtime'
+		 WHERE COALESCE(dependency_scope, '') = ''
+		   AND COALESCE(dependency_kind, '') <> 'self'`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

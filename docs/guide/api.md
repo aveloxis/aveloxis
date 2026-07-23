@@ -546,7 +546,9 @@ Token semantics:
   repo's next scan) and a `dependency_scope` when the lockfile flags
   the entry's scope. Since v0.27.46 DIRECT findings carry
   `dependency_scope` too, stamped from the manifest's own scope
-  (`dev`/`test`/`build`/`optional`/`peer`; `""` = runtime). GUIs
+  (`dev`/`test`/`build`/`optional`/`peer`; `"runtime"` explicit since
+  v0.27.51 — legacy `""` rows read as runtime and heal to the word on
+  each repo's next scan). GUIs
   should lead with direct findings — a repo with 3 direct and 400
   transitive findings must never headline "403 vulnerabilities".
 

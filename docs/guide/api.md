@@ -597,6 +597,13 @@ Token semantics:
   1.5 `vulnerabilities` array (`affects.ref` = component purl). SPDX
   (since v0.27.46): package-level SECURITY/advisory `externalRefs` —
   the 2.3-conformant vehicle (the old 400 is gone).
+- `GET /api/v1/repos/{repoID}/stats` — response gains (v0.27.50)
+  `archived` (the forge's read-only status, read from the latest
+  repo_info snapshot — the ACCURATE signal, distinct from the
+  internal repos.repo_archived flag) and `last_activity_at`
+  (most recent observed commit/issue/PR timestamp; omitted when the
+  repo has no activity). The GUI derives the Archived/Dormant chip
+  and the historical chart window from these.
 - `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
   `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
   dependency-analysis phase has not recorded anything for this repo

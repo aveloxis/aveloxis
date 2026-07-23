@@ -29,7 +29,7 @@ import (
 // the displayed data to reflect the API's current state.
 //
 // v0.23.0.
-func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int) error {
+func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool) error {
 	langJSON := []byte("{}")
 	if len(languages) > 0 {
 		b, err := json.Marshal(languages)
@@ -44,9 +44,17 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			SET repo_description = $2,
 			    primary_language = $3,
 			    languages        = $4::jsonb,
+			    -- v0.27.50: propagate the forge's archived status so
+			    -- repos.repo_archived stops disagreeing with the
+			    -- accurate repo_info.status (17,665 forge-archived
+			    -- repos had the flag false). Both directions: an
+			    -- un-archived repo flips back to false. prelim's
+			    -- dead-repo ArchiveRepo path is unaffected — those
+			    -- repos are dequeued and never reach Phase 0.
+			    repo_archived    = $5,
 			    data_collection_date = NOW()
 			WHERE repo_id = $1`,
-			repoID, description, primaryLanguage, langJSON)
+			repoID, description, primaryLanguage, langJSON, archived)
 		return err
 	})
 }

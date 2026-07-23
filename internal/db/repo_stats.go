@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 
+	"time"
+
 	"github.com/jackc/pgx/v5"
 )
 
@@ -25,6 +27,15 @@ type RepoStats struct {
 	MetadataCommits int   `json:"metadata_commits"` // commit_count from repo_info
 	Vulnerabilities int   `json:"vulnerabilities"`  // current (unresolved, non-self) CVEs from OSV.dev scan
 	CriticalVulns   int   `json:"critical_vulns"`   // current CVEs with severity CRITICAL or cvss_score >= 9.0
+	// Archived (v0.27.50) is the forge's read-only status from the
+	// latest repo_info snapshot (status='Archived') — the ACCURATE
+	// signal, distinct from the repos.repo_archived boolean (which
+	// prelim sets only for DEAD/404 repos). The GUI reads THIS.
+	Archived bool `json:"archived"`
+	// LastActivityAt (v0.27.50) is the most recent observed activity
+	// (MAX commit/issue/PR timestamp), driving the chart last-active
+	// ceiling + the dormant/archived chip. Nil = no activity yet.
+	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
 }
 
 // SearchRepoResult is a minimal repo record for search results.
@@ -92,14 +103,24 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 
 	// Metadata counts — from the most recent repo_info snapshot.
 	// ErrNoRows = never collected; zeros are the honest answer.
+	var status string
 	err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(pr_count, 0), COALESCE(issues_count, 0), COALESCE(commit_count, 0)
+		SELECT COALESCE(pr_count, 0), COALESCE(issues_count, 0), COALESCE(commit_count, 0),
+		       COALESCE(status, '')
 		FROM aveloxis_data.repo_info
 		WHERE repo_id = $1
 		ORDER BY data_collection_date DESC
-		LIMIT 1`, repoID).Scan(&st.MetadataPRs, &st.MetadataIssues, &st.MetadataCommits)
+		LIMIT 1`, repoID).Scan(&st.MetadataPRs, &st.MetadataIssues, &st.MetadataCommits, &status)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("metadata counts: %w", err)
+	}
+	st.Archived = status == "Archived"
+
+	// v0.27.50: last observed activity — drives the chart last-active
+	// ceiling and the dormant/archived chip. Non-fatal: an error here
+	// leaves LastActivityAt nil (the chip/ceiling degrade to off).
+	if la, ok, laErr := s.LastActivityAt(ctx, []int64{repoID}); laErr == nil && ok {
+		st.LastActivityAt = &la
 	}
 
 	// Vulnerability counts from OSV.dev scan.

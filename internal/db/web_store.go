@@ -490,6 +490,31 @@ func (s *PostgresStore) GetOrgRequests(ctx context.Context) ([]GroupOrg, error) 
 	return orgs, rows.Err()
 }
 
+// HasNeverScannedOrgs reports whether any tracked org has never been
+// enumerated (last_scanned IS NULL). This is the scheduler's demand
+// signal for an immediate org scan (v0.27.52): both registration paths
+// — an admin adding an org directly (web/portal AddOrgToGroup) and an
+// admin approving a pending org request (DecideAddRequest) — insert
+// the user_org_requests row with a NULL last_scanned, so the row
+// itself carries "scan me now" across processes with no RPC.
+//
+// Orgs whose owning group is 'rejected' are EXCLUDED: the scan's
+// rejected gate skips them without ever stamping last_scanned, so
+// counting them here would re-fire the demand probe on every poll
+// tick forever.
+func (s *PostgresStore) HasNeverScannedOrgs(ctx context.Context) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM aveloxis_ops.user_org_requests o
+			JOIN aveloxis_ops.user_groups g USING (group_id)
+			WHERE o.last_scanned IS NULL
+			  AND COALESCE(g.status, 'approved') <> 'rejected'
+		)`).Scan(&exists)
+	return exists, err
+}
+
 // GetGroupIDForOrgRequest returns the group_id for an org request.
 func (s *PostgresStore) GetGroupIDForOrgRequest(ctx context.Context, orgRequestID int64) (int64, error) {
 	var groupID int64

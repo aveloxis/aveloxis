@@ -141,8 +141,8 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 						// children properly; fall back to it instead of
 						// stranding the row for the next run.
 						logger.Info("reconcile: heal refused (residual children) — falling back to consolidation", "repo_id", sr.RepoID)
-						var winnerGit string
-						if wr, gerr := store.GetRepoByID(ctx, winnerID); gerr == nil {
+						winnerGit := finalURL
+						if wr, gerr := store.GetRepoByID(ctx, winnerID); gerr == nil && wr.GitURL != "" {
 							winnerGit = wr.GitURL
 						}
 						if derr := db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {

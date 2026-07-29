@@ -29,6 +29,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The ubuntu-latest runner image can ship a podman/crun version
+      # skew: podman writes its OCI config at runtime-spec v1.2.1, which
+      # crun < 1.14.3 rejects with "unknown version specified", failing
+      # the first RUN step of every build (containers/podman#27272 —
+      # observed on this repo 2026-07-29; Docker builds are unaffected).
+      # Install a current static crun so the job doesn't depend on the
+      # image's packaged version.
+      - name: Install current crun (podman/crun skew workaround)
+        run: |
+          sudo curl -fsSL -o /usr/bin/crun \
+            https://github.com/containers/crun/releases/download/1.28/crun-1.28-linux-amd64
+          sudo chmod +x /usr/bin/crun
+          crun --version
+
       - name: Build with Podman
         run: podman build -t aveloxis:test .
 

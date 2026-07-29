@@ -226,3 +226,30 @@ func TestRepoDedupEnqueuesUncollectedWinner(t *testing.T) {
 			"one-collected pairs under the MIN(repo_id) winner rule.")
 	}
 }
+
+// TestMsgRefRemapCarriesCollisionGuard pins the v0.27.49 fix for the
+// 2026-07-22 reconcile-repos failure wave: v0.27.15's
+// uq_pr_review_msg_ref (pr_review_id, msg_id) invalidated the
+// v0.25.33 assumption that no unique involves pr_review_id, so the
+// cross-repo bridge remap must skip rows whose winner-equivalent link
+// already exists (both repo copies share ONE messages row — the
+// winner usually already holds the link). Without the guard every
+// consolidation of a pair with shared review messages dies on 23505.
+func TestMsgRefRemapCarriesCollisionGuard(t *testing.T) {
+	src, err := os.ReadFile("repo_dedup.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+	at := strings.Index(code, `"remap cross-repo pull_request_review_message_ref"`)
+	if at < 0 {
+		t.Fatal("msg_ref remap step not found")
+	}
+	window := code[at:min(at+900, len(code))]
+	if !strings.Contains(window, "NOT EXISTS") ||
+		!strings.Contains(window, "x.pr_review_id = wr.pr_review_id AND x.msg_id = mr.msg_id") {
+		t.Error("the pull_request_review_message_ref remap must carry the NOT EXISTS collision guard " +
+			"against uq_pr_review_msg_ref — collided rows fall through to the blanket delete " +
+			"(the winner already holds that link)")
+	}
+}

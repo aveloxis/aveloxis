@@ -1667,6 +1667,48 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"v0.27.11 index repo_lockfile_packages by repo",
 		`CREATE INDEX IF NOT EXISTS idx_repo_lockfile_packages_repo_id
 			ON aveloxis_data.repo_lockfile_packages (repo_id)`)
+
+	// v0.27.50: reconcile repos.repo_archived with the forge's actual
+	// archived status. The GraphQL isArchived bit reaches
+	// repo_info.status ('Archived') but was NEVER propagated to the
+	// repos.repo_archived boolean — only prelim's dead-repo (404) path
+	// set it, so ~17,665 forge-archived-but-alive repos had the flag
+	// FALSE. Backfill from the latest repo_info snapshot per repo.
+	// Idempotent (IS DISTINCT FROM). Effect: archived repos are now
+	// excluded from scancode + distribution claims (read-only source
+	// can't change — correct); main collection + matviews + all
+	// analytics are unaffected (DequeueNext and the matviews do not
+	// filter repo_archived). Going forward, staged Phase 0's
+	// UpdateRepoMetadata keeps the flag current in both directions.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.50 reconcile repo_archived from forge status",
+		`UPDATE aveloxis_data.repos r
+		 SET repo_archived = (latest.status = 'Archived')
+		 FROM (
+		     SELECT DISTINCT ON (repo_id) repo_id, status
+		     FROM aveloxis_data.repo_info
+		     ORDER BY repo_id, data_collection_date DESC
+		 ) latest
+		 WHERE r.repo_id = latest.repo_id
+		   AND COALESCE(r.repo_archived, FALSE) IS DISTINCT FROM (latest.status = 'Archived')`)
+
+	// v0.27.51: dependency_scope stores the WORD 'runtime' instead of
+	// '' (operator decision — '' was uninterpretable for direct table
+	// readers). Backfill every ''-scope direct/transitive finding:
+	// under the presentation contract '' already READ as runtime
+	// everywhere (IsRuntimeScope), so this is a spelling change, not a
+	// semantic one — and it is SELF-CORRECTING for legacy rows whose
+	// dep is really non-runtime: the upsert refreshes scope
+	// unconditionally on each repo's next scan, overwriting the
+	// backfilled 'runtime' with the fine value. kind='self' rows
+	// deliberately stay '' — scope vocabulary does not apply to a
+	// project's own advisories. Idempotent by predicate.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.51 backfill dependency_scope '' -> 'runtime' on dependency findings",
+		`UPDATE aveloxis_data.repo_deps_vulnerabilities
+		 SET dependency_scope = 'runtime'
+		 WHERE COALESCE(dependency_scope, '') = ''
+		   AND COALESCE(dependency_kind, '') <> 'self'`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

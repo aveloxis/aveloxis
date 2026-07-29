@@ -150,7 +150,8 @@ Search and pagination work together: if you search for `chaoss` and there are 40
 
 When you add an org, Aveloxis does not just snapshot the current repo list -- it continuously monitors the org for new repos:
 
-- A scheduler task runs **every 4 hours** and re-fetches the repository list for every org in `user_org_requests`.
+- **Newly registered orgs are scanned within seconds.** The scheduler checks on every poll tick (default 10 s) for orgs that have never been enumerated (`last_scanned IS NULL`) and scans them immediately. This fires both when an admin adds an org directly and when an admin approves a user's pending org request — so repositories that are already collected (for example an org tracked by another group) appear in the new group right away, without re-collection. The `aveloxis serve` process must be running: it owns all forge traffic, so nothing links while it is stopped.
+- A scheduler task additionally runs **every 4 hours** and re-fetches the repository list for every org in `user_org_requests`, picking up repos created after the initial scan.
 - Any newly created repos that are not already in the database are added to the group and queued for collection automatically.
 - Repos that are deleted or made private on the forge are handled by the existing dead repo sidelining logic during collection.
 

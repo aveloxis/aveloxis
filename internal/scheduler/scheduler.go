@@ -107,6 +107,9 @@ type Scheduler struct {
 	searchActive       atomic.Bool
 	affiliationsActive atomic.Bool
 	breadthActive      atomic.Bool
+	// v0.27.52: shared by the orgRefreshTicker pass AND the poll-tick
+	// demand scan (maybeScanNewOrgs) so the two can never overlap.
+	userOrgScanActive atomic.Bool
 
 	// v0.27.35 large-repo skip (collection.skip_largest_percent): the
 	// cached top-N% repo_id set excluded from claims, refreshed lazily
@@ -519,7 +522,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-orgRefreshTicker.C:
 			safego.Go(s.logger, "org-refresh", func() { s.refreshOrgs(ctx) })
-			safego.Go(s.logger, "user-org-refresh", func() { s.refreshUserOrgs(ctx) })
+			// Full pass (all orgs) — this is what discovers new repos in
+			// long-tracked orgs. Shares userOrgScanActive with the
+			// poll-tick demand scan so the two never overlap.
+			s.singleFlight(&s.userOrgScanActive, "user-org-refresh", func() { s.refreshUserOrgs(ctx, false) })
 
 		case <-breadthTicker.C:
 			s.singleFlight(&s.breadthActive, "contributor-breadth", func() { s.runBreadth(ctx) })
@@ -557,6 +563,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-pollTicker.C:
 			s.fillWorkerSlots(ctx, sem)
 			s.maybeStartMatviewRebuild(ctx, sem, &lastMatviewRebuild)
+			s.maybeScanNewOrgs(ctx)
 		}
 	}
 }
@@ -1830,15 +1837,69 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 	s.logger.Info("weekly matview rebuild: collection will resume on next poll tick")
 }
 
+// maybeScanNewOrgs runs on every poll tick (default 10s). A
+// user_org_requests row with last_scanned IS NULL is the
+// cross-process signal that an org was just registered — an admin
+// added it directly (portal API or web GUI), or an admin approved a
+// pending org request (DecideAddRequest inserts the registration).
+// Instead of waiting up to 4 hours for orgRefreshTicker, launch an
+// immediate scan scoped to the never-scanned orgs so already-tracked
+// repos (e.g. a fully-collected org added to a second group) link
+// into the new group within seconds of the add/approval (v0.27.52).
+//
+// Non-admin adds never fire this: their orgs pend in
+// collection_add_requests, and no user_org_requests row exists until
+// an admin approves (v0.27.20). Rejected-group orgs are excluded by
+// the probe itself — the scan's rejected gate deliberately never
+// stamps them, so counting them would re-fire the probe every tick.
+// A failed enumeration is also safe: MarkOrgRequestScanned stamps
+// unconditionally per attempt, so retries fall to the 4h cadence
+// instead of looping here.
+func (s *Scheduler) maybeScanNewOrgs(ctx context.Context) {
+	// Same gate as fillWorkerSlots: while the database is unavailable
+	// (nightly Postgres restart), skip silently instead of producing a
+	// probe-failed WARN on every 10s poll tick.
+	if !s.dbHealthy.Load() {
+		return
+	}
+	pending, err := s.store.HasNeverScannedOrgs(ctx)
+	if err != nil {
+		s.logger.Warn("never-scanned-orgs probe failed", "error", err)
+		return
+	}
+	if !pending {
+		return
+	}
+	s.singleFlight(&s.userOrgScanActive, "user-org-demand-scan", func() {
+		s.logger.Info("new org registrations detected — scanning now instead of waiting for the org refresh ticker")
+		s.refreshUserOrgs(ctx, true)
+	})
+}
+
 // refreshUserOrgs scans user_org_requests for new repos in tracked orgs
-// and adds them to the user's group + collection queue.
-func (s *Scheduler) refreshUserOrgs(ctx context.Context) {
+// and adds them to the user's group + collection queue. With
+// onlyNeverScanned set (the poll-tick demand path) the pass is scoped
+// to orgs that have never been enumerated; the 4h ticker pass runs
+// unscoped to keep discovering new repos in long-tracked orgs.
+func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) {
 	orgs, err := s.store.GetOrgRequests(ctx)
 	if err != nil || len(orgs) == 0 {
 		return
 	}
+	if onlyNeverScanned {
+		scoped := orgs[:0]
+		for _, o := range orgs {
+			if o.LastScanned == nil {
+				scoped = append(scoped, o)
+			}
+		}
+		orgs = scoped
+		if len(orgs) == 0 {
+			return
+		}
+	}
 
-	s.logger.Info("scanning user org requests", "count", len(orgs))
+	s.logger.Info("scanning user org requests", "count", len(orgs), "only_never_scanned", onlyNeverScanned)
 	for _, org := range orgs {
 		groupID, err := s.store.GetGroupIDForOrgRequest(ctx, org.OrgRequestID)
 		if err != nil {

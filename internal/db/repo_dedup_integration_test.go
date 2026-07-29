@@ -359,6 +359,8 @@ func cleanupDedupRepos(ctx context.Context, t *testing.T, store *PostgresStore, 
 		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
 		`DELETE FROM aveloxis_data.review_comments WHERE repo_id IN
 		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
+		`DELETE FROM aveloxis_data.pull_request_review_message_ref WHERE repo_id IN
+		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
 		`DELETE FROM aveloxis_data.pull_request_reviews WHERE repo_id IN
 		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
 		`DELETE FROM aveloxis_data.messages WHERE repo_id IN
@@ -392,5 +394,97 @@ func cleanupDedupRepos(ctx context.Context, t *testing.T, store *PostgresStore, 
 		`DELETE FROM aveloxis_data.messages
 		 WHERE platform_msg_id IN (909090901, 909090902, 909090903) AND platform_id = 1`); err != nil {
 		t.Logf("cleanup shared message (non-fatal): %v", err)
+	}
+}
+
+// TestDedupOnePairSurvivesMsgRefCollision reproduces the 2026-07-22
+// reconcile-repos failure wave: v0.27.15's uq_pr_review_msg_ref
+// (pr_review_id, msg_id) invalidated the v0.25.33 remap's
+// "no unique involves pr_review_id" assumption. Both copies of a
+// duplicated repo share the SAME messages row, so the winner ALREADY
+// holds the (winner_review, msg) bridge link — remapping the loser's
+// bridge row onto the winner's review produced 23505 and rolled the
+// whole pair back. The remap must skip collision rows (the blanket
+// delete removes them; the winner already has that link).
+func TestDedupOnePairSurvivesMsgRefCollision(t *testing.T) {
+	ctx, store := caseConnect(t)
+	const slug = "_avdedup_msgref"
+	cleanupDedupRepos(ctx, t, store, slug)
+	t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+
+	winnerURL := "https://github.com/" + slug + "_Org/Repo"
+	loserURL := strings.ToLower(winnerURL)
+	winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, loserURL)
+
+	mustScan := func(dst *int64, sql string, args ...any) {
+		t.Helper()
+		if err := store.pool.QueryRow(ctx, sql, args...).Scan(dst); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := store.pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	var winnerPRID, loserPRID int64
+	mustScan(&winnerPRID, `INSERT INTO aveloxis_data.pull_requests (repo_id, platform_pr_id, pr_number)
+		VALUES ($1, 565656562, 57) RETURNING pull_request_id`, winnerID)
+	mustScan(&loserPRID, `SELECT pull_request_id FROM aveloxis_data.pull_requests
+		WHERE repo_id = $1 AND platform_pr_id = 565656561`, loserID)
+
+	var winnerReview, loserReview int64
+	mustScan(&winnerReview, `INSERT INTO aveloxis_data.pull_request_reviews
+		(pull_request_id, repo_id, platform_id, platform_review_id)
+		VALUES ($1, $2, 1, 777000333) RETURNING pr_review_id`, winnerPRID, winnerID)
+	mustScan(&loserReview, `INSERT INTO aveloxis_data.pull_request_reviews
+		(pull_request_id, repo_id, platform_id, platform_review_id)
+		VALUES ($1, $2, 1, 777000333) RETURNING pr_review_id`, loserPRID, loserID)
+
+	// ONE shared message (the pair shares platform_msg_id) with BOTH
+	// bridge rows — the winner's (the collision target) and the
+	// loser's (the row the remap would have flipped into a duplicate).
+	var sharedMsg int64
+	mustScan(&sharedMsg, `INSERT INTO aveloxis_data.messages (repo_id, platform_msg_id, platform_id)
+		VALUES ($1, 909090904, 1) RETURNING msg_id`, winnerID)
+	mustExec(`INSERT INTO aveloxis_data.pull_request_review_message_ref (pr_review_id, msg_id, repo_id)
+		VALUES ($1, $2, $3)`, winnerReview, sharedMsg, winnerID)
+	mustExec(`INSERT INTO aveloxis_data.pull_request_review_message_ref (pr_review_id, msg_id, repo_id)
+		VALUES ($1, $2, $3)`, loserReview, sharedMsg, loserID)
+
+	pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+	if pair == nil {
+		t.Fatal("candidate query did not surface the seeded pair")
+	}
+	if err := dedupOnePair(ctx, store, *pair); err != nil {
+		t.Fatalf("dedupOnePair must survive the uq_pr_review_msg_ref collision (2026-07-22 wave), got: %v", err)
+	}
+
+	// Exactly ONE surviving bridge row, on the winner's review.
+	var n int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.pull_request_review_message_ref
+		WHERE msg_id = $1`, sharedMsg).Scan(&n); err != nil {
+		t.Fatalf("count bridge rows: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("want exactly 1 surviving bridge row for the shared message, got %d", n)
+	}
+	var surviving int64
+	if err := store.pool.QueryRow(ctx, `SELECT pr_review_id FROM aveloxis_data.pull_request_review_message_ref
+		WHERE msg_id = $1`, sharedMsg).Scan(&surviving); err != nil {
+		t.Fatalf("read surviving bridge pr_review_id: %v", err)
+	}
+	if surviving != winnerReview {
+		t.Errorf("surviving bridge row must point at the winner review %d, got %d", winnerReview, surviving)
+	}
+	// Loser reviews fully gone (the delete that used to 23503/23505).
+	if err := store.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1`, loserID).Scan(&n); err != nil {
+		t.Fatalf("count loser reviews: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("loser reviews must be deleted, found %d", n)
 	}
 }

@@ -257,7 +257,7 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		// slow-changing reference data so they live on repos.
 		// Non-fatal — if the UPDATE fails we log and continue;
 		// the next cycle will retry.
-		if updateErr := sc.store.UpdateRepoMetadata(ctx, repoID, info.Description, info.PrimaryLanguage, info.Languages); updateErr != nil {
+		if updateErr := sc.store.UpdateRepoMetadata(ctx, repoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived"); updateErr != nil {
 			sc.logger.Warn("failed to update repos.repo_description/primary_language/languages",
 				"owner", owner, "repo", repo, "error", updateErr)
 		}

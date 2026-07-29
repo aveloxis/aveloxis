@@ -546,7 +546,9 @@ Token semantics:
   repo's next scan) and a `dependency_scope` when the lockfile flags
   the entry's scope. Since v0.27.46 DIRECT findings carry
   `dependency_scope` too, stamped from the manifest's own scope
-  (`dev`/`test`/`build`/`optional`/`peer`; `""` = runtime). GUIs
+  (`dev`/`test`/`build`/`optional`/`peer`; `"runtime"` explicit since
+  v0.27.51 — legacy `""` rows read as runtime and heal to the word on
+  each repo's next scan). GUIs
   should lead with direct findings — a repo with 3 direct and 400
   transitive findings must never headline "403 vulnerabilities".
 
@@ -597,6 +599,13 @@ Token semantics:
   1.5 `vulnerabilities` array (`affects.ref` = component purl). SPDX
   (since v0.27.46): package-level SECURITY/advisory `externalRefs` —
   the 2.3-conformant vehicle (the old 400 is gone).
+- `GET /api/v1/repos/{repoID}/stats` — response gains (v0.27.50)
+  `archived` (the forge's read-only status, read from the latest
+  repo_info snapshot — the ACCURATE signal, distinct from the
+  internal repos.repo_archived flag) and `last_activity_at`
+  (most recent observed commit/issue/PR timestamp; omitted when the
+  repo has no activity). The GUI derives the Archived/Dormant chip
+  and the historical chart window from these.
 - `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
   `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
   dependency-analysis phase has not recorded anything for this repo

@@ -291,6 +291,35 @@ func (s *PostgresStore) SearchOrgs(ctx context.Context, query string, limit int)
 // entity per process. Deliberately NO index was added for this: a
 // once-per-process aggregate does not justify permanent write
 // amplification on the fleet's largest table.
+// LastActivityAt returns the most recent observed activity across the
+// repo set — the MAX of last issue, last PR, and last commit (author
+// timestamp). Unlike FirstActivityAt it deliberately omits
+// repos.created_at (creation is not activity) and is NOT cached: last
+// activity advances as a repo collects, so a process-lifetime cache
+// would go stale (the v0.27.24 first-activity cache is safe only
+// because first activity is immutable). ok=false when the repo set
+// has no activity yet. (v0.27.50: the chart "last-active ceiling" for
+// archived/dormant repos, mirror of the first-activity floor.)
+func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
+	if len(repoIDs) == 0 {
+		return time.Time{}, false, nil
+	}
+	var la *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT GREATEST(
+			(SELECT MAX(created_at) FROM aveloxis_data.issues WHERE repo_id = ANY($1)),
+			(SELECT MAX(created_at) FROM aveloxis_data.pull_requests WHERE repo_id = ANY($1)),
+			(SELECT MAX(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = ANY($1))
+		)`, repoIDs).Scan(&la)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if la == nil {
+		return time.Time{}, false, nil
+	}
+	return la.UTC(), true, nil
+}
+
 func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
 	if len(repoIDs) == 0 {
 		return time.Time{}, false, nil

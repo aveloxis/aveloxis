@@ -157,8 +157,10 @@ func TestModelScopeMappings(t *testing.T) {
 			t.Errorf("CycloneDXScopeForScope(%q) = %q, want %q", scope, got, want)
 		}
 	}
+	// v0.27.51: runtime stores as the WORD (operator decision — ''
+	// was uninterpretable for direct table readers).
 	storedCases := map[string]string{
-		"": "", "runtime": "", "future-unknown": "",
+		"": model.ScopeRuntime, "runtime": model.ScopeRuntime, "future-unknown": model.ScopeRuntime,
 		model.ScopeDev: model.ScopeDev, model.ScopeTest: model.ScopeTest,
 	}
 	for scope, want := range storedCases {
@@ -182,11 +184,11 @@ func TestVulnScanTargetsCarryScope(t *testing.T) {
 			t.Errorf("direct target scope %q, want dev — findings' dependency_scope must work for direct deps", tgt.Scope)
 		}
 	}
-	// Runtime dep stores '' per the column convention.
+	// v0.27.51: runtime deps stamp the WORD explicitly.
 	dep.Type = "runtime"
 	for _, tgt := range vulnScanTargets(dep, nil) {
-		if tgt.Scope != "" {
-			t.Errorf("runtime dep target scope %q, want '' (StoredScope column convention)", tgt.Scope)
+		if tgt.Scope != model.ScopeRuntime {
+			t.Errorf("runtime dep target scope %q, want 'runtime' (v0.27.51 StoredScope convention)", tgt.Scope)
 		}
 	}
 }
@@ -201,21 +203,30 @@ func TestMergeDirectTargetRuntimeWinsCollision(t *testing.T) {
 	m := map[string]vulnScanTarget{}
 	var purls []string
 	buildFirst := vulnScanTarget{Purl: "pkg:pypi/setuptools@67", Scope: model.ScopeBuild}
-	runtimeSecond := vulnScanTarget{Purl: "pkg:pypi/setuptools@67", Scope: ""}
+	runtimeSecond := vulnScanTarget{Purl: "pkg:pypi/setuptools@67", Scope: model.ScopeRuntime}
 	purls = mergeDirectTarget(m, purls, buildFirst)
 	purls = mergeDirectTarget(m, purls, runtimeSecond)
 	if len(purls) != 1 {
 		t.Fatalf("collision must not duplicate the purl list, got %d", len(purls))
 	}
-	if got := m["pkg:pypi/setuptools@67"].Scope; got != "" {
+	if got := m["pkg:pypi/setuptools@67"].Scope; !model.IsRuntimeScope(got) {
 		t.Errorf("runtime declaration must win the scope fold, got %q", got)
 	}
 	// Reverse order: runtime first stays runtime.
 	m2 := map[string]vulnScanTarget{}
 	purls2 := mergeDirectTarget(m2, nil, runtimeSecond)
 	purls2 = mergeDirectTarget(m2, purls2, buildFirst)
-	if len(purls2) != 1 || m2["pkg:pypi/setuptools@67"].Scope != "" {
+	if len(purls2) != 1 || !model.IsRuntimeScope(m2["pkg:pypi/setuptools@67"].Scope) {
 		t.Error("runtime-first must stay runtime on later non-runtime collision")
+	}
+	// v0.27.51: a LEGACY ''-scope target (pre-word rows in flight)
+	// must fold identically to the explicit word.
+	m4 := map[string]vulnScanTarget{}
+	legacyRuntime := vulnScanTarget{Purl: "pkg:pypi/setuptools@67", Scope: ""}
+	_ = mergeDirectTarget(m4, nil, buildFirst)
+	_ = mergeDirectTarget(m4, nil, legacyRuntime)
+	if got := m4["pkg:pypi/setuptools@67"].Scope; !model.IsRuntimeScope(got) {
+		t.Errorf("legacy '' runtime must win the fold too (IsRuntimeScope contract), got %q", got)
 	}
 	// Two non-runtime declarations keep the first scope (no runtime
 	// evidence — nothing to fold toward).

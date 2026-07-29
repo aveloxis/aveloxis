@@ -464,20 +464,26 @@ func TestDedupOnePairSurvivesMsgRefCollision(t *testing.T) {
 
 	// Exactly ONE surviving bridge row, on the winner's review.
 	var n int
-	store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.pull_request_review_message_ref
-		WHERE msg_id = $1`, sharedMsg).Scan(&n)
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.pull_request_review_message_ref
+		WHERE msg_id = $1`, sharedMsg).Scan(&n); err != nil {
+		t.Fatalf("count bridge rows: %v", err)
+	}
 	if n != 1 {
 		t.Errorf("want exactly 1 surviving bridge row for the shared message, got %d", n)
 	}
 	var surviving int64
-	store.pool.QueryRow(ctx, `SELECT pr_review_id FROM aveloxis_data.pull_request_review_message_ref
-		WHERE msg_id = $1`, sharedMsg).Scan(&surviving)
+	if err := store.pool.QueryRow(ctx, `SELECT pr_review_id FROM aveloxis_data.pull_request_review_message_ref
+		WHERE msg_id = $1`, sharedMsg).Scan(&surviving); err != nil {
+		t.Fatalf("read surviving bridge pr_review_id: %v", err)
+	}
 	if surviving != winnerReview {
 		t.Errorf("surviving bridge row must point at the winner review %d, got %d", winnerReview, surviving)
 	}
 	// Loser reviews fully gone (the delete that used to 23503/23505).
-	store.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1`, loserID).Scan(&n)
+	if err := store.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1`, loserID).Scan(&n); err != nil {
+		t.Fatalf("count loser reviews: %v", err)
+	}
 	if n != 0 {
 		t.Errorf("loser reviews must be deleted, found %d", n)
 	}

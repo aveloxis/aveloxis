@@ -158,8 +158,8 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			case winnerID > 0 && winnerID != sr.RepoID:
 				fmt.Printf("  consolidate (data-bearing dup): %s -> repo %d (dup %d)\n", sr.GitURL, winnerID, sr.RepoID)
 				if !dryRun {
-					var winnerGit string
-					if wr, gerr := store.GetRepoByID(ctx, winnerID); gerr == nil {
+					winnerGit := finalURL
+					if wr, gerr := store.GetRepoByID(ctx, winnerID); gerr == nil && wr.GitURL != "" {
 						winnerGit = wr.GitURL
 					}
 					if derr := db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {

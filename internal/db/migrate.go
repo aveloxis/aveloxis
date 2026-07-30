@@ -1709,6 +1709,27 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		 SET dependency_scope = 'runtime'
 		 WHERE COALESCE(dependency_scope, '') = ''
 		   AND COALESCE(dependency_kind, '') <> 'self'`)
+
+	// v0.27.54: email/canonical lookup indexes for the mailing-list
+	// identity chain (sender-resolve candidates NOT EXISTS,
+	// ResolveContributorIDByEmail join, CreateEmailOnlyContributor
+	// probe). Without them the OR-equality anti-join seq-scanned the
+	// 9.4 GB contributors heap per outer row — 30-50 min hourly on 5
+	// backends (2026-07-29). The v0.25.6 "no reader" rationale for
+	// dropping the canonical index was obsoleted by v0.25.7+'s
+	// mailing-list readers — do not re-drop these in a future index
+	// audit. NEW names because the v0.25.6 DROP steps above still run
+	// on every migrate; reusing the dropped names would rebuild each
+	// run. NON-partial because the probes are join variables, which
+	// cannot prove a partial predicate at plan time.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_email_lookup",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_email_lookup
+		 ON aveloxis_data.contributors (cntrb_email)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_canonical_lookup",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_canonical_lookup
+		 ON aveloxis_data.contributors (cntrb_canonical)`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

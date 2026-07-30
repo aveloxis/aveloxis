@@ -253,6 +253,28 @@ CREATE INDEX IF NOT EXISTS idx_contributors_last_breadth
 CREATE INDEX IF NOT EXISTS idx_contributors_gh_login_lower
     ON aveloxis_data.contributors (LOWER(gh_login)) WHERE gh_login != '';
 
+-- v0.27.54 — serve the mailing-list identity chain's email-equality
+-- probes: GetMailingListSenderResolveCandidates' NOT EXISTS,
+-- ResolveContributorIDByEmail's join, CreateEmailOnlyContributor's
+-- lookup. Without these the OR-equality anti-join planned as a full
+-- contributors seq scan (9.4 GB on aveloxis_large) PER OUTER ROW —
+-- observed 30-50 min hourly on 5 backends (2026-07-29). History:
+-- cntrb_email never had an index; cntrb_canonical's was dropped in
+-- v0.25.6 as "no reader", then v0.25.7+ shipped these readers. NEW
+-- names on purpose: the v0.25.6 DROP steps still run every migrate,
+-- so reusing the old names would rebuild the index each run.
+-- Deliberately NON-partial: the hot probes compare against a JOIN
+-- column (em.sender_email), and a partial predicate cannot be proven
+-- from a join variable at plan time — a partial index would be
+-- ignored for exactly the anti-join this fixes. Existing fleets get
+-- the CONCURRENTLY build from migrate.go; this plain form covers
+-- fresh installs.
+CREATE INDEX IF NOT EXISTS idx_contributors_email_lookup
+    ON aveloxis_data.contributors (cntrb_email);
+
+CREATE INDEX IF NOT EXISTS idx_contributors_canonical_lookup
+    ON aveloxis_data.contributors (cntrb_canonical);
+
 CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_identities (
     identity_id    BIGSERIAL PRIMARY KEY,
     cntrb_id       UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,

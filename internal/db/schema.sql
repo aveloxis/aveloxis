@@ -227,6 +227,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributors (
     gh_last_contribution_year   INTEGER,
     gh_activity_class           TEXT DEFAULT '',
     gh_activity_checked_at      TIMESTAMPTZ,
+    gh_history_backfilled_at    TIMESTAMPTZ,
     tool_source    TEXT DEFAULT 'aveloxis',
     tool_version   TEXT DEFAULT '',
     data_source    TEXT DEFAULT '',
@@ -298,6 +299,45 @@ CREATE INDEX IF NOT EXISTS idx_contributors_canonical_lookup
 -- migrate.go; this plain form covers fresh installs.
 CREATE INDEX IF NOT EXISTS idx_contributors_activity_checked
     ON aveloxis_data.contributors (gh_activity_checked_at ASC NULLS FIRST);
+
+-- v0.27.58 — daily contributor activity history (GitHub GraphQL
+-- contributionsCollection, operator decision 2026-07-30: store by
+-- day). contributor_activity_days holds per-(contributor, day,
+-- repository) PUBLIC activity binned from the four by-repository
+-- connections; repo_full_name is deliberately TEXT with NO repos FK —
+-- these are mostly repositories Aveloxis does not track (the
+-- ecosystem outside the fleet is the point of the data).
+-- contributor_activity_day_totals holds the contribution calendar's
+-- per-day TOTAL, which INCLUDES disclosed private contributions — the
+-- only daily private signal (untyped and repo-less by GitHub's
+-- design). Both upsert on their natural keys (the quarterly re-audit
+-- overwrites in place); the claim column
+-- contributors.gh_history_backfilled_at drives bootstrap (NULL-first)
+-- and the quarterly healing in one mechanism.
+CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_days (
+    activity_day_id BIGSERIAL PRIMARY KEY,
+    cntrb_id        UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    day             DATE NOT NULL,
+    repo_full_name  TEXT NOT NULL,
+    commit_count    INTEGER NOT NULL DEFAULT 0,
+    issue_count     INTEGER NOT NULL DEFAULT 0,
+    pr_count        INTEGER NOT NULL DEFAULT 0,
+    review_count    INTEGER NOT NULL DEFAULT 0,
+    fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (cntrb_id, day, repo_full_name)
+);
+
+CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_day_totals (
+    activity_total_id   BIGSERIAL PRIMARY KEY,
+    cntrb_id            UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    day                 DATE NOT NULL,
+    total_contributions INTEGER NOT NULL DEFAULT 0,
+    fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (cntrb_id, day)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contributors_history_backfilled
+    ON aveloxis_data.contributors (gh_history_backfilled_at ASC NULLS FIRST);
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_identities (
     identity_id    BIGSERIAL PRIMARY KEY,

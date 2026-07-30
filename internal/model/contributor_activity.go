@@ -77,6 +77,31 @@ func (a ContributionActivity) LastContributionYear() int {
 	return last
 }
 
+// ContributorDayActivity is one (day, repository) cell of a
+// contributor's public activity history (v0.27.58) — binned from the
+// dated nodes of the four contributionsCollection by-repository
+// connections. Day is "2006-01-02". RepoFullName is GitHub's
+// nameWithOwner — usually a repository Aveloxis does NOT track (that's
+// the point: the ecosystem outside the fleet), so it is deliberately a
+// name, not a repos FK.
+type ContributorDayActivity struct {
+	Day          string
+	RepoFullName string
+	Commits      int
+	Issues       int
+	PRs          int
+	Reviews      int
+}
+
+// ContributorDayTotal is one day of the contribution calendar: the
+// TOTAL contribution count across all repositories, INCLUDING disclosed
+// private contributions — the only daily signal that carries private
+// activity (untyped and repo-less by GitHub's design).
+type ContributorDayTotal struct {
+	Day   string
+	Total int
+}
+
 // ClassifyContributorActivity maps the trailing-year numbers onto the
 // four activity classes. public and restricted are the trailing-year
 // counts; lastContributionYear is LastContributionYear() (0 = none

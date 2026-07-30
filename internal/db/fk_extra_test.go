@@ -280,12 +280,14 @@ func TestSchemaDeclaresDeferredOnCntrbIDFKs(t *testing.T) {
 	code := string(src)
 	refTarget := "REFERENCES aveloxis_data.contributors(cntrb_id)"
 	occurrences := strings.Count(code, refTarget)
-	// v0.22.1 baseline: 16. v0.23.0 added contributor_login_history,
-	// bringing the total to 17. If you add another cntrb_id child
-	// table, bump this count AND add the entry to cntrbIDChildFKs in
-	// cntrb_id_cascade.go so the migration helper covers it.
-	if occurrences != 17 {
-		t.Fatalf("expected 17 cntrb_id FK occurrences in schema.sql, got %d — "+
+	// v0.22.1 baseline: 16. v0.23.0 added contributor_login_history
+	// (17). v0.27.58 added contributor_activity_days and
+	// contributor_activity_day_totals (19). If you add another
+	// cntrb_id child table, bump this count AND add the entry to
+	// cntrbIDChildFKs in cntrb_id_cascade.go so the migration helper
+	// covers it.
+	if occurrences != 19 {
+		t.Fatalf("expected 19 cntrb_id FK occurrences in schema.sql, got %d — "+
 			"if this changed, update both this test and the cntrb_id_cascade.go fixture", occurrences)
 	}
 	idx := 0

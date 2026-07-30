@@ -49,6 +49,12 @@ var cntrbIDChildFKs = []cntrbIDChildFK{
 	// adding it here ensures the v0.22.1 migration helper covers it
 	// on legacy databases where the table is created post-fact.
 	{"contributor_login_history", "cntrb_id", "contributor_login_history_cntrb_id_fkey"},
+	// v0.27.58: the daily activity-history tables are cntrb_id
+	// children; schema declarations carry the full house clause, these
+	// entries keep the v0.22.1 migration helper + cascade coverage
+	// complete on legacy databases.
+	{"contributor_activity_days", "cntrb_id", "contributor_activity_days_cntrb_id_fkey"},
+	{"contributor_activity_day_totals", "cntrb_id", "contributor_activity_day_totals_cntrb_id_fkey"},
 }
 
 // ensureOnUpdateCascadeOnCntrbIDFKs is the v0.22.1 idempotent

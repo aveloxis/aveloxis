@@ -105,6 +105,7 @@ type Scheduler struct {
 	// tasks (see singleFlight).
 	enrichmentActive    atomic.Bool
 	activityClassActive atomic.Bool
+	activityHistActive  atomic.Bool
 	searchActive        atomic.Bool
 	affiliationsActive  atomic.Bool
 	breadthActive       atomic.Bool
@@ -339,6 +340,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// activity_classification.go.
 	activityTicker := time.NewTicker(activityCheckInterval)
 	defer activityTicker.Stop()
+	// v0.27.58: daily contributor-history sweep (bootstrap + quarterly
+	// re-audit in one claim mechanism; constants derived in
+	// activity_history.go).
+	historyTicker := time.NewTicker(activityHistoryInterval)
+	defer historyTicker.Stop()
 	defer breadthTicker.Stop()
 	// v0.27.18: construct the breadth worker ONCE, here (not lazily in
 	// runBreadth, which runs in a per-tick goroutine — lazy init would
@@ -538,6 +544,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-activityTicker.C:
 			s.singleFlight(&s.activityClassActive, "activity-classification", func() { s.runActivityClassification(ctx) })
+
+		case <-historyTicker.C:
+			s.singleFlight(&s.activityHistActive, "activity-history", func() { s.runActivityHistory(ctx) })
 
 		case <-matviewCheckTicker.C:
 			now := time.Now()

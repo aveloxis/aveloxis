@@ -1747,6 +1747,38 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"aveloxis_data", "idx_contributors_activity_checked",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_activity_checked
 		 ON aveloxis_data.contributors (gh_activity_checked_at ASC NULLS FIRST)`)
+
+	// v0.27.58: daily contributor activity history (see schema.sql for
+	// the design rationale — TEXT repo names on purpose, no repos FK).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_history_backfilled_at", "TIMESTAMPTZ")
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.58 create contributor_activity_days",
+		`CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_days (
+			activity_day_id BIGSERIAL PRIMARY KEY,
+			cntrb_id        UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+			day             DATE NOT NULL,
+			repo_full_name  TEXT NOT NULL,
+			commit_count    INTEGER NOT NULL DEFAULT 0,
+			issue_count     INTEGER NOT NULL DEFAULT 0,
+			pr_count        INTEGER NOT NULL DEFAULT 0,
+			review_count    INTEGER NOT NULL DEFAULT 0,
+			fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (cntrb_id, day, repo_full_name)
+		)`)
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.58 create contributor_activity_day_totals",
+		`CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_day_totals (
+			activity_total_id   BIGSERIAL PRIMARY KEY,
+			cntrb_id            UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+			day                 DATE NOT NULL,
+			total_contributions INTEGER NOT NULL DEFAULT 0,
+			fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (cntrb_id, day)
+		)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_history_backfilled",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_history_backfilled
+		 ON aveloxis_data.contributors (gh_history_backfilled_at ASC NULLS FIRST)`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

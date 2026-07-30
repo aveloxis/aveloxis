@@ -283,6 +283,21 @@ CREATE INDEX IF NOT EXISTS idx_contributors_email_lookup
 CREATE INDEX IF NOT EXISTS idx_contributors_canonical_lookup
     ON aveloxis_data.contributors (cntrb_canonical);
 
+-- v0.27.57/58 EXISTING-FLEET GUARDS (the 2026-07-30 kate migrate
+-- failure): on a database where contributors already exists, the
+-- CREATE TABLE above no-ops and its new columns never materialize —
+-- and the CREATE INDEX statements below would then fail with 42703
+-- BEFORE migrate.go's addColumnIfMissing steps run (base DDL executes
+-- first). Any same-release (new column, schema.sql index) pair MUST
+-- carry one of these guards ahead of its index. Fresh installs no-op
+-- here (the CREATE TABLE already declared the columns).
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_public_contribs_year INTEGER;
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_restricted_contribs_year INTEGER;
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_last_contribution_year INTEGER;
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_activity_class TEXT DEFAULT '';
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_activity_checked_at TIMESTAMPTZ;
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_history_backfilled_at TIMESTAMPTZ;
+
 -- v0.27.57 — GitHub contribution-activity classification (GraphQL
 -- contributionsCollection). Distinguishes publicly-active /
 -- privately-active-disclosed / dormant / no-observable-activity for

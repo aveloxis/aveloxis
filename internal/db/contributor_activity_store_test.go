@@ -31,6 +31,38 @@ var activityColumns = []string{
 	"gh_activity_checked_at",
 }
 
+// TestSchemaGuardsNewIndexedColumnsForExistingFleets pins the fix for
+// the 2026-07-30 kate migrate failure: on an EXISTING database,
+// CREATE TABLE IF NOT EXISTS contributors no-ops, so columns that are
+// new in this release never materialize from the base DDL — and any
+// schema.sql CREATE INDEX referencing them fails with SQLSTATE 42703
+// BEFORE addColumnIfMissing gets a chance to run (base DDL executes
+// first). Every same-release (new column, schema.sql index) pair must
+// therefore carry an ALTER TABLE ... ADD COLUMN IF NOT EXISTS guard in
+// schema.sql, positioned BEFORE the index statement. (The local test
+// signal for this bug was "first migrate run fails, second passes" —
+// the failed run's addColumnIfMissing steps repair the DB for the next
+// attempt. Production migrate is fail-closed and runs once.)
+func TestSchemaGuardsNewIndexedColumnsForExistingFleets(t *testing.T) {
+	schema := readSourceFile(t, "schema.sql")
+	flat := strings.Join(strings.Fields(schema), " ")
+	for _, g := range []struct{ column, index string }{
+		{"gh_activity_checked_at", "idx_contributors_activity_checked"},
+		{"gh_history_backfilled_at", "idx_contributors_history_backfilled"},
+	} {
+		guard := "ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS " + g.column
+		gpos := strings.Index(flat, guard)
+		ipos := strings.Index(flat, "CREATE INDEX IF NOT EXISTS "+g.index)
+		if gpos < 0 {
+			t.Errorf("schema.sql must carry %q so existing fleets (where CREATE TABLE no-ops) get the column before %s references it", guard, g.index)
+			continue
+		}
+		if ipos >= 0 && gpos > ipos {
+			t.Errorf("the %s guard must appear BEFORE %s — order is the whole point", g.column, g.index)
+		}
+	}
+}
+
 func TestSchemaDeclaresActivityColumns(t *testing.T) {
 	schema := readSourceFile(t, "schema.sql")
 	for _, col := range activityColumns {

@@ -220,6 +220,13 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributors (
     cntrb_created_at TIMESTAMPTZ,
     cntrb_last_enriched_at TIMESTAMPTZ,
     cntrb_last_breadth_at  TIMESTAMPTZ,
+    -- v0.27.57 GitHub contribution-activity classification (see the
+    -- idx_contributors_activity_checked comment below).
+    gh_public_contribs_year     INTEGER,
+    gh_restricted_contribs_year INTEGER,
+    gh_last_contribution_year   INTEGER,
+    gh_activity_class           TEXT DEFAULT '',
+    gh_activity_checked_at      TIMESTAMPTZ,
     tool_source    TEXT DEFAULT 'aveloxis',
     tool_version   TEXT DEFAULT '',
     data_source    TEXT DEFAULT '',
@@ -274,6 +281,23 @@ CREATE INDEX IF NOT EXISTS idx_contributors_email_lookup
 
 CREATE INDEX IF NOT EXISTS idx_contributors_canonical_lookup
     ON aveloxis_data.contributors (cntrb_canonical);
+
+-- v0.27.57 — GitHub contribution-activity classification (GraphQL
+-- contributionsCollection). Distinguishes publicly-active /
+-- privately-active-disclosed / dormant / no-observable-activity for
+-- the ~1.4M contributors whose REST events feed is empty. GITHUB-ONLY
+-- (gh_ prefix): GitLab has no restrictedContributionsCount
+-- equivalent — private profiles are simply invisible (documented
+-- parity gap). Empty gh_activity_class = never checked, or the user
+-- was absent from the API response (deleted/renamed).
+-- The index serves GetContributorsForActivityCheck's
+-- `ORDER BY gh_activity_checked_at ASC NULLS FIRST` claim — explicit
+-- ASC NULLS FIRST per the v0.27.8 breadth lesson (Postgres's ASC
+-- default is NULLS LAST; neither scan direction serves the ORDER BY
+-- without it). Existing fleets get the CONCURRENTLY build from
+-- migrate.go; this plain form covers fresh installs.
+CREATE INDEX IF NOT EXISTS idx_contributors_activity_checked
+    ON aveloxis_data.contributors (gh_activity_checked_at ASC NULLS FIRST);
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_identities (
     identity_id    BIGSERIAL PRIMARY KEY,

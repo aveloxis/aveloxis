@@ -169,13 +169,34 @@ Response shape:
     "full_name": "Alice Anderson",
     "email": "alice@example.com",
     "profile_company": "Acme Corp",
-    "location": "Berlin"
+    "location": "Berlin",
+    "activity_class": "private-active",
+    "public_contribs_year": 0,
+    "restricted_contribs_year": 812,
+    "last_contribution_year": 2026
   },
   ...
 ]
 ```
 
 All string fields are normalized server-side: `""` represents "no value recorded" (no per-field null handling needed on the client). Ordering is by `login NULLS LAST, full_name NULLS LAST` so unidentifiable contributors sort to the bottom of the roster.
+
+**Activity classification fields** (v0.27.57, GitHub only — GitLab has no
+equivalent of `restrictedContributionsCount`, so gl-side contributors keep
+an empty `activity_class`): sourced from GitHub's GraphQL
+`contributionsCollection` over the trailing year and refreshed by a
+scheduler sweep on the breadth cooldown cadence.
+
+| `activity_class` | Meaning |
+|---|---|
+| `public-active` | Public contributions > 0 in the trailing year. |
+| `private-active` | Zero public, but the user disclosed private activity (`restricted_contribs_year` > 0 — the profile's "N contributions in private repositories"). |
+| `dormant` | Nothing observable this year; `last_contribution_year` shows when they were last active. |
+| `no-observable-activity` | Nothing, ever. Render this honestly — GitHub deliberately makes truly-inactive indistinguishable from active-only-in-private with disclosure off. |
+| `""` | Never checked yet, GitLab-side contributor, or the account was deleted/renamed at check time. |
+
+`public_contribs_year` is derived as calendar-total minus restricted
+(the calendar includes disclosed private contributions).
 
 **What counts as a contribution** (all in one window via the unified messages table and the standard work-tracking tables):
 

@@ -61,6 +61,7 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "force_full": false,
     "matview_rebuild_day": "saturday",
     "matview_rebuild_on_startup": false,
+    "matview_rebuild_skip_dm_aggregates": false,
     "pr_child_mode": "graphql",
     "listing_mode": "graphql",
     "threading_mode": "sharded",
@@ -177,6 +178,7 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 |---|---|---|---|
 | `collection.matview_rebuild_day` | string | `"saturday"` | Day of the week the scheduler refreshes the 22 materialized views. Values: `"sunday"`–`"saturday"`, or `"disabled"` / `"none"` / `"off"` to never auto-rebuild. Independent of `aveloxis refresh-views` which always refreshes on demand. |
 | `collection.matview_rebuild_on_startup` | boolean | `false` | When `true`, `aveloxis serve` rebuilds the matviews on every startup. Default `false` because the rebuild can take many minutes on large fleets and `migrate` already refreshes them on schema changes. |
+| `collection.matview_rebuild_skip_dm_aggregates` | boolean | `false` | When `true`, the weekly scheduler rebuild refreshes ONLY the materialized views and skips the `dm_` aggregate table pass (a per-repo loop that can run for days on fleet-scale databases — while it runs, new collection claims are paused). With the skip on, `dm_repo_*` / `dm_repo_group_*` tables update only when an operator runs `aveloxis refresh-views` or `aveloxis migrate`. To disable the weekly rebuild entirely (matviews AND aggregates), set `matview_rebuild_day` to `"disabled"`. |
 
 **REST → GraphQL refactor (v0.18.x phases)**
 

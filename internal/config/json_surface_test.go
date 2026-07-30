@@ -23,6 +23,7 @@ var frozenCollectionKeys = []string{
 	"force_full",
 	"matview_rebuild_day",
 	"matview_rebuild_on_startup",
+	"matview_rebuild_skip_dm_aggregates",
 	"pr_child_mode",
 	"listing_mode",
 	"threading_mode",

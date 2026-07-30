@@ -1730,6 +1730,23 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"aveloxis_data", "idx_contributors_canonical_lookup",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_canonical_lookup
 		 ON aveloxis_data.contributors (cntrb_canonical)`)
+
+	// v0.27.57: GitHub contribution-activity classification columns
+	// (GraphQL contributionsCollection — distinguishes publicly-active
+	// / privately-active-disclosed / dormant / no-observable-activity
+	// for contributors whose REST events feed is empty). GITHUB-ONLY;
+	// GitLab has no restrictedContributionsCount equivalent. The
+	// claim index is declared ASC NULLS FIRST per the v0.27.8 breadth
+	// lesson.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_public_contribs_year", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_restricted_contribs_year", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_last_contribution_year", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_activity_class", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_activity_checked_at", "TIMESTAMPTZ")
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_activity_checked",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_activity_checked
+		 ON aveloxis_data.contributors (gh_activity_checked_at ASC NULLS FIRST)`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

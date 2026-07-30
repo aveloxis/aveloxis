@@ -20,6 +20,16 @@ type RepoContributor struct {
 	Email          string `json:"email"`
 	ProfileCompany string `json:"profile_company"`
 	Location       string `json:"location"`
+	// v0.27.57 activity classification (GitHub contributionsCollection;
+	// empty class = never checked or GitLab-side contributor — GitLab
+	// has no restricted-contributions equivalent). Class vocabulary in
+	// model.Activity*; the "no-observable-activity" class must be
+	// rendered honestly (truly-inactive is indistinguishable from
+	// private-with-disclosure-off by GitHub's design).
+	ActivityClass      string `json:"activity_class"`
+	PublicContribsYear int    `json:"public_contribs_year"`
+	RestrictedContribs int    `json:"restricted_contribs_year"`
+	LastContributionYr int    `json:"last_contribution_year"`
 }
 
 // AffiliationCount is a single row in the affiliation breakdown returned
@@ -147,7 +157,11 @@ SELECT
     COALESCE(NULLIF(c.cntrb_full_name, ''), '')                        AS full_name,
     COALESCE(NULLIF(c.cntrb_email, ''), '')                            AS email,
     COALESCE(NULLIF(c.cntrb_company, ''), '')                          AS profile_company,
-    COALESCE(NULLIF(c.cntrb_location, ''), '')                         AS location
+    COALESCE(NULLIF(c.cntrb_location, ''), '')                         AS location,
+    COALESCE(c.gh_activity_class, '')                                  AS activity_class,
+    COALESCE(c.gh_public_contribs_year, 0)                             AS public_contribs_year,
+    COALESCE(c.gh_restricted_contribs_year, 0)                         AS restricted_contribs_year,
+    COALESCE(c.gh_last_contribution_year, 0)                           AS last_contribution_year
 FROM contributors_in_window ciw
 JOIN aveloxis_data.contributors c USING (cntrb_id)
 WHERE COALESCE(c.cntrb_deleted, 0) = 0
@@ -162,7 +176,8 @@ ORDER BY login NULLS LAST, full_name NULLS LAST`
 	out := make([]RepoContributor, 0, 128)
 	for rows.Next() {
 		var rc RepoContributor
-		if err := rows.Scan(&rc.CntrbID, &rc.Login, &rc.FullName, &rc.Email, &rc.ProfileCompany, &rc.Location); err != nil {
+		if err := rows.Scan(&rc.CntrbID, &rc.Login, &rc.FullName, &rc.Email, &rc.ProfileCompany, &rc.Location,
+			&rc.ActivityClass, &rc.PublicContribsYear, &rc.RestrictedContribs, &rc.LastContributionYr); err != nil {
 			return nil, fmt.Errorf("GetRepoContributors scan: %w", err)
 		}
 		out = append(out, rc)

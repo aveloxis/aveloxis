@@ -34,6 +34,30 @@ type ContributorRepoRow struct {
 	CreatedAt time.Time
 }
 
+// BreadthCooldownJitterFrac is the ± fraction by which each row's
+// effective breadth cooldown is randomized per claim, uniform over
+// [1-frac, 1+frac] × cooldown (mean exactly 1.0, so the configured
+// cadence is preserved in expectation).
+//
+// Why (v0.27.55, diagnosed 2026-07-29 on aveloxis_large): a hard
+// cooldown cliff makes each day's eligible supply an exact echo of the
+// marks one cooldown-period earlier — cohorts bunched by history (the
+// v0.27.8 backlog chew produced 560K-mark days; pre-v0.27.8 famines
+// produced 411-mark days) re-bunched every period forever, so daily
+// breadth throughput sawtoothed between ~500K and ~400 while claim
+// capacity sat idle. The jitter adds an independent uniform offset
+// every period, so cohort spread grows period over period and the
+// sawtooth decays toward the uniform pool/cooldown daily rate.
+//
+// 0.10 is derived, not a guess: ±10% of the production 14-day cooldown
+// is ±1.4 days — wide enough that feast cohorts leak into the 1-2-day
+// famine valleys within one period, narrow enough that every row's
+// actual cadence stays within 10% of the operator's knob. Must stay in
+// (0, 0.5): at 0 the echo returns; at >= 0.5 the multiplier's lower
+// edge reaches zero and rows become re-eligible immediately after
+// marking.
+const BreadthCooldownJitterFrac = 0.10
+
 // GetContributorsForBreadth returns contributors that need breadth
 // collection, prioritizing those never attempted (NULL
 // cntrb_last_breadth_at) then those past the cooldown window.
@@ -60,6 +84,12 @@ func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int
 	if cooldown <= 0 {
 		cooldown = 7 * 24 * time.Hour
 	}
+	// v0.27.55: the cooldown is jittered PER ROW PER CLAIM, uniform
+	// over [1-frac, 1+frac] — see BreadthCooldownJitterFrac for the
+	// full derivation. random() is volatile so each cycle re-rolls
+	// every candidate; the ordered index scan on
+	// idx_contributors_last_breadth still serves the ORDER BY, with
+	// the jitter applied as a per-tuple filter.
 	rows, err := s.pool.Query(ctx, `
 		SELECT cntrb_id::text, gh_login, COALESCE(gh_user_id, 0)
 		FROM aveloxis_data.contributors
@@ -67,9 +97,9 @@ func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int
 		  AND gh_login != ''
 		  AND COALESCE(cntrb_deleted, 0) = 0
 		  AND (cntrb_last_breadth_at IS NULL
-		       OR cntrb_last_breadth_at < NOW() - $2::interval)
+		       OR cntrb_last_breadth_at < NOW() - ($2::interval * (1.0 - $3::float8 + random() * 2.0 * $3::float8)))
 		ORDER BY cntrb_last_breadth_at ASC NULLS FIRST
-		LIMIT $1`, limit, cooldown.String())
+		LIMIT $1`, limit, cooldown.String(), BreadthCooldownJitterFrac)
 	if err != nil {
 		return nil, err
 	}

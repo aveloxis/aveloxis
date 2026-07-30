@@ -583,6 +583,23 @@ Per [R7](#r7-cached-resolution-on-the-hot-path), the `ContributorResolver` cache
 
 ---
 
+### Activity classification is GitHub-only (v0.27.57)
+
+The `gh_activity_class` / `gh_public_contribs_year` /
+`gh_restricted_contribs_year` / `gh_last_contribution_year` columns are
+populated from GitHub's GraphQL `contributionsCollection` — the only
+API surface on either forge that separates "publicly active" from
+"privately active but disclosed" (`restrictedContributionsCount`) from
+"quiet". GitLab has NO equivalent: a private-profile GitLab user's
+events feed is simply empty, with no disclosed-private-count concept,
+so gl-side contributors keep an empty `gh_activity_class` and any
+front end must treat empty as "unknown", not "inactive". This is a
+documented parity limitation, not a gap to close — the data does not
+exist on GitLab's API. Note also the deliberate honesty boundary on
+GitHub itself: `no-observable-activity` never claims "inactive",
+because truly-inactive is indistinguishable from
+active-only-in-private-with-disclosure-off (privacy by design).
+
 ## GitLab vs GitHub: column-by-column parity matrix (v0.20.3)
 
 Aveloxis collects contributor data from both GitHub and GitLab and stores them in the same `aveloxis_data.contributors` table. Some columns map cleanly between platforms; others are intentionally GitHub-only or GitLab-only. This matrix is the contract for what to expect when querying contributor data on a mixed-platform fleet.

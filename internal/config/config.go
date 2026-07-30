@@ -208,6 +208,18 @@ type CollectionConfig struct {
 	// Default: "saturday". Views are rebuilt once per week on this day.
 	MatviewRebuildDay string `json:"matview_rebuild_day"`
 
+	// MatviewRebuildSkipDMAggregates skips the dm_ aggregate table
+	// refresh (RefreshAllRepoAggregates) inside the weekly scheduler
+	// rebuild, keeping only the materialized-view step. v0.27.56 —
+	// added after the 2026-07-27→30 incident where the dm_ step (a
+	// 93K-repo × two-pass per-repo loop) ran 3+ days holding
+	// MatviewRebuildActive, silently pausing all collection claims.
+	// Deliberately does NOT affect `aveloxis refresh-views` or
+	// `aveloxis migrate` — those are explicit operator commands.
+	// The FULL weekly-rebuild off-switch is matview_rebuild_day:
+	// "disabled".
+	MatviewRebuildSkipDMAggregates bool `json:"matview_rebuild_skip_dm_aggregates"`
+
 	// MatviewRebuildOnStartup controls whether materialized views are created/refreshed
 	// during schema migration (startup). For large databases this can take minutes.
 	// Default: false — views are created on first migrate but not refreshed on every startup.

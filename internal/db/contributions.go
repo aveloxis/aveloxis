@@ -361,6 +361,14 @@ func (s *PostgresStore) TopContributors(ctx context.Context, repoID int64, since
 	if limit <= 0 {
 		limit = 20
 	}
+	// Hard upper backstop AT THE STORE LAYER (CodeQL
+	// go/uncontrolled-allocation-size, 2026-07-31): the API handler
+	// caps limit at 100 too, but the store is the shared surface —
+	// a future caller that forgets its own cap must not reach the
+	// slice allocation (or the SQL LIMIT) with an unbounded value.
+	if limit > 100 {
+		limit = 100
+	}
 
 	sql := `
 WITH per_kind AS (

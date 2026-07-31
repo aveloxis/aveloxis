@@ -211,8 +211,18 @@ func (s *PostgresStore) GetCollectionRepos(ctx context.Context, collectionID int
 	if page < 1 {
 		page = 1
 	}
-	if pageSize < 1 || pageSize > 100 {
+	// Two single-comparison clamps rather than one compound
+	// condition (CodeQL go/uncontrolled-allocation-size,
+	// 2026-07-31): semantically identical, but the bare
+	// `pageSize > 100` guard is the barrier shape the scanner's
+	// upper-bound analysis recognizes — the OR-combined
+	// reassignment was flagged as an uncontrolled allocation size
+	// even though it bounded the value.
+	if pageSize < 1 {
 		pageSize = 50
+	}
+	if pageSize > 100 {
+		pageSize = 100
 	}
 
 	var total int

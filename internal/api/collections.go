@@ -56,11 +56,17 @@ func (s *Server) handleCollectionDetail(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Echo the EFFECTIVE paging values (mirrors the store's clamps —
+	// the v0.27.65 split-clamp shape): an oversize page_size request
+	// returns 100 rows and must say 100, not the default.
 	if page < 1 {
 		page = 1
 	}
-	if pageSize < 1 || pageSize > 100 {
+	if pageSize < 1 {
 		pageSize = 50
+	}
+	if pageSize > 100 {
+		pageSize = 100
 	}
 	jsonResponse(w, map[string]any{
 		"collection_id": collID,

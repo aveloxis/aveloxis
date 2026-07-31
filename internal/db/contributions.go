@@ -313,6 +313,134 @@ FROM enriched_state`
 	return out, nil
 }
 
+// TopContributor is one ranked row from TopContributors: a contributor
+// with their per-kind activity counts inside the requested window.
+type TopContributor struct {
+	CntrbID       string `json:"cntrb_id"`
+	Login         string `json:"login"`
+	FullName      string `json:"full_name"`
+	ActivityClass string `json:"activity_class"`
+	Commits       int    `json:"commits"`
+	Issues        int    `json:"issues"`
+	PRs           int    `json:"prs"`
+	Reviews       int    `json:"reviews"`
+	Comments      int    `json:"comments"`
+	Total         int    `json:"total"`
+}
+
+// TopContributors (v0.27.61) returns the top-N contributors to repoID
+// in [since, until), ranked by total activity, with the per-kind
+// breakdown that produced the rank.
+//
+// What counts, per kind (each arm windowed on its own event time):
+//   - commits:  DISTINCT commit hashes authored (the commits table is
+//     one row per FILE per commit — COUNT(*) would weight a 30-file
+//     commit 30×). Windowed on cmt_author_timestamp (TIMESTAMPTZ);
+//     cmt_author_date is TEXT and unsafe to range-filter.
+//   - issues:   issues OPENED (reporter_id / created_at).
+//   - prs:      pull requests OPENED (author_id / created_at).
+//   - reviews:  PR reviews SUBMITTED (cntrb_id / submitted_at) — the
+//     arm that makes maintainer review load visible; it is invisible
+//     in commit/PR counts alone.
+//   - comments: unified messages (issue comments + PR conversation +
+//     inline review comment bodies) by msg_timestamp.
+//
+// Issue/PR events (labels, assignments, closes) are deliberately NOT
+// counted — they are process noise for a "who does the work here"
+// ranking, though they DO count for cohort membership in
+// contributorsInWindowCTE. The two surfaces answer different
+// questions and the difference is documented in docs/guide/api.md.
+//
+// Identity resolution matches GetRepoContributors exactly: the shared
+// COALESCE login chain and the cntrb_deleted=0 soft-delete filter, so
+// the two contributor surfaces can never disagree about who a
+// cntrb_id is. Commits with NULL cmt_ght_author_id (unresolved
+// authors) are excluded — there is no identity to rank.
+func (s *PostgresStore) TopContributors(ctx context.Context, repoID int64, since, until time.Time, limit int) ([]TopContributor, error) {
+	lower, upper := resolveWindow(since, until)
+	if limit <= 0 {
+		limit = 20
+	}
+
+	sql := `
+WITH per_kind AS (
+    SELECT c.cmt_ght_author_id AS cntrb_id,
+           COUNT(DISTINCT c.cmt_commit_hash) AS commits,
+           0::bigint AS issues, 0::bigint AS prs, 0::bigint AS reviews, 0::bigint AS comments
+    FROM aveloxis_data.commits c
+    WHERE c.repo_id = $1 AND c.cmt_ght_author_id IS NOT NULL
+      AND c.cmt_author_timestamp >= $2 AND c.cmt_author_timestamp < $3
+    GROUP BY 1
+
+    UNION ALL
+    SELECT i.reporter_id, 0, COUNT(*), 0, 0, 0
+    FROM aveloxis_data.issues i
+    WHERE i.repo_id = $1 AND i.reporter_id IS NOT NULL
+      AND i.created_at >= $2 AND i.created_at < $3
+    GROUP BY 1
+
+    UNION ALL
+    SELECT pr.author_id, 0, 0, COUNT(*), 0, 0
+    FROM aveloxis_data.pull_requests pr
+    WHERE pr.repo_id = $1 AND pr.author_id IS NOT NULL
+      AND pr.created_at >= $2 AND pr.created_at < $3
+    GROUP BY 1
+
+    UNION ALL
+    SELECT prr.cntrb_id, 0, 0, 0, COUNT(*), 0
+    FROM aveloxis_data.pull_request_reviews prr
+    WHERE prr.repo_id = $1 AND prr.cntrb_id IS NOT NULL
+      AND prr.submitted_at >= $2 AND prr.submitted_at < $3
+    GROUP BY 1
+
+    UNION ALL
+    SELECT m.cntrb_id, 0, 0, 0, 0, COUNT(*)
+    FROM aveloxis_data.messages m
+    WHERE m.repo_id = $1 AND m.cntrb_id IS NOT NULL
+      AND m.msg_timestamp >= $2 AND m.msg_timestamp < $3
+    GROUP BY 1
+),
+totals AS (
+    SELECT cntrb_id,
+           SUM(commits) AS commits, SUM(issues) AS issues, SUM(prs) AS prs,
+           SUM(reviews) AS reviews, SUM(comments) AS comments
+    FROM per_kind
+    GROUP BY cntrb_id
+)
+SELECT
+    t.cntrb_id::text,
+    COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '') AS login,
+    COALESCE(NULLIF(c.cntrb_full_name, ''), '')                        AS full_name,
+    COALESCE(c.gh_activity_class, '')                                  AS activity_class,
+    t.commits::int, t.issues::int, t.prs::int, t.reviews::int, t.comments::int,
+    (t.commits + t.issues + t.prs + t.reviews + t.comments)::int       AS total
+FROM totals t
+JOIN aveloxis_data.contributors c ON c.cntrb_id = t.cntrb_id
+WHERE COALESCE(c.cntrb_deleted, 0) = 0
+ORDER BY total DESC, login
+LIMIT $4`
+
+	rows, err := s.pool.Query(ctx, sql, repoID, lower, upper, limit)
+	if err != nil {
+		return nil, fmt.Errorf("TopContributors query: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]TopContributor, 0, limit)
+	for rows.Next() {
+		var tc TopContributor
+		if err := rows.Scan(&tc.CntrbID, &tc.Login, &tc.FullName, &tc.ActivityClass,
+			&tc.Commits, &tc.Issues, &tc.PRs, &tc.Reviews, &tc.Comments, &tc.Total); err != nil {
+			return nil, fmt.Errorf("TopContributors scan: %w", err)
+		}
+		out = append(out, tc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("TopContributors rows: %w", err)
+	}
+	return out, nil
+}
+
 // GetRepoAffiliationCounts returns the number of DISTINCT contributors
 // per affiliation in the same window as GetRepoContributors.
 //

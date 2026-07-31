@@ -170,6 +170,14 @@ func (s *PostgresStore) findOrCreateNamedGroup(ctx context.Context, userID int, 
 	return s.CreateUserGroup(ctx, userID, name)
 }
 
+// FindOrCreateUserGroupByName is the exported find-or-create for a
+// user's group by name (v0.27.63 — the collections copy flow lets the
+// caller name a fresh destination group). Same v0.19.0 status rules
+// as every other creation path.
+func (s *PostgresStore) FindOrCreateUserGroupByName(ctx context.Context, userID int, name string) (int64, error) {
+	return s.findOrCreateNamedGroup(ctx, userID, name)
+}
+
 // FindOrCreateStarredGroup returns the user's Starred group id,
 // creating the group on first use.
 func (s *PostgresStore) FindOrCreateStarredGroup(ctx context.Context, userID int) (int64, error) {

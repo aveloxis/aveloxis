@@ -1779,6 +1779,52 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"aveloxis_data", "idx_contributors_history_backfilled",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_history_backfilled
 		 ON aveloxis_data.contributors (gh_history_backfilled_at ASC NULLS FIRST)`)
+
+	// v0.27.60: stable fleet-entry timestamp for the new-repositories
+	// feeds. ORDER IS LOAD-BEARING: (1) bare column add — a STABLE
+	// DEFAULT at add-time would stamp every legacy row with the
+	// migration timestamp via attmissingval; (2) backfill legacy rows
+	// from data_collection_date (an HONEST last-touch approximation —
+	// collection_queue has no created-at to do better; feeds are noisy
+	// for one window post-deploy, which is why this ships ahead of the
+	// endpoint); (3) only then the NOW() default for future inserts.
+	// added_at is deliberately absent from UpsertRepo's DO UPDATE SET
+	// (insert-only contract, pinned).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "added_at", "TIMESTAMPTZ")
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.60 backfill repos.added_at from data_collection_date (last-touch approximation)",
+		`UPDATE aveloxis_data.repos
+		 SET added_at = COALESCE(data_collection_date, created_at, NOW())
+		 WHERE added_at IS NULL`)
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.60 default repos.added_at to NOW() for future inserts",
+		`ALTER TABLE aveloxis_data.repos ALTER COLUMN added_at SET DEFAULT NOW()`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_repos_added_at",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_added_at
+		 ON aveloxis_data.repos (added_at DESC)`)
+
+	// v0.27.63: collections (admin-curated groups-of-groups) — same
+	// DDL as schema.sql so existing fleets pick the tables up on
+	// migrate. Both idempotent via IF NOT EXISTS.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.63 create aveloxis_ops.collections",
+		`CREATE TABLE IF NOT EXISTS aveloxis_ops.collections (
+		    collection_id BIGSERIAL PRIMARY KEY,
+		    name          TEXT NOT NULL UNIQUE,
+		    description   TEXT NOT NULL DEFAULT '',
+		    position      INT NOT NULL DEFAULT 0,
+		    created_by    INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+		    created_at    TIMESTAMPTZ DEFAULT NOW()
+		)`)
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.63 create aveloxis_ops.collection_groups",
+		`CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_groups (
+		    collection_id BIGINT NOT NULL REFERENCES aveloxis_ops.collections(collection_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+		    group_id      BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+		    position      INT NOT NULL DEFAULT 0,
+		    PRIMARY KEY (collection_id, group_id)
+		)`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

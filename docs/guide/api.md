@@ -22,6 +22,22 @@ Returns the server status and version.
 {"status": "ok", "version": "0.9.0"}
 ```
 
+### Public repository count
+
+```
+GET /api/v1/public/stats
+```
+
+Public (no token required, like `/health`) — the landing page's
+"repositories under analysis" number. Returns the count of
+non-archived repositories in the catalog, served from a 60-second
+cache that keeps the last good value if the database hiccups. Still
+subject to the per-IP rate limiter.
+
+```json
+{"repos": 12483}
+```
+
 ### Repository Statistics
 
 ```
@@ -257,6 +273,118 @@ The derivation priority is deliberate: the curated domain map is updated by a ba
 - **Group of repos**: the two endpoints are per-repo. For an org-wide rollup, call them for each repo in the group and merge the responses (the `cntrb_id` column is stable across repos so dedup is trivial).
 - **Hide the `(unknown)` bucket**: filter on the client. The server returns it so the math reconciles with `/contributions/identities`.
 - **Different windows**: `?since=YYYY-MM-DD` and `?until=YYYY-MM-DD` are both accepted independently. Omit `until` for "everything since `since`".
+
+### Top contributors, ranked (v0.27.61)
+
+```
+GET /api/v1/repos/{repoID}/contributors/top
+GET /api/v1/repos/{repoID}/contributors/top?since=2024-01-01&until=2024-12-31&limit=20
+```
+
+The ranked "who does the work here" table behind the repo page's Top
+contributors card. Same `since`/`until` window semantics as the
+`/contributions/*` endpoints (default: trailing 2 years; `until` is
+inclusive); `limit` defaults to 20 and is capped at 100. Requires the
+same repo scope as every other per-repo endpoint; responses are served
+from a 60-second cache (the underlying data only changes per
+collection cycle).
+
+Response:
+
+```json
+{
+  "since": "2024-07-31T00:00:00Z",
+  "until": "0001-01-01T00:00:00Z",
+  "limit": 20,
+  "contributors": [
+    {
+      "cntrb_id": "01001234-...",
+      "login": "octocat",
+      "full_name": "Octo Cat",
+      "activity_class": "active",
+      "commits": 412, "issues": 38, "prs": 91, "reviews": 130, "comments": 505,
+      "total": 1176
+    }
+  ]
+}
+```
+
+What counts, per column: `commits` = DISTINCT commit hashes authored
+(windowed on the commit's author timestamp); `issues` = issues opened;
+`prs` = pull requests opened; `reviews` = PR reviews submitted;
+`comments` = unified messages (issue comments + PR conversation +
+inline review comments). `total` is the sum and the ranking key.
+
+Issue/PR **events** (labels, assignments, closes) deliberately do NOT
+count here even though they DO count for cohort membership in
+`/contributions/identities` — this endpoint ranks creative/review
+work; the identities endpoint enumerates everyone who touched the
+repo at all. `activity_class` is the v0.27.57 classification (empty =
+never checked or GitLab-side). Commits whose author was never resolved
+to a contributor identity are excluded — there is no identity to rank.
+
+### Where else are these contributors active? (v0.27.64)
+
+```
+GET /api/v1/repos/{repoID}/contributors/elsewhere
+GET /api/v1/repos/{repoID}/contributors/elsewhere?since=2026-02-01&limit=10
+```
+
+For the repo's top contributors (same ranking as `/contributors/top`;
+`limit` default 10, cap 25), their top-10 OTHER repositories from the
+v0.27.58 contributor daily-history tables (GitHub
+contributionsCollection data), aggregated over the window (`since`
+defaults to the trailing 180 days — the standard history window).
+Response rows per contributor:
+
+```json
+{
+  "since": "2026-02-01", "limit": 10,
+  "contributors": [
+    {
+      "cntrb_id": "0100...", "login": "octocat",
+      "backfilled_at": "2026-07-30T02:11:00Z",
+      "elsewhere": [
+        {"repo_full_name": "kubernetes/kubernetes", "repo_id": 4021,
+         "active_days": 14, "commits": 33, "issues": 2, "prs": 5, "reviews": 9},
+        {"repo_full_name": "torvalds/linux",
+         "active_days": 3, "commits": 4, "issues": 0, "prs": 0, "reviews": 0}
+      ]
+    }
+  ]
+}
+```
+
+**Reading `backfilled_at`** (the honesty rule): a `null` stamp means
+the v0.27.58 history backfill has not reached this contributor yet —
+their empty `elsewhere` array is "history pending", NOT "active
+nowhere else". Frontends must render the two differently. `repo_id`
+is present only when the repo is tracked on this instance
+(GitHub-side match; the history source is GitHub-only). The current
+repo is excluded case-insensitively (GitHub's canonical casing can
+differ from ours).
+
+### One contributor's cross-repo activity (v0.27.64)
+
+```
+GET /api/v1/contributors/{cntrbID}/activity
+GET /api/v1/contributors/{cntrbID}/activity?bucket=month&months=24
+```
+
+The person-level view: monthly per-repo activity buckets (top-10
+repos by total activity in the window) plus the contribution
+calendar's disclosed day-total series (`day_totals` — includes
+private contributions when the user enabled disclosure, which is why
+it can exceed the per-repo sum). `months` defaults 24, caps 60;
+`bucket` accepts only `month` (400 otherwise — reserved for future
+granularities). `cntrbID` must be a UUID (400 otherwise); unknown
+contributors 404.
+
+Requires a Bearer identity but NOT repo scope: person-level history
+spans repositories this instance doesn't track, so repo scope cannot
+express an authorization boundary for it — and it is not anonymous
+data, so a signed-in identity is the floor. Carries `backfilled_at`
+with the same semantics as `/contributors/elsewhere`.
 
 ### Knowing whether your coverage is complete
 
@@ -497,7 +625,7 @@ collected.
 ## Authentication: getting an API token
 
 When `api.require_auth` is `true`, every data endpoint (everything
-except `GET /api/v1/health`) requires a session token sent as
+except `GET /api/v1/health` and `GET /api/v1/public/stats`) requires a session token sent as
 `Authorization: Bearer <token>`. Exempt-CIDR clients (same box / LAN
 by default) bypass this for the read endpoints; the portal endpoints
 above always require a token regardless.
@@ -646,6 +774,20 @@ Token semantics:
   requests opened). Default limit is 50 (v0.27.14; was 20). There is
   no cap on the number of repos a user may star — the limit only
   bounds how many rows the home list returns per request.
+- `GET /api/v1/home/new-repos?days=30` — the "New Repositories" home
+  feed (v0.27.62): `{"days", "fleet": [...], "mine": [...]}` where
+  each row is `{repo_id, owner, name, org, added_at}`, newest-first,
+  up to 200 rows per arm. `fleet` = repos added inside the window
+  whose owner matches an org registered by an ADMIN user (the curated
+  what's-new-on-this-instance signal); `mine` = same, for orgs the
+  caller registered. Orgs whose owning group is rejected surface in
+  neither arm. `days` defaults to 30, capped at 90. Requires a Bearer
+  identity (discovery surface — not repo-scoped, same posture as
+  `/repos/search`). `added_at` is the v0.27.60 fleet-entry stamp;
+  rows created before that release carry a last-touch approximation,
+  so the feed is honest-noisy for one window after that deploy.
+  Known v1 edge: GitLab nested-group paths (`group/subgroup`) don't
+  equal `repo_owner` and fall out of the feed.
 - `GET /api/v1/repos/{repoID}/scorecard` — the current OpenSSF
   Scorecard results for the repo:
   `{"repo_id", "scanned", "as_of", "overall", "checks": [{"name", "score"}]}`.
@@ -759,6 +901,49 @@ Admin-only:
   exact same `PrioritizeRepo` store call the legacy :5555 monitor's
   `/api/prioritize/{repoID}` makes. 404 when the repo has no queue
   row; 400 for a non-numeric id. Returns `{ok: true, repo_id}`.
+
+## Collections (v0.27.63)
+
+Admin-curated groups-of-groups for the GUI home page ("Apache
+Graduated", "CNCF Sandbox", …). A collection joins to LIVE
+`user_groups` — never a frozen repo list — so admin org-groups that
+auto-grow via org scans keep their collections fresh for free. Only
+admin-owned groups may be members (link-time check). Mutations are
+POST-everywhere because the CORS `Allow-Methods` header only
+advertises GET/POST.
+
+Reads (any authenticated user):
+
+- `GET /api/v1/collections` — `{collections: [{collection_id, name,
+  description, position, groups, repos, created_at}]}`,
+  position-ordered, repo counts deduped across member groups.
+- `GET /api/v1/collections/{collectionID}?page&page_size` — member
+  groups (each with live repo count) + one page of the deduped repo
+  set: `{collection_id, groups, repos, total, page, page_size}`.
+  Page size defaults 50, caps 100; ordering is owner/name with
+  repo_id as the stable tiebreaker.
+- `POST /api/v1/collections/{collectionID}/copy` with `{group_id}`
+  (must be the caller's) or `{group_name}` (find-or-create for the
+  caller) — links every repo of the collection into that group and
+  returns `{added, group_id}` (repos already in the group no-op).
+  **Never enqueues collection and never creates add-requests**:
+  collection repos are already tracked, and approval only ever gates
+  NEW collection (v0.27.20). The caller's auth scope and home cache
+  are invalidated so the repos are visible on the next request.
+
+Admin mutations (requireAdmin):
+
+- `POST /api/v1/admin/collections` `{name, description, position}` →
+  `{collection_id}`. Name is globally UNIQUE.
+- `POST /api/v1/admin/collections/{collectionID}` `{name,
+  description, position}` — update in place.
+- `POST /api/v1/admin/collections/{collectionID}/delete` — removes
+  the collection; member links cascade, member groups are untouched.
+- `POST /api/v1/admin/collections/{collectionID}/groups`
+  `{group_id}` — link an ADMIN-OWNED group (400 for a group owned by
+  a non-admin; linking an already-linked group is an idempotent ok).
+- `POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove`
+  — unlink; the group and its repos are untouched.
 
 
 ## Window-boundary semantics (v0.27.39)

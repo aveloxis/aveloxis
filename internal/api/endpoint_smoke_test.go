@@ -50,6 +50,7 @@ type smokeRecipe struct {
 // metrics.go. Path placeholders are filled from the seeded fixture.
 var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/health":                                    {},
+	"GET /api/v1/public/stats":                              {},
 	"GET /api/v1/metrics":                                   {},
 	"GET /api/v1/repos":                                     {},
 	"GET /api/v1/repos/search":                              {query: "q=smokerepo"},
@@ -67,6 +68,9 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/repos/{repoID}/contributions/identities":   {},
 	"GET /api/v1/repos/{repoID}/contributions/affiliations": {},
 	"GET /api/v1/repos/{repoID}/contributions/coverage":     {},
+	"GET /api/v1/repos/{repoID}/contributors/top":           {},
+	"GET /api/v1/repos/{repoID}/contributors/elsewhere":     {},
+	"GET /api/v1/contributors/{cntrbID}/activity":           {auth: "user"},
 	"GET /api/v1/compare":                                   {query: "entities=repo:{repoID}&metric=contributors"},
 	"GET /api/v1/compare/snapshot":                          {query: "entities=repo:{repoID}&metric=labor_investment"},
 	"GET /api/v1/entities/search":                           {query: "q=smokerepo", auth: "user"},
@@ -84,8 +88,19 @@ var smokeRecipes = map[string]smokeRecipe{
 	// code, pinned by portal_bulk_add_test.go).
 	"POST /api/v1/groups/{groupID}/repos": {auth: "user", body: `{"urls":["https://github.com/_avsmoke/{repoName}"],"kind":"repo"}`},
 	"GET /api/v1/home/repos":              {auth: "user"},
-	"PUT /api/v1/repos/{repoID}/star":     {auth: "user"},
-	"DELETE /api/v1/repos/{repoID}/star":  {auth: "user", after: "PUT /api/v1/repos/{repoID}/star"},
+	"GET /api/v1/home/new-repos":          {auth: "user"},
+	// v0.27.63 collections. Ordering via `after`: the group link and
+	// copy run before the delete so they exercise a live collection.
+	"GET /api/v1/collections":                                               {auth: "user"},
+	"GET /api/v1/collections/{collectionID}":                                {auth: "user"},
+	"POST /api/v1/collections/{collectionID}/copy":                          {auth: "user", body: `{"group_name":"smoke-coll-copy-{repoName}"}`, after: "POST /api/v1/admin/collections/{collectionID}/groups"},
+	"POST /api/v1/admin/collections":                                        {auth: "admin", body: `{"name":"smoke-coll-extra-{repoName}"}`},
+	"POST /api/v1/admin/collections/{collectionID}":                         {auth: "admin", body: `{"name":"smoke-coll-upd-{repoName}"}`, after: "POST /api/v1/collections/{collectionID}/copy"},
+	"POST /api/v1/admin/collections/{collectionID}/groups":                  {auth: "admin", body: `{"group_id":{groupID}}`},
+	"POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove": {auth: "admin", after: "POST /api/v1/collections/{collectionID}/copy"},
+	"POST /api/v1/admin/collections/{collectionID}/delete":                  {auth: "admin", after: "POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove"},
+	"PUT /api/v1/repos/{repoID}/star":                                       {auth: "user"},
+	"DELETE /api/v1/repos/{repoID}/star":                                    {auth: "user", after: "PUT /api/v1/repos/{repoID}/star"},
 
 	// Admin.
 	"GET /api/v1/admin/users":                                {auth: "admin"},
@@ -206,6 +221,8 @@ func TestEveryEndpointExecutes(t *testing.T) {
 		"{userID}", fmt.Sprint(fx.userID),
 		"{decision}", "approve",
 		"{requestID}", fmt.Sprint(fx.requestID),
+		"{collectionID}", fmt.Sprint(fx.collectionID),
+		"{cntrbID}", fx.cntrbID,
 		"{owner}", fx.owner,
 		"{repo}", fx.repoName,
 		"{repoName}", fx.repoName,
@@ -261,7 +278,17 @@ func TestEveryEndpointExecutes(t *testing.T) {
 	}
 
 	// Ordered pass first (recipes with dependencies), then the rest.
-	ordered := []string{"PUT /api/v1/repos/{repoID}/star", "DELETE /api/v1/repos/{repoID}/star"}
+	ordered := []string{
+		"PUT /api/v1/repos/{repoID}/star", "DELETE /api/v1/repos/{repoID}/star",
+		// v0.27.63 collections chain: link the group, copy from the
+		// live collection, unlink, then delete — so every mutation
+		// exercises a real state, not an already-deleted collection.
+		"POST /api/v1/admin/collections/{collectionID}/groups",
+		"POST /api/v1/collections/{collectionID}/copy",
+		"POST /api/v1/admin/collections/{collectionID}",
+		"POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove",
+		"POST /api/v1/admin/collections/{collectionID}/delete",
+	}
 	done := map[string]bool{}
 	for _, route := range ordered {
 		if r, ok := smokeRecipes[route]; ok {
@@ -278,14 +305,16 @@ func TestEveryEndpointExecutes(t *testing.T) {
 }
 
 type smokeFixture struct {
-	repoID    int64
-	groupID   int64
-	userID    int
-	owner     string
-	repoName  string
-	rgName    string
-	tokens    map[string]string // "user" and "admin" bearer tokens
-	requestID int64             // v0.27.20 pending add-request
+	repoID       int64
+	groupID      int64
+	userID       int
+	owner        string
+	repoName     string
+	rgName       string
+	tokens       map[string]string // "user" and "admin" bearer tokens
+	requestID    int64             // v0.27.20 pending add-request
+	collectionID int64             // v0.27.63 collections routes
+	cntrbID      string            // v0.27.64 contributor activity route
 }
 
 // seedSmokeFixture creates the minimal graph the recipes need: a repo
@@ -367,7 +396,29 @@ func seedSmokeFixture(t *testing.T, ctx context.Context, store *db.PostgresStore
 		INSERT INTO aveloxis_ops.collection_add_request_items (request_id, repo_url) VALUES ($1, $2)`,
 		fx.requestID, fmt.Sprintf("https://github.com/_avsmoke/%s", fx.repoName))
 
+	// v0.27.64: a contributor with a history-backfill stamp feeding
+	// the /contributors/{cntrbID}/activity route.
+	fx.cntrbID = "0100fade-d000-0000-0000-00000000000f"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login, gh_history_backfilled_at)
+		VALUES ($1::uuid, $2, NOW())
+		ON CONFLICT (cntrb_login) WHERE cntrb_login != '' DO NOTHING`,
+		fx.cntrbID, fmt.Sprintf("_avsmoke_c%d", suffix)); err != nil {
+		t.Fatal(err)
+	}
+
+	// v0.27.63: a collection feeding the collections routes. NOT
+	// pre-linked to the group — the add-group recipe links it live.
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_ops.collections (name, description, created_by)
+		VALUES ($1, 'smoke collection', $2) RETURNING collection_id`,
+		fmt.Sprintf("_avsmoke_coll%d", suffix), fx.userID).Scan(&fx.collectionID); err != nil {
+		t.Fatal(err)
+	}
+
 	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.collections WHERE created_by = $1`, fx.userID)
+		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, fx.cntrbID)
 		for _, q := range []string{
 			`DELETE FROM aveloxis_ops.user_repo_stars WHERE user_id = $1`,
 			`DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id = $1`,

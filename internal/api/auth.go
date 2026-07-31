@@ -119,11 +119,21 @@ func (a *authenticator) invalidateAll() {
 	a.mu.Unlock()
 }
 
-// middleware enforces Bearer auth on every route except /api/v1/health
-// when require is set. Exempt-CIDR clients bypass (LAN tooling).
+// publicPaths bypass require_auth. This is the fail-closed boundary —
+// keep the list tiny, explicit, and EXACT-MATCH only (no prefixes):
+// health is the liveness probe; public/stats is the landing page's
+// anonymous repo count (v0.27.59, still per-IP rate limited).
+var publicPaths = map[string]bool{
+	"/api/v1/health":       true,
+	"/api/v1/public/stats": true,
+}
+
+// middleware enforces Bearer auth on every route except the
+// publicPaths allowlist when require is set. Exempt-CIDR clients
+// bypass (LAN tooling).
 func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !a.require || r.URL.Path == "/api/v1/health" || rl.isExempt(rl.clientIP(r)) {
+		if !a.require || publicPaths[r.URL.Path] || rl.isExempt(rl.clientIP(r)) {
 			// Best-effort: attach auth info when a token IS presented,
 			// so scope checks apply even before require_auth flips on.
 			if tok := bearerToken(r); tok != "" {

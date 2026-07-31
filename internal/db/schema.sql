@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     platform_repo_id TEXT DEFAULT '',
     created_at       TIMESTAMPTZ,
     updated_at       TIMESTAMPTZ,
+    -- v0.27.60: STABLE fleet-entry timestamp (insert-only — NOT in
+    -- UpsertRepo's DO UPDATE SET). Feeds the new-repositories feeds.
+    -- Legacy rows are backfilled from data_collection_date (an honest
+    -- last-touch approximation) by the migrate step.
+    added_at         TIMESTAMPTZ DEFAULT NOW(),
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
@@ -138,6 +143,18 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- incomplete.
     distribution_scan_complete   BOOLEAN DEFAULT TRUE
 );
+
+-- v0.27.60 EXISTING-FLEET GUARD (the v0.27.58 lesson): on a database
+-- where repos already exists the CREATE TABLE above no-ops, so
+-- added_at must be guarded here before its index references it. Bare
+-- type on purpose — the migrate step backfills legacy rows from
+-- data_collection_date and only then sets the NOW() default (the
+-- STABLE-default-at-add trap would stamp every legacy row with the
+-- migration timestamp).
+ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_repos_added_at
+    ON aveloxis_data.repos (added_at DESC);
 
 -- ============================================================
 -- Repo groups list serve (mailing lists)
@@ -2284,6 +2301,27 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_org_requests (
     last_scanned   TIMESTAMPTZ,
     created_at     TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (group_id, org_url)
+);
+
+-- v0.27.63: collections — admin-curated groups-of-groups for the GUI
+-- home page ("Collections" box). Collections join to LIVE user_groups
+-- (not frozen repo lists): admin org-groups auto-grow via org scans,
+-- so collections stay fresh for free. Placed after users +
+-- user_groups per the create-before-reference rule (v0.27.9).
+CREATE TABLE IF NOT EXISTS aveloxis_ops.collections (
+    collection_id BIGSERIAL PRIMARY KEY,
+    name          TEXT NOT NULL UNIQUE,
+    description   TEXT NOT NULL DEFAULT '',
+    position      INT NOT NULL DEFAULT 0,
+    created_by    INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+    created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_groups (
+    collection_id BIGINT NOT NULL REFERENCES aveloxis_ops.collections(collection_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    group_id      BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    position      INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (collection_id, group_id)
 );
 
 CREATE TABLE IF NOT EXISTS aveloxis_ops.client_applications (

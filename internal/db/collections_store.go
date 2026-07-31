@@ -247,7 +247,13 @@ func (s *PostgresStore) GetCollectionRepos(ctx context.Context, collectionID int
 	}
 	defer rows.Close()
 
-	out := make([]CollectionRepo, 0, pageSize)
+	// CONSTANT capacity hint (CodeQL go/uncontrolled-allocation-size,
+	// round 2): pageSize is clamped above, but the scanner doesn't
+	// credit clamp-and-continue reassignments as barriers. Capacity
+	// is only a pre-allocation hint — append grows past it on a
+	// 100-row page — so a constant severs the taint path outright.
+	// Do NOT change this back to `pageSize`.
+	out := make([]CollectionRepo, 0, 50)
 	for rows.Next() {
 		var cr CollectionRepo
 		if err := rows.Scan(&cr.RepoID, &cr.Owner, &cr.Name, &cr.GitURL); err != nil {

@@ -23,6 +23,13 @@ func TestTopContributorsClampsUpperLimitInStore(t *testing.T) {
 	if !strings.Contains(body, "limit > 100") {
 		t.Error("TopContributors must clamp limit > 100 at the STORE layer — the API cap alone leaves the shared surface unbounded (CodeQL go/uncontrolled-allocation-size)")
 	}
+	// Round 2: the make() capacity must be a CONSTANT, never the
+	// user-derived limit — the scanner doesn't credit clamp-and-
+	// continue reassignments as barriers, and a constant hint costs
+	// nothing (append grows past it).
+	if strings.Contains(body, "make([]TopContributor, 0, limit)") {
+		t.Error("TopContributors allocation capacity must be a constant, not `limit` — the taint path to make() is what CodeQL flags (2026-07-31 round 2)")
+	}
 }
 
 func TestGetCollectionReposClampsPageSizeWithBareGuards(t *testing.T) {
@@ -32,6 +39,10 @@ func TestGetCollectionReposClampsPageSizeWithBareGuards(t *testing.T) {
 	}
 	if strings.Contains(body, "pageSize < 1 || pageSize > 100") {
 		t.Error("GetCollectionRepos must NOT combine the clamps into one compound condition — CodeQL's upper-bound barrier misses that shape (2026-07-31 finding)")
+	}
+	// Round 2: constant capacity, never the user-derived pageSize.
+	if strings.Contains(body, "make([]CollectionRepo, 0, pageSize)") {
+		t.Error("GetCollectionRepos allocation capacity must be a constant, not `pageSize` — the taint path to make() is what CodeQL flags (2026-07-31 round 2)")
 	}
 }
 

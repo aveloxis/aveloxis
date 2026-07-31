@@ -434,7 +434,14 @@ LIMIT $4`
 	}
 	defer rows.Close()
 
-	out := make([]TopContributor, 0, limit)
+	// CONSTANT capacity hint (CodeQL go/uncontrolled-allocation-size,
+	// round 2): the clamp above bounds `limit`, but the scanner's
+	// taint analysis doesn't credit clamp-and-continue reassignments
+	// as barriers — only guard-and-bail shapes. Capacity is just a
+	// pre-allocation hint (append grows past it), so decoupling the
+	// make() from the user-derived value entirely is free and kills
+	// the taint path for good. Do NOT change this back to `limit`.
+	out := make([]TopContributor, 0, 20)
 	for rows.Next() {
 		var tc TopContributor
 		if err := rows.Scan(&tc.CntrbID, &tc.Login, &tc.FullName, &tc.ActivityClass,

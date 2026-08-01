@@ -2643,6 +2643,16 @@ CREATE INDEX IF NOT EXISTS idx_pull_request_message_ref_msg_id ON aveloxis_data.
 CREATE INDEX IF NOT EXISTS idx_review_comments_msg_id ON aveloxis_data.review_comments (msg_id);
 -- pull_request_reviews(pr_review_id) ← 2 children
 CREATE INDEX IF NOT EXISTS idx_pull_request_review_message_ref_pr_review_id ON aveloxis_data.pull_request_review_message_ref (pr_review_id);
+-- v0.27.67: msg_id probe for GetMessageHealBatch's review-side
+-- LATERAL (and any future msg→review resolution). uq_pr_review_msg_ref
+-- leads with pr_review_id, so it cannot serve a bare msg_id seek —
+-- without this index the heal-messages batch SELECT filter-scanned
+-- 30.5M index entries PER worklist row (measured 1.67s/probe ≈ 10.5
+-- days for the 546K-row worklist on aveloxis_large, 2026-08-01).
+-- NON-partial on purpose: the probe value is a join variable
+-- (v0.27.54 lesson — partial predicates can't be proven at plan time
+-- for join-variable probes).
+CREATE INDEX IF NOT EXISTS idx_pull_request_review_message_ref_msg_id ON aveloxis_data.pull_request_review_message_ref (msg_id);
 CREATE INDEX IF NOT EXISTS idx_review_comments_pr_review_id ON aveloxis_data.review_comments (pr_review_id);
 -- repos(repo_id) ← 30 children (includes issue_assignees.repo_id)
 CREATE INDEX IF NOT EXISTS idx_commit_comment_ref_repo_id ON aveloxis_data.commit_comment_ref (repo_id);

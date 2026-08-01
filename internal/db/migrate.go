@@ -1804,6 +1804,19 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_added_at
 		 ON aveloxis_data.repos (added_at DESC)`)
 
+	// v0.27.67: msg_id probe index for heal-messages (live diagnosis
+	// 2026-08-01: GetMessageHealBatch's review-side LATERAL filter-
+	// scanned the 30.5M-entry uq_pr_review_msg_ref per worklist row —
+	// 1.67s/probe × 546K pending ≈ 10.5 days for one batch SELECT).
+	// CONCURRENTLY: the production table is 41 GB and a blocking
+	// build would stall the message writers. Operators can pre-create
+	// by hand via scripts/create_message_heal_index.sql — this step
+	// then no-ops via IF NOT EXISTS (the v0.27.54 pattern).
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_pull_request_review_message_ref_msg_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_request_review_message_ref_msg_id
+		 ON aveloxis_data.pull_request_review_message_ref (msg_id)`)
+
 	// v0.27.63: collections (admin-curated groups-of-groups) — same
 	// DDL as schema.sql so existing fleets pick the tables up on
 	// migrate. Both idempotent via IF NOT EXISTS.

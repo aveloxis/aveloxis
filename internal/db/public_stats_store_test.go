@@ -8,21 +8,25 @@ import (
 	"testing"
 )
 
-// TestCountActiveReposPredicate (v0.27.59): the landing-page count must
-// exclude archived repositories. Deterministic under parallel test
-// packages (a global before/after count-delta races concurrent
-// inserts into the shared scratch DB — the original form of this test
-// flaked exactly that way): pin the method's predicate at the source
-// level, then prove that predicate's behavior on seeded rows with a
-// scoped query.
-func TestCountActiveReposPredicate(t *testing.T) {
+// TestCountActiveReposCountsEverything (v0.27.68, reversing the
+// v0.27.59 archived-exclusion): the landing count is the TOTAL repo
+// catalog. The v0.27.59 non-archived filter made the landing number
+// visibly disagree with the monitor's ~94K queue view — a definition
+// mismatch the operator resolved in favor of "count everything"
+// (archived repos carry full collected history and analysis).
+// Deterministic under parallel test packages: source-level predicate
+// pin + a scoped seeded-row check.
+func TestCountActiveReposCountsEverything(t *testing.T) {
 	src := readSourceFile(t, "public_stats_store.go")
-	if !strings.Contains(src, "NOT COALESCE(repo_archived, FALSE)") {
-		t.Fatal("CountActiveRepos must filter NOT COALESCE(repo_archived, FALSE) — archived repos are read-only and don't belong in 'repositories under analysis'")
+	if strings.Contains(src, "NOT COALESCE(repo_archived, FALSE)") {
+		t.Fatal("CountActiveRepos must NOT filter archived repos (v0.27.68 operator decision — the landing number must agree with the monitor's total)")
+	}
+	if !strings.Contains(src, "SELECT COUNT(*) FROM aveloxis_data.repos") {
+		t.Fatal("CountActiveRepos must count the whole repos catalog")
 	}
 }
 
-func TestCountActiveReposExcludesArchived(t *testing.T) {
+func TestCountActiveReposIncludesArchived(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	defer store.Close()
 
@@ -37,16 +41,15 @@ func TestCountActiveReposExcludesArchived(t *testing.T) {
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner = '_avcount'`)
 	})
 
-	// The exact predicate the method is pinned to, scoped to the seeded
-	// cohort: exactly the active row survives.
+	// Both seeded rows count — archived included (scoped check so
+	// parallel packages can't race the assertion).
 	var n int
 	if err := store.pool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM aveloxis_data.repos
-		WHERE NOT COALESCE(repo_archived, FALSE) AND repo_owner = '_avcount'`).Scan(&n); err != nil {
+		SELECT COUNT(*) FROM aveloxis_data.repos WHERE repo_owner = '_avcount'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Errorf("predicate must keep the active row and exclude the archived one: got %d of 2 seeded", n)
+	if n != 2 {
+		t.Errorf("both rows (active + archived) must count: got %d of 2 seeded", n)
 	}
 
 	// And the method itself executes cleanly against the live schema.

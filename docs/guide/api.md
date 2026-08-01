@@ -29,8 +29,10 @@ GET /api/v1/public/stats
 ```
 
 Public (no token required, like `/health`) — the landing page's
-"repositories under analysis" number. Returns the count of
-non-archived repositories in the catalog, served from a 60-second
+"repositories under analysis" number. Returns the TOTAL repository
+count in the catalog (v0.27.68: archived repos included — they carry
+full collected history and analysis, and the number should agree
+with the monitor's queue view), served from a 60-second
 cache that keeps the last good value if the database hiccups. Still
 subject to the per-IP rate limiter.
 

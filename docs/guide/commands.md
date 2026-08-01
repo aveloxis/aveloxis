@@ -804,11 +804,20 @@ crests so it doesn't compete with collection for the key pool.
 
 ## `aveloxis heal-vulnerabilities`
 
-One-shot healer for vulnerability rows stored before v0.27.4's
-two-phase OSV fetch (they carry `severity=UNKNOWN` and empty
-summaries — the querybatch endpoint only returns id stubs). Re-scans
-every repository that has vulnerability rows, filling severity, CVSS,
-summary, fix versions, aliases, and references from `/v1/vulns/{id}`.
+One-shot healer that re-scans every repository with stored
+vulnerability rows. Two healing classes it covers:
+
+- Rows stored before v0.27.4's two-phase OSV fetch (they carry
+  `severity=UNKNOWN` and empty summaries — the querybatch endpoint
+  only returns id stubs). The re-scan fills severity, CVSS, summary,
+  fix versions, aliases, and references from `/v1/vulns/{id}`.
+- False positives from malformed dependency versions (v0.27.71 — the
+  "6.0.3, fixed in 5.4" class: an unparseable version defeats OSV's
+  version matching and every advisory in the package's history is
+  reported). As of v0.27.72 the scan normalizes stored versions and
+  rebuilds purls at read time, so this command heals those findings
+  immediately after deploy — no need to wait for each repo's
+  analysis phase to rewrite its dependency rows.
 
 ```bash
 aveloxis heal-vulnerabilities              # all repos with findings

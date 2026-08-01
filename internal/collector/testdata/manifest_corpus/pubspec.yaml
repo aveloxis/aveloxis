@@ -1,0 +1,14 @@
+name: my_app
+dependencies:
+  path: ^1.8.0
+  my_lib:
+    path: ../
+  from_git:
+    git:
+      url: https://github.com/x/y.git
+      ref: main
+  http: '>=0.11.1 <0.12.0'
+  flutter:
+    sdk: flutter
+dev_dependencies:
+  test: ^1.24.0

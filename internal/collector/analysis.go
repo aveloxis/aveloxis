@@ -1246,6 +1246,17 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		ac.logger.Warn("libyear manifest walk failed — dependency scan may be incomplete", "dir", workDir, "error", err)
 	}
 
+	// v0.27.71: central version-hygiene choke point. Every parser's
+	// output passes through here before resolution, storage, and purl
+	// construction — a malformed version (line-continuation backslash,
+	// property interpolation, inline-table fragment, monorepo
+	// protocol) becomes "" (the honest 'unpinned' pathway) instead of
+	// silently defeating OSV version matching and registry lookups.
+	// See version_normalize.go for the incident history.
+	for i := range allDeps {
+		allDeps[i].Version = normalizeParsedVersion(allDeps[i].Manager, allDeps[i].Version)
+	}
+
 	// v0.27.45 (summary/19 P2, Go C1): relabel go.mod deps whose
 	// packages are imported ONLY from _test.go files as test-scope.
 	// Ungated — relabel only, adds no rows.
@@ -1435,12 +1446,38 @@ func parseRequirementsTxtVersions(path string) []libyearDep {
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
 			continue
 		}
+		// v0.27.71 (the zephyr false-CRITICAL incident): pip's
+		// hash-pinned format ends the pin line with a backslash
+		// continuation ("pyyaml==6.0.3 \"). The --hash continuation
+		// lines are already skipped by the "-" prefix filter above,
+		// but the backslash survived into the version — and from
+		// there into purls, where it defeated OSV's version matching
+		// (unparseable version → package-level match → the package's
+		// entire advisory history reported as findings).
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\\"))
+		// Inline comments, PEP 508 environment markers, and same-line
+		// pip args are not version content ("attrs==3.1.0  # Apache-2.0",
+		// "croniter==0.4.6 ; sys_platform == 'win32'").
+		if idx := strings.Index(line, " #"); idx > 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		if idx := strings.Index(line, ";"); idx > 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		if idx := strings.Index(line, " --"); idx > 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		if line == "" {
+			continue
+		}
 		name := line
 		version := ""
 		for _, sep := range []string{"==", ">=", "~="} {
 			if idx := strings.Index(line, sep); idx > 0 {
 				name = strings.TrimSpace(line[:idx])
-				version = strings.TrimSpace(line[idx+len(sep):])
+				// cleanVersion handles compound ranges ("10,<11" → "10")
+				// that previously leaked whole into the version.
+				version = cleanVersion(strings.TrimSpace(line[idx+len(sep):]))
 				break
 			}
 		}
@@ -1477,7 +1514,18 @@ func cleanVersion(v string) string {
 	}
 
 	// Trim any whitespace left after operator removal (e.g., "~> 1.2" -> " 1.2").
-	return strings.TrimSpace(v)
+	v = strings.TrimSpace(v)
+
+	// v0.27.71: space-separated compound ranges keep the floor. pub
+	// ("'>=0.11.1 <0.12.0'"), npm hyphen ranges ("1.2.3 - 2.3.4"),
+	// and hex ("~> 3.0.0 and < 5.0.0") all separate bounds with
+	// spaces, which the comma/pipe split above never saw — the whole
+	// range leaked into versions and purls. No real version contains
+	// a space, so cutting at the first one is universally safe.
+	if idx := strings.IndexByte(v, ' '); idx > 0 {
+		v = strings.TrimSpace(v[:idx])
+	}
+	return v
 }
 
 // decodeIfUTF16 detects UTF-16 BOM and converts to UTF-8. Some Windows-created
@@ -1769,16 +1817,24 @@ func parseCargoVersions(path string) []libyearDep {
 		if inDeps && strings.Contains(trimmed, "=") {
 			parts := strings.SplitN(trimmed, "=", 2)
 			name := strings.TrimSpace(parts[0])
-			version := strings.Trim(strings.TrimSpace(parts[1]), "\"' {}")
-			// Handle table-style: serde = { version = "1.0", features = ["derive"] }
-			if strings.Contains(version, "version") {
-				for _, kv := range strings.Split(version, ",") {
+			raw := strings.TrimSpace(parts[1])
+			version := ""
+			if strings.HasPrefix(raw, "{") {
+				// v0.27.71: inline tables carry a version ONLY under an
+				// explicit version key. workspace-inherited
+				// ({ workspace = true }), path ({ path = ".." }), and
+				// git ({ git = "…" }) deps have none — the pre-fix code
+				// captured the whole table body as the "version"
+				// (13,471 production rows of "workspace = true").
+				for _, kv := range strings.Split(strings.Trim(raw, "{}"), ",") {
 					kv = strings.TrimSpace(kv)
 					if strings.HasPrefix(kv, "version") {
 						version = strings.Trim(strings.TrimPrefix(kv, "version"), " =\"")
 						break
 					}
 				}
+			} else {
+				version = strings.Trim(raw, "\"' ")
 			}
 			version = cleanVersion(version)
 			if name != "" {
@@ -1822,7 +1878,15 @@ func parseGemfileVersions(path string) []libyearDep {
 			name = strings.Trim(strings.TrimPrefix(strings.TrimSpace(parts[0]), "gem "), "\"' ")
 		}
 		if len(parts) >= 2 {
-			version = cleanVersion(strings.Trim(strings.TrimSpace(parts[1]), "\"' "))
+			// v0.27.71: only a QUOTED second argument is a version
+			// requirement ("~> 1.0", ">= 1.1"). Unquoted keyword
+			// options (require: false, path: "..", group: :x,
+			// platforms: [..]) were captured as versions —
+			// "require: false" was the #1 rubygems garbage version
+			// in production (1,212 rows).
+			if arg := strings.TrimSpace(parts[1]); strings.HasPrefix(arg, `"`) || strings.HasPrefix(arg, "'") {
+				version = cleanVersion(strings.Trim(arg, "\"' "))
+			}
 		}
 		scope := "runtime"
 		if len(groupStack) > 0 {
@@ -2293,6 +2357,14 @@ func parseBuildGradleVersions(content string) []libyearDep {
 		if strings.HasPrefix(line, "//") {
 			continue
 		}
+		// v0.27.71: project(":core:util") references are the repo's
+		// OWN modules, not external deps. The quoted ":"-separated
+		// module path split like a maven coordinate and emitted fake
+		// deps named ":core" with MODULE NAMES as versions (583+
+		// production rows on apereo/cas alone).
+		if strings.Contains(line, "project(") {
+			continue
+		}
 		for _, prefix := range prefixes {
 			if !strings.HasPrefix(line, prefix) {
 				continue
@@ -2665,9 +2737,14 @@ func parseMixExsVersions(content string) []libyearDep {
 			continue
 		}
 		name := strings.TrimPrefix(strings.TrimSpace(parts[0]), "{:")
-		// Extract version from second part, stripping quotes and braces.
-		versionPart := strings.Trim(strings.TrimSpace(parts[1]), "\"'}] ")
-		version := cleanVersion(versionPart)
+		// v0.27.71: only a QUOTED second element is a version
+		// requirement ("~> 1.7.0"). Keyword options (git:, github:,
+		// path:) mark source deps with no registry version — the
+		// pre-fix code captured the option text as the version.
+		version := ""
+		if p1 := strings.TrimSpace(parts[1]); strings.HasPrefix(p1, `"`) {
+			version = cleanVersion(strings.Trim(p1, "\"'}] "))
+		}
 		// v0.27.44 (summary/19 P1): Mix's only: option restricts a dep
 		// to specific envs. only: :test → test; anything mentioning
 		// :dev → dev (only: [:dev, :test] is a dev-tooling dep that
@@ -3005,16 +3082,30 @@ func parsePubspecVersions(content string) []libyearDep {
 	var deps []libyearDep
 	inDeps := false
 	depType := "runtime"
+	// v0.27.71: block-style deps nest their source under the name:
+	//
+	//	my_lib:
+	//	  path: ../
+	//
+	// The pre-fix parser emitted the SUB-KEYS as deps — a package
+	// named "path" at version "../" (90 production rows), fake "git"/
+	// "url"/"ref" packages. Track the indent of the first dep line in
+	// each section; anything deeper is a sub-key, not a dep. (Name
+	// filtering would be wrong: "path" is a real pub.dev package that
+	// legitimately appears at dep level.)
+	depIndent := -1
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "dependencies:" {
 			inDeps = true
 			depType = "runtime"
+			depIndent = -1
 			continue
 		}
 		if trimmed == "dev_dependencies:" {
 			inDeps = true
 			depType = "dev"
+			depIndent = -1
 			continue
 		}
 		if inDeps && len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
@@ -3024,6 +3115,13 @@ func parsePubspecVersions(content string) []libyearDep {
 			continue
 		}
 		if strings.Contains(trimmed, ":") && !strings.HasPrefix(trimmed, "#") {
+			indent := len(line) - len(strings.TrimLeft(line, " \t"))
+			if depIndent == -1 {
+				depIndent = indent
+			}
+			if indent > depIndent {
+				continue // sub-key of a block-style dep
+			}
 			parts := strings.SplitN(trimmed, ":", 2)
 			name := strings.TrimSpace(parts[0])
 			if name == "" || name == "flutter" || name == "flutter_test" {

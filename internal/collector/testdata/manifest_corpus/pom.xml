@@ -1,0 +1,14 @@
+<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-core</artifactId>
+      <version>6.1.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>sibling</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+</project>

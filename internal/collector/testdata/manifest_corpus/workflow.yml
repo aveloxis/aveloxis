@@ -1,0 +1,6 @@
+jobs:
+  build:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@releases/v1
+      - uses: custom/action@5c049362c2b3f4b8dd1ee0f6d0b7f2e9a0e8f7d6

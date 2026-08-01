@@ -8,6 +8,7 @@ syslog
 # v0.27.29: purl-spec canonical cases fixture
 !internal/collector/testdata/*.json
 !internal/collector/testdata/registries/*.json
+!internal/collector/testdata/manifest_corpus/*.json
 *code-workspace
 db.config.json
 aveloxis.chaoss.tv.json

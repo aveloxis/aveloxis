@@ -223,3 +223,25 @@ func purlWithVersion(purl, version string) string {
 	}
 	return purl + "@" + version
 }
+
+// purlReplaceVersion (v0.27.72) swaps a purl's version segment for a
+// NORMALIZED one, or strips it entirely when version is "" (the
+// unpinned pathway). This is the scan-side half of the v0.27.71
+// version-hygiene fix: stored dep rows keep pre-fix garbage versions
+// until each repo's analysis re-runs, so the scan rebuilds purls from
+// normalizeParsedVersion output at READ time — which is what lets
+// `aveloxis heal-vulnerabilities` clean up the malformed-purl false
+// positives immediately after deploy. Same scope-marker rule as
+// purlWithVersion.
+func purlReplaceVersion(purl, version string) string {
+	if purl == "" {
+		return ""
+	}
+	if at := strings.LastIndex(purl, "@"); at > 0 && !strings.Contains(purl[at:], "/") {
+		purl = purl[:at]
+	}
+	if version == "" {
+		return purl
+	}
+	return purl + "@" + purlEscapeSegment(version)
+}

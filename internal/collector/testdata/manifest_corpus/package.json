@@ -1,0 +1,13 @@
+{
+  "dependencies": {
+    "express": "^4.18.0",
+    "internal-a": "workspace:^",
+    "internal-b": "catalog:testing",
+    "anything": "*",
+    "local-tool": "file:../../../tools/eslint",
+    "typescript": ">=5.0.0 <6.0.0"
+  },
+  "devDependencies": {
+    "vitest": "~1.6.0"
+  }
+}

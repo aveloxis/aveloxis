@@ -1,0 +1,7 @@
+[packages]
+requests = "==2.31.0"
+flask = "*"
+numpy = {version = "*", extras = ["dev"]}
+
+[dev-packages]
+pytest = "~=8.2"

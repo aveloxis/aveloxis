@@ -927,8 +927,17 @@ advertises GET/POST.
 Reads (any authenticated user):
 
 - `GET /api/v1/collections` — `{collections: [{collection_id, name,
-  description, position, groups, repos, created_at}]}`,
-  position-ordered, repo counts deduped across member groups.
+  description, position, groups, repos, starred, created_at}]}`, repo
+  counts deduped across member groups. Ordering (v0.27.70): the
+  CALLER's starred collections first, then position, then name.
+  `starred` reflects the calling user only — stars are a per-user
+  sort preference, never a visibility control (every collection is
+  visible to every authenticated user).
+- `PUT /api/v1/collections/{collectionID}/star` /
+  `DELETE .../star` — star / unstar the collection for the signed-in
+  user (mirrors the repo-star routes). Both idempotent; PUT on a
+  nonexistent collection returns 404. Response
+  `{ok, starred}`.
 - `GET /api/v1/collections/{collectionID}?page&page_size` — member
   groups (each with live repo count) + one page of the deduped repo
   set: `{collection_id, groups, repos, total, page, page_size}`.

@@ -1838,6 +1838,16 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		    position      INT NOT NULL DEFAULT 0,
 		    PRIMARY KEY (collection_id, group_id)
 		)`)
+
+	// v0.27.70: per-user collection stars.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.70 create aveloxis_ops.user_collection_stars",
+		`CREATE TABLE IF NOT EXISTS aveloxis_ops.user_collection_stars (
+		    user_id       INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+		    collection_id BIGINT NOT NULL REFERENCES aveloxis_ops.collections(collection_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+		    starred_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    PRIMARY KEY (user_id, collection_id)
+		)`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

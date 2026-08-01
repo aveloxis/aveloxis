@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Collections (v0.27.63) are admin-curated groups-of-groups for the
@@ -30,12 +32,19 @@ import (
 // candidate member group is not owned by an admin user.
 var ErrGroupNotAdminOwned = errors.New("collection member groups must be admin-owned")
 
+// ErrCollectionNotFound is returned by StarCollection when the target
+// collection does not exist (surfaced from the FK violation so the
+// API can 404 instead of 500).
+var ErrCollectionNotFound = errors.New("collection not found")
+
 // ErrNotGroupOwner is returned by CopyCollectionToGroup when the
 // target group does not belong to the calling user.
 var ErrNotGroupOwner = errors.New("target group is not owned by the calling user")
 
 // CollectionSummary is one row in the collections list: the
-// collection plus its live group/repo cardinality.
+// collection plus its live group/repo cardinality and whether the
+// CALLING user starred it (v0.27.70 — stars are per-user sort
+// preference, never visibility).
 type CollectionSummary struct {
 	CollectionID int64     `json:"collection_id"`
 	Name         string    `json:"name"`
@@ -43,6 +52,7 @@ type CollectionSummary struct {
 	Position     int       `json:"position"`
 	GroupCount   int       `json:"groups"`
 	RepoCount    int       `json:"repos"`
+	Starred      bool      `json:"starred"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
@@ -147,18 +157,24 @@ func (s *PostgresStore) RemoveGroupFromCollection(ctx context.Context, collectio
 	return nil
 }
 
-// ListCollections returns every collection ordered by position (then
-// name), each with its live group count and DEDUPED repo count.
-func (s *PostgresStore) ListCollections(ctx context.Context) ([]CollectionSummary, error) {
+// ListCollections returns every collection with its live group count
+// and DEDUPED repo count. Ordering (v0.27.70): the CALLER's starred
+// collections first, then position, then name — stars are a per-user
+// sort preference; every collection stays visible to everyone.
+// userID 0 (no identity) yields the unstarred ordering.
+func (s *PostgresStore) ListCollections(ctx context.Context, userID int) ([]CollectionSummary, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT c.collection_id, c.name, c.description, c.position, c.created_at,
 		       COUNT(DISTINCT cg.group_id)::int  AS groups,
-		       COUNT(DISTINCT ur.repo_id)::int   AS repos
+		       COUNT(DISTINCT ur.repo_id)::int   AS repos,
+		       (ucs.user_id IS NOT NULL)         AS starred
 		FROM aveloxis_ops.collections c
 		LEFT JOIN aveloxis_ops.collection_groups cg USING (collection_id)
 		LEFT JOIN aveloxis_ops.user_repos ur ON ur.group_id = cg.group_id
-		GROUP BY c.collection_id
-		ORDER BY c.position, c.name`)
+		LEFT JOIN aveloxis_ops.user_collection_stars ucs
+		    ON ucs.collection_id = c.collection_id AND ucs.user_id = $1
+		GROUP BY c.collection_id, ucs.user_id
+		ORDER BY (ucs.user_id IS NOT NULL) DESC, c.position, c.name`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("ListCollections: %w", err)
 	}
@@ -168,12 +184,40 @@ func (s *PostgresStore) ListCollections(ctx context.Context) ([]CollectionSummar
 	for rows.Next() {
 		var cs CollectionSummary
 		if err := rows.Scan(&cs.CollectionID, &cs.Name, &cs.Description, &cs.Position, &cs.CreatedAt,
-			&cs.GroupCount, &cs.RepoCount); err != nil {
+			&cs.GroupCount, &cs.RepoCount, &cs.Starred); err != nil {
 			return nil, fmt.Errorf("ListCollections scan: %w", err)
 		}
 		out = append(out, cs)
 	}
 	return out, rows.Err()
+}
+
+// StarCollection / UnstarCollection (v0.27.70) — the per-user sort
+// preference. Both idempotent.
+func (s *PostgresStore) StarCollection(ctx context.Context, userID int, collectionID int64) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO aveloxis_ops.user_collection_stars (user_id, collection_id)
+		VALUES ($1, $2) ON CONFLICT DO NOTHING`, userID, collectionID)
+	if err != nil {
+		// The collection FK is DEFERRABLE, so a nonexistent target
+		// surfaces as 23503 at the statement's implicit commit.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return ErrCollectionNotFound
+		}
+		return fmt.Errorf("StarCollection: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) UnstarCollection(ctx context.Context, userID int, collectionID int64) error {
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM aveloxis_ops.user_collection_stars
+		WHERE user_id = $1 AND collection_id = $2`, userID, collectionID)
+	if err != nil {
+		return fmt.Errorf("UnstarCollection: %w", err)
+	}
+	return nil
 }
 
 // GetCollectionGroups returns the member groups of a collection in

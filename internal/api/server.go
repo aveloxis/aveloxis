@@ -139,6 +139,10 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/collections", s.handleCollectionsList)
 	s.mux.HandleFunc("GET /api/v1/collections/{collectionID}", s.handleCollectionDetail)
 	s.mux.HandleFunc("POST /api/v1/collections/{collectionID}/copy", s.handleCollectionCopy)
+	// v0.27.70 — per-user collection stars (sort preference, mirrors
+	// the repo-star PUT/DELETE pattern).
+	s.mux.HandleFunc("PUT /api/v1/collections/{collectionID}/star", s.handleStarCollection)
+	s.mux.HandleFunc("DELETE /api/v1/collections/{collectionID}/star", s.handleStarCollection)
 	s.mux.HandleFunc("POST /api/v1/admin/collections", s.handleAdminCollectionCreate)
 	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}", s.handleAdminCollectionUpdate)
 	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}/delete", s.handleAdminCollectionDelete)

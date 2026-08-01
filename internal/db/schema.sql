@@ -2324,6 +2324,16 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_groups (
     PRIMARY KEY (collection_id, group_id)
 );
 
+-- v0.27.70: per-user collection stars (the user_repo_stars pattern).
+-- Collections are public; a star only affects the STARRER's sort
+-- order (starred collections list first for them).
+CREATE TABLE IF NOT EXISTS aveloxis_ops.user_collection_stars (
+    user_id       INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    collection_id BIGINT NOT NULL REFERENCES aveloxis_ops.collections(collection_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    starred_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, collection_id)
+);
+
 CREATE TABLE IF NOT EXISTS aveloxis_ops.client_applications (
     id             TEXT PRIMARY KEY,
     api_key        TEXT NOT NULL DEFAULT '',

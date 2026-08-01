@@ -19,17 +19,53 @@ import (
 // DELETE special case), so DELETE/PATCH verbs would break the SPA.
 
 // handleCollectionsList — GET /collections: every collection with its
-// live group/repo counts, position-ordered.
+// live group/repo counts. The caller's starred collections sort first
+// (v0.27.70); everything else stays position-ordered.
 func (s *Server) handleCollectionsList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireUser(w, r); !ok {
+	info, ok := s.requireUser(w, r)
+	if !ok {
 		return
 	}
-	cols, err := s.store.ListCollections(r.Context())
+	cols, err := s.store.ListCollections(r.Context(), info.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	jsonResponse(w, map[string]any{"collections": cols})
+}
+
+// handleStarCollection stars (PUT) or unstars (DELETE) a collection
+// for the signed-in user (v0.27.70). Stars are a per-user SORT
+// preference — starred collections list first for the starrer — never
+// a visibility control, so no scope check applies (collections are
+// visible to every authenticated user by design). Mirrors the repo
+// star pattern (handleStarRepo) minus the scope/auto-add machinery.
+func (s *Server) handleStarCollection(w http.ResponseWriter, r *http.Request) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	collID, err := strconv.ParseInt(r.PathValue("collectionID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid collection_id", http.StatusBadRequest)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		err = s.store.UnstarCollection(r.Context(), info.UserID, collID)
+	} else {
+		// Guard against starring a nonexistent collection: the FK
+		// rejects it, but surface a clean 404 instead of a 500.
+		err = s.store.StarCollection(r.Context(), info.UserID, collID)
+		if err != nil && errors.Is(err, db.ErrCollectionNotFound) {
+			http.Error(w, "collection not found", http.StatusNotFound)
+			return
+		}
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{"ok": true, "starred": r.Method != http.MethodDelete})
 }
 
 // handleCollectionDetail — GET /collections/{collectionID}?page&page_size:

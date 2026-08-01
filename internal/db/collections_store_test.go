@@ -4,6 +4,7 @@
 package db
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -147,8 +148,9 @@ func TestCollectionsEndToEnd(t *testing.T) {
 		t.Error("AddGroupToCollection must refuse a group owned by a non-admin")
 	}
 
-	// List: our collection shows 2 groups / 3 distinct repos.
-	sums, err := store.ListCollections(ctx)
+	// List: our collection shows 2 groups / 3 distinct repos, and is
+	// unstarred for a caller who never starred it.
+	sums, err := store.ListCollections(ctx, plainID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,10 +164,74 @@ func TestCollectionsEndToEnd(t *testing.T) {
 			if c.RepoCount != 3 {
 				t.Errorf("repo count = %d, want 3 (deduped across groups)", c.RepoCount)
 			}
+			if c.Starred {
+				t.Error("collection must not be starred before StarCollection")
+			}
 		}
 	}
 	if !found {
 		t.Fatalf("collection not listed: %+v", sums)
+	}
+
+	// ─── v0.27.70: per-user stars ───────────────────────────────
+	// A second collection at a LATER position; starring it as plainID
+	// must sort it ahead of _avcoll_main for plainID ONLY.
+	coll2, err := store.CreateCollection(ctx, "_avcoll_second", "starred later", 9, adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StarCollection(ctx, plainID, coll2); err != nil {
+		t.Fatalf("StarCollection: %v", err)
+	}
+	// Idempotent re-star.
+	if err := store.StarCollection(ctx, plainID, coll2); err != nil {
+		t.Fatalf("second StarCollection: %v", err)
+	}
+	orderOf := func(userID int) (secondIdx, mainIdx int, secondStarred bool) {
+		secondIdx, mainIdx = -1, -1
+		list, lerr := store.ListCollections(ctx, userID)
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		for i, c := range list {
+			switch c.Name {
+			case "_avcoll_second":
+				secondIdx, secondStarred = i, c.Starred
+			case "_avcoll_main":
+				mainIdx = i
+			}
+		}
+		return secondIdx, mainIdx, secondStarred
+	}
+	secondIdx, mainIdx, secondStarred := orderOf(plainID)
+	if !secondStarred {
+		t.Error("starred collection must report starred=true for the starrer")
+	}
+	if secondIdx == -1 || mainIdx == -1 || secondIdx > mainIdx {
+		t.Errorf("starred collection must sort first for the starrer (second at %d, main at %d)", secondIdx, mainIdx)
+	}
+	// The star is PER-USER: the admin still sees position order.
+	secondIdx, mainIdx, secondStarred = orderOf(adminID)
+	if secondStarred {
+		t.Error("another user's star must not leak into the admin's listing")
+	}
+	if secondIdx == -1 || mainIdx == -1 || secondIdx < mainIdx {
+		t.Errorf("non-starrer must keep position order (second at %d, main at %d)", secondIdx, mainIdx)
+	}
+	// Unstar reverts the starrer's ordering.
+	if err := store.UnstarCollection(ctx, plainID, coll2); err != nil {
+		t.Fatalf("UnstarCollection: %v", err)
+	}
+	secondIdx, mainIdx, secondStarred = orderOf(plainID)
+	if secondStarred || secondIdx < mainIdx {
+		t.Errorf("after unstar, position order must return (second at %d starred=%v, main at %d)", secondIdx, secondStarred, mainIdx)
+	}
+	// Starring a nonexistent collection surfaces the typed sentinel.
+	if err := store.StarCollection(ctx, plainID, coll2+999999); !errors.Is(err, ErrCollectionNotFound) {
+		t.Errorf("starring a nonexistent collection: got %v, want ErrCollectionNotFound", err)
+	}
+	if err := store.DeleteCollection(ctx, coll2); err != nil {
+		t.Fatal(err)
 	}
 
 	// Detail repos: deduped, 3 rows.

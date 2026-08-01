@@ -101,6 +101,9 @@ var smokeRecipes = map[string]smokeRecipe{
 	"POST /api/v1/admin/collections/{collectionID}/delete":                  {auth: "admin", after: "POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove"},
 	"PUT /api/v1/repos/{repoID}/star":                                       {auth: "user"},
 	"DELETE /api/v1/repos/{repoID}/star":                                    {auth: "user", after: "PUT /api/v1/repos/{repoID}/star"},
+	// v0.27.70 collection stars — must run before the collection delete.
+	"PUT /api/v1/collections/{collectionID}/star":    {auth: "user"},
+	"DELETE /api/v1/collections/{collectionID}/star": {auth: "user", after: "PUT /api/v1/collections/{collectionID}/star"},
 
 	// Admin.
 	"GET /api/v1/admin/users":                                {auth: "admin"},
@@ -286,6 +289,9 @@ func TestEveryEndpointExecutes(t *testing.T) {
 		"POST /api/v1/admin/collections/{collectionID}/groups",
 		"POST /api/v1/collections/{collectionID}/copy",
 		"POST /api/v1/admin/collections/{collectionID}",
+		// v0.27.70 stars ride the live collection before it's deleted.
+		"PUT /api/v1/collections/{collectionID}/star",
+		"DELETE /api/v1/collections/{collectionID}/star",
 		"POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove",
 		"POST /api/v1/admin/collections/{collectionID}/delete",
 	}

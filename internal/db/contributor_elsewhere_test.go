@@ -119,7 +119,7 @@ func TestContributorElsewhereEndToEnd(t *testing.T) {
 	}
 
 	since := time.Now().AddDate(0, 0, -180)
-	rows, err := store.ContributorsElsewhere(ctx, repoID, since, 10, 10)
+	rows, err := store.ContributorsElsewhere(ctx, repoID, since, 10, 10, false)
 	if err != nil {
 		t.Fatalf("ContributorsElsewhere: %v", err)
 	}

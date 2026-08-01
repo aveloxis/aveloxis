@@ -54,7 +54,7 @@ type ElsewhereContributor struct {
 // The CURRENT repo is excluded case-insensitively: repo_full_name is
 // GitHub-canonical TEXT and our stored owner/name casing can drift
 // from it (the v0.25.32 case lesson).
-func (s *PostgresStore) ContributorsElsewhere(ctx context.Context, repoID int64, since time.Time, topN, reposPer int) ([]ElsewhereContributor, error) {
+func (s *PostgresStore) ContributorsElsewhere(ctx context.Context, repoID int64, since time.Time, topN, reposPer int, excludeBots bool) ([]ElsewhereContributor, error) {
 	if topN <= 0 {
 		topN = 10
 	}
@@ -62,7 +62,7 @@ func (s *PostgresStore) ContributorsElsewhere(ctx context.Context, repoID int64,
 		reposPer = 10
 	}
 
-	top, err := s.TopContributors(ctx, repoID, since, time.Time{}, topN)
+	top, err := s.TopContributors(ctx, repoID, since, time.Time{}, topN, excludeBots)
 	if err != nil {
 		return nil, err
 	}

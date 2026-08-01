@@ -54,15 +54,18 @@ func (s *Server) handleContributorsElsewhere(w http.ResponseWriter, r *http.Requ
 	if limit > 25 {
 		limit = 25
 	}
+	// v0.27.69: keep the cohort consistent with /contributors/top when
+	// the caller hides bots there.
+	excludeBots := r.URL.Query().Get("bots") == "hide"
 
-	key := fmt.Sprintf("elsewhere|%d|%s|%d", repoID, since.Format("2006-01-02"), limit)
+	key := fmt.Sprintf("elsewhere|%d|%s|%d|%t", repoID, since.Format("2006-01-02"), limit, excludeBots)
 	if body, ok := s.respCache.get(key); ok {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)
 		return
 	}
 
-	rows, err := s.store.ContributorsElsewhere(r.Context(), repoID, since, limit, 10)
+	rows, err := s.store.ContributorsElsewhere(r.Context(), repoID, since, limit, 10, excludeBots)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -160,7 +160,7 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := store.TopContributors(ctx, repoID, time.Time{}, time.Time{}, 20)
+	rows, err := store.TopContributors(ctx, repoID, time.Time{}, time.Time{}, 20, false)
 	if err != nil {
 		t.Fatalf("TopContributors: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 	// Windowed: the 3-year-old commit falls out — alice commits = 1
 	// (deduped from two file rows), total 5.
 	since := time.Now().AddDate(0, -2, 0)
-	rows, err = store.TopContributors(ctx, repoID, since, time.Time{}, 20)
+	rows, err = store.TopContributors(ctx, repoID, since, time.Time{}, 20, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,11 +204,64 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 	}
 
 	// Limit applies AFTER ranking: limit 1 returns only alice.
-	rows, err = store.TopContributors(ctx, repoID, time.Time{}, time.Time{}, 1)
+	rows, err = store.TopContributors(ctx, repoID, time.Time{}, time.Time{}, 1, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || rows[0].Login != "_avtopc_alice" {
 		t.Errorf("limit 1 must return exactly the top-ranked row, got %+v", rows)
+	}
+
+	// v0.27.69 — the bot filter. Three marker classes, seeded to
+	// mirror the live k8s finding (k8s-ci-robot is gh_type='User' —
+	// only the -robot suffix catches it).
+	_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login LIKE '_avtopc_x%'`)
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login LIKE '_avtopc_x%'`)
+	})
+	seedBot := func(login, id, ghType string) {
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login, gh_type)
+			VALUES ($1::uuid, $2, $3)
+			ON CONFLICT (cntrb_login) WHERE cntrb_login != '' DO NOTHING`, id, login, ghType); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_name, cmt_author_email, cmt_author_date, cmt_author_timestamp, cmt_ght_author_id)
+			VALUES ($1, $2, 'z.go', 'x', 'x@x', '2026-07-01', $3, $4::uuid)`,
+			repoID, "h"+id[len(id)-6:], in, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedBot("_avtopc_x[bot]", "0100abcd-0000-0000-0000-0000000000b1", "Bot")      // App bot
+	seedBot("_avtopc_x-ci-robot", "0100abcd-0000-0000-0000-0000000000b2", "User") // k8s-class machine user
+	seedBot("_avtopc_x-bot", "0100abcd-0000-0000-0000-0000000000b3", "User")      // hyphen-bot machine user
+	seedBot("_avtopc_xtalbot", "0100abcd-0000-0000-0000-0000000000b4", "User")    // HUMAN surname — must survive
+
+	all, err := store.TopContributors(ctx, repoID, time.Time{}, time.Time{}, 20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := store.TopContributors(ctx, repoID, time.Time{}, time.Time{}, 20, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != len(filtered)+3 {
+		t.Errorf("excludeBots must drop exactly the 3 bot rows: all=%d filtered=%d", len(all), len(filtered))
+	}
+	for _, r := range filtered {
+		switch r.Login {
+		case "_avtopc_x[bot]", "_avtopc_x-ci-robot", "_avtopc_x-bot":
+			t.Errorf("bot %q survived the filter", r.Login)
+		}
+	}
+	var talbotSurvives bool
+	for _, r := range filtered {
+		if r.Login == "_avtopc_xtalbot" {
+			talbotSurvives = true
+		}
+	}
+	if !talbotSurvives {
+		t.Error("human login ending in 'bot' without a separator (talbot) must NOT be filtered")
 	}
 }

@@ -286,7 +286,17 @@ GET /api/v1/repos/{repoID}/contributors/top?since=2024-01-01&until=2024-12-31&li
 The ranked "who does the work here" table behind the repo page's Top
 contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: trailing 2 years; `until` is
-inclusive); `limit` defaults to 20 and is capped at 100. Requires the
+inclusive); `limit` defaults to 20 and is capped at 100.
+
+`?bots=hide` (v0.27.69) filters bot identities by three markers:
+`gh_type='Bot'` (GitHub App accounts like `dependabot[bot]`), the
+`[bot]` login suffix, and the hyphenated `-bot`/`-robot`
+machine-account convention (the `k8s-ci-robot` class, which GitHub
+types as a regular User — verified live). The separator requirement
+keeps human surnames (talbot) safe. Deliberately broader than the
+`contributor_retention` metric's bot exclusion, which is pinned to
+8Knot parity; this one is a display filter. The same parameter works
+on `/contributors/elsewhere` so the two surfaces stay consistent. Requires the
 same repo scope as every other per-repo endpoint; responses are served
 from a 60-second cache (the underlying data only changes per
 collection cycle).

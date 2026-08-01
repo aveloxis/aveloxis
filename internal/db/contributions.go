@@ -356,7 +356,19 @@ type TopContributor struct {
 // the two contributor surfaces can never disagree about who a
 // cntrb_id is. Commits with NULL cmt_ght_author_id (unresolved
 // authors) are excluded — there is no identity to rank.
-func (s *PostgresStore) TopContributors(ctx context.Context, repoID int64, since, until time.Time, limit int) ([]TopContributor, error) {
+//
+// excludeBots (v0.27.69, the "hide bots" checkbox): filters rows whose
+// identity is a bot by THREE markers — gh_type='Bot' (GitHub App
+// accounts: dependabot[bot]), the '[bot]' login suffix, and the
+// hyphenated -bot/-robot machine-account convention. The third marker
+// exists because the k8s fleet's dominant committers (k8s-ci-robot,
+// k8s-release-robot) are gh_type='User' machine accounts — verified
+// live 2026-08-01 — that the first two markers cannot see. The
+// separator requirement keeps human surnames (talbot, abbot) safe.
+// Deliberately BROADER than the contributor_retention metric's
+// exclusion (gh_type + [bot] only) — that one is pinned to 8Knot
+// parity; this one is a user-controlled display filter.
+func (s *PostgresStore) TopContributors(ctx context.Context, repoID int64, since, until time.Time, limit int, excludeBots bool) ([]TopContributor, error) {
 	lower, upper := resolveWindow(since, until)
 	if limit <= 0 {
 		limit = 20
@@ -424,7 +436,17 @@ SELECT
     (t.commits + t.issues + t.prs + t.reviews + t.comments)::int       AS total
 FROM totals t
 JOIN aveloxis_data.contributors c ON c.cntrb_id = t.cntrb_id
-WHERE COALESCE(c.cntrb_deleted, 0) = 0
+WHERE COALESCE(c.cntrb_deleted, 0) = 0`
+
+	if excludeBots {
+		sql += `
+  AND NOT (
+      COALESCE(c.gh_type, '') = 'Bot'
+      OR c.cntrb_login ILIKE '%[bot]%'
+      OR c.cntrb_login ~* '[-_](bot|robot)[0-9]*$'
+  )`
+	}
+	sql += `
 ORDER BY total DESC, login
 LIMIT $4`
 

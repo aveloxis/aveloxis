@@ -47,15 +47,19 @@ func (s *Server) handleTopContributors(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
+	// v0.27.69 — the "hide bots" checkbox: ?bots=hide filters bot
+	// identities (App accounts, [bot] logins, -bot/-robot machine
+	// accounts — the k8s-ci-robot class).
+	excludeBots := r.URL.Query().Get("bots") == "hide"
 
-	key := fmt.Sprintf("topcontrib|%d|%s|%s|%d", repoID, since.Format("2006-01-02"), until.Format("2006-01-02"), limit)
+	key := fmt.Sprintf("topcontrib|%d|%s|%s|%d|%t", repoID, since.Format("2006-01-02"), until.Format("2006-01-02"), limit, excludeBots)
 	if body, ok := s.respCache.get(key); ok {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)
 		return
 	}
 
-	rows, err := s.store.TopContributors(r.Context(), repoID, since, until, limit)
+	rows, err := s.store.TopContributors(r.Context(), repoID, since, until, limit, excludeBots)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

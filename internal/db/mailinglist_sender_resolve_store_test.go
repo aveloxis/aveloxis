@@ -30,7 +30,7 @@ func TestSchemaDeclaresSenderResolveTable(t *testing.T) {
 // sender never appears; a DB-resolvable sender never appears.
 func TestSenderResolveCandidatesAndStamp(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const (
 		hot      = "_av_srhot@example.org"   // 6 messages, unresolvable → candidate
@@ -105,7 +105,7 @@ func TestSenderResolveCandidatesAndStamp(t *testing.T) {
 // and records the sender email as an alias.
 func TestLinkMailingListSenderCreatesContributorAndAlias(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const (
 		email = "_av_srlink@example.org"
@@ -143,7 +143,7 @@ func TestLinkMailingListSenderCreatesContributorAndAlias(t *testing.T) {
 // convergence ticker), idempotent on re-call, and gets an alias row.
 func TestCreateEmailOnlyContributor(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const email = "_av_eoc_human@example.org"
 	clean := func() {

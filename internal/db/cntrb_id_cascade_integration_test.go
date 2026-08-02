@@ -47,7 +47,7 @@ func TestCntrbIDCascadeIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	store.SetMatviewSkip(true)
 	if err := RunMigrations(ctx, store, logger); err != nil {
@@ -108,7 +108,7 @@ func TestCntrbIDCascadeActuallyCascades(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	store.SetMatviewSkip(true)
 	if err := RunMigrations(ctx, store, logger); err != nil {

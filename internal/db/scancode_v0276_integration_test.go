@@ -35,7 +35,7 @@ func v0276Connect(t *testing.T) (*PostgresStore, context.Context) {
 	// t.Cleanup runs LIFO and AFTER the test's deferred calls would —
 	// registering the pool close here (before any per-row cleanup is
 	// registered) guarantees the row deletes still have a live pool.
-	// An explicit `defer store.pool.Close()` in the test body would
+	// An explicit `t.Cleanup(store.pool.Close)` in the test body would
 	// close the pool BEFORE t.Cleanup's deletes, silently leaking
 	// seed rows into the shared scratch DB (observed on the first
 	// suite re-run as 23505 on repos_repo_git_key).

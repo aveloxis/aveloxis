@@ -114,7 +114,7 @@ func scorecardModeConnect(t *testing.T) (*PostgresStore, context.Context) {
 // ever diverge on scorecard_mode.
 func TestScorecardModePersistsAndRotates(t *testing.T) {
 	store, ctx := scorecardModeConnect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 
 	var repoID int64
 	err := store.pool.QueryRow(ctx, `
@@ -196,7 +196,7 @@ func TestScorecardModePersistsAndRotates(t *testing.T) {
 // first, older-than filter, limit, and the last_collected gate.
 func TestListScorecardBacklogOrdering(t *testing.T) {
 	store, ctx := scorecardModeConnect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 
 	mk := func(name string, collected bool) int64 {
 		var id int64

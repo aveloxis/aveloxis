@@ -139,7 +139,7 @@ func TestMarkActivityCheckedBatchContract(t *testing.T) {
 // pool.
 func TestContributorActivityStoreEndToEnd(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	cooldown := 240 * time.Hour
 
 	never := seedActivityContributor(t, store, "_avact_never", "")

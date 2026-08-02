@@ -99,7 +99,7 @@ func TestEmailLookupIndexNamesNotDropTargets(t *testing.T) {
 // exist on contributors and are valid.
 func TestContributorEmailLookupIndexesEndToEnd(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	for _, idx := range emailLookupIndexes {
 		var valid bool
 		err := store.pool.QueryRow(ctx, `

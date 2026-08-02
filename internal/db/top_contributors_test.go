@@ -74,7 +74,7 @@ func TestTopContributorsIdentityJoin(t *testing.T) {
 
 func TestTopContributorsEndToEnd(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	// Scoped fixture: everything under repo_owner '_avtopc' so
 	// parallel test packages can't interfere.

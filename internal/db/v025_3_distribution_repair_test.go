@@ -101,7 +101,7 @@ func TestV0253RepairExecutesMaxAcrossBothTables(t *testing.T) {
 	}
 
 	store, ctx := v0251Connect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 	pool := store.pool
 
 	const repoID = 888001
@@ -193,7 +193,7 @@ func TestV0253RepairSkipsReposWithNoRows(t *testing.T) {
 	}
 
 	store, ctx := v0251Connect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 	pool := store.pool
 
 	const repoID = 888002
@@ -231,7 +231,7 @@ func TestV0253RepairIsIdempotentAfterFirstRun(t *testing.T) {
 	}
 
 	store, ctx := v0251Connect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 	pool := store.pool
 
 	const repoID = 888003
@@ -311,7 +311,7 @@ func TestV0253ImmediateReclaimKnobAffectsEligibilityFilter(t *testing.T) {
 		t.Skip("AVELOXIS_TEST_DB not set — skipping integration test")
 	}
 	store, ctx := v0251Connect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 	pool := store.pool
 
 	const repoPartial = 888011

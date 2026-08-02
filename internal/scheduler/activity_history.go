@@ -75,7 +75,14 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 		if err != nil {
 			if errors.Is(err, platform.ErrNotFound) || platform.ClassifyError(err) == platform.ClassSkip {
 				// Deleted/renamed account: stamp so the claim head drains.
-				if merr := s.store.MarkHistoryBackfilled(ctx, c.ID); merr == nil {
+				// A failed stamp leaves the contributor at the claim head
+				// for a pointless re-fetch every tick — log it and count
+				// it as a failure so the operator sees the churn (Copilot
+				// review, PR #171).
+				if merr := s.store.MarkHistoryBackfilled(ctx, c.ID); merr != nil {
+					s.logger.Warn("activity history: mark-only stamp failed — contributor will be re-claimed", "login", c.Login, "error", merr)
+					failed++
+				} else {
 					marked++
 				}
 				continue
@@ -87,8 +94,11 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 		windows := github.HistoryWindows(created, years, time.Now().UTC(), windowDays)
 		if len(windows) == 0 {
 			// Account exists but has zero contribution years: nothing to
-			// fetch, ever — stamp it.
-			if merr := s.store.MarkHistoryBackfilled(ctx, c.ID); merr == nil {
+			// fetch, ever — stamp it. Same failure treatment as above.
+			if merr := s.store.MarkHistoryBackfilled(ctx, c.ID); merr != nil {
+				s.logger.Warn("activity history: zero-years stamp failed — contributor will be re-claimed", "login", c.Login, "error", merr)
+				failed++
+			} else {
 				marked++
 			}
 			continue

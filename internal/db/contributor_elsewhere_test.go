@@ -57,7 +57,7 @@ func TestElsewhereRepoLinkIsGitHubOnly(t *testing.T) {
 
 func TestContributorElsewhereEndToEnd(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	clean := func() {
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributor_activity_days WHERE cntrb_id IN (SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login LIKE '_avelse%')`)

@@ -145,7 +145,7 @@ func claimIDs(t *testing.T, store *PostgresStore, cooldown time.Duration) map[st
 // shortens but never defeats, and NULL priority survives.
 func TestBreadthJitterEligibilityBounds(t *testing.T) {
 	store, _ := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	cooldown := 240 * time.Hour
 
 	pastID := seedJitterContributor(t, store, "_avjitter_well_past", 2*cooldown)
@@ -176,7 +176,7 @@ func TestBreadthJitterEligibilityBounds(t *testing.T) {
 // not a flake source.
 func TestBreadthJitterBoundaryIsProbabilistic(t *testing.T) {
 	store, _ := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	cooldown := 240 * time.Hour
 	borderID := seedJitterContributor(t, store, "_avjitter_boundary", cooldown)
 

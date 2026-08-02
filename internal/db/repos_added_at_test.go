@@ -83,7 +83,7 @@ func TestUpsertRepoNeverTouchesAddedAt(t *testing.T) {
 
 func TestAddedAtEndToEnd(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	// Fresh insert gets a NOW()-ish stamp via the default.
 	login := "_avaddedat/probe"

@@ -38,7 +38,7 @@ func TestProcessorEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 	store.SetMatviewSkip(true)
 	if err := db.RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations: %v", err)

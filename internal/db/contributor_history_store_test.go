@@ -86,7 +86,7 @@ func TestHistoryClaimContract(t *testing.T) {
 
 func TestActivityHistoryEndToEnd(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	cooldown := 90 * 24 * time.Hour
 
 	id := seedHistoryContributor(t, store, "_avhist_active", "public-active", "")

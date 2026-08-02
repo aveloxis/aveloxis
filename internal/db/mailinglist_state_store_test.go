@@ -59,7 +59,7 @@ func seedList(t *testing.T, store *PostgresStore, ctx context.Context, system, e
 
 func TestClaimNextListLifecycle(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const system = "mltest_lifecycle"
 	email := "dev@mltest-lifecycle.example.org"
@@ -115,7 +115,7 @@ func TestClaimNextListLifecycle(t *testing.T) {
 
 func TestRecoverStaleListLocks(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	rglsID := seedList(t, store, ctx, "mltest_stale", "dev@mltest-stale.example.org")
 	defer store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id=$1`, rglsID)
@@ -145,7 +145,7 @@ func TestRecoverStaleListLocks(t *testing.T) {
 
 func TestMailingListStatsSmoke(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	if _, err := store.MailingListStats(ctx); err != nil {
 		t.Errorf("MailingListStats should not error: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestMailingListStatsSmoke(t *testing.T) {
 
 func TestRecordListFailureBacksOff(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const system = "mltest_failure"
 	email := "dev@mltest-failure.example.org"

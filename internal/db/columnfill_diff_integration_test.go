@@ -34,7 +34,7 @@ func TestColumnFillDiffSelfComparison(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 	store.SetMatviewSkip(true)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
@@ -44,7 +44,7 @@ func TestColumnFillDiffSelfComparison(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	// One REPEATABLE READ transaction serves as BOTH sides: a single
 	// MVCC snapshot makes the self-comparison deterministic even while

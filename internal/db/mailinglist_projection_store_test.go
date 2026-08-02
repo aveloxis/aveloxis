@@ -57,7 +57,7 @@ func TestIssueNumberFromKey(t *testing.T) {
 // link-existing, plus the comment bridge + comment_count recompute, live.
 func TestLinkOrCreateIssueFromEmail(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const repoGit = "https://github.com/_av_proj/repo"
 	clean := func() {
@@ -159,7 +159,7 @@ func TestEmailMessageModelHasProjectionFields(t *testing.T) {
 // issue is reported; one without a native twin is not.
 func TestMailingListProjectionDuplicates(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const repoGit = "https://github.com/_av_dup/repo"
 	clean := func() {
@@ -218,7 +218,7 @@ func TestMailingListProjectionDuplicates(t *testing.T) {
 // issue carries only in its title — it skips the shadowed native issue instead.
 func TestBackfillExternalKeysConflictSafe(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const repoGit = "https://github.com/_av_bxk/repo"
 	clean := func() {
@@ -256,7 +256,7 @@ func TestBackfillExternalKeysConflictSafe(t *testing.T) {
 // winner-per-(repo,key) fix must key exactly one and not error.
 func TestBackfillExternalKeysSameStatementDup(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const repoGit = "https://github.com/_av_ssd/repo"
 	clean := func() {

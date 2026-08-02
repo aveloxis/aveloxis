@@ -70,7 +70,7 @@ func emConnect(t *testing.T) (*PostgresStore, context.Context) {
 
 func TestUpsertEmailMessageIsIdempotent(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const mid = "emtest-idem-<aaa@dev.kafka.apache.org>"
 	em := &model.EmailMessage{
@@ -106,7 +106,7 @@ func TestUpsertEmailMessageIsIdempotent(t *testing.T) {
 
 func TestResolveSignaledRepoForURL(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const url = "https://github.com/emtest-owner/emtest-resolve-repo"
 	const mid = "emtest-resolve-<bbb@github.arrow.apache.org>"
@@ -152,7 +152,7 @@ func TestResolveSignaledRepoForURL(t *testing.T) {
 
 func TestInsertEmailMessageRefIdempotent(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID, err := store.UpsertRepo(ctx, &model.Repo{
 		Platform: model.PlatformGitHub, GitURL: "https://github.com/emtest-owner/emtest-ref-repo",

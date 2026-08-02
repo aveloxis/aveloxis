@@ -38,7 +38,7 @@ func bucketDate(points []WeeklyPoint, y int, m time.Month, d int) float64 {
 
 func TestMetricSeriesExactValuesFromSeededData(t *testing.T) {
 	store, ctx := retentionConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	seed := newRetentionSeed(ctx, t, store)
 	carol := seed.contributor("_avgt-carol", "User", 0)
 
@@ -116,7 +116,7 @@ func TestMetricSeriesExactValuesFromSeededData(t *testing.T) {
 // rounding, not implementation slack).
 func TestLaborInvestmentMatchesPublishedCOCOMO(t *testing.T) {
 	store, ctx := retentionConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	seed := newRetentionSeed(ctx, t, store)
 
 	_, err := store.pool.Exec(ctx, `

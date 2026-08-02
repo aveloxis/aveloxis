@@ -40,12 +40,12 @@ func TestMailingListPipelineEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	store, err := db.NewPostgresStore(ctx, dsn, lg)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

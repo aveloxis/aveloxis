@@ -5,12 +5,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // v0.27.64 — the read API over the v0.27.58 contributor daily
@@ -117,9 +119,16 @@ func (s *Server) handleContributorActivity(w http.ResponseWriter, r *http.Reques
 
 	view, err := s.store.ContributorActivity(r.Context(), cntrbID, months)
 	if err != nil {
-		// Unknown contributor surfaces as the lookup error — a 404 is
-		// the honest mapping (the id parsed but nobody has it).
-		http.Error(w, "contributor not found", http.StatusNotFound)
+		// Copilot review, PR #171: only a genuine no-rows lookup is
+		// "not found" — the id parsed but nobody has it. Every other
+		// error is an operational failure (DB down, query bug) and
+		// must surface as a logged 500, never masquerade as a 404.
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "contributor not found", http.StatusNotFound)
+			return
+		}
+		s.logger.Error("contributor activity lookup failed", "cntrb_id", logSafe(cntrbID), "error", err)
+		http.Error(w, "contributor activity lookup failed", http.StatusInternalServerError)
 		return
 	}
 	body, err := json.Marshal(view)

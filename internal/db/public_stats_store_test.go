@@ -28,7 +28,7 @@ func TestCountActiveReposCountsEverything(t *testing.T) {
 
 func TestCountActiveReposIncludesArchived(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner = '_avcount'`)
 	if _, err := store.pool.Exec(ctx, `

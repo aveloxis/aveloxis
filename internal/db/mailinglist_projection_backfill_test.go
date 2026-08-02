@@ -15,7 +15,7 @@ import (
 // lone discuss is marked mailing_list_only — and a re-run is a no-op.
 func TestBackfillMailingListProjection(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const (
 		repoGit = "https://github.com/_av_bf/repo"
@@ -126,7 +126,7 @@ func TestMlBackfillTitle(t *testing.T) {
 // (idempotent) and the two indexes exist afterward.
 func TestEnsureMailingListProjectionIndexes(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	lg := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := store.EnsureMailingListProjectionIndexes(ctx, lg); err != nil {
 		t.Fatalf("ensure indexes: %v", err)

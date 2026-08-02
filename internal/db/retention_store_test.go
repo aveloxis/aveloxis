@@ -243,7 +243,7 @@ func monthValue(points []WeeklyPoint, year int, month time.Month) float64 {
 
 func TestContributorRetentionSeriesEndToEnd(t *testing.T) {
 	store, ctx := retentionConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	seed := newRetentionSeed(ctx, t, store)
 	uniq := time.Now().UnixNano()
 

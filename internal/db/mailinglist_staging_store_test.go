@@ -34,7 +34,7 @@ func mlsPtr(v int64) *int64 { return &v }
 // processed, plus idempotency of re-staging the same message.
 func TestMailingListStagingRoundTrip(t *testing.T) {
 	store, ctx := emConnect(t) // runs Migrate → creates mailing_list_staging
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const rgls = int64(999000111)
 	clean := func() {
@@ -111,7 +111,7 @@ func containsInt64(xs []int64, v int64) bool {
 // whose group HAS a repo is not (it can drain). summary/12 §11.
 func TestStuckMailingLists(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const (
 		stuckList  = "dev@_av_stuck.apache.org"

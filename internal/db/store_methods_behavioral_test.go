@@ -37,7 +37,7 @@ func (s *retentionSeed) enqueueCollected() {
 
 func TestClaimNextScancodeRepoClaimsEligibleRow(t *testing.T) {
 	store, ctx := retentionConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	seed := newRetentionSeed(ctx, t, store)
 	seed.enqueueCollected()
 
@@ -87,7 +87,7 @@ func TestClaimNextScancodeRepoClaimsEligibleRow(t *testing.T) {
 
 func TestRecordScancodeFailureBackoffAndSideline(t *testing.T) {
 	store, ctx := retentionConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	seed := newRetentionSeed(ctx, t, store)
 
 	readState := func() (attempts int, lastFailed, lastRun, lockedAt *time.Time) {
@@ -153,7 +153,7 @@ func TestRecordScancodeFailureBackoffAndSideline(t *testing.T) {
 
 func TestClearStaleNullPidLocksHealsOnlyStaleRows(t *testing.T) {
 	store, ctx := retentionConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	stale := newRetentionSeed(ctx, t, store)
 	fresh := newRetentionSeed(ctx, t, store)
 
@@ -196,7 +196,7 @@ func TestClearStaleNullPidLocksHealsOnlyStaleRows(t *testing.T) {
 
 func TestGetRepoTransitivePackagesFoldsScopeAndExcludesDirect(t *testing.T) {
 	store, ctx := retentionConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	seed := newRetentionSeed(ctx, t, store)
 
 	insert := func(name, version, lockfile string, direct bool, scope string) {
@@ -233,7 +233,7 @@ func TestGetRepoTransitivePackagesFoldsScopeAndExcludesDirect(t *testing.T) {
 
 func TestBackfillGitLabCommitCountPatchesOnlyZeroLatestRow(t *testing.T) {
 	store, ctx := retentionConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	seed := newRetentionSeed(ctx, t, store)
 	carol := seed.contributor("_avgt-backfill", "User", 0)
 
@@ -310,7 +310,7 @@ func TestBackfillGitLabCommitCountPatchesOnlyZeroLatestRow(t *testing.T) {
 // ground-truth rule.
 func TestCollectedRepoIDsCohort(t *testing.T) {
 	store, ctx := retentionConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	collected := newRetentionSeed(ctx, t, store)
 	collected.enqueueCollected()

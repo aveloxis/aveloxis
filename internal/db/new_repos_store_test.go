@@ -59,7 +59,7 @@ func TestGetNewReposOwnerMatchCaseInsensitive(t *testing.T) {
 
 func TestGetNewReposEndToEnd(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	clean := func() {
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_org_requests WHERE org_url LIKE 'https://github.com/_avnewr%'`)

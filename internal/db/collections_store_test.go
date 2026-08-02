@@ -102,7 +102,7 @@ func TestCopyCollectionNeverEnqueues(t *testing.T) {
 
 func TestCollectionsEndToEnd(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	clean := func() {
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collections WHERE name LIKE '_avcoll%'`)

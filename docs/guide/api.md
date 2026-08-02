@@ -390,7 +390,9 @@ private contributions when the user enabled disclosure, which is why
 it can exceed the per-repo sum). `months` defaults 24, caps 60;
 `bucket` accepts only `month` (400 otherwise — reserved for future
 granularities). `cntrbID` must be a UUID (400 otherwise); unknown
-contributors 404.
+contributors 404. Operational failures (database errors) surface as
+500, never 404 — a 404 always means "this id parsed but nobody has
+it" (v0.27.76).
 
 Requires a Bearer identity but NOT repo scope: person-level history
 spans repositories this instance doesn't track, so repo scope cannot

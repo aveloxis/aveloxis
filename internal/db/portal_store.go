@@ -119,6 +119,16 @@ func (s *PostgresStore) GetPortalGroupReposForUser(ctx context.Context, userID i
 	return out, total, rows.Err()
 }
 
+// GetUserLogin returns the login_name for a user id — the /api/v1/me
+// display identity (v0.27.77: the SPA nav avatar showed a hardcoded
+// placeholder because /me carried no login).
+func (s *PostgresStore) GetUserLogin(ctx context.Context, userID int) (string, error) {
+	var login string
+	err := s.pool.QueryRow(ctx,
+		`SELECT login_name FROM aveloxis_ops.users WHERE user_id = $1`, userID).Scan(&login)
+	return login, err
+}
+
 // GetPortalGroupOrgsForUser lists a group's tracked organizations
 // (aveloxis_ops.user_org_requests — presence there means approved to
 // scan, per the v0.27.20 rule), enforcing the same ownership gate as

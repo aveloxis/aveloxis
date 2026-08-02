@@ -1,5 +1,7 @@
 # Aveloxis
 
+**Open source community health analytics at fleet scale — the Go successor to [Augur](https://github.com/chaoss/augur), built by CHAOSS's co-founder.** CHAOSS metrics, contributor analytics, SBOMs, and vulnerability scanning for GitHub and GitLab. Live at [aveloxis.io](https://aveloxis.io).
+
 [![Tests](https://github.com/aveloxis/aveloxis/actions/workflows/test.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/test.yml)
 [![Lint](https://github.com/aveloxis/aveloxis/actions/workflows/lint.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/lint.yml)
 [![CodeQL](https://github.com/aveloxis/aveloxis/actions/workflows/codeql.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/codeql.yml) 

@@ -746,6 +746,30 @@ The scheduler also logs a startup gauge (`non-archived repos with no
 collection_queue row`) pointing here whenever the count is non-zero.
 Re-run until stranded = 0; healed repos drop out of the set.
 
+## `aveloxis generate-showcase`
+
+Renders the PUBLIC collection showcase pages (v0.27.77 growth plan):
+every admin-curated collection becomes a static, SEO-indexable HTML
+page under `<out>/showcase/`, plus a showcase index, plus the site
+`sitemap.xml` (when `--gui-root` is given — the generator is the
+single writer of the sitemap once deployed). Pages carry full
+meta/OG/JSON-LD and render ONLY collection metadata + cached per-repo
+counts — never user names, stars, or group ownership (queries run
+anonymously). Writes are atomic (tmp+rename) and pages whose
+collection was deleted or renamed are pruned.
+
+```bash
+aveloxis generate-showcase \
+  --out /var/www/aveloxis-gui/showcase \
+  --gui-root /var/www/aveloxis-gui \
+  --base-url https://aveloxis.io
+```
+
+Runs hourly from the `aveloxis-showcase.timer` systemd unit (template
+in the aveloxis-gui repo's `deploy/` directory). Read-only on the
+schema; does not run migrations (v0.21.5 policy). Safe alongside an
+active `aveloxis serve`.
+
 ## `aveloxis data-verify`
 
 The standing data-verification program (v0.27.43): runs the read-only

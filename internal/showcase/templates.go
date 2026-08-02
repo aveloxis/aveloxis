@@ -1,0 +1,193 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+package showcase
+
+// allTemplates — the public showcase pages, in the aveloxis.io light
+// visual grammar (self-contained inline CSS: generated files must
+// render correctly even if styles.css changes shape underneath them).
+// html/template auto-escapes every interpolation, so hostile
+// collection names/descriptions cannot inject markup.
+//
+// The pages load /lib/telemetry.js (cookieless Umami, DNT-respecting)
+// and fire the `showcase-login-cta` event on the sign-in CTAs — the
+// measured middle of the landing → showcase → signup funnel.
+const allTemplates = `
+{{define "shell-head"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="/favicon.ico" sizes="32x32" />
+<link rel="icon" type="image/png" sizes="192x192" href="/assets/favicon-192.png" />
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+<script defer src="/lib/telemetry.js"></script>
+<meta property="og:site_name" content="Aveloxis" />
+<meta property="og:image" content="{{.BaseURL}}/assets/og-card.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<style>
+* { margin: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #eef2f9; color: #16203a; line-height: 1.6; }
+a { color: #0369a1; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 26px 22px 60px; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 34px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 19px; color: #16203a; }
+.brand img { width: 26px; height: 26px; }
+.cta { display: inline-block; padding: 9px 18px; border-radius: 999px; background: #2563eb;
+  color: #fff !important; font-size: 13.5px; font-weight: 600; }
+.cta:hover { background: #1d4ed8; text-decoration: none; }
+.eyebrow { display: block; font-size: 11.5px; letter-spacing: 0.14em; color: #0284c7;
+  font-weight: 700; margin-bottom: 8px; }
+h1 { font-size: 30px; letter-spacing: -0.01em; line-height: 1.25; margin-bottom: 10px; }
+.lead { color: #46557a; font-size: 15px; max-width: 720px; margin-bottom: 8px; }
+.meta-line { color: #66739a; font-size: 12.5px; margin-bottom: 26px; }
+.card { background: rgba(255,255,255,0.8); border: 1px solid rgba(37,99,235,0.16);
+  border-radius: 12px; padding: 4px 0; }
+.tbl-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th, td { padding: 10px 18px; text-align: left; border-bottom: 1px solid rgba(37,99,235,0.09); }
+th { font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #46557a; }
+tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, 'JetBrains Mono', monospace; }
+td.date { color: #66739a; font-family: ui-monospace, monospace; font-size: 12.5px; white-space: nowrap; }
+td.name a { color: #16203a; font-weight: 600; }
+td.name a:hover { color: #0369a1; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.tile { display: block; padding: 18px 20px; border: 1px solid rgba(37,99,235,0.16);
+  border-radius: 12px; background: rgba(255,255,255,0.8); color: inherit; }
+.tile:hover { border-color: rgba(37,99,235,0.45); text-decoration: none; }
+.tile h2 { font-size: 16.5px; margin-bottom: 5px; }
+.tile p { color: #66739a; font-size: 13px; margin-bottom: 10px; }
+.tile .counts { color: #0369a1; font-size: 12px; font-family: ui-monospace, monospace; }
+.more-note { margin: 20px 0 0; padding: 16px 20px; border: 1px dashed rgba(37,99,235,0.3);
+  border-radius: 12px; color: #46557a; font-size: 13.5px;
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.foot { margin-top: 40px; color: #66739a; font-size: 12.5px; display: flex;
+  justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+</style>
+{{end}}
+
+{{define "shell-top"}}
+<div class="top">
+  <a class="brand" href="/"><img src="/assets/aveloxis-bird.png" alt="" />aveloxis</a>
+  <a class="cta" href="/login.html" onclick="window.avTrack&&avTrack('showcase-login-cta')">Sign in for full analytics →</a>
+</div>
+{{end}}
+
+{{define "index"}}{{template "shell-head" .}}
+<title>Open source health showcase — Aveloxis</title>
+<meta name="description" content="Public open source health snapshots for curated collections — Apache, CNCF, NumFocus and more. CHAOSS-style metrics from the Aveloxis production fleet, updated hourly." />
+<link rel="canonical" href="{{.BaseURL}}/showcase/index.html" />
+<meta property="og:title" content="Open source health showcase — Aveloxis" />
+<meta property="og:description" content="Public open source health snapshots for curated collections — Apache, CNCF, NumFocus and more." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="{{.BaseURL}}/showcase/index.html" />
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "CollectionPage",
+  "name": "Open source health showcase",
+  "url": "{{.BaseURL}}/showcase/index.html",
+  "isPartOf": { "@type": "WebSite", "name": "Aveloxis", "url": "{{.BaseURL}}/" }
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+  {{template "shell-top" .}}
+  <span class="eyebrow">PUBLIC SHOWCASE</span>
+  <h1>Open source health, ecosystem by ecosystem</h1>
+  <p class="lead">Live snapshots of the curated collections tracked by the Aveloxis production fleet. Every number below is collected, not scraped — sign in for the full per-repository analytics behind them.</p>
+  <p class="meta-line">Updated {{.GeneratedAt.UTC.Format "Jan 2, 2006 15:04"}} UTC · regenerated hourly</p>
+  <div class="grid">
+    {{range .Collections}}
+    <a class="tile" href="/showcase/{{.Slug}}.html">
+      <h2>{{.Name}}</h2>
+      {{if .Description}}<p>{{.Description}}</p>{{end}}
+      <span class="counts">{{.Groups}} group{{if ne .Groups 1}}s{{end}} · {{commaInt .Repos}} repositories</span>
+    </a>
+    {{end}}
+  </div>
+  <div class="foot">
+    <span>© 2026 University of Missouri · MIT License</span>
+    <span><a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a> · <a href="https://aveloxis.readthedocs.io">Docs</a></span>
+  </div>
+</div>
+</body>
+</html>
+{{end}}
+
+{{define "collection"}}{{template "shell-head" .}}
+<title>{{.Name}} — open source health — Aveloxis</title>
+<meta name="description" content="Open source health snapshot for {{.Name}}: {{commaInt .TotalRepos}} repositories with collected issue, pull request, and commit totals from the Aveloxis fleet. Updated hourly." />
+<link rel="canonical" href="{{.BaseURL}}/showcase/{{.Slug}}.html" />
+<meta property="og:title" content="{{.Name}} — open source health — Aveloxis" />
+<meta property="og:description" content="Open source health snapshot for {{.Name}}: {{commaInt .TotalRepos}} repositories tracked by the Aveloxis fleet." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="{{.BaseURL}}/showcase/{{.Slug}}.html" />
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Aveloxis", "item": "{{.BaseURL}}/" },
+        { "@type": "ListItem", "position": 2, "name": "Showcase", "item": "{{.BaseURL}}/showcase/index.html" },
+        { "@type": "ListItem", "position": 3, "name": "{{.Name}}", "item": "{{.BaseURL}}/showcase/{{.Slug}}.html" }
+      ]
+    },
+    {
+      "@type": "CollectionPage",
+      "name": "{{.Name}}",
+      "url": "{{.BaseURL}}/showcase/{{.Slug}}.html",
+      "isPartOf": { "@type": "WebSite", "name": "Aveloxis", "url": "{{.BaseURL}}/" }
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+  {{template "shell-top" .}}
+  <span class="eyebrow">PUBLIC SHOWCASE</span>
+  <h1>{{.Name}}</h1>
+  {{if .Description}}<p class="lead">{{.Description}}</p>{{end}}
+  <p class="meta-line">{{.Groups}} member group{{if ne .Groups 1}}s{{end}} · {{commaInt .TotalRepos}} unique repositories · updated {{.GeneratedAt.UTC.Format "Jan 2, 2006 15:04"}} UTC</p>
+  <div class="card"><div class="tbl-wrap">
+  <table>
+    <thead><tr>
+      <th>Repository</th><th class="num">Issues</th><th class="num">PRs</th>
+      <th class="num">Commits</th><th>Last activity</th>
+    </tr></thead>
+    <tbody>
+      {{range .Repos}}
+      <tr>
+        <td class="name"><a href="{{.ForgeURL}}" rel="noopener">{{.Owner}} / {{.Name}}</a></td>
+        <td class="num">{{comma .Issues}}</td>
+        <td class="num">{{comma .PRs}}</td>
+        <td class="num">{{comma .Commits}}</td>
+        <td class="date">{{if .LastActivity}}{{.LastActivity}}{{else}}—{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  </div></div>
+  {{if gt .TotalRepos (len .Repos)}}
+  <div class="more-note">
+    <span>Showing the top {{len .Repos}} of {{commaInt .TotalRepos}} repositories by commits. The full list — with contributor analytics, CHAOSS metrics, vulnerability data, and comparisons — is one sign-in away.</span>
+    <a class="cta" href="/login.html" onclick="window.avTrack&&avTrack('showcase-login-cta')">Sign in free →</a>
+  </div>
+  {{end}}
+  <div class="foot">
+    <span>© 2026 University of Missouri · MIT License</span>
+    <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
+  </div>
+</div>
+</body>
+</html>
+{{end}}
+`

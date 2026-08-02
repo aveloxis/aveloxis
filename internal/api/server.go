@@ -70,10 +70,10 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux(),
 		mailer: opts.Mailer, autoApproveAddLimit: opts.AutoApproveAddLimit}
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
-	// v0.27.59: the landing page's public repo count — on the
-	// publicPaths allowlist (auth.go); 60s stale-on-error cache.
-	s.publicStats = newPublicStatsCache(time.Minute, func() (int, error) {
-		return store.CountActiveRepos(context.Background())
+	// v0.27.59/v0.27.77: the landing page's public fleet stats — on
+	// the publicPaths allowlist (auth.go); 60s stale-on-error cache.
+	s.publicStats = newPublicStatsCache(time.Minute, func() (db.PublicFleetStats, error) {
+		return store.GetPublicFleetStats(context.Background())
 	})
 	s.mux.HandleFunc("GET /api/v1/public/stats", s.handlePublicStats)
 	s.mux.HandleFunc("GET /api/v1/mailing-list/stats", s.handleMailingListStats)

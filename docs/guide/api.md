@@ -22,22 +22,25 @@ Returns the server status and version.
 {"status": "ok", "version": "0.9.0"}
 ```
 
-### Public repository count
+### Public fleet stats
 
 ```
 GET /api/v1/public/stats
 ```
 
 Public (no token required, like `/health`) — the landing page's
-"repositories under analysis" number. Returns the TOTAL repository
-count in the catalog (v0.27.68: archived repos included — they carry
-full collected history and analysis, and the number should agree
-with the monitor's queue view), served from a 60-second
-cache that keeps the last good value if the database hiccups. Still
-subject to the per-IP rate limiter.
+fleet-scale numbers. `repos` is the TOTAL repository count in the
+catalog (v0.27.68: archived repos included — they carry full
+collected history and analysis, and the number should agree with the
+monitor's queue view). v0.27.77 adds `commits`, `issues`, and `prs`
+(sums of the collection queue's cached cumulative per-repo gathered
+totals — never a live scan of the data tables) and `contributors`
+(the contributor catalog count). Served from a 60-second cache that
+keeps the last good values if the database hiccups. Still subject to
+the per-IP rate limiter.
 
 ```json
-{"repos": 12483}
+{"repos": 94104, "commits": 512345678, "issues": 9123456, "prs": 8123456, "contributors": 1712345}
 ```
 
 ### Repository Statistics
@@ -825,7 +828,9 @@ require the caller's user to be an administrator (403 otherwise).
 
 Per-user:
 
-- `GET /api/v1/me` — `{user_id, is_admin, scope_repo_count}`.
+- `GET /api/v1/me` — `{user_id, login, is_admin, scope_repo_count}`
+  (`login` added v0.27.77 so the GUI nav shows the real signed-in
+  identity).
   `scope_repo_count` is `-1` for admins (unscoped). The GUI uses
   `is_admin` to decide whether to render the admin navigation.
 - `GET /api/v1/groups` — the caller's groups:

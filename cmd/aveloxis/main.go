@@ -92,6 +92,7 @@ func main() {
 		healMessagesCmd(&cfgPath),
 		reconcileReposCmd(&cfgPath),
 		dataVerifyCmd(&cfgPath),
+		generateShowcaseCmd(&cfgPath),
 	)
 
 	if err := root.Execute(); err != nil {

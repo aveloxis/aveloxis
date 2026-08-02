@@ -67,8 +67,14 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// v0.27.77: carry the display identity so the SPA nav can show
+	// the REAL signed-in user (it rendered a hardcoded placeholder
+	// before). Best-effort — a lookup failure yields an empty login,
+	// never an error for /me.
+	login, _ := s.store.GetUserLogin(r.Context(), info.UserID)
 	jsonResponse(w, map[string]any{
 		"user_id":  info.UserID,
+		"login":    login,
 		"is_admin": info.IsAdmin,
 		"scope_repo_count": func() int {
 			if info.IsAdmin {

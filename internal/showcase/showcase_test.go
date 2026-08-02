@@ -4,6 +4,7 @@
 package showcase
 
 import (
+	"html/template"
 	"strings"
 	"testing"
 	"time"
@@ -146,6 +147,149 @@ func TestRenderRepoHonestEmptyStates(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), "No open vulnerabilities") {
 		t.Error("scanned repo with zero findings must render the clean state")
+	}
+}
+
+func TestRenderCollectionInjectsFeaturedStylingAndCTARow(t *testing.T) {
+	d := hostileCollection()
+	d.CTARowAfter = 0 // the single featured row (accumulo) is row 0
+	var b strings.Builder
+	if err := RenderCollection(&b, d); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := b.String()
+	// Featured rows are visually distinct (2026-08-02 operator ask:
+	// "visually obvious distinction between the repos that have repo
+	// pages and those that don't").
+	if !strings.Contains(out, `<tr class="featured">`) {
+		t.Error("rows with snapshot pages must carry the featured class")
+	}
+	// The sign-in reminder renders as its OWN differentiated row right
+	// below the featured block — not just the footer note.
+	if !strings.Contains(out, `class="cta-row"`) {
+		t.Error("the login-reminder row must render after the featured block")
+	}
+	if !strings.Contains(out, `colspan="5"`) {
+		t.Error("the CTA row must span the full table width")
+	}
+	// It must appear BETWEEN the two data rows (after accumulo, before
+	// abdera), not at the end of the table.
+	ctaPos := strings.Index(out, `class="cta-row"`)
+	abderaPos := strings.Index(out, "abdera")
+	if ctaPos > abderaPos {
+		t.Error("CTA row must sit directly under the featured block, above the remaining rows")
+	}
+	if !strings.Contains(out, "Sign in") {
+		t.Error("CTA row must carry the sign-in affordance")
+	}
+	// CTARowAfter = -1 renders no CTA row.
+	d.CTARowAfter = -1
+	b.Reset()
+	if err := RenderCollection(&b, d); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), `class="cta-row"`) {
+		t.Error("CTARowAfter=-1 must render no CTA row")
+	}
+}
+
+func TestRenderRepoEmbedsActivityChart(t *testing.T) {
+	d := hostileRepoPage()
+	d.ActivityChart = &RepoChart{
+		Caption: "Weekly activity, trailing 12 months",
+		Legend: []LegendItem{
+			{Label: "Commits", Color: "#2563eb"},
+			{Label: "Issues", Color: "#d97706"},
+		},
+		SVG: template.HTML(`<svg viewBox="0 0 720 220"><polyline points="0,0 1,1" fill="none" stroke="#2563eb"/></svg>`),
+	}
+	var b strings.Builder
+	if err := RenderRepo(&b, d); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := b.String()
+	for _, needle := range []string{
+		"<svg", "Weekly activity", "Commits", `class="dot"`,
+	} {
+		if !strings.Contains(out, needle) {
+			t.Errorf("repo page with chart missing %q", needle)
+		}
+	}
+	// Without a chart: the honest empty state, never a broken frame.
+	d.ActivityChart = nil
+	b.Reset()
+	if err := RenderRepo(&b, d); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "No collected activity") {
+		t.Error("chartless repo page must carry the honest empty state")
+	}
+}
+
+func TestRenderComparePage(t *testing.T) {
+	d := ComparePageData{
+		BaseURL:     "https://aveloxis.io",
+		GeneratedAt: time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC),
+		WindowLabel: "trailing 12 months, weekly",
+		Repos: []CompareRepoRef{
+			{Label: "pandas-dev/pandas", Slug: "pandas-dev-pandas", Color: "#2563eb"},
+			{Label: "apache/arrow", Slug: "apache-arrow", Color: "#d97706"},
+			{Label: "istio/istio", Slug: "istio-istio", Color: "#059669"},
+			{Label: "keycloak/keycloak <script>x</script>", Slug: "keycloak-keycloak", Color: "#7c3aed"},
+		},
+		Charts: []RepoChart{
+			{Title: "Code Change Commits", SVG: template.HTML("<svg><polyline/></svg>")},
+			{Title: "Issues", SVG: template.HTML("<svg><polyline/></svg>")},
+		},
+	}
+	var b strings.Builder
+	if err := RenderComparePage(&b, d); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := b.String()
+	if strings.Contains(out, "<script>x</script>") {
+		t.Error("repo labels must be HTML-escaped")
+	}
+	for _, needle := range []string{
+		`<link rel="canonical" href="https://aveloxis.io/showcase/compare.html" />`,
+		"pandas-dev/pandas", `href="/showcase/repos/apache-arrow.html"`,
+		"Code Change Commits", "trailing 12 months",
+		"showcase-login-cta", "/lib/telemetry.js", "application/ld+json",
+	} {
+		if !strings.Contains(out, needle) {
+			t.Errorf("compare page missing %q", needle)
+		}
+	}
+	if strings.Count(out, "<svg") != 2 {
+		t.Errorf("want one svg per chart (2), got %d", strings.Count(out, "<svg"))
+	}
+}
+
+func TestPickSimilarActivity(t *testing.T) {
+	cands := []CompareCandidate{
+		{Slug: "a", Label: "a", Activity: 60000},
+		{Slug: "b", Label: "b", Activity: 49000},
+		{Slug: "c", Label: "c", Activity: 28000},
+		{Slug: "d", Label: "d", Activity: 28000},
+		{Slug: "e", Label: "e", Activity: 22000},
+		{Slug: "f", Label: "f", Activity: 19000},
+		{Slug: "g", Label: "g", Activity: 500},
+	}
+	got := PickSimilarActivity(cands, 4)
+	if len(got) != 4 {
+		t.Fatalf("want 4, got %d", len(got))
+	}
+	// The tightest ratio window is c,d,e,f (28000/19000 ≈ 1.47) — not
+	// the top-4 by volume (60000/28000 ≈ 2.14) and never the outlier g.
+	want := []string{"c", "d", "e", "f"}
+	for i, w := range want {
+		if got[i].Slug != w {
+			t.Errorf("pick[%d] = %s, want %s (tightest activity window)", i, got[i].Slug, w)
+		}
+	}
+	// Fewer candidates than n: return them all rather than nothing.
+	if got := PickSimilarActivity(cands[:3], 4); len(got) != 3 {
+		t.Errorf("undersized candidate set must return everything, got %d", len(got))
 	}
 }
 

@@ -85,6 +85,20 @@ td.name a.ext { color: #66739a; font-weight: 400; font-size: 12px; margin-left: 
 .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11.5px;
   font-weight: 700; background: #e2e8f0; color: #475569; vertical-align: middle; }
 .note-line { color: #46557a; font-size: 13.5px; }
+tr.featured td { background: rgba(37,99,235,0.055); }
+tr.featured td.name a:first-child { color: #1d4ed8; }
+.cta-row td { background: #fef6e4; border-top: 1px solid rgba(146,103,14,0.35);
+  border-bottom: 1px solid rgba(146,103,14,0.35); color: #6b4e0c;
+  font-size: 13px; padding: 12px 18px; }
+.cta-row a { color: #92670e; font-weight: 700; white-space: nowrap; }
+.chart-card { background: rgba(255,255,255,0.8); border: 1px solid rgba(37,99,235,0.16);
+  border-radius: 12px; padding: 16px 18px 10px; margin-bottom: 16px; }
+.chart-card h3 { font-size: 14px; margin-bottom: 8px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 8px;
+  color: #46557a; font-size: 12px; }
+.legend .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  margin-right: 5px; vertical-align: middle; }
+.chart-caption { color: #66739a; font-size: 11.5px; margin: 4px 0 6px; }
 </style>
 {{end}}
 
@@ -129,6 +143,12 @@ td.name a.ext { color: #66739a; font-weight: 400; font-size: 12px; margin-left: 
     </a>
     {{end}}
   </div>
+  {{if .HasCompare}}
+  <div class="more-note">
+    <span>See Aveloxis comparison in action: four projects with similar activity levels, compared week by week on real collected data.</span>
+    <a class="cta" href="/showcase/compare.html">Open the comparison →</a>
+  </div>
+  {{end}}
   <div class="foot">
     <span>© 2026 University of Missouri · MIT License</span>
     <span><a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a> · <a href="https://aveloxis.readthedocs.io">Docs</a></span>
@@ -182,14 +202,19 @@ td.name a.ext { color: #66739a; font-weight: 400; font-size: 12px; margin-left: 
       <th class="num">Commits</th><th>Last activity</th>
     </tr></thead>
     <tbody>
-      {{range .Repos}}
-      <tr>
-        <td class="name">{{if .PageSlug}}<a href="/showcase/repos/{{.PageSlug}}.html">{{.Owner}} / {{.Name}}</a><a class="ext" href="{{.ForgeURL}}" rel="noopener" title="Source repository">↗</a>{{else}}<a href="{{.ForgeURL}}" rel="noopener">{{.Owner}} / {{.Name}}</a>{{end}}</td>
-        <td class="num">{{comma .Issues}}</td>
-        <td class="num">{{comma .PRs}}</td>
-        <td class="num">{{comma .Commits}}</td>
-        <td class="date">{{if .LastActivity}}{{.LastActivity}}{{else}}—{{end}}</td>
+      {{range $i, $r := .Repos}}
+      <tr{{if $r.PageSlug}} class="featured"{{end}}>
+        <td class="name">{{if $r.PageSlug}}<a href="/showcase/repos/{{$r.PageSlug}}.html">{{$r.Owner}} / {{$r.Name}}</a><a class="ext" href="{{$r.ForgeURL}}" rel="noopener" title="Source repository">↗</a>{{else}}<a href="{{$r.ForgeURL}}" rel="noopener">{{$r.Owner}} / {{$r.Name}}</a>{{end}}</td>
+        <td class="num">{{comma $r.Issues}}</td>
+        <td class="num">{{comma $r.PRs}}</td>
+        <td class="num">{{comma $r.Commits}}</td>
+        <td class="date">{{if $r.LastActivity}}{{$r.LastActivity}}{{else}}—{{end}}</td>
       </tr>
+      {{if eq $i $.CTARowAfter}}
+      <tr class="cta-row">
+        <td colspan="5">The highlighted repositories above have public snapshot pages — <a href="/login.html" onclick="window.avTrack&&avTrack('showcase-login-cta')">Sign in free →</a> to open the full repository pages for all {{commaInt $.TotalRepos}} repositories, with charts, contributors, and comparisons.</td>
+      </tr>
+      {{end}}
       {{end}}
     </tbody>
   </table>
@@ -260,6 +285,17 @@ td.name a.ext { color: #66739a; font-weight: 400; font-size: 12px; margin-left: 
     <div class="stat"><div class="v">{{if .LastCollected}}{{.LastCollected}}{{else}}—{{end}}</div><div class="k">Last collected</div></div>
   </div>
 
+  <div class="section-h">Weekly activity</div>
+  {{if .ActivityChart}}
+  <div class="chart-card">
+    <div class="legend">{{range .ActivityChart.Legend}}<span><span class="dot" style="background: {{.Color}}"></span>{{.Label}}</span>{{end}}</div>
+    {{.ActivityChart.SVG}}
+    {{if .ActivityChart.Caption}}<p class="chart-caption">{{.ActivityChart.Caption}}</p>{{end}}
+  </div>
+  {{else}}
+  <p class="note-line">No collected activity in the trailing 12 months — the interactive page carries the full history.</p>
+  {{end}}
+
   <div class="section-h">Security posture</div>
   <p class="note-line">
     {{- if .DepsScanned -}}
@@ -297,6 +333,67 @@ td.name a.ext { color: #66739a; font-weight: 400; font-size: 12px; margin-left: 
 
   <div class="more-note">
     <span>This is a static snapshot. The interactive version — weekly activity charts, contributor analytics, CHAOSS metrics, comparisons, and SBOM downloads — is one sign-in away.</span>
+    <a class="cta" href="/login.html" onclick="window.avTrack&&avTrack('showcase-login-cta')">Sign in free →</a>
+  </div>
+  <div class="foot">
+    <span>© 2026 University of Missouri · MIT License</span>
+    <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
+  </div>
+</div>
+</body>
+</html>
+{{end}}
+
+{{define "compare-demo"}}{{template "shell-head" .}}
+<title>Compare open source projects side by side — Aveloxis</title>
+<meta name="description" content="A live sample of Aveloxis project comparison: four projects with similar activity levels, compared week by week on commits, issues, change requests, and contributors — from real collected data." />
+<link rel="canonical" href="{{.BaseURL}}/showcase/compare.html" />
+<meta property="og:title" content="Compare open source projects side by side — Aveloxis" />
+<meta property="og:description" content="Four projects with similar activity levels, compared week by week on real collected data." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="{{.BaseURL}}/showcase/compare.html" />
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Aveloxis", "item": "{{.BaseURL}}/" },
+        { "@type": "ListItem", "position": 2, "name": "Showcase", "item": "{{.BaseURL}}/showcase/index.html" },
+        { "@type": "ListItem", "position": 3, "name": "Compare", "item": "{{.BaseURL}}/showcase/compare.html" }
+      ]
+    },
+    {
+      "@type": "WebPage",
+      "name": "Compare open source projects side by side",
+      "url": "{{.BaseURL}}/showcase/compare.html",
+      "isPartOf": { "@type": "WebSite", "name": "Aveloxis", "url": "{{.BaseURL}}/" }
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+  {{template "shell-top" .}}
+  <span class="eyebrow">PUBLIC SHOWCASE</span>
+  <h1>Compare projects side by side</h1>
+  <p class="lead">A static sample of the Aveloxis comparison view: four projects with approximately the same activity level, compared on real collected data ({{.WindowLabel}}). The interactive version compares any tracked repositories or whole organizations across every CHAOSS metric.</p>
+  <p class="meta-line">
+    {{- range $i, $r := .Repos}}{{if $i}} · {{end}}<span class="dot" style="background: {{$r.Color}}"></span> <a href="/showcase/repos/{{$r.Slug}}.html">{{$r.Label}}</a>{{end}} ·
+    updated {{.GeneratedAt.UTC.Format "Jan 2, 2006 15:04"}} UTC
+  </p>
+  {{range .Charts}}
+  <div class="chart-card">
+    <h3>{{.Title}}</h3>
+    <div class="legend">{{range .Legend}}<span><span class="dot" style="background: {{.Color}}"></span>{{.Label}}</span>{{end}}</div>
+    {{.SVG}}
+    {{if .Caption}}<p class="chart-caption">{{.Caption}}</p>{{end}}
+  </div>
+  {{end}}
+  <div class="more-note">
+    <span>Build your own comparison — any repositories, whole organizations, every metric in the catalog, z-score normalization, shareable URLs. One sign-in away.</span>
     <a class="cta" href="/login.html" onclick="window.avTrack&&avTrack('showcase-login-cta')">Sign in free →</a>
   </div>
   <div class="foot">

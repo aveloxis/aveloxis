@@ -123,6 +123,33 @@ func TestGenerateShowcaseRepoPages(t *testing.T) {
 	}
 }
 
+// TestGenerateShowcaseStaticCharts pins the v0.27.80 chart surface:
+// each snapshot page gets a static weekly-activity SVG, and the
+// showcase carries ONE static comparison page — four featured repos
+// with approximately the same activity level (operator decision),
+// completely static (no JS, no endpoints, the whole showcase
+// premise).
+func TestGenerateShowcaseStaticCharts(t *testing.T) {
+	src := showcaseSrc(t)
+	for _, needle := range []string{
+		"GetRepoTimeSeries(",                       // repo pages: weekly activity data
+		"MetricWeeklySeries(",                      // compare demo: headline metric series
+		"PickSimilarActivity(",                     // the similar-activity-window picker
+		`"compare.html"`,                           // the demo page itself
+		"RenderLineChartSVG(",                      // charts are baked SVG, never JS
+		`slugSeen := map[string]int{"compare": 1}`, // reserved slug
+	} {
+		if !strings.Contains(src, needle) {
+			t.Errorf("static-chart surface missing %s", needle)
+		}
+	}
+	// The CTA row position rides CollectionData (the sign-in reminder
+	// row under the featured block).
+	if !strings.Contains(src, "CTARowAfter:") {
+		t.Error("collection pages must position the sign-in CTA row after the featured block")
+	}
+}
+
 // TestGenerateShowcaseEndToEnd (AVELOXIS_TEST_DB): seed a collection
 // with a group + repos + cached queue counts, generate into a temp
 // dir, and assert the pages exist with the right content and ZERO
@@ -298,6 +325,40 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 		}
 	}
 
+	// The sign-in CTA row renders under the featured block (v0.27.80)
+	// with the featured rows visually distinct.
+	if !strings.Contains(html, `class="cta-row"`) {
+		t.Error("collection page must carry the sign-in reminder row under the featured block")
+	}
+	if !strings.Contains(html, `<tr class="featured">`) {
+		t.Error("featured rows must be visually distinct")
+	}
+
+	// The static comparison demo exists: 4 of the 5 featured repos
+	// (the tightest activity window: delta 700, epsilon 600, alpha
+	// 500, zeta 400 — beta's 900 falls outside) with baked SVG charts.
+	comparePage, err := os.ReadFile(filepath.Join(out, "compare.html"))
+	if err != nil {
+		t.Fatalf("compare demo page must exist: %v", err)
+	}
+	compareHTML := string(comparePage)
+	for _, needle := range []string{"_avshow/delta", "_avshow/zeta", "<svg", "showcase-login-cta"} {
+		if !strings.Contains(compareHTML, needle) {
+			t.Errorf("compare demo missing %q", needle)
+		}
+	}
+	if strings.Contains(compareHTML, "_avshow/beta") {
+		t.Error("beta (900 issues) sits outside the tightest 4-repo activity window and must not be picked")
+	}
+	// And the index links it.
+	indexPage, err := os.ReadFile(filepath.Join(out, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(indexPage), "/showcase/compare.html") {
+		t.Error("showcase index must link the comparison demo")
+	}
+
 	// The rich repo page: detail fields, scorecard, vuln posture, SEO,
 	// escaping, zero user leakage.
 	betaPage, err := os.ReadFile(filepath.Join(out, "repos", "avshow-beta.html"))
@@ -331,7 +392,7 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, needle := range []string{"not yet scanned", "analysis pending"} {
+	for _, needle := range []string{"not yet scanned", "analysis pending", "No collected activity"} {
 		if !strings.Contains(string(alphaPage), needle) {
 			t.Errorf("unscanned repo page missing honest empty state %q", needle)
 		}

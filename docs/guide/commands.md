@@ -766,14 +766,22 @@ page under `<out>/repos/`, deduped across collections. Forks
 (`repos.forked_from` non-empty, captured by Phase 0 since v0.27.78)
 are skipped and the next non-fork slides into the freed slot. Each
 snapshot carries the cached commit/issue/PR counts, description and
-primary language, the latest OpenSSF Scorecard table, and the
-open-vulnerability posture — with honest "not yet scanned" /
-"analysis pending" states instead of fabricated zeros. Collection
-pages link the featured names to these snapshots (the forge link
-survives as a ↗ affordance); everything below the cut stays
-forge-linked with a note that sign-in unlocks the full repository
-pages. Snapshot pages ride the same sitemap, prune pass, and privacy
+primary language, a **static weekly-activity SVG chart** (trailing 12
+months, baked at generation time — no JS, no endpoints), the latest
+OpenSSF Scorecard table, and the open-vulnerability posture — with
+honest "not yet scanned" / "analysis pending" / "no collected
+activity" states instead of fabricated zeros. Collection pages
+highlight the featured rows and carry a sign-in reminder as its own
+row directly under them; everything below the cut stays forge-linked.
+Snapshot pages ride the same sitemap, prune pass, and privacy
 contract.
+
+v0.27.80 also emits `/showcase/compare.html` — a fully static
+comparison demo of the four featured repos with the most comparable
+activity levels, one baked SVG chart per headline metric (commits,
+issues, change requests, contributors), linked from the showcase
+index. The slug `compare` is reserved (a collection literally named
+"Compare" gets `compare-2`).
 
 ```bash
 aveloxis generate-showcase \

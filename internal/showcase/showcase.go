@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -39,6 +40,9 @@ type IndexData struct {
 	BaseURL     string // e.g. https://aveloxis.io — no trailing slash
 	GeneratedAt time.Time
 	Collections []CollectionCard
+	// HasCompare links the static comparison demo (v0.27.80) when the
+	// generator produced one.
+	HasCompare bool
 }
 
 // RepoRow is one repository line on a collection page.
@@ -103,6 +107,11 @@ type RepoPageData struct {
 	DepsScanned  bool
 	VulnTotal    int
 	VulnCritical int
+
+	// ActivityChart is the static weekly-activity SVG (v0.27.80,
+	// trailing 12 months). Nil = no collected activity in the window;
+	// the template renders the honest empty state.
+	ActivityChart *RepoChart
 }
 
 // CollectionData drives one public collection page.
@@ -115,6 +124,76 @@ type CollectionData struct {
 	TotalRepos  int
 	GeneratedAt time.Time
 	Repos       []RepoRow // top-N by collected issues; len may be < TotalRepos
+	// CTARowAfter is the row index after which the sign-in reminder
+	// renders as its own visually differentiated table row (2026-08-02
+	// operator ask) — normally the index of the last featured row.
+	// -1 = no CTA row.
+	CTARowAfter int
+}
+
+// LegendItem is one entry in a chart's HTML legend.
+type LegendItem struct {
+	Label string
+	Color string
+}
+
+// RepoChart is one static chart on a showcase page: the SVG is
+// produced ONLY by RenderLineChartSVG (numbers and formatted dates —
+// nothing attacker-influenced), which is the sole justification for
+// the template.HTML type. Never assign forge-sourced strings to SVG.
+type RepoChart struct {
+	Title   string
+	Caption string
+	Legend  []LegendItem
+	SVG     template.HTML
+}
+
+// CompareRepoRef is one repository on the static compare demo page.
+type CompareRepoRef struct {
+	Label string // owner/name
+	Slug  string // snapshot-page slug
+	Color string // series color, from ChartPalette
+}
+
+// ComparePageData drives the static 4-repo comparison demo page.
+type ComparePageData struct {
+	BaseURL     string
+	GeneratedAt time.Time
+	WindowLabel string
+	Repos       []CompareRepoRef
+	Charts      []RepoChart
+}
+
+// CompareCandidate is a featured repo considered for the compare demo.
+type CompareCandidate struct {
+	Slug     string
+	Label    string
+	Activity int64 // cached issue count — the comparability signal
+}
+
+// PickSimilarActivity chooses the n candidates with the most
+// comparable activity levels (2026-08-02 operator ask: "repositories
+// with approximately the same activity levels"): sort by activity
+// descending, slide a window of n, and keep the window with the
+// smallest (max+1)/(min+1) ratio — ties go to the higher-activity
+// window. Fewer than n candidates come back unchanged.
+func PickSimilarActivity(cands []CompareCandidate, n int) []CompareCandidate {
+	if len(cands) <= n {
+		return cands
+	}
+	sorted := append([]CompareCandidate(nil), cands...)
+	// Stable: equal-activity ties keep the caller's (deterministic) order.
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Activity > sorted[j].Activity })
+	best := 0
+	bestRatio := math.MaxFloat64
+	for i := 0; i+n <= len(sorted); i++ {
+		ratio := float64(sorted[i].Activity+1) / float64(sorted[i+n-1].Activity+1)
+		if ratio < bestRatio {
+			bestRatio = ratio
+			best = i
+		}
+	}
+	return sorted[best : best+n]
 }
 
 var slugStrip = regexp.MustCompile(`[^a-z0-9]+`)
@@ -206,6 +285,11 @@ func RenderCollection(w io.Writer, d CollectionData) error {
 // RenderRepo writes one public repository snapshot page.
 func RenderRepo(w io.Writer, d RepoPageData) error {
 	return tmpl.ExecuteTemplate(w, "repo", d)
+}
+
+// RenderComparePage writes the static 4-repo comparison demo page.
+func RenderComparePage(w io.Writer, d ComparePageData) error {
+	return tmpl.ExecuteTemplate(w, "compare-demo", d)
 }
 
 // BuildSitemap emits sitemap.xml for the whole site: the static core

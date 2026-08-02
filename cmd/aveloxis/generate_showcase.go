@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -55,6 +56,7 @@ type showcaseOpts struct {
 type showcaseSummary struct {
 	Collections int
 	RepoPages   int
+	ComparePage bool
 	Pruned      int
 	Sitemap     bool
 }
@@ -116,7 +118,7 @@ editing collections.`,
 				return err
 			}
 			logger.Info("showcase generated",
-				"collections", sum.Collections, "repo_pages", sum.RepoPages,
+				"collections", sum.Collections, "repo_pages", sum.RepoPages, "compare", sum.ComparePage,
 				"pruned", sum.Pruned, "sitemap", sum.Sitemap, "out", outDir)
 			return nil
 		},
@@ -151,7 +153,10 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 	}
 
 	now := time.Now()
-	slugSeen := map[string]int{}
+	// "compare" is reserved for the static comparison demo page
+	// (v0.27.80) — a collection literally named "Compare" gets the
+	// -2 suffix instead of colliding with it.
+	slugSeen := map[string]int{"compare": 1}
 	var cards []showcase.CollectionCard
 	emitted := map[string]bool{"index.html": true}
 	targets := map[int64]*repoTarget{} // featured repos, deduped by repo_id
@@ -180,6 +185,7 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 		var rows []showcase.RepoRow
 		total := 0
 		featured := 0
+		lastFeaturedRow := -1 // where the sign-in CTA row renders (v0.27.80)
 		for page := 1; len(rows) < opts.RepoCap; page++ {
 			repos, tot, err := store.GetCollectionRepos(ctx, c.CollectionID, 0, page, opts.PageSize, "issues", "desc")
 			if err != nil {
@@ -221,6 +227,7 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 					row.PageSlug = registerFeaturedRepo(targets, repoSlugToID, r, row,
 						showcase.RepoLink{Slug: slug, Name: c.Name})
 					featured++
+					lastFeaturedRow = len(rows)
 				}
 				rows = append(rows, row)
 			}
@@ -233,6 +240,7 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 		err = showcase.RenderCollection(&b, showcase.CollectionData{
 			BaseURL: opts.BaseURL, Slug: slug, Name: c.Name, Description: c.Description,
 			Groups: len(groups), TotalRepos: total, GeneratedAt: now, Repos: rows,
+			CTARowAfter: lastFeaturedRow,
 		})
 		if err != nil {
 			return sum, fmt.Errorf("rendering %s: %w", slug, err)
@@ -246,16 +254,6 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 			Groups: len(groups), Repos: total,
 		})
 		sum.Collections++
-	}
-
-	var b strings.Builder
-	if err := showcase.RenderIndex(&b, showcase.IndexData{
-		BaseURL: opts.BaseURL, GeneratedAt: now, Collections: cards,
-	}); err != nil {
-		return sum, fmt.Errorf("rendering index: %w", err)
-	}
-	if err := writeAtomic(filepath.Join(opts.OutDir, "index.html"), []byte(b.String())); err != nil {
-		return sum, err
 	}
 
 	// ---- Repo snapshot pages (top-N per collection, deduped) ----
@@ -300,6 +298,29 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 			continue
 		}
 		sum.Pruned++
+	}
+
+	// ---- Static comparison demo (v0.27.80): four featured repos with
+	// approximately the same activity level, compared on real data. ----
+	compareEmitted, err := buildCompareDemo(ctx, store, opts, now, targets, repoSlugToID)
+	if err != nil {
+		return sum, err
+	}
+	if compareEmitted {
+		emitted["compare.html"] = true
+		sum.ComparePage = true
+	}
+
+	// Index page — rendered after the compare demo so it can link it.
+	var b strings.Builder
+	if err := showcase.RenderIndex(&b, showcase.IndexData{
+		BaseURL: opts.BaseURL, GeneratedAt: now, Collections: cards,
+		HasCompare: compareEmitted,
+	}); err != nil {
+		return sum, fmt.Errorf("rendering index: %w", err)
+	}
+	if err := writeAtomic(filepath.Join(opts.OutDir, "index.html"), []byte(b.String())); err != nil {
+		return sum, err
 	}
 
 	// Prune pages whose collection no longer exists (renames included
@@ -408,7 +429,140 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, baseURL string,
 	if d.VulnTotal, d.VulnCritical, err = store.CountRepoVulnerabilities(ctx, t.repoID); err != nil {
 		return d, fmt.Errorf("vulnerability counts: %w", err)
 	}
+	if d.ActivityChart, err = buildActivityChart(ctx, store, t.repoID, now); err != nil {
+		return d, fmt.Errorf("activity chart: %w", err)
+	}
 	return d, nil
+}
+
+// weekStartUTC returns the Monday 00:00 UTC of t's ISO week — the
+// same buckets date_trunc('week', … AT TIME ZONE 'UTC') produces, so
+// DensifyWeekly's date-string join always lands.
+func weekStartUTC(t time.Time) time.Time {
+	d := t.UTC().Truncate(24 * time.Hour)
+	return d.AddDate(0, 0, -((int(d.Weekday()) + 6) % 7))
+}
+
+// showcaseChartWindow is the static charts' trailing-12-month weekly
+// window: 52 Monday buckets plus the current partial week.
+func showcaseChartWindow(now time.Time) (since, until time.Time) {
+	until = weekStartUTC(now).AddDate(0, 0, 7)
+	since = until.AddDate(0, 0, -52*7)
+	return since, until
+}
+
+func weeklyChartPoints(pts []db.WeeklyDataPoint, since, until time.Time) []showcase.ChartPoint {
+	cp := make([]showcase.ChartPoint, 0, len(pts))
+	for _, p := range pts {
+		cp = append(cp, showcase.ChartPoint{T: p.WeekStart, V: float64(p.Count)})
+	}
+	return showcase.DensifyWeekly(cp, since, until)
+}
+
+// buildActivityChart renders a repo snapshot page's static weekly
+// activity chart (v0.27.80). Nil chart = zero collected activity in
+// the window — the template renders the honest empty state.
+func buildActivityChart(ctx context.Context, store *db.PostgresStore, repoID int64, now time.Time) (*showcase.RepoChart, error) {
+	since, until := showcaseChartWindow(now)
+	ts, err := store.GetRepoTimeSeries(ctx, repoID, since, until)
+	if err != nil {
+		return nil, err
+	}
+	if len(ts.Commits)+len(ts.Issues)+len(ts.PRsOpened)+len(ts.PRsMerged) == 0 {
+		return nil, nil
+	}
+	series := []showcase.ChartSeries{
+		{Label: "Commits", Color: showcase.ChartPalette[0], Points: weeklyChartPoints(ts.Commits, since, until)},
+		{Label: "Issues opened", Color: showcase.ChartPalette[1], Points: weeklyChartPoints(ts.Issues, since, until)},
+		{Label: "PRs opened", Color: showcase.ChartPalette[2], Points: weeklyChartPoints(ts.PRsOpened, since, until)},
+		{Label: "PRs merged", Color: showcase.ChartPalette[3], Points: weeklyChartPoints(ts.PRsMerged, since, until)},
+	}
+	svg := showcase.RenderLineChartSVG(series, 720, 220)
+	if svg == "" {
+		return nil, nil
+	}
+	chart := &showcase.RepoChart{
+		Caption: "Weekly activity, trailing 12 months — sign in for 3y/5y windows and every CHAOSS metric.",
+		SVG:     template.HTML(svg), // produced only by RenderLineChartSVG
+	}
+	for _, s := range series {
+		chart.Legend = append(chart.Legend, showcase.LegendItem{Label: s.Label, Color: s.Color})
+	}
+	return chart, nil
+}
+
+// buildCompareDemo renders the static 4-repo comparison page from the
+// featured pool: the four repos with the most comparable activity
+// levels (2026-08-02 operator decision), one chart per headline
+// metric, all data baked in at generation time.
+func buildCompareDemo(ctx context.Context, store *db.PostgresStore, opts showcaseOpts, now time.Time,
+	targets map[int64]*repoTarget, repoSlugToID map[string]int64) (bool, error) {
+	cands := make([]showcase.CompareCandidate, 0, len(repoSlugToID))
+	for slug, id := range repoSlugToID {
+		t := targets[id]
+		cands = append(cands, showcase.CompareCandidate{
+			Slug: slug, Label: t.row.Owner + "/" + t.row.Name, Activity: t.row.Issues,
+		})
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].Slug < cands[j].Slug }) // map order → deterministic
+	picked := showcase.PickSimilarActivity(cands, 4)
+	if len(picked) < 2 {
+		return false, nil // nothing comparable to show
+	}
+
+	since, until := showcaseChartWindow(now)
+	refs := make([]showcase.CompareRepoRef, 0, len(picked))
+	legend := make([]showcase.LegendItem, 0, len(picked))
+	for i, c := range picked {
+		color := showcase.ChartPalette[i%len(showcase.ChartPalette)]
+		refs = append(refs, showcase.CompareRepoRef{Label: c.Label, Slug: c.Slug, Color: color})
+		legend = append(legend, showcase.LegendItem{Label: c.Label, Color: color})
+	}
+	metrics := []struct{ key, title string }{
+		{"code_change_commits", "Code Change Commits"},
+		{"issues", "Issues"},
+		{"change_requests", "Change Requests"},
+		{"contributors", "Contributors"},
+	}
+	var charts []showcase.RepoChart
+	for _, m := range metrics {
+		series := make([]showcase.ChartSeries, 0, len(picked))
+		for i, c := range picked {
+			pts, err := store.MetricWeeklySeries(ctx, []int64{repoSlugToID[c.Slug]}, m.key, "week", since, until)
+			if err != nil {
+				return false, fmt.Errorf("compare demo %s for %s: %w", m.key, c.Slug, err)
+			}
+			cp := make([]showcase.ChartPoint, 0, len(pts))
+			for _, p := range pts {
+				cp = append(cp, showcase.ChartPoint{T: p.Bucket, V: p.Value})
+			}
+			series = append(series, showcase.ChartSeries{
+				Label: c.Label, Color: refs[i].Color,
+				Points: showcase.DensifyWeekly(cp, since, until),
+			})
+		}
+		svg := showcase.RenderLineChartSVG(series, 720, 220)
+		if svg == "" {
+			continue
+		}
+		charts = append(charts, showcase.RepoChart{Title: m.title, Legend: legend, SVG: template.HTML(svg)})
+	}
+	if len(charts) == 0 {
+		return false, nil
+	}
+
+	var b strings.Builder
+	if err := showcase.RenderComparePage(&b, showcase.ComparePageData{
+		BaseURL: opts.BaseURL, GeneratedAt: now,
+		WindowLabel: "trailing 12 months, weekly",
+		Repos:       refs, Charts: charts,
+	}); err != nil {
+		return false, fmt.Errorf("rendering compare demo: %w", err)
+	}
+	if err := writeAtomic(filepath.Join(opts.OutDir, "compare.html"), []byte(b.String())); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // writeAtomic writes via tmp+rename so nginx never serves a torn page.

@@ -425,3 +425,70 @@ func TestScanVulnerabilitiesNormalizesStoredVersions(t *testing.T) {
 			"— normalizing the version without the purl leaves the malformed purl in the query")
 	}
 }
+
+// ─── v0.27.73: the OSV wire gate ────────────────────────────────
+
+// The 2026-08-01 heal run: 81 repos failed with OSV 400s like
+// `invalid URL escape "%i["` — pre-v0.27.29 RAW purls (built by
+// concatenation before the canonical escaper) that survived in
+// legacy-era dep rows. One malformed query 400s the ENTIRE repo
+// batch, and OSV's "error in query at index N" names no purl, so
+// diagnosis requires production forensics. wireValidPurl is the
+// last-line syntactic gate: anything that would 400 at OSV is
+// dropped (and NAMED in the log) instead of sinking the repo.
+func TestWireValidPurl(t *testing.T) {
+	valid := []string{
+		"pkg:pypi/pyyaml@6.0.3",
+		"pkg:pypi/numpy@%25s", // escape-valid (decodes to the garbage %s, but syntactically sendable)
+		"pkg:gem/tzinfo-data@platforms:%20%25i[mingw%20mswin%20x64_mingw%20jruby]",
+		"pkg:npm/%40scope/name@1.0.0",
+		"pkg:pypi/flask", // versionless (unpinned / self-advisory)
+		"pkg:golang/golang.org/x/text@v0.16.0",
+	}
+	for _, p := range valid {
+		if !wireValidPurl(p) {
+			t.Errorf("wireValidPurl(%q) = false, want true", p)
+		}
+	}
+	invalid := []string{
+		// The exact production 400 shapes (raw pre-escaper purls).
+		`pkg:gem/tzinfo-data@platforms: %i[mingw mswin x64_mingw jruby]`,
+		"pkg:pypi/numpy@%s",
+		"pkg:gem/foo@1.0 %= bar",
+		"pkg:gem/foo@100%",
+		// Missing / blank name regions ("purl is missing name").
+		"pkg:pypi/",
+		"pkg:pypi/%20",
+		"pkg:pypi/%20@1.0",
+		// Whitespace anywhere is never wire-safe.
+		"pkg:gem/foo bar@1.0",
+		// Not a purl at all.
+		"",
+		"nonsense",
+	}
+	for _, p := range invalid {
+		if wireValidPurl(p) {
+			t.Errorf("wireValidPurl(%q) = true, want false", p)
+		}
+	}
+}
+
+// The gate must be WIRED: ScanVulnerabilities filters targets through
+// it before the OSV batch, logging what it drops (the "index N"
+// anonymity of OSV's error is what made the 2026-08-01 investigation
+// take hours — the log must NAME the dropped purl).
+func TestScanVulnerabilitiesGatesWirePurls(t *testing.T) {
+	src, err := os.ReadFile("vulnerability.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+	if !strings.Contains(code, "wireValidPurl(") {
+		t.Error("ScanVulnerabilities must filter targets through wireValidPurl — " +
+			"one malformed purl 400s the ENTIRE repo batch at OSV (81 repos on the 2026-08-01 heal run)")
+	}
+	if !strings.Contains(code, "dropping malformed scan target") {
+		t.Error("dropped targets must be logged with the offending purl NAMED " +
+			"(OSV's 'error in query at index N' identifies nothing)")
+	}
+}

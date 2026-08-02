@@ -74,12 +74,19 @@ func TestScanHealsMalformedPurlsEndToEnd(t *testing.T) {
 		}
 	})
 
-	// The exact pre-v0.27.71 production shapes, verbatim.
+	// The exact pre-v0.27.71 production shapes, verbatim. The third
+	// row is the v0.27.73 residual class from the 2026-08-01 heal run:
+	// a RAW pre-v0.27.29 purl (unescaped concatenation, literal "%i[")
+	// paired with a CLEAN current_version — normalization no-ops (the
+	// version doesn't change), so ONLY the wire gate keeps the garbage
+	// purl from 400ing the repo's entire OSV batch.
 	for _, lb := range []*db.LibyearRow{
 		{Name: "pyyaml", Requirement: `pyyaml==6.0.3 \`, PackageManager: "pypi",
 			CurrentVersion: `6.0.3 \`, Purl: `pkg:pypi/pyyaml@6.0.3 \`},
 		{Name: "serde", Requirement: "serde = { workspace = true }", PackageManager: "cargo",
 			CurrentVersion: "workspace = true", Purl: "pkg:cargo/serde@workspace = true"},
+		{Name: "tzinfo-data", Requirement: "gem 'tzinfo-data', platforms: %i[mingw]", PackageManager: "rubygems",
+			CurrentVersion: "1.2025.3", Purl: `pkg:gem/tzinfo-data@platforms: %i[mingw mswin]`},
 	} {
 		if err := store.InsertRepoLibyear(ctx, repoID, lb); err != nil {
 			t.Fatal(err)
@@ -132,7 +139,8 @@ func TestScanHealsMalformedPurlsEndToEnd(t *testing.T) {
 	osvVulnURLBase = srv.URL + "/v1/vulns/"
 	t.Cleanup(func() { osvBatchURL, osvVulnURLBase = oldBatch, oldVulns })
 
-	if _, err := ScanVulnerabilities(ctx, store, repoID, logger, nil, false); err != nil {
+	result, err := ScanVulnerabilities(ctx, store, repoID, logger, nil, false)
+	if err != nil {
 		t.Fatalf("ScanVulnerabilities: %v", err)
 	}
 
@@ -144,6 +152,9 @@ func TestScanHealsMalformedPurlsEndToEnd(t *testing.T) {
 	for _, p := range purls {
 		if strings.Contains(p, `\`) || strings.Contains(p, "workspace") || strings.Contains(p, " ") {
 			t.Errorf("malformed purl reached OSV: %q — the scan must normalize stored versions at read time", p)
+		}
+		if strings.Contains(p, "%i[") || strings.Contains(p, "tzinfo") {
+			t.Errorf("legacy raw purl reached OSV: %q — the v0.27.73 wire gate must drop it", p)
 		}
 		if p == "pkg:pypi/pyyaml@6.0.3" {
 			sawCleanPyyaml = true
@@ -157,6 +168,11 @@ func TestScanHealsMalformedPurlsEndToEnd(t *testing.T) {
 	}
 	if !sawCleanSerde {
 		t.Errorf("versionless pkg:cargo/serde never queried (workspace dep → unpinned); received: %v", purls)
+	}
+	// The raw-purl target was dropped by the wire gate — counted, and
+	// the scan SUCCEEDED anyway (pre-v0.27.73 it 400'd the whole repo).
+	if result.MalformedTargetsDropped != 1 {
+		t.Errorf("MalformedTargetsDropped = %d, want 1 (the raw tzinfo purl)", result.MalformedTargetsDropped)
 	}
 
 	// The stale false positive must be resolved by the complete scan

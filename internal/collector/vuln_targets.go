@@ -224,6 +224,55 @@ func purlWithVersion(purl, version string) string {
 	return purl + "@" + version
 }
 
+// wireValidPurl (v0.27.73) is the last-line syntactic gate before a
+// purl goes to OSV. The 2026-08-01 heal run failed 81 repos with 400s
+// (`invalid URL escape "%i["`, `"purl is missing name"`) because
+// legacy dep rows carried RAW pre-v0.27.29 purls — built by string
+// concatenation before the canonical escaper — and ONE malformed
+// query 400s the repo's ENTIRE batch. OSV's error names only "query
+// at index N", so the offending purl is invisible without production
+// forensics. Anything failing this gate is dropped and NAMED in the
+// log instead of sinking the repo.
+//
+// Rules (syntactic only — semantic hygiene is normalizeParsedVersion's
+// job upstream): "pkg:type/…" shape; no whitespace or control bytes;
+// every '%' begins a valid two-hex escape; the name region (after the
+// type, before any version separator) must be non-blank once %20s are
+// discounted.
+func wireValidPurl(p string) bool {
+	if !strings.HasPrefix(p, "pkg:") {
+		return false
+	}
+	rest := p[len("pkg:"):]
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 || slash == len(rest)-1 {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		if c == ' ' || c == '\t' || c < 0x20 {
+			return false
+		}
+		if c == '%' {
+			if i+2 >= len(p) || !isHexByte(p[i+1]) || !isHexByte(p[i+2]) {
+				return false
+			}
+		}
+	}
+	nameRegion := rest[slash+1:]
+	if at := strings.LastIndex(nameRegion, "@"); at >= 0 && !strings.Contains(nameRegion[at:], "/") {
+		nameRegion = nameRegion[:at]
+	}
+	if strings.Trim(strings.ReplaceAll(nameRegion, "%20", " "), " /") == "" {
+		return false
+	}
+	return true
+}
+
+func isHexByte(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
 // purlReplaceVersion (v0.27.72) swaps a purl's version segment for a
 // NORMALIZED one, or strips it entirely when version is "" (the
 // unpinned pathway). This is the scan-side half of the v0.27.71

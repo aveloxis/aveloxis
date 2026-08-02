@@ -4,14 +4,13 @@
 package api
 
 // v0.27.14 — the group page's repo listing paginates and carries
-// ALL-TIME counts + star state per row.
-//
-// OPERATOR DECISION (2026-07-15): the counts are the ALL-TIME totals
-// from the latest repo_info snapshot — deliberately NOT the 90-day
-// activity metric, which caused the v0.27.4 nginx-timeout incident at
-// fleet scale and would need per-group caching we don't want here.
-// Counts are fetched per PAGE only, via the existing batched-stats
-// machinery (GetRepoStatsBatch), never for the whole group.
+// per-row counts + star state.
+// v0.27.75 — the listing adopts the COLLECTIONS table grammar
+// (operator request 2026-08-02): cached queue counts, last_collected,
+// forge-reported last_activity, starred, and server-side sort through
+// the SAME allowlist as GetCollectionRepos. The counts remain
+// pre-cached values — never a per-request aggregation (the v0.27.4
+// nginx-timeout class).
 
 import (
 	"net/http/httptest"
@@ -43,31 +42,51 @@ func TestParsePortalPage(t *testing.T) {
 	}
 }
 
-// TestHandleGroupReposEnvelope pins the wiring: pagination flows to
-// the store, per-PAGE counts come from GetRepoStatsBatch, star state
-// from GetUserStarredRepoIDs, and the response is an envelope with
-// total/page/page_size (the GUI pager reads it).
+// TestHandleGroupReposEnvelope pins the v0.27.75 wiring: pagination
+// AND sort params flow to the store, the effective sort/dir are echoed
+// in the envelope alongside total/page/page_size, and the row shape is
+// the collections table grammar (cached counts + dates + starred from
+// the store — no per-page annotation loop in the handler).
 func TestHandleGroupReposEnvelope(t *testing.T) {
 	src := mustReadFile(t, "portal.go")
 	body := extractFuncBody(t, src, "handleGroupRepos")
 	for _, needle := range []string{
-		"parsePortalPage(", "GetRepoStatsBatch(", "GetUserStarredRepoIDs(",
-		`"total"`, `"page"`, `"page_size"`,
+		"parsePortalPage(", `Get("sort")`, `Get("dir")`,
+		"CollectionRepoSortValid(",
+		`"total"`, `"page"`, `"page_size"`, `"sort"`, `"dir"`,
 	} {
 		if !strings.Contains(body, needle) {
-			t.Errorf("handleGroupRepos must contain %q — pagination envelope + per-page counts + star annotation", needle)
+			t.Errorf("handleGroupRepos must contain %q — pagination + allowlisted sort with effective-value echo", needle)
 		}
 	}
-	// The all-time counts read the repo_info metadata totals — NOT any
-	// 90-day activity query (the v0.27.4 nginx-timeout class).
+	// The v0.27.14 per-page annotation loop is GONE — the store fills
+	// counts and stars in the listing query itself.
+	for _, banned := range []string{"GetRepoStatsBatch(", "GetUserStarredRepoIDs("} {
+		if strings.Contains(body, banned) {
+			t.Errorf("handleGroupRepos must NOT call %s — the store fills the whole row (v0.27.75)", banned)
+		}
+	}
 	storeSrc := mustReadFile(t, "../db/portal_store.go")
-	for _, needle := range []string{`json:"commits_all_time"`, `json:"issues_all_time"`, `json:"prs_all_time"`, `json:"starred"`} {
+	// The collections row shape, verbatim (v0.27.74 field names — the
+	// two GUI tables render from identical JSON).
+	for _, needle := range []string{
+		`json:"issues"`, `json:"prs"`, `json:"commits"`,
+		`json:"last_collected,omitempty"`, `json:"last_activity,omitempty"`, `json:"starred"`,
+	} {
 		if !strings.Contains(storeSrc, needle) {
-			t.Errorf("PortalGroupRepo must declare %s — labeled all-time so the GUI can say so", needle)
+			t.Errorf("PortalGroupRepo must declare %s — the collections table grammar", needle)
+		}
+	}
+	// Counts come from the queue's CACHED totals + the repo_info
+	// LATERAL; sort resolves through the SHARED allowlist. Never a
+	// windowed per-request aggregation (the v0.27.4 timeout class).
+	for _, needle := range []string{"last_issues", "last_updated", "user_repo_stars", "collectionRepoSorts"} {
+		if !strings.Contains(storeSrc, needle) {
+			t.Errorf("GetPortalGroupReposForUser must use %s — cached counts + shared sort allowlist", needle)
 		}
 	}
 	if strings.Contains(storeSrc, "90 days") || strings.Contains(storeSrc, "INTERVAL '90") {
-		t.Error("group-page counts must be ALL-TIME, never the 90-day activity metric (operator decision; v0.27.4 timeout incident)")
+		t.Error("group-page counts must be cached totals, never the 90-day activity metric (operator decision; v0.27.4 timeout incident)")
 	}
 }
 

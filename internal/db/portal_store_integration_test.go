@@ -60,15 +60,15 @@ func TestGetPortalGroupReposForUserOwnership(t *testing.T) {
 	})
 
 	// Owner reads own (empty) group fine.
-	if _, _, err := store.GetPortalGroupReposForUser(ctx, ownerID, groupID, false, 50, 0); err != nil {
+	if _, _, err := store.GetPortalGroupReposForUser(ctx, ownerID, groupID, false, 1, 50, "", ""); err != nil {
 		t.Errorf("owner must be able to read own group: %v", err)
 	}
 	// Stranger is refused.
-	if _, _, err := store.GetPortalGroupReposForUser(ctx, strangerID, groupID, false, 50, 0); err == nil {
+	if _, _, err := store.GetPortalGroupReposForUser(ctx, strangerID, groupID, false, 1, 50, "", ""); err == nil {
 		t.Error("non-owner non-admin must NOT be able to read another user's group")
 	}
 	// Admin bypasses ownership.
-	if _, _, err := store.GetPortalGroupReposForUser(ctx, strangerID, groupID, true, 50, 0); err != nil {
+	if _, _, err := store.GetPortalGroupReposForUser(ctx, strangerID, groupID, true, 1, 50, "", ""); err != nil {
 		t.Errorf("admin must be able to read any group: %v", err)
 	}
 
@@ -152,14 +152,14 @@ func TestGetPortalGroupReposPagination(t *testing.T) {
 		}
 	})
 
-	page1, total, err := store.GetPortalGroupReposForUser(ctx, userID, groupID, false, 2, 0)
+	page1, total, err := store.GetPortalGroupReposForUser(ctx, userID, groupID, false, 1, 2, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page1) != 2 || total != 3 {
 		t.Errorf("page 1: want 2 repos of total 3, got %d of %d", len(page1), total)
 	}
-	page2, total, err := store.GetPortalGroupReposForUser(ctx, userID, groupID, false, 2, 2)
+	page2, total, err := store.GetPortalGroupReposForUser(ctx, userID, groupID, false, 2, 2, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,5 +170,73 @@ func TestGetPortalGroupReposPagination(t *testing.T) {
 	if len(page1) == 2 && len(page2) == 1 &&
 		(page1[0].RepoID == page2[0].RepoID || page1[1].RepoID == page2[0].RepoID) {
 		t.Error("pages must be disjoint slices of the ordered listing")
+	}
+
+	// ─── v0.27.75: the collections table grammar on the group page ───
+	// Cached queue counts + last_collected surface per row; sort keys
+	// resolve through the shared allowlist; the caller's stars ride
+	// along; hostile sort keys fall back instead of erroring.
+	for i, seed := range []struct {
+		issues, prs, commits int64
+	}{{10, 5, 100}, {30, 2, 50}, {20, 9, 75}} {
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO aveloxis_ops.collection_queue (repo_id, status, last_issues, last_prs, last_commits, last_collected)
+			VALUES ($1, 'queued', $2, $3, $4, NOW())
+			ON CONFLICT (repo_id) DO UPDATE SET last_issues = $2, last_prs = $3, last_commits = $4, last_collected = NOW()`,
+			repoIDs[i], seed.issues, seed.prs, seed.commits); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN ($1,$2,$3)`, repoIDs[0], repoIDs[1], repoIDs[2])
+	})
+	if err := store.StarRepo(ctx, userID, repoIDs[2]); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repo_stars WHERE user_id = $1`, userID)
+	})
+	sorted, _, err := store.GetPortalGroupReposForUser(ctx, userID, groupID, false, 1, 50, "issues", "desc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sorted) != 3 || sorted[0].RepoID != repoIDs[1] || sorted[0].Issues != 30 {
+		t.Errorf("issues-desc sort: first row = %+v, want repo %d with 30 issues", sorted[0], repoIDs[1])
+	}
+	if sorted[0].LastCollected == nil {
+		t.Error("last_collected must surface from the queue row")
+	}
+	for _, row := range sorted {
+		if row.RepoID == repoIDs[2] && !row.Starred {
+			t.Error("starred repo must carry the caller's starred flag")
+		}
+		if row.RepoID == repoIDs[0] && row.Starred {
+			t.Error("unstarred repo must not be starred")
+		}
+	}
+	// A DIFFERENT caller (admin read) sees their own star state, not
+	// the owner's.
+	var adminID int
+	if err := store.pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_ops.users (login_name, oauth_provider, email, admin)
+		VALUES ($1, 'github', '', TRUE) RETURNING user_id`,
+		fmt.Sprintf("_avpage_admin_%d", suffix)).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, adminID)
+	})
+	adminView, _, err := store.GetPortalGroupReposForUser(ctx, adminID, groupID, true, 1, 50, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range adminView {
+		if row.Starred {
+			t.Error("stars are per-caller — the admin never starred anything here")
+		}
+	}
+	// A hostile sort key falls back to the default order, no SQL error.
+	if _, _, err := store.GetPortalGroupReposForUser(ctx, userID, groupID, false, 1, 50, "evil; DROP TABLE x", "desc"); err != nil {
+		t.Errorf("unknown sort key must fall back to the default, got error: %v", err)
 	}
 }

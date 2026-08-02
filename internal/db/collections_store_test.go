@@ -48,6 +48,12 @@ func TestAddGroupToCollectionRequiresAdminOwner(t *testing.T) {
 // is a direct user_repos INSERT…SELECT — it must NEVER touch the
 // collection queue or the add-request tables. Comment-stripped scan
 // so prose mentioning the words can't false-match.
+//
+// 2026-08-02 scope correction: v0.27.74's GetCollectionRepos
+// legitimately READS collection_queue (the cached count columns), so
+// the bare "collection_queue" ban moved from file-wide to the
+// CopyCollectionToGroup body. Queue WRITES stay banned file-wide —
+// the invariant was always about mutation, not reads.
 func TestCopyCollectionNeverEnqueues(t *testing.T) {
 	src := collectionsSQL(t)
 	var code []string
@@ -62,12 +68,32 @@ func TestCopyCollectionNeverEnqueues(t *testing.T) {
 		code = append(code, line)
 	}
 	joined := strings.Join(code, "\n")
-	for _, banned := range []string{"EnqueueRepo", "collection_queue", "collection_add_requests", "AddReposToGroup("} {
+	// File-wide: no enqueue helpers, no add-request tables, no queue
+	// WRITES of any shape.
+	for _, banned := range []string{
+		"EnqueueRepo", "collection_add_requests", "AddReposToGroup(",
+		"INSERT INTO aveloxis_ops.collection_queue",
+		"UPDATE aveloxis_ops.collection_queue",
+		"DELETE FROM aveloxis_ops.collection_queue",
+	} {
 		if strings.Contains(joined, banned) {
 			t.Errorf("collections_store.go must not reference %q — copy is a pure user_repos INSERT…SELECT (v0.27.20: approval gates NEW collection; collection repos are already tracked)", banned)
 		}
 	}
-	if !strings.Contains(joined, "ON CONFLICT DO NOTHING") {
+	// Copy-path-scoped: the copy function itself may not touch the
+	// queue AT ALL, reads included.
+	start := strings.Index(joined, "func (s *PostgresStore) CopyCollectionToGroup")
+	if start < 0 {
+		t.Fatal("CopyCollectionToGroup not found in collections_store.go")
+	}
+	body := joined[start:]
+	if end := strings.Index(body[1:], "\nfunc "); end >= 0 {
+		body = body[:end+1]
+	}
+	if strings.Contains(body, "collection_queue") {
+		t.Error("CopyCollectionToGroup must not reference collection_queue in any form")
+	}
+	if !strings.Contains(body, "ON CONFLICT DO NOTHING") {
 		t.Error("CopyCollectionToGroup must be idempotent (ON CONFLICT DO NOTHING on the user_repos PK)")
 	}
 }
@@ -82,6 +108,14 @@ func TestCollectionsEndToEnd(t *testing.T) {
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collections WHERE name LIKE '_avcoll%'`)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE name LIKE '_avcoll%')`)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE name LIKE '_avcoll%'`)
+		// Child rows FIRST (2026-08-02): user_repo_stars.repo_id and
+		// collection_queue.repo_id have no ON DELETE action, so a
+		// leftover child row silently kills the repos delete (errors
+		// here are discarded by design) and the stranded '_avcoll'
+		// repos collide with mkRepo on every subsequent run — the
+		// chicken-and-egg residue loop this pre-clean exists to break.
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repo_stars WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '_avcoll')`)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '_avcoll')`)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner = '_avcoll'`)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name LIKE '_avcoll%'`)
 	}

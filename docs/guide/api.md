@@ -833,16 +833,21 @@ Per-user:
 - `POST /api/v1/groups` with `{"name": "..."}` — create a group.
   Non-admin users' groups start `pending` per the v0.19.0 approval
   workflow. Returns `{group_id}`.
-- `GET /api/v1/groups/{groupID}/repos?page=1&page_size=50` — one page
-  of the group's repos in a pagination envelope (v0.27.14):
-  `{repos: [...], total, page, page_size}` (`page_size` defaults to
-  50, capped at 100). Each repo row is
-  `{repo_id, owner, name, git_url, commits_all_time, issues_all_time,
-  prs_all_time, starred}` — the `*_all_time` counts are the forge's
-  own ALL-TIME totals from the latest repo_info snapshot (deliberately
-  not a windowed activity metric), fetched per page via the batched
-  stats cache; `starred` reflects the calling user's star state.
-  Non-admins may only read their own groups (403 otherwise).
+- `GET /api/v1/groups/{groupID}/repos?page=1&page_size=50&sort=name&dir=asc`
+  — one page of the group's repos in a pagination envelope:
+  `{repos: [...], total, page, page_size, sort, dir}` (`page_size`
+  defaults to 50, capped at 100). v0.27.75: the row shape and sort
+  semantics are IDENTICAL to the collection detail listing. Each repo
+  row is `{repo_id, owner, name, git_url, issues, prs, commits,
+  last_collected?, last_activity?, starred}` — the counts are the
+  collection queue's cached cumulative gathered totals (never a
+  per-request aggregation), `last_activity` is the forge's own
+  `last_updated` from the latest repo_info snapshot, and `starred`
+  reflects the calling user's star state. `sort` accepts `name`
+  (default), `issues`, `prs`, `commits`, `collected`, `activity`;
+  `dir` accepts `asc` (default) or `desc`; unknown values fall back
+  and the response echoes the effective sort. Non-admins may only
+  read their own groups (403 otherwise).
 - `POST /api/v1/groups/{groupID}/repos` with
   `{"url": "https://github.com/owner/repo", "kind": "repo"}` (or
   `"kind": "org"` with an org URL) — add a repo or track an org.

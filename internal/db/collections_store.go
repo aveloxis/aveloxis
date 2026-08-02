@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -69,6 +70,40 @@ type CollectionRepo struct {
 	Owner  string `json:"owner"`
 	Name   string `json:"name"`
 	GitURL string `json:"git_url"`
+	// v0.27.74 — the collection detail table's data columns. Counts
+	// come from collection_queue's CACHED cumulative totals
+	// (v0.19.11/v0.21.2 — the same values the monitor renders), never
+	// per-request aggregation (the v0.27.4 nginx-timeout class).
+	// LastActivity is the FORGE's own last_updated from the latest
+	// repo_info snapshot — the deliberate cost/benefit balance: a real
+	// per-table MAX(created_at) sweep would scan issues/commits for
+	// every page render.
+	Issues        int64      `json:"issues"`
+	PRs           int64      `json:"prs"`
+	Commits       int64      `json:"commits"`
+	LastCollected *time.Time `json:"last_collected,omitempty"`
+	LastActivity  *time.Time `json:"last_activity,omitempty"`
+	Starred       bool       `json:"starred"`
+}
+
+// CollectionRepoSortValid reports whether key is an allowlisted sort
+// for GetCollectionRepos (the API echoes the effective sort).
+func CollectionRepoSortValid(key string) bool {
+	_, ok := collectionRepoSorts[key]
+	return ok
+}
+
+// collectionRepoSorts is the ALLOWLIST of sortable columns for
+// GetCollectionRepos — the sort expression is interpolated into the
+// ORDER BY, so it must never carry caller-controlled text. Numeric and
+// date sorts sink NULL/never-collected rows with NULLS LAST.
+var collectionRepoSorts = map[string]string{
+	"name":      "r.repo_owner %s, r.repo_name %s",
+	"issues":    "COALESCE(q.last_issues, 0) %s",
+	"prs":       "COALESCE(q.last_prs, 0) %s",
+	"commits":   "COALESCE(q.last_commits, 0) %s",
+	"collected": "q.last_collected %s NULLS LAST",
+	"activity":  "ri.last_updated %s NULLS LAST",
 }
 
 // CreateCollection inserts a new collection. Name is UNIQUE — a
@@ -251,7 +286,7 @@ func (s *PostgresStore) GetCollectionGroups(ctx context.Context, collectionID in
 // repo set (a repo in two member groups appears once), ordered by
 // owner/name with repo_id as the stable tiebreaker (the v0.18.7
 // pagination lesson), plus the total deduped count.
-func (s *PostgresStore) GetCollectionRepos(ctx context.Context, collectionID int64, page, pageSize int) ([]CollectionRepo, int, error) {
+func (s *PostgresStore) GetCollectionRepos(ctx context.Context, collectionID int64, userID, page, pageSize int, sortKey, sortDir string) ([]CollectionRepo, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -278,14 +313,42 @@ func (s *PostgresStore) GetCollectionRepos(ctx context.Context, collectionID int
 		return nil, 0, fmt.Errorf("GetCollectionRepos count: %w", err)
 	}
 
+	// v0.27.74 — server-side sort (pagination makes client-side sort
+	// meaningless: it would only reorder the current page). Both the
+	// key and direction resolve through fixed allowlists BEFORE any
+	// interpolation; unknown values fall back to the default.
+	sortExpr, ok := collectionRepoSorts[sortKey]
+	if !ok {
+		sortExpr = collectionRepoSorts["name"]
+	}
+	dir := "ASC"
+	if sortDir == "desc" {
+		dir = "DESC"
+	}
+	orderBy := strings.ReplaceAll(sortExpr, "%s", dir) + ", r.repo_id"
+
 	rows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT r.repo_id, r.repo_owner, r.repo_name, r.repo_git
-		FROM aveloxis_ops.collection_groups cg
-		JOIN aveloxis_ops.user_repos ur USING (group_id)
-		JOIN aveloxis_data.repos r ON r.repo_id = ur.repo_id
-		WHERE cg.collection_id = $1
-		ORDER BY r.repo_owner, r.repo_name, r.repo_id
-		LIMIT $2 OFFSET $3`, collectionID, pageSize, (page-1)*pageSize)
+		SELECT r.repo_id, r.repo_owner, r.repo_name, r.repo_git,
+		       COALESCE(q.last_issues, 0), COALESCE(q.last_prs, 0), COALESCE(q.last_commits, 0),
+		       q.last_collected, ri.last_updated,
+		       (ucs.user_id IS NOT NULL) AS starred
+		FROM (
+			SELECT DISTINCT ur.repo_id
+			FROM aveloxis_ops.collection_groups cg
+			JOIN aveloxis_ops.user_repos ur USING (group_id)
+			WHERE cg.collection_id = $1
+		) member
+		JOIN aveloxis_data.repos r ON r.repo_id = member.repo_id
+		LEFT JOIN aveloxis_ops.collection_queue q ON q.repo_id = r.repo_id
+		LEFT JOIN LATERAL (
+			SELECT last_updated FROM aveloxis_data.repo_info
+			WHERE repo_id = r.repo_id
+			ORDER BY data_collection_date DESC LIMIT 1
+		) ri ON TRUE
+		LEFT JOIN aveloxis_ops.user_repo_stars ucs
+			ON ucs.repo_id = r.repo_id AND ucs.user_id = $2
+		ORDER BY `+orderBy+`
+		LIMIT $3 OFFSET $4`, collectionID, userID, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, 0, fmt.Errorf("GetCollectionRepos: %w", err)
 	}
@@ -300,7 +363,8 @@ func (s *PostgresStore) GetCollectionRepos(ctx context.Context, collectionID int
 	out := make([]CollectionRepo, 0, 50)
 	for rows.Next() {
 		var cr CollectionRepo
-		if err := rows.Scan(&cr.RepoID, &cr.Owner, &cr.Name, &cr.GitURL); err != nil {
+		if err := rows.Scan(&cr.RepoID, &cr.Owner, &cr.Name, &cr.GitURL,
+			&cr.Issues, &cr.PRs, &cr.Commits, &cr.LastCollected, &cr.LastActivity, &cr.Starred); err != nil {
 			return nil, 0, fmt.Errorf("GetCollectionRepos scan: %w", err)
 		}
 		out = append(out, cr)

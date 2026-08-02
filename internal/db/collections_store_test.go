@@ -234,8 +234,8 @@ func TestCollectionsEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Detail repos: deduped, 3 rows.
-	repos, total, err := store.GetCollectionRepos(ctx, collID, 1, 50)
+	// Detail repos: deduped, 3 rows (default name-asc sort).
+	repos, total, err := store.GetCollectionRepos(ctx, collID, plainID, 1, 50, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,11 +273,55 @@ func TestCollectionsEndToEnd(t *testing.T) {
 		t.Errorf("copy must never enqueue collection — found %d queue rows", queued)
 	}
 
+	// ─── v0.27.74: counts + sort + starred on the detail rows ───
+	// (AFTER the zero-queue-rows assertion above — this block seeds
+	// queue rows deliberately, which would false-fail that check.)
+	for _, seed := range []struct {
+		rid                  int64
+		issues, prs, commits int64
+	}{{r1, 10, 5, 100}, {r2, 30, 2, 50}, {r3, 20, 9, 75}} {
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO aveloxis_ops.collection_queue (repo_id, status, last_issues, last_prs, last_commits, last_collected)
+			VALUES ($1, 'queued', $2, $3, $4, NOW())
+			ON CONFLICT (repo_id) DO UPDATE SET last_issues = $2, last_prs = $3, last_commits = $4, last_collected = NOW()`,
+			seed.rid, seed.issues, seed.prs, seed.commits); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN ($1,$2,$3)`, r1, r2, r3)
+	})
+	if err := store.StarRepo(ctx, plainID, r3); err != nil {
+		t.Fatal(err)
+	}
+	sorted, _, err := store.GetCollectionRepos(ctx, collID, plainID, 1, 50, "issues", "desc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sorted) != 3 || sorted[0].RepoID != r2 || sorted[0].Issues != 30 {
+		t.Errorf("issues-desc sort: first row = %+v, want repo %d with 30 issues", sorted[0], r2)
+	}
+	if sorted[0].LastCollected == nil {
+		t.Error("last_collected must surface from the queue row")
+	}
+	for _, row := range sorted {
+		if row.RepoID == r3 && !row.Starred {
+			t.Error("r3 must carry the caller's starred flag")
+		}
+		if row.RepoID == r1 && row.Starred {
+			t.Error("unstarred repo must not be starred")
+		}
+	}
+	// An unknown sort key falls back safely (no SQL error, default order).
+	if _, _, err := store.GetCollectionRepos(ctx, collID, plainID, 1, 50, "evil; DROP TABLE x", "desc"); err != nil {
+		t.Errorf("unknown sort key must fall back to the default, got error: %v", err)
+	}
+
 	// Remove a group: repo count shrinks to g2's set (r2, r3).
 	if err := store.RemoveGroupFromCollection(ctx, collID, g1); err != nil {
 		t.Fatal(err)
 	}
-	_, total, err = store.GetCollectionRepos(ctx, collID, 1, 50)
+	_, total, err = store.GetCollectionRepos(ctx, collID, plainID, 1, 50, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

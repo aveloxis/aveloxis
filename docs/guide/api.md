@@ -938,11 +938,20 @@ Reads (any authenticated user):
   user (mirrors the repo-star routes). Both idempotent; PUT on a
   nonexistent collection returns 404. Response
   `{ok, starred}`.
-- `GET /api/v1/collections/{collectionID}?page&page_size` — member
-  groups (each with live repo count) + one page of the deduped repo
-  set: `{collection_id, groups, repos, total, page, page_size}`.
-  Page size defaults 50, caps 100; ordering is owner/name with
-  repo_id as the stable tiebreaker.
+- `GET /api/v1/collections/{collectionID}?page&page_size&sort&dir` —
+  member groups (each with live repo count) + one page of the deduped
+  repo set: `{collection_id, groups, repos, total, page, page_size,
+  sort, dir}`. Page size defaults 50, caps 100. v0.27.74: rows carry
+  `issues`, `prs`, `commits` (the queue's CACHED cumulative counts —
+  the monitor's numbers, never per-request aggregation),
+  `last_collected`, `last_activity` (the FORGE's own last_updated
+  from the latest repo_info snapshot — deliberately not a live
+  per-table MAX, keeping page renders cheap at 3K-repo collection
+  scale), and the calling user's `starred` flag. `sort` ∈ name |
+  issues | prs | commits | collected | activity (allowlisted
+  server-side; unknown falls back to name), `dir` ∈ asc | desc;
+  repo_id is always the stable tiebreaker. The envelope echoes the
+  EFFECTIVE sort/dir.
 - `POST /api/v1/collections/{collectionID}/copy` with `{group_id}`
   (must be the caller's) or `{group_name}` (find-or-create for the
   caller) — links every repo of the collection into that group and

@@ -68,10 +68,16 @@ func (s *Server) handleStarCollection(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]any{"ok": true, "starred": r.Method != http.MethodDelete})
 }
 
-// handleCollectionDetail — GET /collections/{collectionID}?page&page_size:
-// the member groups + one page of the DEDUPED repo set.
+// handleCollectionDetail — GET
+// /collections/{collectionID}?page&page_size&sort&dir: the member
+// groups + one page of the DEDUPED repo set. v0.27.74: rows carry
+// cached issue/PR/commit counts, last_collected, the forge-reported
+// last_activity, and the caller's starred flag; sort/dir select the
+// server-side ordering (allowlisted in the store — unknown values
+// fall back to name asc).
 func (s *Server) handleCollectionDetail(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireUser(w, r); !ok {
+	info, ok := s.requireUser(w, r)
+	if !ok {
 		return
 	}
 	collID, err := strconv.ParseInt(r.PathValue("collectionID"), 10, 64)
@@ -81,20 +87,22 @@ func (s *Server) handleCollectionDetail(w http.ResponseWriter, r *http.Request) 
 	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	sortKey := r.URL.Query().Get("sort")
+	sortDir := r.URL.Query().Get("dir")
 
 	groups, err := s.store.GetCollectionGroups(r.Context(), collID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	repos, total, err := s.store.GetCollectionRepos(r.Context(), collID, page, pageSize)
+	repos, total, err := s.store.GetCollectionRepos(r.Context(), collID, info.UserID, page, pageSize, sortKey, sortDir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Echo the EFFECTIVE paging values (mirrors the store's clamps —
-	// the v0.27.65 split-clamp shape): an oversize page_size request
-	// returns 100 rows and must say 100, not the default.
+	// Echo the EFFECTIVE paging/sort values (mirrors the store's
+	// clamps + allowlist — the v0.27.65 log-the-effective-value rule
+	// applied to response envelopes).
 	if page < 1 {
 		page = 1
 	}
@@ -104,6 +112,12 @@ func (s *Server) handleCollectionDetail(w http.ResponseWriter, r *http.Request) 
 	if pageSize > 100 {
 		pageSize = 100
 	}
+	if !db.CollectionRepoSortValid(sortKey) {
+		sortKey = "name"
+	}
+	if sortDir != "desc" {
+		sortDir = "asc"
+	}
 	jsonResponse(w, map[string]any{
 		"collection_id": collID,
 		"groups":        groups,
@@ -111,6 +125,8 @@ func (s *Server) handleCollectionDetail(w http.ResponseWriter, r *http.Request) 
 		"total":         total,
 		"page":          page,
 		"page_size":     pageSize,
+		"sort":          sortKey,
+		"dir":           sortDir,
 	})
 }
 

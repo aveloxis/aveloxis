@@ -43,13 +43,31 @@ type showcaseOpts struct {
 	GUIRoot  string // docroot for sitemap.xml + blog glob ("" = skip sitemap)
 	RepoCap  int    // per-collection table cap (top-N by commits)
 	PageSize int    // store page size while accumulating rows
+	// RepoPages: the top-N repos of EACH collection get a public repo
+	// snapshot page under <out>/repos/ (2026-08-02 operator decision:
+	// 5 — the public collections span ~59K repos, so per-repo pages
+	// exist only for the handful a visitor recognizes; sign-in unlocks
+	// the rest). 0 = default 5; negative = disabled.
+	RepoPages int
 }
 
 // showcaseSummary reports what a run did.
 type showcaseSummary struct {
 	Collections int
+	RepoPages   int
 	Pruned      int
 	Sitemap     bool
+}
+
+// repoTarget accumulates one featured repository across every
+// collection that ranks it in its top-N (deduped by repo_id — a repo
+// featured in two collections gets ONE page listing both).
+type repoTarget struct {
+	repoID        int64
+	slug          string
+	row           showcase.RepoRow
+	lastCollected string
+	collections   []showcase.RepoLink
 }
 
 func generateShowcaseCmd(cfgPath *string) *cobra.Command {
@@ -92,13 +110,14 @@ editing collections.`,
 
 			sum, err := runGenerateShowcase(ctx, store, logger, showcaseOpts{
 				OutDir: outDir, BaseURL: strings.TrimRight(baseURL, "/"), GUIRoot: guiRoot,
-				RepoCap: 100, PageSize: 100,
+				RepoCap: 100, PageSize: 100, RepoPages: 5,
 			})
 			if err != nil {
 				return err
 			}
 			logger.Info("showcase generated",
-				"collections", sum.Collections, "pruned", sum.Pruned, "sitemap", sum.Sitemap, "out", outDir)
+				"collections", sum.Collections, "repo_pages", sum.RepoPages,
+				"pruned", sum.Pruned, "sitemap", sum.Sitemap, "out", outDir)
 			return nil
 		},
 	}
@@ -119,6 +138,9 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 	if opts.PageSize <= 0 || opts.PageSize > 100 {
 		opts.PageSize = 100
 	}
+	if opts.RepoPages == 0 {
+		opts.RepoPages = 5
+	}
 	if err := os.MkdirAll(opts.OutDir, 0o755); err != nil {
 		return sum, fmt.Errorf("creating out dir: %w", err)
 	}
@@ -132,6 +154,8 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 	slugSeen := map[string]int{}
 	var cards []showcase.CollectionCard
 	emitted := map[string]bool{"index.html": true}
+	targets := map[int64]*repoTarget{} // featured repos, deduped by repo_id
+	repoSlugToID := map[string]int64{} // snapshot slug → repo_id (collision suffixing)
 
 	for _, c := range cols {
 		slug := showcase.Slugify(c.Name)
@@ -167,6 +191,13 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 				if r.LastActivity != nil {
 					row.LastActivity = r.LastActivity.UTC().Format("2006-01-02")
 				}
+				// The collection's top-N repos get a public snapshot
+				// page; the row's name links there (rows are already
+				// commits-desc, so position == rank).
+				if opts.RepoPages > 0 && len(rows) < opts.RepoPages {
+					row.PageSlug = registerFeaturedRepo(targets, repoSlugToID, r, row,
+						showcase.RepoLink{Slug: slug, Name: c.Name})
+				}
 				rows = append(rows, row)
 			}
 			if len(repos) < opts.PageSize {
@@ -201,6 +232,50 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 	}
 	if err := writeAtomic(filepath.Join(opts.OutDir, "index.html"), []byte(b.String())); err != nil {
 		return sum, err
+	}
+
+	// ---- Repo snapshot pages (top-N per collection, deduped) ----
+	reposDir := filepath.Join(opts.OutDir, "repos")
+	if err := os.MkdirAll(reposDir, 0o755); err != nil {
+		return sum, fmt.Errorf("creating repos dir: %w", err)
+	}
+	repoSlugs := make([]string, 0, len(repoSlugToID))
+	for s := range repoSlugToID {
+		repoSlugs = append(repoSlugs, s)
+	}
+	sort.Strings(repoSlugs) // deterministic render + sitemap order
+	emittedRepos := map[string]bool{}
+	for _, rslug := range repoSlugs {
+		t := targets[repoSlugToID[rslug]]
+		page, err := buildRepoPage(ctx, store, opts.BaseURL, now, t)
+		if err != nil {
+			return sum, fmt.Errorf("repo page %s (repo %d): %w", rslug, t.repoID, err)
+		}
+		var rb strings.Builder
+		if err := showcase.RenderRepo(&rb, page); err != nil {
+			return sum, fmt.Errorf("rendering repo page %s: %w", rslug, err)
+		}
+		if err := writeAtomic(filepath.Join(reposDir, rslug+".html"), []byte(rb.String())); err != nil {
+			return sum, err
+		}
+		emittedRepos[rslug+".html"] = true
+		sum.RepoPages++
+	}
+	// Prune repo pages whose repo fell out of every top-N (or whose
+	// collection was deleted/renamed).
+	repoEntries, err := os.ReadDir(reposDir)
+	if err != nil {
+		return sum, fmt.Errorf("reading repos dir for prune: %w", err)
+	}
+	for _, e := range repoEntries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".html") || emittedRepos[e.Name()] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(reposDir, e.Name())); err != nil {
+			logger.Warn("showcase repo-page prune failed", "file", e.Name(), "error", err)
+			continue
+		}
+		sum.Pruned++
 	}
 
 	// Prune pages whose collection no longer exists (renames included
@@ -239,13 +314,77 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 		}
 		sort.Strings(slugs)
 		xml := showcase.BuildSitemap(opts.BaseURL,
-			[]string{"history.html", "augur.html"}, blog, slugs, now)
+			[]string{"history.html", "augur.html"}, blog, slugs, repoSlugs, now)
 		if err := writeAtomic(filepath.Join(opts.GUIRoot, "sitemap.xml"), xml); err != nil {
 			return sum, err
 		}
 		sum.Sitemap = true
 	}
 	return sum, nil
+}
+
+// registerFeaturedRepo records a collection's top-N repo for snapshot
+// rendering and returns its page slug. Deduped by repo_id: a repo
+// featured in several collections keeps one slug and accumulates the
+// "featured in" links. Distinct repos whose slugs collide (e.g.
+// "a-b/c" vs "a/b-c") get a -2/-3… suffix.
+func registerFeaturedRepo(targets map[int64]*repoTarget, repoSlugToID map[string]int64,
+	r db.CollectionRepo, row showcase.RepoRow, coll showcase.RepoLink) string {
+	if t, ok := targets[r.RepoID]; ok {
+		t.collections = append(t.collections, coll)
+		return t.slug
+	}
+	base := showcase.RepoSlug(r.Owner, r.Name)
+	slug := base
+	for i := 2; ; i++ {
+		if _, taken := repoSlugToID[slug]; !taken {
+			break
+		}
+		slug = fmt.Sprintf("%s-%d", base, i)
+	}
+	repoSlugToID[slug] = r.RepoID
+	t := &repoTarget{repoID: r.RepoID, slug: slug, row: row,
+		collections: []showcase.RepoLink{coll}}
+	if r.LastCollected != nil {
+		t.lastCollected = r.LastCollected.UTC().Format("2006-01-02")
+	}
+	targets[r.RepoID] = t
+	return slug
+}
+
+// buildRepoPage assembles one repo snapshot page's data from the
+// repo-level detail reads. All queries are repo-scoped — nothing
+// user-scoped can reach the page (the showcase privacy contract).
+func buildRepoPage(ctx context.Context, store *db.PostgresStore, baseURL string, now time.Time, t *repoTarget) (showcase.RepoPageData, error) {
+	d := showcase.RepoPageData{
+		BaseURL: baseURL, Slug: t.slug,
+		Owner: t.row.Owner, Name: t.row.Name, ForgeURL: t.row.ForgeURL,
+		Issues: t.row.Issues, PRs: t.row.PRs, Commits: t.row.Commits,
+		LastActivity: t.row.LastActivity, LastCollected: t.lastCollected,
+		GeneratedAt: now, Collections: t.collections,
+	}
+	var err error
+	if d.Description, d.PrimaryLanguage, d.Archived, err = store.GetRepoShowcaseMeta(ctx, t.repoID); err != nil {
+		return d, fmt.Errorf("showcase meta: %w", err)
+	}
+	checks, overall, asOf, err := store.GetRepoScorecard(ctx, t.repoID)
+	if err != nil {
+		return d, fmt.Errorf("scorecard: %w", err)
+	}
+	d.ScorecardOverall = overall
+	if !asOf.IsZero() {
+		d.ScorecardAsOf = asOf.UTC().Format("2006-01-02")
+	}
+	for _, c := range checks {
+		d.ScorecardChecks = append(d.ScorecardChecks, showcase.RepoScorecardRow{Name: c.Name, Score: c.Score})
+	}
+	if d.DepsScanned, err = store.HasDependencyData(ctx, t.repoID); err != nil {
+		return d, fmt.Errorf("dependency presence: %w", err)
+	}
+	if d.VulnTotal, d.VulnCritical, err = store.CountRepoVulnerabilities(ctx, t.repoID); err != nil {
+		return d, fmt.Errorf("vulnerability counts: %w", err)
+	}
+	return d, nil
 }
 
 // writeAtomic writes via tmp+rename so nginx never serves a torn page.

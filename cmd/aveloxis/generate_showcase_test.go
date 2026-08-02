@@ -86,6 +86,35 @@ func TestGenerateShowcaseAnonymousAndAtomic(t *testing.T) {
 	}
 }
 
+// TestGenerateShowcaseRepoPages pins the repo snapshot-page surface
+// (2026-08-02 operator decision: the top 5 repos of each collection
+// get a PUBLIC static page; everything else needs sign-in).
+func TestGenerateShowcaseRepoPages(t *testing.T) {
+	src := showcaseSrc(t)
+	// The per-collection featured count is 5 — a deliberate scope cap
+	// (59K repos across the public collections; snapshot pages exist
+	// for the handful a visitor recognizes, sign-in unlocks the rest).
+	if !strings.Contains(src, "RepoPages") {
+		t.Fatal("showcaseOpts must carry RepoPages (featured repos per collection)")
+	}
+	if !strings.Contains(src, "RepoPages: 5") && !strings.Contains(src, "opts.RepoPages = 5") {
+		t.Error("the featured-repo count must default to 5")
+	}
+	// Detail reads — all repo-level, none user-scoped.
+	for _, needle := range []string{
+		"GetRepoShowcaseMeta(", "GetRepoScorecard(",
+		"CountRepoVulnerabilities(", "HasDependencyData(",
+	} {
+		if !strings.Contains(src, needle) {
+			t.Errorf("repo snapshot pages must read %s", needle)
+		}
+	}
+	// Pages land under <out>/repos/ and get their own prune pass.
+	if !strings.Contains(src, `"repos"`) {
+		t.Error("repo snapshot pages must render into the repos/ subdirectory")
+	}
+}
+
 // TestGenerateShowcaseEndToEnd (AVELOXIS_TEST_DB): seed a collection
 // with a group + repos + cached queue counts, generate into a temp
 // dir, and assert the pages exist with the right content and ZERO
@@ -109,6 +138,9 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE name LIKE '_avshow%')`)
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE name LIKE '_avshow%'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '_avshow')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_deps_scorecard WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '_avshow')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_deps_vulnerabilities WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '_avshow')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_dependencies WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '_avshow')`)
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner = '_avshow'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name LIKE '_avshow%'`)
 	}
@@ -147,7 +179,35 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 		return rid
 	}
 	mkRepo("alpha", 500)
-	mkRepo("beta", 900)
+	betaID := mkRepo("beta", 900)
+	mkRepo("gamma", 800)
+	mkRepo("delta", 700)
+	mkRepo("epsilon", 600)
+	mkRepo("zeta", 400) // below the top-5 cut — must NOT get a snapshot page
+	mkRepo("eta", 300)  // below the cut
+
+	// beta (the top repo) gets the full detail surface: description +
+	// language, a scorecard with headline, one CRITICAL vulnerability,
+	// and a dependency row (so DepsScanned=true).
+	if _, err := pool.Exec(ctx, `
+		UPDATE aveloxis_data.repos SET repo_description = 'Fast <script>x</script> streaming',
+		       primary_language = 'Go' WHERE repo_id = $1`, betaID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.repo_deps_scorecard (repo_id, name, score, data_collection_date)
+		VALUES ($1, 'Maintained', '8', NOW()), ($1, '__overall__', '7.5', NOW())`, betaID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.repo_deps_vulnerabilities (repo_id, vuln_id, package_name, severity)
+		VALUES ($1, 'GHSA-avshow-test', 'left-pad', 'CRITICAL')`, betaID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.repo_dependencies (repo_id, dep_name) VALUES ($1, 'left-pad')`, betaID); err != nil {
+		t.Fatal(err)
+	}
 
 	collID, err := store.CreateCollection(ctx, "_avshow Ecosystem <One>", "the showcase test set", 1, adminID)
 	if err != nil {
@@ -193,7 +253,68 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 			t.Errorf("public page leaked %q", banned)
 		}
 	}
-	// Sitemap exists and carries the page.
+	// ---- Repo snapshot pages (top 5 by commits, 2026-08-02) ----
+	// Top 5 = beta(900) gamma(800) delta(700) epsilon(600) alpha(500);
+	// zeta(400) and eta(300) fall below the cut.
+	for _, name := range []string{"beta", "gamma", "delta", "epsilon", "alpha"} {
+		if _, err := os.Stat(filepath.Join(out, "repos", "avshow-"+name+".html")); err != nil {
+			t.Errorf("top-5 repo %s must get a snapshot page: %v", name, err)
+		}
+	}
+	for _, name := range []string{"zeta", "eta"} {
+		if _, err := os.Stat(filepath.Join(out, "repos", "avshow-"+name+".html")); !os.IsNotExist(err) {
+			t.Errorf("below-the-cut repo %s must NOT get a snapshot page", name)
+		}
+	}
+	// The collection page links top-5 names to the snapshot pages and
+	// never invents links for the rest.
+	if !strings.Contains(html, `href="/showcase/repos/avshow-beta.html"`) {
+		t.Error("collection page must link top repos to their snapshot pages")
+	}
+	if strings.Contains(html, `/showcase/repos/avshow-zeta.html`) {
+		t.Error("collection page must not link below-the-cut repos internally")
+	}
+
+	// The rich repo page: detail fields, scorecard, vuln posture, SEO,
+	// escaping, zero user leakage.
+	betaPage, err := os.ReadFile(filepath.Join(out, "repos", "avshow-beta.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	betaHTML := string(betaPage)
+	if strings.Contains(betaHTML, "<script>x</script>") {
+		t.Error("repo description must be HTML-escaped")
+	}
+	for _, needle := range []string{
+		"Fast", "Go", "Maintained", "Overall score", "7.5",
+		"1 critical", "900",
+		`<link rel="canonical" href="https://aveloxis.io/showcase/repos/avshow-beta.html" />`,
+		"SoftwareSourceCode", "showcase-login-cta",
+		"_avshow Ecosystem", // featured-in link back to the collection
+	} {
+		if !strings.Contains(betaHTML, needle) {
+			t.Errorf("repo page missing %q", needle)
+		}
+	}
+	lowerBeta := strings.ToLower(betaHTML)
+	for _, banned := range []string{"_avshow_admin", "_avshow_grp", "login_name", "starred"} {
+		if strings.Contains(lowerBeta, banned) {
+			t.Errorf("public repo page leaked %q", banned)
+		}
+	}
+	// A featured repo with no scorecard / dependency data renders the
+	// honest empty states — never a fabricated clean bill.
+	alphaPage, err := os.ReadFile(filepath.Join(out, "repos", "avshow-alpha.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{"not yet scanned", "analysis pending"} {
+		if !strings.Contains(string(alphaPage), needle) {
+			t.Errorf("unscanned repo page missing honest empty state %q", needle)
+		}
+	}
+
+	// Sitemap exists and carries the pages.
 	sm, err := os.ReadFile(filepath.Join(out, "sitemap.xml"))
 	if err != nil {
 		t.Fatal(err)
@@ -201,8 +322,12 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 	if !strings.Contains(string(sm), "/showcase/"+slug+".html") {
 		t.Error("sitemap must include the generated showcase page")
 	}
+	if !strings.Contains(string(sm), "/showcase/repos/avshow-beta.html") {
+		t.Error("sitemap must include the repo snapshot pages")
+	}
 
-	// Prune: delete the collection, regenerate, page disappears.
+	// Prune: delete the collection, regenerate, pages disappear —
+	// including the repo snapshot pages.
 	if err := store.DeleteCollection(ctx, collID); err != nil {
 		t.Fatal(err)
 	}
@@ -214,5 +339,8 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, slug+".html")); !os.IsNotExist(err) {
 		t.Errorf("deleted collection's page must be pruned (pruned=%d)", sum2.Pruned)
+	}
+	if _, err := os.Stat(filepath.Join(out, "repos", "avshow-beta.html")); !os.IsNotExist(err) {
+		t.Errorf("deleted collection's repo snapshot pages must be pruned (pruned=%d)", sum2.Pruned)
 	}
 }

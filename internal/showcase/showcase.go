@@ -50,6 +50,59 @@ type RepoRow struct {
 	PRs          int64
 	Commits      int64
 	LastActivity string // YYYY-MM-DD or ""
+	// PageSlug, when non-empty, links the repo name to its public
+	// snapshot page at /showcase/repos/{PageSlug}.html (the top-N
+	// repos of each collection get one). Empty = name links to the
+	// forge as before.
+	PageSlug string
+}
+
+// RepoLink names a showcase collection that features a repository.
+type RepoLink struct {
+	Slug string
+	Name string
+}
+
+// RepoScorecardRow is one OpenSSF Scorecard check on a repo snapshot
+// page. Score is 0–10; -1 means not applicable / inconclusive.
+type RepoScorecardRow struct {
+	Name  string
+	Score float64
+}
+
+// RepoPageData drives one public repository snapshot page. Same
+// privacy contract as the collection pages: repo-level facts only —
+// there is structurally nowhere to put user names, stars, or group
+// ownership.
+type RepoPageData struct {
+	BaseURL         string
+	Slug            string
+	Owner           string
+	Name            string
+	ForgeURL        string
+	Description     string
+	PrimaryLanguage string
+	Archived        bool
+	Issues          int64
+	PRs             int64
+	Commits         int64
+	LastCollected   string // YYYY-MM-DD or ""
+	LastActivity    string // YYYY-MM-DD or ""
+	GeneratedAt     time.Time
+	Collections     []RepoLink // showcase collections featuring this repo
+
+	// OpenSSF Scorecard latest snapshot. Nil overall + empty checks =
+	// never scanned (rendered honestly, never as a zero score).
+	ScorecardOverall *float64
+	ScorecardAsOf    string // YYYY-MM-DD or ""
+	ScorecardChecks  []RepoScorecardRow
+
+	// Dependency / vulnerability posture. DepsScanned=false means the
+	// analysis phase hasn't run — the page says "pending", never "0
+	// vulnerabilities" (a fabricated clean bill).
+	DepsScanned  bool
+	VulnTotal    int
+	VulnCritical int
 }
 
 // CollectionData drives one public collection page.
@@ -79,6 +132,14 @@ func Slugify(name string) string {
 	return s
 }
 
+// RepoSlug turns owner/name into the snapshot-page slug under
+// /showcase/repos/. Callers handle collisions (rare — case variants
+// are impossible for GitHub/GitLab rows post-v0.25.32, but e.g.
+// "a-b/c" vs "a/b-c" can collide).
+func RepoSlug(owner, name string) string {
+	return Slugify(owner + " " + name)
+}
+
 // comma groups digits ("1234567" → "1,234,567") for the templates.
 func comma(s string) string {
 	if len(s) <= 3 {
@@ -101,6 +162,33 @@ func comma(s string) string {
 var funcs = template.FuncMap{
 	"comma":    func(n int64) string { return comma(fmt.Sprintf("%d", n)) },
 	"commaInt": func(n int) string { return comma(fmt.Sprintf("%d", n)) },
+	// scoreClass maps an OpenSSF Scorecard score to its color chip
+	// class — the same thresholds the GUI uses (v0.27.4 operator
+	// decision): >=6 green, >=2.5 yellow, <2.5 red, negative = N/A.
+	"scoreClass": func(s float64) string {
+		switch {
+		case s < 0:
+			return "sc-na"
+		case s >= 6:
+			return "sc-good"
+		case s >= 2.5:
+			return "sc-mid"
+		default:
+			return "sc-bad"
+		}
+	},
+	"score1": func(s float64) string {
+		if s < 0 {
+			return "N/A"
+		}
+		return strings.TrimSuffix(strings.TrimSuffix(fmt.Sprintf("%.1f", s), "0"), ".")
+	},
+	"deref": func(p *float64) float64 {
+		if p == nil {
+			return -1
+		}
+		return *p
+	},
 }
 
 var tmpl = template.Must(template.New("showcase").Funcs(funcs).Parse(allTemplates))
@@ -115,12 +203,18 @@ func RenderCollection(w io.Writer, d CollectionData) error {
 	return tmpl.ExecuteTemplate(w, "collection", d)
 }
 
+// RenderRepo writes one public repository snapshot page.
+func RenderRepo(w io.Writer, d RepoPageData) error {
+	return tmpl.ExecuteTemplate(w, "repo", d)
+}
+
 // BuildSitemap emits sitemap.xml for the whole site: the static core
 // pages, blog posts (relative paths like "blog/2026-08-intro.html"),
-// and the generated showcase pages. The GENERATOR is the single
-// writer of sitemap.xml once deployed (the hand-written fallback in
-// aveloxis-gui is replaced on the first run).
-func BuildSitemap(baseURL string, staticPages, blogPages, slugs []string, now time.Time) []byte {
+// the generated showcase pages, and the repo snapshot pages under
+// /showcase/repos/. The GENERATOR is the single writer of sitemap.xml
+// once deployed (the hand-written fallback in aveloxis-gui is
+// replaced on the first run).
+func BuildSitemap(baseURL string, staticPages, blogPages, slugs, repoSlugs []string, now time.Time) []byte {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 	b.WriteString(`<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` + "\n")
@@ -142,6 +236,11 @@ func BuildSitemap(baseURL string, staticPages, blogPages, slugs []string, now ti
 	sort.Strings(slugsSorted)
 	for _, s := range slugsSorted {
 		add(baseURL + "/showcase/" + s + ".html")
+	}
+	repoSorted := append([]string(nil), repoSlugs...)
+	sort.Strings(repoSorted)
+	for _, s := range repoSorted {
+		add(baseURL + "/showcase/repos/" + s + ".html")
 	}
 	b.WriteString("</urlset>\n")
 	return []byte(b.String())

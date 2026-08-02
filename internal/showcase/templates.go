@@ -67,6 +67,24 @@ td.name a:hover { color: #0369a1; }
   display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
 .foot { margin-top: 40px; color: #66739a; font-size: 12.5px; display: flex;
   justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+td.name a.ext { color: #66739a; font-weight: 400; font-size: 12px; margin-left: 6px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 26px; }
+.stat { padding: 16px 18px; border: 1px solid rgba(37,99,235,0.16); border-radius: 12px;
+  background: rgba(255,255,255,0.8); }
+.stat .v { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, 'JetBrains Mono', monospace; }
+.stat .k { font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #46557a; margin-top: 2px; }
+.section-h { font-size: 15px; font-weight: 700; margin: 30px 0 12px; }
+.chip { display: inline-block; min-width: 42px; text-align: center; padding: 2px 10px;
+  border-radius: 999px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, monospace; }
+.sc-good { background: #dcfce7; color: #166534; }
+.sc-mid { background: #fef9c3; color: #854d0e; }
+.sc-bad { background: #fee2e2; color: #991b1b; }
+.sc-na { background: #e2e8f0; color: #64748b; }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11.5px;
+  font-weight: 700; background: #e2e8f0; color: #475569; vertical-align: middle; }
+.note-line { color: #46557a; font-size: 13.5px; }
 </style>
 {{end}}
 
@@ -166,7 +184,7 @@ td.name a:hover { color: #0369a1; }
     <tbody>
       {{range .Repos}}
       <tr>
-        <td class="name"><a href="{{.ForgeURL}}" rel="noopener">{{.Owner}} / {{.Name}}</a></td>
+        <td class="name">{{if .PageSlug}}<a href="/showcase/repos/{{.PageSlug}}.html">{{.Owner}} / {{.Name}}</a><a class="ext" href="{{.ForgeURL}}" rel="noopener" title="Source repository">↗</a>{{else}}<a href="{{.ForgeURL}}" rel="noopener">{{.Owner}} / {{.Name}}</a>{{end}}</td>
         <td class="num">{{comma .Issues}}</td>
         <td class="num">{{comma .PRs}}</td>
         <td class="num">{{comma .Commits}}</td>
@@ -178,10 +196,109 @@ td.name a:hover { color: #0369a1; }
   </div></div>
   {{if gt .TotalRepos (len .Repos)}}
   <div class="more-note">
-    <span>Showing the top {{len .Repos}} of {{commaInt .TotalRepos}} repositories by commits. The full list — with contributor analytics, CHAOSS metrics, vulnerability data, and comparisons — is one sign-in away.</span>
+    <span>Showing the top {{len .Repos}} of {{commaInt .TotalRepos}} repositories by commits. The top repositories link to a public snapshot page — sign in to open the full repository pages for every project here, with contributor analytics, CHAOSS metrics, vulnerability data, and comparisons.</span>
     <a class="cta" href="/login.html" onclick="window.avTrack&&avTrack('showcase-login-cta')">Sign in free →</a>
   </div>
   {{end}}
+  <div class="foot">
+    <span>© 2026 University of Missouri · MIT License</span>
+    <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
+  </div>
+</div>
+</body>
+</html>
+{{end}}
+
+{{define "repo"}}{{template "shell-head" .}}
+<title>{{.Owner}}/{{.Name}} — open source health — Aveloxis</title>
+<meta name="description" content="Open source health snapshot for {{.Owner}}/{{.Name}}: {{comma .Commits}} commits, {{comma .Issues}} issues, {{comma .PRs}} pull requests collected by the Aveloxis fleet, with OpenSSF Scorecard and vulnerability posture." />
+<link rel="canonical" href="{{.BaseURL}}/showcase/repos/{{.Slug}}.html" />
+<meta property="og:title" content="{{.Owner}}/{{.Name}} — open source health — Aveloxis" />
+<meta property="og:description" content="Open source health snapshot for {{.Owner}}/{{.Name}}: {{comma .Commits}} commits, {{comma .Issues}} issues, {{comma .PRs}} pull requests tracked by the Aveloxis fleet." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="{{.BaseURL}}/showcase/repos/{{.Slug}}.html" />
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Aveloxis", "item": "{{.BaseURL}}/" },
+        { "@type": "ListItem", "position": 2, "name": "Showcase", "item": "{{.BaseURL}}/showcase/index.html" },
+        { "@type": "ListItem", "position": 3, "name": "{{.Owner}}/{{.Name}}", "item": "{{.BaseURL}}/showcase/repos/{{.Slug}}.html" }
+      ]
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "name": "{{.Owner}}/{{.Name}}",
+      "codeRepository": "{{.ForgeURL}}",
+      "url": "{{.BaseURL}}/showcase/repos/{{.Slug}}.html"{{if .PrimaryLanguage}},
+      "programmingLanguage": "{{.PrimaryLanguage}}"{{end}}
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+  {{template "shell-top" .}}
+  <span class="eyebrow">PUBLIC SNAPSHOT</span>
+  <h1>{{.Owner}} / {{.Name}}{{if .Archived}} <span class="badge">archived</span>{{end}}</h1>
+  {{if .Description}}<p class="lead">{{.Description}}</p>{{end}}
+  <p class="meta-line">
+    {{if .PrimaryLanguage}}{{.PrimaryLanguage}} · {{end}}featured in
+    {{- range $i, $c := .Collections}}{{if $i}},{{end}} <a href="/showcase/{{$c.Slug}}.html">{{$c.Name}}</a>{{end}} ·
+    <a href="{{.ForgeURL}}" rel="noopener">source repository ↗</a> ·
+    updated {{.GeneratedAt.UTC.Format "Jan 2, 2006 15:04"}} UTC
+  </p>
+  <div class="tiles">
+    <div class="stat"><div class="v">{{comma .Commits}}</div><div class="k">Commits</div></div>
+    <div class="stat"><div class="v">{{comma .Issues}}</div><div class="k">Issues</div></div>
+    <div class="stat"><div class="v">{{comma .PRs}}</div><div class="k">Pull requests</div></div>
+    <div class="stat"><div class="v">{{if .LastActivity}}{{.LastActivity}}{{else}}—{{end}}</div><div class="k">Last activity</div></div>
+    <div class="stat"><div class="v">{{if .LastCollected}}{{.LastCollected}}{{else}}—{{end}}</div><div class="k">Last collected</div></div>
+  </div>
+
+  <div class="section-h">Security posture</div>
+  <p class="note-line">
+    {{- if .DepsScanned -}}
+      {{- if gt .VulnTotal 0 -}}
+        {{.VulnTotal}} open {{if eq .VulnTotal 1}}vulnerability{{else}}vulnerabilities{{end}} in dependencies{{if gt .VulnCritical 0}} ({{.VulnCritical}} critical){{end}}.
+      {{- else -}}
+        No open vulnerabilities recorded in scanned dependencies.
+      {{- end -}}
+    {{- else -}}
+      Dependency analysis pending — vulnerability data arrives with this repository's next analysis cycle.
+    {{- end -}}
+  </p>
+
+  <div class="section-h">OpenSSF Scorecard</div>
+  {{if .ScorecardChecks}}
+  <div class="card"><div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Check</th><th class="num">Score</th></tr></thead>
+    <tbody>
+      {{if .ScorecardOverall}}
+      <tr style="border-bottom: 3px double rgba(37,99,235,0.25);">
+        <td class="name"><strong>Overall score</strong>{{if .ScorecardAsOf}} <span class="note-line">(as of {{.ScorecardAsOf}})</span>{{end}}</td>
+        <td class="num"><span class="chip {{scoreClass (deref .ScorecardOverall)}}">{{score1 (deref .ScorecardOverall)}}</span></td>
+      </tr>
+      {{end}}
+      {{range .ScorecardChecks}}
+      <tr><td>{{.Name}}</td><td class="num"><span class="chip {{scoreClass .Score}}">{{score1 .Score}}</span></td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  </div></div>
+  {{else}}
+  <p class="note-line">OpenSSF Scorecard: not yet scanned for this repository.</p>
+  {{end}}
+
+  <div class="more-note">
+    <span>This is a static snapshot. The interactive version — weekly activity charts, contributor analytics, CHAOSS metrics, comparisons, and SBOM downloads — is one sign-in away.</span>
+    <a class="cta" href="/login.html" onclick="window.avTrack&&avTrack('showcase-login-cta')">Sign in free →</a>
+  </div>
   <div class="foot">
     <span>© 2026 University of Missouri · MIT License</span>
     <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>

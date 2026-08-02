@@ -758,6 +758,19 @@ counts — never user names, stars, or group ownership (queries run
 anonymously). Writes are atomic (tmp+rename) and pages whose
 collection was deleted or renamed are pruned.
 
+Since v0.27.78 the **top 5 repositories of each collection** (by
+commits — the same ordering the collection table shows) also get a
+public repo snapshot page under `<out>/repos/`, deduped across
+collections. Each snapshot carries the cached commit/issue/PR counts,
+description and primary language, the latest OpenSSF Scorecard table,
+and the open-vulnerability posture — with honest "not yet scanned" /
+"analysis pending" states instead of fabricated zeros. Collection
+pages link their top-5 names to these snapshots (the forge link
+survives as a ↗ affordance); everything below the cut stays
+forge-linked with a note that sign-in unlocks the full repository
+pages. Snapshot pages ride the same sitemap, prune pass, and privacy
+contract.
+
 ```bash
 aveloxis generate-showcase \
   --out /var/www/aveloxis-gui/showcase \

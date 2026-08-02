@@ -318,10 +318,19 @@ func parseGraphQLResponse(body []byte, dest any, logger interface {
 	}
 
 	// Classify errors: partial-path vs global.
+	//
+	// v0.27.79: RESOURCE_LIMITS_EXCEEDED is ALWAYS global even though
+	// GitHub reports it with per-path entries — the message literally
+	// says "Resource limits for THIS QUERY exceeded" and every node in
+	// the query arrives null. Treating it as per-path turned an
+	// oversized aliased batch into an empty-but-successful result: the
+	// 2026-07-30/31 production incident stamped 216,000 contributors
+	// "activity checked, no data" because every contributionsCollection
+	// alias errored this way and the tolerance path swallowed it.
 	var globalErrs []graphqlError
 	var partialErrs []graphqlError
 	for _, e := range env.Errors {
-		if len(e.Path) == 0 {
+		if len(e.Path) == 0 || e.Type == "RESOURCE_LIMITS_EXCEEDED" {
 			globalErrs = append(globalErrs, e)
 		} else {
 			partialErrs = append(partialErrs, e)
@@ -365,6 +374,19 @@ func classifyGraphQLErrors(errs []graphqlError) error {
 			return &classifiedGraphQLError{
 				class:   ClassRateLimit,
 				message: "graphql RATE_LIMITED: " + e.Message,
+			}
+		}
+	}
+	// RESOURCE_LIMITS_EXCEEDED dominates like RATE_LIMITED: the query
+	// as shaped is too expensive and every node is null. ClassTransient
+	// so batch callers with subdivision machinery (fetchPRBatchWith-
+	// Subdivide, v0.20.8) automatically retry in halves; callers
+	// without it fail loudly instead of persisting an empty result.
+	for _, e := range errs {
+		if e.Type == "RESOURCE_LIMITS_EXCEEDED" {
+			return &classifiedGraphQLError{
+				class:   ClassTransient,
+				message: "graphql RESOURCE_LIMITS_EXCEEDED (query too expensive — subdivide the batch): " + e.Message,
 			}
 		}
 	}
@@ -422,7 +444,6 @@ func joinErrs(msgs []string) string {
 // later phase we may add a marker so callers can distinguish "this came
 // from GraphQL" vs REST. For now the classes are enough.
 var ErrNotGraphQLClassified = errors.New("graphql: not classified")
-
 
 // isRetryableReadError classifies an error surfaced while READING or
 // DECODING a 200-OK response body — GraphQL (io.ReadAll) and REST

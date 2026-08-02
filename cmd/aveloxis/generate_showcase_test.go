@@ -113,6 +113,14 @@ func TestGenerateShowcaseRepoPages(t *testing.T) {
 	if !strings.Contains(src, `"repos"`) {
 		t.Error("repo snapshot pages must render into the repos/ subdirectory")
 	}
+	// Forks are excluded from the featured selection (2026-08-02
+	// operator decision) — size-based ordering surfaces
+	// high-commit mirrors/forks (flatironinstitute/nixpkgs,
+	// sys-bio/llvm-*) that aren't the collection's own flagship work.
+	// The filter reads repos.forked_from via the batch helper.
+	if !strings.Contains(src, "GetForkStatusBatch(") {
+		t.Error("featured-repo selection must consult GetForkStatusBatch and skip forks")
+	}
 }
 
 // TestGenerateShowcaseEndToEnd (AVELOXIS_TEST_DB): seed a collection
@@ -159,7 +167,11 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 		INSERT INTO aveloxis_ops.user_groups (user_id, name) VALUES ($1, '_avshow_grp') RETURNING group_id`, adminID).Scan(&gid); err != nil {
 		t.Fatal(err)
 	}
-	mkRepo := func(name string, commits int64) int64 {
+	// n drives BOTH last_issues and last_commits — the public table
+	// and featured selection order by ISSUES (operator decision
+	// 2026-08-02: commit counts are bot-floodable), and the page
+	// content assertions read the commits tile.
+	mkRepo := func(name string, n int64) int64 {
 		var rid int64
 		if err := pool.QueryRow(ctx, `
 			INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id)
@@ -169,7 +181,7 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 		}
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO aveloxis_ops.collection_queue (repo_id, status, last_issues, last_prs, last_commits, last_collected)
-			VALUES ($1, 'queued', 11, 7, $2, NOW())`, rid, commits); err != nil {
+			VALUES ($1, 'queued', $2, 7, $2, NOW())`, rid, n); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := pool.Exec(ctx, `
@@ -180,11 +192,19 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 	}
 	mkRepo("alpha", 500)
 	betaID := mkRepo("beta", 900)
-	mkRepo("gamma", 800)
+	gammaID := mkRepo("gamma", 800) // marked as a FORK below — excluded from snapshots
 	mkRepo("delta", 700)
 	mkRepo("epsilon", 600)
-	mkRepo("zeta", 400) // below the top-5 cut — must NOT get a snapshot page
+	mkRepo("zeta", 400) // slides INTO the top 5 because the gamma fork is skipped
 	mkRepo("eta", 300)  // below the cut
+
+	// gamma is a fork: it must be skipped by the featured selection
+	// even though it ranks #2 by issues, and the next non-fork slides
+	// into the freed slot (2026-08-02 operator decision).
+	if _, err := pool.Exec(ctx, `
+		UPDATE aveloxis_data.repos SET forked_from = 'upstream/gamma' WHERE repo_id = $1`, gammaID); err != nil {
+		t.Fatal(err)
+	}
 
 	// beta (the top repo) gets the full detail surface: description +
 	// language, a scorecard with headline, one CRITICAL vulnerability,
@@ -242,9 +262,9 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 			t.Errorf("collection page missing %q", needle)
 		}
 	}
-	// beta (900 commits) sorts before alpha (500) — commits desc.
+	// beta (900 issues) sorts before alpha (500) — issues desc.
 	if strings.Index(html, "beta") > strings.Index(html, ">alpha<") && strings.Contains(html, ">alpha<") {
-		t.Error("repos must order by commits desc (beta before alpha)")
+		t.Error("repos must order by issues desc (beta before alpha)")
 	}
 	// ZERO user-data leakage.
 	lower := strings.ToLower(html)
@@ -253,26 +273,29 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 			t.Errorf("public page leaked %q", banned)
 		}
 	}
-	// ---- Repo snapshot pages (top 5 by commits, 2026-08-02) ----
-	// Top 5 = beta(900) gamma(800) delta(700) epsilon(600) alpha(500);
-	// zeta(400) and eta(300) fall below the cut.
-	for _, name := range []string{"beta", "gamma", "delta", "epsilon", "alpha"} {
+	// ---- Repo snapshot pages (top 5 non-fork by issues) ----
+	// Issues order: beta(900) gamma(800,FORK) delta(700) epsilon(600)
+	// alpha(500) zeta(400) eta(300). The gamma fork is skipped, so the
+	// featured five are beta delta epsilon alpha zeta; eta stays out.
+	for _, name := range []string{"beta", "delta", "epsilon", "alpha", "zeta"} {
 		if _, err := os.Stat(filepath.Join(out, "repos", "avshow-"+name+".html")); err != nil {
-			t.Errorf("top-5 repo %s must get a snapshot page: %v", name, err)
+			t.Errorf("featured repo %s must get a snapshot page: %v", name, err)
 		}
 	}
-	for _, name := range []string{"zeta", "eta"} {
+	for _, name := range []string{"gamma", "eta"} {
 		if _, err := os.Stat(filepath.Join(out, "repos", "avshow-"+name+".html")); !os.IsNotExist(err) {
-			t.Errorf("below-the-cut repo %s must NOT get a snapshot page", name)
+			t.Errorf("repo %s must NOT get a snapshot page (fork / below the cut)", name)
 		}
 	}
-	// The collection page links top-5 names to the snapshot pages and
-	// never invents links for the rest.
+	// The collection page links featured names to the snapshot pages
+	// and never invents links for forks or below-the-cut rows.
 	if !strings.Contains(html, `href="/showcase/repos/avshow-beta.html"`) {
-		t.Error("collection page must link top repos to their snapshot pages")
+		t.Error("collection page must link featured repos to their snapshot pages")
 	}
-	if strings.Contains(html, `/showcase/repos/avshow-zeta.html`) {
-		t.Error("collection page must not link below-the-cut repos internally")
+	for _, name := range []string{"gamma", "eta"} {
+		if strings.Contains(html, `/showcase/repos/avshow-`+name+`.html`) {
+			t.Errorf("collection page must not link %s internally (fork / below the cut)", name)
+		}
 	}
 
 	// The rich repo page: detail fields, scorecard, vuln posture, SEO,

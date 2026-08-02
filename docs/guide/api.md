@@ -61,13 +61,20 @@ Returns gathered (actual row counts) vs metadata (API-reported totals) for a sin
   "metadata_issues": 810,
   "metadata_commits": 5100,
   "vulnerabilities": 12,
-  "critical_vulns": 2
+  "critical_vulns": 2,
+  "forked_from": "NixOS/nixpkgs"
 }
 ```
 
 - **Gathered** counts come from actual rows in the data tables.
 - **Metadata** counts come from the most recent `repo_info` snapshot (GitHub GraphQL / GitLab API totals).
 - **Vulnerabilities** come from OSV.dev vulnerability scanning.
+- **forked_from** (v0.27.79, omitted when empty) is the upstream
+  `owner/name` when the repository is a fork — captured from the forge
+  on every Phase 0 cycle since v0.27.78. The literal
+  `(unknown upstream)` means the forge reports fork status but the
+  upstream was deleted or is inaccessible. Drives the repo page's
+  "Forked from X" chip.
 
 ### Batch Statistics
 

@@ -196,7 +196,7 @@ td.name a.ext { color: #66739a; font-weight: 400; font-size: 12px; margin-left: 
   </div></div>
   {{if gt .TotalRepos (len .Repos)}}
   <div class="more-note">
-    <span>Showing the top {{len .Repos}} of {{commaInt .TotalRepos}} repositories by commits. The top repositories link to a public snapshot page — sign in to open the full repository pages for every project here, with contributor analytics, CHAOSS metrics, vulnerability data, and comparisons.</span>
+    <span>Showing the top {{len .Repos}} of {{commaInt .TotalRepos}} repositories by collected issues. The top repositories link to a public snapshot page — sign in to open the full repository pages for every project here, with contributor analytics, CHAOSS metrics, vulnerability data, and comparisons.</span>
     <a class="cta" href="/login.html" onclick="window.avTrack&&avTrack('showcase-login-cta')">Sign in free →</a>
   </div>
   {{end}}

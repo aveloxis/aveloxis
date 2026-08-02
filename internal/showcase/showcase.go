@@ -114,7 +114,7 @@ type CollectionData struct {
 	Groups      int
 	TotalRepos  int
 	GeneratedAt time.Time
-	Repos       []RepoRow // top-N by commits; len may be < TotalRepos
+	Repos       []RepoRow // top-N by collected issues; len may be < TotalRepos
 }
 
 var slugStrip = regexp.MustCompile(`[^a-z0-9]+`)

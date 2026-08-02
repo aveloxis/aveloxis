@@ -26,10 +26,21 @@ import (
 // scheduler — NOT on platform.Client.
 
 // contributorActivityBatchSize is how many aliased user() lookups ride
-// one GraphQL query. 100 matches the FetchIssueClosers precedent and
-// costs ~1 rate-limit point per query — a full 2.4M-contributor sweep
-// is ~24K queries against a 5K-points/hour/token budget.
-const contributorActivityBatchSize = 100
+// one GraphQL query.
+//
+// NOT 100: contributionsCollection is resource-capped independently of
+// the rate-limit point cost. The FetchIssueClosers precedent (100
+// aliases) does NOT transfer — at 100 (and 50, and 40) GitHub answers
+// EVERY alias with a per-path RESOURCE_LIMITS_EXCEEDED ("Resource
+// limits for this query exceeded") and null nodes, which is how
+// production stamped 216,000 contributors "checked, no data" on
+// 2026-07-30/31 before v0.27.79. Live probe 2026-08-02 with real
+// fleet logins: 40 → all fail, 35 → all succeed. 25 leaves ~30%
+// headroom under the observed edge; a 2,500-contributor tick is 100
+// queries ≈ 100 points — still negligible against the pool budget.
+// If this ever trips again, parseGraphQLResponse now fails the whole
+// query (ClassTransient) instead of silently returning nothing.
+const contributorActivityBatchSize = 25
 
 // FetchContributorActivity returns trailing-year contribution summaries
 // for the given logins, keyed by login. Deleted/renamed users (per-path

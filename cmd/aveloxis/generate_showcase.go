@@ -41,7 +41,7 @@ type showcaseOpts struct {
 	OutDir   string // showcase pages land here (…/showcase)
 	BaseURL  string // canonical origin, no trailing slash
 	GUIRoot  string // docroot for sitemap.xml + blog glob ("" = skip sitemap)
-	RepoCap  int    // per-collection table cap (top-N by commits)
+	RepoCap  int    // per-collection table cap (top-N by collected issues)
 	PageSize int    // store page size while accumulating rows
 	// RepoPages: the top-N repos of EACH collection get a public repo
 	// snapshot page under <out>/repos/ (2026-08-02 operator decision:
@@ -169,17 +169,40 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 			return sum, fmt.Errorf("collection %d groups: %w", c.CollectionID, err)
 		}
 
-		// Top-N by commits (the public table). userID 0 → starred is
-		// FALSE everywhere; the templates have no field to render it
-		// anyway (the structural privacy guarantee).
+		// Top-N by collected ISSUES (the public table). Issues, not
+		// commits, on operator decision 2026-08-02: commit counts are
+		// bot-floodable (conda-forge automation repos carry millions of
+		// machine commits and headlined the NumFocus/SciOSS pages);
+		// issue counts track human community engagement and surface the
+		// flagship projects (pytorch, pandas, kubernetes) on real data.
+		// userID 0 → starred is FALSE everywhere; the templates have no
+		// field to render it anyway (the structural privacy guarantee).
 		var rows []showcase.RepoRow
 		total := 0
+		featured := 0
 		for page := 1; len(rows) < opts.RepoCap; page++ {
-			repos, tot, err := store.GetCollectionRepos(ctx, c.CollectionID, 0, page, opts.PageSize, "commits", "desc")
+			repos, tot, err := store.GetCollectionRepos(ctx, c.CollectionID, 0, page, opts.PageSize, "issues", "desc")
 			if err != nil {
 				return sum, fmt.Errorf("collection %d repos page %d: %w", c.CollectionID, page, err)
 			}
 			total = tot
+			// Fork status for the page, fetched only while featured
+			// slots remain open. Forks are EXCLUDED from the snapshot
+			// selection (2026-08-02 operator decision): size-based
+			// ordering surfaces high-commit mirrors/forks
+			// (flatironinstitute/nixpkgs, sys-bio/llvm-*) that aren't
+			// the collection's own flagship work — the next non-fork
+			// slides into the freed slot.
+			var forkStatus map[int64]bool
+			if opts.RepoPages > 0 && featured < opts.RepoPages {
+				ids := make([]int64, 0, len(repos))
+				for _, r := range repos {
+					ids = append(ids, r.RepoID)
+				}
+				if forkStatus, err = store.GetForkStatusBatch(ctx, ids); err != nil {
+					return sum, fmt.Errorf("collection %d fork status: %w", c.CollectionID, err)
+				}
+			}
 			for _, r := range repos {
 				if len(rows) >= opts.RepoCap {
 					break
@@ -191,12 +214,13 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 				if r.LastActivity != nil {
 					row.LastActivity = r.LastActivity.UTC().Format("2006-01-02")
 				}
-				// The collection's top-N repos get a public snapshot
-				// page; the row's name links there (rows are already
-				// commits-desc, so position == rank).
-				if opts.RepoPages > 0 && len(rows) < opts.RepoPages {
+				// The collection's top-N NON-FORK repos get a public
+				// snapshot page; the row's name links there (rows are
+				// already issues-desc, so scan order == rank).
+				if opts.RepoPages > 0 && featured < opts.RepoPages && !forkStatus[r.RepoID] {
 					row.PageSlug = registerFeaturedRepo(targets, repoSlugToID, r, row,
 						showcase.RepoLink{Slug: slug, Name: c.Name})
+					featured++
 				}
 				rows = append(rows, row)
 			}

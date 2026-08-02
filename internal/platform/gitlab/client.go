@@ -1042,6 +1042,15 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		primaryLang = topName
 	}
 
+	// v0.27.78 — GitLab reports fork lineage via forked_from_project;
+	// its presence IS the fork flag (no separate boolean exists).
+	forkParent := ""
+	isFork := false
+	if raw.ForkedFromProject != nil {
+		isFork = true
+		forkParent = raw.ForkedFromProject.PathWithNamespace
+	}
+
 	return &model.RepoInfo{
 		FullName:          raw.PathWithNamespace,
 		LastUpdated:       raw.LastActivityAt,
@@ -1049,6 +1058,8 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		PRsEnabled:        raw.MergeRequestsEnabled,
 		WikiEnabled:       raw.WikiEnabled,
 		PagesEnabled:      raw.PagesAccessLevel != "disabled",
+		IsFork:            isFork,
+		ForkParent:        forkParent,
 		ForkCount:         raw.ForksCount,
 		StarCount:         raw.StarCount,
 		OpenIssues:        raw.OpenIssuesCount,

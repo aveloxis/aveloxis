@@ -36,6 +36,11 @@ type RepoStats struct {
 	// (MAX commit/issue/PR timestamp), driving the chart last-active
 	// ceiling + the dormant/archived chip. Nil = no activity yet.
 	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
+	// ForkedFrom (v0.27.79) is the upstream "owner/name" when the repo
+	// is a fork (repos.forked_from — captured by Phase 0 since
+	// v0.27.78; model.UnknownForkParent when the upstream was deleted).
+	// Empty = not a fork. Drives the GUI's "Forked from X" chip.
+	ForkedFrom string `json:"forked_from,omitempty"`
 }
 
 // SearchRepoResult is a minimal repo record for search results.
@@ -115,6 +120,15 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 		return nil, fmt.Errorf("metadata counts: %w", err)
 	}
 	st.Archived = status == "Archived"
+
+	// v0.27.79: fork lineage for the GUI chip. ErrNoRows cannot happen
+	// for a repo the caller already resolved, but degrade the same way
+	// the metadata block does rather than 500 the whole stats payload.
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(forked_from, '') FROM aveloxis_data.repos WHERE repo_id = $1`,
+		repoID).Scan(&st.ForkedFrom); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("fork lineage: %w", err)
+	}
 
 	// v0.27.50: last observed activity — drives the chart last-active
 	// ceiling and the dormant/archived chip. Non-fatal: an error here

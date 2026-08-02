@@ -907,6 +907,11 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		}
 	}
 
+	forkParent := ""
+	if r.Parent != nil {
+		forkParent = r.Parent.NameWithOwner
+	}
+
 	return &model.RepoInfo{
 		FullName:          r.NameWithOwner,
 		LastUpdated:       r.UpdatedAt,
@@ -914,6 +919,8 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		WikiEnabled:       r.HasWikiEnabled,
 		PagesEnabled:      false, // GraphQL doesn't expose this
 		PRsEnabled:        true,
+		IsFork:            r.IsFork,
+		ForkParent:        forkParent,
 		ForkCount:         r.ForkCount,
 		StarCount:         r.StargazerCount,
 		WatcherCount:      r.Watchers.TotalCount,
@@ -964,6 +971,10 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 	if raw.Language != "" {
 		languages[raw.Language] = 1 // sentinel — real bytes via GraphQL
 	}
+	restForkParent := ""
+	if raw.Parent != nil {
+		restForkParent = raw.Parent.FullName
+	}
 	return &model.RepoInfo{
 		FullName:        raw.FullName,
 		LastUpdated:     raw.UpdatedAt,
@@ -971,6 +982,8 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 		WikiEnabled:     raw.HasWiki,
 		PagesEnabled:    raw.HasPages,
 		PRsEnabled:      true,
+		IsFork:          raw.Fork,
+		ForkParent:      restForkParent,
 		ForkCount:       raw.ForksCount,
 		StarCount:       raw.StargazersCount,
 		WatcherCount:    raw.WatchersCount,
@@ -1001,6 +1014,8 @@ func repoInfoGraphQL(owner, repo string) string {
     hasWikiEnabled
     isArchived
     isDisabled
+    isFork
+    parent { nameWithOwner }
     forkCount
     stargazerCount
     watchers { totalCount }
@@ -1042,9 +1057,13 @@ type graphQLRepo struct {
 	HasWikiEnabled   bool      `json:"hasWikiEnabled"`
 	IsArchived       bool      `json:"isArchived"`
 	IsDisabled       bool      `json:"isDisabled"`
-	ForkCount        int       `json:"forkCount"`
-	StargazerCount   int       `json:"stargazerCount"`
-	Watchers         struct {
+	IsFork           bool      `json:"isFork"` // v0.27.78 — fork capture
+	Parent           *struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"parent"`
+	ForkCount      int `json:"forkCount"`
+	StargazerCount int `json:"stargazerCount"`
+	Watchers       struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"watchers"`
 	OpenIssues struct {

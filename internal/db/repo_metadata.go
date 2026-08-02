@@ -28,8 +28,12 @@ import (
 // This is intentionally NOT a "fill-empty-only" UPDATE — operators want
 // the displayed data to reflect the API's current state.
 //
-// v0.23.0.
-func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool) error {
+// v0.23.0; v0.27.78 adds forkedFrom (callers pass
+// model.RepoInfo.ForkedFrom() — the single source of the stored
+// representation). Written unconditionally like the other fields:
+// the forge's current statement of fork lineage is the truth, and a
+// repo detaching from its upstream honestly clears the column.
+func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool, forkedFrom string) error {
 	langJSON := []byte("{}")
 	if len(languages) > 0 {
 		b, err := json.Marshal(languages)
@@ -52,9 +56,14 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			    -- dead-repo ArchiveRepo path is unaffected — those
 			    -- repos are dequeued and never reach Phase 0.
 			    repo_archived    = $5,
+			    -- v0.27.78: fork lineage from the forge (upstream
+			    -- owner/name, model.UnknownForkParent for a fork with
+			    -- a deleted upstream, '' for a non-fork). The showcase
+			    -- fork filter and future GUI fork badges read this.
+			    forked_from      = $6,
 			    data_collection_date = NOW()
 			WHERE repo_id = $1`,
-			repoID, description, primaryLanguage, langJSON, archived)
+			repoID, description, primaryLanguage, langJSON, archived, forkedFrom)
 		return err
 	})
 }
@@ -104,4 +113,43 @@ type RepoMetadataBackfillTarget struct {
 	Owner      string
 	Name       string
 	PlatformID int16
+}
+
+// GetReposForMetadataRefresh pages the WHOLE forge-backed fleet
+// (GitHub + GitLab; generic git has no API to ask) by repo_id keyset
+// for the operator-driven `aveloxis backfill-repo-metadata` sweep.
+// Unlike ReposNeedingMetadataBackfill this does NOT filter on empty
+// fields — the sweep's point is refreshing values that cannot be
+// distinguished from absent (forked_from = ” means both "not a fork"
+// and "never checked"), so every repo gets one visit. Archived repos
+// are INCLUDED: they appear in public collections and their fork
+// status matters there.
+//
+// v0.27.79.
+func (s *PostgresStore) GetReposForMetadataRefresh(ctx context.Context, afterRepoID int64, limit int) ([]RepoMetadataBackfillTarget, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT repo_id, repo_owner, repo_name, platform_id
+		FROM aveloxis_data.repos
+		WHERE repo_id > $1
+		  AND platform_id IN (1, 2)
+		  AND COALESCE(repo_owner, '') != ''
+		  AND COALESCE(repo_name, '') != ''
+		ORDER BY repo_id
+		LIMIT $2`, afterRepoID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RepoMetadataBackfillTarget
+	for rows.Next() {
+		var t RepoMetadataBackfillTarget
+		if err := rows.Scan(&t.RepoID, &t.Owner, &t.Name, &t.PlatformID); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }

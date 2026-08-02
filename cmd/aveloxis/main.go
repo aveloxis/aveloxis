@@ -93,6 +93,7 @@ func main() {
 		reconcileReposCmd(&cfgPath),
 		dataVerifyCmd(&cfgPath),
 		generateShowcaseCmd(&cfgPath),
+		backfillRepoMetadataCmd(&cfgPath),
 	)
 
 	if err := root.Execute(); err != nil {

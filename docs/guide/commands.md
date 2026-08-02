@@ -758,14 +758,18 @@ counts — never user names, stars, or group ownership (queries run
 anonymously). Writes are atomic (tmp+rename) and pages whose
 collection was deleted or renamed are pruned.
 
-Since v0.27.78 the **top 5 repositories of each collection** (by
-commits — the same ordering the collection table shows) also get a
-public repo snapshot page under `<out>/repos/`, deduped across
-collections. Each snapshot carries the cached commit/issue/PR counts,
-description and primary language, the latest OpenSSF Scorecard table,
-and the open-vulnerability posture — with honest "not yet scanned" /
+Since v0.27.78 the collection tables order by **collected issues**
+(commit counts are bot-floodable — automation repos with millions of
+machine commits headlined the tables), and the **top 5 non-fork
+repositories of each collection** also get a public repo snapshot
+page under `<out>/repos/`, deduped across collections. Forks
+(`repos.forked_from` non-empty, captured by Phase 0 since v0.27.78)
+are skipped and the next non-fork slides into the freed slot. Each
+snapshot carries the cached commit/issue/PR counts, description and
+primary language, the latest OpenSSF Scorecard table, and the
+open-vulnerability posture — with honest "not yet scanned" /
 "analysis pending" states instead of fabricated zeros. Collection
-pages link their top-5 names to these snapshots (the forge link
+pages link the featured names to these snapshots (the forge link
 survives as a ↗ affordance); everything below the cut stays
 forge-linked with a note that sign-in unlocks the full repository
 pages. Snapshot pages ride the same sitemap, prune pass, and privacy
@@ -782,6 +786,34 @@ Runs hourly from the `aveloxis-showcase.timer` systemd unit (template
 in the aveloxis-gui repo's `deploy/` directory). Read-only on the
 schema; does not run migrations (v0.21.5 policy). Safe alongside an
 active `aveloxis serve`.
+
+## `aveloxis backfill-repo-metadata`
+
+Operator-driven fleet sweep (v0.27.79) that refreshes
+`repos.repo_description`, `primary_language`, `languages`,
+`repo_archived`, and `forked_from` from the forge APIs — one
+`FetchRepoInfo` per GitHub/GitLab repo, written through the same
+`UpdateRepoMetadata` path the collector's Phase 0 uses. Generic-git
+repos are skipped (no API).
+
+Built as a launch accelerator for fork status: v0.27.78 added fork
+capture to Phase 0, but the per-cycle forward path takes ~6–21 days
+to cover the fleet. This command front-loads it — roughly an hour for
+a 94K-repo fleet at the default 8 workers, costing ~94K GraphQL
+points (about a quarter of one hour of a 73-key pool's budget).
+
+```bash
+aveloxis backfill-repo-metadata --dry-run       # candidate count only
+aveloxis backfill-repo-metadata --limit 100     # canary
+aveloxis backfill-repo-metadata                 # full sweep
+aveloxis backfill-repo-metadata --after-repo-id 51234   # resume
+```
+
+Idempotent (every write is the forge's current truth) and resumable —
+progress lines and the summary print the last repo_id processed;
+re-run with `--after-repo-id` after an interruption. Repos that 404
+(renamed/deleted/private) are skipped and left to prelim's normal
+rename/dead-repo handling. Does not run migrations (v0.21.5 policy).
 
 ## `aveloxis data-verify`
 

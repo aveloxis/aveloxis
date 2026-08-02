@@ -14,6 +14,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -42,6 +43,15 @@ type Server struct {
 	// endpoint. Both zero-valued when unconfigured.
 	mailer              *mailer.Mailer
 	autoApproveAddLimit int
+
+	// v0.27.59: single-value 60s cache for the public repo count.
+	publicStats *publicStatsCache
+
+	// v0.27.61: general 60s body cache for per-repo read endpoints
+	// (top contributors, contributor elsewhere). Same shape as
+	// cmpCache; separate instance so a compare-traffic flood can't
+	// evict the repo-page bodies (both maps are bounded at 1000).
+	respCache *compareCache
 }
 
 // New creates an API server with default middleware options
@@ -60,6 +70,12 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux(),
 		mailer: opts.Mailer, autoApproveAddLimit: opts.AutoApproveAddLimit}
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	// v0.27.59: the landing page's public repo count — on the
+	// publicPaths allowlist (auth.go); 60s stale-on-error cache.
+	s.publicStats = newPublicStatsCache(time.Minute, func() (int, error) {
+		return store.CountActiveRepos(context.Background())
+	})
+	s.mux.HandleFunc("GET /api/v1/public/stats", s.handlePublicStats)
 	s.mux.HandleFunc("GET /api/v1/mailing-list/stats", s.handleMailingListStats)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/stats", s.handleRepoStats)
 	s.mux.HandleFunc("GET /api/v1/repos/stats", s.handleRepoStatsBatch)
@@ -115,7 +131,31 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("PUT /api/v1/repos/{repoID}/star", s.handleStarRepo)
 	s.mux.HandleFunc("DELETE /api/v1/repos/{repoID}/star", s.handleStarRepo)
 	s.mux.HandleFunc("GET /api/v1/home/repos", s.handleHomeRepos)
+	// v0.27.62 — the "New Repositories" home feed (fleet + mine arms).
+	s.mux.HandleFunc("GET /api/v1/home/new-repos", s.handleNewRepos)
+	// v0.27.63 — collections (admin-curated groups-of-groups). Reads
+	// for every authenticated user; mutations admin-only and
+	// POST-everywhere (CORS Allow-Methods only advertises GET/POST).
+	s.mux.HandleFunc("GET /api/v1/collections", s.handleCollectionsList)
+	s.mux.HandleFunc("GET /api/v1/collections/{collectionID}", s.handleCollectionDetail)
+	s.mux.HandleFunc("POST /api/v1/collections/{collectionID}/copy", s.handleCollectionCopy)
+	// v0.27.70 — per-user collection stars (sort preference, mirrors
+	// the repo-star PUT/DELETE pattern).
+	s.mux.HandleFunc("PUT /api/v1/collections/{collectionID}/star", s.handleStarCollection)
+	s.mux.HandleFunc("DELETE /api/v1/collections/{collectionID}/star", s.handleStarCollection)
+	s.mux.HandleFunc("POST /api/v1/admin/collections", s.handleAdminCollectionCreate)
+	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}", s.handleAdminCollectionUpdate)
+	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}/delete", s.handleAdminCollectionDelete)
+	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}/groups", s.handleAdminCollectionAddGroup)
+	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove", s.handleAdminCollectionRemoveGroup)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scorecard", s.handleRepoScorecard)
+	// v0.27.61 — ranked per-contributor activity for the repo page's
+	// "Top contributors" card.
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributors/top", s.handleTopContributors)
+	// v0.27.64 — cross-repo contributor history (the v0.27.58 daily
+	// tables): where-else matrix + person-level monthly view.
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributors/elsewhere", s.handleContributorsElsewhere)
+	s.mux.HandleFunc("GET /api/v1/contributors/{cntrbID}/activity", s.handleContributorActivity)
 	s.registerMetricRoutes()
 	rl, err := newRateLimiter(opts)
 	if err != nil {
@@ -124,6 +164,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.limiter = rl
 	s.auth = newAuthenticator(store, opts.RequireAuth)
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
+	s.respCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.faCache = &firstActivityCache{m: map[string]time.Time{}}
 	return s, nil
 }

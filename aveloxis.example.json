@@ -34,6 +34,8 @@
     "force_full": false,
     "matview_rebuild_day": "saturday",
     "matview_rebuild_on_startup": false,
+    "matview_rebuild_skip_dm_aggregates": false,
+    "activity_history_window_days": 180,
     "pr_child_mode": "graphql",
     "listing_mode": "graphql",
     "threading_mode": "single",

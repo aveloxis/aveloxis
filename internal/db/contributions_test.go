@@ -205,7 +205,7 @@ func insertContributor(ctx context.Context, t *testing.T, store *PostgresStore,
 // out-of-window contributors don't leak in.
 func TestGetRepoContributors_FiltersByWindow(t *testing.T) {
 	store, ctx := contributionsConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedContribRepo(ctx, t, store)
 	insider := insertContributor(ctx, t, store,
@@ -263,7 +263,7 @@ func TestGetRepoContributors_FiltersByWindow(t *testing.T) {
 // cntrb_company beats "(unknown)".
 func TestGetRepoAffiliationCounts_DerivationPriority(t *testing.T) {
 	store, ctx := contributionsConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedContribRepo(ctx, t, store)
 
@@ -337,7 +337,7 @@ func TestGetRepoAffiliationCounts_DerivationPriority(t *testing.T) {
 // predicate flipped" that the source-contract pin can't see.
 func TestGetRepoContributionsCoverage_ExerciseAllFields(t *testing.T) {
 	store, ctx := contributionsConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedContribRepo(ctx, t, store)
 
@@ -454,7 +454,7 @@ func TestGetRepoContributionsCoverage_ExerciseAllFields(t *testing.T) {
 // so the JSON omits the fields entirely rather than emitting zero-time.
 func TestGetRepoContributionsCoverage_EmptyCohort(t *testing.T) {
 	store, ctx := contributionsConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedContribRepo(ctx, t, store)
 

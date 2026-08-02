@@ -142,7 +142,7 @@ func TestBreadthIndexMatchesClaimQueryOrder(t *testing.T) {
 // that subset is stamped.
 func TestMarkBreadthAttemptedBatchStampsAll(t *testing.T) {
 	store, ctx := realignConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	slug := fmt.Sprintf("avbreadthbatch_%d", time.Now().UnixNano())
 	var ids []string
@@ -190,7 +190,7 @@ func TestMarkBreadthAttemptedBatchStampsAll(t *testing.T) {
 // the index landed with the NULLS FIRST ordering in its definition.
 func TestBreadthIndexExistsAfterMigrate(t *testing.T) {
 	store, ctx := realignConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	store.SetMatviewSkip(true)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)

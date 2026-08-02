@@ -56,7 +56,7 @@ func TestHasNeverScannedOrgsBehavior(t *testing.T) {
 		t.Skip("AVELOXIS_TEST_DB not set — skipping integration test")
 	}
 	store, ctx := v0251Connect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const slug = "_avdemandprobe"
 	cleanup := func() {

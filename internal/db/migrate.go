@@ -1709,6 +1709,145 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		 SET dependency_scope = 'runtime'
 		 WHERE COALESCE(dependency_scope, '') = ''
 		   AND COALESCE(dependency_kind, '') <> 'self'`)
+
+	// v0.27.54: email/canonical lookup indexes for the mailing-list
+	// identity chain (sender-resolve candidates NOT EXISTS,
+	// ResolveContributorIDByEmail join, CreateEmailOnlyContributor
+	// probe). Without them the OR-equality anti-join seq-scanned the
+	// 9.4 GB contributors heap per outer row — 30-50 min hourly on 5
+	// backends (2026-07-29). The v0.25.6 "no reader" rationale for
+	// dropping the canonical index was obsoleted by v0.25.7+'s
+	// mailing-list readers — do not re-drop these in a future index
+	// audit. NEW names because the v0.25.6 DROP steps above still run
+	// on every migrate; reusing the dropped names would rebuild each
+	// run. NON-partial because the probes are join variables, which
+	// cannot prove a partial predicate at plan time.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_email_lookup",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_email_lookup
+		 ON aveloxis_data.contributors (cntrb_email)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_canonical_lookup",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_canonical_lookup
+		 ON aveloxis_data.contributors (cntrb_canonical)`)
+
+	// v0.27.57: GitHub contribution-activity classification columns
+	// (GraphQL contributionsCollection — distinguishes publicly-active
+	// / privately-active-disclosed / dormant / no-observable-activity
+	// for contributors whose REST events feed is empty). GITHUB-ONLY;
+	// GitLab has no restrictedContributionsCount equivalent. The
+	// claim index is declared ASC NULLS FIRST per the v0.27.8 breadth
+	// lesson.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_public_contribs_year", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_restricted_contribs_year", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_last_contribution_year", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_activity_class", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_activity_checked_at", "TIMESTAMPTZ")
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_activity_checked",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_activity_checked
+		 ON aveloxis_data.contributors (gh_activity_checked_at ASC NULLS FIRST)`)
+
+	// v0.27.58: daily contributor activity history (see schema.sql for
+	// the design rationale — TEXT repo names on purpose, no repos FK).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_history_backfilled_at", "TIMESTAMPTZ")
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.58 create contributor_activity_days",
+		`CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_days (
+			activity_day_id BIGSERIAL PRIMARY KEY,
+			cntrb_id        UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+			day             DATE NOT NULL,
+			repo_full_name  TEXT NOT NULL,
+			commit_count    INTEGER NOT NULL DEFAULT 0,
+			issue_count     INTEGER NOT NULL DEFAULT 0,
+			pr_count        INTEGER NOT NULL DEFAULT 0,
+			review_count    INTEGER NOT NULL DEFAULT 0,
+			fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (cntrb_id, day, repo_full_name)
+		)`)
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.58 create contributor_activity_day_totals",
+		`CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_day_totals (
+			activity_total_id   BIGSERIAL PRIMARY KEY,
+			cntrb_id            UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+			day                 DATE NOT NULL,
+			total_contributions INTEGER NOT NULL DEFAULT 0,
+			fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (cntrb_id, day)
+		)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_history_backfilled",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_history_backfilled
+		 ON aveloxis_data.contributors (gh_history_backfilled_at ASC NULLS FIRST)`)
+
+	// v0.27.60: stable fleet-entry timestamp for the new-repositories
+	// feeds. ORDER IS LOAD-BEARING: (1) bare column add — a STABLE
+	// DEFAULT at add-time would stamp every legacy row with the
+	// migration timestamp via attmissingval; (2) backfill legacy rows
+	// from data_collection_date (an HONEST last-touch approximation —
+	// collection_queue has no created-at to do better; feeds are noisy
+	// for one window post-deploy, which is why this ships ahead of the
+	// endpoint); (3) only then the NOW() default for future inserts.
+	// added_at is deliberately absent from UpsertRepo's DO UPDATE SET
+	// (insert-only contract, pinned).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "added_at", "TIMESTAMPTZ")
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.60 backfill repos.added_at from data_collection_date (last-touch approximation)",
+		`UPDATE aveloxis_data.repos
+		 SET added_at = COALESCE(data_collection_date, created_at, NOW())
+		 WHERE added_at IS NULL`)
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.60 default repos.added_at to NOW() for future inserts",
+		`ALTER TABLE aveloxis_data.repos ALTER COLUMN added_at SET DEFAULT NOW()`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_repos_added_at",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_added_at
+		 ON aveloxis_data.repos (added_at DESC)`)
+
+	// v0.27.67: msg_id probe index for heal-messages (live diagnosis
+	// 2026-08-01: GetMessageHealBatch's review-side LATERAL filter-
+	// scanned the 30.5M-entry uq_pr_review_msg_ref per worklist row —
+	// 1.67s/probe × 546K pending ≈ 10.5 days for one batch SELECT).
+	// CONCURRENTLY: the production table is 41 GB and a blocking
+	// build would stall the message writers. Operators can pre-create
+	// by hand via scripts/create_message_heal_index.sql — this step
+	// then no-ops via IF NOT EXISTS (the v0.27.54 pattern).
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_pull_request_review_message_ref_msg_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_request_review_message_ref_msg_id
+		 ON aveloxis_data.pull_request_review_message_ref (msg_id)`)
+
+	// v0.27.63: collections (admin-curated groups-of-groups) — same
+	// DDL as schema.sql so existing fleets pick the tables up on
+	// migrate. Both idempotent via IF NOT EXISTS.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.63 create aveloxis_ops.collections",
+		`CREATE TABLE IF NOT EXISTS aveloxis_ops.collections (
+		    collection_id BIGSERIAL PRIMARY KEY,
+		    name          TEXT NOT NULL UNIQUE,
+		    description   TEXT NOT NULL DEFAULT '',
+		    position      INT NOT NULL DEFAULT 0,
+		    created_by    INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+		    created_at    TIMESTAMPTZ DEFAULT NOW()
+		)`)
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.63 create aveloxis_ops.collection_groups",
+		`CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_groups (
+		    collection_id BIGINT NOT NULL REFERENCES aveloxis_ops.collections(collection_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+		    group_id      BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+		    position      INT NOT NULL DEFAULT 0,
+		    PRIMARY KEY (collection_id, group_id)
+		)`)
+
+	// v0.27.70: per-user collection stars.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.70 create aveloxis_ops.user_collection_stars",
+		`CREATE TABLE IF NOT EXISTS aveloxis_ops.user_collection_stars (
+		    user_id       INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+		    collection_id BIGINT NOT NULL REFERENCES aveloxis_ops.collections(collection_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+		    starred_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    PRIMARY KEY (user_id, collection_id)
+		)`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     platform_repo_id TEXT DEFAULT '',
     created_at       TIMESTAMPTZ,
     updated_at       TIMESTAMPTZ,
+    -- v0.27.60: STABLE fleet-entry timestamp (insert-only — NOT in
+    -- UpsertRepo's DO UPDATE SET). Feeds the new-repositories feeds.
+    -- Legacy rows are backfilled from data_collection_date (an honest
+    -- last-touch approximation) by the migrate step.
+    added_at         TIMESTAMPTZ DEFAULT NOW(),
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
@@ -139,6 +144,18 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     distribution_scan_complete   BOOLEAN DEFAULT TRUE
 );
 
+-- v0.27.60 EXISTING-FLEET GUARD (the v0.27.58 lesson): on a database
+-- where repos already exists the CREATE TABLE above no-ops, so
+-- added_at must be guarded here before its index references it. Bare
+-- type on purpose — the migrate step backfills legacy rows from
+-- data_collection_date and only then sets the NOW() default (the
+-- STABLE-default-at-add trap would stamp every legacy row with the
+-- migration timestamp).
+ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_repos_added_at
+    ON aveloxis_data.repos (added_at DESC);
+
 -- ============================================================
 -- Repo groups list serve (mailing lists)
 -- ============================================================
@@ -220,6 +237,14 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributors (
     cntrb_created_at TIMESTAMPTZ,
     cntrb_last_enriched_at TIMESTAMPTZ,
     cntrb_last_breadth_at  TIMESTAMPTZ,
+    -- v0.27.57 GitHub contribution-activity classification (see the
+    -- idx_contributors_activity_checked comment below).
+    gh_public_contribs_year     INTEGER,
+    gh_restricted_contribs_year INTEGER,
+    gh_last_contribution_year   INTEGER,
+    gh_activity_class           TEXT DEFAULT '',
+    gh_activity_checked_at      TIMESTAMPTZ,
+    gh_history_backfilled_at    TIMESTAMPTZ,
     tool_source    TEXT DEFAULT 'aveloxis',
     tool_version   TEXT DEFAULT '',
     data_source    TEXT DEFAULT '',
@@ -252,6 +277,99 @@ CREATE INDEX IF NOT EXISTS idx_contributors_last_breadth
 -- from migrate.go; this plain form covers fresh installs.
 CREATE INDEX IF NOT EXISTS idx_contributors_gh_login_lower
     ON aveloxis_data.contributors (LOWER(gh_login)) WHERE gh_login != '';
+
+-- v0.27.54 — serve the mailing-list identity chain's email-equality
+-- probes: GetMailingListSenderResolveCandidates' NOT EXISTS,
+-- ResolveContributorIDByEmail's join, CreateEmailOnlyContributor's
+-- lookup. Without these the OR-equality anti-join planned as a full
+-- contributors seq scan (9.4 GB on aveloxis_large) PER OUTER ROW —
+-- observed 30-50 min hourly on 5 backends (2026-07-29). History:
+-- cntrb_email never had an index; cntrb_canonical's was dropped in
+-- v0.25.6 as "no reader", then v0.25.7+ shipped these readers. NEW
+-- names on purpose: the v0.25.6 DROP steps still run every migrate,
+-- so reusing the old names would rebuild the index each run.
+-- Deliberately NON-partial: the hot probes compare against a JOIN
+-- column (em.sender_email), and a partial predicate cannot be proven
+-- from a join variable at plan time — a partial index would be
+-- ignored for exactly the anti-join this fixes. Existing fleets get
+-- the CONCURRENTLY build from migrate.go; this plain form covers
+-- fresh installs.
+CREATE INDEX IF NOT EXISTS idx_contributors_email_lookup
+    ON aveloxis_data.contributors (cntrb_email);
+
+CREATE INDEX IF NOT EXISTS idx_contributors_canonical_lookup
+    ON aveloxis_data.contributors (cntrb_canonical);
+
+-- v0.27.57/58 EXISTING-FLEET GUARDS (the 2026-07-30 kate migrate
+-- failure): on a database where contributors already exists, the
+-- CREATE TABLE above no-ops and its new columns never materialize —
+-- and the CREATE INDEX statements below would then fail with 42703
+-- BEFORE migrate.go's addColumnIfMissing steps run (base DDL executes
+-- first). Any same-release (new column, schema.sql index) pair MUST
+-- carry one of these guards ahead of its index. Fresh installs no-op
+-- here (the CREATE TABLE already declared the columns).
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_public_contribs_year INTEGER;
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_restricted_contribs_year INTEGER;
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_last_contribution_year INTEGER;
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_activity_class TEXT DEFAULT '';
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_activity_checked_at TIMESTAMPTZ;
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_history_backfilled_at TIMESTAMPTZ;
+
+-- v0.27.57 — GitHub contribution-activity classification (GraphQL
+-- contributionsCollection). Distinguishes publicly-active /
+-- privately-active-disclosed / dormant / no-observable-activity for
+-- the ~1.4M contributors whose REST events feed is empty. GITHUB-ONLY
+-- (gh_ prefix): GitLab has no restrictedContributionsCount
+-- equivalent — private profiles are simply invisible (documented
+-- parity gap). Empty gh_activity_class = never checked, or the user
+-- was absent from the API response (deleted/renamed).
+-- The index serves GetContributorsForActivityCheck's
+-- `ORDER BY gh_activity_checked_at ASC NULLS FIRST` claim — explicit
+-- ASC NULLS FIRST per the v0.27.8 breadth lesson (Postgres's ASC
+-- default is NULLS LAST; neither scan direction serves the ORDER BY
+-- without it). Existing fleets get the CONCURRENTLY build from
+-- migrate.go; this plain form covers fresh installs.
+CREATE INDEX IF NOT EXISTS idx_contributors_activity_checked
+    ON aveloxis_data.contributors (gh_activity_checked_at ASC NULLS FIRST);
+
+-- v0.27.58 — daily contributor activity history (GitHub GraphQL
+-- contributionsCollection, operator decision 2026-07-30: store by
+-- day). contributor_activity_days holds per-(contributor, day,
+-- repository) PUBLIC activity binned from the four by-repository
+-- connections; repo_full_name is deliberately TEXT with NO repos FK —
+-- these are mostly repositories Aveloxis does not track (the
+-- ecosystem outside the fleet is the point of the data).
+-- contributor_activity_day_totals holds the contribution calendar's
+-- per-day TOTAL, which INCLUDES disclosed private contributions — the
+-- only daily private signal (untyped and repo-less by GitHub's
+-- design). Both upsert on their natural keys (the quarterly re-audit
+-- overwrites in place); the claim column
+-- contributors.gh_history_backfilled_at drives bootstrap (NULL-first)
+-- and the quarterly healing in one mechanism.
+CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_days (
+    activity_day_id BIGSERIAL PRIMARY KEY,
+    cntrb_id        UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    day             DATE NOT NULL,
+    repo_full_name  TEXT NOT NULL,
+    commit_count    INTEGER NOT NULL DEFAULT 0,
+    issue_count     INTEGER NOT NULL DEFAULT 0,
+    pr_count        INTEGER NOT NULL DEFAULT 0,
+    review_count    INTEGER NOT NULL DEFAULT 0,
+    fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (cntrb_id, day, repo_full_name)
+);
+
+CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_day_totals (
+    activity_total_id   BIGSERIAL PRIMARY KEY,
+    cntrb_id            UUID NOT NULL REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    day                 DATE NOT NULL,
+    total_contributions INTEGER NOT NULL DEFAULT 0,
+    fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (cntrb_id, day)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contributors_history_backfilled
+    ON aveloxis_data.contributors (gh_history_backfilled_at ASC NULLS FIRST);
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_identities (
     identity_id    BIGSERIAL PRIMARY KEY,
@@ -2185,6 +2303,37 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_org_requests (
     UNIQUE (group_id, org_url)
 );
 
+-- v0.27.63: collections — admin-curated groups-of-groups for the GUI
+-- home page ("Collections" box). Collections join to LIVE user_groups
+-- (not frozen repo lists): admin org-groups auto-grow via org scans,
+-- so collections stay fresh for free. Placed after users +
+-- user_groups per the create-before-reference rule (v0.27.9).
+CREATE TABLE IF NOT EXISTS aveloxis_ops.collections (
+    collection_id BIGSERIAL PRIMARY KEY,
+    name          TEXT NOT NULL UNIQUE,
+    description   TEXT NOT NULL DEFAULT '',
+    position      INT NOT NULL DEFAULT 0,
+    created_by    INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+    created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_groups (
+    collection_id BIGINT NOT NULL REFERENCES aveloxis_ops.collections(collection_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    group_id      BIGINT NOT NULL REFERENCES aveloxis_ops.user_groups(group_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    position      INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (collection_id, group_id)
+);
+
+-- v0.27.70: per-user collection stars (the user_repo_stars pattern).
+-- Collections are public; a star only affects the STARRER's sort
+-- order (starred collections list first for them).
+CREATE TABLE IF NOT EXISTS aveloxis_ops.user_collection_stars (
+    user_id       INT NOT NULL REFERENCES aveloxis_ops.users(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    collection_id BIGINT NOT NULL REFERENCES aveloxis_ops.collections(collection_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    starred_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, collection_id)
+);
+
 CREATE TABLE IF NOT EXISTS aveloxis_ops.client_applications (
     id             TEXT PRIMARY KEY,
     api_key        TEXT NOT NULL DEFAULT '',
@@ -2504,6 +2653,16 @@ CREATE INDEX IF NOT EXISTS idx_pull_request_message_ref_msg_id ON aveloxis_data.
 CREATE INDEX IF NOT EXISTS idx_review_comments_msg_id ON aveloxis_data.review_comments (msg_id);
 -- pull_request_reviews(pr_review_id) ← 2 children
 CREATE INDEX IF NOT EXISTS idx_pull_request_review_message_ref_pr_review_id ON aveloxis_data.pull_request_review_message_ref (pr_review_id);
+-- v0.27.67: msg_id probe for GetMessageHealBatch's review-side
+-- LATERAL (and any future msg→review resolution). uq_pr_review_msg_ref
+-- leads with pr_review_id, so it cannot serve a bare msg_id seek —
+-- without this index the heal-messages batch SELECT filter-scanned
+-- 30.5M index entries PER worklist row (measured 1.67s/probe ≈ 10.5
+-- days for the 546K-row worklist on aveloxis_large, 2026-08-01).
+-- NON-partial on purpose: the probe value is a join variable
+-- (v0.27.54 lesson — partial predicates can't be proven at plan time
+-- for join-variable probes).
+CREATE INDEX IF NOT EXISTS idx_pull_request_review_message_ref_msg_id ON aveloxis_data.pull_request_review_message_ref (msg_id);
 CREATE INDEX IF NOT EXISTS idx_review_comments_pr_review_id ON aveloxis_data.review_comments (pr_review_id);
 -- repos(repo_id) ← 30 children (includes issue_assignees.repo_id)
 CREATE INDEX IF NOT EXISTS idx_commit_comment_ref_repo_id ON aveloxis_data.commit_comment_ref (repo_id);

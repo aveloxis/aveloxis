@@ -208,6 +208,27 @@ type CollectionConfig struct {
 	// Default: "saturday". Views are rebuilt once per week on this day.
 	MatviewRebuildDay string `json:"matview_rebuild_day"`
 
+	// MatviewRebuildSkipDMAggregates skips the dm_ aggregate table
+	// refresh (RefreshAllRepoAggregates) inside the weekly scheduler
+	// rebuild, keeping only the materialized-view step. v0.27.56 —
+	// added after the 2026-07-27→30 incident where the dm_ step (a
+	// 93K-repo × two-pass per-repo loop) ran 3+ days holding
+	// MatviewRebuildActive, silently pausing all collection claims.
+	// Deliberately does NOT affect `aveloxis refresh-views` or
+	// `aveloxis migrate` — those are explicit operator commands.
+	// The FULL weekly-rebuild off-switch is matview_rebuild_day:
+	// "disabled".
+	MatviewRebuildSkipDMAggregates bool `json:"matview_rebuild_skip_dm_aggregates"`
+
+	// ActivityHistoryWindowDays is the span of each GitHub
+	// contributionsCollection window the v0.27.58 daily-history
+	// backfill queries (operator decision 2026-07-30: parameterizable,
+	// default 180). GitHub validates from/to at max one year, so the
+	// accessor clamps at 365; the subdivision-on-cap logic halves
+	// windows below this at runtime when a window hits the 100-repo or
+	// page caps, so this is the STARTING span, not a guarantee.
+	ActivityHistoryWindowDays int `json:"activity_history_window_days"`
+
 	// MatviewRebuildOnStartup controls whether materialized views are created/refreshed
 	// during schema migration (startup). For large databases this can take minutes.
 	// Default: false — views are created on first migrate but not refreshed on every startup.
@@ -1206,6 +1227,20 @@ func (c *Config) SlogLevel() slog.Level {
 
 // MatviewRebuildWeekday returns the time.Weekday for the configured matview
 // rebuild day, or -1 if disabled.
+// ActivityHistoryWindowDaysOrDefault returns the configured history
+// window span, clamped to GitHub's 1-year contributionsCollection
+// limit (365); non-positive values fall back to the 180-day default.
+func (c *CollectionConfig) ActivityHistoryWindowDaysOrDefault() int {
+	switch {
+	case c.ActivityHistoryWindowDays <= 0:
+		return 180
+	case c.ActivityHistoryWindowDays > 365:
+		return 365
+	default:
+		return c.ActivityHistoryWindowDays
+	}
+}
+
 func (c *CollectionConfig) MatviewRebuildWeekday() int {
 	switch strings.ToLower(c.MatviewRebuildDay) {
 	case "sunday":
@@ -1251,11 +1286,12 @@ func DefaultConfig() *Config {
 			APIInternalURL: "http://127.0.0.1:8383",
 		},
 		Collection: CollectionConfig{
-			DaysUntilRecollect:      1,
-			Workers:                 12,
-			RepoCloneDir:            defaultCloneDir(),
-			MatviewRebuildDay:       "saturday",
-			MatviewRebuildOnStartup: false,
+			DaysUntilRecollect:        1,
+			Workers:                   12,
+			RepoCloneDir:              defaultCloneDir(),
+			MatviewRebuildDay:         "saturday",
+			ActivityHistoryWindowDays: 180,
+			MatviewRebuildOnStartup:   false,
 			// v0.26.0 (tech-debt Action 3, phase A): GraphQL is the
 			// default for GitHub PR-child fetch and issue+PR listing —
 			// the flip the v0.19.0 sunset plan scheduled but never

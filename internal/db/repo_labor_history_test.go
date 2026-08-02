@@ -372,7 +372,7 @@ func rlCount(t *testing.T, ctx context.Context, s *PostgresStore, table string, 
 // untouched, all-NULL untouched, and a re-run moves nothing.
 func TestRepoLaborSnapshotMigrationEndToEnd(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 
 	rlCleanup(t, ctx, store, rlRepoMulti, rlRepoSingle, rlRepoAllNull)
 	rlSeedRepo(t, ctx, store, rlRepoMulti)
@@ -480,7 +480,7 @@ func TestRepoLaborSnapshotMigrationEndToEnd(t *testing.T) {
 // zero source files) leaves an empty current snapshot.
 func TestReplaceRepoLaborSnapshotEndToEnd(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 
 	rlCleanup(t, ctx, store, rlRepoReplace)
 	rlSeedRepo(t, ctx, store, rlRepoReplace)
@@ -540,7 +540,7 @@ func TestReplaceRepoLaborSnapshotEndToEnd(t *testing.T) {
 // installs until its inherited copy is dropped next to the CREATE.
 func TestRepoLaborHistoryHasNoNaturalKeyUniques(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 
 	var hasPK bool
 	if err := store.pool.QueryRow(ctx, `
@@ -590,7 +590,7 @@ func TestRepoLaborHistoryHasNoNaturalKeyUniques(t *testing.T) {
 // cleared, history accumulates across rotations.
 func TestRotateScorecardToHistoryBehaviorPreserved(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 
 	rlCleanup(t, ctx, store, rlRepoScorecard)
 	rlSeedRepo(t, ctx, store, rlRepoScorecard)

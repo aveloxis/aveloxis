@@ -1,0 +1,33 @@
+-- SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+-- SPDX-License-Identifier: MIT
+--
+-- v0.27.67 operator relief (2026-08-01): hand-create the msg_id probe
+-- index heal-messages needs, CONCURRENTLY, before the release deploys.
+-- The v0.27.67 migration then no-ops via IF NOT EXISTS (the v0.27.54
+-- pattern — see scripts/create_email_lookup_indexes.sql).
+--
+-- WHY: `aveloxis heal-messages`' batch SELECT resolves each pending
+-- worklist row's review-side parent by probing
+-- pull_request_review_message_ref.msg_id. The table's only
+-- msg_id-bearing index is uq_pr_review_msg_ref (pr_review_id, msg_id)
+-- — pr_review_id leads, so the probe walks all ~30.5M entries as a
+-- FILTER: measured 1.67 s per probe × 546,081 pending rows ≈ 10.5
+-- days for one SELECT. With this index the probe is a sub-ms seek and
+-- the batch resolves in minutes.
+--
+-- Run against the production DB (safe while serve is running —
+-- CONCURRENTLY doesn't block writes; expect minutes on the 41 GB
+-- table):
+--
+--   psql -h chaoss.tv -p 5434 -U aveloxis -d aveloxis_large \
+--        -f scripts/create_message_heal_index.sql
+--
+-- If a previous attempt was interrupted, drop the INVALID leftover
+-- first (check: SELECT indisvalid FROM pg_index i JOIN pg_class c ON
+-- c.oid = i.indexrelid WHERE c.relname =
+-- 'idx_pull_request_review_message_ref_msg_id'):
+--
+--   DROP INDEX IF EXISTS aveloxis_data.idx_pull_request_review_message_ref_msg_id;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_request_review_message_ref_msg_id
+    ON aveloxis_data.pull_request_review_message_ref (msg_id);

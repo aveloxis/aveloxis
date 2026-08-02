@@ -29,7 +29,7 @@ func TestMirrorAndExternalKeyMethodsExist(t *testing.T) {
 
 func TestResolveMirrorLinkAndExternalKeyBackfill(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID, err := store.UpsertRepo(ctx, &model.Repo{
 		Platform: model.PlatformGitHub, GitURL: "https://github.com/apache/mirrortest",

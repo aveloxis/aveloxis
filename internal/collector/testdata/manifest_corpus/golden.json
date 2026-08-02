@@ -1,0 +1,500 @@
+{
+  "Cargo.toml": [
+    {
+      "name": "anyhow",
+      "version": "1.0.86",
+      "requirement": "anyhow = \"1.0.86\"",
+      "type": "runtime",
+      "manager": "cargo"
+    },
+    {
+      "name": "criterion",
+      "version": "0.5",
+      "requirement": "criterion = \"0.5\"",
+      "type": "dev",
+      "manager": "cargo"
+    },
+    {
+      "name": "fork",
+      "version": "",
+      "requirement": "fork = { git = \"https://github.com/x/y\" }",
+      "type": "runtime",
+      "manager": "cargo"
+    },
+    {
+      "name": "local",
+      "version": "",
+      "requirement": "local = { path = \"../..\" }",
+      "type": "runtime",
+      "manager": "cargo"
+    },
+    {
+      "name": "serde",
+      "version": "",
+      "requirement": "serde = { workspace = true }",
+      "type": "runtime",
+      "manager": "cargo"
+    },
+    {
+      "name": "tokio",
+      "version": "1.38",
+      "requirement": "tokio = { version = \"1.38\", features = [\"full\"] }",
+      "type": "runtime",
+      "manager": "cargo"
+    },
+    {
+      "name": "wild",
+      "version": "",
+      "requirement": "wild = \"*\"",
+      "type": "runtime",
+      "manager": "cargo"
+    }
+  ],
+  "Gemfile": [
+    {
+      "name": "bootsnap",
+      "version": "",
+      "requirement": "gem \"bootsnap\", require: false",
+      "type": "runtime",
+      "manager": "rubygems"
+    },
+    {
+      "name": "jekyll-feed",
+      "version": "",
+      "requirement": "gem \"jekyll-feed\", group: :jekyll_plugins",
+      "type": "runtime",
+      "manager": "rubygems"
+    },
+    {
+      "name": "local_thing",
+      "version": "",
+      "requirement": "gem \"local_thing\", path: \"../shared\"",
+      "type": "runtime",
+      "manager": "rubygems"
+    },
+    {
+      "name": "pg",
+      "version": "1.1",
+      "requirement": "gem \"pg\", \"\u003e= 1.1\", require: false",
+      "type": "runtime",
+      "manager": "rubygems"
+    },
+    {
+      "name": "rails",
+      "version": "7.1",
+      "requirement": "gem \"rails\", \"~\u003e 7.1\"",
+      "type": "runtime",
+      "manager": "rubygems"
+    },
+    {
+      "name": "rspec",
+      "version": "3.13",
+      "requirement": "gem \"rspec\", \"~\u003e 3.13\"",
+      "type": "test",
+      "manager": "rubygems"
+    }
+  ],
+  "Package.swift": [
+    {
+      "name": "swift-argument-parser",
+      "version": "1.3.0",
+      "requirement": "https://github.com/apple/swift-argument-parser",
+      "type": "runtime",
+      "manager": "swiftpm"
+    }
+  ],
+  "Pipfile": [
+    {
+      "name": "flask",
+      "version": "",
+      "requirement": "flask = \"*\"",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "numpy",
+      "version": "",
+      "requirement": "numpy = {version = \"*\", extras = [\"dev\"]}",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "requests",
+      "version": "2.31.0",
+      "requirement": "requests = \"==2.31.0\"",
+      "type": "runtime",
+      "manager": "pypi"
+    }
+  ],
+  "build.gradle": [
+    {
+      "name": "com.google.guava:guava",
+      "version": "33.0.0-jre",
+      "requirement": "com.google.guava:guava:33.0.0-jre",
+      "type": "runtime",
+      "manager": "maven"
+    },
+    {
+      "name": "org.junit.jupiter:junit-jupiter",
+      "version": "5.10.2",
+      "requirement": "org.junit.jupiter:junit-jupiter:5.10.2",
+      "type": "dev",
+      "manager": "maven"
+    },
+    {
+      "name": "org.springframework:spring-core",
+      "version": "6.1.0",
+      "requirement": "org.springframework:spring-core:6.1.0",
+      "type": "runtime",
+      "manager": "maven"
+    }
+  ],
+  "build.sbt": [
+    {
+      "name": "org.scala-lang:scala-library",
+      "version": "2.13.14",
+      "requirement": "libraryDependencies += \"org.scala-lang\" % \"scala-library\" % \"2.13.14\"",
+      "type": "runtime",
+      "manager": "maven"
+    },
+    {
+      "name": "org.scalatest:scalatest",
+      "version": "3.2.18",
+      "requirement": "libraryDependencies += \"org.scalatest\" %% \"scalatest\" % \"3.2.18\" % Test",
+      "type": "test",
+      "manager": "maven"
+    }
+  ],
+  "composer.json": [
+    {
+      "name": "monolog/monolog",
+      "version": "3.5",
+      "requirement": "^3.5",
+      "type": "runtime",
+      "manager": "packagist"
+    },
+    {
+      "name": "vendor/anything",
+      "version": "",
+      "requirement": "*",
+      "type": "runtime",
+      "manager": "packagist"
+    },
+    {
+      "name": "vendor/dev-only",
+      "version": "",
+      "requirement": "@dev",
+      "type": "runtime",
+      "manager": "packagist"
+    },
+    {
+      "name": "vendor/unstable",
+      "version": "2.1.0",
+      "requirement": "2.1.0@beta",
+      "type": "runtime",
+      "manager": "packagist"
+    }
+  ],
+  "example.csproj": [
+    {
+      "name": "Microsoft.Maui.Controls",
+      "version": "",
+      "requirement": "\u003cPackageReference Include=\"Microsoft.Maui.Controls\" Version=\"$(MauiVersion)\" /\u003e",
+      "type": "runtime",
+      "manager": "nuget"
+    },
+    {
+      "name": "System.Text.Json",
+      "version": "8.0.4",
+      "requirement": "\u003cPackageReference Include=\"System.Text.Json\" Version=\"8.0.4\" /\u003e",
+      "type": "runtime",
+      "manager": "nuget"
+    }
+  ],
+  "go.mod": [
+    {
+      "name": "github.com/jackc/pgx/v5",
+      "version": "v5.6.0",
+      "requirement": "github.com/jackc/pgx/v5 v5.6.0",
+      "type": "runtime",
+      "manager": "go"
+    },
+    {
+      "name": "golang.org/x/text",
+      "version": "v0.16.0",
+      "requirement": "golang.org/x/text v0.16.0",
+      "type": "runtime",
+      "manager": "go"
+    }
+  ],
+  "mix.exs": [
+    {
+      "name": "bamboo",
+      "version": "",
+      "requirement": "{:bamboo, git: \"https://github.com/pablo-co/bamboo_postmark.git\", tag: \"v1.0\"},",
+      "type": "runtime",
+      "manager": "hex"
+    },
+    {
+      "name": "burrito",
+      "version": "",
+      "requirement": "{:burrito, github: \"burrito-elixir/burrito\"},",
+      "type": "runtime",
+      "manager": "hex"
+    },
+    {
+      "name": "ex_unit_notifier",
+      "version": "1.3",
+      "requirement": "{:ex_unit_notifier, \"~\u003e 1.3\", only: :test}",
+      "type": "test",
+      "manager": "hex"
+    },
+    {
+      "name": "local_dep",
+      "version": "",
+      "requirement": "{:local_dep, path: \"../shared\"},",
+      "type": "runtime",
+      "manager": "hex"
+    },
+    {
+      "name": "phoenix",
+      "version": "1.7.0",
+      "requirement": "{:phoenix, \"~\u003e 1.7.0\"},",
+      "type": "runtime",
+      "manager": "hex"
+    },
+    {
+      "name": "ranged",
+      "version": "3.0.0",
+      "requirement": "{:ranged, \"\u003e= 3.0.0 and \u003c 5.0.0\"},",
+      "type": "runtime",
+      "manager": "hex"
+    }
+  ],
+  "package.json": [
+    {
+      "name": "anything",
+      "version": "",
+      "requirement": "*",
+      "type": "runtime",
+      "manager": "npm"
+    },
+    {
+      "name": "express",
+      "version": "4.18.0",
+      "requirement": "^4.18.0",
+      "type": "runtime",
+      "manager": "npm"
+    },
+    {
+      "name": "internal-a",
+      "version": "",
+      "requirement": "workspace:^",
+      "type": "runtime",
+      "manager": "npm"
+    },
+    {
+      "name": "internal-b",
+      "version": "",
+      "requirement": "catalog:testing",
+      "type": "runtime",
+      "manager": "npm"
+    },
+    {
+      "name": "local-tool",
+      "version": "",
+      "requirement": "file:../../../tools/eslint",
+      "type": "runtime",
+      "manager": "npm"
+    },
+    {
+      "name": "typescript",
+      "version": "5.0.0",
+      "requirement": "\u003e=5.0.0 \u003c6.0.0",
+      "type": "runtime",
+      "manager": "npm"
+    },
+    {
+      "name": "vitest",
+      "version": "1.6.0",
+      "requirement": "~1.6.0",
+      "type": "dev",
+      "manager": "npm"
+    }
+  ],
+  "package.yaml": [
+    {
+      "name": "aeson",
+      "version": "2.1",
+      "requirement": "aeson \u003e= 2.1",
+      "type": "runtime",
+      "manager": "hackage"
+    },
+    {
+      "name": "base",
+      "version": "4.7",
+      "requirement": "base \u003e= 4.7 \u0026\u0026 \u003c 5",
+      "type": "runtime",
+      "manager": "hackage"
+    }
+  ],
+  "packages.config": [
+    {
+      "name": "BuildTool",
+      "version": "1.2.0",
+      "requirement": "\u003cpackage id=\"BuildTool\" version=\"1.2.0\" developmentDependency=\"true\" /\u003e",
+      "type": "build",
+      "manager": "nuget"
+    },
+    {
+      "name": "Newtonsoft.Json",
+      "version": "13.0.3",
+      "requirement": "\u003cpackage id=\"Newtonsoft.Json\" version=\"13.0.3\" /\u003e",
+      "type": "runtime",
+      "manager": "nuget"
+    }
+  ],
+  "pom.xml": [
+    {
+      "name": "com.example:sibling",
+      "version": "",
+      "requirement": "com.example:sibling:${project.version}",
+      "type": "runtime",
+      "manager": "maven"
+    },
+    {
+      "name": "org.springframework:spring-core",
+      "version": "6.1.0",
+      "requirement": "org.springframework:spring-core:6.1.0",
+      "type": "runtime",
+      "manager": "maven"
+    }
+  ],
+  "pubspec.yaml": [
+    {
+      "name": "from_git",
+      "version": "",
+      "requirement": "from_git:",
+      "type": "runtime",
+      "manager": "pub"
+    },
+    {
+      "name": "http",
+      "version": "0.11.1",
+      "requirement": "http: '\u003e=0.11.1 \u003c0.12.0'",
+      "type": "runtime",
+      "manager": "pub"
+    },
+    {
+      "name": "my_lib",
+      "version": "",
+      "requirement": "my_lib:",
+      "type": "runtime",
+      "manager": "pub"
+    },
+    {
+      "name": "path",
+      "version": "1.8.0",
+      "requirement": "path: ^1.8.0",
+      "type": "runtime",
+      "manager": "pub"
+    },
+    {
+      "name": "test",
+      "version": "1.24.0",
+      "requirement": "test: ^1.24.0",
+      "type": "dev",
+      "manager": "pub"
+    }
+  ],
+  "pyproject.toml": [
+    {
+      "name": "httpx",
+      "version": "0.27.0",
+      "requirement": "httpx\u003e=0.27.0",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "pydantic",
+      "version": "2.7.1",
+      "requirement": "pydantic==2.7.1",
+      "type": "runtime",
+      "manager": "pypi"
+    }
+  ],
+  "requirements.txt": [
+    {
+      "name": "attrs",
+      "version": "3.1.0",
+      "requirement": "attrs==3.1.0",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "croniter",
+      "version": "0.4.6",
+      "requirement": "croniter==0.4.6",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "django",
+      "version": "10",
+      "requirement": "django\u003e=10,\u003c11",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "flask",
+      "version": "",
+      "requirement": "flask",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "pyyaml",
+      "version": "6.0.3",
+      "requirement": "pyyaml==6.0.3",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "requests",
+      "version": "2.31.0",
+      "requirement": "requests[security]==2.31.0",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "urllib3",
+      "version": "2.7.0",
+      "requirement": "urllib3==2.7.0",
+      "type": "runtime",
+      "manager": "pypi"
+    }
+  ],
+  "workflow.yml": [
+    {
+      "name": "actions/checkout",
+      "version": "v4",
+      "requirement": "actions/checkout@v4",
+      "type": "build",
+      "manager": "githubactions"
+    },
+    {
+      "name": "actions/setup-go",
+      "version": "releases/v1",
+      "requirement": "actions/setup-go@releases/v1",
+      "type": "build",
+      "manager": "githubactions"
+    },
+    {
+      "name": "custom/action",
+      "version": "5c049362c2b3f4b8dd1ee0f6d0b7f2e9a0e8f7d6",
+      "requirement": "custom/action@5c049362c2b3f4b8dd1ee0f6d0b7f2e9a0e8f7d6",
+      "type": "build",
+      "manager": "githubactions"
+    }
+  ]
+}

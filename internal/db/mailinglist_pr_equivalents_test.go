@@ -32,7 +32,7 @@ func TestMailingListPREquivalentsDeclaredNotRefreshed(t *testing.T) {
 // mail (discuss/issue_event) produces ZERO rows (the forge-less filter).
 func TestMailingListPREquivalents(t *testing.T) {
 	store, ctx := emConnect(t) // runs Migrate → creates the view
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const repoGit = "https://github.com/_av_pre/repo"
 	const list = "linux-pci@_av_pre.kernel.org"

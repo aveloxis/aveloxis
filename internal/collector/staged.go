@@ -1150,8 +1150,17 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 	}
 
 	for _, entityType := range entityTypes {
+		// v0.27.53: progress visibility only — the tracker counts rows
+		// AFTER a successful processBatch and never affects the error
+		// path. Before this, a pytorch-class repo (1.32M staged
+		// messages) spent 4+ days here with zero log output.
+		prog := newProcessProgress(p.logger, repoID, entityType, processProgressEvery)
 		if err := p.store.ProcessStaged(ctx, repoID, entityType, processBatchSize, func(rows []db.StagedRow) error {
-			return p.processBatch(ctx, repoID, platID, entityType, rows)
+			if err := p.processBatch(ctx, repoID, platID, entityType, rows); err != nil {
+				return err
+			}
+			prog.add(len(rows))
+			return nil
 		}); err != nil {
 			// v0.27.28: cancellation is the shutdown asking us to stop
 			// mid-flush — expected, resumable (staging rows stay
@@ -1165,6 +1174,7 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 			}
 			return err
 		}
+		prog.finish()
 	}
 
 	// v0.26.5: derive issues.closed_by_id from the latest 'closed'

@@ -1,0 +1,10 @@
+[dependencies]
+serde = { workspace = true }
+tokio = { version = "1.38", features = ["full"] }
+local = { path = "../.." }
+fork = { git = "https://github.com/x/y" }
+anyhow = "1.0.86"
+wild = "*"
+
+[dev-dependencies]
+criterion = "0.5"

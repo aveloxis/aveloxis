@@ -28,7 +28,7 @@ func TestSchemaDeclaresAveloxisStatus(t *testing.T) {
 // TestAveloxisStatusUpsert exercises set → get → re-set (one row per status_name).
 func TestAveloxisStatusUpsert(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 	clean := func() {
 		store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.aveloxis_status WHERE status_name='_av_test_sc'`)
 	}

@@ -159,35 +159,32 @@ func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, pageSize := parsePortalPage(r)
-	repos, total, err := s.store.GetPortalGroupReposForUser(r.Context(), info.UserID, groupID, info.IsAdmin, pageSize, (page-1)*pageSize)
+	sortKey := r.URL.Query().Get("sort")
+	sortDir := r.URL.Query().Get("dir")
+	// v0.27.75: the store fills the whole row — cached queue counts,
+	// last_collected, forge-reported last_activity, and the caller's
+	// star state — and applies the allowlisted server-side sort (the
+	// collections table grammar, shared allowlist). No per-page
+	// annotation loop remains here.
+	repos, total, err := s.store.GetPortalGroupReposForUser(r.Context(), info.UserID, groupID, info.IsAdmin, page, pageSize, sortKey, sortDir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
-	// v0.27.14: annotate the PAGE (never the whole group) with ALL-TIME
-	// counts from the latest repo_info snapshot via the batched-stats
-	// cache, plus the caller's star state. OPERATOR DECISION: all-time
-	// totals, NOT the 90-day activity metric (the v0.27.4 nginx-timeout
-	// class at fleet scale).
-	ids := make([]int64, 0, len(repos))
-	for _, g := range repos {
-		ids = append(ids, g.RepoID)
-	}
-	stats, _ := s.store.GetRepoStatsBatch(r.Context(), ids)
-	starred, _ := s.store.GetUserStarredRepoIDs(r.Context(), info.UserID)
-	for i := range repos {
-		if st, ok := stats[repos[i].RepoID]; ok && st != nil {
-			repos[i].CommitsAllTime = st.MetadataCommits
-			repos[i].IssuesAllTime = st.MetadataIssues
-			repos[i].PRsAllTime = st.MetadataPRs
-		}
-		repos[i].Starred = starred[repos[i].RepoID]
-	}
 	if repos == nil {
 		repos = []db.PortalGroupRepo{}
 	}
+	// Echo the EFFECTIVE sort values (mirrors the store's allowlist —
+	// the log-the-effective-value rule applied to response envelopes).
+	if !db.CollectionRepoSortValid(sortKey) {
+		sortKey = "name"
+	}
+	if sortDir != "desc" {
+		sortDir = "asc"
+	}
 	jsonResponse(w, map[string]any{
 		"repos": repos, "total": total, "page": page, "page_size": pageSize,
+		"sort": sortKey, "dir": sortDir,
 	})
 }
 

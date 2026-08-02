@@ -37,7 +37,7 @@ func TestApacheListBridgeStoreMethodsExist(t *testing.T) {
 // worker can write bodies with a NOT-NULL repo_id).
 func TestApacheListBridgeEndToEnd(t *testing.T) {
 	store, ctx := emConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID, err := store.UpsertRepo(ctx, &model.Repo{
 		Platform: model.PlatformGitHub, GitURL: "https://github.com/apache/bridgetest",

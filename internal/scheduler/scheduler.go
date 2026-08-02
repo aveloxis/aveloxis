@@ -103,10 +103,12 @@ type Scheduler struct {
 
 	// v0.27.40 single-flight guards for the ticker-fired background
 	// tasks (see singleFlight).
-	enrichmentActive   atomic.Bool
-	searchActive       atomic.Bool
-	affiliationsActive atomic.Bool
-	breadthActive      atomic.Bool
+	enrichmentActive    atomic.Bool
+	activityClassActive atomic.Bool
+	activityHistActive  atomic.Bool
+	searchActive        atomic.Bool
+	affiliationsActive  atomic.Bool
+	breadthActive       atomic.Bool
 	// v0.27.52: shared by the orgRefreshTicker pass AND the poll-tick
 	// demand scan (maybeScanNewOrgs) so the two can never overlap.
 	userOrgScanActive atomic.Bool
@@ -333,6 +335,16 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// and left zero-event contributors stuck at the queue head
 	// forever.
 	breadthTicker := time.NewTicker(s.cfg.Collection.BreadthIntervalDuration())
+	// v0.27.57: contribution-activity classification sweep (GraphQL
+	// contributionsCollection). Cadence constants derived in
+	// activity_classification.go.
+	activityTicker := time.NewTicker(activityCheckInterval)
+	defer activityTicker.Stop()
+	// v0.27.58: daily contributor-history sweep (bootstrap + quarterly
+	// re-audit in one claim mechanism; constants derived in
+	// activity_history.go).
+	historyTicker := time.NewTicker(activityHistoryInterval)
+	defer historyTicker.Stop()
 	defer breadthTicker.Stop()
 	// v0.27.18: construct the breadth worker ONCE, here (not lazily in
 	// runBreadth, which runs in a per-tick goroutine — lazy init would
@@ -529,6 +541,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-breadthTicker.C:
 			s.singleFlight(&s.breadthActive, "contributor-breadth", func() { s.runBreadth(ctx) })
+
+		case <-activityTicker.C:
+			s.singleFlight(&s.activityClassActive, "activity-classification", func() { s.runActivityClassification(ctx) })
+
+		case <-historyTicker.C:
+			s.singleFlight(&s.activityHistActive, "activity-history", func() { s.runActivityHistory(ctx) })
 
 		case <-matviewCheckTicker.C:
 			now := time.Now()
@@ -1826,12 +1844,20 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 
 	// Refresh dm_ aggregate tables (dm_repo_annual/monthly/weekly and
 	// dm_repo_group variants). These aggregate commit data by email,
-	// affiliation, and time period.
-	aggStart := time.Now()
-	if err := s.store.RefreshAllRepoAggregates(ctx, s.logger); err != nil {
-		s.logger.Error("dm_ aggregate refresh failed", "error", err)
+	// affiliation, and time period. v0.27.56: skippable by config —
+	// the per-repo loop ran 3+ days on the production fleet
+	// (2026-07-27→30) while MatviewRebuildActive held all collection
+	// claims paused; operators can now keep the weekly matview step
+	// and refresh dm_ tables only via `aveloxis refresh-views`.
+	if s.cfg.Collection.MatviewRebuildSkipDMAggregates {
+		s.logger.Info("dm_ aggregate refresh skipped by config (matview_rebuild_skip_dm_aggregates=true) — dm_ tables update only via refresh-views/migrate")
 	} else {
-		s.logger.Info("dm_ aggregate refresh complete", "duration", time.Since(aggStart).Truncate(time.Second))
+		aggStart := time.Now()
+		if err := s.store.RefreshAllRepoAggregates(ctx, s.logger); err != nil {
+			s.logger.Error("dm_ aggregate refresh failed", "error", err)
+		} else {
+			s.logger.Info("dm_ aggregate refresh complete", "duration", time.Since(aggStart).Truncate(time.Second))
+		}
 	}
 
 	s.logger.Info("weekly matview rebuild: collection will resume on next poll tick")

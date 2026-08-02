@@ -1,0 +1,9 @@
+source "https://rubygems.org"
+gem "rails", "~> 7.1"
+gem "bootsnap", require: false
+gem "local_thing", path: "../shared"
+gem "jekyll-feed", group: :jekyll_plugins
+gem "pg", ">= 1.1", require: false
+group :test do
+  gem "rspec", "~> 3.13"
+end

@@ -120,7 +120,7 @@ func TestRunVulnDigestEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

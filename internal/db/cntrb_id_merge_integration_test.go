@@ -40,7 +40,7 @@ func TestMergeCntrbIDCollisionsBatchEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	store.SetMatviewSkip(true)
 	if err := RunMigrations(ctx, store, logger); err != nil {

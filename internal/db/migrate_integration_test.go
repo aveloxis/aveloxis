@@ -90,7 +90,7 @@ func TestRunMigrationsOnFreshDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPostgresStore: %v", err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	// Run migrations. Any non-nil return means at least one
 	// schema-changing step failed. The error message includes
@@ -148,7 +148,7 @@ func TestRunMigrationsIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPostgresStore: %v", err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("first RunMigrations: %v", err)

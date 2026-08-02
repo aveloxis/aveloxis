@@ -136,7 +136,7 @@ func approxEqual(a, b time.Time, tolerance time.Duration) bool {
 // was not restarted" or a rendering-layer issue (not a store issue).
 func TestRealignDueDates_ShiftsDueAtOnConfigChange(t *testing.T) {
 	store, ctx := realignConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedRealignRepo(ctx, t, store, "shift")
 
@@ -175,7 +175,7 @@ func TestRealignDueDates_ShiftsDueAtOnConfigChange(t *testing.T) {
 // would churn the updated_at column across the whole fleet.
 func TestRealignDueDates_Idempotent(t *testing.T) {
 	store, ctx := realignConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedRealignRepo(ctx, t, store, "idem")
 	lastCollected := time.Now().Add(-2 * time.Hour).UTC()
@@ -211,7 +211,7 @@ func TestRealignDueDates_Idempotent(t *testing.T) {
 // the worker claimed it.
 func TestRealignDueDates_SkipsCollecting(t *testing.T) {
 	store, ctx := realignConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedRealignRepo(ctx, t, store, "collecting")
 	lastCollected := time.Now().Add(-48 * time.Hour).UTC()
@@ -244,7 +244,7 @@ func TestRealignDueDates_SkipsCollecting(t *testing.T) {
 // explicit.
 func TestRealignDueDates_SkipsNullLastCollected(t *testing.T) {
 	store, ctx := realignConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedRealignRepo(ctx, t, store, "nevercoll")
 	// last_collected = NULL, due_at = now (typical state for a newly-added
@@ -274,7 +274,7 @@ func TestRealignDueDates_SkipsNullLastCollected(t *testing.T) {
 // production.
 func TestRealignDueDates_VariousDurations(t *testing.T) {
 	store, ctx := realignConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	cases := []struct {
 		name     string
@@ -332,7 +332,7 @@ func TestRealignDueDates_VariousDurations(t *testing.T) {
 // call and the post-read).
 func TestCompleteJob_BakesDueAtFromRecollectAfter(t *testing.T) {
 	store, ctx := realignConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedRealignRepo(ctx, t, store, "complete")
 	// Start in 'collecting' to match real life — CompleteJob is called
@@ -376,7 +376,7 @@ func TestCompleteJob_BakesDueAtFromRecollectAfter(t *testing.T) {
 // will still reflect the 1-day interval, and this test will fail loudly.
 func TestCompleteJob_ThenRealign_FullConfigChangeScenario(t *testing.T) {
 	store, ctx := realignConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedRealignRepo(ctx, t, store, "scenario")
 	seedQueueRow(ctx, t, store, repoID, "collecting", nil, time.Now().UTC())
@@ -444,7 +444,7 @@ func TestCompleteJob_ThenRealign_FullConfigChangeScenario(t *testing.T) {
 // explicitly claims.
 func TestRealignDueDates_OverdueRowGetsNewWindow(t *testing.T) {
 	store, ctx := realignConnect(t)
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	repoID := seedRealignRepo(ctx, t, store, "overdue")
 	// Row completed 10 days ago, old 1d setting baked due_at = 9 days ago.

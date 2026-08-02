@@ -39,12 +39,12 @@ func TestCommitResolverIntegration_Strategy4ViaSharedResolver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	store, err := db.NewPostgresStore(ctx, dsn, lg)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 
 	const (
 		repoGit = "https://github.com/_av_cr_test/repo"

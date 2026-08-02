@@ -163,7 +163,7 @@ func TestV0251MigrationIsIdempotent(t *testing.T) {
 // on the second INSERT. With the fix, both INSERTs succeed.
 func TestV0251HistoryRotationAllowsRepeatedKeys(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 
 	pool := store.pool
 
@@ -263,7 +263,7 @@ func v0251Connect(t *testing.T) (*PostgresStore, context.Context) {
 // on distribution_id / manifest_id. Pin that the PKs survive.
 func TestV0251HistoryTablesStillHavePrimaryKey(t *testing.T) {
 	store, ctx := v0251Connect(t)
-	defer store.pool.Close()
+	t.Cleanup(store.pool.Close)
 	pool := store.pool
 
 	for _, tbl := range []string{

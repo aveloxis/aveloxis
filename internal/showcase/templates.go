@@ -94,11 +94,14 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
 .chart-card { background: rgba(255,255,255,0.8); border: 1px solid rgba(37,99,235,0.16);
   border-radius: 12px; padding: 16px 18px 10px; margin-bottom: 16px; }
 .chart-card h3 { font-size: 14px; margin-bottom: 8px; }
-.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 8px;
-  color: #46557a; font-size: 12px; }
+.legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 16px;
+  margin-bottom: 8px; color: #46557a; font-size: 12px; }
 .legend .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
   margin-right: 5px; vertical-align: middle; }
 .chart-caption { color: #66739a; font-size: 11.5px; margin: 4px 0 6px; }
+.trend-chip { display: inline-block; margin-left: 8px; padding: 1px 10px; border-radius: 999px;
+  border: 1px solid rgba(70,85,122,0.25); background: rgba(70,85,122,0.05); color: #46557a;
+  font-size: 11px; font-weight: 600; font-family: ui-monospace, monospace; vertical-align: middle; }
 </style>
 {{end}}
 
@@ -331,6 +334,18 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   <p class="note-line">OpenSSF Scorecard: not yet scanned for this repository.</p>
   {{end}}
 
+  {{if .MetricCharts}}
+  <div class="section-h">CHAOSS metrics</div>
+  {{range .MetricCharts}}
+  <div class="chart-card">
+    <h3>{{.Title}}{{if .Chip}}<span class="trend-chip">{{.Chip}}</span>{{end}}</h3>
+    {{if .Legend}}<div class="legend">{{range .Legend}}<span><span class="dot" style="background: {{.Color}}"></span>{{.Label}}</span>{{end}}</div>{{end}}
+    {{.SVG}}
+    {{if .Caption}}<p class="chart-caption">{{.Caption}}</p>{{end}}
+  </div>
+  {{end}}
+  {{end}}
+
   <div class="more-note">
     <span>This is a static snapshot. The interactive version — weekly activity charts, contributor analytics, CHAOSS metrics, comparisons, and SBOM downloads — is one sign-in away.</span>
     <a class="cta" href="/login.html" onclick="window.avTrack&&avTrack('showcase-login-cta')">Sign in free →</a>
@@ -386,7 +401,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   </p>
   {{range .Charts}}
   <div class="chart-card">
-    <h3>{{.Title}}</h3>
+    <h3>{{.Title}}{{if .Chip}}<span class="trend-chip">{{.Chip}}</span>{{end}}</h3>
     <div class="legend">{{range .Legend}}<span><span class="dot" style="background: {{.Color}}"></span>{{.Label}}</span>{{end}}</div>
     {{.SVG}}
     {{if .Caption}}<p class="chart-caption">{{.Caption}}</p>{{end}}

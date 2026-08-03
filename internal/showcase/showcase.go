@@ -109,9 +109,18 @@ type RepoPageData struct {
 	VulnCritical int
 
 	// ActivityChart is the static weekly-activity SVG (v0.27.80,
-	// trailing 12 months). Nil = no collected activity in the window;
-	// the template renders the honest empty state.
+	// trailing 12 months) in the signed-in grammar: commits + issues +
+	// PRs-opened STACKED, PRs-merged as a line overlay. Nil = no
+	// collected activity in the window; the template renders the
+	// honest empty state.
 	ActivityChart *RepoChart
+
+	// MetricCharts mirrors the signed-in repo page's per-metric
+	// sections (2026-08-02 operator ask: "show all of the line graphs
+	// a user will see when logged in"): one static chart per temporal
+	// catalog metric, in catalog order. All-zero windows render flat —
+	// honest data, not an omission.
+	MetricCharts []RepoChart
 }
 
 // CollectionData drives one public collection page.
@@ -144,8 +153,12 @@ type LegendItem struct {
 type RepoChart struct {
 	Title   string
 	Caption string
-	Legend  []LegendItem
-	SVG     template.HTML
+	// Chip is the trend headline next to the title — trend.js's
+	// chipHTML wording ("↑ +1.24/week · R² 0.42" or "no meaningful
+	// trend · R² 0.03"). Empty = no fit / no trend on this chart.
+	Chip   string
+	Legend []LegendItem
+	SVG    template.HTML
 }
 
 // CompareRepoRef is one repository on the static compare demo page.

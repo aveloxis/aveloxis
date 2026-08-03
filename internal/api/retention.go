@@ -24,7 +24,7 @@ import (
 
 const retentionMetricID = "contributor_retention"
 
-// defaultRetentionThreshold mirrors 8Knot's UI default for its
+// DefaultRetentionThreshold mirrors 8Knot's UI default for its
 // drive-by/repeat contributors visualization: the "Contributions
 // Required" input is dbc.Input(type="number", min=1, max=15, step=1,
 // value=4) in 8Knot/pages/contributors/visualizations/
@@ -32,7 +32,7 @@ const retentionMetricID = "contributor_retention"
 // 2026-07-15). 8Knot classifies repeat contributors as >= the
 // threshold; ContributorRetentionSeries uses the same comparison.
 // Operator-adjustable per request via ?retention_threshold=N.
-const defaultRetentionThreshold = 4
+const DefaultRetentionThreshold = 4
 
 // Registered via a package-level var (v0.27.41, summary/18 Phase 4):
 // the codebase's ONLY init() made catalog order file-name-dependent if
@@ -54,7 +54,7 @@ var _ = func() bool {
 func parseRetentionThreshold(r *http.Request) (int, error) {
 	raw := r.URL.Query().Get("retention_threshold")
 	if raw == "" {
-		return defaultRetentionThreshold, nil
+		return DefaultRetentionThreshold, nil
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 1 {

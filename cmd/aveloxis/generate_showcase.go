@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/api"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/showcase"
 	"github.com/spf13/cobra"
@@ -432,6 +433,9 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, baseURL string,
 	if d.ActivityChart, err = buildActivityChart(ctx, store, t.repoID, now); err != nil {
 		return d, fmt.Errorf("activity chart: %w", err)
 	}
+	if d.MetricCharts, err = buildMetricCharts(ctx, store, t.repoID, now); err != nil {
+		return d, fmt.Errorf("metric charts: %w", err)
+	}
 	return d, nil
 }
 
@@ -460,8 +464,12 @@ func weeklyChartPoints(pts []db.WeeklyDataPoint, since, until time.Time) []showc
 }
 
 // buildActivityChart renders a repo snapshot page's static weekly
-// activity chart (v0.27.80). Nil chart = zero collected activity in
-// the window — the template renders the honest empty state.
+// activity chart (v0.27.80) in the signed-in grammar (v0.27.16,
+// operator-preferred 2026-08-02): commits + issues + PRs-opened
+// STACKED, PRs-merged as a line overlay (a subset of PRs-opened —
+// stacking it would double-count). Nil chart = zero collected
+// activity in the window — the template renders the honest empty
+// state.
 func buildActivityChart(ctx context.Context, store *db.PostgresStore, repoID int64, now time.Time) (*showcase.RepoChart, error) {
 	since, until := showcaseChartWindow(now)
 	ts, err := store.GetRepoTimeSeries(ctx, repoID, since, until)
@@ -471,24 +479,162 @@ func buildActivityChart(ctx context.Context, store *db.PostgresStore, repoID int
 	if len(ts.Commits)+len(ts.Issues)+len(ts.PRsOpened)+len(ts.PRsMerged) == 0 {
 		return nil, nil
 	}
-	series := []showcase.ChartSeries{
+	bars := []showcase.ChartSeries{
 		{Label: "Commits", Color: showcase.ChartPalette[0], Points: weeklyChartPoints(ts.Commits, since, until)},
 		{Label: "Issues opened", Color: showcase.ChartPalette[1], Points: weeklyChartPoints(ts.Issues, since, until)},
 		{Label: "PRs opened", Color: showcase.ChartPalette[2], Points: weeklyChartPoints(ts.PRsOpened, since, until)},
-		{Label: "PRs merged", Color: showcase.ChartPalette[3], Points: weeklyChartPoints(ts.PRsMerged, since, until)},
 	}
-	svg := showcase.RenderLineChartSVG(series, 720, 220)
+	overlay := &showcase.ChartSeries{
+		Label: "PRs merged", Color: showcase.ChartPalette[3],
+		Points: weeklyChartPoints(ts.PRsMerged, since, until),
+	}
+	svg := showcase.RenderStackedBarChart(bars, overlay, showcase.LineChartOpts{Width: 720, Height: 220, YLabel: "count"})
 	if svg == "" {
 		return nil, nil
 	}
 	chart := &showcase.RepoChart{
-		Caption: "Weekly activity, trailing 12 months — sign in for 3y/5y windows and every CHAOSS metric.",
-		SVG:     template.HTML(svg), // produced only by RenderLineChartSVG
+		Caption: "Weekly activity, trailing 12 months — sign in for 3y/5y windows and interactive charts.",
+		SVG:     template.HTML(svg), // produced only by the svgchart renderers
 	}
-	for _, s := range series {
+	for _, s := range bars {
 		chart.Legend = append(chart.Legend, showcase.LegendItem{Label: s.Label, Color: s.Color})
 	}
+	chart.Legend = append(chart.Legend, showcase.LegendItem{Label: overlay.Label + " (line)", Color: overlay.Color})
 	return chart, nil
+}
+
+// metricWeeklyChartPoints fetches one temporal metric's series for a
+// repo and densifies it onto the window's Monday grid.
+func metricWeeklyChartPoints(ctx context.Context, store *db.PostgresStore, repoID int64, key string, since, until time.Time) ([]showcase.ChartPoint, error) {
+	pts, err := store.MetricWeeklySeries(ctx, []int64{repoID}, key, "week", since, until)
+	if err != nil {
+		return nil, fmt.Errorf("metric %s: %w", key, err)
+	}
+	cp := make([]showcase.ChartPoint, 0, len(pts))
+	for _, p := range pts {
+		cp = append(cp, showcase.ChartPoint{T: p.Bucket, V: p.Value})
+	}
+	return showcase.DensifyWeekly(cp, since, until), nil
+}
+
+func chartPointsToWeekly(cp []showcase.ChartPoint) []db.WeeklyPoint {
+	out := make([]db.WeeklyPoint, 0, len(cp))
+	for _, p := range cp {
+		out = append(out, db.WeeklyPoint{Bucket: p.T, Value: p.V})
+	}
+	return out
+}
+
+func weeklyToChartPoints(pts []db.WeeklyPoint) []showcase.ChartPoint {
+	out := make([]showcase.ChartPoint, 0, len(pts))
+	for _, p := range pts {
+		out = append(out, showcase.ChartPoint{T: p.Bucket, V: p.Value})
+	}
+	return out
+}
+
+// buildMetricCharts mirrors the signed-in repo page's per-metric
+// sections (2026-08-02 operator ask: every line graph a signed-in
+// user sees) as static SVGs, in catalog order. The computed metrics
+// route through the SAME functions the compare API uses
+// (api.BurstinessSeries / api.VelocitySeries — exported for this in
+// v0.27.80 — and db.ContributorRetentionSeries at the 8Knot-parity
+// default threshold), so the public snapshots can never disagree
+// with the signed-in charts.
+func buildMetricCharts(ctx context.Context, store *db.PostgresStore, repoID int64, now time.Time) ([]showcase.RepoChart, error) {
+	since, until := showcaseChartWindow(now)
+	lineColor := showcase.ChartPalette[0]
+	caption := "Trailing 12 months, weekly — sign in for longer windows, trend analysis, and comparisons."
+
+	// The live per-metric grammar (lib/trend.js, v0.27.16): raw weekly
+	// line with point markers, dashed green OLS trend, dashed amber
+	// ±2σ residual tube with translucent fill, red dots on breaching
+	// points, and the slope/R² chip in the header.
+	trendLegend := func(seriesColor string) []showcase.LegendItem {
+		return []showcase.LegendItem{
+			{Label: "Raw weekly data", Color: seriesColor},
+			{Label: "Linear trend", Color: "#15803d"},
+			{Label: "Trend ± 2σ residual tube", Color: "#b45309"},
+			{Label: "Points breaching tube", Color: "#dc2626"},
+		}
+	}
+	var charts []showcase.RepoChart
+	line := func(title, unit string, cp []showcase.ChartPoint) {
+		svg := showcase.RenderLineChart([]showcase.ChartSeries{
+			{Label: title, Color: lineColor, Points: cp},
+		}, showcase.LineChartOpts{Width: 720, Height: 200, Trend: true, YLabel: unit})
+		if svg == "" {
+			return
+		}
+		charts = append(charts, showcase.RepoChart{
+			Title: title, Caption: caption,
+			Chip:   showcase.FitTrend(cp).ChipText(),
+			Legend: trendLegend(lineColor),
+			SVG:    template.HTML(svg),
+		})
+	}
+
+	// The seven store-backed temporal metrics, in catalog order.
+	base := map[string][]showcase.ChartPoint{}
+	for _, m := range []struct{ key, title, unit string }{
+		// Units are the catalog entries' `unit` fields (metricCatalog,
+		// internal/api/analytics.go) — the same y-axis labels the live
+		// charts render.
+		{"contributors", "Contributors", "people"},
+		{"change_requests", "Change Requests", "change requests"},
+		{"change_requests_merged", "Change Requests Merged", "change requests"},
+		{"issues", "Issues", "issues"},
+		{"issues_closed", "Issues Closed", "issues"},
+		{"code_change_commits", "Code Change Commits", "commits"},
+		{"committers", "Committers", "people"},
+	} {
+		cp, err := metricWeeklyChartPoints(ctx, store, repoID, m.key, since, until)
+		if err != nil {
+			return nil, err
+		}
+		base[m.key] = cp
+		line(m.title, m.unit, cp)
+	}
+
+	// Burstiness: Goh–Barabási over the summed activity series — the
+	// exact composition handleCompare uses.
+	activity := make([]showcase.ChartPoint, len(base["code_change_commits"]))
+	copy(activity, base["code_change_commits"])
+	for i := range activity {
+		activity[i].V += base["change_requests"][i].V + base["issues"][i].V
+	}
+	line("Burstiness", "B coefficient", weeklyToChartPoints(api.BurstinessSeries(chartPointsToWeekly(activity), 26)))
+
+	// Project velocity: averaged per-component z-scores.
+	velocity := api.VelocitySeries([][]db.WeeklyPoint{
+		chartPointsToWeekly(base["issues_closed"]),
+		chartPointsToWeekly(base["change_requests_merged"]),
+		chartPointsToWeekly(base["code_change_commits"]),
+	})
+	line("Project Velocity", "z-score", weeklyToChartPoints(velocity))
+
+	// Contributor retention: the one multi-series metric — drive-by vs
+	// repeat cohorts as stacked bars (the signed-in grammar).
+	driveBy, repeat, err := store.ContributorRetentionSeries(ctx, []int64{repoID}, "week", since, until, api.DefaultRetentionThreshold)
+	if err != nil {
+		return nil, fmt.Errorf("contributor retention: %w", err)
+	}
+	retBars := []showcase.ChartSeries{
+		{Label: "Repeat", Color: showcase.ChartPalette[2], Points: showcase.DensifyWeekly(weeklyToChartPoints(repeat), since, until)},
+		{Label: "Drive-by", Color: showcase.ChartPalette[1], Points: showcase.DensifyWeekly(weeklyToChartPoints(driveBy), since, until)},
+	}
+	if svg := showcase.RenderStackedBarChart(retBars, nil, showcase.LineChartOpts{Width: 720, Height: 200, YLabel: "contributors"}); svg != "" {
+		charts = append(charts, showcase.RepoChart{
+			Title:   "Contributor Retention (Drive-by vs Repeat)",
+			Caption: caption,
+			Legend: []showcase.LegendItem{
+				{Label: "Repeat", Color: showcase.ChartPalette[2]},
+				{Label: "Drive-by", Color: showcase.ChartPalette[1]},
+			},
+			SVG: template.HTML(svg),
+		})
+	}
+	return charts, nil
 }
 
 // buildCompareDemo renders the static 4-repo comparison page from the
@@ -518,11 +664,11 @@ func buildCompareDemo(ctx context.Context, store *db.PostgresStore, opts showcas
 		refs = append(refs, showcase.CompareRepoRef{Label: c.Label, Slug: c.Slug, Color: color})
 		legend = append(legend, showcase.LegendItem{Label: c.Label, Color: color})
 	}
-	metrics := []struct{ key, title string }{
-		{"code_change_commits", "Code Change Commits"},
-		{"issues", "Issues"},
-		{"change_requests", "Change Requests"},
-		{"contributors", "Contributors"},
+	metrics := []struct{ key, title, unit string }{
+		{"code_change_commits", "Code Change Commits", "commits"},
+		{"issues", "Issues", "issues"},
+		{"change_requests", "Change Requests", "change requests"},
+		{"contributors", "Contributors", "people"},
 	}
 	var charts []showcase.RepoChart
 	for _, m := range metrics {
@@ -541,7 +687,10 @@ func buildCompareDemo(ctx context.Context, store *db.PostgresStore, opts showcas
 				Points: showcase.DensifyWeekly(cp, since, until),
 			})
 		}
-		svg := showcase.RenderLineChartSVG(series, 720, 220)
+		// Trend on, like the live compare default: per-entity colored
+		// overlays (v0.27.16 — green/amber ×4 is unreadable), red
+		// breach dots; the overlay legend stays hidden there too.
+		svg := showcase.RenderLineChart(series, showcase.LineChartOpts{Width: 720, Height: 220, Trend: true, YLabel: m.unit})
 		if svg == "" {
 			continue
 		}

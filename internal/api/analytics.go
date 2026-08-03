@@ -545,7 +545,7 @@ func (s *Server) metricSeries(r *http.Request, ids []int64, metric, bucket strin
 		if err != nil {
 			return nil, err
 		}
-		return burstinessSeries(activity, 26), nil
+		return BurstinessSeries(activity, 26), nil
 	case "project_velocity":
 		var parts [][]db.WeeklyPoint
 		for _, m := range []string{"issues_closed", "change_requests_merged", "code_change_commits"} {
@@ -555,7 +555,7 @@ func (s *Server) metricSeries(r *http.Request, ids []int64, metric, bucket strin
 			}
 			parts = append(parts, fillBuckets(p, since, until, bucket))
 		}
-		return velocitySeries(parts), nil
+		return VelocitySeries(parts), nil
 	default:
 		return s.store.MetricWeeklySeries(ctx, ids, metric, bucket, since, until)
 	}
@@ -618,9 +618,9 @@ func nextBucket(t time.Time, bucket string) time.Time {
 	return t.AddDate(0, 0, 7)
 }
 
-// burstinessSeries: Goh–Barabási B over a trailing window of activity
+// BurstinessSeries: Goh–Barabási B over a trailing window of activity
 // counts. B = (σ−μ)/(σ+μ), clamped to 0 when the window is silent.
-func burstinessSeries(activity []db.WeeklyPoint, window int) []db.WeeklyPoint {
+func BurstinessSeries(activity []db.WeeklyPoint, window int) []db.WeeklyPoint {
 	out := make([]db.WeeklyPoint, len(activity))
 	for i := range activity {
 		lo := i - window + 1
@@ -647,9 +647,9 @@ func burstinessSeries(activity []db.WeeklyPoint, window int) []db.WeeklyPoint {
 	return out
 }
 
-// velocitySeries: per-bucket average of each component's z-score
+// VelocitySeries: per-bucket average of each component's z-score
 // against its own window mean.
-func velocitySeries(parts [][]db.WeeklyPoint) []db.WeeklyPoint {
+func VelocitySeries(parts [][]db.WeeklyPoint) []db.WeeklyPoint {
 	if len(parts) == 0 || len(parts[0]) == 0 {
 		return nil
 	}

@@ -132,11 +132,21 @@ func TestGenerateShowcaseRepoPages(t *testing.T) {
 func TestGenerateShowcaseStaticCharts(t *testing.T) {
 	src := showcaseSrc(t)
 	for _, needle := range []string{
-		"GetRepoTimeSeries(",                       // repo pages: weekly activity data
-		"MetricWeeklySeries(",                      // compare demo: headline metric series
-		"PickSimilarActivity(",                     // the similar-activity-window picker
-		`"compare.html"`,                           // the demo page itself
-		"RenderLineChartSVG(",                      // charts are baked SVG, never JS
+		"GetRepoTimeSeries(",        // repo pages: weekly activity data
+		"MetricWeeklySeries(",       // metric line charts + compare demo
+		"PickSimilarActivity(",      // the similar-activity-window picker
+		`"compare.html"`,            // the demo page itself
+		"RenderLineChart(",          // charts are baked SVG, never JS
+		"Trend: true",               // the live trend+tube grammar on every line chart
+		"RenderStackedBarChart(",    // activity + retention use the stacked grammar
+		"YLabel:",                   // catalog units ride the y-axis like the live charts
+		// The computed metrics route through the SAME functions the
+		// compare API uses — public snapshots can never disagree with
+		// the signed-in charts.
+		"api.BurstinessSeries(", "api.VelocitySeries(",
+		"ContributorRetentionSeries(", "api.DefaultRetentionThreshold",
+		"buildMetricCharts(", // every signed-in line graph, statically
+		"ChipText()",         // the slope/R² header chip (trend.js wording)
 		`slugSeen := map[string]int{"compare": 1}`, // reserved slug
 	} {
 		if !strings.Contains(src, needle) {
@@ -396,6 +406,21 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 		if !strings.Contains(string(alphaPage), needle) {
 			t.Errorf("unscanned repo page missing honest empty state %q", needle)
 		}
+	}
+	// Every signed-in line graph appears statically (2026-08-02
+	// operator ask): the seven base metrics + burstiness + velocity +
+	// retention — flat-zero windows still chart (honest data).
+	for _, needle := range []string{
+		"CHAOSS metrics", "Contributors", "Change Requests Merged",
+		"Issues Closed", "Committers", "Burstiness", "Project Velocity",
+		"Contributor Retention",
+	} {
+		if !strings.Contains(string(alphaPage), needle) {
+			t.Errorf("repo page missing metric section %q", needle)
+		}
+	}
+	if got := strings.Count(string(alphaPage), "<svg"); got < 10 {
+		t.Errorf("repo page must carry all 10 metric charts, got %d svgs", got)
 	}
 
 	// Sitemap exists and carries the pages.

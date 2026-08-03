@@ -83,17 +83,17 @@ func TestBurstinessMath(t *testing.T) {
 		return out
 	}
 	// Metronome-regular activity → B approaches −1 (σ=0).
-	reg := burstinessSeries(mk(5, 5, 5, 5, 5, 5, 5, 5), 8)
+	reg := BurstinessSeries(mk(5, 5, 5, 5, 5, 5, 5, 5), 8)
 	if got := reg[len(reg)-1].Value; got != -1 {
 		t.Errorf("constant activity must give B=-1, got %f", got)
 	}
 	// One giant spike among silence → B > 0 (bursty).
-	burst := burstinessSeries(mk(0, 0, 0, 0, 0, 0, 0, 100), 8)
+	burst := BurstinessSeries(mk(0, 0, 0, 0, 0, 0, 0, 100), 8)
 	if got := burst[len(burst)-1].Value; got <= 0 {
 		t.Errorf("spiky activity must give B>0, got %f", got)
 	}
 	// Silence → clamped to 0, not NaN.
-	silent := burstinessSeries(mk(0, 0, 0), 3)
+	silent := BurstinessSeries(mk(0, 0, 0), 3)
 	if got := silent[len(silent)-1].Value; got != 0 || math.IsNaN(got) {
 		t.Errorf("silent window must clamp to 0, got %f", got)
 	}
@@ -110,7 +110,7 @@ func TestVelocityMath(t *testing.T) {
 	}
 	// Rising components → last bucket's z-average must be positive,
 	// first negative; constant component contributes 0 (σ=0 guard).
-	v := velocitySeries([][]db.WeeklyPoint{mk(1, 2, 3, 4), mk(2, 4, 6, 8), mk(5, 5, 5, 5)})
+	v := VelocitySeries([][]db.WeeklyPoint{mk(1, 2, 3, 4), mk(2, 4, 6, 8), mk(5, 5, 5, 5)})
 	if v[0].Value >= 0 || v[len(v)-1].Value <= 0 {
 		t.Errorf("velocity z-composite: first=%f last=%f", v[0].Value, v[len(v)-1].Value)
 	}

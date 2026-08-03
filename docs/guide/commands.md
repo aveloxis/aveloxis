@@ -766,15 +766,22 @@ page under `<out>/repos/`, deduped across collections. Forks
 (`repos.forked_from` non-empty, captured by Phase 0 since v0.27.78)
 are skipped and the next non-fork slides into the freed slot. Each
 snapshot carries the cached commit/issue/PR counts, description and
-primary language, a **static weekly-activity SVG chart** (trailing 12
-months, baked at generation time — no JS, no endpoints), the latest
-OpenSSF Scorecard table, and the open-vulnerability posture — with
-honest "not yet scanned" / "analysis pending" / "no collected
-activity" states instead of fabricated zeros. Collection pages
-highlight the featured rows and carry a sign-in reminder as its own
-row directly under them; everything below the cut stays forge-linked.
-Snapshot pages ride the same sitemap, prune pass, and privacy
-contract.
+primary language, a **static weekly-activity chart** in the signed-in
+grammar (commits + issues + PRs-opened stacked bars, PRs-merged line
+overlay; trailing 12 months, baked SVG — no JS, no endpoints), **every
+temporal CHAOSS-metric chart the signed-in repo page shows** (the
+seven store-backed metrics plus burstiness, project velocity, and the
+drive-by/repeat retention cohorts — computed through the SAME
+functions the compare API uses), each line chart carrying the live
+site's full trend grammar (dashed OLS trend, ±2σ residual tube, red
+breach dots, slope/R² chip — a Go port of `lib/trend.js` with
+identical formulas), the latest OpenSSF Scorecard table,
+and the open-vulnerability posture — with honest "not yet scanned" /
+"analysis pending" / "no collected activity" states instead of
+fabricated zeros. Collection pages highlight the featured rows and
+carry a sign-in reminder as its own row directly under them;
+everything below the cut stays forge-linked. Snapshot pages ride the
+same sitemap, prune pass, and privacy contract.
 
 v0.27.80 also emits `/showcase/compare.html` — a fully static
 comparison demo of the four featured repos with the most comparable

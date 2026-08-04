@@ -342,7 +342,10 @@ count here even though they DO count for cohort membership in
 `/contributions/identities` — this endpoint ranks creative/review
 work; the identities endpoint enumerates everyone who touched the
 repo at all. `activity_class` is the v0.27.57 classification (empty =
-never checked or GitLab-side). Commits whose author was never resolved
+never checked, GitLab-side, or — since v0.27.81 — an account whose
+activity query exceeds GitHub's per-query resource budget even when
+fetched alone; those accounts are stamped checked without a class so
+they stop re-claiming). Commits whose author was never resolved
 to a contributor identity are excluded — there is no identity to rank.
 
 ### Where else are these contributors active? (v0.27.64)
@@ -380,7 +383,12 @@ Response rows per contributor:
 **Reading `backfilled_at`** (the honesty rule): a `null` stamp means
 the v0.27.58 history backfill has not reached this contributor yet —
 their empty `elsewhere` array is "history pending", NOT "active
-nowhere else". Frontends must render the two differently. `repo_id`
+nowhere else". Frontends must render the two differently. Exception
+(v0.27.81): bot accounts and GitHub system accounts (actions-user,
+web-flow, ghost) are excluded from the backfill claim entirely —
+their stamps stay `null` permanently by design (their histories are
+the most expensive to fetch and the contributor surfaces exclude
+bots from display anyway). `repo_id`
 is present only when the repo is tracked on this instance
 (GitHub-side match; the history source is GitHub-only). The current
 repo is excluded case-insensitively (GitHub's canonical casing can

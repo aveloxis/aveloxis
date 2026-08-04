@@ -44,6 +44,11 @@ type Server struct {
 	mailer              *mailer.Mailer
 	autoApproveAddLimit int
 
+	// v0.27.82: narrow seam for the shared-link auto-add in
+	// authorizeRepo (set to the store at construction; nil in bare
+	// test Servers, which fail closed to the 403).
+	sharedWithMe sharedWithMeStore
+
 	// v0.27.59: single-value 60s cache for the public repo count.
 	publicStats *publicStatsCache
 
@@ -68,7 +73,8 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 // plan: summary/api-analytics-plan-2026-07-10.md).
 func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) (*Server, error) {
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux(),
-		mailer: opts.Mailer, autoApproveAddLimit: opts.AutoApproveAddLimit}
+		mailer: opts.Mailer, autoApproveAddLimit: opts.AutoApproveAddLimit,
+		sharedWithMe: store}
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	// v0.27.59/v0.27.77: the landing page's public fleet stats — on
 	// the publicPaths allowlist (auth.go); 60s stale-on-error cache.

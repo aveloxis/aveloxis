@@ -694,10 +694,20 @@ Token semantics:
   off when you log in elsewhere.
 - Your token carries **your** repository scope — every repo in any
   of your groups (pending included; approval gates new collection,
-  not visibility of collected data). Requests for repos outside your
-  groups return a structured 403
-  (`repo_out_of_scope`) with a hint to request access via your
-  groups. Administrators are unscoped.
+  not visibility of collected data). Administrators are unscoped.
+- **Shared links (v0.27.82):** requesting a repo outside your groups
+  auto-adds it to your implicit **"Shared with Me"** group and the
+  request proceeds — repo links are shareable between signed-in
+  users (the Starred/Comparisons auto-add pattern, triggered by
+  viewing). The response that performed the add carries a one-time
+  `X-Aveloxis-Added-To-Group: Shared with Me` header (CORS-exposed)
+  so GUIs can toast it; subsequent requests are ordinary in-scope
+  reads. The auto-add LINKS the existing repo only — it never
+  enqueues collection, never registers org tracking (the v0.27.20
+  approval principle: approval gates collection, never visibility).
+  Repo IDs with no repos row still return the structured 403
+  (`repo_out_of_scope`), as do requests when the auto-add cannot be
+  performed (fail closed).
 - Treat the token like a password. There is no self-service revoke
   endpoint yet; operators can delete rows from
   `aveloxis_ops.user_session_tokens` to revoke immediately.

@@ -55,6 +55,26 @@ func (s *PostgresStore) EnsureRepoSharedWithUser(ctx context.Context, userID int
 	if !exists {
 		return false, ErrSharedRepoNotFound
 	}
+	// v0.27.85: fresh any-group membership check. authorizeRepo gates
+	// on a scope map cached for up to 60s, so a repo the user JUST
+	// gained through another group (the compare page's Comparisons
+	// auto-add, a star's Starred auto-add, an org scan landing) still
+	// looks out-of-scope here for the cache window — and pre-fix every
+	// repo-scoped request in that window minted a spurious
+	// Shared-with-Me link (the 2026-08-05 compare double-group report).
+	// The DB is the truth: already in ANY of the user's groups means
+	// allow without linking (added=false, no notice).
+	var inGroup bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM aveloxis_ops.user_repos ur
+			JOIN aveloxis_ops.user_groups g USING (group_id)
+			WHERE g.user_id = $1 AND ur.repo_id = $2)`, userID, repoID).Scan(&inGroup); err != nil {
+		return false, fmt.Errorf("shared-with-me membership check: %w", err)
+	}
+	if inGroup {
+		return false, nil
+	}
 	groupID, err := s.findOrCreateNamedGroup(ctx, userID, SharedWithMeGroupName)
 	if err != nil {
 		return false, fmt.Errorf("shared-with-me group: %w", err)

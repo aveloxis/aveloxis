@@ -100,7 +100,8 @@ var smokeRecipes = map[string]smokeRecipe{
 	"POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove": {auth: "admin", after: "POST /api/v1/collections/{collectionID}/copy"},
 	"POST /api/v1/admin/collections/{collectionID}/delete":                  {auth: "admin", after: "POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove"},
 	"PUT /api/v1/repos/{repoID}/star":                                       {auth: "user"},
-	"DELETE /api/v1/repos/{repoID}/star":                                    {auth: "user", after: "PUT /api/v1/repos/{repoID}/star"},
+	"GET /api/v1/repos/{repoID}/star":                                       {auth: "user", after: "PUT /api/v1/repos/{repoID}/star"},
+	"DELETE /api/v1/repos/{repoID}/star":                                    {auth: "user", after: "GET /api/v1/repos/{repoID}/star"},
 	// v0.27.70 collection stars — must run before the collection delete.
 	"PUT /api/v1/collections/{collectionID}/star":    {auth: "user"},
 	"DELETE /api/v1/collections/{collectionID}/star": {auth: "user", after: "PUT /api/v1/collections/{collectionID}/star"},
@@ -282,7 +283,7 @@ func TestEveryEndpointExecutes(t *testing.T) {
 
 	// Ordered pass first (recipes with dependencies), then the rest.
 	ordered := []string{
-		"PUT /api/v1/repos/{repoID}/star", "DELETE /api/v1/repos/{repoID}/star",
+		"PUT /api/v1/repos/{repoID}/star", "GET /api/v1/repos/{repoID}/star", "DELETE /api/v1/repos/{repoID}/star",
 		// v0.27.63 collections chain: link the group, copy from the
 		// live collection, unlink, then delete — so every mutation
 		// exercises a real state, not an already-deleted collection.

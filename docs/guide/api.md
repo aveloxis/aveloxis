@@ -49,7 +49,7 @@ the per-IP rate limiter.
 GET /api/v1/repos/{repoID}/stats
 ```
 
-Returns gathered (actual row counts) vs metadata (API-reported totals) for a single repo.
+Returns gathered (collected totals) vs metadata (API-reported totals) for a single repo.
 
 ```json
 {
@@ -66,7 +66,11 @@ Returns gathered (actual row counts) vs metadata (API-reported totals) for a sin
 }
 ```
 
-- **Gathered** counts come from actual rows in the data tables.
+- **Gathered** counts are the collection queue's cached cumulative
+  totals, as of the repo's last completed collection cycle (v0.27.85 —
+  the same source and freshness as the monitor, group, and collection
+  listings; previously three live `COUNT(*)` aggregates that cost
+  ~23,500 buffer pages per call on a large repo).
 - **Metadata** counts come from the most recent `repo_info` snapshot (GitHub GraphQL / GitLab API totals).
 - **Vulnerabilities** come from OSV.dev vulnerability scanning.
 - **forked_from** (v0.27.79, omitted when empty) is the upstream
@@ -813,6 +817,12 @@ Token semantics:
   collection, and stars can only target already-collected repos, so
   no approval is involved. Unstarring never removes the repo from
   the group (scope stays until the user prunes the group).
+- `GET /api/v1/repos/{repoID}/star` — `{"starred": bool}`, the
+  signed-in caller's current star state for one repo (v0.27.85 —
+  backs the repo page's star toggle; every other starred signal is
+  list-shaped). Bearer required unconditionally, same posture as
+  PUT/DELETE; starred state is caller-personal, so repo scope does
+  not apply.
 - `GET /api/v1/home/repos?limit=50` — the home-tab list: the user's
   starred repos first (always included), then the most active repos
   from their own groups over the trailing 90 days (issues + change

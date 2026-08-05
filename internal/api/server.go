@@ -136,6 +136,8 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/vulnerabilities", s.handleRepoVulnerabilities)
 	s.mux.HandleFunc("PUT /api/v1/repos/{repoID}/star", s.handleStarRepo)
 	s.mux.HandleFunc("DELETE /api/v1/repos/{repoID}/star", s.handleStarRepo)
+	// v0.27.85 — the repo page's star toggle reads its current state.
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/star", s.handleRepoStarState)
 	s.mux.HandleFunc("GET /api/v1/home/repos", s.handleHomeRepos)
 	// v0.27.62 — the "New Repositories" home feed (fleet + mine arms).
 	s.mux.HandleFunc("GET /api/v1/home/new-repos", s.handleNewRepos)

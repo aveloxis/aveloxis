@@ -36,6 +36,11 @@ func TestSharedWithMeSourceContract(t *testing.T) {
 		// idempotency is load-bearing: a repo page fires several data
 		// calls in parallel and every one runs this
 		"ON CONFLICT DO NOTHING",
+		// v0.27.85: the fresh any-group membership check — a repo
+		// already in one of the user's groups (Comparisons, Starred, a
+		// real group) must never gain a spurious Shared-with-Me link
+		// during the 60s stale-scope-cache window
+		"JOIN aveloxis_ops.user_groups g USING (group_id)",
 	} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("shared_with_me.go must contain %q", needle)
@@ -291,5 +296,37 @@ func TestEnsureRepoSharedWithUserEndToEnd(t *testing.T) {
 	if n := countScoped(`SELECT COUNT(*) FROM aveloxis_ops.user_groups WHERE user_id = $1 AND name = $2`,
 		userC, SharedWithMeGroupName); n != 1 {
 		t.Errorf("concurrent shares must converge on exactly 1 group, got %d", n)
+	}
+
+	// (8) v0.27.85: a repo ALREADY in one of the user's other groups
+	// must not gain a Shared-with-Me link. This is the fresh-DB read
+	// that closes the 60s stale-scope-cache window: authorizeRepo's
+	// cached scope can lag a Comparisons/Starred/real-group add, and
+	// pre-fix every repo-scoped request in that window minted a
+	// spurious "Shared with Me" link (the 2026-08-05 compare-page
+	// double-group report).
+	userD := seedUser("d")
+	realGroup, err := store.FindOrCreateUserGroupByName(ctx, userD, "Real Group")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO aveloxis_ops.user_repos (group_id, repo_id) VALUES ($1, $2)`,
+		realGroup, repoQ); err != nil {
+		t.Fatal(err)
+	}
+	added, err = store.EnsureRepoSharedWithUser(ctx, userD, repoQ)
+	if err != nil {
+		t.Fatalf("share of an already-grouped repo must succeed quietly, got %v", err)
+	}
+	if added {
+		t.Error("already-in-another-group repo must report added=false (no GUI notice)")
+	}
+	if n := linkCount(userD, repoQ); n != 0 {
+		t.Errorf("already-grouped repo must gain NO Shared with Me link, got %d", n)
+	}
+	if n := countScoped(`SELECT COUNT(*) FROM aveloxis_ops.user_groups WHERE user_id = $1 AND name = $2`,
+		userD, SharedWithMeGroupName); n != 0 {
+		t.Errorf("already-grouped repo must not create a Shared with Me group, got %d", n)
 	}
 }

@@ -40,6 +40,18 @@ func (s *PostgresStore) UnstarRepo(ctx context.Context, userID int, repoID int64
 	return err
 }
 
+// IsRepoStarred reports whether userID has starred repoID — the
+// targeted read behind GET /repos/{id}/star (v0.27.85, the repo page's
+// star toggle). Deliberately a single EXISTS rather than
+// GetUserStarredRepoIDs, which loads the caller's entire star set.
+func (s *PostgresStore) IsRepoStarred(ctx context.Context, userID int, repoID int64) (bool, error) {
+	var starred bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM aveloxis_ops.user_repo_stars
+		              WHERE user_id = $1 AND repo_id = $2)`, userID, repoID).Scan(&starred)
+	return starred, err
+}
+
 // GetHomeRepos returns the home-tab list for userID: every starred
 // repo (always included, however idle), then the most active repos
 // from the user's own groups over the trailing 90 days, deduplicated,

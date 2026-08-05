@@ -764,6 +764,30 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, resp)
 }
 
+// handleRepoStarState reports whether the signed-in user has starred
+// the repo (v0.27.85 — the repo page's star toggle needs the current
+// state; every other starred source is list-shaped). Same requireUser
+// posture as PUT/DELETE: starred state is caller-personal, never
+// repo-scoped, so authorizeRepo does not apply.
+func (s *Server) handleRepoStarState(w http.ResponseWriter, r *http.Request) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		return
+	}
+	starred, err := s.store.IsRepoStarred(r.Context(), info.UserID, repoID)
+	if err != nil {
+		s.logger.Error("star state read failed", "user_id", info.UserID, "repo_id", repoID, "error", err)
+		http.Error(w, "could not read star state", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{"starred": starred})
+}
+
 // handleHomeRepos returns the signed-in user's home-tab repo list:
 // starred repos first (always shown), then the most active repos from
 // their own groups over the trailing 90 days.

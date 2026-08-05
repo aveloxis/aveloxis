@@ -1,3 +1,5 @@
+loadorgs
+el-orgs.txt
 long-running-jobs/**
 scancode-logs-chaoss.tv/**
 *.err

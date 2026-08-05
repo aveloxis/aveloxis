@@ -62,10 +62,21 @@ func TestMaybeScanNewOrgsShape(t *testing.T) {
 			"the same gate fillWorkerSlots uses, so a DB outage doesn't produce a " +
 			"probe-failed WARN on every 10s poll tick (the nightly-restart storm class)")
 	}
-	if !strings.Contains(body, "singleFlight(&s.userOrgScanActive") {
-		t.Error("maybeScanNewOrgs must launch through singleFlight(&s.userOrgScanActive, ...) — " +
-			"a demand scan overlapping the 4h ticker pass (or another demand scan) would " +
-			"double-enumerate every org")
+	// v0.27.83: the demand scan has its OWN single-flight flag. Sharing
+	// userOrgScanActive with the 4h full pass meant a new registration
+	// made mid-pass waited for the ENTIRE fleet pass to finish before
+	// its ~10s pickup — the new-user first experience degraded linearly
+	// with fleet size. Overlap between the two passes is safe: every
+	// write in the scan path is idempotent (UpsertRepo / EnqueueRepo /
+	// AddRepoToGroupByID are all ON CONFLICT), and the demand pass is
+	// scoped to never-scanned rows so duplicate enumeration is bounded.
+	if !strings.Contains(body, "singleFlight(&s.userOrgDemandActive") {
+		t.Error("maybeScanNewOrgs must launch through singleFlight(&s.userOrgDemandActive, ...) — " +
+			"its own flag, so a long 4h full pass can never starve the ~10s pickup of new registrations")
+	}
+	if strings.Contains(body, "singleFlight(&s.userOrgScanActive") {
+		t.Error("maybeScanNewOrgs must NOT share userOrgScanActive with the full pass — " +
+			"that is the pre-v0.27.83 starvation shape (new org adds waited hours behind the fleet pass)")
 	}
 	if !regexp.MustCompile(`refreshUserOrgs\(ctx,\s*true\)`).MatchString(body) {
 		t.Error("maybeScanNewOrgs must run the SCOPED scan (refreshUserOrgs(ctx, true)) — " +
@@ -95,7 +106,7 @@ func TestPollLoopTriggersDemandOrgScan(t *testing.T) {
 	}
 }
 
-func TestUserOrgRefreshTickerSharesSingleFlightGuard(t *testing.T) {
+func TestUserOrgRefreshTickerKeepsOwnSingleFlightGuard(t *testing.T) {
 	src, err := os.ReadFile("scheduler.go")
 	if err != nil {
 		t.Fatalf("read scheduler.go: %v", err)
@@ -113,8 +124,8 @@ func TestUserOrgRefreshTickerSharesSingleFlightGuard(t *testing.T) {
 	}
 	if !strings.Contains(arm, "singleFlight(&s.userOrgScanActive") {
 		t.Error("the orgRefreshTicker's refreshUserOrgs invocation must route through " +
-			"singleFlight(&s.userOrgScanActive, ...) — the demand scan and the ticker pass " +
-			"share one guard so they can never overlap")
+			"singleFlight(&s.userOrgScanActive, ...) — full passes must never overlap " +
+			"each other (the demand scan runs under its own flag since v0.27.83)")
 	}
 	if !regexp.MustCompile(`refreshUserOrgs\(ctx,\s*false\)`).MatchString(arm) {
 		t.Error("the ticker pass must stay UNSCOPED (refreshUserOrgs(ctx, false)) — " +

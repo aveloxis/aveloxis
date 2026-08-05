@@ -109,9 +109,20 @@ type Scheduler struct {
 	searchActive        atomic.Bool
 	affiliationsActive  atomic.Bool
 	breadthActive       atomic.Bool
-	// v0.27.52: shared by the orgRefreshTicker pass AND the poll-tick
-	// demand scan (maybeScanNewOrgs) so the two can never overlap.
-	userOrgScanActive atomic.Bool
+	// v0.27.52: guards the orgRefreshTicker's unscoped full pass.
+	// v0.27.83: the poll-tick demand scan (maybeScanNewOrgs) runs
+	// under its OWN flag below — sharing this one meant an org
+	// registered mid-pass waited for the ENTIRE fleet pass before its
+	// ~10s pickup. Overlap between the two passes is safe: every
+	// write in the scan path is idempotent (ON CONFLICT), and the
+	// demand pass is scoped to never-scanned rows.
+	userOrgScanActive   atomic.Bool
+	userOrgDemandActive atomic.Bool
+
+	// ghAPIBase is the GitHub REST base URL the org scan enumerates
+	// against — "https://api.github.com" in production, an httptest
+	// server in the v0.27.83 dedup behavioral suite.
+	ghAPIBase string
 
 	// v0.27.35 large-repo skip (collection.skip_largest_percent): the
 	// cached top-N% repo_id set excluded from claims, refreshed lazily
@@ -190,6 +201,9 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 		logger:   logger,
 		cfg:      cfg,
 		workerID: workerID,
+		// Overridable in tests so the org scan can run against an
+		// httptest GitHub (v0.27.83 dedup behavioral suite).
+		ghAPIBase: "https://api.github.com",
 	}
 
 	// Install a permanent-redirect hook on both platform clients so that a
@@ -535,8 +549,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-orgRefreshTicker.C:
 			safego.Go(s.logger, "org-refresh", func() { s.refreshOrgs(ctx) })
 			// Full pass (all orgs) — this is what discovers new repos in
-			// long-tracked orgs. Shares userOrgScanActive with the
-			// poll-tick demand scan so the two never overlap.
+			// long-tracked orgs. Guarded by its own flag so full passes
+			// never overlap EACH OTHER; the poll-tick demand scan runs
+			// under a separate flag since v0.27.83 (see maybeScanNewOrgs).
 			s.singleFlight(&s.userOrgScanActive, "user-org-refresh", func() { s.refreshUserOrgs(ctx, false) })
 
 		case <-breadthTicker.C:
@@ -1896,7 +1911,15 @@ func (s *Scheduler) maybeScanNewOrgs(ctx context.Context) {
 	if !pending {
 		return
 	}
-	s.singleFlight(&s.userOrgScanActive, "user-org-demand-scan", func() {
+	// v0.27.83: the demand scan runs under its OWN single-flight flag.
+	// Sharing userOrgScanActive with the 4h full pass meant a new
+	// registration made mid-pass waited for the entire fleet pass
+	// before its quick pickup — a first-experience regression that
+	// grows with fleet size. Overlapping the full pass is safe: every
+	// write in the scan path is idempotent, and this pass is scoped to
+	// never-scanned rows so duplicate enumeration is bounded to orgs
+	// registered while a full pass happens to be running.
+	s.singleFlight(&s.userOrgDemandActive, "user-org-demand-scan", func() {
 		s.logger.Info("new org registrations detected — scanning now instead of waiting for the org refresh ticker")
 		s.refreshUserOrgs(ctx, true)
 	})
@@ -1925,7 +1948,28 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 		}
 	}
 
-	s.logger.Info("scanning user org requests", "count", len(orgs), "only_never_scanned", onlyNeverScanned)
+	// v0.27.83 dedup: user_org_requests is unique per (group_id,
+	// org_url), so an org tracked by N groups is N rows — and the
+	// pre-v0.27.83 loop enumerated the SAME org N times per pass (API
+	// pages × N plus per-repo DB round trips × N; the multiplier grows
+	// with users × popular orgs). Rows are now resolved and
+	// rejected-gated PER ROW first (exact v0.27.20 semantics: a
+	// rejected group's row is never linked and never stamped), then
+	// grouped by (platform, lowercased org name) — GitHub org names
+	// are case-insensitive — so each distinct org is enumerated ONCE,
+	// its repos linked into ALL registered groups, and ALL its rows
+	// stamped.
+	type orgEntry struct {
+		requestID int64
+		groupID   int64
+	}
+	type orgScan struct {
+		name     string // first-seen casing — used in the API path
+		platform string
+		entries  []orgEntry
+	}
+	var order []string // claim order (most-stale org first)
+	grouped := map[string]*orgScan{}
 	for _, org := range orgs {
 		groupID, err := s.store.GetGroupIDForOrgRequest(ctx, org.OrgRequestID)
 		if err != nil {
@@ -1943,17 +1987,32 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 			continue
 		}
 
+		key := org.Platform + "\x00" + strings.ToLower(org.OrgName)
+		g, ok := grouped[key]
+		if !ok {
+			g = &orgScan{name: org.OrgName, platform: org.Platform}
+			grouped[key] = g
+			order = append(order, key)
+		}
+		g.entries = append(g.entries, orgEntry{requestID: org.OrgRequestID, groupID: groupID})
+	}
+
+	s.logger.Info("scanning user org requests",
+		"count", len(orgs), "distinct_orgs", len(order), "only_never_scanned", onlyNeverScanned)
+	for _, key := range order {
+		g := grouped[key]
+
 		var repos []struct{ URL, Owner, Name string }
-		switch org.Platform {
+		switch g.platform {
 		case "github":
 			if s.ghKeys == nil {
-				continue
+				continue // rows stay unstamped — retried when keys exist
 			}
-			httpC := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
+			httpC := platform.NewHTTPClient(s.ghAPIBase, s.ghKeys, s.logger, platform.AuthGitHub)
 			// Try /orgs/ first, fall back to /users/ for personal accounts.
 			basePaths := []string{
-				fmt.Sprintf("/orgs/%s/repos", org.OrgName),
-				fmt.Sprintf("/users/%s/repos", org.OrgName),
+				fmt.Sprintf("/orgs/%s/repos", g.name),
+				fmt.Sprintf("/users/%s/repos", g.name),
 			}
 			for _, basePath := range basePaths {
 				page := 1
@@ -1990,9 +2049,21 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 			}
 		}
 
-		newCount := 0
+		// Distinct target groups (case-variant registrations of the same
+		// org within one group collapse here).
+		var groupIDs []int64
+		seenGroup := map[int64]bool{}
+		for _, e := range g.entries {
+			if !seenGroup[e.groupID] {
+				seenGroup[e.groupID] = true
+				groupIDs = append(groupIDs, e.groupID)
+			}
+		}
+
+		newCounts := map[int64]int{}
 		for _, repo := range repos {
-			// Ensure repo exists.
+			// Ensure repo exists — ONCE per repo, regardless of how many
+			// groups track the org.
 			repoID, findErr := s.store.FindRepoByURL(ctx, repo.URL)
 			if findErr != nil {
 				s.logger.Warn("failed to find repo by URL", "url", repo.URL, "error", findErr)
@@ -2012,18 +2083,26 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 					s.logger.Warn("failed to enqueue repo", "repo_id", repoID, "error", enqErr)
 				}
 			}
-			// Add to user group (ON CONFLICT DO NOTHING for existing).
-			if err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err == nil {
-				newCount++
+			// Link into every registered group (ON CONFLICT DO NOTHING).
+			for _, gid := range groupIDs {
+				if err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err == nil {
+					newCounts[gid]++
+				}
 			}
 		}
 
-		if err := s.store.MarkOrgRequestScanned(ctx, org.OrgRequestID); err != nil {
-			s.logger.Warn("failed to mark org request scanned", "org_request_id", org.OrgRequestID, "error", err)
+		// Stamp EVERY registration row for this org — they all shared
+		// the one enumeration.
+		for _, e := range g.entries {
+			if err := s.store.MarkOrgRequestScanned(ctx, e.requestID); err != nil {
+				s.logger.Warn("failed to mark org request scanned", "org_request_id", e.requestID, "error", err)
+			}
 		}
-		if newCount > 0 {
-			s.logger.Info("user org scan found new repos",
-				"org", org.OrgName, "group_id", groupID, "new_repos", newCount)
+		for _, gid := range groupIDs {
+			if newCounts[gid] > 0 {
+				s.logger.Info("user org scan found new repos",
+					"org", g.name, "group_id", gid, "new_repos", newCounts[gid])
+			}
 		}
 	}
 }

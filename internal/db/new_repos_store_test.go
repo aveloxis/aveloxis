@@ -43,6 +43,13 @@ func TestGetNewReposFleetArmGating(t *testing.T) {
 	if !strings.Contains(src, "repo_archived") {
 		t.Error("archived repos don't belong in a new-repos feed")
 	}
+	// v0.27.84: the feed shows repos only AFTER their first completed
+	// collection — a never-collected repo's page is all zeros and reads
+	// as broken (operator: "they look frankly kind of disappointing
+	// every single time").
+	if !strings.Contains(src, "last_collected IS NOT NULL") {
+		t.Error("feed must require collection_queue.last_collected IS NOT NULL (first pass complete)")
+	}
 }
 
 // Owner matching is case-insensitive: GitHub org logins are
@@ -64,6 +71,7 @@ func TestGetNewReposEndToEnd(t *testing.T) {
 	clean := func() {
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_org_requests WHERE org_url LIKE 'https://github.com/_avnewr%'`)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE name LIKE '_avnewr%'`)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner ILIKE '_avnewr%')`)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner ILIKE '_avnewr%'`)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name LIKE '_avnewr%'`)
 	}
@@ -104,19 +112,33 @@ func TestGetNewReposEndToEnd(t *testing.T) {
 	mkOrg(plainID, plainGroup, "_avnewr_mineorg")
 	mkOrg(adminID, rejGroup, "_avnewr_rejorg")
 
-	mkRepo := func(owner, name string, age time.Duration) {
-		if _, err := store.pool.Exec(ctx, `
+	// v0.27.84: rows surface only after their FIRST completed collection,
+	// so fixtures that must appear need a queue row with last_collected
+	// set; the "uncollected" fixture proves the exclusion.
+	mkRepo := func(owner, name string, age time.Duration, collected bool) {
+		var id int64
+		if err := store.pool.QueryRow(ctx, `
 			INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id, added_at)
-			VALUES ($1, $2, $3, 1, NOW() - $4::interval)`,
-			"https://github.com/"+owner+"/"+name, owner, name, age.String()); err != nil {
+			VALUES ($1, $2, $3, 1, NOW() - $4::interval) RETURNING repo_id`,
+			"https://github.com/"+owner+"/"+name, owner, name, age.String()).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		lc := "NULL"
+		if collected {
+			lc = "NOW()"
+		}
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO aveloxis_ops.collection_queue (repo_id, status, priority, due_at, last_collected)
+			VALUES ($1, 'queued', 100, NOW(), `+lc+`)`, id); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Case-variant owner spelling proves the LOWER match.
-	mkRepo("_AVNEWR_fleetorg", "fresh", 24*time.Hour)
-	mkRepo("_avnewr_fleetorg", "stale", 200*24*time.Hour) // outside any window
-	mkRepo("_avnewr_mineorg", "mine1", 24*time.Hour)
-	mkRepo("_avnewr_rejorg", "hidden", 24*time.Hour) // rejected group → never surfaces
+	mkRepo("_AVNEWR_fleetorg", "fresh", 24*time.Hour, true)
+	mkRepo("_avnewr_fleetorg", "stale", 200*24*time.Hour, true)    // outside any window
+	mkRepo("_avnewr_fleetorg", "uncollected", 24*time.Hour, false) // never collected → excluded
+	mkRepo("_avnewr_mineorg", "mine1", 24*time.Hour, true)
+	mkRepo("_avnewr_rejorg", "hidden", 24*time.Hour, true) // rejected group → never surfaces
 
 	since := time.Now().AddDate(0, 0, -30)
 
@@ -139,6 +161,9 @@ func TestGetNewReposEndToEnd(t *testing.T) {
 	}
 	if find(fleet, "stale") {
 		t.Error("fleet arm must window on added_at — 200-day-old repo leaked in")
+	}
+	if find(fleet, "uncollected") || find(mine, "uncollected") {
+		t.Error("never-collected repos must not surface — the feed waits for the first completed pass (v0.27.84)")
 	}
 	if find(fleet, "hidden") || find(mine, "hidden") {
 		t.Error("rejected-group org repos must never surface")

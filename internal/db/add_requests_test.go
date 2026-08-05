@@ -51,7 +51,7 @@ func TestAddRepoToGroupByIDStaysEnqueueFree(t *testing.T) {
 // directly. Presence in user_org_requests = approved to scan.
 func TestOrgRegistrationGatedOnAdmin(t *testing.T) {
 	body := extractFunctionBody(t, "web_store.go", "AddOrgToGroup")
-	for _, needle := range []string{"IsUserAdmin", "createAddRequest", "user_org_requests", `"rejected"`} {
+	for _, needle := range []string{"IsUserAdmin", "createAddRequest", "user_org_requests", `"rejected"`, "IsOrgRegisteredAnywhere"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("AddOrgToGroup must gate registration on admin role (needle %q missing) — "+
 				"a non-admin org registration must pend on an add-request, never reach "+

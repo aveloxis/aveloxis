@@ -51,6 +51,8 @@ WITH org_set AS (
 SELECT r.repo_id, r.repo_owner, r.repo_name, os.org_login, r.added_at
 FROM aveloxis_data.repos r
 JOIN org_set os ON LOWER(r.repo_owner) = os.org_login
+JOIN aveloxis_ops.collection_queue q
+  ON q.repo_id = r.repo_id AND q.last_collected IS NOT NULL
 WHERE r.added_at >= $1
   AND NOT COALESCE(r.repo_archived, FALSE)
 ORDER BY r.added_at DESC, r.repo_id DESC

@@ -796,7 +796,10 @@ Token semantics:
   internal repos.repo_archived flag) and `last_activity_at`
   (most recent observed commit/issue/PR timestamp; omitted when the
   repo has no activity). The GUI derives the Archived/Dormant chip
-  and the historical chart window from these.
+  and the historical chart window from these. v0.27.84 adds
+  `last_collected` (omitted when the repo has never completed a
+  collection pass) — the GUI's signal to render the "queued for
+  first collection" banner instead of misleading zeros.
 - `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
   `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
   dependency-analysis phase has not recorded anything for this repo
@@ -828,6 +831,10 @@ Token semantics:
   `/repos/search`). `added_at` is the v0.27.60 fleet-entry stamp;
   rows created before that release carry a last-touch approximation,
   so the feed is honest-noisy for one window after that deploy.
+  v0.27.84: rows surface only AFTER the repo's first completed
+  collection pass — a freshly-added, never-collected repo would land
+  users on an all-zeros page, so it stays out of the feed until it
+  has data to show.
   Known v1 edge: GitLab nested-group paths (`group/subgroup`) don't
   equal `repo_owner` and fall out of the feed.
 - `GET /api/v1/repos/{repoID}/scorecard` — the current OpenSSF
@@ -853,18 +860,23 @@ require the caller's user to be an administrator (403 otherwise).
 
 Per-user:
 
-- `GET /api/v1/me` — `{user_id, login, is_admin, scope_repo_count}`
-  (`login` added v0.27.77 so the GUI nav shows the real signed-in
-  identity).
-  `scope_repo_count` is `-1` for admins (unscoped). The GUI uses
-  `is_admin` to decide whether to render the admin navigation.
+- `GET /api/v1/me` — `{user_id, login, name, avatar_url, is_admin,
+  scope_repo_count}` (`login` added v0.27.77; `name` + `avatar_url`
+  added v0.27.84 — the home greeting and nav avatar render the REAL
+  signed-in identity, stored from OAuth and refreshed on every
+  login). `scope_repo_count` is `-1` for admins (unscoped). The GUI
+  uses `is_admin` to decide whether to render the admin navigation.
 - `GET /api/v1/groups` — the caller's groups:
-  `{groups: [{group_id, name, status, repo_count, favorited}]}`.
-  `status` is `approved`, `pending`, or `rejected` (empty legacy
-  values normalize to `approved`).
+  `{groups: [{group_id, name, status, repo_count, favorited,
+  pending_adds}]}`. `status` is `approved`, `pending`, or `rejected`
+  (empty legacy values normalize to `approved`). `pending_adds`
+  (v0.27.84) counts the group's pending addition requests — the GUI
+  renders "N additions awaiting approval" from it, since under the
+  v0.27.20 model the GROUP is approved while its ADDITIONS may pend.
 - `POST /api/v1/groups` with `{"name": "..."}` — create a group.
-  Non-admin users' groups start `pending` per the v0.19.0 approval
-  workflow. Returns `{group_id}`.
+  Groups are created `approved` (v0.27.20 — the approval unit is the
+  ADDITION of not-yet-collected repos/orgs, never the group
+  container). Returns `{group_id}`.
 - `GET /api/v1/groups/{groupID}/repos?page=1&page_size=50&sort=name&dir=asc`
   — one page of the group's repos in a pagination envelope:
   `{repos: [...], total, page, page_size, sort, dir}` (`page_size`
@@ -892,8 +904,16 @@ Per-user:
   batched add (one approval unit per v0.27.20). `urls` wins when both
   fields are present; the single-`url` body remains accepted. The
   response carries `submitted` plus the outcome counts
-  `{linked, enqueued, pending_approval?, request_id?}`. Orgs stay one
-  per request — a multi-URL `kind: "org"` body is a 400.
+  `{linked, enqueued, pending_approval?, request_id?, registered?}`.
+  Org outcomes (v0.27.84): `registered: 1` means the org is tracked
+  NOW — admin adds always register, and a non-admin's add of an org
+  that is ALREADY registered in any group auto-approves (it adds zero
+  new collection: the org's repos are already tracked and its future
+  repos already auto-enqueue via the existing registration; an
+  auto-approved audit row is still recorded). A non-admin's add of a
+  NEW org returns `pending_approval` — registering a new org is an
+  open-ended future-repo commitment, so it awaits admin review.
+  Orgs stay one per request — a multi-URL `kind: "org"` body is a 400.
 - `GET /api/v1/groups/{groupID}/orgs` — the organizations tracked in
   the group (2026-07-21; read-only — registration goes through the
   POST above with `kind: "org"`). Envelope:

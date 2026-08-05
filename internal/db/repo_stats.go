@@ -41,6 +41,11 @@ type RepoStats struct {
 	// v0.27.78; model.UnknownForkParent when the upstream was deleted).
 	// Empty = not a fork. Drives the GUI's "Forked from X" chip.
 	ForkedFrom string `json:"forked_from,omitempty"`
+	// LastCollected (v0.27.84) is collection_queue.last_collected —
+	// the GUI's ONLY way to distinguish "queued for first collection"
+	// (nil → prominent queued banner) from "collected, zero activity"
+	// (honest zeros). Absent when the repo has no queue row too.
+	LastCollected *time.Time `json:"last_collected,omitempty"`
 }
 
 // SearchRepoResult is a minimal repo record for search results.
@@ -143,6 +148,15 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 		return nil, fmt.Errorf("vulnerability counts: %w", err)
 	}
 
+	// v0.27.84: queue freshness — nil for never-collected repos (and
+	// repos with no queue row), driving the GUI's queued banner.
+	// ErrNoRows degrades to nil like the metadata block.
+	if err := s.pool.QueryRow(ctx,
+		`SELECT last_collected FROM aveloxis_ops.collection_queue WHERE repo_id = $1`,
+		repoID).Scan(&st.LastCollected); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("queue last_collected: %w", err)
+	}
+
 	return st, nil
 }
 
@@ -188,6 +202,7 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 		       COALESCE(q.last_issues, 0),
 		       COALESCE(q.last_prs, 0),
 		       COALESCE(q.last_commits, 0),
+		       q.last_collected,
 		       COALESCE(ri.pr_count, 0),
 		       COALESCE(ri.issues_count, 0),
 		       COALESCE(ri.commit_count, 0)
@@ -207,13 +222,15 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	for rows.Next() {
 		var id int64
 		var gIssues, gPRs, gCommits, mPRs, mIssues, mCommits int
-		if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &mPRs, &mIssues, &mCommits); err != nil {
+		var lastCollected *time.Time
+		if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &lastCollected, &mPRs, &mIssues, &mCommits); err != nil {
 			return nil, fmt.Errorf("batch stats scan: %w", err)
 		}
 		if st, ok := result[id]; ok {
 			st.GatheredIssues = gIssues
 			st.GatheredPRs = gPRs
 			st.GatheredCommits = gCommits
+			st.LastCollected = lastCollected
 			st.MetadataPRs = mPRs
 			st.MetadataIssues = mIssues
 			st.MetadataCommits = mCommits

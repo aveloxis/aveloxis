@@ -108,14 +108,7 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 			return 0, fmt.Errorf("lookup user by login: %w", err)
 		}
 		// Not found — create.
-		firstName := info.Name
-		if idx := strings.Index(firstName, " "); idx > 0 {
-			firstName = firstName[:idx]
-		}
-		lastName := ""
-		if idx := strings.LastIndex(info.Name, " "); idx > 0 {
-			lastName = info.Name[idx+1:]
-		}
+		firstName, lastName := splitOAuthName(info.Name)
 
 		// v0.19.0: first user is auto-admin. Count existing rows; if
 		// zero, set admin = TRUE on this INSERT so the bootstrap
@@ -152,7 +145,11 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 		return userID, err
 	}
 
-	// Found — update OAuth fields.
+	// Found — update OAuth fields. v0.27.84: the display name is
+	// refreshed on every login too (it used to be written only at
+	// first signup, going stale after provider-side renames); an
+	// empty provider name preserves the stored one.
+	freshFirst, freshLast := splitOAuthName(info.Name)
 	_, err = s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.users SET
 			email = COALESCE(NULLIF($2, ''), email),
@@ -162,11 +159,13 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 			gl_user_id = COALESCE(gl_user_id, $6),
 			gl_username = COALESCE(NULLIF($7, ''), gl_username),
 			oauth_provider = $8,
+			first_name = CASE WHEN $9 = '' THEN first_name ELSE $9 END,
+			last_name = CASE WHEN $9 = '' THEN last_name ELSE $10 END,
 			data_collection_date = NOW()
 		WHERE user_id = $1`,
 		userID, info.Email, info.AvatarURL,
 		info.GHUserID, info.GHLogin, info.GLUserID, info.GLUsername,
-		info.Provider)
+		info.Provider, freshFirst, freshLast)
 	return userID, err
 }
 
@@ -201,14 +200,22 @@ type UserGroup struct {
 	Favorited bool
 	RepoCount int
 	Status    string
+	// PendingAdds (v0.27.84) counts the group's pending
+	// collection_add_requests so the GUI can render the REAL state:
+	// the group itself is approved (v0.27.20 — the approval unit is
+	// the ADDITION), but its additions may await review.
+	PendingAdds int
 }
 
-// GetUserGroups returns all groups for a user with repo counts.
+// GetUserGroups returns all groups for a user with repo counts and
+// pending-addition counts (the subquery rides idx_add_requests_group).
 func (s *PostgresStore) GetUserGroups(ctx context.Context, userID int) ([]UserGroup, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT g.group_id, g.name, g.favorited,
 		       COUNT(ur.repo_id) AS repo_count,
-		       COALESCE(g.status, 'approved') AS status
+		       COALESCE(g.status, 'approved') AS status,
+		       (SELECT COUNT(*) FROM aveloxis_ops.collection_add_requests ar
+		        WHERE ar.group_id = g.group_id AND ar.status = 'pending') AS pending_adds
 		FROM aveloxis_ops.user_groups g
 		LEFT JOIN aveloxis_ops.user_repos ur ON ur.group_id = g.group_id
 		WHERE g.user_id = $1
@@ -221,7 +228,7 @@ func (s *PostgresStore) GetUserGroups(ctx context.Context, userID int) ([]UserGr
 	var groups []UserGroup
 	for rows.Next() {
 		var g UserGroup
-		if err := rows.Scan(&g.GroupID, &g.Name, &g.Favorited, &g.RepoCount, &g.Status); err != nil {
+		if err := rows.Scan(&g.GroupID, &g.Name, &g.Favorited, &g.RepoCount, &g.Status, &g.PendingAdds); err != nil {
 			return nil, err
 		}
 		groups = append(groups, g)
@@ -413,13 +420,55 @@ func (s *PostgresStore) AddRepoToGroup(ctx context.Context, userID int, groupID 
 	return err
 }
 
+// splitOAuthName splits a provider display name into the users
+// table's first/last columns: first token before the first space,
+// last token after the last space (middle names fall away — the
+// original v0.19.0 rule, now shared by the INSERT and UPDATE paths).
+func splitOAuthName(name string) (first, last string) {
+	first = name
+	if idx := strings.Index(first, " "); idx > 0 {
+		first = first[:idx]
+	}
+	if idx := strings.LastIndex(name, " "); idx > 0 {
+		last = name[idx+1:]
+	}
+	return first, last
+}
+
+// IsOrgRegisteredAnywhere reports whether an org URL is already
+// registered for scanning in ANY group (case-insensitive — org URLs
+// are stored case-preserved and GitHub logins are case-insensitive).
+// This is the v0.27.84 auto-approve criterion: a duplicate
+// registration of an already-registered org adds ZERO new collection
+// (the v0.27.83 scan dedup enumerates each distinct org once, and the
+// org's future repos already auto-enqueue via the existing
+// registration), so a non-admin adding one needs no review.
+func (s *PostgresStore) IsOrgRegisteredAnywhere(ctx context.Context, orgURL string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM aveloxis_ops.user_org_requests
+		WHERE LOWER(org_url) = LOWER($1))`, orgURL).Scan(&exists)
+	return exists, err
+}
+
 // AddOrgToGroup registers an org for tracking under the v0.27.20
 // per-add approval rule: an ADMIN's registration lands in
 // user_org_requests immediately (presence there = approved to scan;
 // the caller may fire an immediate scan); a non-admin's registration
-// creates a pending collection_add_requests row (kind='org') that an
-// admin must approve — org registrations are unbounded mass adds by
-// definition, so they ALWAYS pend regardless of auto_approve_add_limit.
+// of a NEW org creates a pending collection_add_requests row
+// (kind='org') that an admin must approve — a new org is an unbounded
+// future-repo commitment, so it pends regardless of
+// auto_approve_add_limit.
+//
+// v0.27.84 refinement (operator decision, 2026-08-05): a non-admin's
+// registration of an org that is ALREADY registered in any group
+// auto-approves — it leaves an auto-approved audit row (decided_by=0,
+// the auto_approve_add_limit pattern) and registers immediately. This
+// preserves the "no EnqueueRepo reachable from a non-admin handler
+// without approval" invariant structurally: the org's repos are
+// already tracked and its future repos already auto-enqueue via the
+// existing registration, so this branch adds no new enqueue
+// reachability.
 func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID int64, orgURL string) (OrgAddOutcome, error) {
 	var out OrgAddOutcome
 	if err := s.verifyGroupOwned(ctx, userID, groupID); err != nil {
@@ -436,12 +485,25 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 	orgURL = strings.TrimSuffix(strings.TrimSpace(orgURL), "/")
 	isAdmin, _ := s.IsUserAdmin(ctx, userID)
 	if !isAdmin {
-		reqID, err := s.createAddRequest(ctx, userID, groupID, "org", orgURL, nil, "pending")
+		registered, regErr := s.IsOrgRegisteredAnywhere(ctx, orgURL)
+		if regErr != nil {
+			return out, fmt.Errorf("check org registration: %w", regErr)
+		}
+		if !registered {
+			reqID, err := s.createAddRequest(ctx, userID, groupID, "org", orgURL, nil, "pending")
+			if err != nil {
+				return out, err
+			}
+			out.RequestID = reqID
+			return out, nil
+		}
+		// Already registered → auto-approve with an audit row, then
+		// fall through to the registration insert below.
+		reqID, err := s.createAddRequest(ctx, userID, groupID, "org", orgURL, nil, "approved")
 		if err != nil {
 			return out, err
 		}
 		out.RequestID = reqID
-		return out, nil
 	}
 
 	orgName, platformName := parseOrgURLMeta(orgURL)

@@ -22,22 +22,25 @@ Returns the server status and version.
 {"status": "ok", "version": "0.9.0"}
 ```
 
-### Public repository count
+### Public fleet stats
 
 ```
 GET /api/v1/public/stats
 ```
 
 Public (no token required, like `/health`) — the landing page's
-"repositories under analysis" number. Returns the TOTAL repository
-count in the catalog (v0.27.68: archived repos included — they carry
-full collected history and analysis, and the number should agree
-with the monitor's queue view), served from a 60-second
-cache that keeps the last good value if the database hiccups. Still
-subject to the per-IP rate limiter.
+fleet-scale numbers. `repos` is the TOTAL repository count in the
+catalog (v0.27.68: archived repos included — they carry full
+collected history and analysis, and the number should agree with the
+monitor's queue view). v0.27.77 adds `commits`, `issues`, and `prs`
+(sums of the collection queue's cached cumulative per-repo gathered
+totals — never a live scan of the data tables) and `contributors`
+(the contributor catalog count). Served from a 60-second cache that
+keeps the last good values if the database hiccups. Still subject to
+the per-IP rate limiter.
 
 ```json
-{"repos": 12483}
+{"repos": 94104, "commits": 512345678, "issues": 9123456, "prs": 8123456, "contributors": 1712345}
 ```
 
 ### Repository Statistics
@@ -46,7 +49,7 @@ subject to the per-IP rate limiter.
 GET /api/v1/repos/{repoID}/stats
 ```
 
-Returns gathered (actual row counts) vs metadata (API-reported totals) for a single repo.
+Returns gathered (collected totals) vs metadata (API-reported totals) for a single repo.
 
 ```json
 {
@@ -58,13 +61,24 @@ Returns gathered (actual row counts) vs metadata (API-reported totals) for a sin
   "metadata_issues": 810,
   "metadata_commits": 5100,
   "vulnerabilities": 12,
-  "critical_vulns": 2
+  "critical_vulns": 2,
+  "forked_from": "NixOS/nixpkgs"
 }
 ```
 
-- **Gathered** counts come from actual rows in the data tables.
+- **Gathered** counts are the collection queue's cached cumulative
+  totals, as of the repo's last completed collection cycle (v0.27.85 —
+  the same source and freshness as the monitor, group, and collection
+  listings; previously three live `COUNT(*)` aggregates that cost
+  ~23,500 buffer pages per call on a large repo).
 - **Metadata** counts come from the most recent `repo_info` snapshot (GitHub GraphQL / GitLab API totals).
 - **Vulnerabilities** come from OSV.dev vulnerability scanning.
+- **forked_from** (v0.27.79, omitted when empty) is the upstream
+  `owner/name` when the repository is a fork — captured from the forge
+  on every Phase 0 cycle since v0.27.78. The literal
+  `(unknown upstream)` means the forge reports fork status but the
+  upstream was deleted or is inaccessible. Drives the repo page's
+  "Forked from X" chip.
 
 ### Batch Statistics
 
@@ -332,7 +346,10 @@ count here even though they DO count for cohort membership in
 `/contributions/identities` — this endpoint ranks creative/review
 work; the identities endpoint enumerates everyone who touched the
 repo at all. `activity_class` is the v0.27.57 classification (empty =
-never checked or GitLab-side). Commits whose author was never resolved
+never checked, GitLab-side, or — since v0.27.81 — an account whose
+activity query exceeds GitHub's per-query resource budget even when
+fetched alone; those accounts are stamped checked without a class so
+they stop re-claiming). Commits whose author was never resolved
 to a contributor identity are excluded — there is no identity to rank.
 
 ### Where else are these contributors active? (v0.27.64)
@@ -370,7 +387,12 @@ Response rows per contributor:
 **Reading `backfilled_at`** (the honesty rule): a `null` stamp means
 the v0.27.58 history backfill has not reached this contributor yet —
 their empty `elsewhere` array is "history pending", NOT "active
-nowhere else". Frontends must render the two differently. `repo_id`
+nowhere else". Frontends must render the two differently. Exception
+(v0.27.81): bot accounts and GitHub system accounts (actions-user,
+web-flow, ghost) are excluded from the backfill claim entirely —
+their stamps stay `null` permanently by design (their histories are
+the most expensive to fetch and the contributor surfaces exclude
+bots from display anyway). `repo_id`
 is present only when the repo is tracked on this instance
 (GitHub-side match; the history source is GitHub-only). The current
 repo is excluded case-insensitively (GitHub's canonical casing can
@@ -604,6 +626,17 @@ continues to gate collection, not visibility. The structured 403
 (`entity_out_of_scope`) remains for entities that resolve to nothing
 collected.
 
+**Comparisons is a persistent record (v0.27.86).** Every
+authenticated compare — admins and in-scope selections included —
+silently links its REPO entities into the caller's "Comparisons"
+group, so the group is the standing record of what the user has
+compared (before this, only the out-of-scope auto-add above wrote to
+it, and admin comparisons left no trace). Repo entities only: org
+entities are never recorded (an org expands to up to 500 repos).
+Idempotent, best-effort (a record failure never fails the compare),
+and notice-free — `added_to_group` stays reserved for the
+scope-granting auto-add.
+
 - `GET /api/v1/metrics` — the metric catalog (docs-as-data; drives
   the GUI's popovers and reference page).
 - `GET /api/v1/compare?entities=repo:1,org:github.com/chaoss&metric=contributors&since=2023-07-01&until=2026-07-01&bucket=week`
@@ -676,10 +709,20 @@ Token semantics:
   off when you log in elsewhere.
 - Your token carries **your** repository scope — every repo in any
   of your groups (pending included; approval gates new collection,
-  not visibility of collected data). Requests for repos outside your
-  groups return a structured 403
-  (`repo_out_of_scope`) with a hint to request access via your
-  groups. Administrators are unscoped.
+  not visibility of collected data). Administrators are unscoped.
+- **Shared links (v0.27.82):** requesting a repo outside your groups
+  auto-adds it to your implicit **"Shared with Me"** group and the
+  request proceeds — repo links are shareable between signed-in
+  users (the Starred/Comparisons auto-add pattern, triggered by
+  viewing). The response that performed the add carries a one-time
+  `X-Aveloxis-Added-To-Group: Shared with Me` header (CORS-exposed)
+  so GUIs can toast it; subsequent requests are ordinary in-scope
+  reads. The auto-add LINKS the existing repo only — it never
+  enqueues collection, never registers org tracking (the v0.27.20
+  approval principle: approval gates collection, never visibility).
+  Repo IDs with no repos row still return the structured 403
+  (`repo_out_of_scope`), as do requests when the auto-add cannot be
+  performed (fail closed).
 - Treat the token like a password. There is no self-service revoke
   endpoint yet; operators can delete rows from
   `aveloxis_ops.user_session_tokens` to revoke immediately.
@@ -768,7 +811,10 @@ Token semantics:
   internal repos.repo_archived flag) and `last_activity_at`
   (most recent observed commit/issue/PR timestamp; omitted when the
   repo has no activity). The GUI derives the Archived/Dormant chip
-  and the historical chart window from these.
+  and the historical chart window from these. v0.27.84 adds
+  `last_collected` (omitted when the repo has never completed a
+  collection pass) — the GUI's signal to render the "queued for
+  first collection" banner instead of misleading zeros.
 - `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
   `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
   dependency-analysis phase has not recorded anything for this repo
@@ -782,6 +828,12 @@ Token semantics:
   collection, and stars can only target already-collected repos, so
   no approval is involved. Unstarring never removes the repo from
   the group (scope stays until the user prunes the group).
+- `GET /api/v1/repos/{repoID}/star` — `{"starred": bool}`, the
+  signed-in caller's current star state for one repo (v0.27.85 —
+  backs the repo page's star toggle; every other starred signal is
+  list-shaped). Bearer required unconditionally, same posture as
+  PUT/DELETE; starred state is caller-personal, so repo scope does
+  not apply.
 - `GET /api/v1/home/repos?limit=50` — the home-tab list: the user's
   starred repos first (always included), then the most active repos
   from their own groups over the trailing 90 days (issues + change
@@ -800,6 +852,10 @@ Token semantics:
   `/repos/search`). `added_at` is the v0.27.60 fleet-entry stamp;
   rows created before that release carry a last-touch approximation,
   so the feed is honest-noisy for one window after that deploy.
+  v0.27.84: rows surface only AFTER the repo's first completed
+  collection pass — a freshly-added, never-collected repo would land
+  users on an all-zeros page, so it stays out of the feed until it
+  has data to show.
   Known v1 edge: GitLab nested-group paths (`group/subgroup`) don't
   equal `repo_owner` and fall out of the feed.
 - `GET /api/v1/repos/{repoID}/scorecard` — the current OpenSSF
@@ -825,16 +881,23 @@ require the caller's user to be an administrator (403 otherwise).
 
 Per-user:
 
-- `GET /api/v1/me` — `{user_id, is_admin, scope_repo_count}`.
-  `scope_repo_count` is `-1` for admins (unscoped). The GUI uses
-  `is_admin` to decide whether to render the admin navigation.
+- `GET /api/v1/me` — `{user_id, login, name, avatar_url, is_admin,
+  scope_repo_count}` (`login` added v0.27.77; `name` + `avatar_url`
+  added v0.27.84 — the home greeting and nav avatar render the REAL
+  signed-in identity, stored from OAuth and refreshed on every
+  login). `scope_repo_count` is `-1` for admins (unscoped). The GUI
+  uses `is_admin` to decide whether to render the admin navigation.
 - `GET /api/v1/groups` — the caller's groups:
-  `{groups: [{group_id, name, status, repo_count, favorited}]}`.
-  `status` is `approved`, `pending`, or `rejected` (empty legacy
-  values normalize to `approved`).
+  `{groups: [{group_id, name, status, repo_count, favorited,
+  pending_adds}]}`. `status` is `approved`, `pending`, or `rejected`
+  (empty legacy values normalize to `approved`). `pending_adds`
+  (v0.27.84) counts the group's pending addition requests — the GUI
+  renders "N additions awaiting approval" from it, since under the
+  v0.27.20 model the GROUP is approved while its ADDITIONS may pend.
 - `POST /api/v1/groups` with `{"name": "..."}` — create a group.
-  Non-admin users' groups start `pending` per the v0.19.0 approval
-  workflow. Returns `{group_id}`.
+  Groups are created `approved` (v0.27.20 — the approval unit is the
+  ADDITION of not-yet-collected repos/orgs, never the group
+  container). Returns `{group_id}`.
 - `GET /api/v1/groups/{groupID}/repos?page=1&page_size=50&sort=name&dir=asc`
   — one page of the group's repos in a pagination envelope:
   `{repos: [...], total, page, page_size, sort, dir}` (`page_size`
@@ -862,8 +925,16 @@ Per-user:
   batched add (one approval unit per v0.27.20). `urls` wins when both
   fields are present; the single-`url` body remains accepted. The
   response carries `submitted` plus the outcome counts
-  `{linked, enqueued, pending_approval?, request_id?}`. Orgs stay one
-  per request — a multi-URL `kind: "org"` body is a 400.
+  `{linked, enqueued, pending_approval?, request_id?, registered?}`.
+  Org outcomes (v0.27.84): `registered: 1` means the org is tracked
+  NOW — admin adds always register, and a non-admin's add of an org
+  that is ALREADY registered in any group auto-approves (it adds zero
+  new collection: the org's repos are already tracked and its future
+  repos already auto-enqueue via the existing registration; an
+  auto-approved audit row is still recorded). A non-admin's add of a
+  NEW org returns `pending_approval` — registering a new org is an
+  open-ended future-repo commitment, so it awaits admin review.
+  Orgs stay one per request — a multi-URL `kind: "org"` body is a 400.
 - `GET /api/v1/groups/{groupID}/orgs` — the organizations tracked in
   the group (2026-07-21; read-only — registration goes through the
   POST above with `kind: "org"`). Envelope:

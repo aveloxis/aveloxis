@@ -82,6 +82,41 @@ func (e *classifiedGraphQLError) Error() string     { return e.message }
 func (e *classifiedGraphQLError) Class() ErrorClass { return e.class }
 func (e *classifiedGraphQLError) Unwrap() error     { return e.wrapped }
 
+// graphqlRetrySleep is the ctx-aware backoff sleep used by the GraphQL
+// retry loop. Package-level seam (v0.27.87) so backoff-SHAPE tests can
+// count sleeps instead of paying real wall-clock — the fast-fail
+// poison-account test spent 18s in genuine jittered sleeps before the
+// seam existed. Production code never replaces it.
+var graphqlRetrySleep = func(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+// SetGraphQLSleepForTest replaces the GraphQL retry backoff sleep and
+// returns a restore func. TEST-ONLY seam — see graphqlRetrySleep.
+func SetGraphQLSleepForTest(f func(ctx context.Context, d time.Duration) error) (restore func()) {
+	old := graphqlRetrySleep
+	graphqlRetrySleep = f
+	return func() { graphqlRetrySleep = old }
+}
+
+// retrySleep waits before the NEXT retry attempt. On the FINAL allowed
+// attempt it returns immediately — sleeping after the last attempt
+// only delays the caller's failure (v0.27.87, Copilot round on
+// PR #173). This matters most under WithGraphQLFastFail, where the
+// wasted tail backoff partially defeated the fast-fail budget and
+// batch subdivision MULTIPLIES exhausted chains.
+func retrySleep(ctx context.Context, wait time.Duration, attempt, budget int) error {
+	if attempt+1 >= budget {
+		return nil
+	}
+	return graphqlRetrySleep(ctx, wait)
+}
+
 // GraphQL executes a GraphQL query against <baseURL>/graphql.
 //
 // The query and variables are JSON-encoded into the POST body. The response
@@ -112,7 +147,20 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 	const maxReadRetries = 3
 	readRetries := 0
 
-	for attempt := range maxRetries {
+	// v0.27.81: callers with their own recovery machinery (batch
+	// subdivision — FetchContributorActivity) opt into a tight retry
+	// budget via WithGraphQLFastFail. Same rationale as maxReadRetries:
+	// when the QUERY CONTENT is the problem (an account too dense for
+	// GitHub's resolver draws deterministic 500s — the 2026-08-04 pilot
+	// measured one such query burning ~7 minutes of the 10-retry
+	// backoff chain), the caller's subdivision IS the retry strategy;
+	// the inner budget only needs to smooth transport blips.
+	budget := maxRetries
+	if graphqlFastFailEnabled(ctx) {
+		budget = graphqlFastFailRetries
+	}
+
+	for attempt := range budget {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -142,10 +190,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			}
 			c.logger.Warn("graphql request failed, retrying",
 				"url", url, "query", query, "attempt", attempt+1, "error", err)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+			if err := retrySleep(ctx, time.Duration(attempt+1)*2*time.Second, attempt, budget); err != nil {
+				return err
 			}
 			continue
 		}
@@ -206,10 +252,11 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 					c.logger.Warn("graphql body read error, retrying",
 						"url", url, "error", readErr, "query", query,
 						"read_retry", readRetries, "wait", wait)
-					select {
-					case <-ctx.Done():
-						return ctx.Err()
-					case <-time.After(wait):
+					// The read-retry sub-budget's sleep always precedes a
+					// real retry (the guard above), so it routes through
+					// the seam directly — no final-attempt skip applies.
+					if err := graphqlRetrySleep(ctx, wait); err != nil {
+						return err
 					}
 					continue
 				}
@@ -234,10 +281,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
 				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait)
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(wait):
+				if err := retrySleep(ctx, wait, attempt, budget); err != nil {
+					return err
 				}
 				continue
 			}
@@ -251,10 +296,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			_ = resp.Body.Close()
 			wait := parseRetryAfter(resp)
 			c.logger.Info("graphql 429 rate limited", "url", url, "wait", wait)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(wait):
+			if err := retrySleep(ctx, wait, attempt, budget); err != nil {
+				return err
 			}
 			continue
 
@@ -266,10 +309,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			wait := jitteredBackoff(attempt)
 			c.logger.Warn("graphql server error, retrying with backoff",
 				"url", url, "query", query, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(wait):
+			if err := retrySleep(ctx, wait, attempt, budget); err != nil {
+				return err
 			}
 			continue
 
@@ -280,10 +321,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 				"url", url, "status", resp.StatusCode,
 				"body_snippet", truncateBody(string(respBody), 200),
 				"attempt", attempt+1)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+			if err := retrySleep(ctx, time.Duration(attempt+1)*2*time.Second, attempt, budget); err != nil {
+				return err
 			}
 		}
 	}
@@ -296,7 +335,35 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 	// subdivision never fires. Production diagnostic on
 	// 2026-05-13 traced 6 of 7 stuck repos to exactly this
 	// missing classification.
-	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", maxRetries, url, ErrTransient)
+	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, ErrTransient)
+}
+
+// graphqlFastFailRetries is the retry budget under WithGraphQLFastFail
+// — deliberately equal in spirit to maxReadRetries: three consecutive
+// failures on fresh attempts mean the query content is the problem,
+// and the caller's subdivision machinery recovers faster than the
+// exponential backoff chain ever could.
+const graphqlFastFailRetries = 3
+
+// ctxKeyGraphQLFastFail is the context flag type for WithGraphQLFastFail
+// (the WithoutETag pattern).
+type ctxKeyGraphQLFastFail struct{}
+
+// WithGraphQLFastFail returns a context that caps the GraphQL retry
+// loop at graphqlFastFailRetries attempts. ONLY for callers that have
+// their own recovery strategy for transient failures (batch
+// subdivision); everything else should keep the full maxRetries
+// budget. Note the cap applies to ALL retryable conditions in the
+// loop (5xx, 401 rotation, rate-limit waits), so a caller may see
+// occasional spurious exhaustion under pool contention — acceptable
+// because subdivision retries the same content immediately in halves.
+func WithGraphQLFastFail(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyGraphQLFastFail{}, true)
+}
+
+func graphqlFastFailEnabled(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyGraphQLFastFail{}).(bool)
+	return v
 }
 
 // parseGraphQLResponse decodes a GraphQL response body, populates dest
@@ -318,10 +385,19 @@ func parseGraphQLResponse(body []byte, dest any, logger interface {
 	}
 
 	// Classify errors: partial-path vs global.
+	//
+	// v0.27.79: RESOURCE_LIMITS_EXCEEDED is ALWAYS global even though
+	// GitHub reports it with per-path entries — the message literally
+	// says "Resource limits for THIS QUERY exceeded" and every node in
+	// the query arrives null. Treating it as per-path turned an
+	// oversized aliased batch into an empty-but-successful result: the
+	// 2026-07-30/31 production incident stamped 216,000 contributors
+	// "activity checked, no data" because every contributionsCollection
+	// alias errored this way and the tolerance path swallowed it.
 	var globalErrs []graphqlError
 	var partialErrs []graphqlError
 	for _, e := range env.Errors {
-		if len(e.Path) == 0 {
+		if len(e.Path) == 0 || e.Type == "RESOURCE_LIMITS_EXCEEDED" {
 			globalErrs = append(globalErrs, e)
 		} else {
 			partialErrs = append(partialErrs, e)
@@ -365,6 +441,23 @@ func classifyGraphQLErrors(errs []graphqlError) error {
 			return &classifiedGraphQLError{
 				class:   ClassRateLimit,
 				message: "graphql RATE_LIMITED: " + e.Message,
+			}
+		}
+	}
+	// RESOURCE_LIMITS_EXCEEDED dominates like RATE_LIMITED: the query
+	// as shaped is too expensive and every node is null. ClassTransient
+	// so batch callers with subdivision machinery (fetchPRBatchWith-
+	// Subdivide, v0.20.8) automatically retry in halves; callers
+	// without it fail loudly instead of persisting an empty result.
+	// Wraps ErrResourceLimits (v0.27.81) so subdivision callers can
+	// gate on THIS condition specifically via errors.Is — halving
+	// provably helps RLE and nothing else that arrives in-body.
+	for _, e := range errs {
+		if e.Type == "RESOURCE_LIMITS_EXCEEDED" {
+			return &classifiedGraphQLError{
+				class:   ClassTransient,
+				message: "graphql RESOURCE_LIMITS_EXCEEDED (query too expensive — subdivide the batch): " + e.Message,
+				wrapped: ErrResourceLimits,
 			}
 		}
 	}
@@ -423,6 +516,18 @@ func joinErrs(msgs []string) string {
 // from GraphQL" vs REST. For now the classes are enough.
 var ErrNotGraphQLClassified = errors.New("graphql: not classified")
 
+// ErrResourceLimits (v0.27.81) marks GitHub's RESOURCE_LIMITS_EXCEEDED
+// — "Resource limits for this query exceeded", the per-query cost cap
+// that is independent of rate-limit points. It is the ONLY in-body
+// GraphQL condition where subdividing an aliased batch provably helps
+// (the cap is on the whole query's resolution cost), so subdivision
+// callers gate on errors.Is(err, ErrResourceLimits) rather than the
+// broad ClassTransient. Observed edges move: 100/50/40 aliases failed
+// in the 2026-07-30 incident, 35 passed a 2026-08-02 probe, and 25
+// failed in production on 2026-08-04 — cost depends on WHICH accounts
+// are in the batch, so no fixed batch size is safe without
+// subdivision.
+var ErrResourceLimits = errors.New("graphql resource limits exceeded")
 
 // isRetryableReadError classifies an error surfaced while READING or
 // DECODING a 200-OK response body — GraphQL (io.ReadAll) and REST

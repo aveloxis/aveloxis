@@ -9,16 +9,26 @@ import (
 	"testing"
 )
 
-// TestGetRepoStatsUsesDistinctCommits is a regression pin against the
-// over-counting bug that motivated v0.19.11. The single-repo path
-// (`GetRepoStats`) computes commits via `COUNT(DISTINCT
-// cmt_commit_hash)` directly from the commits table, so it's
-// authoritative and must stay that way. If a future refactor
-// "optimizes" this to read `collection_queue.last_commits` like the
-// batch path does, the dashboard-alignment property breaks: the live
-// query and the cache could disagree if the cache hasn't been
-// re-populated since a recent collection.
-func TestGetRepoStatsUsesDistinctCommits(t *testing.T) {
+// TestGetRepoStatsReadsFromQueueCache pins the v0.27.85 contract for
+// the SINGLE-repo path: gathered counts come from collection_queue's
+// cached cumulative totals (last_issues / last_prs / last_commits),
+// exactly like the batch path has since v0.18.30, in ONE queue read
+// that also carries last_collected.
+//
+// SUPERSESSION NOTE — this test previously pinned the OPPOSITE
+// (v0.19.11: "GetRepoStats must use COUNT(DISTINCT cmt_commit_hash)
+// live"). That pin's stated worry — cache vs live disagreement — died
+// with v0.19.11 itself: FacadeResult.Commits counts distinct hashes
+// and CompleteJob writes cumulative issue/PR counts (v0.21.2), so the
+// cache is accurate to the last completed cycle, the same freshness
+// every listing surface already shows. What the live COUNTs actually
+// cost in production (measured 2026-08-05, kubernetes/website): ~23,500
+// buffer pages (~184 MB) per /stats call — 10-20s of random I/O on a
+// cold spinning-disk repo, which is what made the repo page's chained
+// weekly-activity loader appear dead for new users. Do NOT bring the
+// live COUNTs back; the negative pins below fail the build if they
+// return.
+func TestGetRepoStatsReadsFromQueueCache(t *testing.T) {
 	data, err := os.ReadFile("repo_stats.go")
 	if err != nil {
 		t.Fatal(err)
@@ -33,12 +43,24 @@ func TestGetRepoStatsUsesDistinctCommits(t *testing.T) {
 	end := strings.Index(rest[1:], "\nfunc ")
 	body := rest[:end+1]
 
-	if !strings.Contains(body, "COUNT(DISTINCT cmt_commit_hash)") {
-		t.Error("GetRepoStats must use `COUNT(DISTINCT cmt_commit_hash)` " +
-			"for the gathered commits count. The commits table has one " +
-			"row per file per commit; a naive COUNT(*) inflates by the " +
-			"average files-per-commit ratio. Per CLAUDE.md Common " +
-			"Pitfalls and the v0.19.11 fix.")
+	for _, needle := range []string{"last_issues", "last_prs", "last_commits", "last_collected"} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("GetRepoStats must read %s from collection_queue's cached "+
+				"cumulative counts (the v0.18.30 batch-path pattern, adopted "+
+				"by the single path in v0.27.85)", needle)
+		}
+	}
+	for _, banned := range []string{
+		"COUNT(*) FROM aveloxis_data.pull_requests",
+		"COUNT(*) FROM aveloxis_data.issues",
+		"COUNT(DISTINCT cmt_commit_hash)",
+	} {
+		if strings.Contains(body, banned) {
+			t.Errorf("GetRepoStats must NOT run %q — the live aggregates cost "+
+				"~23,500 buffer pages per call on a big repo (10-20s cold on "+
+				"spinning disks; the 2026-08-05 dead-chart-loader report). "+
+				"Gathered counts come from the queue cache.", banned)
+		}
 	}
 }
 

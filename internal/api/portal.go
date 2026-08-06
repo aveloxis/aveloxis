@@ -67,9 +67,18 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// v0.27.77: carry the display identity so the SPA nav can show
+	// the REAL signed-in user (it rendered a hardcoded placeholder
+	// before). v0.27.84: name + avatar_url added — the home greeting
+	// and nav avatar render from here, never from mocks. Best-effort —
+	// a lookup failure yields empty strings, never an error for /me.
+	login, name, avatarURL, _ := s.store.GetUserIdentity(r.Context(), info.UserID)
 	jsonResponse(w, map[string]any{
-		"user_id":  info.UserID,
-		"is_admin": info.IsAdmin,
+		"user_id":    info.UserID,
+		"login":      login,
+		"name":       name,
+		"avatar_url": avatarURL,
+		"is_admin":   info.IsAdmin,
 		"scope_repo_count": func() int {
 			if info.IsAdmin {
 				return -1 // unscoped
@@ -87,6 +96,10 @@ type groupJSON struct {
 	Status    string `json:"status"`
 	RepoCount int    `json:"repo_count"`
 	Favorited bool   `json:"favorited"`
+	// v0.27.84: pending collection_add_requests — the GUI renders
+	// "N additions awaiting approval" from this (the group itself is
+	// approved; the approval unit is the addition, v0.27.20).
+	PendingAdds int `json:"pending_adds"`
 }
 
 func (s *Server) handleGroupsList(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +118,7 @@ func (s *Server) handleGroupsList(w http.ResponseWriter, r *http.Request) {
 		if status == "" {
 			status = "approved"
 		}
-		out = append(out, groupJSON{g.GroupID, g.Name, status, g.RepoCount, g.Favorited})
+		out = append(out, groupJSON{g.GroupID, g.Name, status, g.RepoCount, g.Favorited, g.PendingAdds})
 	}
 	jsonResponse(w, map[string]any{"groups": out})
 }
@@ -287,6 +300,11 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 			resp["pending_approval"] = 1
 			resp["request_id"] = out.RequestID
 			s.notifyAddRequestSubmitted(out.RequestID)
+		}
+		if err == nil && out.Registered {
+			// v0.27.84: lets the GUI say "tracked now" (admin add OR
+			// the already-registered-org auto-approve) vs "pending".
+			resp["registered"] = 1
 		}
 	} else {
 		out, aerr := s.store.AddReposToGroup(r.Context(), info.UserID, groupID,
@@ -744,6 +762,30 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		resp["added_to_group"] = addedToGroup
 	}
 	jsonResponse(w, resp)
+}
+
+// handleRepoStarState reports whether the signed-in user has starred
+// the repo (v0.27.85 — the repo page's star toggle needs the current
+// state; every other starred source is list-shaped). Same requireUser
+// posture as PUT/DELETE: starred state is caller-personal, never
+// repo-scoped, so authorizeRepo does not apply.
+func (s *Server) handleRepoStarState(w http.ResponseWriter, r *http.Request) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		return
+	}
+	starred, err := s.store.IsRepoStarred(r.Context(), info.UserID, repoID)
+	if err != nil {
+		s.logger.Error("star state read failed", "user_id", info.UserID, "repo_id", repoID, "error", err)
+		http.Error(w, "could not read star state", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{"starred": starred})
 }
 
 // handleHomeRepos returns the signed-in user's home-tab repo list:

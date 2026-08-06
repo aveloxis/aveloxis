@@ -254,3 +254,39 @@ func TestCompareAutoAddEndToEnd(t *testing.T) {
 		t.Errorf("403 must keep the structured entity_out_of_scope shape, got %v", payload)
 	}
 }
+
+// TestCompareRecordsEveryRepoEntity pins the v0.27.86 semantics
+// change: Comparisons is the PERSISTENT RECORD of every repo the
+// caller compares — admins and in-scope selections included, not just
+// the out-of-scope auto-add. Operator report 2026-08-05: "The
+// comparisons group not having any saved anymore is problematic" —
+// verified on production that the admin account had NO Comparisons
+// group at all, because admins are unscoped and the v0.27.14 branch
+// never fired for them.
+func TestCompareRecordsEveryRepoEntity(t *testing.T) {
+	src := mustReadFile(t, "analytics.go")
+	if !strings.Contains(src, "func (s *Server) recordComparison(") {
+		t.Fatal("analytics.go must define recordComparison")
+	}
+	// Both handlers must record — the temporal handler AND snapshot.
+	if n := strings.Count(src, "s.recordComparison(r, entities)"); n < 2 {
+		t.Errorf("both compare handlers (series + snapshot) must call "+
+			"s.recordComparison(r, entities); found %d call sites", n)
+	}
+	fn := src[strings.Index(src, "func (s *Server) recordComparison("):]
+	if end := strings.Index(fn[1:], "\nfunc "); end > 0 {
+		fn = fn[:end+1]
+	}
+	// Repo entities only — recording a 500-repo org expansion into the
+	// group would be noise, and org access-granting keeps its own path.
+	if !strings.Contains(fn, `e.Kind == "repo"`) {
+		t.Error("recordComparison must record REPO entities only")
+	}
+	// Best-effort: a failed record logs and never breaks the compare.
+	if strings.Contains(fn, "http.Error") {
+		t.Error("recordComparison must be best-effort — a record failure must never fail the compare request")
+	}
+	if !strings.Contains(fn, "RecordComparisonRepos(") {
+		t.Error("recordComparison must persist via store.RecordComparisonRepos")
+	}
+}

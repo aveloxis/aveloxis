@@ -202,3 +202,111 @@ func seedHistoryContributor(t *testing.T, store *PostgresStore, login, class, ba
 	})
 	return id
 }
+
+// TestHistoryClaimExcludesBots (v0.27.81) — the 2026-08-04 restart
+// diagnostic: the first post-restart history cycle took 30m50s for 25
+// contributors, partly because the unprioritized NULL-first cohort
+// included actions-user (the GitHub Actions machine account, whose
+// contributionsCollection windows drew repeated GraphQL 500s). Bots
+// are excluded from the contributor display surfaces (v0.27.69), so
+// spending the history worker's constrained throughput on them is
+// pure waste — and the GitHub SYSTEM accounts (actions-user,
+// web-flow, ghost) are gh_type='User', invisible to all three
+// standard bot markers (verified live 2026-08-04), so they need the
+// curated list.
+func TestHistoryClaimExcludesBots(t *testing.T) {
+	src := readSourceFile(t, "contributor_history_store.go")
+	idx := strings.Index(src, "func (s *PostgresStore) GetContributorsForHistoryBackfill(")
+	if idx < 0 {
+		t.Fatal("cannot find GetContributorsForHistoryBackfill")
+	}
+	body := src[idx:]
+	if end := strings.Index(body[1:], "\nfunc "); end > 0 {
+		body = body[:1+end]
+	}
+	flat := strings.Join(strings.Fields(body), " ")
+	for _, needle := range []string{
+		// the v0.27.69 three-marker predicate, applied to gh_login (the
+		// claim's fetch key)
+		`COALESCE(gh_type, '') = 'Bot'`,
+		`gh_login ILIKE '%[bot]%'`,
+		`gh_login ~* '[-_](bot|robot)[0-9]*$'`,
+		// the curated GitHub system-account list
+		"githubSystemAccounts",
+	} {
+		if !strings.Contains(flat, needle) {
+			t.Errorf("history claim must exclude bots: missing %q", needle)
+		}
+	}
+	// The list itself must carry the three known GitHub system accounts.
+	for _, acct := range []string{`"actions-user"`, `"web-flow"`, `"ghost"`} {
+		if !strings.Contains(src, acct) {
+			t.Errorf("githubSystemAccounts must include %s", acct)
+		}
+	}
+}
+
+// TestHistoryClaimSkipsBotAndSystemAccounts — integration proof that
+// the exclusion predicate works against a live schema, including the
+// LOWER() match on system accounts and the talbot-survives regex
+// safety (mirroring the v0.27.69 pin).
+func TestHistoryClaimSkipsBotAndSystemAccounts(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	cooldown := 90 * 24 * time.Hour
+
+	seed := func(login, ghLogin, ghType string) string {
+		t.Helper()
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login = $1`, login)
+		var id string
+		if err := store.pool.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.contributors
+				(cntrb_id, cntrb_login, gh_login, gh_type, data_collection_date)
+			VALUES (gen_random_uuid(), $1, $2, $3, NOW())
+			RETURNING cntrb_id::text`, login, ghLogin, ghType).Scan(&id); err != nil {
+			t.Fatalf("seed %s: %v", login, err)
+		}
+		t.Cleanup(func() {
+			_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, id)
+		})
+		return id
+	}
+
+	human := seed("_avhistbot_human", "_avhistbot_human", "User")
+	talbot := seed("_avhistbot_talbot", "some-talbot", "User") // surname safety
+	appBot := seed("_avhistbot_app", "_avhistbot_app", "Bot")
+	suffixBot := seed("_avhistbot_x", "_avhistbot_x[bot]", "User")
+	robot := seed("_avhistbot_ci", "_avhistbot-ci-robot", "User")
+	system := seed("_avhistbot_ghost", "GHOST", "User") // LOWER() must catch case variants
+
+	var poolN int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM aveloxis_data.contributors
+		WHERE gh_login IS NOT NULL AND gh_login != '' AND COALESCE(cntrb_deleted, 0) = 0`).Scan(&poolN); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.GetContributorsForHistoryBackfill(ctx, poolN+10, cooldown)
+	if err != nil {
+		t.Fatalf("GetContributorsForHistoryBackfill: %v", err)
+	}
+	got := map[string]bool{}
+	for _, c := range claimed {
+		got[c.ID] = true
+	}
+	if !got[human] {
+		t.Error("plain human must be claimable")
+	}
+	if !got[talbot] {
+		t.Error("talbot-style surname must survive the bot regex (v0.27.69 safety)")
+	}
+	for name, id := range map[string]string{
+		"gh_type=Bot":       appBot,
+		"[bot] suffix":      suffixBot,
+		"-ci-robot suffix":  robot,
+		"system acct GHOST": system,
+	} {
+		if got[id] {
+			t.Errorf("%s must be excluded from the history claim", name)
+		}
+	}
+}

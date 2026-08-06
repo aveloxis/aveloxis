@@ -8,25 +8,41 @@ import (
 	"testing"
 )
 
-// TestCountActiveReposCountsEverything (v0.27.68, reversing the
-// v0.27.59 archived-exclusion): the landing count is the TOTAL repo
-// catalog. The v0.27.59 non-archived filter made the landing number
-// visibly disagree with the monitor's ~94K queue view — a definition
-// mismatch the operator resolved in favor of "count everything"
-// (archived repos carry full collected history and analysis).
-// Deterministic under parallel test packages: source-level predicate
-// pin + a scoped seeded-row check.
-func TestCountActiveReposCountsEverything(t *testing.T) {
+// v0.27.77 — the landing page's public stats grew from the single
+// repo count (v0.27.59/68) to the fleet-scale payload
+// {repos, commits, issues, prs, contributors}. Contracts pinned:
+//   1. The v0.27.68 operator decision survives: the repos arm counts
+//      EVERYTHING (no archived filter) so the landing number agrees
+//      with the monitor's total.
+//   2. Cost class: commits/issues/prs come from the queue's CACHED
+//      cumulative totals (one SUM over ~100K queue rows), NEVER from
+//      counting the 474M-row commits table per refresh (the v0.27.4
+//      timeout class). The 60s stale-on-error cache in the api layer
+//      bounds refresh frequency.
+
+func TestPublicFleetStatsCountsEverything(t *testing.T) {
 	src := readSourceFile(t, "public_stats_store.go")
 	if strings.Contains(src, "NOT COALESCE(repo_archived, FALSE)") {
-		t.Fatal("CountActiveRepos must NOT filter archived repos (v0.27.68 operator decision — the landing number must agree with the monitor's total)")
+		t.Fatal("GetPublicFleetStats must NOT filter archived repos (v0.27.68 operator decision — the landing number must agree with the monitor's total)")
 	}
 	if !strings.Contains(src, "SELECT COUNT(*) FROM aveloxis_data.repos") {
-		t.Fatal("CountActiveRepos must count the whole repos catalog")
+		t.Fatal("GetPublicFleetStats must count the whole repos catalog")
 	}
 }
 
-func TestCountActiveReposIncludesArchived(t *testing.T) {
+func TestPublicFleetStatsUsesCachedQueueTotals(t *testing.T) {
+	src := readSourceFile(t, "public_stats_store.go")
+	for _, needle := range []string{"SUM(last_commits)", "SUM(last_issues)", "SUM(last_prs)"} {
+		if !strings.Contains(src, needle) {
+			t.Errorf("GetPublicFleetStats must read %s from collection_queue — the cached cumulative totals (v0.19.11/v0.21.2)", needle)
+		}
+	}
+	if strings.Contains(src, "FROM aveloxis_data.commits") {
+		t.Error("GetPublicFleetStats must NOT count aveloxis_data.commits — use the queue's cached totals (the v0.27.4 timeout class)")
+	}
+}
+
+func TestPublicFleetStatsIncludesArchived(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.Close)
 
@@ -52,8 +68,32 @@ func TestCountActiveReposIncludesArchived(t *testing.T) {
 		t.Errorf("both rows (active + archived) must count: got %d of 2 seeded", n)
 	}
 
-	// And the method itself executes cleanly against the live schema.
-	if _, err := store.CountActiveRepos(ctx); err != nil {
-		t.Fatalf("CountActiveRepos: %v", err)
+	// And the method itself executes cleanly against the live schema
+	// with sane values.
+	stats, err := store.GetPublicFleetStats(ctx)
+	if err != nil {
+		t.Fatalf("GetPublicFleetStats: %v", err)
+	}
+	if stats.Repos < 2 {
+		t.Errorf("repos count must include the seeded rows, got %d", stats.Repos)
+	}
+	if stats.Commits < 0 || stats.Issues < 0 || stats.PRs < 0 || stats.Contributors < 0 {
+		t.Errorf("counts must be non-negative: %+v", stats)
+	}
+}
+
+// TestPublicFleetStatsSingleQueueScan (v0.27.87, Copilot round on
+// PR #173): the three cached-total sums must come from ONE scan of
+// collection_queue, not three separate SUM subqueries — the pre-fix
+// shape scanned the ~100K-row queue three times per cache refresh.
+func TestPublicFleetStatsSingleQueueScan(t *testing.T) {
+	src := readSourceFile(t, "public_stats_store.go")
+	fn := src[strings.Index(src, "func (s *PostgresStore) GetPublicFleetStats("):]
+	if end := strings.Index(fn[1:], "\nfunc "); end > 0 {
+		fn = fn[:end+1]
+	}
+	if n := strings.Count(fn, "collection_queue"); n != 1 {
+		t.Errorf("GetPublicFleetStats must reference collection_queue exactly once "+
+			"(one scan computing all three sums); found %d references", n)
 	}
 }

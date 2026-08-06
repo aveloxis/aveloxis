@@ -1748,6 +1748,29 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_activity_checked
 		 ON aveloxis_data.contributors (gh_activity_checked_at ASC NULLS FIRST)`)
 
+	// v0.27.79: re-null the activity-check stamps from the 2026-07-30/31
+	// RESOURCE_LIMITS_EXCEEDED incident. GitHub answered every
+	// 100-alias contributionsCollection batch with per-path resource-
+	// limit errors + null nodes; the per-path tolerance turned that into
+	// an empty-but-successful fetch and 216,000 contributors were
+	// durably stamped "checked, no data" without a single classification
+	// landing. Re-nulling puts them back at the head of the claim queue
+	// (NULLS FIRST) for the fixed 25-alias fetcher. Self-disabling via
+	// the time bound: post-fix stamps are all after 2026-08-03, so
+	// legitimately-dataless rows (deleted users, mark-only) stamped by
+	// the fixed code never match. Broken-era deleted users get exactly
+	// one harmless re-check.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.79 re-null activity-check stamps from the resource-limits incident",
+		`UPDATE aveloxis_data.contributors
+		 SET gh_activity_checked_at = NULL
+		 WHERE gh_activity_checked_at IS NOT NULL
+		   AND gh_activity_checked_at < TIMESTAMPTZ '2026-08-03 00:00:00+00'
+		   AND COALESCE(gh_activity_class, '') = ''
+		   AND COALESCE(gh_public_contribs_year, 0) = 0
+		   AND COALESCE(gh_restricted_contribs_year, 0) = 0
+		   AND COALESCE(gh_last_contribution_year, 0) = 0`)
+
 	// v0.27.58: daily contributor activity history (see schema.sql for
 	// the design rationale — TEXT repo names on purpose, no repos FK).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_history_backfilled_at", "TIMESTAMPTZ")

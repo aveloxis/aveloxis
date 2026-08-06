@@ -210,6 +210,36 @@ func parseEntities(raw string) ([]entity, error) {
 // (≤ OrgRepoCap) — org TRACKING is deliberately never registered,
 // because the org-refresh ticker would then enqueue new repos, i.e.
 // collection without approval.
+// recordComparison persists the request's REPO entities into the
+// caller's Comparisons group (v0.27.86). Comparisons is the standing
+// record of "repos I've compared" for EVERY authenticated user —
+// before this, only the v0.27.14 out-of-scope auto-add below wrote to
+// it, so admins (unscoped) and in-scope selections left no trace
+// (operator report 2026-08-05). Repo entities only: an org entity
+// expands to up to OrgRepoCap repos and recording that would bury the
+// group in noise; org access-granting keeps its own path below.
+// Best-effort and silent — a record failure logs and never breaks the
+// compare, and no added_to_group notice fires (the group quietly
+// accumulates; notices stay reserved for scope-granting adds).
+func (s *Server) recordComparison(r *http.Request, entities []entity) {
+	info, authed := r.Context().Value(authCtxKey{}).(authInfo)
+	if !authed || info.UserID <= 0 {
+		return
+	}
+	var repoIDs []int64
+	for _, e := range entities {
+		if e.Kind == "repo" {
+			repoIDs = append(repoIDs, e.RepoID)
+		}
+	}
+	if len(repoIDs) == 0 {
+		return
+	}
+	if _, err := s.store.RecordComparisonRepos(r.Context(), info.UserID, repoIDs); err != nil {
+		s.logger.Warn("comparison record failed", "user_id", info.UserID, "error", err)
+	}
+}
+
 func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e entity) ([]int64, string, bool) {
 	info, authed := r.Context().Value(authCtxKey{}).(authInfo)
 	scoped := authed && !info.IsAdmin
@@ -466,6 +496,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.labelEntities(r, entities)
+	s.recordComparison(r, entities) // v0.27.86: Comparisons remembers every compared repo
 	series := make([]compareSeries, 0, len(entities))
 	var added []map[string]string // v0.27.14 one-time auto-add notices
 	for _, e := range entities {
@@ -545,7 +576,7 @@ func (s *Server) metricSeries(r *http.Request, ids []int64, metric, bucket strin
 		if err != nil {
 			return nil, err
 		}
-		return burstinessSeries(activity, 26), nil
+		return BurstinessSeries(activity, 26), nil
 	case "project_velocity":
 		var parts [][]db.WeeklyPoint
 		for _, m := range []string{"issues_closed", "change_requests_merged", "code_change_commits"} {
@@ -555,7 +586,7 @@ func (s *Server) metricSeries(r *http.Request, ids []int64, metric, bucket strin
 			}
 			parts = append(parts, fillBuckets(p, since, until, bucket))
 		}
-		return velocitySeries(parts), nil
+		return VelocitySeries(parts), nil
 	default:
 		return s.store.MetricWeeklySeries(ctx, ids, metric, bucket, since, until)
 	}
@@ -618,9 +649,9 @@ func nextBucket(t time.Time, bucket string) time.Time {
 	return t.AddDate(0, 0, 7)
 }
 
-// burstinessSeries: Goh–Barabási B over a trailing window of activity
+// BurstinessSeries: Goh–Barabási B over a trailing window of activity
 // counts. B = (σ−μ)/(σ+μ), clamped to 0 when the window is silent.
-func burstinessSeries(activity []db.WeeklyPoint, window int) []db.WeeklyPoint {
+func BurstinessSeries(activity []db.WeeklyPoint, window int) []db.WeeklyPoint {
 	out := make([]db.WeeklyPoint, len(activity))
 	for i := range activity {
 		lo := i - window + 1
@@ -647,9 +678,9 @@ func burstinessSeries(activity []db.WeeklyPoint, window int) []db.WeeklyPoint {
 	return out
 }
 
-// velocitySeries: per-bucket average of each component's z-score
+// VelocitySeries: per-bucket average of each component's z-score
 // against its own window mean.
-func velocitySeries(parts [][]db.WeeklyPoint) []db.WeeklyPoint {
+func VelocitySeries(parts [][]db.WeeklyPoint) []db.WeeklyPoint {
 	if len(parts) == 0 || len(parts[0]) == 0 {
 		return nil
 	}
@@ -703,6 +734,7 @@ func (s *Server) handleCompareSnapshot(w http.ResponseWriter, r *http.Request) {
 		db.SnapshotValue
 	}
 	s.labelEntities(r, entities)
+	s.recordComparison(r, entities) // v0.27.86: Comparisons remembers every compared repo
 	values := make([]snapValue, 0, len(entities))
 	var added []map[string]string // v0.27.14 one-time auto-add notices
 	for _, e := range entities {

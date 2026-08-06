@@ -18,6 +18,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 func TestPublicStatsBypassesRequireAuth(t *testing.T) {
@@ -48,14 +50,15 @@ func TestPublicNamespaceIsNotBlanketPublic(t *testing.T) {
 
 func TestPublicStatsCacheSingleLoadWithinTTL(t *testing.T) {
 	loads := 0
-	c := newPublicStatsCache(time.Minute, func() (int, error) {
+	want := db.PublicFleetStats{Repos: 12483, Commits: 500_000_000, Issues: 9_000_000, PRs: 8_000_000, Contributors: 1_700_000}
+	c := newPublicStatsCache(time.Minute, func() (db.PublicFleetStats, error) {
 		loads++
-		return 12483, nil
+		return want, nil
 	})
 	for i := 0; i < 5; i++ {
-		n, err := c.get()
-		if err != nil || n != 12483 {
-			t.Fatalf("get %d: n=%d err=%v", i, n, err)
+		v, err := c.get()
+		if err != nil || v != want {
+			t.Fatalf("get %d: v=%+v err=%v", i, v, err)
 		}
 	}
 	if loads != 1 {
@@ -65,22 +68,25 @@ func TestPublicStatsCacheSingleLoadWithinTTL(t *testing.T) {
 
 func TestPublicStatsCacheServesStaleOnError(t *testing.T) {
 	loads := 0
-	c := newPublicStatsCache(0, func() (int, error) { // TTL 0 → reload every get
+	want := db.PublicFleetStats{Repos: 12483}
+	c := newPublicStatsCache(0, func() (db.PublicFleetStats, error) { // TTL 0 → reload every get
 		loads++
 		if loads == 1 {
-			return 12483, nil
+			return want, nil
 		}
-		return 0, errors.New("db down")
+		return db.PublicFleetStats{}, errors.New("db down")
 	})
-	if n, _ := c.get(); n != 12483 {
+	if v, _ := c.get(); v != want {
 		t.Fatal("first load")
 	}
-	n, err := c.get() // loader errors now
-	if err != nil || n != 12483 {
-		t.Errorf("a failed refresh must serve the stale value (n=%d err=%v) — the landing page never renders an error for the count", n, err)
+	v, err := c.get() // loader errors now
+	if err != nil || v != want {
+		t.Errorf("a failed refresh must serve the stale value (v=%+v err=%v) — the landing page never renders an error for the numbers", v, err)
 	}
 	// Never-loaded + error → the error DOES surface (nothing to be stale with).
-	c2 := newPublicStatsCache(time.Minute, func() (int, error) { return 0, errors.New("down") })
+	c2 := newPublicStatsCache(time.Minute, func() (db.PublicFleetStats, error) {
+		return db.PublicFleetStats{}, errors.New("down")
+	})
 	if _, err := c2.get(); err == nil {
 		t.Error("no cached value and a failed load must surface the error")
 	}

@@ -24,10 +24,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // sessionStore is the role interface auth needs from the DB layer
@@ -174,10 +177,31 @@ func writeAuthError(w http.ResponseWriter, code int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
+// sharedWithMeStore is the narrow seam authorizeRepo needs for the
+// v0.27.82 shared-link auto-add (*db.PostgresStore satisfies it;
+// tests fake it; a nil seam fails closed to the 403).
+type sharedWithMeStore interface {
+	EnsureRepoSharedWithUser(ctx context.Context, userID int, repoID int64) (bool, error)
+}
+
+// sharedWithMeHeader is the one-time notice a response carries when
+// THIS request auto-added the repo to the caller's "Shared with Me"
+// group — the GUI toasts it. Header (not body) because authorizeRepo
+// guards 40+ handlers whose bodies it doesn't control.
+const sharedWithMeHeader = "X-Aveloxis-Added-To-Group"
+
 // authorizeRepo enforces §2b on a repo-scoped handler: unauthenticated
 // contexts (auth off / exempt LAN) and admins pass; scoped users must
 // have the repo in their user_repos. The 403 is STRUCTURED so the GUI
 // renders an "ask for access" affordance instead of a dead end.
+//
+// v0.27.82 (operator decision 2026-08-04 — links are shareable): an
+// out-of-scope repo that EXISTS is auto-added to the caller's
+// implicit "Shared with Me" group and the request proceeds — the
+// Starred/Comparisons pattern, triggered by viewing. The auto-add
+// links only; it is structurally incapable of enqueueing collection
+// (see db/shared_with_me.go's tripwire). Nonexistent repos, db
+// errors, and nil-seam servers all FAIL CLOSED to the structured 403.
 func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID int64) bool {
 	info, ok := r.Context().Value(authCtxKey{}).(authInfo)
 	if !ok || info.IsAdmin {
@@ -185,6 +209,29 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 	}
 	if info.Scope[repoID] {
 		return true
+	}
+	if s.sharedWithMe != nil && info.UserID > 0 {
+		added, err := s.sharedWithMe.EnsureRepoSharedWithUser(r.Context(), info.UserID, repoID)
+		switch {
+		case err == nil:
+			if added {
+				// Scope changed: cached token validations must
+				// re-resolve, and the user's home list now includes
+				// the shared repo.
+				if s.auth != nil {
+					s.auth.invalidateAll()
+				}
+				s.homeCache.invalidate(info.UserID)
+				w.Header().Set(sharedWithMeHeader, db.SharedWithMeGroupName)
+				w.Header().Add("Access-Control-Expose-Headers", sharedWithMeHeader)
+			}
+			return true
+		case errors.Is(err, db.ErrSharedRepoNotFound):
+			// Nonexistent repo id — fall through to the 403.
+		default:
+			s.logger.Warn("shared-with-me auto-add failed — refusing access (fail closed)",
+				"user_id", info.UserID, "repo_id", repoID, "error", err)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)

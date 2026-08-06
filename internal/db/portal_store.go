@@ -119,6 +119,20 @@ func (s *PostgresStore) GetPortalGroupReposForUser(ctx context.Context, userID i
 	return out, total, rows.Err()
 }
 
+// GetUserIdentity returns the /api/v1/me display identity: login,
+// display name (first + last as stored from OAuth, trimmed), and
+// avatar URL. Replaces the v0.27.77 GetUserLogin (v0.27.84: the home
+// greeting and nav avatar render the REAL user — a leftover GUI mock
+// showed every user "Welcome back, Sean").
+func (s *PostgresStore) GetUserIdentity(ctx context.Context, userID int) (login, name, avatarURL string, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT login_name,
+		       TRIM(first_name || ' ' || last_name),
+		       COALESCE(avatar_url, '')
+		FROM aveloxis_ops.users WHERE user_id = $1`, userID).Scan(&login, &name, &avatarURL)
+	return login, name, avatarURL, err
+}
+
 // GetPortalGroupOrgsForUser lists a group's tracked organizations
 // (aveloxis_ops.user_org_requests — presence there means approved to
 // scan, per the v0.27.20 rule), enforcing the same ownership gate as

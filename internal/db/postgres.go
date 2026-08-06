@@ -323,7 +323,12 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				repo_owner = EXCLUDED.repo_owner,
 				repo_description = EXCLUDED.repo_description,
 				primary_language = EXCLUDED.primary_language,
-				forked_from = EXCLUDED.forked_from,
+				-- v0.27.78: prefer-nonempty — Phase 0 (UpdateRepoMetadata) is
+				-- the authoritative forked_from writer; UpsertRepo callers
+				-- (org scans, add-repo) carry a zero-valued model.Repo and a
+				-- bare EXCLUDED overwrite wiped the captured value on every
+				-- scan tick. Phase 0 still clears it when a repo un-forks.
+				forked_from = COALESCE(NULLIF(EXCLUDED.forked_from, ''), repos.forked_from),
 				repo_archived = EXCLUDED.repo_archived,
 				updated_at = COALESCE(EXCLUDED.updated_at, repos.updated_at),
 				tool_version = EXCLUDED.tool_version,

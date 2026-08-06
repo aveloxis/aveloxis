@@ -144,10 +144,15 @@ func TestAuthorizeRepoScopeEnforcement(t *testing.T) {
 		t.Error("in-scope repo must be allowed")
 	}
 
-	// Scoped user, repo OUT of scope: structured 403.
+	// Scoped user, repo OUT of scope, NO sharedWithMe seam (bare
+	// Server): fail closed to the structured 403. Since v0.27.82 an
+	// out-of-scope repo on a fully-wired Server auto-adds to the
+	// user's "Shared with Me" group instead — see
+	// shared_with_me_authz_test.go — so this case now specifically
+	// pins the nil-seam fail-closed contract.
 	rec = httptest.NewRecorder()
 	if s.authorizeRepo(rec, base.WithContext(ctx), 99) {
-		t.Error("out-of-scope repo must be denied")
+		t.Error("out-of-scope repo with no auto-add seam must be denied (fail closed)")
 	}
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected 403, got %d", rec.Code)

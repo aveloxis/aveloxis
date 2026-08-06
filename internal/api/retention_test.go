@@ -40,8 +40,8 @@ func TestRetentionMetricRegisteredInCatalog(t *testing.T) {
 // default (Contributions Required input, value=4) and that the source
 // carries the citation so a future edit can re-verify it.
 func TestRetentionDefaultThresholdMatches8Knot(t *testing.T) {
-	if defaultRetentionThreshold != 4 {
-		t.Errorf("defaultRetentionThreshold = %d, want 4 (8Knot's contrib_drive_repeat.py input default)", defaultRetentionThreshold)
+	if DefaultRetentionThreshold != 4 {
+		t.Errorf("DefaultRetentionThreshold = %d, want 4 (8Knot's contrib_drive_repeat.py input default)", DefaultRetentionThreshold)
 	}
 	src := mustReadFile(t, "retention.go")
 	if !strings.Contains(src, "8Knot") || !strings.Contains(src, "contrib_drive_repeat") {
@@ -55,8 +55,8 @@ func TestParseRetentionThreshold(t *testing.T) {
 		r := httptest.NewRequest("GET", "/api/v1/compare"+q, nil)
 		return parseRetentionThreshold(r)
 	}
-	if n, err := get(""); err != nil || n != defaultRetentionThreshold {
-		t.Errorf("absent param: got (%d, %v), want (%d, nil)", n, err, defaultRetentionThreshold)
+	if n, err := get(""); err != nil || n != DefaultRetentionThreshold {
+		t.Errorf("absent param: got (%d, %v), want (%d, nil)", n, err, DefaultRetentionThreshold)
 	}
 	if n, err := get("?retention_threshold=7"); err != nil || n != 7 {
 		t.Errorf("explicit 7: got (%d, %v)", n, err)

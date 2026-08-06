@@ -36,6 +36,16 @@ type RepoStats struct {
 	// (MAX commit/issue/PR timestamp), driving the chart last-active
 	// ceiling + the dormant/archived chip. Nil = no activity yet.
 	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
+	// ForkedFrom (v0.27.79) is the upstream "owner/name" when the repo
+	// is a fork (repos.forked_from — captured by Phase 0 since
+	// v0.27.78; model.UnknownForkParent when the upstream was deleted).
+	// Empty = not a fork. Drives the GUI's "Forked from X" chip.
+	ForkedFrom string `json:"forked_from,omitempty"`
+	// LastCollected (v0.27.84) is collection_queue.last_collected —
+	// the GUI's ONLY way to distinguish "queued for first collection"
+	// (nil → prominent queued banner) from "collected, zero activity"
+	// (honest zeros). Absent when the repo has no queue row too.
+	LastCollected *time.Time `json:"last_collected,omitempty"`
 }
 
 // SearchRepoResult is a minimal repo record for search results.
@@ -79,26 +89,31 @@ func (s *PostgresStore) SearchRepos(ctx context.Context, query string, limit int
 //
 // v0.27.36: every query error propagates. The pre-fix structure
 // discarded all Scan errors, so a DB failure served all-zero stats as
-// if they were real (summary/18 Phase 0b). A missing repo_info
-// snapshot (never-collected repo) is legitimate and yields zero
-// metadata counts — that is the only tolerated no-row case.
+// if they were real (summary/18 Phase 0b). The tolerated no-row cases
+// are legitimate absences only: a missing repo_info snapshot and a
+// missing collection_queue row (never-collected / removed-from-queue
+// repos) yield zero counts and nil last_collected.
 func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoStats, error) {
 	st := &RepoStats{RepoID: repoID}
 
-	// Gathered counts — actual rows in data tables. COUNT(*) always
-	// returns a row, so any error here is a real failure.
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1`, repoID).Scan(&st.GatheredPRs); err != nil {
-		return nil, fmt.Errorf("gathered PR count: %w", err)
-	}
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1`, repoID).Scan(&st.GatheredIssues); err != nil {
-		return nil, fmt.Errorf("gathered issue count: %w", err)
-	}
-	// commits table has one row per file per commit, so count distinct hashes.
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(DISTINCT cmt_commit_hash) FROM aveloxis_data.commits WHERE repo_id = $1`, repoID).Scan(&st.GatheredCommits); err != nil {
-		return nil, fmt.Errorf("gathered commit count: %w", err)
+	// Gathered counts + queue freshness — ONE read of the queue row's
+	// cached cumulative totals (last_issues / last_prs / last_commits,
+	// populated by CompleteJob; cumulative since v0.19.11/v0.21.2) plus
+	// last_collected (nil = never collected, drives the GUI's queued
+	// banner). v0.27.85: the single-repo path adopts the v0.18.30
+	// batch-path pattern — the previous three live COUNT(*)s cost
+	// ~23,500 buffer pages per call on a big repo (measured on
+	// kubernetes/website), 10-20s of random I/O cold on spinning disks,
+	// which stalled the repo page's chained weekly-activity load. A
+	// repo with no queue row (removed from collection) legitimately
+	// reports zero gathered counts and nil last_collected.
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(last_issues, 0), COALESCE(last_prs, 0),
+		       COALESCE(last_commits, 0), last_collected
+		FROM aveloxis_ops.collection_queue
+		WHERE repo_id = $1`, repoID).
+		Scan(&st.GatheredIssues, &st.GatheredPRs, &st.GatheredCommits, &st.LastCollected); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("queue cached counts: %w", err)
 	}
 
 	// Metadata counts — from the most recent repo_info snapshot.
@@ -115,6 +130,15 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 		return nil, fmt.Errorf("metadata counts: %w", err)
 	}
 	st.Archived = status == "Archived"
+
+	// v0.27.79: fork lineage for the GUI chip. ErrNoRows cannot happen
+	// for a repo the caller already resolved, but degrade the same way
+	// the metadata block does rather than 500 the whole stats payload.
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(forked_from, '') FROM aveloxis_data.repos WHERE repo_id = $1`,
+		repoID).Scan(&st.ForkedFrom); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("fork lineage: %w", err)
+	}
 
 	// v0.27.50: last observed activity — drives the chart last-active
 	// ceiling and the dormant/archived chip. Non-fatal: an error here
@@ -174,6 +198,7 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 		       COALESCE(q.last_issues, 0),
 		       COALESCE(q.last_prs, 0),
 		       COALESCE(q.last_commits, 0),
+		       q.last_collected,
 		       COALESCE(ri.pr_count, 0),
 		       COALESCE(ri.issues_count, 0),
 		       COALESCE(ri.commit_count, 0)
@@ -193,13 +218,15 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	for rows.Next() {
 		var id int64
 		var gIssues, gPRs, gCommits, mPRs, mIssues, mCommits int
-		if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &mPRs, &mIssues, &mCommits); err != nil {
+		var lastCollected *time.Time
+		if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &lastCollected, &mPRs, &mIssues, &mCommits); err != nil {
 			return nil, fmt.Errorf("batch stats scan: %w", err)
 		}
 		if st, ok := result[id]; ok {
 			st.GatheredIssues = gIssues
 			st.GatheredPRs = gPRs
 			st.GatheredCommits = gCommits
+			st.LastCollected = lastCollected
 			st.MetadataPRs = mPRs
 			st.MetadataIssues = mIssues
 			st.MetadataCommits = mCommits

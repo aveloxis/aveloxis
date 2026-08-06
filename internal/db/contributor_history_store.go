@@ -19,6 +19,18 @@ import (
 // re-audit (stamp older than the cooldown; heals disclosure-toggle
 // flips and other retroactive changes).
 
+// githubSystemAccounts are GitHub-operated machine accounts typed
+// "User" (verified live 2026-08-04), invisible to all three standard
+// bot markers, with astronomically dense contributionsCollection
+// histories: actions-user is the git author of github-actions
+// workflow commits fleet-wide, web-flow signs every web-UI merge, and
+// ghost aggregates EVERY deleted user's activity. On 2026-08-04 the
+// first post-restart history cycle spent much of its 30m50s grinding
+// actions-user through repeated GraphQL 500s — throughput the
+// contributor surfaces can't use, since bots are excluded from
+// display (v0.27.69).
+var githubSystemAccounts = []string{"actions-user", "web-flow", "ghost"}
+
 // GetContributorsForHistoryBackfill claims contributors for the daily
 // history sweep: never-backfilled first, then oldest — with
 // contributors whose trailing-year class shows activity
@@ -26,6 +38,15 @@ import (
 // pool, because they're the rows the frontend renders. Same jittered
 // cooldown as breadth (the quarterly re-audit has the same cohort-echo
 // dynamics). Served by idx_contributors_history_backfilled.
+//
+// v0.27.81: bot and GitHub system accounts are excluded — the
+// v0.27.69 three-marker predicate on gh_login (the claim's fetch key)
+// plus the curated githubSystemAccounts list. Their histories are the
+// most expensive to fetch and the display surfaces exclude them
+// anyway; the exclusion also keeps the 90-day re-audit from
+// re-claiming ones already stamped. Consequence: their rows read
+// "history pending" indefinitely on the contributor surfaces, which
+// is honest — no backfill is coming for them.
 func (s *PostgresStore) GetContributorsForHistoryBackfill(ctx context.Context, limit int, cooldown time.Duration) ([]ActivityCheckContributor, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -40,11 +61,17 @@ func (s *PostgresStore) GetContributorsForHistoryBackfill(ctx context.Context, l
 			WHERE gh_login IS NOT NULL
 			  AND gh_login != ''
 			  AND COALESCE(cntrb_deleted, 0) = 0
+			  AND NOT (
+			      COALESCE(gh_type, '') = 'Bot'
+			      OR gh_login ILIKE '%[bot]%'
+			      OR gh_login ~* '[-_](bot|robot)[0-9]*$'
+			      OR LOWER(gh_login) = ANY($4::text[])
+			  )
 			  `+classFilter+`
 			  AND (gh_history_backfilled_at IS NULL
 			       OR gh_history_backfilled_at < NOW() - ($2::interval * (1.0 - $3::float8 + random() * 2.0 * $3::float8)))
 			ORDER BY gh_history_backfilled_at ASC NULLS FIRST
-			LIMIT $1`, n, cooldown.String(), BreadthCooldownJitterFrac)
+			LIMIT $1`, n, cooldown.String(), BreadthCooldownJitterFrac, githubSystemAccounts)
 		if err != nil {
 			return nil, err
 		}

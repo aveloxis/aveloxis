@@ -746,6 +746,90 @@ The scheduler also logs a startup gauge (`non-archived repos with no
 collection_queue row`) pointing here whenever the count is non-zero.
 Re-run until stranded = 0; healed repos drop out of the set.
 
+## `aveloxis generate-showcase`
+
+Renders the PUBLIC collection showcase pages (v0.27.77 growth plan):
+every admin-curated collection becomes a static, SEO-indexable HTML
+page under `<out>/showcase/`, plus a showcase index, plus the site
+`sitemap.xml` (when `--gui-root` is given — the generator is the
+single writer of the sitemap once deployed). Pages carry full
+meta/OG/JSON-LD and render ONLY collection metadata + cached per-repo
+counts — never user names, stars, or group ownership (queries run
+anonymously). Writes are atomic (tmp+rename) and pages whose
+collection was deleted or renamed are pruned.
+
+Since v0.27.78 the collection tables order by **collected issues**
+(commit counts are bot-floodable — automation repos with millions of
+machine commits headlined the tables), and the **top 5 non-fork
+repositories of each collection** also get a public repo snapshot
+page under `<out>/repos/`, deduped across collections. Forks
+(`repos.forked_from` non-empty, captured by Phase 0 since v0.27.78)
+are skipped and the next non-fork slides into the freed slot. Each
+snapshot carries the cached commit/issue/PR counts, description and
+primary language, a **static weekly-activity chart** in the signed-in
+grammar (commits + issues + PRs-opened stacked bars, PRs-merged line
+overlay; trailing 12 months, baked SVG — no JS, no endpoints), **every
+temporal CHAOSS-metric chart the signed-in repo page shows** (the
+seven store-backed metrics plus burstiness, project velocity, and the
+drive-by/repeat retention cohorts — computed through the SAME
+functions the compare API uses), each line chart carrying the live
+site's full trend grammar (dashed OLS trend, ±2σ residual tube, red
+breach dots, slope/R² chip — a Go port of `lib/trend.js` with
+identical formulas), the latest OpenSSF Scorecard table,
+and the open-vulnerability posture — with honest "not yet scanned" /
+"analysis pending" / "no collected activity" states instead of
+fabricated zeros. Collection pages highlight the featured rows and
+carry a sign-in reminder as its own row directly under them;
+everything below the cut stays forge-linked. Snapshot pages ride the
+same sitemap, prune pass, and privacy contract.
+
+v0.27.80 also emits `/showcase/compare.html` — a fully static
+comparison demo of the four featured repos with the most comparable
+activity levels, one baked SVG chart per headline metric (commits,
+issues, change requests, contributors), linked from the showcase
+index. The slug `compare` is reserved (a collection literally named
+"Compare" gets `compare-2`).
+
+```bash
+aveloxis generate-showcase \
+  --out /var/www/aveloxis-gui/showcase \
+  --gui-root /var/www/aveloxis-gui \
+  --base-url https://aveloxis.io
+```
+
+Runs hourly from the `aveloxis-showcase.timer` systemd unit (template
+in the aveloxis-gui repo's `deploy/` directory). Read-only on the
+schema; does not run migrations (v0.21.5 policy). Safe alongside an
+active `aveloxis serve`.
+
+## `aveloxis backfill-repo-metadata`
+
+Operator-driven fleet sweep (v0.27.79) that refreshes
+`repos.repo_description`, `primary_language`, `languages`,
+`repo_archived`, and `forked_from` from the forge APIs — one
+`FetchRepoInfo` per GitHub/GitLab repo, written through the same
+`UpdateRepoMetadata` path the collector's Phase 0 uses. Generic-git
+repos are skipped (no API).
+
+Built as a launch accelerator for fork status: v0.27.78 added fork
+capture to Phase 0, but the per-cycle forward path takes ~6–21 days
+to cover the fleet. This command front-loads it — roughly an hour for
+a 94K-repo fleet at the default 8 workers, costing ~94K GraphQL
+points (about a quarter of one hour of a 73-key pool's budget).
+
+```bash
+aveloxis backfill-repo-metadata --dry-run       # candidate count only
+aveloxis backfill-repo-metadata --limit 100     # canary
+aveloxis backfill-repo-metadata                 # full sweep
+aveloxis backfill-repo-metadata --after-repo-id 51234   # resume
+```
+
+Idempotent (every write is the forge's current truth) and resumable —
+progress lines and the summary print the last repo_id processed;
+re-run with `--after-repo-id` after an interruption. Repos that 404
+(renamed/deleted/private) are skipped and left to prelim's normal
+rename/dead-repo handling. Does not run migrations (v0.21.5 policy).
+
 ## `aveloxis data-verify`
 
 The standing data-verification program (v0.27.43): runs the read-only

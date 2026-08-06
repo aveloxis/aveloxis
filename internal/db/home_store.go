@@ -10,6 +10,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -200,6 +201,48 @@ func (s *PostgresStore) FindOrCreateStarredGroup(ctx context.Context, userID int
 // id, creating the group on first use (v0.27.14).
 func (s *PostgresStore) FindOrCreateComparisonsGroup(ctx context.Context, userID int) (int64, error) {
 	return s.findOrCreateNamedGroup(ctx, userID, ComparisonsGroupName)
+}
+
+// RecordComparisonRepos links repoIDs into userID's Comparisons group
+// and returns the number of NEW links. v0.27.86: Comparisons is the
+// persistent record of every repo the user has compared — before
+// this, only the v0.27.14 out-of-scope auto-add wrote to it, so
+// admins (unscoped) and in-scope selections left no trace at all
+// (operator report 2026-08-05; production showed the admin account
+// had no Comparisons group despite heavy compare use).
+//
+// The insert joins aveloxis_data.repos so nonexistent ids (admin repo
+// ids come straight from the URL, unverified) are silently skipped,
+// and the existence probe runs FIRST so a garbage-only call can never
+// leave an empty group behind (the shared-with-me rule). Links are
+// idempotent — compare fires one request per metric section, all
+// carrying the same entity set. Pure user_repos linkage: NEVER
+// touches collection machinery (approval gates collection, v0.27.20).
+func (s *PostgresStore) RecordComparisonRepos(ctx context.Context, userID int, repoIDs []int64) (int, error) {
+	if userID <= 0 || len(repoIDs) == 0 {
+		return 0, nil
+	}
+	var anyReal bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM aveloxis_data.repos WHERE repo_id = ANY($1))`,
+		repoIDs).Scan(&anyReal); err != nil {
+		return 0, fmt.Errorf("comparison record repo check: %w", err)
+	}
+	if !anyReal {
+		return 0, nil
+	}
+	gid, err := s.findOrCreateNamedGroup(ctx, userID, ComparisonsGroupName)
+	if err != nil {
+		return 0, fmt.Errorf("comparison record group: %w", err)
+	}
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
+		SELECT $1, r.repo_id FROM aveloxis_data.repos r WHERE r.repo_id = ANY($2)
+		ON CONFLICT DO NOTHING`, gid, repoIDs)
+	if err != nil {
+		return 0, fmt.Errorf("comparison record link: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 // ScorecardOverallName is the reserved row name under which the

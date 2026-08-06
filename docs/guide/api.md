@@ -626,6 +626,17 @@ continues to gate collection, not visibility. The structured 403
 (`entity_out_of_scope`) remains for entities that resolve to nothing
 collected.
 
+**Comparisons is a persistent record (v0.27.86).** Every
+authenticated compare — admins and in-scope selections included —
+silently links its REPO entities into the caller's "Comparisons"
+group, so the group is the standing record of what the user has
+compared (before this, only the out-of-scope auto-add above wrote to
+it, and admin comparisons left no trace). Repo entities only: org
+entities are never recorded (an org expands to up to 500 repos).
+Idempotent, best-effort (a record failure never fails the compare),
+and notice-free — `added_to_group` stays reserved for the
+scope-granting auto-add.
+
 - `GET /api/v1/metrics` — the metric catalog (docs-as-data; drives
   the GUI's popovers and reference page).
 - `GET /api/v1/compare?entities=repo:1,org:github.com/chaoss&metric=contributors&since=2023-07-01&until=2026-07-01&bucket=week`

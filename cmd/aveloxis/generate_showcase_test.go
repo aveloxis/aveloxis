@@ -132,14 +132,14 @@ func TestGenerateShowcaseRepoPages(t *testing.T) {
 func TestGenerateShowcaseStaticCharts(t *testing.T) {
 	src := showcaseSrc(t)
 	for _, needle := range []string{
-		"GetRepoTimeSeries(",        // repo pages: weekly activity data
-		"MetricWeeklySeries(",       // metric line charts + compare demo
-		"PickSimilarActivity(",      // the similar-activity-window picker
-		`"compare.html"`,            // the demo page itself
-		"RenderLineChart(",          // charts are baked SVG, never JS
-		"Trend: true",               // the live trend+tube grammar on every line chart
-		"RenderStackedBarChart(",    // activity + retention use the stacked grammar
-		"YLabel:",                   // catalog units ride the y-axis like the live charts
+		"GetRepoTimeSeries(",     // repo pages: weekly activity data
+		"MetricWeeklySeries(",    // metric line charts + compare demo
+		"PickSimilarActivity(",   // the similar-activity-window picker
+		`"compare.html"`,         // the demo page itself
+		"RenderLineChart(",       // charts are baked SVG, never JS
+		"Trend: true",            // the live trend+tube grammar on every line chart
+		"RenderStackedBarChart(", // activity + retention use the stacked grammar
+		"YLabel:",                // catalog units ride the y-axis like the live charts
 		// The computed metrics route through the SAME functions the
 		// compare API uses — public snapshots can never disagree with
 		// the signed-in charts.
@@ -451,5 +451,36 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, "repos", "avshow-beta.html")); !os.IsNotExist(err) {
 		t.Errorf("deleted collection's repo snapshot pages must be pruned (pruned=%d)", sum2.Pruned)
+	}
+}
+
+// TestCompareDemoRequiresExactlyFour (v0.27.87, Copilot round on
+// PR #173): the page copy, meta description, and OG description all
+// promise "four projects" — emitting the page with 2-3 repos breaks
+// the public contract. With fewer than four comparable candidates the
+// demo is skipped entirely (the index already handles its absence via
+// IndexData.HasCompare).
+func TestCompareDemoRequiresExactlyFour(t *testing.T) {
+	src := showcaseSrc(t)
+	if !strings.Contains(src, "len(picked) < 4") {
+		t.Error("buildCompareDemo must require the full four picks — " +
+			"the page copy hardcodes \"four projects\"")
+	}
+	if strings.Contains(src, "len(picked) < 2") {
+		t.Error("the old 2-repo floor must be gone — it emitted a " +
+			"\"four projects\" page with fewer than four repos")
+	}
+}
+
+// TestForgeURLsAreSanitized (v0.27.87): every ForgeURL populate site
+// must route through showcase.SafeForgeURL before the value can reach
+// a template href.
+func TestForgeURLsAreSanitized(t *testing.T) {
+	src := showcaseSrc(t)
+	if strings.Contains(src, "ForgeURL: r.GitURL") {
+		t.Error("raw repo_git must not reach ForgeURL — wrap it in showcase.SafeForgeURL")
+	}
+	if !strings.Contains(src, "showcase.SafeForgeURL(") {
+		t.Error("generate_showcase.go must sanitize forge URLs via showcase.SafeForgeURL")
 	}
 }

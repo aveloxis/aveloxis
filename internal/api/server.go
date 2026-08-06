@@ -49,7 +49,9 @@ type Server struct {
 	// test Servers, which fail closed to the 403).
 	sharedWithMe sharedWithMeStore
 
-	// v0.27.59: single-value 60s cache for the public repo count.
+	// v0.27.59 (repo count) → v0.27.77 (full fleet payload): 60s
+	// stale-on-error cache for GET /public/stats — repos, commits,
+	// issues, PRs, contributors.
 	publicStats *publicStatsCache
 
 	// v0.27.61: general 60s body cache for per-repo read endpoints

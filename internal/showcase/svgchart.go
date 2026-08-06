@@ -114,7 +114,15 @@ func newChartFrame(minV, maxV float64, t0, t1 time.Time, opts LineChartOpts) cha
 	step := niceStep(span / chartYTicksTarget)
 	yMax := math.Ceil(maxV/step-1e-9) * step
 	if yMax <= 0 {
-		yMax = step
+		if minV < 0 {
+			// All-negative domain (burstiness of a perfectly steady
+			// repo ≈ -1 everywhere): top the axis at zero instead of a
+			// phantom positive step (v0.27.87, Copilot round PR #173).
+			yMax = 0
+		} else {
+			// All-zero degenerate: keep a visible axis.
+			yMax = step
+		}
 	}
 	yMin := 0.0
 	if minV < 0 {

@@ -20,6 +20,7 @@ import (
 	"html/template"
 	"io"
 	"math"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -210,6 +211,25 @@ func PickSimilarActivity(cands []CompareCandidate, n int) []CompareCandidate {
 }
 
 var slugStrip = regexp.MustCompile(`[^a-z0-9]+`)
+
+// SafeForgeURL returns raw when it is an absolute http/https URL with
+// a host, and "" otherwise. v0.27.87 (Copilot round, PR #173):
+// html/template escapes markup but NOT URL schemes, so a javascript:
+// value reaching a template href on the public unauthenticated
+// showcase would be an XSS vector. repo_git is validated at add time,
+// making this defense-in-depth — but the showcase is exactly where a
+// belt belongs. Templates render forge links only when ForgeURL is
+// non-empty.
+func SafeForgeURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	return raw
+}
 
 // Slugify turns a collection name into a URL slug: lowercase,
 // non-alphanumerics collapse to single hyphens, trimmed. Callers

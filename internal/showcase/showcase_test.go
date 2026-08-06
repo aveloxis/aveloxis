@@ -425,3 +425,27 @@ func TestBuildSitemap(t *testing.T) {
 		t.Error("repo snapshot URLs must be sorted for deterministic sitemaps")
 	}
 }
+
+// TestSafeForgeURL (v0.27.87, Copilot round on PR #173): html/template
+// escapes markup but not URL schemes — a javascript: value reaching an
+// href on the public unauthenticated showcase would be an XSS vector.
+// repo_git is add-time validated so this is defense-in-depth, but the
+// showcase is exactly where a belt belongs.
+func TestSafeForgeURL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"https://github.com/chaoss/augur", "https://github.com/chaoss/augur"},
+		{"http://git.example.org/repo", "http://git.example.org/repo"},
+		{"javascript:alert(1)", ""},
+		{"data:text/html,x", ""},
+		{"vbscript:msgbox", ""},
+		{"//evil.example/x", ""}, // scheme-relative: resolves to the attacker's origin
+		{"github.com/chaoss/augur", ""},
+		{"", ""},
+		{"ht tp://broken", ""},
+	}
+	for _, c := range cases {
+		if got := SafeForgeURL(c.in); got != c.want {
+			t.Errorf("SafeForgeURL(%q) = %q; want %q", c.in, got, c.want)
+		}
+	}
+}

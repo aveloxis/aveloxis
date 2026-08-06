@@ -326,3 +326,25 @@ func TestDensifyWeekly(t *testing.T) {
 		t.Errorf("offset-timezone point must land in its UTC bucket, got %v", out2[1].V)
 	}
 }
+
+// TestChartFrameAllNegativeDomainTopsAtZero (v0.27.87, Copilot round
+// on PR #173): an all-negative series — burstiness of a perfectly
+// steady repo sits near -1 for every bucket — must top its axis at 0,
+// not at a phantom positive step that misrepresents the domain. The
+// all-zero degenerate keeps yMax = step so a flat line still has a
+// visible axis.
+func TestChartFrameAllNegativeDomainTopsAtZero(t *testing.T) {
+	opts := LineChartOpts{Width: 640, Height: 260}
+	f := newChartFrame(-1.2, -0.8, time.Now().Add(-24*time.Hour), time.Now(), opts)
+	if f.yMax != 0 {
+		t.Errorf("all-negative domain must top the axis at 0, got yMax=%v", f.yMax)
+	}
+	if f.yMin >= 0 {
+		t.Errorf("all-negative domain must keep a negative floor, got yMin=%v", f.yMin)
+	}
+	// All-zero degenerate: keep the existing visible-axis behavior.
+	z := newChartFrame(0, 0, time.Now().Add(-24*time.Hour), time.Now(), opts)
+	if z.yMax <= 0 {
+		t.Errorf("all-zero series must keep a positive yMax for a visible axis, got %v", z.yMax)
+	}
+}

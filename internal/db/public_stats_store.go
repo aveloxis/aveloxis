@@ -36,13 +36,20 @@ type PublicFleetStats struct {
 //     rows, ~100-300ms) — acceptable behind the 60s cache.
 func (s *PostgresStore) GetPublicFleetStats(ctx context.Context) (PublicFleetStats, error) {
 	var out PublicFleetStats
+	// v0.27.87 (Copilot round, PR #173): all three sums come from ONE
+	// scan of the queue — the pre-fix shape ran three separate SUM
+	// subqueries, scanning the ~100K-row table three times per refresh.
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM aveloxis_data.repos),
-			(SELECT COALESCE(SUM(last_commits), 0) FROM aveloxis_ops.collection_queue),
-			(SELECT COALESCE(SUM(last_issues), 0) FROM aveloxis_ops.collection_queue),
-			(SELECT COALESCE(SUM(last_prs), 0) FROM aveloxis_ops.collection_queue),
-			(SELECT COUNT(*) FROM aveloxis_data.contributors)`).
+			q.commits, q.issues, q.prs,
+			(SELECT COUNT(*) FROM aveloxis_data.contributors)
+		FROM (
+			SELECT COALESCE(SUM(last_commits), 0) AS commits,
+			       COALESCE(SUM(last_issues), 0) AS issues,
+			       COALESCE(SUM(last_prs), 0) AS prs
+			FROM aveloxis_ops.collection_queue
+		) q`).
 		Scan(&out.Repos, &out.Commits, &out.Issues, &out.PRs, &out.Contributors)
 	return out, err
 }

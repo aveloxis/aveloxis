@@ -425,6 +425,11 @@ func (s *PostgresStore) AddRepoToGroup(ctx context.Context, userID int, groupID 
 // last token after the last space (middle names fall away — the
 // original v0.19.0 rule, now shared by the INSERT and UPDATE paths).
 func splitOAuthName(name string) (first, last string) {
+	// v0.27.87 (Copilot round): trim BEFORE splitting. A
+	// whitespace-only provider name used to pass the UPDATE path's
+	// `$9 = ''` preserve-guard and overwrite stored names with junk
+	// (" " / ''); a trailing space clobbered last_name the same way.
+	name = strings.TrimSpace(name)
 	first = name
 	if idx := strings.Index(first, " "); idx > 0 {
 		first = first[:idx]

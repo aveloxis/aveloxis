@@ -23,6 +23,7 @@ package github
 // empty-but-successful result).
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +35,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
@@ -180,10 +182,15 @@ func TestFetchContributorActivityAllExpensiveFailsSystemic(t *testing.T) {
 // also pins the WithGraphQLFastFail budget: each failing query must
 // burn exactly graphqlFastFailRetries attempts, not the full
 // 10-retry backoff chain (the pilot measured ~7 minutes for ONE
-// query under the full budget). Runtime note: this test sleeps
-// through real backoff (~10-20s) — that's the price of exercising
-// the genuine retry loop.
+// query under the full budget). v0.27.87: backoff routes through the
+// platform sleep seam so the retry SHAPE is exercised without real
+// wall-clock — this test measured 18.12s of genuine jittered sleeps
+// before the seam (Copilot review round, PR #173).
 func TestFetchContributorActivityServerErrorFastFailAndSkip(t *testing.T) {
+	restoreSleep := platform.SetGraphQLSleepForTest(func(ctx context.Context, d time.Duration) error {
+		return nil // count the shape, skip the wall-clock
+	})
+	defer restoreSleep()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	const poison = "dense-500-account"
 

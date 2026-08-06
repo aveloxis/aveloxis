@@ -81,3 +81,19 @@ func TestPublicFleetStatsIncludesArchived(t *testing.T) {
 		t.Errorf("counts must be non-negative: %+v", stats)
 	}
 }
+
+// TestPublicFleetStatsSingleQueueScan (v0.27.87, Copilot round on
+// PR #173): the three cached-total sums must come from ONE scan of
+// collection_queue, not three separate SUM subqueries — the pre-fix
+// shape scanned the ~100K-row queue three times per cache refresh.
+func TestPublicFleetStatsSingleQueueScan(t *testing.T) {
+	src := readSourceFile(t, "public_stats_store.go")
+	fn := src[strings.Index(src, "func (s *PostgresStore) GetPublicFleetStats("):]
+	if end := strings.Index(fn[1:], "\nfunc "); end > 0 {
+		fn = fn[:end+1]
+	}
+	if n := strings.Count(fn, "collection_queue"); n != 1 {
+		t.Errorf("GetPublicFleetStats must reference collection_queue exactly once "+
+			"(one scan computing all three sums); found %d references", n)
+	}
+}

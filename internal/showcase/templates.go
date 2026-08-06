@@ -207,7 +207,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
     <tbody>
       {{range $i, $r := .Repos}}
       <tr{{if $r.PageSlug}} class="featured"{{end}}>
-        <td class="name">{{if $r.PageSlug}}<a href="/showcase/repos/{{$r.PageSlug}}.html">{{$r.Owner}} / {{$r.Name}}</a><a class="ext" href="{{$r.ForgeURL}}" rel="noopener" title="Source repository">↗</a>{{else}}<a href="{{$r.ForgeURL}}" rel="noopener">{{$r.Owner}} / {{$r.Name}}</a>{{end}}</td>
+        <td class="name">{{if $r.PageSlug}}<a href="/showcase/repos/{{$r.PageSlug}}.html">{{$r.Owner}} / {{$r.Name}}</a>{{if $r.ForgeURL}}<a class="ext" href="{{$r.ForgeURL}}" rel="noopener" title="Source repository">↗</a>{{end}}{{else if $r.ForgeURL}}<a href="{{$r.ForgeURL}}" rel="noopener">{{$r.Owner}} / {{$r.Name}}</a>{{else}}{{$r.Owner}} / {{$r.Name}}{{end}}</td>
         <td class="num">{{comma $r.Issues}}</td>
         <td class="num">{{comma $r.PRs}}</td>
         <td class="num">{{comma $r.Commits}}</td>
@@ -260,7 +260,8 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
     {
       "@type": "SoftwareSourceCode",
       "name": "{{.Owner}}/{{.Name}}",
-      "codeRepository": "{{.ForgeURL}}",
+      {{if .ForgeURL}}"codeRepository": "{{.ForgeURL}}",
+      {{end -}}
       "url": "{{.BaseURL}}/showcase/repos/{{.Slug}}.html"{{if .PrimaryLanguage}},
       "programmingLanguage": "{{.PrimaryLanguage}}"{{end}}
     }
@@ -277,7 +278,8 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   <p class="meta-line">
     {{if .PrimaryLanguage}}{{.PrimaryLanguage}} · {{end}}featured in
     {{- range $i, $c := .Collections}}{{if $i}},{{end}} <a href="/showcase/{{$c.Slug}}.html">{{$c.Name}}</a>{{end}} ·
-    <a href="{{.ForgeURL}}" rel="noopener">source repository ↗</a> ·
+    {{if .ForgeURL}}<a href="{{.ForgeURL}}" rel="noopener">source repository ↗</a> ·
+    {{end -}}
     updated {{.GeneratedAt.UTC.Format "Jan 2, 2006 15:04"}} UTC
   </p>
   <div class="tiles">

@@ -215,7 +215,11 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 					break
 				}
 				row := showcase.RepoRow{
-					Owner: r.Owner, Name: r.Name, ForgeURL: r.GitURL,
+					// v0.27.87: scheme-allowlisted (http/https only) —
+					// the row's ForgeURL is what every downstream
+					// showcase surface (snapshot pages included) renders
+					// into hrefs on the public pages.
+					Owner: r.Owner, Name: r.Name, ForgeURL: showcase.SafeForgeURL(r.GitURL),
 					Issues: r.Issues, PRs: r.PRs, Commits: r.Commits,
 				}
 				if r.LastActivity != nil {
@@ -652,8 +656,12 @@ func buildCompareDemo(ctx context.Context, store *db.PostgresStore, opts showcas
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].Slug < cands[j].Slug }) // map order → deterministic
 	picked := showcase.PickSimilarActivity(cands, 4)
-	if len(picked) < 2 {
-		return false, nil // nothing comparable to show
+	if len(picked) < 4 {
+		// v0.27.87 (Copilot round, PR #173): the page copy, meta
+		// description, and OG description all promise "four projects" —
+		// emitting with fewer breaks the public contract. Skip the demo
+		// (the index handles its absence via IndexData.HasCompare).
+		return false, nil
 	}
 
 	since, until := showcaseChartWindow(now)

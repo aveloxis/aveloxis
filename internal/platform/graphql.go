@@ -82,6 +82,41 @@ func (e *classifiedGraphQLError) Error() string     { return e.message }
 func (e *classifiedGraphQLError) Class() ErrorClass { return e.class }
 func (e *classifiedGraphQLError) Unwrap() error     { return e.wrapped }
 
+// graphqlRetrySleep is the ctx-aware backoff sleep used by the GraphQL
+// retry loop. Package-level seam (v0.27.87) so backoff-SHAPE tests can
+// count sleeps instead of paying real wall-clock — the fast-fail
+// poison-account test spent 18s in genuine jittered sleeps before the
+// seam existed. Production code never replaces it.
+var graphqlRetrySleep = func(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+// SetGraphQLSleepForTest replaces the GraphQL retry backoff sleep and
+// returns a restore func. TEST-ONLY seam — see graphqlRetrySleep.
+func SetGraphQLSleepForTest(f func(ctx context.Context, d time.Duration) error) (restore func()) {
+	old := graphqlRetrySleep
+	graphqlRetrySleep = f
+	return func() { graphqlRetrySleep = old }
+}
+
+// retrySleep waits before the NEXT retry attempt. On the FINAL allowed
+// attempt it returns immediately — sleeping after the last attempt
+// only delays the caller's failure (v0.27.87, Copilot round on
+// PR #173). This matters most under WithGraphQLFastFail, where the
+// wasted tail backoff partially defeated the fast-fail budget and
+// batch subdivision MULTIPLIES exhausted chains.
+func retrySleep(ctx context.Context, wait time.Duration, attempt, budget int) error {
+	if attempt+1 >= budget {
+		return nil
+	}
+	return graphqlRetrySleep(ctx, wait)
+}
+
 // GraphQL executes a GraphQL query against <baseURL>/graphql.
 //
 // The query and variables are JSON-encoded into the POST body. The response
@@ -155,10 +190,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			}
 			c.logger.Warn("graphql request failed, retrying",
 				"url", url, "query", query, "attempt", attempt+1, "error", err)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+			if err := retrySleep(ctx, time.Duration(attempt+1)*2*time.Second, attempt, budget); err != nil {
+				return err
 			}
 			continue
 		}
@@ -219,10 +252,11 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 					c.logger.Warn("graphql body read error, retrying",
 						"url", url, "error", readErr, "query", query,
 						"read_retry", readRetries, "wait", wait)
-					select {
-					case <-ctx.Done():
-						return ctx.Err()
-					case <-time.After(wait):
+					// The read-retry sub-budget's sleep always precedes a
+					// real retry (the guard above), so it routes through
+					// the seam directly — no final-attempt skip applies.
+					if err := graphqlRetrySleep(ctx, wait); err != nil {
+						return err
 					}
 					continue
 				}
@@ -247,10 +281,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
 				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait)
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(wait):
+				if err := retrySleep(ctx, wait, attempt, budget); err != nil {
+					return err
 				}
 				continue
 			}
@@ -264,10 +296,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			_ = resp.Body.Close()
 			wait := parseRetryAfter(resp)
 			c.logger.Info("graphql 429 rate limited", "url", url, "wait", wait)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(wait):
+			if err := retrySleep(ctx, wait, attempt, budget); err != nil {
+				return err
 			}
 			continue
 
@@ -279,10 +309,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 			wait := jitteredBackoff(attempt)
 			c.logger.Warn("graphql server error, retrying with backoff",
 				"url", url, "query", query, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(wait):
+			if err := retrySleep(ctx, wait, attempt, budget); err != nil {
+				return err
 			}
 			continue
 
@@ -293,10 +321,8 @@ func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[st
 				"url", url, "status", resp.StatusCode,
 				"body_snippet", truncateBody(string(respBody), 200),
 				"attempt", attempt+1)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+			if err := retrySleep(ctx, time.Duration(attempt+1)*2*time.Second, attempt, budget); err != nil {
+				return err
 			}
 		}
 	}

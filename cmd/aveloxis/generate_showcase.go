@@ -75,9 +75,10 @@ type repoTarget struct {
 
 func generateShowcaseCmd(cfgPath *string) *cobra.Command {
 	var (
-		outDir  string
-		baseURL string
-		guiRoot string
+		outDir     string
+		baseURL    string
+		guiRoot    string
+		runTimeout time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "generate-showcase",
@@ -98,8 +99,20 @@ editing collections.`,
 			cfg := loadConfig(*cfgPath, bootLog)
 			logger := newLogger(cfg)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-			defer cancel()
+			// v0.27.88: whole-run budget is operator-tunable. The original
+			// hardcoded 10 minutes was sized before the v0.27.80 snapshot
+			// pages carried the full signed-in chart set — ~16
+			// flagship-scale featured repos × ~10 multi-second analytics
+			// queries exceed it on production, and the expired deadline
+			// surfaced as a misleading per-query "context deadline
+			// exceeded" on whichever chart the clock died at. <= 0
+			// disables the deadline entirely.
+			ctx := context.Background()
+			if runTimeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, runTimeout)
+				defer cancel()
+			}
 
 			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)
 			if err != nil {
@@ -127,6 +140,7 @@ editing collections.`,
 	cmd.Flags().StringVar(&outDir, "out", "./showcase", "output directory for the generated showcase pages")
 	cmd.Flags().StringVar(&baseURL, "base-url", "https://aveloxis.io", "canonical site origin for links/OG/sitemap")
 	cmd.Flags().StringVar(&guiRoot, "gui-root", "", "site docroot: sitemap.xml is written here and blog/*.html globbed from it (empty = skip sitemap)")
+	cmd.Flags().DurationVar(&runTimeout, "timeout", 60*time.Minute, "whole-run deadline (e.g. 90m, 2h); 0 or negative disables it")
 	return cmd
 }
 

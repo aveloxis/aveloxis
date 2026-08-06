@@ -797,6 +797,18 @@ aveloxis generate-showcase \
   --base-url https://aveloxis.io
 ```
 
+The whole run is bounded by `--timeout` (default **60m**; accepts any
+Go duration like `90m` or `2h`; `0` or negative disables the deadline
+entirely). The pre-v0.27.88 hardcoded 10-minute budget was sized
+before the snapshot pages carried the full chart set — on a fleet
+whose featured repos include kubernetes-scale projects, the ~16
+snapshot pages × ~10 analytics queries each exceed 10 minutes and the
+run died with a misleading per-query `context deadline exceeded` on
+whichever chart the clock expired at (aborting `compare.html`, the
+sitemap, and the prune pass with it). If a run still times out, raise
+`--timeout` — the first run on a cold Postgres cache is the slowest;
+subsequent hourly runs benefit from warm buffers.
+
 Runs hourly from the `aveloxis-showcase.timer` systemd unit (template
 in the aveloxis-gui repo's `deploy/` directory). Read-only on the
 schema; does not run migrations (v0.21.5 policy). Safe alongside an

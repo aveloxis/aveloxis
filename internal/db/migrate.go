@@ -1063,6 +1063,26 @@ func migrateStage7UsersAndGroups(ctx context.Context, pg *PostgresStore, logger 
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "oauth_provider", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "oauth_token", "TEXT DEFAULT ''")
 
+	// v0.27.89: real join date for the admin users screen. ORDER IS
+	// LOAD-BEARING (the v0.27.60 repos.added_at pattern): (1) bare
+	// column add — a default at add-time would stamp every legacy row
+	// with the migration timestamp; (2) backfill from
+	// data_collection_date (an HONEST last-touch approximation — the
+	// table has nothing closer to a historical join date; the value
+	// is exact for any user who hasn't logged in since signup);
+	// (3) only then the NOW() default for future signups. created_at
+	// is INSERT-only: UpsertOAuthUser's UPDATE branch never touches it
+	// (pinned), so it can't degrade back into last-accessed.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "created_at", "TIMESTAMPTZ")
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.89 backfill users.created_at from data_collection_date (last-touch approximation)",
+		`UPDATE aveloxis_ops.users
+		 SET created_at = COALESCE(data_collection_date, NOW())
+		 WHERE created_at IS NULL`)
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.89 default users.created_at to NOW() for future signups",
+		`ALTER TABLE aveloxis_ops.users ALTER COLUMN created_at SET DEFAULT NOW()`)
+
 	// v0.19.0 public-access feature: email confirmation timestamp +
 	// group approval workflow. Set email_confirmed_at to NOW() at
 	// signup since GitHub OAuth has already verified the address —

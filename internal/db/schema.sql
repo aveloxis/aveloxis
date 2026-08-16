@@ -2256,6 +2256,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.users (
     tool_source    TEXT DEFAULT 'aveloxis',
     tool_version   TEXT DEFAULT '',
     data_source    TEXT DEFAULT '',
+    -- v0.27.89: real join date, INSERT-only. data_collection_date is
+    -- re-stamped on every login and serves as last-seen.
+    created_at     TIMESTAMPTZ DEFAULT NOW(),
     data_collection_date TIMESTAMPTZ DEFAULT NOW()
 );
 

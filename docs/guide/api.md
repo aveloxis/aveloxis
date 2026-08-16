@@ -945,7 +945,14 @@ Per-user:
 Admin-only:
 
 - `GET /api/v1/admin/users` —
-  `{users: [{user_id, login, email, provider, is_admin, created_at}]}`.
+  `{users: [{user_id, login, email, provider, is_admin, created_at,
+  last_seen}]}`. Since v0.27.89 `created_at` is the REAL join date
+  (INSERT-only `users.created_at`) and `last_seen` is
+  `data_collection_date`, which every login re-stamps. Rows that
+  predate v0.27.89 carry the migration's honest last-touch
+  approximation as their join date (the table had no earlier
+  timestamp to backfill from), so for those two fields start equal
+  and diverge from the next login onward.
 - `POST /api/v1/admin/users/{userID}/admin` with
   `{"admin": true|false}` — promote/demote. Self-demotion is refused
   (last-admin guard).

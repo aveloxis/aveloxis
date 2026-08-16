@@ -51,6 +51,36 @@ func TestGenerateShowcaseFlagsAndShape(t *testing.T) {
 	}
 }
 
+// TestGenerateShowcaseTimeoutFlag pins the v0.27.88 --timeout flag.
+// The original hardcoded 10-minute whole-run deadline was sized for
+// the pre-v0.27.80 showcase (collection pages only); once every
+// snapshot page carried the full signed-in chart set, ~16
+// flagship-scale featured repos × ~10 multi-second analytics queries
+// blew the budget on production (2026-08-05: the hourly run died at
+// kubernetes/kubernetes' first metric chart with "context deadline
+// exceeded", aborting compare.html + sitemap + prune with it).
+func TestGenerateShowcaseTimeoutFlag(t *testing.T) {
+	src := showcaseSrc(t)
+	// Flag registration with the batch-job default (60 min — this runs
+	// from an hourly timer, not interactively).
+	for _, needle := range []string{
+		`"timeout"`, "DurationVar", "60*time.Minute",
+	} {
+		if !strings.Contains(src, needle) {
+			t.Errorf("generate-showcase must register a --timeout duration flag defaulting to 60*time.Minute: missing %q", needle)
+		}
+	}
+	// The old hardcoded deadline must NOT return.
+	if strings.Contains(src, "10*time.Minute") {
+		t.Error("the hardcoded 10*time.Minute deadline must be gone — the run budget is the --timeout flag")
+	}
+	// <= 0 disables the deadline entirely (documented escape hatch for
+	// pathological first runs on a cold cache).
+	if !strings.Contains(src, "runTimeout > 0") {
+		t.Error("a non-positive --timeout must disable the deadline (runTimeout > 0 gate missing)")
+	}
+}
+
 func TestGenerateShowcaseDoesNotMigrate(t *testing.T) {
 	// Comment-stripped scan (the v0.21.5 contract pin — the comment
 	// EXPLAINING the rule would otherwise false-match it).

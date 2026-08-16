@@ -102,6 +102,23 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
 .trend-chip { display: inline-block; margin-left: 8px; padding: 1px 10px; border-radius: 999px;
   border: 1px solid rgba(70,85,122,0.25); background: rgba(70,85,122,0.05); color: #46557a;
   font-size: 11px; font-weight: 600; font-family: ui-monospace, monospace; vertical-align: middle; }
+/* v0.27.90 mobile retrofit: charts SCROLL IN PLACE instead of
+   shrinking — the SVGs render width=100% against a 720-unit viewBox,
+   which turns their 10px labels into ~4.6px at phone width. The
+   min-width keeps them legible; the container pans. svgchart.go
+   fonts/ticks are deliberately untouched (pinned to the live
+   Chart.js reference; desktop must not move). */
+.chart-scroll { overflow-x: auto; }
+.chart-scroll svg { min-width: 560px; }
+@media (max-width: 640px) {
+  .wrap { padding: 18px 14px 44px; }
+  .top { flex-wrap: wrap; }
+  h1 { font-size: 24px; }
+  th, td { padding: 8px 10px; }
+  .tiles { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .legend { justify-content: flex-start; }
+  .chart-card { padding: 12px 12px 8px; }
+}
 </style>
 {{end}}
 
@@ -294,7 +311,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   {{if .ActivityChart}}
   <div class="chart-card">
     <div class="legend">{{range .ActivityChart.Legend}}<span><span class="dot" style="background: {{.Color}}"></span>{{.Label}}</span>{{end}}</div>
-    {{.ActivityChart.SVG}}
+    <div class="chart-scroll">{{.ActivityChart.SVG}}</div>
     {{if .ActivityChart.Caption}}<p class="chart-caption">{{.ActivityChart.Caption}}</p>{{end}}
   </div>
   {{else}}
@@ -342,7 +359,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   <div class="chart-card">
     <h3>{{.Title}}{{if .Chip}}<span class="trend-chip">{{.Chip}}</span>{{end}}</h3>
     {{if .Legend}}<div class="legend">{{range .Legend}}<span><span class="dot" style="background: {{.Color}}"></span>{{.Label}}</span>{{end}}</div>{{end}}
-    {{.SVG}}
+    <div class="chart-scroll">{{.SVG}}</div>
     {{if .Caption}}<p class="chart-caption">{{.Caption}}</p>{{end}}
   </div>
   {{end}}
@@ -405,7 +422,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   <div class="chart-card">
     <h3>{{.Title}}{{if .Chip}}<span class="trend-chip">{{.Chip}}</span>{{end}}</h3>
     <div class="legend">{{range .Legend}}<span><span class="dot" style="background: {{.Color}}"></span>{{.Label}}</span>{{end}}</div>
-    {{.SVG}}
+    <div class="chart-scroll">{{.SVG}}</div>
     {{if .Caption}}<p class="chart-caption">{{.Caption}}</p>{{end}}
   </div>
   {{end}}

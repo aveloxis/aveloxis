@@ -729,7 +729,8 @@ type AdminUser struct {
 	Email     string
 	Provider  string
 	IsAdmin   bool
-	CreatedAt time.Time
+	CreatedAt time.Time // real join date (users.created_at, INSERT-only)
+	LastSeen  time.Time // data_collection_date — re-stamped on every login
 }
 
 // ListUsers returns all users for the admin user-management page.
@@ -738,7 +739,9 @@ type AdminUser struct {
 func (s *PostgresStore) ListUsers(ctx context.Context) ([]AdminUser, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT user_id, login_name, COALESCE(email, ''), COALESCE(oauth_provider, ''),
-		       admin, COALESCE(data_collection_date, NOW())
+		       admin,
+		       COALESCE(created_at, data_collection_date, NOW()),
+		       COALESCE(data_collection_date, NOW())
 		FROM aveloxis_ops.users
 		ORDER BY user_id`)
 	if err != nil {
@@ -748,7 +751,7 @@ func (s *PostgresStore) ListUsers(ctx context.Context) ([]AdminUser, error) {
 	var out []AdminUser
 	for rows.Next() {
 		var u AdminUser
-		if err := rows.Scan(&u.UserID, &u.Login, &u.Email, &u.Provider, &u.IsAdmin, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.UserID, &u.Login, &u.Email, &u.Provider, &u.IsAdmin, &u.CreatedAt, &u.LastSeen); err != nil {
 			return nil, err
 		}
 		out = append(out, u)

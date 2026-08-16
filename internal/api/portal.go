@@ -500,11 +500,12 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		Email     string    `json:"email"`
 		Provider  string    `json:"provider"`
 		IsAdmin   bool      `json:"is_admin"`
-		CreatedAt time.Time `json:"created_at"`
+		CreatedAt time.Time `json:"created_at"` // real join date (v0.27.89)
+		LastSeen  time.Time `json:"last_seen"`  // re-stamped on every login
 	}
 	out := make([]userJSON, 0, len(users))
 	for _, u := range users {
-		out = append(out, userJSON{u.UserID, u.Login, u.Email, u.Provider, u.IsAdmin, u.CreatedAt})
+		out = append(out, userJSON{u.UserID, u.Login, u.Email, u.Provider, u.IsAdmin, u.CreatedAt, u.LastSeen})
 	}
 	jsonResponse(w, map[string]any{"users": out})
 }

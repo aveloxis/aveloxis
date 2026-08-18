@@ -1257,10 +1257,31 @@ func (c *CollectionConfig) MatviewRebuildWeekday() int {
 		return int(time.Friday)
 	case "saturday":
 		return int(time.Saturday)
-	case "disabled", "none", "off":
+	// v0.27.96: "disable" added to the alias list. The operator set it on
+	// production 2026-08-18 believing rebuilds were off; the silent
+	// Saturday fallback kept the 11-hour weekly rebuild firing. Be liberal
+	// in what disable spellings we accept, and see
+	// MatviewRebuildDayRecognized for the WARN-on-typo companion.
+	case "disabled", "disable", "none", "off":
 		return -1
 	default:
 		return int(time.Saturday) // default
+	}
+}
+
+// MatviewRebuildDayRecognized reports whether MatviewRebuildDay maps to a
+// deliberate schedule choice — a real weekday, a disable alias, or empty
+// (the documented default). False means the value is a typo and
+// MatviewRebuildWeekday is silently falling back to Saturday; the scheduler
+// WARNs at startup so the fallback is never invisible (v0.27.96,
+// log-the-effective-value rule).
+func (c *CollectionConfig) MatviewRebuildDayRecognized() bool {
+	switch strings.ToLower(c.MatviewRebuildDay) {
+	case "", "sunday", "monday", "tuesday", "wednesday", "thursday",
+		"friday", "saturday", "disabled", "disable", "none", "off":
+		return true
+	default:
+		return false
 	}
 }
 

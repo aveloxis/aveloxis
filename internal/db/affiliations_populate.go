@@ -108,6 +108,28 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 
 	affMap := buildAffiliationMap(candidates)
 
+	// v0.27.96 (summary/21 F8): delta-only writes. This pass runs hourly
+	// and used to upsert EVERY domain with `DO UPDATE … ca_last_used =
+	// NOW()` — every row rewritten every hour, which bloated
+	// contributor_affiliations to 3,151 MB for 66K rows (~47 KB/row) on
+	// production. Load the existing map once and write only new or
+	// changed domains. ca_last_used consequently advances only on actual
+	// change — it has no readers (verified 2026-08-18), documented here
+	// so a future reader knows the semantic.
+	existing := make(map[string]string)
+	if exRows, exErr := s.pool.Query(ctx, `
+		SELECT ca_domain, ca_affiliation FROM aveloxis_data.contributor_affiliations`); exErr == nil {
+		for exRows.Next() {
+			var d, a string
+			if err := exRows.Scan(&d, &a); err == nil {
+				existing[d] = a
+			}
+		}
+		exRows.Close()
+	} else {
+		s.logger.Warn("affiliation population: existing-map load failed — falling back to full upsert this run", "error", exErr)
+	}
+
 	// Upsert into contributor_affiliations.
 	//
 	// v0.19.2: scrub invalid UTF-8 from domain and company before
@@ -125,6 +147,9 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 		company = safeUTF8(company)
 		if domain == "" || company == "" {
 			continue
+		}
+		if prev, ok := existing[domain]; ok && prev == company {
+			continue // unchanged — skip the rewrite (delta-only, F8)
 		}
 		_, err := s.pool.Exec(ctx, `
 			INSERT INTO aveloxis_data.contributor_affiliations

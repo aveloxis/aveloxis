@@ -32,7 +32,15 @@
 \echo '==================================================================='
 \echo '== 0. Snapshot header: window, versions'
 \echo '==================================================================='
+-- TWO windows govern this snapshot (the 2026-08-18 F6 lesson):
+--   statements_since  → sections 1–3, 7 (pg_stat_statements)
+--   table_stats_since → sections 4–6, 8 (pg_stat_user_tables/indexes);
+--                       NULL = counters span the database's ENTIRE life,
+--                       including long-fixed incident eras — do not read
+--                       lifetime seq_scan counts as current behavior.
 SELECT (SELECT stats_reset FROM pg_stat_statements_info) AS statements_since,
+       (SELECT stats_reset FROM pg_stat_database
+         WHERE datname = current_database())             AS table_stats_since,
        pg_postmaster_start_time()                        AS postmaster_started,
        now()                                             AS snapshot_at,
        current_setting('server_version')                 AS pg_version,

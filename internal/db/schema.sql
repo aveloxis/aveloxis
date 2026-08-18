@@ -1464,6 +1464,18 @@ CREATE INDEX IF NOT EXISTS idx_issues_repo_created
 CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_created
     ON aveloxis_data.pull_requests (repo_id, created_at);
 
+-- v0.27.96 perf wave (summary/21 F1/F5): the staged processor's
+-- number->serial lookups ran off single-column repo_id indexes, filtering
+-- per-repo rows one by one -- measured 284h/77h/32h of DB time in the
+-- first pg_stat_statements snapshot (2026-08-18). Live fleets build these
+-- CONCURRENTLY via ensurePerfWaveIndexes (perf_indexes.go).
+CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_number
+    ON aveloxis_data.pull_requests (repo_id, pr_number);
+CREATE INDEX IF NOT EXISTS idx_pull_request_reviews_repo_platform_review_id
+    ON aveloxis_data.pull_request_reviews (repo_id, platform_review_id);
+CREATE INDEX IF NOT EXISTS idx_issues_repo_number
+    ON aveloxis_data.issues (repo_id, issue_number);
+
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_cve_id
     ON aveloxis_data.repo_deps_vulnerabilities (cve_id)
     WHERE cve_id != '';
@@ -2093,6 +2105,13 @@ CREATE INDEX IF NOT EXISTS idx_staging_unprocessed
 -- aggregate that completes in ~10ms.
 CREATE INDEX IF NOT EXISTS idx_staging_repo_id
     ON aveloxis_ops.staging (repo_id);
+
+-- v0.27.96 perf wave (summary/21 F7a): PurgeStagedProcessed's hourly
+-- DELETE (`WHERE processed AND created_at < ...`) seq-scanned the 33 GB
+-- staging table at 61.6s mean. Partial on `processed` -- unprocessed rows
+-- (the bulk of the table by design) never qualify for the purge.
+CREATE INDEX IF NOT EXISTS idx_staging_processed_created
+    ON aveloxis_ops.staging (created_at) WHERE processed;
 
 -- ============================================================
 -- Mailing-list staging (v0.25.x). The mailing-list pipeline mirrors the

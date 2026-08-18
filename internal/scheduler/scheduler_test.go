@@ -388,10 +388,13 @@ func TestSchedulerRecoverOtherLocksOnStartup(t *testing.T) {
 	if runIdx < 0 {
 		t.Fatal("cannot find Run function")
 	}
-	// Look in the first ~2000 chars of Run for the startup sequence.
+	// Look in the first ~4000 chars of Run for the startup sequence
+	// (widened from 2000 in v0.27.96 when the matview-schedule startup
+	// log grew the preamble; the pin's intent is "in the startup block,
+	// before the ticker loop", not a byte offset).
 	runBody := src[runIdx:]
-	if len(runBody) > 2000 {
-		runBody = runBody[:2000]
+	if len(runBody) > 4000 {
+		runBody = runBody[:4000]
 	}
 
 	if !strings.Contains(runBody, "RecoverOtherWorkerLocks") {

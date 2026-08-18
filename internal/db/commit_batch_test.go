@@ -4,6 +4,7 @@
 package db
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -106,12 +107,34 @@ func TestUpsertCommitBatchEndToEnd(t *testing.T) {
 		t.Errorf("expected 3 commit-file rows (dup collapsed), got %d", rows)
 	}
 
-	// Idempotent re-run.
+	// Chunk-boundary coverage: a batch larger than commitBatchChunk must
+	// split cleanly across statements (600 rows → 500 + 100 at the
+	// default chunk size).
+	big := make([]*model.Commit, 0, commitBatchChunk+100)
+	for i := 0; i < commitBatchChunk+100; i++ {
+		big = append(big, mk("avtestcbbig", fmt.Sprintf("file-%04d.go", i)))
+	}
+	if err := store.UpsertCommitBatch(ctx, big); err != nil {
+		t.Fatalf("UpsertCommitBatch >chunk: %v", err)
+	}
+	var bigRows int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM aveloxis_data.commits WHERE repo_id = $1 AND cmt_commit_hash = 'avtestcbbig'`,
+		repoID).Scan(&bigRows); err != nil {
+		t.Fatalf("count big: %v", err)
+	}
+	if bigRows != commitBatchChunk+100 {
+		t.Errorf("chunked batch stored %d rows, want %d", bigRows, commitBatchChunk+100)
+	}
+
+	// Idempotent re-run (scoped to the original hashes — the chunk batch
+	// above added its own rows for this repo).
 	if err := store.UpsertCommitBatch(ctx, batch); err != nil {
 		t.Fatalf("re-run UpsertCommitBatch: %v", err)
 	}
 	if err := store.pool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM aveloxis_data.commits WHERE repo_id = $1`, repoID).Scan(&rows); err != nil {
+		SELECT COUNT(*) FROM aveloxis_data.commits
+		WHERE repo_id = $1 AND cmt_commit_hash IN ('avtestcbhash1','avtestcbhash2')`, repoID).Scan(&rows); err != nil {
 		t.Fatalf("recount: %v", err)
 	}
 	if rows != 3 {

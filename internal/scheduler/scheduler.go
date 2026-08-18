@@ -2118,6 +2118,23 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 			}
 		}
 	}
+
+	// v0.27.93 self-heal: enumeration above links only what the forge
+	// listing returns. Tracked repos that entered the catalog through
+	// other paths (mailing-list loaders, foundation importers, renames,
+	// GitLab orgs — which this scan doesn't enumerate) would otherwise
+	// stay unlinked forever (the 2026-08-18 production drift: 9 live
+	// repos stranded, incl. gitlab.com/petsc/petsc). One set-based pass
+	// per FULL cycle; the 10s demand probe (onlyNeverScanned) stays
+	// cheap and skips it.
+	if !onlyNeverScanned {
+		if linked, err := s.store.ReconcileOrgRepoLinks(ctx); err != nil {
+			s.logger.Warn("org link reconciliation failed", "error", err)
+		} else if linked > 0 {
+			s.logger.Info("org link reconciliation linked stranded tracked repos",
+				"links_inserted", linked)
+		}
+	}
 }
 
 // runBreadth discovers cross-repo activity for contributors via the GitHub Events API.

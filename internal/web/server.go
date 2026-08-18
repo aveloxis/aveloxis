@@ -1198,7 +1198,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 				}
 				if repoID > 0 {
 					// Already exists — just add the user_repos reference.
-					if err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
+					if _, err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
 						s.logger.Warn("org scan: linking existing repo failed", "repo_id", repoID, "error", err)
 					}
 					alreadyExisted++
@@ -1221,7 +1221,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 					if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
 						s.logger.Warn("org scan: enqueue failed", "repo_id", repoID, "url", item.HTMLURL, "error", err)
 					}
-					if err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
+					if _, err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
 						s.logger.Warn("org scan: linking new repo failed", "repo_id", repoID, "error", err)
 					}
 					newlyQueued++

@@ -737,7 +737,7 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete && !info.IsAdmin && !info.Scope[repoID] {
 		gid, gerr := s.store.FindOrCreateStarredGroup(r.Context(), info.UserID)
 		if gerr == nil {
-			gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
+			_, gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
 		}
 		if gerr != nil {
 			http.Error(w, "could not add repository to your Starred group", http.StatusInternalServerError)

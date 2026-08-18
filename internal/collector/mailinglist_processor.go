@@ -66,6 +66,31 @@ type MailingListProcessor struct {
 	// runs a single goroutine, so this is a no-op there.
 	mu       sync.Mutex
 	inflight map[int64]bool
+
+	// noRepoWarned rate-limits the "no repo for group, leaving staged" WARN
+	// to once per list per noRepoWarnInterval. A list whose repo_group has
+	// no resolvable repo is stable operator-attention state, not a new
+	// event — unconditional logging re-warned four wedged lists every few
+	// seconds forever (65,592 lines in the Aug 7–16 2026 production log).
+	// Guarded by mu.
+	noRepoWarned map[int64]time.Time
+}
+
+// noRepoWarnInterval bounds how often one list's "no repo for group" WARN
+// repeats. Hourly keeps the wedged state visible in the log without
+// drowning it.
+const noRepoWarnInterval = time.Hour
+
+// shouldWarnNoRepo reports whether the "no repo for group" WARN should fire
+// for this list, and stamps the last-warned time when it does.
+func (p *MailingListProcessor) shouldWarnNoRepo(rglsID int64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if last, ok := p.noRepoWarned[rglsID]; ok && time.Since(last) < noRepoWarnInterval {
+		return false
+	}
+	p.noRepoWarned[rglsID] = time.Now()
+	return true
 }
 
 // NewMailingListProcessor builds a processor for one ML system. projectionClean
@@ -81,6 +106,7 @@ func NewMailingListProcessor(store mlProcessorStore, system, mirrorHandling stri
 	return &MailingListProcessor{
 		store: store, system: system, mirrorHandling: mirrorHandling,
 		projectionClean: projectionClean, logger: logger, inflight: map[int64]bool{},
+		noRepoWarned: map[int64]time.Time{},
 	}
 }
 
@@ -157,8 +183,14 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 				return processed, rerr
 			}
 			if !ok {
-				p.logger.Warn("mailing-list processor: no repo for group, leaving staged",
-					"rgls_id", rglsID, "repo_group_id", derefInt64(batch[0].RepoGroupID))
+				// Rate-limited: a group with no resolvable repo is stable
+				// state, and this line re-fired every few seconds per
+				// wedged list pre-v0.27.91. Rows stay staged untouched.
+				if p.shouldWarnNoRepo(rglsID) {
+					p.logger.Warn("mailing-list processor: no repo for group, leaving staged",
+						"rgls_id", rglsID, "repo_group_id", derefInt64(batch[0].RepoGroupID),
+						"next_warn_in", noRepoWarnInterval)
+				}
 				return processed, nil
 			}
 			repoID, repoResolved = rid, true

@@ -87,6 +87,8 @@ Every distinct commit-author email observed for a resolved contributor lands in 
 
 If an email is observed under two different `cntrb_id`s, that is a duplicate-contributor bug, not a multi-mapping. Use the [Diagnostic queries](#diagnostic-queries) to detect this case.
 
+**Consumer (v0.27.91): the affiliations map.** `PopulateAffiliations` builds its domain→company candidates from contributor profile emails PLUS the `contributors_aliases` bridge — the alias rows are what surface institutional domains seen only in git log (a gmail-profile contributor committing as `person@university.edu`). Before v0.27.91 that signal was (incorrectly) sought via an hourly join against the ~500M-row `commits` table, which could only ever return domains the profile query already had and whose parallel DISTINCT sort exhausted the production host's memory on 2026-08-16, crashing both Postgres backends and `aveloxis serve`. A commits-table join is now banned from `affiliations_populate.go` by the `TestPopulateAffiliationsNeverTouchesCommitsTable` tripwire. Both candidate queries also filter `COALESCE(cntrb_deleted, 0) = 0` — the merge-loser exclusion this document's R3 section has always claimed for `PopulateAffiliations` is real in code as of v0.27.91.
+
 ### R6: Enrichment is best-effort, cooldown-bounded
 
 A "thin" contributor has empty `cntrb_company` AND empty `cntrb_location`. The periodic enrichment ticker calls `client.EnrichContributor(login)` to fill these fields. If the platform profile is genuinely empty (the user has not set company / location), the row's `cntrb_last_enriched_at` is stamped to `NOW()` to suppress retry for the cooldown window (30 days).

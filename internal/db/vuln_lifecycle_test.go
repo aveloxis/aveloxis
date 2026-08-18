@@ -274,7 +274,7 @@ func TestFindOrCreateStarredGroup(t *testing.T) {
 
 	// The star auto-add flow: repo added to the Starred group → in scope
 	// even though the group is PENDING (non-admin user, v0.19.0 rules).
-	if err := store.AddRepoToGroupByID(ctx, g1, repoID); err != nil {
+	if _, err := store.AddRepoToGroupByID(ctx, g1, repoID); err != nil {
 		t.Fatal(err)
 	}
 	scope, err := store.GetUserRepoScope(ctx, userID)

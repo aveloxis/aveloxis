@@ -1470,6 +1470,49 @@ WHERE datname = 'aveloxis_large'
 
 ---
 
+## serve crashed with `fatal error: out of memory allocating heap arena metadata`
+
+**Symptom:** `aveloxis serve` dies with a full Go runtime crash dump whose header is
+`fatal error: out of memory allocating heap arena metadata`, and the fatal
+goroutine is inside `pgx.ConnectConfig` → `pgproto3.(*chunkReader).Next(N)` with
+an absurd `N` in the gigabytes.
+
+**What actually happened (diagnosed 2026-08-18 from the 2026-08-16 production
+crash):** the HOST ran out of memory — the crash is the symptom, not the cause.
+The chain:
+
+1. Something exhausted the machine's memory (in the 2026-08-16 incident: the
+   pre-v0.27.91 `PopulateAffiliations` hourly query joining the ~500M-row
+   `commits` table with a parallel `SELECT DISTINCT` sort). Check the Postgres
+   log for `ERROR: out of memory ... in memory context "Caller tuples"` from
+   parallel workers, and `dmesg` for OOM-killer events.
+2. The postmaster could no longer fork backends and logged
+   `could not fork new process for connection: Cannot allocate memory`.
+3. PostgreSQL's fork-failure path (`report_fork_failure_to_client`) sends that
+   error to the connecting client as a **bare unframed string** —
+   `E` + `"could not fork new process for connection: ..."` — NOT a
+   protocol-framed ErrorResponse.
+4. pgx, opening a replacement pool connection, read `E` as the message type and
+   the next four ASCII bytes — `"coul"` (0x636F756C) — as the big-endian frame
+   length, then tried to allocate `0x636F756C − 4 = 0x636F7568` bytes
+   (~1.66 GB). On the memory-starved host the allocation's mmap failed inside
+   the Go runtime, which aborts with the heap-arena fatal error.
+
+The 1.66 GB / `0x636F7568` value is a recognizable fingerprint: it is literally
+the string `"coul"` from `"could not fork..."` interpreted as a length. Any
+similar crash where the `chunkReader.Next` argument decodes to ASCII text means
+"the server answered with a bare-string error mid-handshake", which for
+PostgreSQL means the postmaster could not fork — i.e., host-level memory (or
+process-limit) exhaustion.
+
+**Recovery:**
+
+1. Find and fix the memory hog first (Postgres log + `dmesg` + `pg_stat_activity`
+   for long-running `state='active'` queries; terminate orphaned backends per
+   the "Orphaned postgres backend" runbook above).
+2. Only then restart `aveloxis serve` — restarting into a memory-starved host
+   reproduces the crash on the next pool reconnect.
+
 ## Next steps
 
 - [Monitoring](monitoring.md) -- use the dashboard for real-time status

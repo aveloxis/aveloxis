@@ -52,4 +52,14 @@ func TestOrgScanCountsOnlyGenuinelyNewLinks(t *testing.T) {
 		t.Error("refreshUserOrgs must gate newCounts[gid]++ on the inserted " +
 			"bool returned by AddRepoToGroupByID")
 	}
+	// v0.27.92 (Copilot round on PR #178): link failures must be logged,
+	// matching the sibling call sites in refreshGitHubOrg /
+	// refreshGitLabGroup — a silently failed link means a repo never
+	// appears in the user's group with zero operator signal.
+	if !strings.Contains(rest, "failed to link discovered repo into user_repos") {
+		t.Error("refreshUserOrgs must WARN when AddRepoToGroupByID fails, " +
+			"using the same \"failed to link discovered repo into user_repos\" " +
+			"message as refreshGitHubOrg/refreshGitLabGroup so one grep " +
+			"covers all three link paths")
+	}
 }

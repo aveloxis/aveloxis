@@ -82,14 +82,27 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 		WHERE co.cntrb_company != '' AND co.cntrb_company != 'None'
 		  AND ca.alias_email != '' AND ca.alias_email NOT LIKE '%noreply%'
 		  AND COALESCE(co.cntrb_deleted, 0) = 0`)
-	if err == nil {
+	// Best-effort but never SILENT (v0.27.92, Copilot round on PR #178):
+	// a failed alias query or a mid-stream iteration error degrades the
+	// map to profile-only candidates, which is still worth writing — but
+	// it must be logged, or an aliases-side outage would invisibly shrink
+	// the affiliations map (the v0.27.19 silent-error-drop lesson).
+	if err != nil {
+		s.logger.Warn("affiliation population: alias-bridge query failed — proceeding with profile candidates only",
+			"error", err)
+	} else {
 		defer aliasRows.Close()
 		for aliasRows.Next() {
 			var c affiliationCandidate
 			if err := aliasRows.Scan(&c.Email, &c.Company); err != nil {
+				scanFailures++
 				continue
 			}
 			candidates = append(candidates, c)
+		}
+		if err := aliasRows.Err(); err != nil {
+			s.logger.Warn("affiliation population: alias-bridge iteration failed mid-stream — alias candidates incomplete",
+				"error", err)
 		}
 	}
 

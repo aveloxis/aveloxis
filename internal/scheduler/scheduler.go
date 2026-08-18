@@ -2090,7 +2090,15 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 			// claiming the org's full repo count every pass forever
 			// (9.3M bogus new repos in the Aug 7–16 2026 run).
 			for _, gid := range groupIDs {
-				if inserted, err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err == nil && inserted {
+				inserted, err := s.store.AddRepoToGroupByID(ctx, gid, repoID)
+				if err != nil {
+					// Same message as refreshGitHubOrg/refreshGitLabGroup so
+					// one grep covers all three link paths (v0.27.92).
+					s.logger.Warn("failed to link discovered repo into user_repos",
+						"repo_id", repoID, "group_id", gid, "error", err)
+					continue
+				}
+				if inserted {
 					newCounts[gid]++
 				}
 			}

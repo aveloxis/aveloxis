@@ -67,6 +67,15 @@ func TestPopulateAffiliationsUsesAliasBridge(t *testing.T) {
 			"PopulateAffiliations among the cntrb_deleted-filtered candidate "+
 			"selections", got)
 	}
+	// v0.27.92 (Copilot round on PR #178): the alias scan is best-effort
+	// but never SILENT — a failed Query or a mid-stream iteration error
+	// must be logged, or an aliases-side outage would invisibly shrink the
+	// affiliations map (the v0.27.19 silent-error-drop lesson).
+	if !strings.Contains(src, "aliasRows.Err()") {
+		t.Error("PopulateAffiliations must check aliasRows.Err() after the " +
+			"alias loop — a mid-stream iteration failure silently drops " +
+			"candidates otherwise")
+	}
 }
 
 // TestPopulateAffiliationsHarvestsAliasDomainsEndToEnd proves the original

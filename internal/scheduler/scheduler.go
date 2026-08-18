@@ -1684,7 +1684,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				}
 			}
 			for _, gid := range userGroupIDs {
-				if err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
+				if _, err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
 					s.logger.Warn("failed to link discovered repo into user_repos",
 						"group_id", gid, "repo_id", repoID, "error", err)
 				}
@@ -1768,7 +1768,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				}
 			}
 			for _, gid := range userGroupIDs {
-				if err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
+				if _, err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
 					s.logger.Warn("failed to link discovered repo into user_repos",
 						"group_id", gid, "repo_id", repoID, "error", err)
 				}
@@ -2084,8 +2084,13 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 				}
 			}
 			// Link into every registered group (ON CONFLICT DO NOTHING).
+			// Count a repo as "new" ONLY when a link row was actually
+			// inserted — a nil error alone includes the no-op re-link of
+			// every already-tracked repo, which had "found new repos"
+			// claiming the org's full repo count every pass forever
+			// (9.3M bogus new repos in the Aug 7–16 2026 run).
 			for _, gid := range groupIDs {
-				if err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err == nil {
+				if inserted, err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err == nil && inserted {
 					newCounts[gid]++
 				}
 			}

@@ -547,7 +547,7 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 					continue
 				}
 				for _, gid := range userGroupIDs {
-					if err := store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
+					if _, err := store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
 						logger.Warn("failed to link repo into user_repos",
 							"group_id", gid, "repo_id", repoID, "error", err)
 					}

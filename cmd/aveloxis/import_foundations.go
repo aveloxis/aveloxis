@@ -207,7 +207,7 @@ func runImportFoundations(cfgPath string, opts runOpts) error {
 					if rerr != nil || repoID == 0 {
 						continue
 					}
-					if err := store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
+					if _, err := store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
 						logger.Warn("failed to add repo to dashboard group", "repo", rurl, "error", err)
 					}
 				}

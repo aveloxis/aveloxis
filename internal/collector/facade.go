@@ -470,7 +470,22 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 				"repo_id", repoID, "count", unparseableTimestamps)
 		}
 	}()
-	for _, pc := range batch {
+	for i, pc := range batch {
+		// v0.27.91: once the job's context is canceled, every remaining
+		// upsert in this batch is guaranteed to fail with the same
+		// "context canceled" error. Pre-fix the loop ground through them
+		// all, logging a WARN per commit-FILE row — one canceled
+		// kernel-scale job produced 4,011,288 identical WARN lines in the
+		// Jul 31 2026 production log. Bail out with ONE aggregate line
+		// (v0.27.39 pattern: aggregate WARN, never silence, never spam)
+		// and return nil — this function has always swallowed per-row
+		// failures, so the return contract stays unchanged and the data
+		// outcome is byte-identical (nothing can be written post-cancel).
+		if ctx.Err() != nil {
+			f.logger.Warn("commit batch aborted — context canceled, skipping remaining commits",
+				"repo_id", repoID, "remaining", len(batch)-i, "cause", ctx.Err())
+			return nil
+		}
 		now := time.Now()
 		// If there are no per-file entries, insert a single row for the commit.
 		files := pc.Files

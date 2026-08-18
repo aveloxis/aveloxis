@@ -591,12 +591,21 @@ func (s *PostgresStore) GetGroupIDForOrgRequest(ctx context.Context, orgRequestI
 	return groupID, err
 }
 
-// AddRepoToGroupByID adds a repo to a user group by repo_id (no ownership check).
-func (s *PostgresStore) AddRepoToGroupByID(ctx context.Context, groupID, repoID int64) error {
-	_, err := s.pool.Exec(ctx, `
+// AddRepoToGroupByID adds a repo to a user group by repo_id (no ownership
+// check). The returned bool reports whether a NEW user_repos link was
+// inserted — the INSERT is ON CONFLICT DO NOTHING, so a nil error alone
+// cannot distinguish "new link" from "already linked". Callers that count
+// or log "new" links must gate on the bool, not the error (v0.27.91: the
+// org scan counted every no-op re-link as new, claiming 9.3M new repos in
+// one 8.8-day production run).
+func (s *PostgresStore) AddRepoToGroupByID(ctx context.Context, groupID, repoID int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_ops.user_repos (group_id, repo_id) VALUES ($1, $2)
 		ON CONFLICT DO NOTHING`, groupID, repoID)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // MarkOrgRequestScanned updates the last_scanned timestamp.

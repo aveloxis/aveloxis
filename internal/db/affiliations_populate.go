@@ -16,7 +16,9 @@ type affiliationCandidate struct {
 }
 
 // PopulateAffiliations auto-populates the contributor_affiliations table by:
-//  1. Querying all contributors with both an email and a company
+//  1. Querying all contributors with both an email and a company, plus their
+//     resolved commit-email aliases (contributors_aliases — this is what
+//     surfaces domains seen only in git log)
 //  2. Extracting email domains and mapping them to the contributor's company
 //  3. Using consensus (most common company per domain) for domains shared by
 //     multiple contributors
@@ -27,12 +29,17 @@ type affiliationCandidate struct {
 // email domains are populated — public providers (gmail, yahoo, etc.) are
 // excluded since they don't represent organizational affiliation.
 func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
-	// Fetch all contributors with email + company.
+	// Fetch all contributors with email + company. Merge losers
+	// (cntrb_deleted = 1, the v0.20.2 soft-delete) are excluded per the
+	// contributor-resolution contract (R3 section) — their non-empty fields
+	// were already copied into the winner, so including them only
+	// duplicates consensus votes.
 	rows, err := s.pool.Query(ctx, `
 		SELECT cntrb_email, cntrb_company
 		FROM aveloxis_data.contributors
 		WHERE cntrb_email != '' AND cntrb_company != '' AND cntrb_company != 'None'
-		  AND cntrb_email NOT LIKE '%noreply%'`)
+		  AND cntrb_email NOT LIKE '%noreply%'
+		  AND COALESCE(cntrb_deleted, 0) = 0`)
 	if err != nil {
 		return 0, err
 	}
@@ -52,19 +59,34 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	// Also gather unique domains from commit author emails that have a matching
-	// contributor with company data. This picks up domains seen only in git log.
-	commitRows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT c.cmt_author_email, co.cntrb_company
-		FROM aveloxis_data.commits c
-		JOIN aveloxis_data.contributors co ON LOWER(c.cmt_author_email) = LOWER(co.cntrb_email)
-		WHERE c.cmt_author_email != '' AND co.cntrb_company != '' AND co.cntrb_company != 'None'
-		  AND c.cmt_author_email NOT LIKE '%noreply%'`)
+	// Also gather domains seen only in git log: commit-author emails the
+	// resolver has linked to a contributor with known company data. The
+	// bridge is contributors_aliases (R5 — every resolved commit email
+	// lands there), which covers emails that DIFFER from the profile email
+	// (e.g. a gmail profile + an institutional commit address).
+	//
+	// 2026-08-16 INCIDENT — do NOT "improve" this back into a join against
+	// the commits table. The pre-2026-08-18 version joined the ~500M-row
+	// commits table on LOWER(cmt_author_email) = LOWER(cntrb_email) with
+	// SELECT DISTINCT: an unindexable hash join plus a giant parallel
+	// tuplesort, every hour, whose parallel workers exhausted the
+	// production host's memory and took down both Postgres backends and
+	// aveloxis-serve. It was also zero-value: equality with cntrb_email
+	// means it could only ever return domains the query above already
+	// fetched. The tripwire TestPopulateAffiliationsNeverTouchesCommitsTable
+	// bans that table from this file.
+	aliasRows, err := s.pool.Query(ctx, `
+		SELECT ca.alias_email, co.cntrb_company
+		FROM aveloxis_data.contributors_aliases ca
+		JOIN aveloxis_data.contributors co ON co.cntrb_id = ca.cntrb_id
+		WHERE co.cntrb_company != '' AND co.cntrb_company != 'None'
+		  AND ca.alias_email != '' AND ca.alias_email NOT LIKE '%noreply%'
+		  AND COALESCE(co.cntrb_deleted, 0) = 0`)
 	if err == nil {
-		defer commitRows.Close()
-		for commitRows.Next() {
+		defer aliasRows.Close()
+		for aliasRows.Next() {
 			var c affiliationCandidate
-			if err := commitRows.Scan(&c.Email, &c.Company); err != nil {
+			if err := aliasRows.Scan(&c.Email, &c.Company); err != nil {
 				continue
 			}
 			candidates = append(candidates, c)

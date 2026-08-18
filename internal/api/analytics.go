@@ -280,7 +280,7 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 			gid, err := s.store.FindOrCreateComparisonsGroup(r.Context(), info.UserID)
 			if err == nil {
 				for _, id := range collected {
-					if err = s.store.AddRepoToGroupByID(r.Context(), gid, id); err != nil {
+					if _, err = s.store.AddRepoToGroupByID(r.Context(), gid, id); err != nil {
 						break
 					}
 				}

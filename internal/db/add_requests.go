@@ -104,7 +104,7 @@ func (s *PostgresStore) ensureRepoCollectedInGroup(ctx context.Context, groupID 
 	if err := s.EnqueueRepo(ctx, repoID, 100); err != nil {
 		return 0, fmt.Errorf("enqueue repo: %w", err)
 	}
-	if err := s.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
+	if _, err := s.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
 		return 0, err
 	}
 	return repoID, nil
@@ -161,7 +161,7 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 		switch {
 		case tracked:
 			// Known repo: instant link, zero collection load added.
-			if err := s.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
+			if _, err := s.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
 				return out, err
 			}
 			out.Linked++

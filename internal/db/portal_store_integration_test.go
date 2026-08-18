@@ -139,7 +139,7 @@ func TestGetPortalGroupReposPagination(t *testing.T) {
 			t.Fatal(err)
 		}
 		repoIDs = append(repoIDs, id)
-		if err := store.AddRepoToGroupByID(ctx, groupID, id); err != nil {
+		if _, err := store.AddRepoToGroupByID(ctx, groupID, id); err != nil {
 			t.Fatal(err)
 		}
 	}

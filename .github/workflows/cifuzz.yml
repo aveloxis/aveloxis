@@ -1,22 +1,28 @@
-name: CIFuzz
+name: ClusterFuzzLite PR fuzzing
 on: [pull_request]
 permissions: {}
 jobs:
-  Fuzzing:
+  PR:
     runs-on: ubuntu-latest
     permissions:
       security-events: write
+    strategy:
+      fail-fast: false
     steps:
     - name: Build Fuzzers
       id: build
-      uses: google/oss-fuzz/infra/cifuzz/actions/build_fuzzers@master
+      uses: google/clusterfuzzlite/actions/build_fuzzers@v1
       with:
-        oss-fuzz-project-name: 'aveloxis'
+        language: go
+        sanitizer: address
     - name: Run Fuzzers
-      uses: google/oss-fuzz/infra/cifuzz/actions/run_fuzzers@master
+      id: run
+      uses: google/clusterfuzzlite/actions/run_fuzzers@v1
       with:
-        oss-fuzz-project-name: 'aveloxis'
+        github-token: ${{ secrets.GITHUB_TOKEN }}
         fuzz-seconds: 600
+        mode: 'code-change'
+        sanitizer: address
         output-sarif: true
     - name: Upload Crash
       uses: actions/upload-artifact@v4
@@ -26,8 +32,7 @@ jobs:
         path: ./out/artifacts
     - name: Upload Sarif
       if: always() && steps.build.outcome == 'success'
-      uses: github/codeql-action/upload-sarif@v2
+      uses: github/codeql-action/upload-sarif@v3
       with:
-        # Path to SARIF file relative to the root of the repository
         sarif_file: cifuzz-sarif/results.sarif
         checkout_path: cifuzz-sarif

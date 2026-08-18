@@ -488,6 +488,19 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 	}
 
 	orgURL = strings.TrimSuffix(strings.TrimSpace(orgURL), "/")
+	// v0.27.94 (Copilot finding on PR #179): canonicalize schemeless input
+	// ("github.com/foo") to https:// form BEFORE anything reads or stores
+	// it. platform.ParseOrgURL tolerates schemeless URLs, so such a
+	// registration WORKS (org_name/platform parse, enumeration scans it)
+	// while the raw stored org_url silently defeats every exact/prefix
+	// matcher: ReconcileOrgRepoLinks, GetUserGroupIDsForOrgURL, and the
+	// IsOrgRegisteredAnywhere dedup below (schemed + schemeless rows of
+	// the same org would count as different orgs). This store method is
+	// the choke point all four callers route through; production had zero
+	// schemeless rows on 2026-08-18, so no migration is needed.
+	if orgURL != "" && !strings.Contains(orgURL, "://") {
+		orgURL = "https://" + orgURL
+	}
 	isAdmin, _ := s.IsUserAdmin(ctx, userID)
 	if !isAdmin {
 		registered, regErr := s.IsOrgRegisteredAnywhere(ctx, orgURL)

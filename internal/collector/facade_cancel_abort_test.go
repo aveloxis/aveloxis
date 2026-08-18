@@ -50,6 +50,25 @@ func TestInsertCommitBatchAbortsOnCanceledContext(t *testing.T) {
 				"an error on cancel would change facade error propagation")
 		}
 	}
+
+	// v0.27.98 (Copilot finding on PR #181): the v0.27.97 phase split
+	// moved parent writes AFTER the build loop's cancel guard — a
+	// cancellation during the parents phase would grind through every
+	// remaining InsertCommitParent with a WARN per parent (the exact
+	// flood class v0.27.91 fixed). The PARENTS region (between the first
+	// InsertCommitParent mention's enclosing loop and the message phase)
+	// must carry its own guard.
+	parentIdx := strings.Index(body, "InsertCommitParent(")
+	if parentIdx < 0 {
+		t.Fatal("InsertCommitParent call missing from insertCommitBatch")
+	}
+	parentRegion := body[max(0, parentIdx-600):parentIdx]
+	if !strings.Contains(parentRegion, "ctx.Err() != nil") {
+		t.Error("the parents phase needs its own ctx-cancel guard (within " +
+			"the 600 chars before the InsertCommitParent call) — it runs " +
+			"after the build guard, so a cancellation there re-creates the " +
+			"per-row WARN flood (PR #181 finding)")
+	}
 }
 
 // facadeFunctionBody extracts a FacadeCollector method body from facade.go

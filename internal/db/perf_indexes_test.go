@@ -30,16 +30,24 @@ var perfWaveIndexes = []struct{ name, table, columns string }{
 	{"idx_staging_processed_created", "aveloxis_ops.staging", "(created_at) WHERE processed"},
 }
 
-// TestSchemaDeclaresPerfWaveIndexes pins the fresh-install declarations.
-func TestSchemaDeclaresPerfWaveIndexes(t *testing.T) {
+// TestPerfWaveIndexesAreMigrationOnly pins the v0.27.98 rollout-safety
+// contract (Copilot finding on PR #181, verified real): RunMigrations
+// executes the full base schema.sql BEFORE ensurePerfWaveIndexes, so a
+// plain CREATE INDEX IF NOT EXISTS declaration in schema.sql would
+// BLOCK-BUILD these indexes on a live fleet's 34 GB / 33 GB tables during
+// the first migrate of the introducing release — stalling every collection
+// writer and making the CONCURRENTLY helper a no-op. NEWLY-INTRODUCED
+// indexes on fleet-scale tables therefore live ONLY in the concurrent
+// migration path (which also covers fresh installs — CONCURRENTLY on an
+// empty table is instant).
+func TestPerfWaveIndexesAreMigrationOnly(t *testing.T) {
 	src := readFileForTest(t, "schema.sql")
-	flat := strings.Join(strings.Fields(src), " ")
 	for _, idx := range perfWaveIndexes {
-		needle := "CREATE INDEX IF NOT EXISTS " + idx.name + " ON " + idx.table + " " + idx.columns
-		if !strings.Contains(flat, needle) {
-			t.Errorf("schema.sql missing %q — the v0.27.96 perf-wave index "+
-				"(summary/21 F1/F5/F7a: measured 284h/77h/32h/3.6h of DB time "+
-				"on the unindexed shapes)", needle)
+		if strings.Contains(src, idx.name) {
+			t.Errorf("schema.sql declares %q — perf-wave indexes must be "+
+				"migration-only: the base DDL runs before the CONCURRENTLY "+
+				"helper, so a plain declaration block-builds on live fleets "+
+				"(PR #181 finding)", idx.name)
 		}
 	}
 }

@@ -565,7 +565,16 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 	// Running AFTER the batch persist means same-batch parent rows exist
 	// for the hash join, which the old interleaved order did not
 	// guarantee.
-	for _, pc := range built {
+	for i, pc := range built {
+		// v0.27.98 (PR #181): this phase runs after the build loop's
+		// cancel guard, so it needs its own — a cancellation here would
+		// otherwise grind through every remaining parent with a WARN per
+		// row (the v0.27.91 flood class).
+		if ctx.Err() != nil {
+			f.logger.Warn("commit parents aborted — context canceled, skipping remaining commits",
+				"repo_id", repoID, "remaining", len(built)-i, "cause", ctx.Err())
+			return nil
+		}
 		for _, parentHash := range pc.Parents {
 			if err := f.store.InsertCommitParent(ctx, repoID, pc.Hash, parentHash); err != nil {
 				f.logger.Warn("failed to insert commit parent",

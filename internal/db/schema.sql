@@ -1464,17 +1464,13 @@ CREATE INDEX IF NOT EXISTS idx_issues_repo_created
 CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_created
     ON aveloxis_data.pull_requests (repo_id, created_at);
 
--- v0.27.96 perf wave (summary/21 F1/F5): the staged processor's
--- number->serial lookups ran off single-column repo_id indexes, filtering
--- per-repo rows one by one -- measured 284h/77h/32h of DB time in the
--- first pg_stat_statements snapshot (2026-08-18). Live fleets build these
--- CONCURRENTLY via ensurePerfWaveIndexes (perf_indexes.go).
-CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_number
-    ON aveloxis_data.pull_requests (repo_id, pr_number);
-CREATE INDEX IF NOT EXISTS idx_pull_request_reviews_repo_platform_review_id
-    ON aveloxis_data.pull_request_reviews (repo_id, platform_review_id);
-CREATE INDEX IF NOT EXISTS idx_issues_repo_number
-    ON aveloxis_data.issues (repo_id, issue_number);
+-- v0.27.96/v0.27.98 perf-wave indexes (summary/21 F1/F5) are DELIBERATELY
+-- NOT declared here. RunMigrations executes this base DDL BEFORE the
+-- CONCURRENTLY helper, so a plain declaration would block-build on a live
+-- fleet's 34 GB pull_requests table during the introducing release's first
+-- migrate (PR #181 finding). ensurePerfWaveIndexes (perf_indexes.go) owns
+-- their creation for fresh installs AND live fleets. RULE: newly-introduced
+-- indexes on fleet-scale tables are migration-only until the fleet has them.
 
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_cve_id
     ON aveloxis_data.repo_deps_vulnerabilities (cve_id)
@@ -2106,12 +2102,10 @@ CREATE INDEX IF NOT EXISTS idx_staging_unprocessed
 CREATE INDEX IF NOT EXISTS idx_staging_repo_id
     ON aveloxis_ops.staging (repo_id);
 
--- v0.27.96 perf wave (summary/21 F7a): PurgeStagedProcessed's hourly
--- DELETE (`WHERE processed AND created_at < ...`) seq-scanned the 33 GB
--- staging table at 61.6s mean. Partial on `processed` -- unprocessed rows
--- (the bulk of the table by design) never qualify for the purge.
-CREATE INDEX IF NOT EXISTS idx_staging_processed_created
-    ON aveloxis_ops.staging (created_at) WHERE processed;
+-- The v0.27.96 staging purge index (summary/21 F7a) is migration-only for
+-- the same reason as the perf-wave indexes above: a plain declaration here
+-- would block-build on the 33 GB staging table before the CONCURRENTLY
+-- helper runs (PR #181 finding). See ensurePerfWaveIndexes.
 
 -- ============================================================
 -- Mailing-list staging (v0.25.x). The mailing-list pipeline mirrors the

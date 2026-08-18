@@ -13,10 +13,13 @@
 --
 -- Prerequisites (summary/20 Phase 0):
 --   * pg_stat_statements preloaded server-side AND `CREATE EXTENSION
---     pg_stat_statements` run IN THE CONNECTED DB. If the extension lives
---     only in the `postgres` DB (the 2026-08-18 state), sections 1–3 error
---     there is a documented fallback: run them connected to `postgres` with
---     `JOIN pg_database d ON d.oid = s.dbid AND d.datname = 'aveloxis_large'`.
+--     pg_stat_statements` run IN THE CONNECTED DB. Every statement section
+--     is scoped to current_database() via the dbid join (PR #181: the pgss
+--     view is CLUSTER-wide — unscoped, another database's workload can
+--     displace the application's offenders). If the extension lives only in
+--     the `postgres` DB (the 2026-08-18 state), sections 1-3/7 error here;
+--     the fallback is to run them connected to `postgres` with the join's
+--     datname changed from current_database() to the app DB name literal.
 --   * track_io_timing = on, or every *_blk_read_time column reads 0.
 --
 -- Column names are PostgreSQL 17 (`shared_blk_read_time`; PG15/16 called it
@@ -56,7 +59,8 @@ SELECT round((total_exec_time/1000/3600)::numeric, 2)      AS exec_hours,
        rows,
        round((shared_blk_read_time/1000/3600)::numeric, 2) AS io_read_hours,
        left(regexp_replace(query, '\s+', ' ', 'g'), 120)   AS query_head
-FROM pg_stat_statements
+FROM pg_stat_statements s
+JOIN pg_database d ON d.oid = s.dbid AND d.datname = current_database()
 ORDER BY total_exec_time DESC
 LIMIT 25;
 
@@ -69,7 +73,8 @@ SELECT round(mean_exec_time::numeric, 1)                   AS mean_ms,
        round((total_exec_time/1000/3600)::numeric, 2)      AS exec_hours,
        round((shared_blk_read_time/1000/3600)::numeric, 2) AS io_read_hours,
        left(regexp_replace(query, '\s+', ' ', 'g'), 120)   AS query_head
-FROM pg_stat_statements
+FROM pg_stat_statements s
+JOIN pg_database d ON d.oid = s.dbid AND d.datname = current_database()
 WHERE calls > 100
 ORDER BY mean_exec_time DESC
 LIMIT 25;
@@ -84,7 +89,8 @@ SELECT round((shared_blk_read_time/1000/3600)::numeric, 2) AS io_read_hours,
        shared_blks_hit,
        calls,
        left(regexp_replace(query, '\s+', ' ', 'g'), 120)   AS query_head
-FROM pg_stat_statements
+FROM pg_stat_statements s
+JOIN pg_database d ON d.oid = s.dbid AND d.datname = current_database()
 ORDER BY shared_blk_read_time DESC
 LIMIT 15;
 
@@ -147,9 +153,10 @@ SELECT round((total_exec_time/1000/60)::numeric, 1)        AS total_min,
        calls,
        round((mean_exec_time/1000)::numeric, 1)            AS mean_s,
        left(regexp_replace(query, '\s+', ' ', 'g'), 110)   AS query_head
-FROM pg_stat_statements
-WHERE query ILIKE 'REFRESH MATERIALIZED VIEW%'
-   OR query ILIKE '%dm_repo%'
+FROM pg_stat_statements s
+JOIN pg_database d ON d.oid = s.dbid AND d.datname = current_database()
+WHERE (query ILIKE 'REFRESH MATERIALIZED VIEW%'
+    OR query ILIKE '%dm_repo%')
 ORDER BY total_exec_time DESC
 LIMIT 20;
 

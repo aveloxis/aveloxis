@@ -26,10 +26,16 @@ import (
 //     `processed AND created_at < …`, and unprocessed rows (the vast
 //     majority by design) never qualify.
 //
-// Fresh installs get the plain declarations in schema.sql; live fleets
-// build CONCURRENTLY here (pull_requests is 34 GB, staging 33 GB — a
-// blocking build would stall every collection writer). Names verified
-// against migrate.go's historical DROP INDEX steps
+// This helper owns creation for BOTH fresh installs and live fleets
+// (v0.27.98, PR #181 finding): the indexes are deliberately NOT declared
+// in schema.sql because RunMigrations executes the base DDL first — a
+// plain CREATE INDEX there would block-build on a live fleet's 34 GB
+// pull_requests / 33 GB staging tables during the introducing release's
+// first migrate, stalling every collection writer and turning the
+// CONCURRENTLY statements below into no-ops. CONCURRENTLY on a fresh
+// install's empty tables is instant, so nothing is lost. RULE: newly
+// introduced indexes on fleet-scale tables are migration-only. Names
+// verified against migrate.go's historical DROP INDEX steps
 // (TestPerfWaveIndexNamesNotDropTargets).
 var perfWaveIndexDDL = []struct{ name, sql string }{
 	{"idx_pull_requests_repo_number",

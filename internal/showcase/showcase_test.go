@@ -449,3 +449,63 @@ func TestSafeForgeURL(t *testing.T) {
 		}
 	}
 }
+
+// TestShowcaseCarriesEcosystemAssociation pins the 2026-08-19 SEO round:
+// every generated showcase page carries the visible CHAOSS ecosystem
+// footer links (crawlable in static HTML), and the showcase index also
+// carries the machine-readable association in its JSON-LD. Legitimate,
+// guideline-compliant association — NOT hidden text/links.
+func TestShowcaseCarriesEcosystemAssociation(t *testing.T) {
+	ecoHosts := []string{
+		"https://chaoss.community", "https://chaoss.io",
+		"https://metrix.chaoss.io", "https://ai.chaoss.io",
+		"https://www.seangoggins.net/",
+	}
+	render := map[string]func(*strings.Builder) error{
+		"index": func(b *strings.Builder) error {
+			return RenderIndex(b, IndexData{BaseURL: "https://aveloxis.io",
+				GeneratedAt: time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC),
+				Collections: []CollectionCard{{Slug: "cncf", Name: "CNCF", Groups: 1, Repos: 180}}})
+		},
+		"collection": func(b *strings.Builder) error { return RenderCollection(b, hostileCollection()) },
+		"repo":       func(b *strings.Builder) error { return RenderRepo(b, hostileRepoPage()) },
+		"compare-demo": func(b *strings.Builder) error {
+			return RenderComparePage(b, ComparePageData{
+				BaseURL:     "https://aveloxis.io",
+				GeneratedAt: time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC),
+				WindowLabel: "trailing 12 months, weekly",
+				Repos:       []CompareRepoRef{{Label: "pandas-dev/pandas", Slug: "pandas-dev-pandas", Color: "#2563eb"}},
+				Charts:      []RepoChart{{Title: "Issues", SVG: template.HTML("<svg><polyline/></svg>")}},
+			})
+		},
+	}
+	for name, fn := range render {
+		var b strings.Builder
+		if err := fn(&b); err != nil {
+			t.Fatalf("%s render: %v", name, err)
+		}
+		out := b.String()
+		if !strings.Contains(out, `class="foot-eco"`) {
+			t.Errorf("%s page missing the visible CHAOSS ecosystem footer band", name)
+		}
+		for _, host := range ecoHosts {
+			if !strings.Contains(out, host) {
+				t.Errorf("%s page footer missing %q", name, host)
+			}
+		}
+	}
+
+	// Machine-readable association on the showcase hub.
+	var b strings.Builder
+	if err := RenderIndex(&b, IndexData{BaseURL: "https://aveloxis.io",
+		GeneratedAt: time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC),
+		Collections: []CollectionCard{{Slug: "cncf", Name: "CNCF", Groups: 1, Repos: 180}}}); err != nil {
+		t.Fatalf("index render: %v", err)
+	}
+	idx := b.String()
+	for _, needle := range []string{`"memberOf"`, `"name": "CHAOSS"`, `"relatedLink"`} {
+		if !strings.Contains(idx, needle) {
+			t.Errorf("showcase index JSON-LD missing %q", needle)
+		}
+	}
+}

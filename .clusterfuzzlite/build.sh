@@ -5,6 +5,16 @@
 cd $SRC/aveloxis
 go mod download
 
+# compile_native_go_fuzzer's generated shim imports
+# github.com/AdamKorcz/go-118-fuzz-build/testing (the bridge from native
+# `f *testing.F` targets to libFuzzer). It is NOT a runtime dependency of
+# aveloxis, so it is added here INSIDE the build container only — never
+# committed to the repo's go.mod. Without this line the first
+# compile_native_go_fuzzer call fails with "no required module provides
+# package github.com/AdamKorcz/go-118-fuzz-build/testing" (the
+# 2026-08-19 PR #181 CI failure).
+go get github.com/AdamKorcz/go-118-fuzz-build/testing
+
 compile_native_go_fuzzer ./internal/mailinglist FuzzParseMbox              fuzz_mailinglist_mbox
 compile_native_go_fuzzer ./internal/mailinglist FuzzDecodeHeader           fuzz_mailinglist_header
 compile_native_go_fuzzer ./internal/collector   FuzzParseLockfile          fuzz_collector_lockfile

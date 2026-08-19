@@ -1166,6 +1166,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 				break
 			}
 			var items []struct {
+				ID      int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
 				HTMLURL string `json:"html_url"`
 				Name    string `json:"name"`
 				Owner   struct {
@@ -1201,15 +1202,22 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 					if _, err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
 						s.logger.Warn("org scan: linking existing repo failed", "repo_id", repoID, "error", err)
 					}
+					// v0.27.102: opportunistic forge-ID backfill (fill-
+					// empty-only) so the org-tracked cohort gains rename
+					// protection on the next scan pass.
+					if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID)); idErr != nil {
+						s.logger.Warn("org scan: platform_repo_id backfill failed", "repo_id", repoID, "error", idErr)
+					}
 					alreadyExisted++
 					added++
 				} else {
 					// New repo — create it and enqueue for collection.
 					repoID, err = s.store.UpsertRepo(ctx, &model.Repo{
-						Platform: model.PlatformGitHub,
-						GitURL:   item.HTMLURL,
-						Name:     item.Name,
-						Owner:    item.Owner.Login,
+						Platform:   model.PlatformGitHub,
+						GitURL:     item.HTMLURL,
+						Name:       item.Name,
+						Owner:      item.Owner.Login,
+						PlatformID: model.ForgeIDString(item.ID), // v0.27.102 — enables the rename-heal inside UpsertRepo
 					})
 					if err != nil {
 						s.logger.Warn("org scan: upserting new repo failed", "url", item.HTMLURL, "error", err)

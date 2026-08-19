@@ -156,6 +156,19 @@ ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_repos_added_at
     ON aveloxis_data.repos (added_at DESC);
 
+-- v0.27.102: forge-numeric-ID lookup (rename/transfer dedup). The
+-- forge's numeric repository ID is the only identity that survives
+-- renames and transfers; FindRepoByPlatformRepoID probes this at add
+-- time so an org scan re-discovering a renamed repo heals the existing
+-- row instead of minting a duplicate. Partial on non-empty values —
+-- the column backfills gradually via Phase 0, and empty rows must
+-- never be probe targets. NON-unique on purpose: pre-fix rename-dup
+-- residue may briefly carry the same forge ID on two rows until
+-- reconcile-repos consolidates them.
+CREATE INDEX IF NOT EXISTS idx_repos_platform_repo_id
+    ON aveloxis_data.repos (platform_id, platform_repo_id)
+    WHERE platform_repo_id <> '';
+
 -- ============================================================
 -- Repo groups list serve (mailing lists)
 -- ============================================================

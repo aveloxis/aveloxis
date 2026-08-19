@@ -914,6 +914,7 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 
 	return &model.RepoInfo{
 		FullName:          r.NameWithOwner,
+		PlatformRepoID:    model.ForgeIDString(r.DatabaseID), // v0.27.102
 		LastUpdated:       r.UpdatedAt,
 		IssuesEnabled:     r.HasIssuesEnabled,
 		WikiEnabled:       r.HasWikiEnabled,
@@ -977,6 +978,7 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 	}
 	return &model.RepoInfo{
 		FullName:        raw.FullName,
+		PlatformRepoID:  model.ForgeIDString(raw.ID), // v0.27.102
 		LastUpdated:     raw.UpdatedAt,
 		IssuesEnabled:   raw.HasIssues,
 		WikiEnabled:     raw.HasWiki,
@@ -1008,6 +1010,7 @@ func repoInfoGraphQL(owner, repo string) string {
 	return fmt.Sprintf(`{
   repository(owner: "%s", name: "%s") {
     nameWithOwner
+    databaseId
     updatedAt
     description
     hasIssuesEnabled
@@ -1052,6 +1055,7 @@ func repoInfoGraphQL(owner, repo string) string {
 
 type graphQLRepo struct {
 	NameWithOwner    string    `json:"nameWithOwner"` // v0.25.32 — canonical owner/name for the case self-heal
+	DatabaseID       int64     `json:"databaseId"`    // v0.27.102 — rename-proof numeric identity
 	UpdatedAt        time.Time `json:"updatedAt"`
 	HasIssuesEnabled bool      `json:"hasIssuesEnabled"`
 	HasWikiEnabled   bool      `json:"hasWikiEnabled"`

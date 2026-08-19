@@ -274,6 +274,39 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 		}
 	}
 
+	// Rename/transfer dedup (v0.27.102): when the caller supplies the
+	// forge's numeric repository ID (org scans decode it from the
+	// listing JSON) and the URL is untracked, a forge-ID hit means the
+	// repo was RENAMED or TRANSFERRED upstream — the existing row IS
+	// this repository under its old URL. Heal that row's URL via the
+	// established UpdateRepoURL writer (same authority class as the
+	// v0.25.32 HealRepoCaseDrift carve-out: the forge itself is telling
+	// us the canonical current URL for this numeric identity) instead
+	// of minting a data-splitting duplicate. The 2026-08-19 audit
+	// proved all 12 reconcile-repos consolidation pairs were exactly
+	// this shape (dio/eaigw → dio/ai-gateway, 18F/api.data.gov →
+	// GSA/api.data.gov, ...). URL-tracked rows never reach this branch
+	// — the ON CONFLICT (repo_git) DO UPDATE below owns those.
+	if r.PlatformID != "" && (r.Platform == model.PlatformGitHub || r.Platform == model.PlatformGitLab) {
+		var urlTracked int64
+		_ = s.pool.QueryRow(ctx,
+			`SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1`,
+			r.GitURL).Scan(&urlTracked)
+		if urlTracked == 0 {
+			if existing, ferr := s.FindRepoByPlatformRepoID(ctx, r.Platform, r.PlatformID); ferr == nil && existing > 0 {
+				if uerr := s.UpdateRepoURL(ctx, existing, r.GitURL); uerr == nil {
+					s.logger.Info("rename detected at add time — healed existing repo URL instead of creating a duplicate",
+						"repo_id", existing, "new_url", r.GitURL, "platform_repo_id", r.PlatformID)
+					return existing, nil
+				}
+				// URL-heal race: another writer landed the new URL
+				// between our probe and the UPDATE (23505 on repo_git's
+				// unique). Fall through — the INSERT below routes to
+				// that row via ON CONFLICT (repo_git) DO UPDATE.
+			}
+		}
+	}
+
 	var id int64
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		// Ensure a default repo group exists if no group is specified.
@@ -329,6 +362,10 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				-- bare EXCLUDED overwrite wiped the captured value on every
 				-- scan tick. Phase 0 still clears it when a repo un-forks.
 				forked_from = COALESCE(NULLIF(EXCLUDED.forked_from, ''), repos.forked_from),
+				-- v0.27.102: same prefer-nonempty rule — the forge numeric
+				-- ID never changes, and an id-less re-upsert (individual
+				-- URL add, importer) must never wipe a captured value.
+				platform_repo_id = COALESCE(NULLIF(EXCLUDED.platform_repo_id, ''), repos.platform_repo_id),
 				repo_archived = EXCLUDED.repo_archived,
 				updated_at = COALESCE(EXCLUDED.updated_at, repos.updated_at),
 				tool_version = EXCLUDED.tool_version,

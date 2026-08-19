@@ -146,7 +146,7 @@ func runBackfillRepoMetadata(ctx context.Context, store *db.PostgresStore, ghCli
 				}
 				forkedFrom := info.ForkedFrom()
 				if err := store.UpdateRepoMetadata(ctx, t.RepoID, info.Description, info.PrimaryLanguage,
-					info.Languages, info.Status == "Archived", forkedFrom); err != nil {
+					info.Languages, info.Status == "Archived", forkedFrom, info.PlatformRepoID); err != nil {
 					failed.Add(1)
 					logger.Warn("metadata refresh write failed", "repo_id", t.RepoID, "error", err)
 					continue

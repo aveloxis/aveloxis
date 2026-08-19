@@ -1053,6 +1053,7 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 
 	return &model.RepoInfo{
 		FullName:          raw.PathWithNamespace,
+		PlatformRepoID:    model.ForgeIDString(raw.ID), // v0.27.102 — rename-proof numeric identity
 		LastUpdated:       raw.LastActivityAt,
 		IssuesEnabled:     raw.IssuesEnabled,
 		PRsEnabled:        raw.MergeRequestsEnabled,

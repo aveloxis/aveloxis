@@ -1652,6 +1652,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		var items []struct {
+			ID      int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
 			HTMLURL string `json:"html_url"`
 			Name    string `json:"name"`
 			Owner   struct {
@@ -1679,13 +1680,19 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 			}
 			if existing > 0 {
 				repoID = existing
+				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
+				// only) — see refreshUserOrgs for the rationale.
+				if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID)); idErr != nil {
+					s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
+				}
 			} else {
 				rid, err := s.store.UpsertRepo(ctx, &model.Repo{
-					Platform: model.PlatformGitHub,
-					GitURL:   item.HTMLURL,
-					Name:     item.Name,
-					Owner:    item.Owner.Login,
-					GroupID:  g.ID,
+					Platform:   model.PlatformGitHub,
+					GitURL:     item.HTMLURL,
+					Name:       item.Name,
+					Owner:      item.Owner.Login,
+					GroupID:    g.ID,
+					PlatformID: model.ForgeIDString(item.ID), // v0.27.102
 				})
 				if err != nil {
 					continue
@@ -1743,6 +1750,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		var items []struct {
+			ID        int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
 			WebURL    string `json:"web_url"`
 			Name      string `json:"name"`
 			Namespace struct {
@@ -1766,13 +1774,19 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 			}
 			if existing > 0 {
 				repoID = existing
+				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
+				// only) — see refreshUserOrgs for the rationale.
+				if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID)); idErr != nil {
+					s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
+				}
 			} else {
 				rid, err := s.store.UpsertRepo(ctx, &model.Repo{
-					Platform: model.PlatformGitLab,
-					GitURL:   item.WebURL,
-					Name:     item.Name,
-					Owner:    item.Namespace.FullPath,
-					GroupID:  g.ID,
+					Platform:   model.PlatformGitLab,
+					GitURL:     item.WebURL,
+					Name:       item.Name,
+					Owner:      item.Namespace.FullPath,
+					GroupID:    g.ID,
+					PlatformID: model.ForgeIDString(item.ID), // v0.27.102
 				})
 				if err != nil {
 					continue
@@ -2022,7 +2036,9 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 	for _, key := range order {
 		g := grouped[key]
 
-		var repos []struct{ URL, Owner, Name string }
+		// ForgeID (v0.27.102) is the forge's numeric repo ID from the
+		// listing JSON — the rename-proof identity UpsertRepo dedups on.
+		var repos []struct{ URL, Owner, Name, ForgeID string }
 		switch g.platform {
 		case "github":
 			if s.ghKeys == nil {
@@ -2044,6 +2060,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 						break
 					}
 					var items []struct {
+						ID      int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
 						HTMLURL string `json:"html_url"`
 						Name    string `json:"name"`
 						Owner   struct {
@@ -2059,7 +2076,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 					}
 					found = true
 					for _, item := range items {
-						repos = append(repos, struct{ URL, Owner, Name string }{item.HTMLURL, item.Owner.Login, item.Name})
+						repos = append(repos, struct{ URL, Owner, Name, ForgeID string }{item.HTMLURL, item.Owner.Login, item.Name, model.ForgeIDString(item.ID)})
 					}
 					page++
 				}
@@ -2091,16 +2108,27 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 			if repoID == 0 {
 				var err error
 				repoID, err = s.store.UpsertRepo(ctx, &model.Repo{
-					Platform: model.PlatformGitHub,
-					GitURL:   repo.URL,
-					Name:     repo.Name,
-					Owner:    repo.Owner,
+					Platform:   model.PlatformGitHub,
+					GitURL:     repo.URL,
+					Name:       repo.Name,
+					Owner:      repo.Owner,
+					PlatformID: repo.ForgeID, // v0.27.102 — enables the rename-heal inside UpsertRepo
 				})
 				if err != nil {
 					continue
 				}
 				if enqErr := s.store.EnqueueRepo(ctx, repoID, 100); enqErr != nil {
 					s.logger.Warn("failed to enqueue repo", "repo_id", repoID, "error", enqErr)
+				}
+			} else if repo.ForgeID != "" {
+				// v0.27.102: opportunistic forge-ID backfill on already-
+				// tracked rows. The org-tracked cohort is EXACTLY the
+				// population at risk of rename re-discovery, so filling
+				// its IDs on every scan pass closes the protection gap
+				// now instead of waiting for each repo's Phase 0 cycle.
+				// Fill-empty-only; best-effort.
+				if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, repo.ForgeID); idErr != nil {
+					s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
 				}
 			}
 			// Link into every registered group (ON CONFLICT DO NOTHING).

@@ -3,7 +3,10 @@
 
 package model
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // RepoInfo is a point-in-time snapshot of repository metadata.
 // Populated via GitHub GraphQL API to get accurate PR/issue/commit counts
@@ -18,7 +21,16 @@ type RepoInfo struct {
 	// canonical casing; the Phase 0 self-heal (HealRepoCaseDrift) uses
 	// this to correct case-drifted repo_git values. Empty when the
 	// transport didn't provide it.
-	FullName       string
+	FullName string
+	// PlatformRepoID is the forge's NUMERIC repository identity as a
+	// decimal string (GitHub databaseId / REST id, GitLab project id) —
+	// the only identity that survives renames and transfers (v0.27.102:
+	// the 2026-08-19 audit proved all 12 reconcile-repos consolidation
+	// pairs were upstream renames that URL-based dedup structurally
+	// cannot catch). Phase 0 backfills repos.platform_repo_id from this
+	// via UpdateRepoMetadata; UpsertRepo dedups on it at add time.
+	// Empty when the transport didn't provide it.
+	PlatformRepoID string
 	LastUpdated    time.Time
 	IssuesEnabled  bool
 	PRsEnabled     bool
@@ -97,4 +109,15 @@ type RepoClone struct {
 	TotalClones  int
 	UniqueClones int
 	Origin       DataOrigin
+}
+
+// ForgeIDString renders a forge's numeric repository/project ID as the
+// decimal string stored in repos.platform_repo_id. Zero (the JSON
+// zero-value when a listing/transport omitted the field) renders as ""
+// so absence never masquerades as a real identity (v0.27.102).
+func ForgeIDString(id int64) string {
+	if id <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(id, 10)
 }

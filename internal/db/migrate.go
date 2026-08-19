@@ -1179,6 +1179,11 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// see perf_indexes.go for the measurements.
 	ensurePerfWaveIndexes(ctx, pg, logger, errs)
 
+	// v0.27.102: forge-numeric-ID lookup index (rename/transfer dedup —
+	// see repo_forge_id.go). Partial on non-empty so it stays tiny until
+	// Phase 0 backfills the fleet's platform_repo_id values.
+	ensureForgeIDIndex(ctx, pg, logger, errs)
+
 	// v0.22.7: apply ON UPDATE CASCADE ON DELETE RESTRICT
 	// DEFERRABLE INITIALLY DEFERRED to the same 50 FKs. RESTRICT
 	// prevents orphaned-child rows by blocking parent DELETEs;

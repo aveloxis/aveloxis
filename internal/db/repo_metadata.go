@@ -33,7 +33,14 @@ import (
 // representation). Written unconditionally like the other fields:
 // the forge's current statement of fork lineage is the truth, and a
 // repo detaching from its upstream honestly clears the column.
-func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool, forkedFrom string) error {
+//
+// v0.27.102 adds platformRepoID (model.RepoInfo.PlatformRepoID — the
+// forge's numeric repository identity, the rename-proof key UpsertRepo
+// dedups on). Written PREFER-NONEMPTY, unlike the fields above: the ID
+// never changes for a given repo, and a transport that didn't provide
+// it must never clear a captured value. This is the fleet backfill —
+// every repo's next Phase 0 cycle fills its platform_repo_id.
+func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool, forkedFrom, platformRepoID string) error {
 	langJSON := []byte("{}")
 	if len(languages) > 0 {
 		b, err := json.Marshal(languages)
@@ -61,9 +68,12 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			    -- a deleted upstream, '' for a non-fork). The showcase
 			    -- fork filter and future GUI fork badges read this.
 			    forked_from      = $6,
+			    -- v0.27.102: forge numeric ID backfill (prefer-nonempty —
+			    -- the ID never changes; absence must never clear it).
+			    platform_repo_id = COALESCE(NULLIF($7, ''), repos.platform_repo_id),
 			    data_collection_date = NOW()
 			WHERE repo_id = $1`,
-			repoID, description, primaryLanguage, langJSON, archived, forkedFrom)
+			repoID, description, primaryLanguage, langJSON, archived, forkedFrom, platformRepoID)
 		return err
 	})
 }

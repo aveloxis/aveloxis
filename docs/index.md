@@ -1,6 +1,6 @@
 # Aveloxis Documentation
 
-Aveloxis is a high-performance open source community health data collection platform written in Go. It collects data from GitHub and GitLab with equal completeness, storing it in a shared PostgreSQL schema for cross-platform analysis. It is designed as a companion to (and eventual replacement for) the [Augur](https://github.com/chaoss/augur) collection pipeline.
+Aveloxis is a high-performance open source community health data collection platform written in Go. It collects data from GitHub and GitLab with equal completeness, storing it in a shared PostgreSQL schema for cross-platform analysis. It is designed as a companion to (and eventual replacement for) the [Augur](https://github.com/augurlabs/augur) collection pipeline.
 
 ## Key Features
 

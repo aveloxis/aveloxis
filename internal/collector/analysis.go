@@ -610,6 +610,13 @@ func extractPEP621DepsFromLine(line string) []string {
 	if end < 0 {
 		end = len(line)
 	}
+	if start > end {
+		// Malformed line where ']' precedes '[' (e.g. "dependencies]=[")
+		// — found by FuzzManifestParsers (v0.27.99): line[start:end]
+		// panicked with slice bounds out of range, killing the whole
+		// analysis phase of any repo carrying the line.
+		return nil
+	}
 	inner := line[start:end]
 	for _, item := range strings.Split(inner, ",") {
 		if name := extractPEP621DepName(item); name != "" {
@@ -973,6 +980,13 @@ func extractPEP621VersionDeps(line string) []libyearDep {
 	}
 	if end < 0 {
 		end = len(line)
+	}
+	if start > end {
+		// Malformed line where ']' precedes '[' (e.g. "dependencies]=[")
+		// — found by FuzzManifestParsers (v0.27.99): line[start:end]
+		// panicked with slice bounds out of range, killing the whole
+		// analysis phase of any repo carrying the line.
+		return nil
 	}
 	inner := line[start:end]
 	for _, item := range strings.Split(inner, ",") {

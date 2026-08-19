@@ -1464,6 +1464,14 @@ CREATE INDEX IF NOT EXISTS idx_issues_repo_created
 CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_created
     ON aveloxis_data.pull_requests (repo_id, created_at);
 
+-- v0.27.96/v0.27.98 perf-wave indexes (summary/21 F1/F5) are DELIBERATELY
+-- NOT declared here. RunMigrations executes this base DDL BEFORE the
+-- CONCURRENTLY helper, so a plain declaration would block-build on a live
+-- fleet's 34 GB pull_requests table during the introducing release's first
+-- migrate (PR #181 finding). ensurePerfWaveIndexes (perf_indexes.go) owns
+-- their creation for fresh installs AND live fleets. RULE: newly-introduced
+-- indexes on fleet-scale tables are migration-only until the fleet has them.
+
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_cve_id
     ON aveloxis_data.repo_deps_vulnerabilities (cve_id)
     WHERE cve_id != '';
@@ -2093,6 +2101,11 @@ CREATE INDEX IF NOT EXISTS idx_staging_unprocessed
 -- aggregate that completes in ~10ms.
 CREATE INDEX IF NOT EXISTS idx_staging_repo_id
     ON aveloxis_ops.staging (repo_id);
+
+-- The v0.27.96 staging purge index (summary/21 F7a) is migration-only for
+-- the same reason as the perf-wave indexes above: a plain declaration here
+-- would block-build on the 33 GB staging table before the CONCURRENTLY
+-- helper runs (PR #181 finding). See ensurePerfWaveIndexes.
 
 -- ============================================================
 -- Mailing-list staging (v0.25.x). The mailing-list pipeline mirrors the

@@ -240,6 +240,26 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.logger.Warn("FORCE FULL COLLECTION enabled — all repos will be fully re-collected. Set collection.force_full to false in aveloxis.json after this pass completes.")
 	}
 
+	// v0.27.96 (log-the-effective-value): state the matview schedule the
+	// scheduler will ACTUALLY follow. Found live 2026-08-18: the operator
+	// set matview_rebuild_day to "disable" (unrecognized pre-v0.27.96),
+	// the accessor silently fell back to Saturday, and the 11-hour weekly
+	// rebuild kept firing with no runtime signal that the disable hadn't
+	// taken effect. This line — and the WARN below — is that signal.
+	effectiveDay := s.cfg.Collection.MatviewRebuildWeekday()
+	dayName := "DISABLED"
+	if effectiveDay >= 0 {
+		dayName = time.Weekday(effectiveDay).String()
+	}
+	s.logger.Info("matview rebuild schedule",
+		"configured_value", s.cfg.Collection.MatviewRebuildDay,
+		"effective_day", dayName,
+		"skip_dm_aggregates", s.cfg.Collection.MatviewRebuildSkipDMAggregates)
+	if !s.cfg.Collection.MatviewRebuildDayRecognized() {
+		s.logger.Warn("matview_rebuild_day value not recognized — falling back to Saturday; use a weekday name or disabled/disable/none/off",
+			"configured_value", s.cfg.Collection.MatviewRebuildDay)
+	}
+
 	// On startup: check for tool updates (monthly), then release any
 	// stale locks BEFORE processing leftover staging. Lock recovery
 	// is a single UPDATE that takes milliseconds; leftover staging

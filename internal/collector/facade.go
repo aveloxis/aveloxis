@@ -470,17 +470,21 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 				"repo_id", repoID, "count", unparseableTimestamps)
 		}
 	}()
+	// Phase 1 — build every row for the batch (v0.27.97, summary/21 F2:
+	// the per-row UpsertCommit loop cost 296.8 h / 293.5M single-row
+	// round trips in the 2026-08-18 production snapshot; the batch write
+	// collapses them ~500×).
+	rows := make([]*model.Commit, 0, len(batch)*4)
+	msgs := make([]*model.CommitMessage, 0, len(batch))
+	built := make([]*parsedCommit, 0, len(batch))
 	for i, pc := range batch {
 		// v0.27.91: once the job's context is canceled, every remaining
-		// upsert in this batch is guaranteed to fail with the same
-		// "context canceled" error. Pre-fix the loop ground through them
-		// all, logging a WARN per commit-FILE row — one canceled
-		// kernel-scale job produced 4,011,288 identical WARN lines in the
-		// Jul 31 2026 production log. Bail out with ONE aggregate line
-		// (v0.27.39 pattern: aggregate WARN, never silence, never spam)
-		// and return nil — this function has always swallowed per-row
-		// failures, so the return contract stays unchanged and the data
-		// outcome is byte-identical (nothing can be written post-cancel).
+		// write is guaranteed to fail with the same "context canceled"
+		// error. Bail out of the BUILD with ONE aggregate line (v0.27.39
+		// pattern) and persist nothing new — this function has always
+		// swallowed per-row failures, so the return contract stays
+		// unchanged and the data outcome is byte-identical (nothing can
+		// be written post-cancel).
 		if ctx.Err() != nil {
 			f.logger.Warn("commit batch aborted — context canceled, skipping remaining commits",
 				"repo_id", repoID, "remaining", len(batch)-i, "cause", ctx.Err())
@@ -505,7 +509,6 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 			// tiles disagree with no trace.
 			unparseableTimestamps++
 		}
-		commitInserted := false
 		for _, file := range files {
 			commit := &model.Commit{
 				RepoID:               repoID,
@@ -528,39 +531,100 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 				Origin:               model.DataOrigin{ToolSource: "aveloxis-facade", DataSource: "git"},
 			}
 			commit.Origin.DataCollectionDate = now
-			if err := f.store.UpsertCommit(ctx, commit); err != nil {
-				f.logger.Warn("failed to upsert commit", "hash", pc.Hash, "file", file.Filename, "error", err)
-				continue
-			}
-			commitInserted = true
+			rows = append(rows, commit)
 		}
-		if commitInserted {
+		built = append(built, pc)
+		if pc.Subject != "" {
+			msgs = append(msgs, &model.CommitMessage{
+				RepoID:  repoID,
+				Hash:    pc.Hash,
+				Message: pc.Subject,
+			})
+		}
+	}
+
+	// Phase 2 — persist commit-file rows in one batched write. On batch
+	// failure, degrade to the pre-v0.27.97 per-row path so one poison row
+	// can't lose the other 499 (collect what we can; the fallback keeps
+	// the old per-row WARN + counting semantics exactly).
+	if err := f.store.UpsertCommitBatch(ctx, rows); err != nil {
+		f.logger.Warn("commit batch write failed — falling back to per-row upserts",
+			"repo_id", repoID, "rows", len(rows), "error", err)
+		f.upsertCommitRowsFallback(ctx, repoID, rows, result)
+	} else {
+		// Batch success means every commit's rows are in place (inserted
+		// or already present) — count each commit once, matching the
+		// v0.19.11 distinct-commit contract.
+		for range built {
 			result.Commits++
 		}
+	}
 
-		// Insert commit parents.
+	// Phase 3 — commit parents, per commit (deliberately outside F2's
+	// batch scope: different INSERT..SELECT shape, 11.6 h measured).
+	// Running AFTER the batch persist means same-batch parent rows exist
+	// for the hash join, which the old interleaved order did not
+	// guarantee.
+	for i, pc := range built {
+		// v0.27.98 (PR #181): this phase runs after the build loop's
+		// cancel guard, so it needs its own — a cancellation here would
+		// otherwise grind through every remaining parent with a WARN per
+		// row (the v0.27.91 flood class).
+		if ctx.Err() != nil {
+			f.logger.Warn("commit parents aborted — context canceled, skipping remaining commits",
+				"repo_id", repoID, "remaining", len(built)-i, "cause", ctx.Err())
+			return nil
+		}
 		for _, parentHash := range pc.Parents {
 			if err := f.store.InsertCommitParent(ctx, repoID, pc.Hash, parentHash); err != nil {
 				f.logger.Warn("failed to insert commit parent",
 					"hash", pc.Hash, "parent", parentHash, "error", err)
 			}
 		}
+	}
 
-		// Insert commit message.
-		if pc.Subject != "" {
-			msg := &model.CommitMessage{
-				RepoID:  repoID,
-				Hash:    pc.Hash,
-				Message: pc.Subject,
+	// Phase 4 — commit messages, batched with the same fallback contract.
+	if len(msgs) > 0 {
+		if err := f.store.UpsertCommitMessageBatch(ctx, msgs); err != nil {
+			f.logger.Warn("commit message batch write failed — falling back to per-row upserts",
+				"repo_id", repoID, "messages", len(msgs), "error", err)
+			for _, msg := range msgs {
+				if ctx.Err() != nil {
+					break
+				}
+				if err := f.store.UpsertCommitMessage(ctx, msg); err != nil {
+					f.logger.Warn("failed to upsert commit message", "hash", msg.Hash, "error", err)
+				} else {
+					result.CommitMessages++
+				}
 			}
-			if err := f.store.UpsertCommitMessage(ctx, msg); err != nil {
-				f.logger.Warn("failed to upsert commit message", "hash", pc.Hash, "error", err)
-			} else {
-				result.CommitMessages++
-			}
+		} else {
+			result.CommitMessages += len(msgs)
 		}
 	}
 	return nil
+}
+
+// upsertCommitRowsFallback is the pre-v0.27.97 per-row write path, kept
+// verbatim as the degradation target when a batched INSERT fails: one
+// poison row (or a transient mid-batch error) must not lose the whole
+// batch. Counting matches the old semantics — a commit counts once when at
+// least one of its file rows landed.
+func (f *FacadeCollector) upsertCommitRowsFallback(ctx context.Context, repoID int64, rows []*model.Commit, result *FacadeResult) {
+	insertedByHash := make(map[string]bool)
+	for i, commit := range rows {
+		if ctx.Err() != nil {
+			f.logger.Warn("commit fallback aborted — context canceled, skipping remaining rows",
+				"repo_id", repoID, "remaining", len(rows)-i, "cause", ctx.Err())
+			break
+		}
+		if err := f.store.UpsertCommit(ctx, commit); err != nil {
+			f.logger.Warn("failed to upsert commit", "hash", commit.Hash, "file", commit.Filename, "error", err)
+			continue
+		}
+		insertedByHash[commit.Hash] = true
+	}
+	result.Commits += len(insertedByHash)
 }
 
 // extractDate returns the YYYY-MM-DD portion of an ISO 8601 date string.

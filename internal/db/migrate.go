@@ -1173,6 +1173,12 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// from minute one.
 	ensureExtraFKIndexes(ctx, pg, logger, errs)
 
+	// v0.27.96: the perf-wave indexes from the first pg_stat_statements
+	// snapshot (summary/21 F1/F5/F7a) — the number→serial lookup shapes
+	// measured at 284h/77h/32h and the 61s staging purge. CONCURRENTLY;
+	// see perf_indexes.go for the measurements.
+	ensurePerfWaveIndexes(ctx, pg, logger, errs)
+
 	// v0.22.7: apply ON UPDATE CASCADE ON DELETE RESTRICT
 	// DEFERRABLE INITIALLY DEFERRED to the same 50 FKs. RESTRICT
 	// prevents orphaned-child rows by blocking parent DELETEs;

@@ -39,7 +39,13 @@ func messageIDToPlatformMsgID(messageID string) int64 {
 // signaled_repo_id is preserved across re-collection.
 func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailMessage) (int64, error) {
 	var id int64
-	err := s.pool.QueryRow(ctx, `
+	// v0.27.112: routed through withRetry (bounded 40P01 retry). The
+	// processor's drop-for-progress policy dropped a message on a
+	// deadlock in CI (2026-08-20, TestMailingListPipelineEndToEnd) —
+	// the v0.25.36 note pre-decided this fix: "if the counter trends
+	// non-zero, the fix is a bounded retry".
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		return s.pool.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.email_message (
 			repo_id, repo_group_id, rgls_id, platform_id, ml_system,
 			message_id_header, list_address, list_id_header, subject, sender_email,
@@ -78,14 +84,15 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 			data_source        = EXCLUDED.data_source,
 			tool_version       = EXCLUDED.tool_version
 		RETURNING email_message_id`,
-		em.RepoID, em.RepoGroupID, em.RglsID, int16(em.PlatformID), em.MLSystem,
-		em.MessageIDHeader, em.ListAddress, em.ListIDHeader, em.Subject, em.SenderEmail,
-		NullTime(em.SentAt), em.InReplyTo, em.ReferencesChain, em.ThreadRootID, em.HasPatch,
-		em.MsgClass, em.ClassificationSource, em.IsMirror, em.MirrorsURL,
-		em.SignaledRepoURL, em.SignaledRepoID,
-		em.LinkedIssueID, em.LinkedPullRequestID, em.LinkedReviewID, em.LinkedExternalKey, em.LinkedCommitHash,
-		em.ProjectedKind, em.DataSource, ToolVersion,
-	).Scan(&id)
+			em.RepoID, em.RepoGroupID, em.RglsID, int16(em.PlatformID), em.MLSystem,
+			em.MessageIDHeader, em.ListAddress, em.ListIDHeader, em.Subject, em.SenderEmail,
+			NullTime(em.SentAt), em.InReplyTo, em.ReferencesChain, em.ThreadRootID, em.HasPatch,
+			em.MsgClass, em.ClassificationSource, em.IsMirror, em.MirrorsURL,
+			em.SignaledRepoURL, em.SignaledRepoID,
+			em.LinkedIssueID, em.LinkedPullRequestID, em.LinkedReviewID, em.LinkedExternalKey, em.LinkedCommitHash,
+			em.ProjectedKind, em.DataSource, ToolVersion,
+		).Scan(&id)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("upsert email_message %q: %w", em.MessageIDHeader, err)
 	}
@@ -101,7 +108,9 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 // retained for the §5d backfill). Returns the msg_id.
 func (s *PostgresStore) UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string) (int64, error) {
 	var id int64
-	err := s.pool.QueryRow(ctx, `
+	// v0.27.112: withRetry (40P01) — see UpsertEmailMessage.
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		return s.pool.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.messages
 			(repo_id, platform_msg_id, platform_id, msg_kind, node_id, cntrb_id,
 			 msg_text, msg_timestamp, msg_sender_email, tool_source, tool_version, data_source)
@@ -111,10 +120,11 @@ func (s *PostgresStore) UpsertMailingListMessageBody(ctx context.Context, repoID
 			cntrb_id = COALESCE(EXCLUDED.cntrb_id, aveloxis_data.messages.cntrb_id),
 			data_collection_date = NOW()
 		RETURNING msg_id`,
-		repoID, messageIDToPlatformMsgID(messageID), MailingListPlatformID, messageID, cntrbID,
-		body, NullTime(sentAt), senderEmail, MailingListToolSource, ToolVersion, listAddress,
-		MsgKindEmail,
-	).Scan(&id)
+			repoID, messageIDToPlatformMsgID(messageID), MailingListPlatformID, messageID, cntrbID,
+			body, NullTime(sentAt), senderEmail, MailingListToolSource, ToolVersion, listAddress,
+			MsgKindEmail,
+		).Scan(&id)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("upsert mailing-list message body %q: %w", messageID, err)
 	}
@@ -315,11 +325,15 @@ func (s *PostgresStore) BackfillMailingListSenderIDs(ctx context.Context, limit 
 // InsertEmailMessageRef links an email_message entity to its body row in
 // messages. Idempotent on (email_message_id, msg_id).
 func (s *PostgresStore) InsertEmailMessageRef(ctx context.Context, emailMessageID, msgID int64, repoGroupID *int64) error {
-	_, err := s.pool.Exec(ctx, `
+	// v0.27.112: withRetry (40P01) — see UpsertEmailMessage.
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_data.email_message_ref (email_message_id, msg_id, repo_group_id, tool_version)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (email_message_id, msg_id) DO NOTHING`,
-		emailMessageID, msgID, repoGroupID, ToolVersion)
+			emailMessageID, msgID, repoGroupID, ToolVersion)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("insert email_message_ref (%d,%d): %w", emailMessageID, msgID, err)
 	}

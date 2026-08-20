@@ -165,3 +165,76 @@ func TestRenameHealPropagatesLookupErrors(t *testing.T) {
 		t.Error("the old-URL scan error must propagate — oldURL='' silently skips the child-URL rewrites")
 	}
 }
+
+// --- round 7 (review 4986041250: 1 active + 4 suppressed, ALL real) -------
+
+func TestRewalkClaimExcludesNeverCollectedAndRechecks(t *testing.T) {
+	src, err := os.ReadFile("whitespace_store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	// Wrongly-suppressed: walking a never-collected repo stamps the
+	// marker over zero commit rows; the later first collection's
+	// incremental walk then skips those commits forever.
+	if !strings.Contains(s, "q.last_collected IS NOT NULL") {
+		t.Error("GetReposForWhitespaceRewalk must exclude never-collected repos (marker-over-nothing = permanent zero whitespace)")
+	}
+	// Active: the page-time status filter goes stale — the command
+	// re-checks the claim per repo just before walking.
+	if !strings.Contains(s, "func (s *PostgresStore) IsRepoCollecting(") {
+		t.Error("IsRepoCollecting must exist for the rewalk worker's pre-walk re-check")
+	}
+	cmdSrc, err := os.ReadFile("../../cmd/aveloxis/rewalk_whitespace.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cmdSrc), "IsRepoCollecting(") {
+		t.Error("the rewalk worker must re-check the collection claim before each walk")
+	}
+}
+
+func TestMailingListWritersRetryDeadlocks(t *testing.T) {
+	src, err := os.ReadFile("email_message_store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	// The 2026-08-20 CI drop: a 40P01 on the email_message upsert was
+	// DROPPED by the processor's drop-for-progress policy. The v0.25.36
+	// note pre-decided the fix: bounded retry — withRetry retries
+	// exactly 40P01.
+	if strings.Count(s, "s.withRetry(ctx, func(ctx context.Context) error {") < 3 {
+		t.Error("UpsertEmailMessage, UpsertMailingListMessageBody, and InsertEmailMessageRef must route through withRetry (40P01)")
+	}
+}
+
+func TestIdentityHealIsReachable(t *testing.T) {
+	src, err := os.ReadFile("contributors.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (r *ContributorResolver) Resolve(")
+	// Wrongly-suppressed: the v0.27.103 heal lived only in ON CONFLICT
+	// clauses that existing identities never reach (the step-2 hit
+	// returns first). The hit branch must read node_id/user_type and
+	// heal in place.
+	if !strings.Contains(body, "COALESCE(node_id, ''), COALESCE(user_type, '')") {
+		t.Error("Resolve's identity hit must read node_id/user_type alongside cntrb_id")
+	}
+	if !strings.Contains(body, "SET node_id = COALESCE(NULLIF(node_id, ''), $3)") {
+		t.Error("Resolve's identity hit must heal empty node_id/user_type in place — the ON CONFLICT heal is unreachable for existing rows")
+	}
+}
+
+func TestRenameHealURLProbePropagatesRealErrors(t *testing.T) {
+	src, err := os.ReadFile("postgres.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) UpsertRepo(")
+	// Wrongly-suppressed: only ErrNoRows means "untracked".
+	if !strings.Contains(body, "rename-heal URL probe") {
+		t.Error("the urlTracked probe must propagate non-ErrNoRows errors instead of steering into the heal path on bad information")
+	}
+}

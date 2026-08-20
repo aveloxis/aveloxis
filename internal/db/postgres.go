@@ -289,9 +289,14 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	// — the ON CONFLICT (repo_git) DO UPDATE below owns those.
 	if r.PlatformID != "" && (r.Platform == model.PlatformGitHub || r.Platform == model.PlatformGitLab) {
 		var urlTracked int64
-		_ = s.pool.QueryRow(ctx,
+		// v0.27.112 (wrongly-suppressed Copilot finding): only ErrNoRows
+		// means "untracked" — a transient probe failure must not steer
+		// us into the heal path on bad information.
+		if perr := s.pool.QueryRow(ctx,
 			`SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1`,
-			r.GitURL).Scan(&urlTracked)
+			r.GitURL).Scan(&urlTracked); perr != nil && !errors.Is(perr, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("rename-heal URL probe: %w", perr)
+		}
 		if urlTracked == 0 {
 			// v0.27.111: a LOOKUP error is not "not found" (the v0.27.36
 			// rule) — falling through to the insert on a transient DB

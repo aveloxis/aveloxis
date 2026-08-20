@@ -110,6 +110,14 @@ many-hour job; progress lines include running totals for extrapolation.`,
 				go func() {
 					defer wg.Done()
 					for t := range jobs {
+						// v0.27.112: the page-time status filter can be
+						// minutes stale — re-check the claim just before
+						// walking. Skipped repos keep an empty marker; a
+						// rerun picks them up.
+						if collecting, cerr := store.IsRepoCollecting(ctx, t.RepoID); cerr == nil && collecting {
+							logger.Info("whitespace rewalk deferring repo — mid-collection", "repo_id", t.RepoID)
+							continue
+						}
 						n, err := fc.RewalkWhitespace(ctx, t.RepoID, t.GitURL)
 						if err != nil {
 							// v0.27.107 (ultrareview bug_002): partial rows

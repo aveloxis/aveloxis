@@ -67,14 +67,36 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 	// refs resolve by login in step 2.5 instead.
 	var cntrbID string
 	if userID > 0 {
+		// v0.27.112 (wrongly-suppressed Copilot finding): the v0.27.103
+		// node_id/user_type heal lived only in the ON CONFLICT clauses —
+		// UNREACHABLE for the rows it targets, because an existing
+		// identity returns right here and never reaches those inserts.
+		// Read the fields alongside cntrb_id (free) and heal in place
+		// when the row is empty and the caller has values; the cache
+		// makes this a once-per-run check per identity.
+		var haveNodeID, haveType string
 		err := r.store.pool.QueryRow(ctx, `
-			SELECT cntrb_id::text
+			SELECT cntrb_id::text, COALESCE(node_id, ''), COALESCE(user_type, '')
 			FROM aveloxis_data.contributor_identities
 			WHERE platform_id = $1 AND platform_user_id = $2`,
 			platformID, userID,
-		).Scan(&cntrbID)
+		).Scan(&cntrbID, &haveNodeID, &haveType)
 
 		if err == nil {
+			if (haveNodeID == "" && nodeID != "") || (haveType == "" && userType != "") {
+				if _, herr := r.store.pool.Exec(ctx, `
+					UPDATE aveloxis_data.contributor_identities
+					SET node_id = COALESCE(NULLIF(node_id, ''), $3),
+					    user_type = COALESCE(NULLIF(user_type, ''), $4)
+					WHERE platform_id = $1 AND platform_user_id = $2`,
+					platformID, userID, nodeID, userType); herr != nil {
+					// Best-effort — resolution itself succeeded and the
+					// next observation retries — but never silent
+					// (v0.25.36).
+					r.store.logger.Warn("identity node_id/user_type heal failed",
+						"platform_id", platformID, "platform_user_id", userID, "error", herr)
+				}
+			}
 			r.cache[key] = cntrbID
 			return cntrbID, nil
 		}

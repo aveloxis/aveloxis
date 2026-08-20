@@ -108,6 +108,30 @@ func (s *PostgresStore) SetWhitespaceHead(ctx context.Context, repoID int64, hea
 	return err
 }
 
+// IsRepoCollecting reports whether the repo is currently claimed by a
+// collection worker. The rewalk command re-checks this immediately
+// before each walk (v0.27.112, Copilot active finding): the page-time
+// status filter can go stale, and while overlapping with a collection
+// is DATA-safe (whitespace updates are same-value idempotent; the
+// marker stamps only on success), the two would contend on the shared
+// persistent clone — facade's stale-clone RemoveAll or concurrent git
+// fetch locks can fail the walk. Skipped repos keep an empty marker
+// and are picked up by a rerun. A durable queue claim was considered
+// and REJECTED: marking the repo 'collecting' for the walk would block
+// normal collection during a multi-hour fleet job; the residual
+// seconds-wide race after this re-check only produces a retryable
+// failure, never bad data.
+func (s *PostgresStore) IsRepoCollecting(ctx context.Context, repoID int64) (bool, error) {
+	var collecting bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT status = 'collecting' FROM aveloxis_ops.collection_queue
+		WHERE repo_id = $1`, repoID).Scan(&collecting)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return collecting, err
+}
+
 // WhitespaceRewalkTarget is one repo the rewalk command should visit.
 type WhitespaceRewalkTarget struct {
 	RepoID int64
@@ -133,6 +157,13 @@ func (s *PostgresStore) GetReposForWhitespaceRewalk(ctx context.Context, afterRe
 		  AND COALESCE(r.whitespace_head_hash, '') = ''
 		  AND COALESCE(r.repo_archived, FALSE) = FALSE
 		  AND q.status <> 'collecting'
+		  -- v0.27.112 (wrongly-suppressed Copilot finding): never-collected
+		  -- repos have NO commit rows yet — walking them stamps the marker
+		  -- over nothing, and the later first collection's incremental walk
+		  -- then skips those commits FOREVER (the exact class the facade's
+		  -- clean-pass gate prevents). First collection bootstraps them
+		  -- inline instead (marker NULL → full walk).
+		  AND q.last_collected IS NOT NULL
 		ORDER BY r.repo_id
 		LIMIT $2`, afterRepoID, limit)
 	if err != nil {

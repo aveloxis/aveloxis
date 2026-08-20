@@ -1270,7 +1270,12 @@ func (c *Client) paginatePRReviewers(ctx context.Context, owner, repo string, nu
 			}
 			out = append(out, model.PullRequestReviewer{
 				PlatformSrcID: r.RequestedReviewer.DatabaseID,
-				Origin:        origin,
+				// v0.27.112 (wrongly-suppressed Copilot finding): the
+				// initial-page path mapped UserRef; this pagination path
+				// dropped it, so reviewers past the first page lost
+				// contributor identity.
+				UserRef: userRefFromGraphQL(r.RequestedReviewer),
+				Origin:  origin,
 			})
 		}
 		pi := resp.Repository.PullRequest.ReviewRequests.PageInfo

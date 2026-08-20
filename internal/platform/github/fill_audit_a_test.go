@@ -123,3 +123,13 @@ func TestBotInlinesSelectNodeID(t *testing.T) {
 		}
 	}
 }
+
+// v0.27.112 (wrongly-suppressed finding): the reviewer PAGINATION path
+// dropped UserRef while the initial-page path mapped it — reviewers past
+// the first page lost contributor identity.
+func TestPaginatedReviewersKeepUserRef(t *testing.T) {
+	body := region(t, readSrc(t, "graphql_pr_batch.go"), "func (c *Client) paginatePRReviewers")
+	if !strings.Contains(body, "userRefFromGraphQL(r.RequestedReviewer)") {
+		t.Error("paginatePRReviewers must map UserRef exactly as the initial-page path does")
+	}
+}

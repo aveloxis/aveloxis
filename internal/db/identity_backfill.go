@@ -190,10 +190,26 @@ func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int,
 	if batchSize <= 0 {
 		batchSize = 100000
 	}
+	// v0.27.110 (Copilot PR #184 round 5): BOTH passes are restricted to
+	// GITHUB-platform rows (meta → repos join, platform_id = 1). The
+	// login sweep matches the GLOBAL contributor table, and v0.26.5-era
+	// pull_request_meta.cntrb_id values came from the same global login
+	// join — so on GitLab rows either pass could attribute a group-owned
+	// project to an unrelated same-name GitHub user, the exact
+	// cross-platform fabrication v0.27.109 banned from the forward path.
+	// GitLab rows stay NULL here and heal FORWARD-ONLY via the
+	// ID-qualified owner-object refs on re-collection. The sweep's
+	// bare-cntrb_login fallback arm additionally disqualifies
+	// GitLab-native contributors (gl_username set): a GitLab user's
+	// cntrb_login colliding with a GitHub owner name must not win.
+	// GitHub-vs-GitHub login matching keeps the documented v0.26.5
+	// accepted risk, unchanged.
 	const pairSQL = `
 		UPDATE aveloxis_data.pull_request_repo pr
 		SET pr_cntrb_id = m.cntrb_id
 		FROM aveloxis_data.pull_request_meta m
+		JOIN aveloxis_data.repos r
+		  ON r.repo_id = m.repo_id AND r.platform_id = 1
 		WHERE m.pr_meta_id = pr.pr_repo_meta_id
 		  AND m.head_or_base = pr.pr_repo_head_or_base
 		  AND m.cntrb_id IS NOT NULL
@@ -202,12 +218,17 @@ func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int,
 	const candidates = `
 		SELECT DISTINCT ON (pr.pr_repo_id) pr.pr_repo_id, c.cntrb_id
 		FROM aveloxis_data.pull_request_repo pr
+		JOIN aveloxis_data.pull_request_meta pm
+		  ON pm.pr_meta_id = pr.pr_repo_meta_id
+		JOIN aveloxis_data.repos r
+		  ON r.repo_id = pm.repo_id AND r.platform_id = 1
 		JOIN aveloxis_data.contributors c
 		  ON LOWER(COALESCE(NULLIF(c.gh_login, ''), c.cntrb_login)) =
 		     LOWER(split_part(pr.pr_repo_full_name, '/', 1))
 		WHERE pr.pr_cntrb_id IS NULL
 		  AND split_part(COALESCE(pr.pr_repo_full_name, ''), '/', 1) <> ''
-		  AND COALESCE(c.cntrb_deleted, 0) = 0%s`
+		  AND COALESCE(c.cntrb_deleted, 0) = 0
+		  AND (c.gh_login <> '' OR COALESCE(c.gl_username, '') = '')%s`
 	if dryRun {
 		// v0.27.107 (ultrareview bug_003): count BOTH derivation passes —
 		// the pair PK-join fills rows the login sweep cannot see (renamed
@@ -220,6 +241,8 @@ func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int,
 			JOIN aveloxis_data.pull_request_meta m
 			  ON m.pr_meta_id = pr.pr_repo_meta_id
 			 AND m.head_or_base = pr.pr_repo_head_or_base
+			JOIN aveloxis_data.repos r
+			  ON r.repo_id = m.repo_id AND r.platform_id = 1
 			WHERE m.cntrb_id IS NOT NULL
 			  AND pr.pr_cntrb_id IS NULL`).Scan(&pair); err != nil {
 			return 0, fmt.Errorf("dry-run pair count pull_request_repo: %w", err)

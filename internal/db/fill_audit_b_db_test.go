@@ -78,6 +78,13 @@ func TestBackfillPRRepoOwnersShape(t *testing.T) {
 		"split_part(pr.pr_repo_full_name, '/', 1)",
 		"pr.pr_cntrb_id IS NULL",
 		"pr_repo_head_or_base", // the cheap meta-pair PK-join first pass
+		// v0.27.110 (Copilot round 5): both passes GitHub-only — GitLab
+		// rows heal forward-only (the login sweep + v0.26.5-era meta
+		// attributions are platform-blind and could fabricate a GitHub
+		// user onto a GitLab group row). Plus the GitLab-native
+		// disqualifier on the bare-login fallback arm.
+		"r.platform_id = 1",
+		"COALESCE(c.gl_username, '') = ''",
 	} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("BackfillPRRepoOwners missing %q", needle)
@@ -246,6 +253,53 @@ func TestFillAuditBEndToEnd(t *testing.T) {
 	if err := store.pool.QueryRow(ctx, `SELECT pr.pr_cntrb_id::text FROM aveloxis_data.pull_request_repo pr WHERE pr.pr_repo_meta_id=$1 AND pr.pr_cntrb_id IS NOT NULL`, baseID).Scan(&cntrb); err == nil {
 		t.Error("deleted-fork row (empty full name) must stay NULL")
 	}
+	// v0.27.110: a GITLAB-platform row with a perfectly matching owner
+	// login must stay NULL — the backfill is GitHub-only (GitLab rows
+	// heal forward via ID-qualified owner refs; the login table is
+	// platform-blind and could hand a GitLab group a GitHub user).
+	glRepoID, err := store.UpsertRepo(ctx, &model.Repo{
+		Platform: model.PlatformGitLab,
+		GitURL:   "https://gitlab.com/avfillb/gl-target",
+		Owner:    "avfillb", Name: "gl-target",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		_, _ = store.pool.Exec(cctx, `DELETE FROM aveloxis_data.pull_request_repo WHERE pr_repo_meta_id IN (SELECT pr_meta_id FROM aveloxis_data.pull_request_meta WHERE repo_id=$1)`, glRepoID)
+		_, _ = store.pool.Exec(cctx, `DELETE FROM aveloxis_data.pull_request_meta WHERE repo_id=$1`, glRepoID)
+		_, _ = store.pool.Exec(cctx, `DELETE FROM aveloxis_data.pull_requests WHERE repo_id=$1`, glRepoID)
+		_, _ = store.pool.Exec(cctx, `DELETE FROM aveloxis_data.repos WHERE repo_id=$1`, glRepoID)
+	})
+	glPRID, err := store.UpsertPullRequest(ctx, &model.PullRequest{
+		RepoID: glRepoID, PlatformSrcID: 991003, Number: 1,
+		Title: "gl pr", State: "open",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	glMetaID, err := store.UpsertPRMeta(ctx, &model.PullRequestMeta{
+		PRID: glPRID, RepoID: glRepoID, HeadOrBase: "head", Ref: "feat", SHA: "ccc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertPRRepo(ctx, &model.PullRequestRepo{
+		MetaID: glMetaID, HeadOrBase: "head", SrcRepoID: 3,
+		RepoName: "gl-fork", RepoFullName: "avfillbowner/gl-fork",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BackfillPRRepoOwners(ctx, 1000000, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	var glCntrb *string
+	if err := store.pool.QueryRow(ctx, `SELECT pr_cntrb_id::text FROM aveloxis_data.pull_request_repo WHERE pr_repo_meta_id=$1 AND pr_cntrb_id IS NOT NULL`, glMetaID).Scan(&glCntrb); err == nil {
+		t.Error("GitLab-platform pr_repo row was backfilled by the GitHub-only login sweep — cross-platform fabrication")
+	}
+
 	// Idempotent: second run fills nothing new.
 	n2, err := store.BackfillPRRepoOwners(ctx, 1000000, 0, false)
 	if err != nil {

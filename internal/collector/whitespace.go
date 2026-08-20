@@ -274,15 +274,18 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 
 	var (
 		updated int64
+		matched int64
+		total   int64
 		pending []db.CommitWhitespaceStat
 	)
 	flush := func() error {
 		if len(pending) == 0 {
 			return nil
 		}
-		n, ferr := f.store.UpdateCommitWhitespaceBatch(ctx, repoID, pending)
+		n, m, ferr := f.store.UpdateCommitWhitespaceBatch(ctx, repoID, pending)
 		pending = pending[:0]
 		updated += n
+		matched += m
 		return ferr
 	}
 	parseErr := parseWhitespaceLog(stdout, func(c whitespaceCommit) error {
@@ -290,6 +293,7 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 			if fs.Filename == "" {
 				continue
 			}
+			total++
 			pending = append(pending, db.CommitWhitespaceStat{
 				Hash: c.Hash, Filename: fs.Filename,
 				Added: fs.Added, Removed: fs.Removed, Whitespace: fs.Whitespace,
@@ -313,6 +317,21 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	}
 	if err := flush(); err != nil {
 		return updated, head, err
+	}
+	// v0.27.116 (Copilot round 10, active): refuse the stamp when any
+	// emitted stat matched NO stored commit row. Historical per-row
+	// write failures (swallowed by the pre-v0.27.107 facade while
+	// last_collected still advanced) leave gaps the numstat pass will
+	// re-insert on the repo's NEXT facade cycle — stamping over them
+	// now would exclude their whitespace from every future incremental
+	// walk (the marker-over-missing-rows class, third path). Updates
+	// already applied stay (idempotent); a rerun after the next facade
+	// cycle finds full coverage and stamps.
+	if matched < total {
+		return updated, head, fmt.Errorf(
+			"%d of %d whitespace stats matched no stored commit row — refusing to stamp the marker; "+
+				"the repo's next facade numstat pass re-inserts the missing rows, rerun after it",
+			total-matched, total)
 	}
 	if err := f.store.SetWhitespaceHead(ctx, repoID, head); err != nil {
 		return updated, head, fmt.Errorf("stamp whitespace head: %w", err)

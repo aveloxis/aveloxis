@@ -409,3 +409,68 @@ func TestProjectionAndVulnWritersRetryDeadlocks(t *testing.T) {
 		t.Error("InsertVulnerabilityBatch must route through withRetry — every queued statement is an idempotent upsert")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 10 (2026-08-20): 2 active + 3 suppressed — all five real. Two
+// of them are EARLIER PR FIXES violating standing rules (the operator's
+// "fixes breaking other things" observation): the v0.27.102 schema.sql
+// index declaration broke the v0.27.98 migration-only rule, and the
+// v0.27.105 rewalk walk reintroduced the marker-over-missing-rows class
+// on a third path. New fixes now get checked against the standing-rules
+// list before shipping.
+// ---------------------------------------------------------------------------
+
+// Active #1: SetPlatformRepoIDIfEmpty's zero-row update was silent for
+// BOTH "already set to the same value" and "set to a DIFFERENT value" —
+// the second is a delete-and-recreate-under-the-same-URL identity
+// conflict whose histories silently merge. Detection is OBSERVATION-ONLY
+// (the house never-auto-mutate rule): an ERROR log naming stored vs
+// observed; the scan pass proceeds unchanged.
+func TestForgeIDMismatchIsDetected(t *testing.T) {
+	src, err := os.ReadFile("repo_forge_id.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmpty(")
+	if !strings.Contains(body, "RowsAffected() == 0") {
+		t.Error("SetPlatformRepoIDIfEmpty must inspect the zero-row case — silence papers over the identity conflict its own doc comment warns about")
+	}
+	if !strings.Contains(body, `stored != "" && stored != forgeID`) {
+		t.Error("the zero-row probe must distinguish same-value (benign) from DIFFERENT-value (delete-recreate identity conflict)")
+	}
+	if !strings.Contains(body, "s.logger.Error(") {
+		t.Error("a forge-ID mismatch is a data-integrity signal — it must log at ERROR with stored + observed IDs")
+	}
+}
+
+// Active #2: the whitespace walk stamped the marker without proving the
+// emitted stats matched stored commit rows. Historical per-row write
+// failures (swallowed by the pre-v0.27.107 facade while last_collected
+// advanced) leave gaps; UpdateCommitWhitespaceBatch silently no-ops on
+// them, and a stamped marker excludes their whitespace from every
+// future incremental walk — the marker-over-missing-rows class on its
+// THIRD path (fleet query v0.27.112, single-repo gate v0.27.113, the
+// walk itself here).
+func TestWhitespaceWalkRefusesToStampOverMissingRows(t *testing.T) {
+	store, err := os.ReadFile("whitespace_store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(store)
+	if !strings.Contains(s, "func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID int64, stats []CommitWhitespaceStat) (updated, matched int64, err error)") {
+		t.Error("UpdateCommitWhitespaceBatch must return a matched count independent of the IS DISTINCT guard (the existence probe)")
+	}
+	walk, err := os.ReadFile("../collector/whitespace.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := string(walk)
+	refIdx := strings.Index(w, "matched < total")
+	stampIdx := strings.Index(w, "SetWhitespaceHead(ctx, repoID, head)")
+	if refIdx < 0 {
+		t.Fatal("runWhitespaceWalk must compare matched stats against emitted total")
+	}
+	if stampIdx >= 0 && refIdx > stampIdx {
+		t.Error("the shortfall refusal must run BEFORE the marker stamp — refusing after is decorative (the v0.27.107 lesson)")
+	}
+}

@@ -155,6 +155,18 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	migrateStage8FKHardening(ctx, pg, logger, &errs)
 	migrateStage9DataQuality(ctx, pg, logger, &errs)
 	migrateStage10RecentReleases(ctx, pg, logger, &errs)
+
+	// v0.27.115 (drift-audit finding 1): base-table plain views run on
+	// EVERY migrate, unconditionally — including --skip-views. They
+	// cost nothing (no storage, no refresh, CREATE OR REPLACE), and
+	// this is the ONLY path that reaches a populated fleet: the matview
+	// block below is sentinel-gated or skipped, so a view stranded in
+	// matviews.sql never materializes on an existing installation
+	// (mailing_list_pr_equivalents was missing on production from
+	// v0.25.7 until this fix). Runs after all stages so every base
+	// table + column the views reference exists.
+	execMigrationStep(ctx, pg, logger, &errs, "base-table views", viewsSQL)
+
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).
 	// Set collection.matview_rebuild_on_startup=true in aveloxis.json to enable,
@@ -1911,6 +1923,26 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"aveloxis_data", "idx_pull_request_review_message_ref_msg_id",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_request_review_message_ref_msg_id
 		 ON aveloxis_data.pull_request_review_message_ref (msg_id)`)
+
+	// v0.27.115 (2026-08-20 schema-drift audit remediation, operator
+	// decisions on findings 3 + 4):
+	//   - contributors_old: Augur-import residue — zero writers ever,
+	//     zero readers, zero rows on production. Dropped from
+	//     schema.sql and from existing installations.
+	//   - the composite repo_labor_history index: an accidental
+	//     LIKE-INCLUDING-ALL copy of the parent's (repo_id,
+	//     rl_analysis_date DESC) index on fleets whose v0.27.7
+	//     migration ran after v0.25.5 — 0 scans ever on production,
+	//     1.2 GB of pure rotation write amplification. The plain
+	//     repo_id copy is KEPT (188 measured scans — dedup-repos'
+	//     hygiene delete) and now declared in schema.sql. Dropped
+	//     names are never re-created (the v0.25.6 rule).
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.115 drop contributors_old (Augur residue, operator-confirmed)",
+		`DROP TABLE IF EXISTS aveloxis_data.contributors_old`)
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.115 drop unused composite index copy on repo_labor_history",
+		`DROP INDEX IF EXISTS aveloxis_data.repo_labor_history_repo_id_rl_analysis_date_idx`)
 
 	// v0.27.63: collections (admin-curated groups-of-groups) — same
 	// DDL as schema.sql so existing fleets pick the tables up on

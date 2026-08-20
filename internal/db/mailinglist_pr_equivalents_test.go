@@ -10,16 +10,19 @@ import (
 )
 
 // TestMailingListPREquivalentsDeclaredNotRefreshed pins Phase C: the view is a
-// plain VIEW in matviews.sql and is NOT in the matview refresh list (refreshing
-// a plain view errors every cycle).
+// plain VIEW and is NOT in the matview refresh list (refreshing a plain view
+// errors every cycle). v0.27.115: the declaration MOVED from matviews.sql to
+// views.sql — the always-run base-table-views file — because matviews.sql is
+// structurally unreachable on populated fleets (the 2026-08-20 drift audit
+// found the view missing on production for exactly that reason).
 func TestMailingListPREquivalentsDeclaredNotRefreshed(t *testing.T) {
-	src := readSourceFile(t, "matviews.sql")
+	src := readSourceFile(t, "views.sql")
 	if !strings.Contains(src, "CREATE OR REPLACE VIEW aveloxis_data.mailing_list_pr_equivalents AS") {
-		t.Error("matviews.sql must declare mailing_list_pr_equivalents as a plain VIEW")
+		t.Error("views.sql must declare mailing_list_pr_equivalents as a plain VIEW")
 	}
 	// The special-case rationale must be documented inline (forge-less / kernel).
 	if !strings.Contains(src, "forge-less") || !strings.Contains(src, "source='mailing_list'") {
-		t.Error("matviews.sql must document the forge-less special case + the mail-derived source label")
+		t.Error("views.sql must document the forge-less special case + the mail-derived source label")
 	}
 	mv := readSourceFile(t, "matviews.go")
 	if strings.Contains(mv, `"aveloxis_data.mailing_list_pr_equivalents"`) {

@@ -77,15 +77,21 @@ func TestUpsertRepoConflictPrefersNonEmptyPlatformRepoID(t *testing.T) {
 	}
 }
 
-func TestSchemaDeclaresPlatformRepoIDIndex(t *testing.T) {
+// INVERTED in v0.27.116 (Copilot round 10, suppressed #1 — real): the
+// original pin REQUIRED a plain schema.sql declaration, which violates
+// the v0.27.98 rule — newly-introduced indexes are MIGRATION-ONLY in
+// their introducing release, because the base schema DDL runs BEFORE
+// the CONCURRENTLY helper, so a live fleet's first upgrade would
+// block-build the index and turn ensureForgeIDIndex into a no-op.
+// ensureForgeIDIndex owns BOTH fresh installs and upgrades
+// (CONCURRENTLY on an empty table is instant — the v0.27.98 precedent).
+func TestPlatformRepoIDIndexIsMigrationOnly(t *testing.T) {
 	src, err := os.ReadFile("schema.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := strings.Join(strings.Fields(string(src)), " ")
-	needle := "CREATE INDEX IF NOT EXISTS idx_repos_platform_repo_id ON aveloxis_data.repos (platform_id, platform_repo_id) WHERE platform_repo_id <> ''"
-	if !strings.Contains(s, needle) {
-		t.Errorf("schema.sql must declare the partial forge-ID lookup index:\n%s", needle)
+	if strings.Contains(string(src), "idx_repos_platform_repo_id") {
+		t.Error("idx_repos_platform_repo_id must NOT be declared in schema.sql — migration-only (v0.27.98 rule); ensureForgeIDIndex owns fresh installs too")
 	}
 }
 

@@ -62,12 +62,35 @@ func (s *PostgresStore) SetPlatformRepoIDIfEmpty(ctx context.Context, repoID int
 	if forgeID == "" {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.repos
 		SET platform_repo_id = $2
 		WHERE repo_id = $1 AND COALESCE(platform_repo_id, '') = ''`,
 		repoID, forgeID)
-	return err
+	if err != nil {
+		return err
+	}
+	// v0.27.116 (Copilot round 10, active): a zero-row update is EITHER
+	// "already set to the same value" (the common case) OR "set to a
+	// DIFFERENT value" — and the second is an identity conflict this
+	// function's own doc comment promised not to paper over, yet nothing
+	// detected it. The shape: a repo deleted upstream and RE-CREATED
+	// under the same URL gets a NEW forge ID; org scans keep linking the
+	// URL-matched row and the two unrelated histories silently merge.
+	// Detection is OBSERVATION-ONLY (the house never-auto-mutate rule) —
+	// the ERROR names the conflict and the remediation surface; the scan
+	// pass itself proceeds unchanged.
+	if tag.RowsAffected() == 0 {
+		var stored string
+		if perr := s.pool.QueryRow(ctx,
+			`SELECT COALESCE(platform_repo_id, '') FROM aveloxis_data.repos WHERE repo_id = $1`,
+			repoID).Scan(&stored); perr == nil && stored != "" && stored != forgeID {
+			s.logger.Error("forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row",
+				"repo_id", repoID, "stored_forge_id", stored, "observed_forge_id", forgeID,
+				"remediation", "inspect the row's data eras; a split needs operator action (reconcile-repos consolidates the INVERSE case only)")
+		}
+	}
+	return nil
 }
 
 // ensureForgeIDIndex builds the partial lookup index serving

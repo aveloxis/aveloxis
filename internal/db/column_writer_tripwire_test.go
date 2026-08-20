@@ -160,14 +160,17 @@ func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {
 			if _, ok := documentedEmpty[key]; ok {
 				continue
 			}
-			// Writer presence: the column name as a whole word inside an
-			// INSERT/UPDATE statement that names THIS table (comment-
-			// stripped). Mentions in code comments, SELECT-only readers,
-			// or other tables' statements do not count.
-			wordRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(col) + `\b`)
+			// Writer presence: the column must appear in a WRITER
+			// POSITION — an INSERT column list or an UPDATE SET
+			// left-hand side — of a statement naming THIS table.
+			// v0.27.116 (round-10 suppressed finding, real): the
+			// earlier check matched the name ANYWHERE in the SQL
+			// literal, so a column read only in a WHERE predicate or
+			// RETURNING clause of a write statement passed as
+			// "written".
 			found := false
 			for _, block := range writeBlocks[tbl] {
-				if wordRe.MatchString(block) {
+				if sqlStatementWritesColumn(block, tbl, col) {
 					found = true
 					break
 				}
@@ -197,6 +200,58 @@ func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {
 		}
 		if !strings.Contains(string(schema), parts[1]) {
 			t.Errorf("documentedEmpty entry %q names a column absent from schema.sql — stale allowlist row", key)
+		}
+	}
+}
+
+// sqlStatementWritesColumn reports whether a comment-stripped SQL
+// literal that names the audited table writes the given column — i.e.
+// the column appears in a WRITER POSITION:
+//   - an INSERT INTO aveloxis_data.<tbl> (...) column list, or
+//   - an UPDATE SET assignment's LEFT-hand side (`SET col =` or
+//     `, col =` — including ON CONFLICT ... DO UPDATE SET).
+//
+// Appearances in WHERE predicates, RETURNING clauses, RHS expressions
+// (COALESCE(col, ...), subqueries), or qualified references (v.col,
+// c.col) deliberately do NOT count. Column lists never contain
+// parentheses, so the [^)]* capture is safe; SQL WHERE clauses join
+// with AND (never commas), so the `, col =` LHS shape cannot
+// false-match a predicate.
+func sqlStatementWritesColumn(block, tbl, col string) bool {
+	insertListRe := regexp.MustCompile(`(?is)INSERT\s+INTO\s+aveloxis_data\.` + regexp.QuoteMeta(tbl) + `\s*\(([^)]*)\)`)
+	wordRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(col) + `\b`)
+	for _, m := range insertListRe.FindAllStringSubmatch(block, -1) {
+		if wordRe.MatchString(m[1]) {
+			return true
+		}
+	}
+	setLHSRe := regexp.MustCompile(`(?is)(?:\bSET\s+|,\s*)` + regexp.QuoteMeta(col) + `\s*=`)
+	return setLHSRe.MatchString(block)
+}
+
+// TestSQLStatementWritesColumnFixtures — the negative fixtures the
+// round-10 suppressed finding asked for: predicate-only and
+// RETURNING-only appearances must NOT count as writers.
+func TestSQLStatementWritesColumnFixtures(t *testing.T) {
+	cases := []struct {
+		name  string
+		block string
+		tbl   string
+		col   string
+		want  bool
+	}{
+		{"set-lhs", `UPDATE aveloxis_data.repos SET repo_name = $1 WHERE repo_id = $2`, "repos", "repo_name", true},
+		{"where-only", `UPDATE aveloxis_data.repos SET repo_name = $1 WHERE whitespace_head_hash = ''`, "repos", "whitespace_head_hash", false},
+		{"insert-list", `INSERT INTO aveloxis_data.repos (repo_git, repo_name) VALUES ($1, $2) RETURNING repo_id`, "repos", "repo_git", true},
+		{"returning-only", `INSERT INTO aveloxis_data.repos (repo_git) VALUES ($1) RETURNING repo_id`, "repos", "repo_id", false},
+		{"conflict-set", `INSERT INTO aveloxis_data.repos (repo_git) VALUES ($1) ON CONFLICT (repo_git) DO UPDATE SET repo_name = EXCLUDED.repo_name`, "repos", "repo_name", true},
+		{"rhs-only", `UPDATE aveloxis_data.repos SET repo_name = COALESCE(NULLIF(repo_git, ''), repo_name)`, "repos", "repo_git", false},
+		{"multi-assign", `UPDATE aveloxis_data.repos SET repo_name = $1, repo_owner = $2 WHERE repo_id = $3`, "repos", "repo_owner", true},
+		{"qualified-predicate", `UPDATE aveloxis_data.commits c SET cmt_added = v.added FROM (SELECT 1) v WHERE c.cmt_filename = v.filename`, "commits", "cmt_filename", false},
+	}
+	for _, c := range cases {
+		if got := sqlStatementWritesColumn(c.block, c.tbl, c.col); got != c.want {
+			t.Errorf("%s: sqlStatementWritesColumn(%q) = %v, want %v", c.name, c.col, got, c.want)
 		}
 	}
 }

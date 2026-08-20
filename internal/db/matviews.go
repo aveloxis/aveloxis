@@ -16,6 +16,13 @@ import (
 //go:embed matviews.sql
 var matviewsSQL string
 
+// viewsSQL holds the base-table plain views executed on EVERY migrate
+// (v0.27.115 drift-audit finding 1 — see views.sql's header for why
+// matviews.sql is structurally unreachable on populated fleets).
+//
+//go:embed views.sql
+var viewsSQL string
+
 // CreateMaterializedViews creates or replaces all materialized views.
 // Safe to run repeatedly (uses DROP IF EXISTS + CREATE).
 func CreateMaterializedViews(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {

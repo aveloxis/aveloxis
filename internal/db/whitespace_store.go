@@ -35,11 +35,20 @@ const whitespaceUpdateChunk = 5000
 // commits rows, joined on the exact (repo_id, cmt_commit_hash,
 // cmt_filename) key the facade stored (idx_commits_repo_hash_file).
 // Rows whose values already match are untouched (IS DISTINCT guard) so
-// steady-state incremental walks and re-runs are near-free. Rows the
-// numstat pass never stored (shouldn't happen — same git ordering)
-// simply don't match; nothing is inserted here.
-func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID int64, stats []CommitWhitespaceStat) (int64, error) {
-	var total int64
+// steady-state incremental walks and re-runs are near-free.
+//
+// Returns (updated, matched): matched counts the stats whose
+// (hash, filename) key exists as a stored row REGARDLESS of whether the
+// values changed (v0.27.116, Copilot round 10 active finding). Rows the
+// numstat pass never stored — historical per-row write failures the
+// pre-v0.27.107 facade swallowed while last_collected still advanced —
+// are invisible to the UPDATE, and the walker must NOT stamp the
+// incremental marker over them (the marker-over-missing-rows class,
+// third path): a later facade cycle re-inserts the rows, but the
+// incremental walk would never revisit their whitespace. The caller
+// compares matched against its emitted-stat total and refuses the
+// stamp on shortfall.
+func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID int64, stats []CommitWhitespaceStat) (updated, matched int64, err error) {
 	for start := 0; start < len(stats); start += whitespaceUpdateChunk {
 		end := min(start+whitespaceUpdateChunk, len(stats))
 		chunk := stats[start:end]
@@ -55,8 +64,8 @@ func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID 
 			removed[i] = int32(c.Removed)
 			ws[i] = int32(c.Whitespace)
 		}
-		err := s.withRetry(ctx, func(ctx context.Context) error {
-			tag, err := s.pool.Exec(ctx, `
+		cerr := s.withRetry(ctx, func(ctx context.Context) error {
+			tag, uerr := s.pool.Exec(ctx, `
 				UPDATE aveloxis_data.commits c
 				SET cmt_added = v.added,
 				    cmt_removed = v.removed,
@@ -75,16 +84,38 @@ func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID 
 				    OR c.cmt_removed IS DISTINCT FROM v.removed
 				    OR c.cmt_whitespace IS DISTINCT FROM v.ws)`,
 				repoID, hashes, files, added, removed, ws)
-			if err == nil {
-				total += tag.RowsAffected()
+			if uerr == nil {
+				updated += tag.RowsAffected()
 			}
-			return err
+			return uerr
 		})
-		if err != nil {
-			return total, fmt.Errorf("whitespace batch update (chunk at %d): %w", start, err)
+		if cerr != nil {
+			return updated, matched, fmt.Errorf("whitespace batch update (chunk at %d): %w", start, cerr)
+		}
+		// Existence probe, independent of the IS DISTINCT guard — one
+		// indexed join per chunk via idx_commits_repo_hash_file, so a
+		// re-run whose values all already match still reports full
+		// coverage.
+		cerr = s.withRetry(ctx, func(ctx context.Context) error {
+			var n int64
+			perr := s.pool.QueryRow(ctx, `
+				SELECT COUNT(*)
+				FROM (SELECT unnest($2::text[]) AS hash, unnest($3::text[]) AS filename) v
+				JOIN aveloxis_data.commits c
+				  ON c.repo_id = $1
+				 AND c.cmt_commit_hash = v.hash
+				 AND c.cmt_filename = v.filename`,
+				repoID, hashes, files).Scan(&n)
+			if perr == nil {
+				matched += n
+			}
+			return perr
+		})
+		if cerr != nil {
+			return updated, matched, fmt.Errorf("whitespace match probe (chunk at %d): %w", start, cerr)
 		}
 	}
-	return total, nil
+	return updated, matched, nil
 }
 
 // GetWhitespaceHead reads the repo's whitespace walk marker — the

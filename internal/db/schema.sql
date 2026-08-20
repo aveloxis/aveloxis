@@ -162,18 +162,13 @@ CREATE INDEX IF NOT EXISTS idx_repos_added_at
 -- past this hash, and `aveloxis rewalk-whitespace` is the bulk bootstrap.
 ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS whitespace_head_hash TEXT DEFAULT '';
 
--- v0.27.102: forge-numeric-ID lookup (rename/transfer dedup). The
--- forge's numeric repository ID is the only identity that survives
--- renames and transfers; FindRepoByPlatformRepoID probes this at add
--- time so an org scan re-discovering a renamed repo heals the existing
--- row instead of minting a duplicate. Partial on non-empty values —
--- the column backfills gradually via Phase 0, and empty rows must
--- never be probe targets. NON-unique on purpose: pre-fix rename-dup
--- residue may briefly carry the same forge ID on two rows until
--- reconcile-repos consolidates them.
-CREATE INDEX IF NOT EXISTS idx_repos_platform_repo_id
-    ON aveloxis_data.repos (platform_id, platform_repo_id)
-    WHERE platform_repo_id <> '';
+-- v0.27.102/v0.27.116: the forge-numeric-ID lookup index
+-- (idx_repos_platform_repo_id) is MIGRATION-ONLY — built by
+-- ensureForgeIDIndex via CONCURRENTLY for fresh installs AND upgrades.
+-- Deliberately NOT declared here (the v0.27.98 rule): a plain
+-- declaration executes in the base schema DDL BEFORE the CONCURRENTLY
+-- helper, so a live fleet's introducing upgrade would block-build it
+-- and the helper would no-op.
 
 -- ============================================================
 -- Repo groups list serve (mailing lists)
@@ -442,57 +437,6 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_login_history (
     UNIQUE (cntrb_id, platform_id, login)
 );
 
--- ============================================================
--- Contributors old (legacy backup)
--- ============================================================
-CREATE TABLE IF NOT EXISTS aveloxis_data.contributors_old (
-    cntrb_id       UUID PRIMARY KEY,
-    cntrb_login    TEXT DEFAULT '',
-    cntrb_email    TEXT DEFAULT '',
-    cntrb_full_name TEXT DEFAULT '',
-    cntrb_company  TEXT DEFAULT '',
-    cntrb_created_at TIMESTAMPTZ,
-    cntrb_type     TEXT DEFAULT '',
-    cntrb_fake     SMALLINT DEFAULT 0,
-    cntrb_deleted  SMALLINT DEFAULT 0,
-    cntrb_long     NUMERIC(11,8),
-    cntrb_lat      NUMERIC(10,8),
-    cntrb_country_code CHAR(3),
-    cntrb_state    TEXT DEFAULT '',
-    cntrb_city     TEXT DEFAULT '',
-    cntrb_location TEXT DEFAULT '',
-    cntrb_canonical TEXT DEFAULT '',
-    cntrb_last_used TIMESTAMPTZ,
-    gh_user_id     BIGINT,
-    gh_login       TEXT DEFAULT '',
-    gh_url         TEXT DEFAULT '',
-    gh_html_url    TEXT DEFAULT '',
-    gh_node_id     TEXT DEFAULT '',
-    gh_avatar_url  TEXT DEFAULT '',
-    gh_gravatar_id TEXT DEFAULT '',
-    gh_followers_url TEXT DEFAULT '',
-    gh_following_url TEXT DEFAULT '',
-    gh_gists_url   TEXT DEFAULT '',
-    gh_starred_url TEXT DEFAULT '',
-    gh_subscriptions_url TEXT DEFAULT '',
-    gh_organizations_url TEXT DEFAULT '',
-    gh_repos_url   TEXT DEFAULT '',
-    gh_events_url  TEXT DEFAULT '',
-    gh_received_events_url TEXT DEFAULT '',
-    gh_type        TEXT DEFAULT '',
-    gh_site_admin  TEXT DEFAULT '',
-    gh_state       TEXT DEFAULT '',
-    gl_web_url     TEXT DEFAULT '',
-    gl_avatar_url  TEXT DEFAULT '',
-    gl_state       TEXT DEFAULT '',
-    gl_username    TEXT DEFAULT '',
-    gl_full_name   TEXT DEFAULT '',
-    gl_id          BIGINT,
-    tool_source    TEXT DEFAULT 'aveloxis',
-    tool_version   TEXT DEFAULT '',
-    data_source    TEXT DEFAULT '',
-    data_collection_date TIMESTAMPTZ DEFAULT NOW()
-);
 
 -- ============================================================
 -- Contributor aliases
@@ -1913,6 +1857,17 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor (
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor_history (
     LIKE aveloxis_data.repo_labor INCLUDING ALL
 );
+-- v0.27.115 (drift audit, finding 3): the ONE deliberate index on the
+-- history table — dedup-repos' hygiene delete probes it by repo_id
+-- (188 measured scans on production). Declared under the exact
+-- auto-generated name a LIKE-INCLUDING-ALL copy produced on fleets
+-- whose v0.27.7 migration ran after repo_labor had its indexes, so
+-- fresh installs and existing fleets converge without a rebuild. The
+-- parent's composite (repo_id, rl_analysis_date DESC) copy is
+-- deliberately NOT declared — 0 scans ever, 1.2 GB of pure rotation
+-- write amplification; the migration drops it and the name is banned.
+CREATE INDEX IF NOT EXISTS repo_labor_history_repo_id_idx
+    ON aveloxis_data.repo_labor_history (repo_id);
 
 -- ============================================================
 -- Repo meta (key-value metadata)

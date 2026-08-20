@@ -71,6 +71,13 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 		return result, fmt.Errorf("git log: %w", err)
 	}
 
+	// v0.27.105: whitespace measurement (Augur parity — see
+	// whitespace.go). Incremental past the stamped marker; full history
+	// when unmarked. Warn-don't-fail: whitespace is a refinement of the
+	// counts the numstat pass already stored, never a reason to fail
+	// the facade phase.
+	f.runWhitespacePhase(ctx, repoID, clonePath)
+
 	// dm_repo_* aggregates are NOT refreshed here. Running them per repo on
 	// every collection duplicated work and dominated facade runtime on large
 	// fleets. The scheduler runs RefreshAllRepoAggregates in bulk on the

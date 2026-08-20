@@ -1079,6 +1079,27 @@ func (s *PostgresStore) UpsertPRMeta(ctx context.Context, meta *model.PullReques
 	return id, err
 }
 
+// SetPRMetaLinks stamps pull_requests.meta_head_id/meta_base_id from the
+// upserted meta rows' PKs (v0.27.104 — processStagedPR held both ids
+// since inception and discarded them; the columns were 100% dark).
+// Zero-valued ids leave the column untouched; a real id may replace a
+// stale one (meta row recreated under a new PK). The IS DISTINCT FROM
+// guard makes steady-state re-collection a no-op read: UpsertPRMeta's
+// ON CONFLICT RETURNING yields the same PK every cycle.
+func (s *PostgresStore) SetPRMetaLinks(ctx context.Context, prID, headMetaID, baseMetaID int64) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE aveloxis_data.pull_requests
+			SET meta_head_id = COALESCE(NULLIF($2::bigint, 0), meta_head_id),
+			    meta_base_id = COALESCE(NULLIF($3::bigint, 0), meta_base_id)
+			WHERE pull_request_id = $1
+			  AND (meta_head_id IS DISTINCT FROM COALESCE(NULLIF($2::bigint, 0), meta_head_id)
+			    OR meta_base_id IS DISTINCT FROM COALESCE(NULLIF($3::bigint, 0), meta_base_id))`,
+			prID, headMetaID, baseMetaID)
+		return err
+	})
+}
+
 // UpsertPRRepo inserts or updates a pull_request_repo row, storing fork/upstream
 // repo details for a PR's head or base branch. Links to pull_request_meta via
 // pr_repo_meta_id. The same PR may have both a head repo (fork) and base repo

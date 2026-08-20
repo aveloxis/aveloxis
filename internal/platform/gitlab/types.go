@@ -148,6 +148,8 @@ type glProject struct {
 	ForksCount           int       `json:"forks_count"`
 	OpenIssuesCount      int       `json:"open_issues_count"`
 	LastActivityAt       time.Time `json:"last_activity_at"`
+	CreatedAt            time.Time `json:"created_at"` // v0.27.104 — repos.created_at
+	Topics               []string  `json:"topics"`     // v0.27.104 — repo_info.keywords
 	Archived             bool      `json:"archived"`
 	Visibility           string    `json:"visibility"`
 	IssuesEnabled        bool      `json:"issues_enabled"`

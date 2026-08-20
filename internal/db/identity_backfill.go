@@ -169,6 +169,96 @@ func (s *PostgresStore) BackfillPRMetaOwners(ctx context.Context, batchSize int,
 	return total, nil
 }
 
+// BackfillPRRepoOwners fills pull_request_repo.pr_cntrb_id — the fork/
+// upstream repo OWNER identity, 0 of 41.2M rows populated when the
+// 2026-08-19 fill audit ran (the owner object was decoded on both rails
+// and dropped before storage; v0.27.104's OwnerRef mappers fix the
+// forward path). Two passes per keyset window over pr_repo_id:
+//
+//  1. The cheap PK-join: the paired pull_request_meta row's cntrb_id
+//     (v0.26.5 filled those FROM this table's owner segment, and
+//     forward-collected meta carries deterministic platform-ID
+//     resolutions).
+//  2. The login-expression sweep for rows the pair couldn't cover:
+//     case-insensitive owner-segment match against contributors
+//     (gh_login with cntrb_login fallback, soft-deleted merge losers
+//     excluded — the exact BackfillPRMetaOwners shape).
+//
+// Rows whose owner never appears in contributors (deleted forks) stay
+// NULL — no fabricated data.
+func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int, limit int64, dryRun bool) (int64, error) {
+	if batchSize <= 0 {
+		batchSize = 100000
+	}
+	const pairSQL = `
+		UPDATE aveloxis_data.pull_request_repo pr
+		SET pr_cntrb_id = m.cntrb_id
+		FROM aveloxis_data.pull_request_meta m
+		WHERE m.pr_meta_id = pr.pr_repo_meta_id
+		  AND m.head_or_base = pr.pr_repo_head_or_base
+		  AND m.cntrb_id IS NOT NULL
+		  AND pr.pr_cntrb_id IS NULL
+		  AND pr.pr_repo_id > $1 AND pr.pr_repo_id <= $2`
+	const candidates = `
+		SELECT DISTINCT ON (pr.pr_repo_id) pr.pr_repo_id, c.cntrb_id
+		FROM aveloxis_data.pull_request_repo pr
+		JOIN aveloxis_data.contributors c
+		  ON LOWER(COALESCE(NULLIF(c.gh_login, ''), c.cntrb_login)) =
+		     LOWER(split_part(pr.pr_repo_full_name, '/', 1))
+		WHERE pr.pr_cntrb_id IS NULL
+		  AND split_part(COALESCE(pr.pr_repo_full_name, ''), '/', 1) <> ''
+		  AND COALESCE(c.cntrb_deleted, 0) = 0%s`
+	if dryRun {
+		q := `SELECT COUNT(DISTINCT pr.pr_repo_id)` + strings.TrimPrefix(
+			fmt.Sprintf(candidates, ""), `
+		SELECT DISTINCT ON (pr.pr_repo_id) pr.pr_repo_id, c.cntrb_id`)
+		var n int64
+		if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
+			return 0, fmt.Errorf("dry-run count pull_request_repo: %w", err)
+		}
+		s.logger.Info("backfill-identities dry-run", "table", "pull_request_repo", "derivable", n)
+		return n, nil
+	}
+	var maxID int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(pr_repo_id), 0) FROM aveloxis_data.pull_request_repo`).Scan(&maxID); err != nil {
+		return 0, fmt.Errorf("max pr_repo_id: %w", err)
+	}
+	var total int64
+	window := int64(batchSize)
+	for lo := int64(0); lo < maxID; lo += window {
+		// Pass 1: the paired-meta PK join (far cheaper than the login
+		// expression; covers everything v0.26.5 + forward collection
+		// already resolved on the meta side).
+		pairTag, err := s.pool.Exec(ctx, pairSQL, lo, lo+window)
+		if err != nil {
+			return total, fmt.Errorf("backfill pull_request_repo (meta pair) window %d: %w", lo, err)
+		}
+		total += pairTag.RowsAffected()
+
+		// Pass 2: the login-expression sweep for the remainder.
+		cand := fmt.Sprintf(candidates, " AND pr.pr_repo_id > $1 AND pr.pr_repo_id <= $2")
+		tag, err := s.pool.Exec(ctx, `
+			WITH cand AS (`+cand+`)
+			UPDATE aveloxis_data.pull_request_repo pr
+			SET pr_cntrb_id = cand.cntrb_id
+			FROM cand WHERE pr.pr_repo_id = cand.pr_repo_id`, lo, lo+window)
+		if err != nil {
+			return total, fmt.Errorf("backfill pull_request_repo (owner login) window %d: %w", lo, err)
+		}
+		n := pairTag.RowsAffected() + tag.RowsAffected()
+		total += tag.RowsAffected()
+		if n > 0 {
+			s.logger.Info("backfill-identities progress",
+				"table", "pull_request_repo", "updated", total, "window_hi", lo+window, "max_id", maxID)
+		}
+		if limit > 0 && total >= limit {
+			break
+		}
+	}
+	return total, nil
+}
+
 // closedByCandidates is the shared derivation: the LATEST 'closed'
 // event's actor per issue. Used by both the fleet backfill and the
 // per-repo forward derivation so the two can never disagree.

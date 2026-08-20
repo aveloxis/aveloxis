@@ -72,6 +72,11 @@ func backfillIdentitiesCmd(cfgPath *string) *cobra.Command {
 					return fmt.Errorf("phase 1 (pr_meta owners): %w", err)
 				}
 				fmt.Printf("phase 1 pr_meta owners: %d rows %s\n", m, verb(dryRun))
+				pr, err := store.BackfillPRRepoOwners(ctx, batchSize, limit, dryRun)
+				if err != nil {
+					return fmt.Errorf("phase 1 (pr_repo owners): %w", err)
+				}
+				fmt.Printf("phase 1 pr_repo owners: %d rows %s\n", pr, verb(dryRun))
 			}
 			if runAll || phase == "2" {
 				n, err := store.BackfillClosedByFromEvents(ctx, batchSize, limit, dryRun)

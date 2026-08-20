@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // UpdateRepoMetadata writes description + primary_language + languages
@@ -40,7 +41,12 @@ import (
 // never changes for a given repo, and a transport that didn't provide
 // it must never clear a captured value. This is the fleet backfill —
 // every repo's next Phase 0 cycle fills its platform_repo_id.
-func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool, forkedFrom, platformRepoID string) error {
+//
+// v0.27.104 adds createdAt (FILL-EMPTY-ONLY — a repository's creation
+// date is an immutable fact; repos.created_at was 0% populated) and
+// updatedAt (prefer-new, nil-safe — the forge's last-updated timestamp,
+// also 0% populated). Zero time.Time values are nil-safe no-ops.
+func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool, forkedFrom, platformRepoID string, createdAt, updatedAt time.Time) error {
 	langJSON := []byte("{}")
 	if len(languages) > 0 {
 		b, err := json.Marshal(languages)
@@ -71,9 +77,14 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			    -- v0.27.102: forge numeric ID backfill (prefer-nonempty —
 			    -- the ID never changes; absence must never clear it).
 			    platform_repo_id = COALESCE(NULLIF($7, ''), repos.platform_repo_id),
+			    -- v0.27.104: creation date is immutable — fill-empty-only;
+			    -- updated_at refreshes from the forge (nil-safe).
+			    created_at = COALESCE(repos.created_at, $8),
+			    updated_at = COALESCE($9, repos.updated_at),
 			    data_collection_date = NOW()
 			WHERE repo_id = $1`,
-			repoID, description, primaryLanguage, langJSON, archived, forkedFrom, platformRepoID)
+			repoID, description, primaryLanguage, langJSON, archived, forkedFrom, platformRepoID,
+			NullTime(createdAt), NullTime(updatedAt))
 		return err
 	})
 }

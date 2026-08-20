@@ -156,6 +156,12 @@ ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_repos_added_at
     ON aveloxis_data.repos (added_at DESC);
 
+-- v0.27.105: whitespace-walk marker — the default-branch head at the
+-- last completed whitespace walk (see internal/collector/whitespace.go).
+-- '' / NULL = never walked; the facade's per-cycle phase is incremental
+-- past this hash, and `aveloxis rewalk-whitespace` is the bulk bootstrap.
+ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS whitespace_head_hash TEXT DEFAULT '';
+
 -- v0.27.102: forge-numeric-ID lookup (rename/transfer dedup). The
 -- forge's numeric repository ID is the only identity that survives
 -- renames and transfers; FindRepoByPlatformRepoID probes this at add

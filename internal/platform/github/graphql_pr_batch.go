@@ -381,7 +381,7 @@ const prNodeFragment = `
       mergeCommit { oid }
       author {
         __typename login
-        ... on User { databaseId avatarUrl url name email }
+        ... on User { id databaseId avatarUrl url name email }
         ... on Bot { databaseId avatarUrl url }
         ... on Organization { databaseId avatarUrl url name }
       }
@@ -397,7 +397,7 @@ const prNodeFragment = `
         nodes {
           requestedReviewer {
             __typename
-            ... on User { databaseId login avatarUrl url name email }
+            ... on User { id databaseId login avatarUrl url name email }
           }
         }
         pageInfo { hasNextPage endCursor }
@@ -405,7 +405,7 @@ const prNodeFragment = `
       reviews(first: 50) {
         nodes {
           databaseId id state body submittedAt authorAssociation url
-          author { __typename login ... on User { databaseId avatarUrl url } }
+          author { __typename login ... on User { id databaseId avatarUrl url } }
           commit { oid }
         }
         pageInfo { hasNextPage endCursor }
@@ -413,7 +413,7 @@ const prNodeFragment = `
       comments(first: 50) {
         nodes {
           databaseId id body createdAt updatedAt url authorAssociation
-          author { __typename login ... on User { databaseId avatarUrl url name email } }
+          author { __typename login ... on User { id databaseId avatarUrl url name email } }
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -445,11 +445,11 @@ const prNodeFragment = `
       baseRefOid
       headRepository {
         databaseId id nameWithOwner name isPrivate
-        owner { __typename login ... on User { databaseId } ... on Organization { databaseId } }
+        owner { __typename login ... on User { id databaseId } ... on Organization { databaseId } }
       }
       baseRepository {
         databaseId id nameWithOwner name isPrivate
-        owner { __typename login ... on User { databaseId } ... on Organization { databaseId } }
+        owner { __typename login ... on User { id databaseId } ... on Organization { databaseId } }
       }
 `
 
@@ -883,7 +883,12 @@ func userRefFromGraphQL(u *prBatchUser) model.UserRef {
 		Email:      u.Email,
 		AvatarURL:  u.AvatarURL,
 		URL:        u.URL,
-		Type:       t,
+		// v0.27.103: u.ID was decoded since v0.18.1 and dropped here,
+		// leaving contributor_identities.node_id dark on the whole
+		// GraphQL rail (26% fill = REST-era rows only). REST's
+		// ghUserToRef always mapped it.
+		NodeID: u.ID,
+		Type:   t,
 	}
 }
 
@@ -918,6 +923,19 @@ func repoFromGraphQL(r *prBatchRepo, headOrBase string, origin model.DataOrigin)
 		RepoFullName: r.NameWithOwner,
 		Private:      r.IsPrivate,
 		Origin:       origin,
+	}
+	// v0.27.104: the query has selected owner{login databaseId __typename}
+	// since v0.18.1 — mapping it enables pr_cntrb_id resolution.
+	if r.Owner != nil {
+		ownerType := r.Owner.Typename
+		if ownerType == "" {
+			ownerType = "User"
+		}
+		out.OwnerRef = model.UserRef{
+			PlatformID: r.Owner.DatabaseID,
+			Login:      r.Owner.Login,
+			Type:       ownerType,
+		}
 	}
 	return out
 }
@@ -1089,7 +1107,7 @@ func (c *Client) paginatePRReviews(ctx context.Context, owner, repo string, numb
       reviews(first: 100, after: $after) {
         nodes {
           databaseId id state body submittedAt authorAssociation url
-          author { __typename login ... on User { databaseId avatarUrl url } }
+          author { __typename login ... on User { id databaseId avatarUrl url } }
           commit { oid }
         }
         pageInfo { hasNextPage endCursor }
@@ -1225,7 +1243,7 @@ func (c *Client) paginatePRReviewers(ctx context.Context, owner, repo string, nu
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       reviewRequests(first: 100, after: $after) {
-        nodes { requestedReviewer { __typename ... on User { databaseId login avatarUrl url } } }
+        nodes { requestedReviewer { __typename ... on User { id databaseId login avatarUrl url } } }
         pageInfo { hasNextPage endCursor }
       }
     }
@@ -1272,7 +1290,7 @@ func (c *Client) paginatePRComments(ctx context.Context, owner, repo string, num
       comments(first: 100, after: $after) {
         nodes {
           databaseId id body createdAt updatedAt url authorAssociation
-          author { __typename login ... on User { databaseId avatarUrl url name email } }
+          author { __typename login ... on User { id databaseId avatarUrl url name email } }
         }
         pageInfo { hasNextPage endCursor }
       }

@@ -1184,6 +1184,29 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// Phase 0 backfills the fleet's platform_repo_id values.
 	ensureForgeIDIndex(ctx, pg, logger, errs)
 
+	// v0.27.103 backfill releases.data_source: GitHub's ListReleases never
+	// set Origin, so data_source was empty on every GitHub release row
+	// (1,051,111 of 1,051,111 on production — 2026-08-19 fill audit).
+	// Value derived from the owning repo's platform. Self-disabling via
+	// the empty-data_source predicate; ~1M rows = one pass, no windows.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.103 backfill releases.data_source from repo platform", `
+		UPDATE aveloxis_data.releases rel
+		SET data_source = CASE r.platform_id
+			WHEN 2 THEN 'GitLab API'
+			ELSE 'GitHub API'
+		END
+		FROM aveloxis_data.repos r
+		WHERE r.repo_id = rel.repo_id
+		  AND COALESCE(rel.data_source, '') = ''`)
+
+	// v0.27.104: backfill pull_requests.meta_head_id/meta_base_id from
+	// pull_request_meta (100% derivable locally — see pr_meta_links.go).
+	ensurePRMetaLinks(ctx, pg, logger, errs)
+
+	// v0.27.105: whitespace-walk marker (fill-audit Workstream C).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "whitespace_head_hash", "TEXT DEFAULT ''")
+
 	// v0.22.7: apply ON UPDATE CASCADE ON DELETE RESTRICT
 	// DEFERRABLE INITIALLY DEFERRED to the same 50 FKs. RESTRICT
 	// prevents orphaned-child rows by blocking parent DELETEs;

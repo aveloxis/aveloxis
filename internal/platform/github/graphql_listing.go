@@ -92,7 +92,7 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
           totalCount
           nodes {
             databaseId id body createdAt updatedAt url authorAssociation
-            author { __typename login ... on User { databaseId avatarUrl url name email } }
+            author { __typename login ... on User { id databaseId avatarUrl url name email } }
           }
           pageInfo { hasNextPage endCursor }
         }
@@ -106,7 +106,7 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
         }
         author {
           __typename login
-          ... on User { databaseId avatarUrl url name email }
+          ... on User { id databaseId avatarUrl url name email }
           ... on Bot { databaseId avatarUrl url }
         }
       }
@@ -386,7 +386,7 @@ func (c *Client) paginateIssueComments(ctx context.Context, owner, repo string, 
       comments(first: 100, after: $after) {
         nodes {
           databaseId id body createdAt updatedAt url authorAssociation
-          author { __typename login ... on User { databaseId avatarUrl url name email } }
+          author { __typename login ... on User { id databaseId avatarUrl url name email } }
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -461,7 +461,7 @@ func (c *Client) listPullRequestsGraphQL(ctx context.Context, owner, repo string
         mergeCommit { oid }
         author {
           __typename login
-          ... on User { databaseId avatarUrl url name email }
+          ... on User { id databaseId avatarUrl url name email }
           ... on Bot { databaseId avatarUrl url }
         }
       }

@@ -91,7 +91,12 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 					ON CONFLICT (platform_id, platform_user_id) DO UPDATE SET
 						login = EXCLUDED.login,
 						name = EXCLUDED.name,
-						email = COALESCE(NULLIF(EXCLUDED.email,''), contributor_identities.email)`,
+						email = COALESCE(NULLIF(EXCLUDED.email,''), contributor_identities.email),
+						-- v0.27.103: pre-fix GraphQL-rail rows carry empty
+						-- node_id/user_type; refresh prefer-nonempty so they
+						-- heal on re-observation (empty never clobbers).
+						node_id = COALESCE(NULLIF(EXCLUDED.node_id, ''), contributor_identities.node_id),
+						user_type = COALESCE(NULLIF(EXCLUDED.user_type, ''), contributor_identities.user_type)`,
 					existingID, platformID, userID, login, name, email,
 					avatarURL, profileURL, nodeID, userType)
 			}
@@ -196,7 +201,10 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 				name = EXCLUDED.name,
 				email = COALESCE(NULLIF(EXCLUDED.email,''), contributor_identities.email),
 				avatar_url = EXCLUDED.avatar_url,
-				profile_url = EXCLUDED.profile_url`,
+				profile_url = EXCLUDED.profile_url,
+				-- v0.27.103: heal empty node_id/user_type on re-observation.
+				node_id = COALESCE(NULLIF(EXCLUDED.node_id, ''), contributor_identities.node_id),
+				user_type = COALESCE(NULLIF(EXCLUDED.user_type, ''), contributor_identities.user_type)`,
 			cntrbID, platformID, userID, login, name, email,
 			avatarURL, profileURL, nodeID, userType, false,
 		)

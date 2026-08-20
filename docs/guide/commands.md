@@ -842,6 +842,41 @@ re-run with `--after-repo-id` after an interruption. Repos that 404
 (renamed/deleted/private) are skipped and left to prelim's normal
 rename/dead-repo handling. Does not run migrations (v0.21.5 policy).
 
+## `aveloxis rewalk-whitespace`
+
+One-time full-history whitespace bootstrap (v0.27.105 — the fill-audit
+Workstream C). `commits.cmt_whitespace` was never measured while
+`SUM(cmt_whitespace)` feeds six live aggregate queries; the facade now
+measures it per cycle with Augur-parity semantics (an added blank line
+counts as whitespace, not added; a whitespace-only reformat of a
+>8-character line counts as whitespace instead of an add/remove pair —
+so `cmt_added`/`cmt_removed` on walked rows become the ADJUSTED Augur
+numbers). The per-cycle phase is incremental past a stamped marker
+(`repos.whitespace_head_hash`); this command does the full-history walk
+per repo, reusing the facade's persistent bare clones, and stamps the
+marker so every later cycle stays incremental.
+
+```bash
+aveloxis rewalk-whitespace --limit 5            # canary first
+aveloxis rewalk-whitespace --workers 8          # fleet run
+aveloxis rewalk-whitespace --repo-id 12345      # single repo
+aveloxis rewalk-whitespace --after-repo-id 51234  # keyset skip-ahead
+```
+
+**Runtime expectation** (grounded 2026-08-19): `git log -p` measured
+~209 MB/s single-threaded; the fleet's patch volume estimates at
+~5–10 TB (162.7M commits, ~146B changed lines). At 8 workers expect
+roughly **8–24 hours wall-clock** (outer bound ~2 days if disk-bound);
+the per-repo progress lines and every-50-repos running totals let you
+extrapolate from the first hour. Safe alongside a running serve —
+repos mid-collection are skipped this pass, and overlapping updates
+are same-value idempotent. Resumable by construction: the marker IS
+the resume state, so a re-run skips every already-walked repo. After
+the fleet run, `aveloxis refresh-views` (or the next scheduled
+aggregate rebuild) picks the corrected sums into the `dm_` tables.
+Does not run migrations (v0.21.5 policy) — run `aveloxis migrate`
+first so the marker column exists.
+
 ## `aveloxis data-verify`
 
 The standing data-verification program (v0.27.43): runs the read-only

@@ -412,11 +412,19 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 		Name              string `json:"name"`
 		PathWithNamespace string `json:"path_with_namespace"`
 		Visibility        string `json:"visibility"` // "public", "internal", "private"
+		// v0.27.104: owner is present on user-owned projects (the fork
+		// case — the value here); group-owned projects fall back to a
+		// login-only ref from the namespace path.
+		Owner     *glUser `json:"owner"`
+		Namespace struct {
+			Path string `json:"path"`
+			Kind string `json:"kind"`
+		} `json:"namespace"`
 	}
 	if err := c.http.GetJSON(ctx, path, &proj); err != nil {
 		return nil
 	}
-	return &model.PullRequestRepo{
+	out := &model.PullRequestRepo{
 		HeadOrBase:   headOrBase,
 		SrcRepoID:    proj.ID,
 		RepoName:     proj.Name,
@@ -424,6 +432,17 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 		Private:      proj.Visibility == "private",
 		Origin:       model.DataOrigin{DataSource: "GitLab API"},
 	}
+	switch {
+	case proj.Owner != nil:
+		out.OwnerRef = glUserToRef(*proj.Owner)
+	case proj.Namespace.Path != "":
+		ownerType := "User"
+		if proj.Namespace.Kind == "group" {
+			ownerType = "Organization"
+		}
+		out.OwnerRef = model.UserRef{Login: proj.Namespace.Path, Type: ownerType}
+	}
+	return out
 }
 
 // --- EventCollector ---
@@ -1054,6 +1073,8 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	return &model.RepoInfo{
 		FullName:          raw.PathWithNamespace,
 		PlatformRepoID:    model.ForgeIDString(raw.ID), // v0.27.102 — rename-proof numeric identity
+		CreatedAt:         raw.CreatedAt,               // v0.27.104
+		Keywords:          strings.Join(raw.Topics, ","),
 		LastUpdated:       raw.LastActivityAt,
 		IssuesEnabled:     raw.IssuesEnabled,
 		PRsEnabled:        raw.MergeRequestsEnabled,

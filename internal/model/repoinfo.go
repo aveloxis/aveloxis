@@ -31,6 +31,10 @@ type RepoInfo struct {
 	// via UpdateRepoMetadata; UpsertRepo dedups on it at add time.
 	// Empty when the transport didn't provide it.
 	PlatformRepoID string
+	// CreatedAt is the forge's repository creation timestamp
+	// (v0.27.104 — repos.created_at was 0% populated; Phase 0 writes
+	// it fill-empty-only since a creation date is immutable).
+	CreatedAt      time.Time
 	LastUpdated    time.Time
 	IssuesEnabled  bool
 	PRsEnabled     bool

@@ -257,7 +257,7 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		// slow-changing reference data so they live on repos.
 		// Non-fatal — if the UPDATE fails we log and continue;
 		// the next cycle will retry.
-		if updateErr := sc.store.UpdateRepoMetadata(ctx, repoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived", info.ForkedFrom(), info.PlatformRepoID); updateErr != nil {
+		if updateErr := sc.store.UpdateRepoMetadata(ctx, repoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived", info.ForkedFrom(), info.PlatformRepoID, info.CreatedAt, info.LastUpdated); updateErr != nil {
 			sc.logger.Warn("failed to update repos.repo_description/primary_language/languages",
 				"owner", owner, "repo", repo, "error", updateErr)
 		}
@@ -1426,15 +1426,30 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 			p.logger.Warn("failed to upsert PR meta (base)", "pr_id", prID, "error", metaErr)
 		}
 	}
+	// v0.27.104: persist the meta-row PKs onto the PR row. They were
+	// computed here since inception and discarded — meta_head_id/
+	// meta_base_id were 100% dark (2026-08-19 fill audit). The PR row
+	// is upserted before the meta rows (FK order), so this is a
+	// targeted follow-up UPDATE, warn-don't-fail like the siblings.
+	if headMetaID != 0 || baseMetaID != 0 {
+		if err := p.store.SetPRMetaLinks(ctx, prID, headMetaID, baseMetaID); err != nil {
+			p.logger.Warn("failed to link PR meta ids", "pr_id", prID, "error", err)
+		}
+	}
 	// Insert fork repo details linked to their corresponding meta rows.
+	// v0.27.104: resolve the fork OWNER identity (the v0.26.5
+	// resolveUser contract) — pull_request_repo.pr_cntrb_id was 0 of
+	// 41.2M rows because OwnerRef was dropped at the mappers.
 	if env.RepoHead != nil && headMetaID != 0 {
 		env.RepoHead.MetaID = headMetaID
+		env.RepoHead.ContribID = p.resolveUser(ctx, platID, env.RepoHead.OwnerRef)
 		if err := p.store.UpsertPRRepo(ctx, env.RepoHead); err != nil {
 			p.logger.Warn("failed to upsert PR repo (head)", "pr_id", prID, "error", err)
 		}
 	}
 	if env.RepoBase != nil && baseMetaID != 0 {
 		env.RepoBase.MetaID = baseMetaID
+		env.RepoBase.ContribID = p.resolveUser(ctx, platID, env.RepoBase.OwnerRef)
 		if err := p.store.UpsertPRRepo(ctx, env.RepoBase); err != nil {
 			p.logger.Warn("failed to upsert PR repo (base)", "pr_id", prID, "error", err)
 		}

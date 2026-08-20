@@ -643,6 +643,14 @@ func (s *PostgresStore) ArchiveRepo(ctx context.Context, repoID int64) error {
 // (issue html_urls, PR html_urls, etc.) that contain the old org/repo path.
 // This handles GitHub/GitLab repo renames/transfers where all URLs change.
 func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL, newURL string) error {
+	// v0.27.113 (Copilot round 9): normalize the stored URL exactly like
+	// UpdateRepoURL does — prelim passes the RAW redirect target, so a
+	// redirect to ".../name.git" (or a trailing slash) would otherwise
+	// persist a noncanonical repo_git and undermine the URL-dedup
+	// invariant. extractRepoPath already trims internally, so only the
+	// direct repo_git write was exposed.
+	newURL = strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")
+
 	// Extract the path portions for find-and-replace.
 	// e.g., "https://github.com/old-org/old-repo" -> "old-org/old-repo"
 	oldPath := extractRepoPath(oldURL)

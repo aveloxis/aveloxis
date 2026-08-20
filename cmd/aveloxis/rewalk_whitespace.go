@@ -131,7 +131,19 @@ many-hour job; progress lines include running totals for extrapolation.`,
 						// minutes stale — re-check the claim just before
 						// walking. Skipped repos keep an empty marker; a
 						// rerun picks them up.
-						if collecting, cerr := store.IsRepoCollecting(ctx, t.RepoID); cerr == nil && collecting {
+						collecting, cerr := store.IsRepoCollecting(ctx, t.RepoID)
+						if cerr != nil {
+							// v0.27.113 (Copilot round 9): a lookup ERROR
+							// is not "no" — walking on bad information
+							// wastes a multi-GB walk that then fails on
+							// clone contention or the same DB trouble.
+							// Failed (nonzero exit); empty marker; a
+							// rerun retries.
+							failed.Add(1)
+							logger.Warn("whitespace rewalk claim check failed — skipping repo", "repo_id", t.RepoID, "error", cerr)
+							continue
+						}
+						if collecting {
 							logger.Info("whitespace rewalk deferring repo — mid-collection", "repo_id", t.RepoID)
 							continue
 						}

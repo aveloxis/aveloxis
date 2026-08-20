@@ -344,3 +344,32 @@ func TestWhitespaceMegaLineIsCappedNotAllocated(t *testing.T) {
 		t.Fatalf("mega-line file: got added=%d ws=%d, want 2/0", f.Added, f.Whitespace)
 	}
 }
+
+func TestWhitespaceDuplicateRemovalsConsumeOncePerOccurrence(t *testing.T) {
+	// v0.27.113 (Copilot round 9): wsCheck became an occurrence-count
+	// multiset (map[string]int) for O(1) reformat lookup. This pins the
+	// MULTISET semantics the old list had: two identical removed lines
+	// satisfy exactly two matching additions; a third identical addition
+	// finds the multiset exhausted and counts as Added. A future
+	// "simplification" to a set (map[string]bool) breaks this — the
+	// second addition would stop matching (or over-match), diverging
+	// from Augur's list-consume behavior.
+	stats := collectStats(t, fixtureLog(
+		"\x1effff000000000000000000000000000000000000",
+		"3\t2\ta.txt",
+		"",
+		"diff --git a/a.txt b/a.txt",
+		"--- a/a.txt",
+		"+++ b/a.txt",
+		"@@ -1,2 +1,3 @@",
+		"-  duplicated long content line",
+		"-  duplicated long content line",
+		"+      duplicated long content line",
+		"+      duplicated long content line",
+		"+      duplicated long content line",
+	))
+	f := stats["ffff000000000000000000000000000000000000"]["a.txt"]
+	if f.Added != 1 || f.Removed != 0 || f.Whitespace != 2 {
+		t.Fatalf("duplicate reformat: got added=%d removed=%d ws=%d, want 1/0/2", f.Added, f.Removed, f.Whitespace)
+	}
+}

@@ -111,9 +111,16 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 		fileIdx      = -1
 		curFile      *whitespaceFileStat
 		inHunk       bool
-		wsCheck      []string
 		resetRemoval bool
 	)
+	// wsCheck is an occurrence-count MULTISET of the current removal
+	// run's stripped lines (v0.27.113, Copilot round 9): the original
+	// []string linear scan made a replacement block O(N×M) — a
+	// 500K-line generated-file rewrite cost ~10^11 string comparisons
+	// on one fleet worker. Entries are only ever matched by exact
+	// content equality, so counts are semantically identical to the
+	// list (consuming "any one" occurrence ≡ consuming "the first").
+	wsCheck := make(map[string]int)
 
 	flushFile := func() {
 		if cur != nil && curFile != nil {
@@ -121,7 +128,7 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 		}
 		curFile = nil
 		inHunk = false
-		wsCheck = wsCheck[:0]
+		clear(wsCheck)
 		resetRemoval = true
 	}
 	flushCommit := func() error {
@@ -189,19 +196,11 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 			case content == "":
 				curFile.Whitespace++
 			default:
-				matched := false
-				if len(content) > 8 {
-					for i, chk := range wsCheck {
-						if chk == content {
-							curFile.Removed--
-							curFile.Whitespace++
-							wsCheck = append(wsCheck[:i], wsCheck[i+1:]...)
-							matched = true
-							break
-						}
-					}
-				}
-				if !matched {
+				if len(content) > 8 && wsCheck[content] > 0 {
+					curFile.Removed--
+					curFile.Whitespace++
+					wsCheck[content]--
+				} else {
 					curFile.Added++
 				}
 			}
@@ -210,10 +209,10 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 		case strings.HasPrefix(line, "-"):
 			curFile.Removed++
 			if resetRemoval {
-				wsCheck = wsCheck[:0]
+				clear(wsCheck)
 				resetRemoval = false
 			}
-			wsCheck = append(wsCheck, strings.TrimSpace(line[1:]))
+			wsCheck[strings.TrimSpace(line[1:])]++
 
 			// DELIBERATE Augur-parity quirk (PR #184 review finding 2,
 			// declined): wsCheck is NOT cleared on context lines or

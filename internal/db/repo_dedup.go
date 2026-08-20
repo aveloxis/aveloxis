@@ -166,7 +166,16 @@ func DedupCaseVariantReposBatch(ctx context.Context, store *PostgresStore, batch
 			skippedCollecting++
 			continue
 		}
-		if perr := dedupOnePair(ctx, store, pair); perr != nil {
+		// v0.27.114: bounded 40P01 retry per pair — a pair transaction
+		// picked as the deadlock victim (concurrent collection writes,
+		// or migration DDL beside a live serve) rolls back cleanly, and
+		// "re-run" is already the documented recovery, so retry inline
+		// instead of failing the whole command run. Non-deadlock errors
+		// (incl. the errPairCollecting sentinel) pass through untouched.
+		perr := store.withRetry(ctx, func(ctx context.Context) error {
+			return dedupOnePair(ctx, store, pair)
+		})
+		if perr != nil {
 			if errors.Is(perr, errPairCollecting) {
 				skippedCollecting++
 				continue

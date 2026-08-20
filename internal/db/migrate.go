@@ -122,14 +122,19 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	go watchBlockers(ctx, pg, logger, migrateDone)
 	defer close(migrateDone)
 
-	if _, err := pg.pool.Exec(ctx, schemaSQL); err != nil {
-		// The base DDL block is the foundation — if it fails, every
-		// subsequent step is operating against an unknown schema. We
-		// still keep going to surface as many follow-up errors as
-		// possible, but record this one first.
-		logger.Error("schema migration error", "step", "base schema DDL", "error", err)
-		errs = append(errs, fmt.Errorf("base schema DDL: %w", err))
-	}
+	// The base DDL block is the foundation — if it fails, every
+	// subsequent step operates against an unknown schema; we still keep
+	// going to surface as many follow-up errors as possible, and this
+	// one is recorded first. v0.27.114: routed through execMigrationStep
+	// so the base DDL gets the same bounded 40P01 retry every OTHER step
+	// has had since v0.27.18 — the multi-statement Exec's ALTER/CREATE
+	// statements can be picked as the deadlock victim against another
+	// session's ordinary statements (parallel test packages on the
+	// shared scratch DB reproduced it on every combined run; `aveloxis
+	// migrate` beside a live serve is the production shape), and every
+	// schema.sql statement is IF NOT EXISTS-idempotent, so the v0.27.18
+	// retry rationale applies verbatim.
+	execMigrationStep(ctx, pg, logger, &errs, "base schema DDL", schemaSQL)
 
 	// Run data cleanup for any garbage timestamps from prior versions.
 	if err := cleanupBadTimestamps(ctx, pg, logger); err != nil {

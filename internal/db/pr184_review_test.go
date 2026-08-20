@@ -297,3 +297,115 @@ func TestColumnMappingDocMatchesDocumentedEmpty(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 9 (2026-08-20): 0 active + 3 suppressed — all three real (fifth
+// consecutive round the suppressed tier earned its read).
+// ---------------------------------------------------------------------------
+
+// Suppressed #1: the v0.27.111 transactional UpdateRepoURLs wrote the
+// raw newURL — UpdateRepoURL (singular) trims trailing "/" and ".git"
+// first, and prelim passes the raw redirect target, so a redirect to
+// ".../name.git" could persist a noncanonical repo_git and undermine
+// the URL-dedup invariant (uq_repos_repo_git_ci matches on the stored
+// string).
+func TestUpdateRepoURLsNormalizesNewURL(t *testing.T) {
+	src, err := os.ReadFile("postgres.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) UpdateRepoURLs(")
+	if !strings.Contains(body, `strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")`) {
+		t.Error("UpdateRepoURLs must normalize newURL (trim trailing / and .git) before writing repo_git — the singular UpdateRepoURL does, and prelim passes the raw redirect target")
+	}
+}
+
+// Suppressed #2: the reformat lookup was a linear scan of every pending
+// removal per added line — O(N×M) on a replacement block (a 500K-line
+// generated-file rewrite ≈ 10^11 string comparisons stalling a fleet
+// worker). The container must be an occurrence-count multiset
+// (map[string]int) — O(1) lookup/consume with identical semantics,
+// since entries are only ever matched by exact content equality.
+// (The multiset SEMANTICS — duplicates consumed once each — are pinned
+// behaviorally in internal/collector/whitespace_test.go.)
+func TestWhitespaceReformatLookupIsConstantTime(t *testing.T) {
+	src, err := os.ReadFile("../collector/whitespace.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "wsCheck") || !strings.Contains(s, "map[string]int") {
+		t.Error("wsCheck must be a map[string]int occurrence-count multiset")
+	}
+	if strings.Contains(s, "for i, chk := range wsCheck") {
+		t.Error("the linear reformat scan is back — a replacement block is O(N×M) again")
+	}
+}
+
+// Suppressed #3: a status-query ERROR bypassed the pre-walk gate and
+// started the walk anyway — the "a lookup ERROR is not 'no'" class,
+// fixed twice already in this PR (v0.27.111 heal branch, v0.27.112
+// urlTracked probe). Overlap is data-safe by construction, so the cost
+// is a wasted multi-GB walk that then fails on clone contention or the
+// same DB trouble — treat the error as a failed repo (empty marker; a
+// rerun retries; the exit status reflects it).
+func TestRewalkStatusErrorCountsAsFailed(t *testing.T) {
+	cmdSrc, err := os.ReadFile("../../cmd/aveloxis/rewalk_whitespace.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := string(cmdSrc)
+	if strings.Contains(c, "cerr == nil && collecting") {
+		t.Error("the worker loop still proceeds to walk on a status-query error — count it as failed and continue instead")
+	}
+	if !strings.Contains(c, "whitespace rewalk claim check failed") {
+		t.Error("a status-query error must WARN and count in the failed total (nonzero exit) so the skipped safety check is visible")
+	}
+}
+
+// Round-9 follow-on, surfaced while gating: the combined db+collector
+// integration run failed on EVERY attempt with `base schema DDL:
+// ERROR: deadlock detected (SQLSTATE 40P01)` — the v0.27.18 deadlock
+// retry covered execMigrationStep but the base schema DDL ran as a
+// bare pool.Exec outside it, so concurrent packages' migrations (and,
+// in production, `aveloxis migrate` beside a live serve) could lose
+// the whole base DDL to a deadlock victim kill. Every schema.sql
+// statement is IF NOT EXISTS-idempotent, so the retry is safe.
+func TestBaseSchemaDDLRetriesDeadlocks(t *testing.T) {
+	src, err := os.ReadFile("migrate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	if !strings.Contains(s, `execMigrationStep(ctx, pg, logger, &errs, "base schema DDL", schemaSQL)`) {
+		t.Error("the base schema DDL must route through execMigrationStep for the bounded 40P01 retry")
+	}
+	if strings.Contains(s, "pg.pool.Exec(ctx, schemaSQL)") {
+		t.Error("the bare base-DDL Exec is back — it loses the deadlock retry")
+	}
+}
+
+// Round-9 follow-on #2: the combined-run gating also caught the OTHER
+// half of the deadlock class — Postgres sometimes picks the concurrent
+// package's ORDINARY statement as the victim instead of the migration.
+// The two production-relevant victims get the v0.25.36 pre-decided
+// bounded retry: the mailing-list PROJECTION writers (drop-for-progress
+// turns an unretried 40P01 into a dropped message — the v0.27.112 wave
+// covered email_message_store.go but missed this file) and the
+// vulnerability batch upsert (a scan beside `aveloxis migrate`).
+func TestProjectionAndVulnWritersRetryDeadlocks(t *testing.T) {
+	proj, err := os.ReadFile("mailinglist_projection_store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(proj), "s.withRetry(ctx, func(ctx context.Context) error {") < 3 {
+		t.Error("LinkOrCreateIssueFromEmail's CREATE and both BridgeEmailToIssue statements must route through withRetry (40P01)")
+	}
+	vuln, err := os.ReadFile("vulnerability_store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(vuln), "s.withRetry(ctx, func(ctx context.Context) error {") {
+		t.Error("InsertVulnerabilityBatch must route through withRetry — every queued statement is an idempotent upsert")
+	}
+}

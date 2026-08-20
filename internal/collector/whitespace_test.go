@@ -373,3 +373,26 @@ func TestWhitespaceDuplicateRemovalsConsumeOncePerOccurrence(t *testing.T) {
 		t.Fatalf("duplicate reformat: got added=%d removed=%d ws=%d, want 1/0/2", f.Added, f.Removed, f.Whitespace)
 	}
 }
+
+func TestWhitespaceShortRunePairIsNotReformat(t *testing.T) {
+	// v0.27.117 (Copilot round 11, suppressed): Augur's Python len()
+	// counts CODE POINTS; Go's len() counts bytes. "ドイツ語です" is 6
+	// runes (Augur: fails the >8 guard) but 18 bytes (a byte-length
+	// check would pass it and diverge from Augur's numbers). The pair
+	// below must count as add+remove, NOT as a whitespace reformat.
+	stats := collectStats(t, fixtureLog(
+		"\x1eeeee000000000000000000000000000000000000",
+		"1\t1\ta.txt",
+		"",
+		"diff --git a/a.txt b/a.txt",
+		"--- a/a.txt",
+		"+++ b/a.txt",
+		"@@ -1,1 +1,1 @@",
+		"-  ドイツ語です",
+		"+      ドイツ語です",
+	))
+	f := stats["eeee000000000000000000000000000000000000"]["a.txt"]
+	if f.Added != 1 || f.Removed != 1 || f.Whitespace != 0 {
+		t.Fatalf("short rune pair: got added=%d removed=%d ws=%d, want 1/1/0", f.Added, f.Removed, f.Whitespace)
+	}
+}

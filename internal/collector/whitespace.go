@@ -41,6 +41,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 )
@@ -196,7 +197,11 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 			case content == "":
 				curFile.Whitespace++
 			default:
-				if len(content) > 8 && wsCheck[content] > 0 {
+				// v0.27.117: RUNE count, not byte length — Augur's
+				// Python len() counts code points, so a short
+				// non-ASCII line (e.g. 3 CJK chars = 9 bytes) must
+				// NOT pass the >8 guard here when it wouldn't there.
+				if utf8.RuneCountInString(content) > 8 && wsCheck[content] > 0 {
 					curFile.Removed--
 					curFile.Whitespace++
 					wsCheck[content]--
@@ -339,14 +344,31 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	return updated, head, nil
 }
 
+// markerResolves reports whether the stamped marker still names a
+// commit in the clone. A vanished marker (force-push + gc, fresh
+// re-clone with pruned history) makes the ranged walk's revision spec
+// invalid; the caller falls back to a full-history walk for THAT case
+// only.
+func markerResolves(ctx context.Context, clonePath, marker string) bool {
+	cmd := exec.CommandContext(ctx, "git", "-C", clonePath,
+		"rev-parse", "--verify", "--quiet", marker+"^{commit}")
+	return cmd.Run() == nil
+}
+
 // runWhitespacePhase is the per-cycle facade phase. A stamped marker
 // makes the walk incremental (only commits past the marker); an empty
 // marker triggers the full-history walk (brand-new repos bootstrap
 // inline; for the pre-existing fleet the operator-controlled
 // `aveloxis rewalk-whitespace` command is the recommended bulk
 // bootstrap — without it each repo self-bootstraps on its next cycle).
-// A marker that no longer resolves (force-push, branch swap) fails the
-// ranged walk; we fall back to a full walk rather than wedging.
+//
+// v0.27.117 (Copilot round 11, suppressed — real): marker validity is
+// checked UP FRONT instead of falling back to a full walk on ANY
+// incremental-walk error. The old shape turned every transient DB
+// failure into a full multi-hour `git log -p` that then hit the same
+// DB failure — an outage amplifier. Now only a marker that no longer
+// resolves (force-push + gc, pruned re-clone) triggers the full walk;
+// every other failure warns and retries next cycle.
 func (f *FacadeCollector) runWhitespacePhase(ctx context.Context, repoID int64, clonePath string) {
 	marker, err := f.store.GetWhitespaceHead(ctx, repoID)
 	if err != nil {
@@ -355,14 +377,14 @@ func (f *FacadeCollector) runWhitespacePhase(ctx context.Context, repoID int64, 
 	}
 	rangeSpec := ""
 	if marker != "" {
-		rangeSpec = marker + ".." + resolveDefaultBranch(ctx, clonePath)
+		if markerResolves(ctx, clonePath, marker) {
+			rangeSpec = marker + ".." + resolveDefaultBranch(ctx, clonePath)
+		} else {
+			f.logger.Warn("whitespace phase: marker no longer resolves — full-history walk",
+				"repo_id", repoID, "marker", marker)
+		}
 	}
 	updated, head, werr := f.runWhitespaceWalk(ctx, repoID, clonePath, rangeSpec)
-	if werr != nil && rangeSpec != "" {
-		f.logger.Warn("whitespace phase: incremental walk failed — retrying full history",
-			"repo_id", repoID, "marker", marker, "error", werr)
-		updated, head, werr = f.runWhitespaceWalk(ctx, repoID, clonePath, "")
-	}
 	if werr != nil {
 		f.logger.Warn("whitespace phase failed", "repo_id", repoID, "error", werr)
 		return

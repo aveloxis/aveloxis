@@ -63,17 +63,22 @@ func TestUpsertRepoHasForgeIDRenameHeal(t *testing.T) {
 	}
 }
 
-func TestUpsertRepoConflictPrefersNonEmptyPlatformRepoID(t *testing.T) {
+// REVISED in v0.27.117 (Copilot round 11, active — real): the original
+// prefer-NONEMPTY-INCOMING shape let a non-empty incoming ID OVERWRITE
+// a different stored one, silently destroying the delete-and-recreate
+// mismatch signal SetPlatformRepoIDIfEmpty and Phase 0 surface. The
+// forge ID never changes for a given repo, so the correct shape is
+// FILL-EMPTY-ONLY: prefer the STORED value; an id-less re-upsert still
+// can't wipe a captured ID, and the first observation still fills.
+func TestUpsertRepoConflictFillsPlatformRepoIDEmptyOnly(t *testing.T) {
 	src, err := os.ReadFile("postgres.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := extractFuncBody(t, string(src), "func (s *PostgresStore) UpsertRepo(")
-	// The v0.27.78 forked_from lesson: a bare EXCLUDED overwrite would let
-	// every re-upsert from an id-less caller wipe a captured forge ID.
-	re := regexp.MustCompile(`platform_repo_id\s*=\s*COALESCE\(NULLIF\(EXCLUDED\.platform_repo_id,\s*''\),\s*repos\.platform_repo_id\)`)
+	re := regexp.MustCompile(`platform_repo_id\s*=\s*COALESCE\(NULLIF\(repos\.platform_repo_id,\s*''\),\s*EXCLUDED\.platform_repo_id\)`)
 	if !re.MatchString(body) {
-		t.Error("UpsertRepo ON CONFLICT must set platform_repo_id via prefer-nonempty (COALESCE(NULLIF(EXCLUDED...,''), repos....))")
+		t.Error("UpsertRepo ON CONFLICT must set platform_repo_id FILL-EMPTY-ONLY (COALESCE(NULLIF(repos....,''), EXCLUDED....)) — an incoming ID must never overwrite a different stored one")
 	}
 }
 
@@ -124,11 +129,19 @@ func TestUpdateRepoMetadataBackfillsPlatformRepoID(t *testing.T) {
 	if !strings.Contains(s, "platformRepoID string") {
 		t.Error("UpdateRepoMetadata must take a platformRepoID parameter so Phase 0 backfills the fleet")
 	}
-	// Prefer-nonempty: a transport that didn't provide the ID (rare) must
-	// never clear a captured value — the forge numeric ID never changes.
-	re := regexp.MustCompile(`platform_repo_id\s*=\s*COALESCE\(NULLIF\(\$\d+,\s*''\),\s*repos\.platform_repo_id\)`)
+	// v0.27.117 (Copilot round 11, active — real): FILL-EMPTY-ONLY, the
+	// same flip as UpsertRepo — a "backfill" that overwrites a different
+	// stored ID erases the delete-and-recreate mismatch signal. The
+	// RETURNING + comparison make Phase 0 the fleet-wide DETECTOR.
+	re := regexp.MustCompile(`platform_repo_id\s*=\s*COALESCE\(NULLIF\(repos\.platform_repo_id,\s*''\),\s*\$\d+\)`)
 	if !re.MatchString(s) {
-		t.Error("UpdateRepoMetadata must write platform_repo_id prefer-nonempty")
+		t.Error("UpdateRepoMetadata must write platform_repo_id FILL-EMPTY-ONLY (prefer the stored value)")
+	}
+	if !strings.Contains(s, "RETURNING COALESCE(platform_repo_id, '')") {
+		t.Error("UpdateRepoMetadata must RETURN the stored forge ID so Phase 0 detects delete-and-recreate mismatches fleet-wide")
+	}
+	if !strings.Contains(s, "storedForgeID != platformRepoID") {
+		t.Error("UpdateRepoMetadata must compare stored vs observed forge ID and log the mismatch at ERROR")
 	}
 }
 

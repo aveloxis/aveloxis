@@ -90,11 +90,19 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 					    user_type = COALESCE(NULLIF(user_type, ''), $4)
 					WHERE platform_id = $1 AND platform_user_id = $2`,
 					platformID, userID, nodeID, userType); herr != nil {
-					// Best-effort — resolution itself succeeded and the
-					// next observation retries — but never silent
-					// (v0.25.36).
+					// Best-effort — resolution itself succeeded — but
+					// never silent (v0.25.36), and v0.27.117 (Copilot
+					// round 11, suppressed): do NOT cache on a failed
+					// heal. A cached identity exits at the step-1
+					// cache lookup on every later observation, so the
+					// "next observation retries" promise would be
+					// false for the process lifetime and the fields
+					// would stay dark until restart. Uncached, the
+					// next observation re-runs this branch (indexed
+					// point read) and retries the heal.
 					r.store.logger.Warn("identity node_id/user_type heal failed",
 						"platform_id", platformID, "platform_user_id", userID, "error", herr)
+					return cntrbID, nil
 				}
 			}
 			r.cache[key] = cntrbID

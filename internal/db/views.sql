@@ -39,8 +39,12 @@
 -- It is a plain VIEW (zero storage, never refreshed; must NOT appear in the
 -- matview refresh list).
 -- ---------------------------------------------------------------------------
-DROP VIEW IF EXISTS aveloxis_data.mailing_list_pr_equivalents CASCADE;
-
+-- v0.27.117 (Copilot round 11, suppressed): NO DROP here — this file
+-- runs on EVERY migrate, and a DROP ... CASCADE would remove dependent
+-- views and grants on every deploy (and contradict this file's own
+-- CREATE OR REPLACE-only rule). If a future release changes a view's
+-- column set incompatibly (OR REPLACE can only append columns), ship a
+-- one-shot execMigrationStep DROP for that release instead.
 CREATE OR REPLACE VIEW aveloxis_data.mailing_list_pr_equivalents AS
 WITH threads AS (
     SELECT
@@ -81,6 +85,20 @@ LEFT JOIN LATERAL (
     ORDER BY (em2.msg_class = 'patch_submission') DESC, em2.sent_at ASC
     LIMIT 1
 ) root ON TRUE
-LEFT JOIN aveloxis_data.contributors c
-    ON COALESCE(c.cntrb_deleted, 0) = 0
-   AND (c.cntrb_email = root.sender_email OR c.cntrb_canonical = root.sender_email);
+LEFT JOIN LATERAL (
+    -- v0.27.117 (Copilot round 11, active): at most ONE unambiguous
+    -- contributor match. Neither cntrb_email nor cntrb_canonical is
+    -- unique, and an empty sender_email would equal every empty-email
+    -- contributor row — the previous plain join could multiply one
+    -- thread into millions of rows. The aggregate returns exactly one
+    -- row (or none, via HAVING) so the one-row-per-thread contract is
+    -- preserved STRUCTURALLY; ambiguous (2+) matches yield NULL rather
+    -- than an arbitrary pick. Served by the v0.27.54 email-lookup
+    -- indexes.
+    SELECT (array_agg(ci.cntrb_id))[1] AS cntrb_id
+    FROM aveloxis_data.contributors ci
+    WHERE root.sender_email <> ''
+      AND COALESCE(ci.cntrb_deleted, 0) = 0
+      AND (ci.cntrb_email = root.sender_email OR ci.cntrb_canonical = root.sender_email)
+    HAVING count(*) = 1
+) c ON TRUE;

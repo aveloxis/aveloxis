@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -472,5 +473,90 @@ func TestWhitespaceWalkRefusesToStampOverMissingRows(t *testing.T) {
 	}
 	if stampIdx >= 0 && refIdx > stampIdx {
 		t.Error("the shortfall refusal must run BEFORE the marker stamp — refusing after is decorative (the v0.27.107 lesson)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round 11 (2026-08-20): 3 active + 4 suppressed — all seven real. The
+// three actives are round-10 interactions: the existing prefer-nonempty
+// forge-ID writers silently DESTROYED the new mismatch signal, and the
+// newly always-run view carried a row-multiplying join. (The two
+// writer-shape flips are pinned in rename_dedup_test.go; the rune-count
+// parity fix is pinned behaviorally in the collector walker suite.)
+// ---------------------------------------------------------------------------
+
+// Active #2: the view's contributor join multiplied threads — neither
+// email column is unique, and an empty sender_email equals every
+// empty-email contributor row. The LATERAL aggregate returns at most
+// one row (HAVING count = 1: ambiguous → NULL, never an arbitrary
+// pick), preserving one-row-per-thread STRUCTURALLY.
+func TestPREquivalentsViewResolvesAtMostOneContributor(t *testing.T) {
+	src, err := os.ReadFile("views.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "HAVING count(*) = 1") {
+		t.Error("the view's contributor match must be unambiguous-or-NULL (HAVING count(*) = 1)")
+	}
+	if !strings.Contains(s, `root.sender_email <> ''`) {
+		t.Error("an empty sender_email must match NO contributor — it would equal every empty-email row")
+	}
+	if strings.Contains(s, "LEFT JOIN aveloxis_data.contributors c") {
+		t.Error("the plain contributors join is back — it multiplies threads on non-unique emails")
+	}
+}
+
+// Suppressed #1: views.sql runs on EVERY migrate — a DROP ... CASCADE
+// there removes dependent views and grants on every deploy.
+func TestViewsSQLNeverDrops(t *testing.T) {
+	src, err := os.ReadFile("views.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := regexp.MustCompile(`(?m)--[^\n]*`).ReplaceAllString(string(src), "")
+	if regexp.MustCompile(`(?i)\bDROP\b`).MatchString(stripped) {
+		t.Error("views.sql must be CREATE OR REPLACE only — a DROP CASCADE on every migrate removes dependents and grants; incompatible shape changes ship as one-shot migration drops instead")
+	}
+}
+
+// Suppressed #2: the incremental whitespace walk fell back to a FULL
+// multi-hour walk on ANY error — a transient DB failure became an
+// outage amplifier. Marker validity is now checked up front; errors
+// just warn and retry next cycle.
+func TestWhitespacePhaseValidatesMarkerUpFront(t *testing.T) {
+	src, err := os.ReadFile("../collector/whitespace.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "func markerResolves(") {
+		t.Error("markerResolves must pre-validate the marker (rev-parse --verify) so only a vanished marker triggers the full walk")
+	}
+	if strings.Contains(s, "retrying full history") {
+		t.Error("the blanket error-triggered full-walk fallback is back — a transient DB failure must not launch a multi-hour git log -p")
+	}
+}
+
+// Suppressed #4: a failed node_id/user_type heal must NOT cache the
+// identity — a cached entry exits at the step-1 cache lookup forever,
+// so "the next observation retries" would be false until restart.
+func TestFailedIdentityHealIsNotCached(t *testing.T) {
+	src, err := os.ReadFile("contributors.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (r *ContributorResolver) Resolve(")
+	healIdx := strings.Index(body, "identity node_id/user_type heal failed")
+	if healIdx < 0 {
+		t.Fatal("the heal-failure warn is gone")
+	}
+	// The failure branch must return BEFORE the cache write that
+	// follows it.
+	after := body[healIdx:]
+	retIdx := strings.Index(after, "return cntrbID, nil")
+	cacheIdx := strings.Index(after, "r.cache[key] = cntrbID")
+	if retIdx < 0 || (cacheIdx >= 0 && cacheIdx < retIdx) {
+		t.Error("a failed heal must return WITHOUT caching so the next observation re-runs the heal (a cached identity never reaches this branch again)")
 	}
 }

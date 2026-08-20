@@ -397,10 +397,15 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				-- bare EXCLUDED overwrite wiped the captured value on every
 				-- scan tick. Phase 0 still clears it when a repo un-forks.
 				forked_from = COALESCE(NULLIF(EXCLUDED.forked_from, ''), repos.forked_from),
-				-- v0.27.102: same prefer-nonempty rule — the forge numeric
-				-- ID never changes, and an id-less re-upsert (individual
-				-- URL add, importer) must never wipe a captured value.
-				platform_repo_id = COALESCE(NULLIF(EXCLUDED.platform_repo_id, ''), repos.platform_repo_id),
+				-- v0.27.116/117: FILL-EMPTY-ONLY (prefer the STORED value) —
+				-- the forge numeric ID never changes for a given repo, so a
+				-- DIFFERENT incoming ID means an upstream delete-and-recreate
+				-- under the same URL, and overwriting the stored ID would
+				-- destroy the mismatch signal SetPlatformRepoIDIfEmpty and
+				-- Phase 0 (UpdateRepoMetadata) now surface. An id-less
+				-- re-upsert still can't wipe a captured value, and the first
+				-- observed ID still fills an empty column.
+				platform_repo_id = COALESCE(NULLIF(repos.platform_repo_id, ''), EXCLUDED.platform_repo_id),
 				repo_archived = EXCLUDED.repo_archived,
 				updated_at = COALESCE(EXCLUDED.updated_at, repos.updated_at),
 				tool_version = EXCLUDED.tool_version,

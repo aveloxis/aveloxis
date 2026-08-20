@@ -6,7 +6,10 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // UpdateRepoMetadata writes description + primary_language + languages
@@ -56,7 +59,8 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 		langJSON = b
 	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, `
+		var storedForgeID string
+		err := s.pool.QueryRow(ctx, `
 			UPDATE aveloxis_data.repos
 			SET repo_description = $2,
 			    primary_language = $3,
@@ -74,18 +78,41 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			    -- a deleted upstream, '' for a non-fork). The showcase
 			    -- fork filter and future GUI fork badges read this.
 			    forked_from      = $6,
-			    -- v0.27.102: forge numeric ID backfill (prefer-nonempty —
-			    -- the ID never changes; absence must never clear it).
-			    platform_repo_id = COALESCE(NULLIF($7, ''), repos.platform_repo_id),
+			    -- v0.27.117: forge numeric ID backfill — FILL-EMPTY-ONLY
+			    -- (prefer the STORED value). The ID never changes for a
+			    -- given repo; a DIFFERENT incoming ID means an upstream
+			    -- delete-and-recreate under the same URL, and this
+			    -- "backfill" overwriting the stored value would erase the
+			    -- exact mismatch signal SetPlatformRepoIDIfEmpty surfaces.
+			    -- The RETURNING below makes Phase 0 the fleet-wide
+			    -- detector instead.
+			    platform_repo_id = COALESCE(NULLIF(repos.platform_repo_id, ''), $7),
 			    -- v0.27.104: creation date is immutable — fill-empty-only;
 			    -- updated_at refreshes from the forge (nil-safe).
 			    created_at = COALESCE(repos.created_at, $8),
 			    updated_at = COALESCE($9, repos.updated_at),
 			    data_collection_date = NOW()
-			WHERE repo_id = $1`,
+			WHERE repo_id = $1
+			RETURNING COALESCE(platform_repo_id, '')`,
 			repoID, description, primaryLanguage, langJSON, archived, forkedFrom, platformRepoID,
-			NullTime(createdAt), NullTime(updatedAt))
-		return err
+			NullTime(createdAt), NullTime(updatedAt)).Scan(&storedForgeID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// v0.27.117 (Copilot round 11, active): identity-conflict
+		// detection on the Phase 0 path — fires within one collection
+		// cycle for every affected repo, fleet-wide. OBSERVATION-ONLY
+		// (the house never-auto-mutate rule); same message class as
+		// SetPlatformRepoIDIfEmpty's scan-time detector.
+		if storedForgeID != "" && platformRepoID != "" && storedForgeID != platformRepoID {
+			s.logger.Error("forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row",
+				"repo_id", repoID, "stored_forge_id", storedForgeID, "observed_forge_id", platformRepoID,
+				"remediation", "inspect the row's data eras; a split needs operator action (reconcile-repos consolidates the INVERSE case only)")
+		}
+		return nil
 	})
 }
 

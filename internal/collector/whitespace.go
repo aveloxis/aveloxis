@@ -209,7 +209,7 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 // whitespaceFlushEvery bounds how many file stats accumulate before a
 // batched DB flush (the v0.27.97 multi-row pattern; only rows whose
 // values actually change are touched — IS DISTINCT guard in the store).
-const whitespaceFlushEvery = 5000
+var whitespaceFlushEvery = 5000
 
 // runWhitespaceWalk streams git log over rangeSpec ("" = the default
 // branch's full history; "old..branch" = incremental) and applies the
@@ -229,7 +229,15 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	if rangeSpec != "" {
 		target = rangeSpec
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", clonePath, "log",
+	// Derived context (ultrareview 2026-08-19, bug_001): when the parse
+	// loop bails early (a DB flush error), git is still writing and the
+	// pipe fills — calling cmd.Wait() with an undrained StdoutPipe then
+	// blocks FOREVER (git wedged in write(), Wait wedged on git's exit;
+	// the exact pattern the exec.StdoutPipe docs warn about). Cancelling
+	// this context on the error path SIGKILLs git so Wait() returns.
+	walkCtx, cancelWalk := context.WithCancel(ctx)
+	defer cancelWalk()
+	cmd := exec.CommandContext(walkCtx, "git", "-C", clonePath, "log",
 		target, "--numstat", "-p", "--format=%x1e%H")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -267,6 +275,10 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 		}
 		return nil
 	})
+	if parseErr != nil {
+		// Kill git before Wait — see the walkCtx comment above.
+		cancelWalk()
+	}
 	waitErr := cmd.Wait()
 	if parseErr != nil {
 		return updated, head, fmt.Errorf("parse whitespace log: %w", parseErr)

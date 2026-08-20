@@ -302,7 +302,13 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 	f.logger.Info("using default branch for git log", "repo_id", repoID, "branch", defaultBranch)
 
 	// Run git log with --numstat for per-file stats on the default branch only.
-	cmd := exec.CommandContext(ctx, "git", "-C", clonePath, "log",
+	// Derived context (v0.27.105 ultrareview, same class as the
+	// whitespace walker's bug_001): a scanner error (token too long)
+	// exits the read loop with git still writing; cmd.Wait() on an
+	// undrained pipe then blocks forever. Cancelling kills git first.
+	logCtx, cancelLog := context.WithCancel(ctx)
+	defer cancelLog()
+	cmd := exec.CommandContext(logCtx, "git", "-C", clonePath, "log",
 		defaultBranch,
 		"--numstat",
 		"--format="+gitLogFormat,
@@ -395,11 +401,19 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 		}
 	}
 
+	if scanErr := scanner.Err(); scanErr != nil {
+		// Early scanner exit — kill git so Wait() below can return
+		// instead of deadlocking on the undrained pipe.
+		cancelLog()
+		_ = cmd.Wait()
+		return fmt.Errorf("scanning git log: %w", scanErr)
+	}
+
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("git log exited with error: %w", err)
 	}
 
-	return scanner.Err()
+	return nil
 }
 
 type parsedCommit struct {

@@ -169,6 +169,7 @@ func TestRenameDedupAtAddTime(t *testing.T) {
 		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer ccancel()
 		_, _ = store.pool.Exec(cctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = 'avrenametest')`)
+		_, _ = store.pool.Exec(cctx, `DELETE FROM aveloxis_data.issues WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = 'avrenametest')`)
 		_, _ = store.pool.Exec(cctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner = 'avrenametest'`)
 	})
 
@@ -187,6 +188,17 @@ func TestRenameDedupAtAddTime(t *testing.T) {
 	}
 	if storedForge != forgeID {
 		t.Fatalf("platform_repo_id not stored on insert: got %q want %q", storedForge, forgeID)
+	}
+
+	// 1b. A child row carrying the OLD owner/repo path in its stored
+	//     URL — the v0.27.111 transactional heal must rewrite it
+	//     alongside repo_git (the round-6 active finding: child
+	//     rewrites must never silently fail while repo_git changes).
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number, issue_title, html_url)
+		VALUES ($1, 991701, 1, 'rename child', 'https://github.com/avrenametest/old-name-xyz/issues/1')`,
+		oldID); err != nil {
+		t.Fatal(err)
 	}
 
 	// 2. The rename: upstream renamed the repo; an org scan enumerates it
@@ -210,6 +222,13 @@ func TestRenameDedupAtAddTime(t *testing.T) {
 	}
 	if gotName != "new-name-xyz" {
 		t.Errorf("repo_name not healed: got %q", gotName)
+	}
+	var childURL string
+	if err := store.pool.QueryRow(ctx, `SELECT COALESCE(html_url,'') FROM aveloxis_data.issues WHERE repo_id=$1 AND platform_issue_id=991701`, oldID).Scan(&childURL); err != nil {
+		t.Fatal(err)
+	}
+	if childURL != "https://github.com/avrenametest/new-name-xyz/issues/1" {
+		t.Errorf("child issue URL not rewritten by the transactional heal: got %q", childURL)
 	}
 	var count int
 	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repos WHERE repo_owner = 'avrenametest'`).Scan(&count); err != nil {

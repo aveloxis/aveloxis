@@ -126,3 +126,42 @@ func TestColumnTripwireScopesToWriteStatements(t *testing.T) {
 		t.Error("tripwire must strip SQL comments so commented mentions can't satisfy the writer check")
 	}
 }
+
+// --- round 6 (review 4985645746: 1 active + 3 suppressed, ALL real) -------
+
+// Active: UpdateRepoURLs must be transactional — the old shape updated
+// repo_git first and swallowed child-update errors, so a mid-child
+// failure reported success with repo_git already changed; later scans
+// saw the new URL and never retried (child URLs permanently stale).
+func TestUpdateRepoURLsIsTransactional(t *testing.T) {
+	src, err := os.ReadFile("postgres.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) UpdateRepoURLs(")
+	if !strings.Contains(body, "s.pool.Begin(ctx)") || !strings.Contains(body, "tx.Commit(ctx)") {
+		t.Error("UpdateRepoURLs must run the repos update + child rewrites in ONE transaction")
+	}
+	if strings.Contains(body, "continue") {
+		t.Error("child-update errors must roll the rename back, never continue — an error is not 'no matching rows'")
+	}
+}
+
+// Suppressed 1+3 (wrongly suppressed): both heal-branch lookups must
+// propagate errors. A forge-ID lookup error treated as not-found mints
+// the rename duplicate; an ignored old-URL lookup passes oldURL="" to
+// UpdateRepoURLs, whose repo-only fallback skips every child rewrite
+// while reporting success.
+func TestRenameHealPropagatesLookupErrors(t *testing.T) {
+	src, err := os.ReadFile("postgres.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) UpsertRepo(")
+	if !strings.Contains(body, "rename-heal forge-id lookup") {
+		t.Error("FindRepoByPlatformRepoID errors must propagate (the v0.27.36 rule: a lookup ERROR is not 'not found')")
+	}
+	if !strings.Contains(body, "rename-heal old-URL lookup") {
+		t.Error("the old-URL scan error must propagate — oldURL='' silently skips the child-URL rewrites")
+	}
+}

@@ -34,7 +34,7 @@ func (c *Client) FetchIssueClosers(ctx context.Context, owner, repo string, numb
 	b.WriteString("query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) {")
 	for i, n := range numbers {
 		fmt.Fprintf(&b, `
-  i%d: issue(number: %d) { timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { __typename ... on ClosedEvent { actor { __typename login avatarUrl url ... on User { id databaseId name email } } } } } }`, i, n)
+  i%d: issue(number: %d) { timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { __typename ... on ClosedEvent { actor { __typename login avatarUrl url ... on User { id databaseId name email } ... on Bot { id databaseId } } } } } }`, i, n)
 	}
 	b.WriteString(" } }")
 

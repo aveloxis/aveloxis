@@ -100,3 +100,26 @@ func TestIssueClosersCaptureTypeAndNodeID(t *testing.T) {
 		t.Error("FetchIssueClosers must map Type and NodeID onto the returned UserRef")
 	}
 }
+
+// v0.27.111 (round 6, wrongly-suppressed finding): every Bot inline must
+// select `id` (and databaseId) — review/comment authors and issue
+// closers are VERY often bots (dependabot et al.), and without these
+// selections they stayed login-only refs with empty node_id, resolving
+// through the login fallback instead of the deterministic platform-ID
+// path.
+func TestBotInlinesSelectNodeID(t *testing.T) {
+	re := regexp.MustCompile(`\.\.\. on Bot \{([^}]*)\}`)
+	for _, f := range []string{"graphql_pr_batch.go", "graphql_listing.go", "issue_closers.go"} {
+		src := readSrc(t, f)
+		hits := re.FindAllStringSubmatch(src, -1)
+		if f != "issue_closers.go" && len(hits) < 3 {
+			t.Errorf("%s: expected Bot inlines on the author fragments (found %d)", f, len(hits))
+		}
+		for _, m := range hits {
+			fields := " " + strings.Join(strings.Fields(m[1]), " ") + " "
+			if !strings.Contains(fields, " id ") || !strings.Contains(fields, " databaseId ") {
+				t.Errorf("%s: Bot inline %q must select id AND databaseId", f, strings.TrimSpace(m[0]))
+			}
+		}
+	}
+}

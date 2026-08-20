@@ -293,16 +293,29 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 			`SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1`,
 			r.GitURL).Scan(&urlTracked)
 		if urlTracked == 0 {
-			if existing, ferr := s.FindRepoByPlatformRepoID(ctx, r.Platform, r.PlatformID); ferr == nil && existing > 0 {
+			// v0.27.111: a LOOKUP error is not "not found" (the v0.27.36
+			// rule) — falling through to the insert on a transient DB
+			// error could mint the exact rename duplicate this branch
+			// prevents. Propagate; the caller retries next scan.
+			existing, ferr := s.FindRepoByPlatformRepoID(ctx, r.Platform, r.PlatformID)
+			if ferr != nil {
+				return 0, fmt.Errorf("rename-heal forge-id lookup: %w", ferr)
+			}
+			if existing > 0 {
 				// v0.27.106 (PR #184 review): heal via UpdateRepoURLs
 				// (PLURAL) — the renamed repo's child rows (issue/PR/
 				// release URLs) carry the OLD owner/repo path and must
 				// heal alongside repo_git, matching the prelim rename
 				// path. Needs the old URL for the find-and-replace.
 				var oldURL string
-				_ = s.pool.QueryRow(ctx,
+				// v0.27.111: an ignored error here passed oldURL="" to
+				// UpdateRepoURLs, whose repo-only fallback then skipped
+				// every child-URL rewrite while reporting success.
+				if serr := s.pool.QueryRow(ctx,
 					`SELECT repo_git FROM aveloxis_data.repos WHERE repo_id = $1`,
-					existing).Scan(&oldURL)
+					existing).Scan(&oldURL); serr != nil {
+					return 0, fmt.Errorf("rename-heal old-URL lookup for repo %d: %w", existing, serr)
+				}
 				uerr := s.UpdateRepoURLs(ctx, existing, oldURL, r.GitURL)
 				if uerr == nil {
 					s.logger.Info("rename detected at add time — healed existing repo URL instead of creating a duplicate",
@@ -635,38 +648,66 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 		return s.UpdateRepoURL(ctx, repoID, newURL)
 	}
 
-	// Update repo_git first.
-	if err := s.UpdateRepoURL(ctx, repoID, newURL); err != nil {
-		return err
-	}
-
-	// Bulk-update all URL columns that contain the old path.
-	updates := []struct {
-		table  string
-		column string
-	}{
-		{"aveloxis_data.issues", "issue_url"},
-		{"aveloxis_data.issues", "html_url"},
-		{"aveloxis_data.pull_requests", "pr_url"},
-		{"aveloxis_data.pull_requests", "pr_html_url"},
-		{"aveloxis_data.pull_requests", "pr_diff_url"},
-		{"aveloxis_data.pull_request_reviews", "html_url"},
-		{"aveloxis_data.review_comments", "html_url"},
-		{"aveloxis_data.releases", "release_url"},
-	}
-
-	for _, u := range updates {
-		_, err := s.pool.Exec(ctx, fmt.Sprintf(
-			`UPDATE %s SET %s = REPLACE(%s, $1, $2) WHERE repo_id = $3 AND %s LIKE '%%' || $1 || '%%'`,
-			u.table, u.column, u.column, u.column),
-			oldPath, newPath, repoID)
+	// v0.27.111 (Copilot PR #184 round 6, active finding): the repo_git
+	// update and the child-URL rewrites run in ONE transaction. The old
+	// shape updated repo_git first and swallowed every child-update
+	// error (the "no matching rows" comment was wrong — a zero-row
+	// UPDATE succeeds; an ERROR is a real failure), so a mid-child
+	// failure returned success with repo_git already changed — later
+	// scans saw the new URL and never retried, leaving issue/PR/release
+	// URLs permanently stale. Now any failure rolls the whole rename
+	// back and the caller retries next cycle.
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
 		if err != nil {
-			// Non-fatal — some tables may not have matching rows.
-			continue
+			return err
 		}
-	}
+		defer tx.Rollback(ctx)
 
-	return nil
+		owner, name := parseRepoURLOwnerName(newURL)
+		if _, err := tx.Exec(ctx,
+			`UPDATE aveloxis_data.repos
+			 SET repo_git = $2, repo_owner = $3, repo_name = $4, data_collection_date = NOW()
+			 WHERE repo_id = $1`,
+			repoID, newURL, owner, name); err != nil {
+			return fmt.Errorf("rename repos row: %w", err)
+		}
+
+		// Bulk-update all URL columns that contain the old path.
+		updates := []struct {
+			table  string
+			column string
+		}{
+			{"aveloxis_data.issues", "issue_url"},
+			{"aveloxis_data.issues", "html_url"},
+			{"aveloxis_data.pull_requests", "pr_url"},
+			{"aveloxis_data.pull_requests", "pr_html_url"},
+			{"aveloxis_data.pull_requests", "pr_diff_url"},
+			{"aveloxis_data.pull_request_reviews", "html_url"},
+			{"aveloxis_data.review_comments", "html_url"},
+			{"aveloxis_data.releases", "release_url"},
+		}
+		for _, u := range updates {
+			if _, err := tx.Exec(ctx, fmt.Sprintf(
+				`UPDATE %s SET %s = REPLACE(%s, $1, $2) WHERE repo_id = $3 AND %s LIKE '%%' || $1 || '%%'`,
+				u.table, u.column, u.column, u.column),
+				oldPath, newPath, repoID); err != nil {
+				return fmt.Errorf("rename %s.%s: %w", u.table, u.column, err)
+			}
+		}
+		return tx.Commit(ctx)
+	})
+}
+
+// parseRepoURLOwnerName extracts the normalized owner/name pair for a
+// repos-row URL update — the single parse both UpdateRepoURL and the
+// transactional UpdateRepoURLs use (v0.27.111).
+func parseRepoURLOwnerName(newURL string) (owner, name string) {
+	if ru, perr := platform.ParseAnyRepoURL(newURL); perr == nil {
+		owner = ru.Owner
+		name = ru.Repo
+	}
+	return owner, model.NormalizeRepoName(name)
 }
 
 // extractRepoPath extracts "owner/repo" from a URL like "https://github.com/owner/repo".
@@ -690,15 +731,7 @@ func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL 
 	// consolidation; unparseable URLs keep empty owner/name — the URL
 	// column still updates, matching the historical permissiveness).
 	newURL = strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")
-	owner := ""
-	name := ""
-	if ru, perr := platform.ParseAnyRepoURL(newURL); perr == nil {
-		owner = ru.Owner
-		name = ru.Repo
-	}
-	// Defense in depth: even after the parser's trimming, normalize the
-	// extracted slug so every write path produces the same canonical form.
-	name = model.NormalizeRepoName(name)
+	owner, name := parseRepoURLOwnerName(newURL)
 
 	_, err := s.pool.Exec(ctx,
 		`UPDATE aveloxis_data.repos

@@ -382,8 +382,8 @@ const prNodeFragment = `
       author {
         __typename login
         ... on User { id databaseId avatarUrl url name email }
-        ... on Bot { databaseId avatarUrl url }
-        ... on Organization { databaseId avatarUrl url name }
+        ... on Bot { id databaseId avatarUrl url }
+        ... on Organization { id databaseId avatarUrl url name }
       }
       labels(first: 50) {
         nodes { id name color description isDefault }
@@ -405,7 +405,7 @@ const prNodeFragment = `
       reviews(first: 50) {
         nodes {
           databaseId id state body submittedAt authorAssociation url
-          author { __typename login ... on User { id databaseId avatarUrl url } }
+          author { __typename login ... on User { id databaseId avatarUrl url } ... on Bot { id databaseId avatarUrl url } }
           commit { oid }
         }
         pageInfo { hasNextPage endCursor }
@@ -413,7 +413,7 @@ const prNodeFragment = `
       comments(first: 50) {
         nodes {
           databaseId id body createdAt updatedAt url authorAssociation
-          author { __typename login ... on User { id databaseId avatarUrl url name email } }
+          author { __typename login ... on User { id databaseId avatarUrl url name email } ... on Bot { id databaseId avatarUrl url } }
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -1109,7 +1109,7 @@ func (c *Client) paginatePRReviews(ctx context.Context, owner, repo string, numb
       reviews(first: 100, after: $after) {
         nodes {
           databaseId id state body submittedAt authorAssociation url
-          author { __typename login ... on User { id databaseId avatarUrl url } }
+          author { __typename login ... on User { id databaseId avatarUrl url } ... on Bot { id databaseId avatarUrl url } }
           commit { oid }
         }
         pageInfo { hasNextPage endCursor }
@@ -1292,7 +1292,7 @@ func (c *Client) paginatePRComments(ctx context.Context, owner, repo string, num
       comments(first: 100, after: $after) {
         nodes {
           databaseId id body createdAt updatedAt url authorAssociation
-          author { __typename login ... on User { id databaseId avatarUrl url name email } }
+          author { __typename login ... on User { id databaseId avatarUrl url name email } ... on Bot { id databaseId avatarUrl url } }
         }
         pageInfo { hasNextPage endCursor }
       }

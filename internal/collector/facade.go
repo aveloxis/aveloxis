@@ -52,6 +52,17 @@ type FacadeResult struct {
 	Commits        int
 	CommitMessages int
 	Errors         []error
+	// CommitWriteFailures counts commit ROWS that failed to persist and
+	// were swallowed (warn-and-continue) — the batch path's per-row
+	// fallback failures and its ctx-cancel bail. v0.27.107 (ultrareview
+	// round 2, bug_005): the v0.27.106 whitespace-phase gate checked
+	// result.Errors, but insertCommitBatch NEVER returns non-nil for DB
+	// failures, so the gate was decorative. The whitespace phase gates
+	// on this counter instead — stamping the marker over missing commit
+	// rows would exclude them from every future incremental walk.
+	// Message/parent write failures deliberately don't count: they
+	// don't remove commits rows, which is all the whitespace join needs.
+	CommitWriteFailures int
 }
 
 // CollectRepo clones (or fetches) the repo and parses git log for commit data.
@@ -83,11 +94,12 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 	// incremental walk once a later cycle inserts them — their
 	// whitespace would stay zero forever. Skipping keeps the marker
 	// empty so the next clean cycle does the full walk.
-	if len(result.Errors) == 0 {
+	if len(result.Errors) == 0 && result.CommitWriteFailures == 0 {
 		f.runWhitespacePhase(ctx, repoID, clonePath)
 	} else {
-		f.logger.Warn("whitespace phase skipped — numstat pass recorded errors; marker stays unstamped for a full walk next cycle",
-			"repo_id", repoID, "numstat_errors", len(result.Errors))
+		f.logger.Warn("whitespace phase skipped — numstat pass lost commit rows; marker stays unstamped for a full walk next cycle",
+			"repo_id", repoID, "numstat_errors", len(result.Errors),
+			"commit_write_failures", result.CommitWriteFailures)
 	}
 
 	// dm_repo_* aggregates are NOT refreshed here. Running them per repo on
@@ -649,10 +661,12 @@ func (f *FacadeCollector) upsertCommitRowsFallback(ctx context.Context, repoID i
 		if ctx.Err() != nil {
 			f.logger.Warn("commit fallback aborted — context canceled, skipping remaining rows",
 				"repo_id", repoID, "remaining", len(rows)-i, "cause", ctx.Err())
+			result.CommitWriteFailures += len(rows) - i
 			break
 		}
 		if err := f.store.UpsertCommit(ctx, commit); err != nil {
 			f.logger.Warn("failed to upsert commit", "hash", commit.Hash, "file", commit.Filename, "error", err)
+			result.CommitWriteFailures++
 			continue
 		}
 		insertedByHash[commit.Hash] = true

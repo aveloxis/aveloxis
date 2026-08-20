@@ -209,6 +209,21 @@ func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int,
 		  AND split_part(COALESCE(pr.pr_repo_full_name, ''), '/', 1) <> ''
 		  AND COALESCE(c.cntrb_deleted, 0) = 0%s`
 	if dryRun {
+		// v0.27.107 (ultrareview bug_003): count BOTH derivation passes —
+		// the pair PK-join fills rows the login sweep cannot see (renamed
+		// owners whose meta row was resolved by platform id), so a
+		// login-only count systematically under-reports the job's scope.
+		var pair int64
+		if err := s.pool.QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM aveloxis_data.pull_request_repo pr
+			JOIN aveloxis_data.pull_request_meta m
+			  ON m.pr_meta_id = pr.pr_repo_meta_id
+			 AND m.head_or_base = pr.pr_repo_head_or_base
+			WHERE m.cntrb_id IS NOT NULL
+			  AND pr.pr_cntrb_id IS NULL`).Scan(&pair); err != nil {
+			return 0, fmt.Errorf("dry-run pair count pull_request_repo: %w", err)
+		}
 		q := `SELECT COUNT(DISTINCT pr.pr_repo_id)` + strings.TrimPrefix(
 			fmt.Sprintf(candidates, ""), `
 		SELECT DISTINCT ON (pr.pr_repo_id) pr.pr_repo_id, c.cntrb_id`)
@@ -216,8 +231,11 @@ func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int,
 		if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
 			return 0, fmt.Errorf("dry-run count pull_request_repo: %w", err)
 		}
-		s.logger.Info("backfill-identities dry-run", "table", "pull_request_repo", "derivable", n)
-		return n, nil
+		// pair+n is an upper bound (the sets overlap); precise enough
+		// for operator scoping and cheaper than a UNION-DISTINCT sort.
+		s.logger.Info("backfill-identities dry-run", "table", "pull_request_repo",
+			"pair_derivable", pair, "login_derivable", n, "derivable_max", pair+n)
+		return pair + n, nil
 	}
 	var maxID int64
 	if err := s.pool.QueryRow(ctx,

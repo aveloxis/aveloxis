@@ -42,3 +42,21 @@ func TestProcessStagedPRPersistsMetaLinks(t *testing.T) {
 		t.Error("SetPRMetaLinks must be called after the UpsertPRMeta calls that produce the ids")
 	}
 }
+
+// v0.27.107 (ultrareview round 2, bug_005): the v0.27.106 whitespace
+// gate checked result.Errors, but insertCommitBatch NEVER returns
+// non-nil for DB failures — the gate was decorative. It now reads the
+// CommitWriteFailures counter, which the swallow sites actually bump.
+func TestWhitespaceGateIsOperative(t *testing.T) {
+	src, err := os.ReadFile("facade.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "result.CommitWriteFailures == 0") {
+		t.Error("the whitespace-phase gate must read FacadeResult.CommitWriteFailures (result.Errors alone never fires — insertCommitBatch swallows DB failures)")
+	}
+	if strings.Count(s, "CommitWriteFailures +") < 1 || !strings.Contains(s, "CommitWriteFailures++") {
+		t.Error("the commit-row swallow sites (fallback per-row failure + ctx-cancel bail) must bump CommitWriteFailures")
+	}
+}

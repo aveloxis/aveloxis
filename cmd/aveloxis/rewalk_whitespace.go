@@ -111,12 +111,15 @@ many-hour job; progress lines include running totals for extrapolation.`,
 					defer wg.Done()
 					for t := range jobs {
 						n, err := fc.RewalkWhitespace(ctx, t.RepoID, t.GitURL)
-						rowsUpdated.Add(n)
 						if err != nil {
+							// v0.27.107 (ultrareview bug_002): partial rows
+							// from a failed repo stay OUT of the top-line
+							// success counter; the warn preserves them.
 							failed.Add(1)
-							logger.Warn("whitespace rewalk failed", "repo_id", t.RepoID, "error", err)
+							logger.Warn("whitespace rewalk failed", "repo_id", t.RepoID, "error", err, "partial_rows", n)
 							continue
 						}
+						rowsUpdated.Add(n)
 						done := reposDone.Add(1)
 						logger.Info("whitespace rewalk repo complete",
 							"repo_id", t.RepoID, "rows_updated", n)

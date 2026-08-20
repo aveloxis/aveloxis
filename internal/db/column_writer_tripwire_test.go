@@ -15,6 +15,11 @@
 // entry fails the build — the "silently dark for years" class dies
 // here. (The subtler bound-but-never-set class needs model-field
 // tracing; the periodic fill audit stays the net for that.)
+//
+// v0.27.106 (PR #184 review): "has a writer" is scoped to INSERT/UPDATE
+// SQL statements that NAME the audited table, with SQL comments
+// stripped — a column mentioned only in a code comment, a SELECT-only
+// reader, or another table's statement no longer satisfies the check.
 package db
 
 import (
@@ -61,6 +66,7 @@ var documentedEmpty = map[string]string{
 	"repo_info.committer_count":             "bound-but-never-set: derivable from facade commits data (documented follow-up)",
 	"repo_info.security_audit_file":         "bound-but-never-set: no forge community-profile source exists for audit files",
 	"pull_requests.pr_augur_contributor_id": "Augur-legacy identity column; aveloxis uses author_id",
+	"messages.rgls_id":                      "mailing-list list linkage lives on email_message/email_message_ref; the shared message upsert never writes it (its name only appears in OTHER tables' SQL — the exact false-positive the v0.27.106 statement-scoped check exists to catch)",
 	"messages.msg_header":                   "mailing-list headers live on email_message; forge-sourced messages have no header material",
 }
 
@@ -95,6 +101,22 @@ func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {
 	}
 	corpus := writers.String()
 
+	// Pull every backtick-delimited SQL literal out of the corpus, strip
+	// its `--` line comments, and index the INSERT/UPDATE statements per
+	// audited table. Only these blocks count as writers.
+	sqlLitRe := regexp.MustCompile("`[^`]*`")
+	commentRe := regexp.MustCompile(`(?m)--[^\n]*`)
+	writeBlocks := map[string][]string{}
+	for _, lit := range sqlLitRe.FindAllString(corpus, -1) {
+		clean := commentRe.ReplaceAllString(lit, "")
+		for _, tbl := range auditedTables {
+			tblRe := regexp.MustCompile(`(?i)(INSERT\s+INTO|UPDATE)\s+aveloxis_data\.` + regexp.QuoteMeta(tbl) + `\b`)
+			if tblRe.MatchString(clean) {
+				writeBlocks[tbl] = append(writeBlocks[tbl], clean)
+			}
+		}
+	}
+
 	// Full declaration line captured so SERIAL PKs can be skipped by
 	// their type, whatever their name (issue_event_id, identity_id, ...).
 	colRe := regexp.MustCompile(`(?m)^\s{4}([a-z_]+)\s+([A-Z][^,\n]*)`)
@@ -127,13 +149,20 @@ func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {
 			if _, ok := documentedEmpty[key]; ok {
 				continue
 			}
-			// Writer presence: the column name as a whole word anywhere
-			// in the store corpus (INSERT lists, SET clauses, SELECT
-			// backfills all count — the tripwire targets NAME-ABSENT
-			// columns, the "dark for years" shape).
+			// Writer presence: the column name as a whole word inside an
+			// INSERT/UPDATE statement that names THIS table (comment-
+			// stripped). Mentions in code comments, SELECT-only readers,
+			// or other tables' statements do not count.
 			wordRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(col) + `\b`)
-			if !wordRe.MatchString(corpus) {
-				t.Errorf("%s has NO writer in internal/db/ and no documentedEmpty entry — either wire a writer or allowlist it WITH a reason (the 2026-08-19 fill-audit contract)", key)
+			found := false
+			for _, block := range writeBlocks[tbl] {
+				if wordRe.MatchString(block) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s appears in NO INSERT/UPDATE statement naming aveloxis_data.%s and has no documentedEmpty entry — either wire a writer or allowlist it WITH a reason (the 2026-08-19 fill-audit contract)", key, tbl)
 			}
 		}
 	}

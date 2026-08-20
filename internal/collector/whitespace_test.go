@@ -319,3 +319,28 @@ func TestWhitespaceWalkEndToEnd(t *testing.T) {
 		t.Fatalf("marker not stamped: %q vs head %q", marker, head)
 	}
 }
+
+// v0.27.106 (PR #184 review, finding 4): readCappedLine is built on
+// ReadSlice fragments so a single mega-line (minified bundle, data
+// blob) never materializes in memory — ReadString would have allocated
+// the whole physical line before truncating. This drives a line larger
+// than the bufio buffer (1 MiB) through the parser and expects clean,
+// correctly-counted output.
+func TestWhitespaceMegaLineIsCappedNotAllocated(t *testing.T) {
+	mega := "+" + strings.Repeat("x", 3*1024*1024) // 3 MiB added line
+	stats := collectStats(t, fixtureLog(
+		"\x1eabab000000000000000000000000000000000000",
+		"2\t0\ta.txt",
+		"",
+		"diff --git a/a.txt b/a.txt",
+		"--- a/a.txt",
+		"+++ b/a.txt",
+		"@@ -0,0 +1,2 @@",
+		mega,
+		"+normal content line",
+	))
+	f := stats["abab000000000000000000000000000000000000"]["a.txt"]
+	if f.Added != 2 || f.Whitespace != 0 {
+		t.Fatalf("mega-line file: got added=%d ws=%d, want 2/0", f.Added, f.Whitespace)
+	}
+}

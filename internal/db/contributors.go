@@ -22,6 +22,23 @@ type ContributorResolver struct {
 type contributorKey struct {
 	platformID int16
 	userID     int64
+	// login participates in the key ONLY for userID == 0 refs
+	// (v0.27.106, ultrareview/Copilot PR #184): login-only refs (GitLab
+	// group owners, GraphQL Bot actors whose fragments carry no
+	// databaseId) all shared the key {plat, 0}, so after the first one
+	// resolved, EVERY subsequent login-only ref returned the FIRST
+	// ref's cntrb_id from cache — collapsing distinct identities onto
+	// one contributor. For userID > 0 the login stays out of the key so
+	// renames keep hitting the same cache entry.
+	login string
+}
+
+// resolverCacheKey builds the cache key per the rule above.
+func resolverCacheKey(platformID int16, userID int64, login string) contributorKey {
+	if userID > 0 {
+		return contributorKey{platformID: platformID, userID: userID}
+	}
+	return contributorKey{platformID: platformID, login: login}
 }
 
 // NewContributorResolver creates a resolver backed by the given store.
@@ -36,28 +53,34 @@ func NewContributorResolver(store *PostgresStore) *ContributorResolver {
 // returning the cntrb_id UUID as a string. Results are cached for the
 // lifetime of the resolver.
 func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, userID int64, login, name, email, avatarURL, profileURL, nodeID, userType string) (string, error) {
-	key := contributorKey{platformID: platformID, userID: userID}
+	key := resolverCacheKey(platformID, userID, login)
 
 	// 1. Check in-memory cache.
 	if id, ok := r.cache[key]; ok {
 		return id, nil
 	}
 
-	// 2. Look up in contributor_identities.
+	// 2. Look up in contributor_identities — ONLY for real platform ids.
+	// A (platform, 0) probe would match whatever identity row happens
+	// to carry platform_user_id = 0 and collapse every login-only ref
+	// onto it (the DB-side twin of the cache-key bug above); login-only
+	// refs resolve by login in step 2.5 instead.
 	var cntrbID string
-	err := r.store.pool.QueryRow(ctx, `
-		SELECT cntrb_id::text
-		FROM aveloxis_data.contributor_identities
-		WHERE platform_id = $1 AND platform_user_id = $2`,
-		platformID, userID,
-	).Scan(&cntrbID)
+	if userID > 0 {
+		err := r.store.pool.QueryRow(ctx, `
+			SELECT cntrb_id::text
+			FROM aveloxis_data.contributor_identities
+			WHERE platform_id = $1 AND platform_user_id = $2`,
+			platformID, userID,
+		).Scan(&cntrbID)
 
-	if err == nil {
-		r.cache[key] = cntrbID
-		return cntrbID, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return "", err
+		if err == nil {
+			r.cache[key] = cntrbID
+			return cntrbID, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", err
+		}
 	}
 
 	// 2.5. Not found by (platform, user_id), but the login may already
@@ -72,7 +95,7 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 	// query).
 	if login != "" {
 		var existingID string
-		err = r.store.pool.QueryRow(ctx, `
+		err := r.store.pool.QueryRow(ctx, `
 			SELECT cntrb_id::text
 			FROM aveloxis_data.contributors
 			WHERE cntrb_login = $1
@@ -128,7 +151,7 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 	} else {
 		newID = uuid.New().String()
 	}
-	err = r.store.withRetry(ctx, func(ctx context.Context) error {
+	err := r.store.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := r.store.pool.Begin(ctx)
 		if err != nil {
 			return err
@@ -275,7 +298,7 @@ func (r *ContributorResolver) MarkContributorEnriched(ctx context.Context, login
 // the contributor was previously resolved. Returns ("", false, nil) if
 // the contributor is not in the cache.
 func (r *ContributorResolver) ResolveIfKnown(ctx context.Context, platformID int16, userID int64) (string, bool, error) {
-	key := contributorKey{platformID: platformID, userID: userID}
+	key := resolverCacheKey(platformID, userID, "")
 	if id, ok := r.cache[key]; ok {
 		return id, true, nil
 	}

@@ -76,7 +76,19 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 	// when unmarked. Warn-don't-fail: whitespace is a refinement of the
 	// counts the numstat pass already stored, never a reason to fail
 	// the facade phase.
-	f.runWhitespacePhase(ctx, repoID, clonePath)
+	//
+	// v0.27.106 (PR #184 review): gated on a CLEAN numstat pass. A
+	// batch-insert failure leaves commit rows missing; stamping the
+	// marker anyway would exclude those commits from every future
+	// incremental walk once a later cycle inserts them — their
+	// whitespace would stay zero forever. Skipping keeps the marker
+	// empty so the next clean cycle does the full walk.
+	if len(result.Errors) == 0 {
+		f.runWhitespacePhase(ctx, repoID, clonePath)
+	} else {
+		f.logger.Warn("whitespace phase skipped — numstat pass recorded errors; marker stays unstamped for a full walk next cycle",
+			"repo_id", repoID, "numstat_errors", len(result.Errors))
+	}
 
 	// dm_repo_* aggregates are NOT refreshed here. Running them per repo on
 	// every collection duplicated work and dominated facade runtime on large

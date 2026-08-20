@@ -445,11 +445,11 @@ const prNodeFragment = `
       baseRefOid
       headRepository {
         databaseId id nameWithOwner name isPrivate
-        owner { __typename login ... on User { id databaseId } ... on Organization { databaseId } }
+        owner { __typename login ... on User { id databaseId } ... on Organization { id databaseId } }
       }
       baseRepository {
         databaseId id nameWithOwner name isPrivate
-        owner { __typename login ... on User { id databaseId } ... on Organization { databaseId } }
+        owner { __typename login ... on User { id databaseId } ... on Organization { id databaseId } }
       }
 `
 
@@ -633,6 +633,7 @@ type prBatchRepo struct {
 	IsPrivate     bool   `json:"isPrivate"`
 	Owner         *struct {
 		Typename   string `json:"__typename"`
+		ID         string `json:"id"` // v0.27.106 — selected since v0.27.103; was decoded nowhere
 		Login      string `json:"login"`
 		DatabaseID int64  `json:"databaseId"`
 	} `json:"owner"`
@@ -934,6 +935,7 @@ func repoFromGraphQL(r *prBatchRepo, headOrBase string, origin model.DataOrigin)
 		out.OwnerRef = model.UserRef{
 			PlatformID: r.Owner.DatabaseID,
 			Login:      r.Owner.Login,
+			NodeID:     r.Owner.ID, // v0.27.106 (PR #184) — close the owner-sourced node_id gap
 			Type:       ownerType,
 		}
 	}

@@ -294,15 +294,32 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 			r.GitURL).Scan(&urlTracked)
 		if urlTracked == 0 {
 			if existing, ferr := s.FindRepoByPlatformRepoID(ctx, r.Platform, r.PlatformID); ferr == nil && existing > 0 {
-				if uerr := s.UpdateRepoURL(ctx, existing, r.GitURL); uerr == nil {
+				// v0.27.106 (PR #184 review): heal via UpdateRepoURLs
+				// (PLURAL) — the renamed repo's child rows (issue/PR/
+				// release URLs) carry the OLD owner/repo path and must
+				// heal alongside repo_git, matching the prelim rename
+				// path. Needs the old URL for the find-and-replace.
+				var oldURL string
+				_ = s.pool.QueryRow(ctx,
+					`SELECT repo_git FROM aveloxis_data.repos WHERE repo_id = $1`,
+					existing).Scan(&oldURL)
+				uerr := s.UpdateRepoURLs(ctx, existing, oldURL, r.GitURL)
+				if uerr == nil {
 					s.logger.Info("rename detected at add time — healed existing repo URL instead of creating a duplicate",
-						"repo_id", existing, "new_url", r.GitURL, "platform_repo_id", r.PlatformID)
+						"repo_id", existing, "old_url", oldURL, "new_url", r.GitURL, "platform_repo_id", r.PlatformID)
 					return existing, nil
 				}
-				// URL-heal race: another writer landed the new URL
-				// between our probe and the UPDATE (23505 on repo_git's
-				// unique). Fall through — the INSERT below routes to
-				// that row via ON CONFLICT (repo_git) DO UPDATE.
+				// ONLY a genuine uniqueness race (another writer landed
+				// the new URL between our probe and the UPDATE — 23505
+				// on repo_git's unique) may fall through to the INSERT
+				// below, which then routes to that row via ON CONFLICT
+				// (repo_git) DO UPDATE. Any OTHER failure (transient DB
+				// error) must propagate — falling through would mint
+				// the very duplicate this branch exists to prevent.
+				var healPgErr *pgconn.PgError
+				if !errors.As(uerr, &healPgErr) || healPgErr.Code != "23505" {
+					return 0, fmt.Errorf("rename-heal URL update for repo %d: %w", existing, uerr)
+				}
 			}
 		}
 	}

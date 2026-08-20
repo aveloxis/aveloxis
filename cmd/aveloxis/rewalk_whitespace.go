@@ -163,8 +163,17 @@ many-hour job; progress lines include running totals for extrapolation.`,
 			fmt.Printf("rewalk-whitespace: %d repos walked, %d rows updated, %d failed, last repo_id %d, elapsed %s\n",
 				reposDone.Load(), rowsUpdated.Load(), failed.Load(), after,
 				time.Since(start).Round(time.Second))
+			// v0.27.106 (PR #184 review): nonzero exit on interruption or
+			// failures so cron/scripts notice, and the resume advice is a
+			// PLAIN rerun — the marker already skips walked repos, while
+			// --after-repo-id would permanently skip failed/mid-collection
+			// repos below the resume point.
 			if err := ctx.Err(); err != nil {
-				fmt.Printf("interrupted — resume with --after-repo-id %d (already-walked repos are skipped anyway)\n", after)
+				fmt.Println("interrupted — rerun `aveloxis rewalk-whitespace` (already-walked repos are skipped via the marker)")
+				return fmt.Errorf("rewalk interrupted: %w", err)
+			}
+			if n := failed.Load(); n > 0 {
+				return fmt.Errorf("rewalk completed with %d failed repos — rerun to retry them (their markers are still empty)", n)
 			}
 			return nil
 		},

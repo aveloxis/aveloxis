@@ -67,19 +67,34 @@ type whitespaceCommit struct {
 const whitespaceLineCap = 64 * 1024
 
 // readCappedLine reads one \n-terminated line, retaining at most
-// whitespaceLineCap bytes and discarding the remainder of longer lines.
+// whitespaceLineCap bytes. v0.27.106 (PR #184 review): built on
+// ReadSlice so the retained prefix is the ONLY allocation — ReadString
+// would materialize the whole physical line first, letting one huge
+// generated/minified line allocate hundreds of MB per walker (kate is
+// an OOM-sensitive host). Overflow fragments are consumed and dropped.
 func readCappedLine(r *bufio.Reader) (string, error) {
-	line, err := r.ReadString('\n')
-	if err == nil || len(line) > 0 {
-		if len(line) > whitespaceLineCap {
-			// Retain the head; drain nothing further — ReadString
-			// already consumed to the newline (or returned a long
-			// prefix on ErrBufferFull-free Reader semantics).
-			line = line[:whitespaceLineCap]
+	var kept []byte
+	for {
+		frag, err := r.ReadSlice('\n')
+		if len(frag) > 0 && len(kept) < whitespaceLineCap {
+			take := frag
+			if len(kept)+len(take) > whitespaceLineCap {
+				take = take[:whitespaceLineCap-len(kept)]
+			}
+			kept = append(kept, take...)
 		}
-		return strings.TrimRight(line, "\n"), err
+		switch err {
+		case nil:
+			return strings.TrimRight(string(kept), "\n"), nil
+		case bufio.ErrBufferFull:
+			continue // long line — keep consuming fragments
+		default:
+			if len(kept) > 0 || err == io.EOF {
+				return strings.TrimRight(string(kept), "\n"), err
+			}
+			return "", err
+		}
 	}
-	return "", err
 }
 
 // parseWhitespaceLog parses `git log --format=%x1e%H --numstat -p`
@@ -198,6 +213,16 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 				resetRemoval = false
 			}
 			wsCheck = append(wsCheck, strings.TrimSpace(line[1:]))
+
+			// DELIBERATE Augur-parity quirk (PR #184 review finding 2,
+			// declined): wsCheck is NOT cleared on context lines or
+			// hunk ("@@") boundaries, so an addition later in the same
+			// file that equals an earlier non-adjacent removal is
+			// counted as a whitespace reformat. Augur's analyzecommit.py
+			// has exactly this behavior (context lines and @@ fall
+			// through its +/- dispatch untouched); "fixing" it would
+			// diverge our cmt_whitespace numbers from Augur's. Column
+			// parity wins over abstract correctness here.
 		}
 
 		if readErr == io.EOF {

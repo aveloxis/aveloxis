@@ -55,8 +55,11 @@ func TestUpsertRepoHasForgeIDRenameHeal(t *testing.T) {
 	if !strings.Contains(body, "FindRepoByPlatformRepoID(") {
 		t.Error("UpsertRepo must look up by (platform_id, platform_repo_id) before creating a row for an untracked URL")
 	}
-	if !strings.Contains(body, "UpdateRepoURL(") {
-		t.Error("UpsertRepo's rename-heal must route through the established UpdateRepoURL writer (updates repo_git + owner + name)")
+	// v0.27.106 (PR #184 review): the heal upgraded from the singular
+	// UpdateRepoURL to UpdateRepoURLs — the PLURAL also rewrites the
+	// child tables' stored issue/PR/release URLs carrying the old path.
+	if !strings.Contains(body, "UpdateRepoURLs(") {
+		t.Error("UpsertRepo's rename-heal must route through UpdateRepoURLs (repo_git + owner + name + child-table URLs)")
 	}
 }
 

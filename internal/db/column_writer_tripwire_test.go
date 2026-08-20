@@ -128,6 +128,7 @@ func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {
 	}
 
 	totalCols := 0
+	inventoried := map[string]bool{}
 	for _, tbl := range auditedTables {
 		marker := "CREATE TABLE IF NOT EXISTS aveloxis_data." + tbl + " ("
 		i := strings.Index(string(schema), marker)
@@ -139,13 +140,23 @@ func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {
 		if j := strings.Index(block, "\n);"); j > 0 {
 			block = block[:j]
 		}
-		for _, m := range colRe.FindAllStringSubmatch(block, -1) {
+		cols := colRe.FindAllStringSubmatch(block, -1)
+		// v0.27.113 (round-8 suppressed finding, real): columns added to
+		// EXISTING fleets arrive as ALTER TABLE ... ADD COLUMN IF NOT
+		// EXISTS guards (the v0.27.58 rule), not in the CREATE TABLE
+		// block — and those are exactly the NEWEST columns, the ones
+		// most at risk of shipping without a writer. Inventory them too.
+		alterRe := regexp.MustCompile(`(?im)^ALTER TABLE aveloxis_data\.` +
+			regexp.QuoteMeta(tbl) + `\s+ADD COLUMN IF NOT EXISTS\s+([a-z_]+)\s+([A-Z][^;\n]*)`)
+		cols = append(cols, alterRe.FindAllStringSubmatch(string(schema), -1)...)
+		for _, m := range cols {
 			col := m[1]
 			if skipCols[col] || strings.Contains(m[2], "SERIAL") {
 				continue
 			}
 			totalCols++
 			key := tbl + "." + col
+			inventoried[key] = true
 			if _, ok := documentedEmpty[key]; ok {
 				continue
 			}
@@ -165,6 +176,12 @@ func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {
 				t.Errorf("%s appears in NO INSERT/UPDATE statement naming aveloxis_data.%s and has no documentedEmpty entry — either wire a writer or allowlist it WITH a reason (the 2026-08-19 fill-audit contract)", key, tbl)
 			}
 		}
+	}
+	// Self-check for the ALTER scan: whitespace_head_hash exists ONLY as
+	// an ALTER guard (schema.sql line ~163), so its absence here means
+	// ALTER-added columns silently dropped out of the audit again.
+	if !inventoried["repos.whitespace_head_hash"] {
+		t.Fatal("self-check: ALTER-added columns are not being inventoried (repos.whitespace_head_hash missing) — the round-8 ALTER coverage regressed")
 	}
 	if totalCols < 200 {
 		t.Fatalf("self-check: only %d columns parsed across %d tables — the schema regex broke", totalCols, len(auditedTables))

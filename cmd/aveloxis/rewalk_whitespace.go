@@ -89,6 +89,23 @@ many-hour job; progress lines include running totals for extrapolation.`,
 				if err != nil {
 					return fmt.Errorf("repo %d: %w", repoID, err)
 				}
+				// v0.27.113 (Copilot round 8, active): apply the same
+				// two gates the fleet query applies in SQL. A
+				// never-collected repo has no commit rows — walking it
+				// would stamp the marker over nothing and the later
+				// first collection's incremental phase would skip all
+				// historical whitespace forever; a mid-collection repo
+				// would contend on the shared persistent clone.
+				collected, collecting, err := store.RepoWhitespaceRewalkState(ctx, repoID)
+				if err != nil {
+					return fmt.Errorf("repo %d rewalk gate: %w", repoID, err)
+				}
+				if !collected {
+					return fmt.Errorf("repo %d has never completed a collection (or is not tracked) — refusing to walk: stamping the whitespace marker before the first collection would permanently exclude its historical commits from the incremental phase; the first collection bootstraps whitespace inline instead", repoID)
+				}
+				if collecting {
+					return fmt.Errorf("repo %d is mid-collection — retry after the cycle completes", repoID)
+				}
 				n, err := fc.RewalkWhitespace(ctx, repoID, repo.GitURL)
 				if err != nil {
 					return err

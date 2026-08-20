@@ -201,11 +201,21 @@ schema parity is a project goal; these columns stay declared and stay empty.
 **Token-scope / corpus outcomes (writer correct, data legitimately rare):**
 `releases.is_draft` (public tokens never see draft releases),
 `pull_request_repo.pr_repo_private_bool` (private forks are invisible),
-`messages.msg_sender_email`/`msg_header`/`rgls_id` (mailing-list-only
-material), the `email_message.linked_pull_request_id`/`linked_pr_review_id`/
+`messages.msg_sender_email` (written only by the mailing-list projection —
+empty on every forge-sourced message), the
+`email_message.linked_pull_request_id`/`linked_pr_review_id`/
 `linked_commit_hash` routing columns (writers exist; matches depend on the
 list corpus), `contributors.gl_*` (wired since v0.20.3; the fleet has one
 GitLab repo).
+
+**Lives on a different table (NO writer on this one — allowlisted):**
+`messages.msg_header` and `messages.rgls_id`. Mailing-list headers and
+list linkage are first-class on `email_message`/`email_message_ref`; the
+shared message upsert never writes these two columns, so they sit in the
+tripwire's `documentedEmpty` map — genuinely writer-less, not merely rare.
+(Corrected v0.27.113: an earlier revision grouped them with the
+writer-backed `msg_sender_email`, drifting from the map this section
+claims to mirror.)
 
 **Platform-parity notes:** `issue_events.action_commit_hash` and
 `pull_request_events.action_commit_hash` are GitHub-only (the GitLab event

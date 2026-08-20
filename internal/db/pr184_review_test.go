@@ -238,3 +238,62 @@ func TestRenameHealURLProbePropagatesRealErrors(t *testing.T) {
 		t.Error("the urlTracked probe must propagate non-ErrNoRows errors instead of steering into the heal path on bad information")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 8 (2026-08-20): 1 active + 2 suppressed — all three real again.
+// ---------------------------------------------------------------------------
+
+// Active: single-repo mode (`rewalk-whitespace --repo-id N`) bypassed
+// BOTH gates the fleet query applies in SQL. Walking a never-collected
+// repo stamps whitespace_head_hash over ZERO commit rows; the later
+// first collection's incremental phase then skips all historical
+// whitespace forever — the exact marker-over-missing-rows class the
+// v0.27.112 fleet-query fix closed. The gate must run BEFORE the walk.
+func TestSingleRepoRewalkAppliesFleetGates(t *testing.T) {
+	src, err := os.ReadFile("whitespace_store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "func (s *PostgresStore) RepoWhitespaceRewalkState(") {
+		t.Error("RepoWhitespaceRewalkState must exist — single-repo rewalk mode needs the never-collected + mid-collection gates the fleet query applies in SQL")
+	}
+	cmdSrc, err := os.ReadFile("../../cmd/aveloxis/rewalk_whitespace.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := string(cmdSrc)
+	gateIdx := strings.Index(c, "RepoWhitespaceRewalkState(")
+	walkIdx := strings.Index(c, "fc.RewalkWhitespace(")
+	if gateIdx < 0 {
+		t.Fatal("single-repo rewalk mode must consult RepoWhitespaceRewalkState before walking")
+	}
+	// The single-repo branch precedes the worker loop, so the FIRST
+	// RewalkWhitespace call site is the single-repo one — the gate must
+	// appear before it.
+	if walkIdx >= 0 && gateIdx > walkIdx {
+		t.Error("the rewalk gate must run BEFORE the single-repo RewalkWhitespace call — gating after the walk is decorative")
+	}
+}
+
+// Suppressed-but-real: the doc grouped msg_header/rgls_id with the
+// writer-backed msg_sender_email under "writer correct, data
+// legitimately rare" while the canonical documentedEmpty map says both
+// have NO writer. The doc must not drift from the map it claims to
+// mirror. (The other suppressed finding — the tripwire missing
+// ALTER-added columns — is pinned by the tripwire's own
+// repos.whitespace_head_hash self-check.)
+func TestColumnMappingDocMatchesDocumentedEmpty(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/architecture/column-mapping.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := string(doc)
+	if strings.Contains(d, "msg_sender_email`/`msg_header") {
+		t.Error("column-mapping.md groups msg_header with the writer-backed msg_sender_email — msg_header is documentedEmpty (no writer)")
+	}
+	for _, needle := range []string{"msg_header", "rgls_id"} {
+		if !strings.Contains(d, needle) {
+			t.Errorf("column-mapping.md must still document messages.%s in the known-empty section", needle)
+		}
+	}
+}

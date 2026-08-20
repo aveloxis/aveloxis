@@ -132,6 +132,28 @@ func (s *PostgresStore) IsRepoCollecting(ctx context.Context, repoID int64) (boo
 	return collecting, err
 }
 
+// RepoWhitespaceRewalkState reports, for the command's single-repo
+// mode, the two gates the fleet query (GetReposForWhitespaceRewalk)
+// applies in SQL (v0.27.113 — Copilot round-8 active finding: the
+// --repo-id path bypassed both): collected = the repo has EVER
+// completed a collection (a never-collected repo has NO commit rows —
+// walking it stamps the marker over nothing, and the later first
+// collection's incremental phase then skips all historical whitespace
+// forever, the marker-over-missing-rows class); collecting = currently
+// claimed by a collection worker. An untracked repo (no queue row)
+// reports (false, false) — untracked repos are outside the rewalk's
+// contract entirely (the v0.27.20 "tracked" definition).
+func (s *PostgresStore) RepoWhitespaceRewalkState(ctx context.Context, repoID int64) (collected, collecting bool, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT last_collected IS NOT NULL, status = 'collecting'
+		FROM aveloxis_ops.collection_queue WHERE repo_id = $1`,
+		repoID).Scan(&collected, &collecting)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	return collected, collecting, err
+}
+
 // WhitespaceRewalkTarget is one repo the rewalk command should visit.
 type WhitespaceRewalkTarget struct {
 	RepoID int64

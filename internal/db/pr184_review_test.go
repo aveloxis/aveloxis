@@ -16,8 +16,9 @@ import (
 	"time"
 )
 
-// Finding 1 (the severe one): login-only UserRefs (userID == 0 — GitLab
-// group owners, GraphQL Bot actors) all shared the resolver cache key
+// Finding 1 (the severe one): login-only UserRefs (userID == 0 —
+// GraphQL Bot actors; GitLab group owners until v0.27.109 stopped
+// producing them) all shared the resolver cache key
 // {platform, 0}, so after the first resolved, EVERY subsequent login-only
 // ref returned the FIRST one's cntrb_id — collapsing distinct identities
 // onto one contributor. The identities lookup had the same collapse via

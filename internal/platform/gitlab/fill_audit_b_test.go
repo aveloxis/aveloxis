@@ -30,19 +30,24 @@ func glRegion(t *testing.T, decl string) string {
 	return decl + rest
 }
 
-// B5 — the fork-owner ref on the GitLab rail: prefer the project's
-// `owner` object (user-owned projects = the fork case), fall back to a
-// login-only ref from the namespace path for group-owned projects.
+// B5 — the fork-owner ref on the GitLab rail comes from the project's
+// `owner` object ONLY (a real user with a numeric platform ID — the
+// canonical, rename-proof identity). v0.27.109 (Copilot PR #184 round
+// 4): the namespace login-only fallback is BANNED — it fed the
+// resolver's GLOBAL cntrb_login lookup, which ignores platform/type,
+// so a GitLab group could be falsely attributed to an unrelated
+// same-login user. Group-owned projects leave pr_cntrb_id honestly
+// NULL instead.
 func TestFetchGLProjectAsRepoCapturesOwnerRef(t *testing.T) {
 	body := glRegion(t, "func (c *Client) fetchGLProjectAsRepo")
 	if !strings.Contains(body, "OwnerRef") {
-		t.Error("fetchGLProjectAsRepo must populate OwnerRef")
+		t.Error("fetchGLProjectAsRepo must populate OwnerRef from the owner object")
 	}
 	if !strings.Contains(body, "`json:\"owner\"`") {
 		t.Error("fetchGLProjectAsRepo must decode the project's owner object")
 	}
-	if !strings.Contains(body, "`json:\"namespace\"`") {
-		t.Error("fetchGLProjectAsRepo must decode namespace as the group-owned fallback")
+	if strings.Contains(body, "`json:\"namespace\"`") || strings.Contains(body, "Namespace.Path") {
+		t.Error("the namespace login-only fallback must NOT return — a login-only ref cross-matches the global cntrb_login table (see v0.27.109)")
 	}
 }
 

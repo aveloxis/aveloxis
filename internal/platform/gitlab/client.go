@@ -413,13 +413,15 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 		PathWithNamespace string `json:"path_with_namespace"`
 		Visibility        string `json:"visibility"` // "public", "internal", "private"
 		// v0.27.104: owner is present on user-owned projects (the fork
-		// case — the value here); group-owned projects fall back to a
-		// login-only ref from the namespace path.
-		Owner     *glUser `json:"owner"`
-		Namespace struct {
-			Path string `json:"path"`
-			Kind string `json:"kind"`
-		} `json:"namespace"`
+		// case). v0.27.109 (Copilot PR #184 round 4): owner is the ONLY
+		// OwnerRef source — group-owned projects deliberately stay
+		// UNRESOLVED. A group namespace has no platform user ID (the
+		// canonical, rename-proof identity), and a login-only ref would
+		// resolve through the resolver's GLOBAL cntrb_login fallback —
+		// which ignores platform and type, so a GitLab group named
+		// "acme" could be falsely attributed to a GitHub user "acme".
+		// Honest NULL beats fabricated attribution (the v0.26.5 rule).
+		Owner *glUser `json:"owner"`
 	}
 	if err := c.http.GetJSON(ctx, path, &proj); err != nil {
 		return nil
@@ -432,15 +434,10 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 		Private:      proj.Visibility == "private",
 		Origin:       model.DataOrigin{DataSource: "GitLab API"},
 	}
-	switch {
-	case proj.Owner != nil:
+	if proj.Owner != nil {
+		// glUserToRef carries the numeric GitLab user ID — the userID>0
+		// resolver path with a deterministic PlatformUUID.
 		out.OwnerRef = glUserToRef(*proj.Owner)
-	case proj.Namespace.Path != "":
-		ownerType := "User"
-		if proj.Namespace.Kind == "group" {
-			ownerType = "Organization"
-		}
-		out.OwnerRef = model.UserRef{Login: proj.Namespace.Path, Type: ownerType}
 	}
 	return out
 }

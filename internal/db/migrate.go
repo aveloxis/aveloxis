@@ -1207,6 +1207,19 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// v0.27.105: whitespace-walk marker (fill-audit Workstream C).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "whitespace_head_hash", "TEXT DEFAULT ''")
 
+	// v0.27.108: delete poisoned (platform, 0) identity rows — the
+	// pre-fix Resolve created ONE shared identity row for every
+	// login-only ref (userID==0), its login churning per observation
+	// while cntrb_id stayed pinned to the first contributor (production
+	// carried exactly one: the codecov Bot actor). Identity rows are
+	// meaningless without a real platform_user_id; nothing reads them
+	// post-v0.27.106. Self-disabling: once deleted, the fixed writer
+	// never recreates them.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.108 delete poisoned platform_user_id=0 identity rows", `
+		DELETE FROM aveloxis_data.contributor_identities
+		WHERE platform_user_id = 0`)
+
 	// v0.22.7: apply ON UPDATE CASCADE ON DELETE RESTRICT
 	// DEFERRABLE INITIALLY DEFERRED to the same 50 FKs. RESTRICT
 	// prevents orphaned-child rows by blocking parent DELETEs;

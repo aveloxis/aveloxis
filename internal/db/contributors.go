@@ -214,7 +214,16 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 			return err
 		}
 
-		_, err = tx.Exec(ctx, `
+		// v0.27.108 (Copilot PR #184 round 3): identity rows are keyed by
+		// (platform_id, platform_user_id) — a userID==0 ref has no such
+		// identity, and inserting one funnels EVERY login-only ref into
+		// the single (platform, 0) row: each new login overwrites its
+		// metadata while cntrb_id stays pinned to the first contributor
+		// (production carried exactly one such poisoned row — the
+		// codecov Bot actor). Login-only contributors get NO identity
+		// row; they resolve by login (step 2.5) every time.
+		if userID > 0 {
+			_, err = tx.Exec(ctx, `
 			INSERT INTO aveloxis_data.contributor_identities
 				(cntrb_id, platform_id, platform_user_id, login, name, email,
 				 avatar_url, profile_url, node_id, user_type, is_admin)
@@ -228,11 +237,12 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 				-- v0.27.103: heal empty node_id/user_type on re-observation.
 				node_id = COALESCE(NULLIF(EXCLUDED.node_id, ''), contributor_identities.node_id),
 				user_type = COALESCE(NULLIF(EXCLUDED.user_type, ''), contributor_identities.user_type)`,
-			cntrbID, platformID, userID, login, name, email,
-			avatarURL, profileURL, nodeID, userType, false,
-		)
-		if err != nil {
-			return err
+				cntrbID, platformID, userID, login, name, email,
+				avatarURL, profileURL, nodeID, userType, false,
+			)
+			if err != nil {
+				return err
+			}
 		}
 
 		return tx.Commit(ctx)

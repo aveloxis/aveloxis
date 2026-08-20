@@ -4,6 +4,7 @@
 // v0.27.105 — store side of the whitespace measurement (fill-audit
 // Workstream C). See internal/collector/whitespace.go for the walker
 // and the Augur-parity semantics.
+
 package db
 
 import (

@@ -61,6 +61,20 @@ func TestLoginOnlyRefsResolveDistinctly(t *testing.T) {
 	if id1b != id1 {
 		t.Fatalf("re-resolving the same login-only ref must be stable: %s vs %s", id1b, id1)
 	}
+
+	// v0.27.108 (round 3): NO identity row may exist for these refs —
+	// the pre-fix step-3 INSERT funneled every login-only ref into one
+	// shared (platform, 0) identity row (login churning per observation,
+	// cntrb_id pinned to the first contributor).
+	var zeroRows int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM aveloxis_data.contributor_identities
+		WHERE platform_user_id = 0 AND cntrb_id::text IN ($1, $2)`, id1, id2).Scan(&zeroRows); err != nil {
+		t.Fatal(err)
+	}
+	if zeroRows != 0 {
+		t.Fatalf("login-only refs created %d (platform, 0) identity rows — identity rows are keyed by platform_user_id, which these refs don't have", zeroRows)
+	}
 }
 
 // Finding 5: the rename-heal must route through UpdateRepoURLs (plural —

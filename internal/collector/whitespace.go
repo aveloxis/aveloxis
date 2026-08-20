@@ -31,6 +31,7 @@
 // patch section POSITIONALLY with the commit's numstat block (both
 // follow the same diff ordering), keying every stat by the numstat
 // name so the UPDATE join always hits the stored row.
+
 package collector
 
 import (

@@ -10,6 +10,7 @@
 // head_or_base)), zero API calls, self-disabling via the IS NULL
 // predicates, keyset windows over the driven table's PK so interrupted
 // runs resume (the v0.26.6 lesson — never LIMIT-rescan loops).
+
 package db
 
 import (

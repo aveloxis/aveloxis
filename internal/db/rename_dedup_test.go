@@ -90,7 +90,10 @@ func TestPlatformRepoIDIndexIsMigrationOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(src), "idx_repos_platform_repo_id") {
+	// Comment-stripped: the rule comment at the old declaration site
+	// legitimately names the index; only real DDL counts.
+	stripped := regexp.MustCompile(`(?m)--[^\n]*`).ReplaceAllString(string(src), "")
+	if strings.Contains(stripped, "idx_repos_platform_repo_id") {
 		t.Error("idx_repos_platform_repo_id must NOT be declared in schema.sql — migration-only (v0.27.98 rule); ensureForgeIDIndex owns fresh installs too")
 	}
 }

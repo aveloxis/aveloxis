@@ -57,7 +57,7 @@
     "scancode_run_timeout_hours": 2,
     "scancode_run_timeout_cap_hours": 24,
     "scancode_max_in_memory": 5000,
-    "vuln_scan_transitive": false,
+    "vuln_scan_transitive": true,
     "dev_build_deps": false,
     "github_actions_deps": false,
     "skip_largest_percent": 0,

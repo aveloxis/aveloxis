@@ -85,7 +85,7 @@ func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 			cache := collector.NewOSVCache()
 			healed, failed := 0, 0
 			for i, id := range ids {
-				if _, err := collector.ScanVulnerabilities(ctx, store, id, logger, cache, cfg.Collection.VulnScanTransitive); err != nil {
+				if _, err := collector.ScanVulnerabilities(ctx, store, id, logger, cache, cfg.Collection.VulnScanTransitiveValue()); err != nil {
 					failed++
 					fmt.Printf("repo %d FAILED: %v\n", id, err)
 				} else {

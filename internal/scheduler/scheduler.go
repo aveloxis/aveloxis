@@ -1082,7 +1082,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// Phase 7: Vulnerability scanning via OSV.dev.
 	// Uses purls from libyear data to query for known CVEs.
 	vulnResult, vulnErr := collector.ScanVulnerabilities(ctx, s.store, job.RepoID, s.logger,
-		s.osvCache, s.cfg.Collection.VulnScanTransitive)
+		s.osvCache, s.cfg.Collection.VulnScanTransitiveValue())
 	if vulnErr != nil {
 		s.logger.Warn("vulnerability scan failed", "repo_id", job.RepoID, "error", vulnErr)
 	} else if vulnResult != nil && vulnResult.VulnsFound > 0 {
@@ -1282,7 +1282,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	ac.RetainClone = true
 	// v0.27.21 C1: store the full lockfile closure when transitive
 	// scanning is on (read at point of use — the v0.25.37 rule).
-	ac.TransitiveLockfiles = s.cfg.Collection.VulnScanTransitive
+	ac.TransitiveLockfiles = s.cfg.Collection.VulnScanTransitiveValue()
 	ac.DevBuildDeps = s.cfg.Collection.DevBuildDeps
 	ac.GitHubActionsDeps = s.cfg.Collection.GitHubActionsDeps
 	aResult, aErr := ac.AnalyzeRepo(ctx, repoID)

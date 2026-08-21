@@ -36,6 +36,7 @@ var exampleValueAllowlist = map[string]string{
 // vs zero-in-default equivalence work (defaults applied at the
 // accessor layer, per the config-knob end-to-end lesson).
 var effectiveAccessors = map[string]func(c *CollectionConfig) any{
+	"VulnScanTransitive":                          func(c *CollectionConfig) any { return c.VulnScanTransitiveValue() },
 	"MailingListProcessorWorkers":                 func(c *CollectionConfig) any { return c.MailingListProcessorWorkersOrDefault() },
 	"MailingListCadenceDays":                      func(c *CollectionConfig) any { return c.MailingListCadenceDuration() },
 	"MailingListWorkers":                          func(c *CollectionConfig) any { return c.MailingListWorkersOrDefault() },

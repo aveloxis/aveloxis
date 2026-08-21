@@ -39,7 +39,7 @@ var emailLookupIndexes = []struct {
 // Both indexes must be declared in schema.sql for fresh installs, and
 // must be NON-partial: the hot probes compare against a JOIN column
 // (em.sender_email), and the planner cannot prove a partial predicate
-// like "cntrb_email != ”" from a join variable at plan time — a partial
+// like "cntrb_email != ''" from a join variable at plan time — a partial
 // index would be silently ignored for exactly the anti-join this fix
 // targets. (The v0.19.9 partial gh_login index is fine because those
 // probes are plan-time-known parameters; this one is not.)

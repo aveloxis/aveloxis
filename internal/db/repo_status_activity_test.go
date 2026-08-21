@@ -187,7 +187,7 @@ func TestMetadataCallersPassForgeArchived(t *testing.T) {
 }
 
 // TestScopeRuntimeWordBackfillMigration pins the v0.27.51 backfill:
-// ” → 'runtime' on direct/transitive findings, self rows untouched
+// '' → 'runtime' on direct/transitive findings, self rows untouched
 // (scope vocabulary does not apply to a project's own advisories).
 func TestScopeRuntimeWordBackfillMigration(t *testing.T) {
 	src, err := os.ReadFile("migrate.go")

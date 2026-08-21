@@ -204,6 +204,60 @@ exists to catch → confirm RED → revert → green. Interdependent pins (ones 
 read other test files or share allowlists) migrate as a closed cluster in one
 change.
 
+### SQL write scanning: `internal/srctest/sqlscan` (v0.27.124)
+
+Tests that reason about SQL WRITE statements use the Phase 2 engine
+instead of ad-hoc regexes:
+
+- `sqlscan.Statements(srctest.PackageFiles(t, "internal/db", 30))` — every
+  backtick SQL literal in a package, comment-stripped (literal-aware), SPLIT at
+  quote-/`$$`-aware top-level semicolons, and attributed to its source file.
+  Splitting matters: in the old concatenated-literal scan, a `SET col =` in an
+  unrelated trailing statement of a multi-statement literal counted as a writer
+  for the leading statement's table.
+- `sqlscan.FindWrites(stmts, "aveloxis_data.repos")` — the INSERT/UPDATE
+  statements naming a schema-qualified table (aveloxis_ops works too).
+- `Stmt.WritesColumn(table, col)` — writer-position detection (INSERT column
+  list or UPDATE SET left-hand side; WHERE/RETURNING/RHS appearances do NOT
+  count — the v0.27.116 contract, fixtures moved wholesale).
+- `Stmt.SetExprs(col)` — the depth-counting, quote-aware RHS extractor the
+  Phase 3 write-policy matchers classify.
+- `Stmt.WhereGuardsEmpty(col)` — recognizes the guarded fill-empty shape
+  (`SET col = $N ... WHERE COALESCE(col, '') = ''` / `col IS NULL`).
+
+Known blind spots are documented in the package doc (concatenated SQL is
+invisible; tagged dollar-quotes untracked). The flagship consumer is
+`internal/db/column_writer_tripwire_test.go`; port verified behavior-identical
+(same zero-violation pass on the real corpus; fake-column and stale-allowlist
+mutations flag identically).
+
+### Column write-policy registry (v0.27.126)
+
+`internal/db/column_write_policy_test.go` declares each protected column's ONE
+write policy (`FillEmptyOnly` / `PreferNonemptyIncoming` /
+`PreferNonNullIncoming` / `GreatestNonNull` / `AlwaysRefresh` / `InsertOnly`);
+the sqlscan policy engine verifies every UPDATE SET assignment in the store
+corpus conforms. Matchers are ORDER-SENSITIVE — the verbatim shipped round-11
+bug (`COALESCE(NULLIF(EXCLUDED.platform_repo_id, ''), repos.platform_repo_id)`,
+incoming-first where fill-empty-only was intended) is a permanent canary
+fixture in the engine's suite, and re-red-verified against the live registry.
+Triage protocol for a red run (in the failure message; never weaken a
+matcher): fix the SQL | correct the registered policy | add an `Exception`
+WITH a reason. Exceptions that suppress nothing are reported STALE and fail
+the run. New schema columns with a meaningful write discipline register at
+introduction (schema-migrations.md checklist step 7).
+
+### Standing-rules registry (v0.27.127)
+
+`scripts/standing_rules.go` is the machine-readable table of the project's
+cross-cutting rules — {ID, one-line Statement, EnforcedBy test names,
+ProcessOnly, Retired}. `TestStandingRulesRegistry` keeps it true: every
+active rule's enforcing tests must exist; every `SR-<n>` citation in any
+test must name a registered rule; IDs are never reused (Retired rules keep
+theirs forever). New tripwires that enforce a standing rule cite their
+SR-ID in a comment (`// Enforces SR-11 ...`). ProcessOnly rules are
+review-time discipline and the analyzer candidates below.
+
 ### Analyzer graduation criteria (deliberately deferred)
 
 All cross-cutting checks stay in `go test` (runs identically everywhere, zero

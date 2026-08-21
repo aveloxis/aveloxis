@@ -237,7 +237,7 @@ func TestScanLockfilesTransitiveGate(t *testing.T) {
 
 // TestVulnScanTargetsCarryKind pins that every direct-target
 // constructor stamps dependency_kind='direct' — a target without a
-// kind would store ” and read as a pre-C1 row forever.
+// kind would store '' and read as a pre-C1 row forever.
 func TestVulnScanTargetsCarryKind(t *testing.T) {
 	src, err := os.ReadFile("vuln_targets.go")
 	if err != nil {

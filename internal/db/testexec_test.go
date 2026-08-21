@@ -88,10 +88,38 @@ func cleanupExecRetry(ctx context.Context, pg *PostgresStore, sql string, args .
 // contract is untouched — this helper is test-only.
 func testMigrate(ctx context.Context, t testing.TB, store *PostgresStore) {
 	t.Helper()
+	// Fast path: steady-state stamped DB — no lock traffic at all.
 	if store.GetSchemaVersion(ctx) == ToolVersion {
 		return
+	}
+	// v0.27.125 (Copilot round 16, suppressed — real): the bare check
+	// above races on FRESH runs — every parallel test binary observes
+	// the old stamp, queues on RunMigrations' internal advisory lock,
+	// and then still executes the full DDL sequentially, recreating the
+	// repeated-migration scenario this helper exists to remove. So:
+	// take a TEST-scoped advisory lock (shared with the collector twin
+	// — the two packages' binaries must serialize against each other)
+	// and RECHECK the stamp under it; only the first caller migrates.
+	conn, err := store.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire conn for test-migrate lock: %v", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", testMigrateLockID); err != nil {
+		t.Fatalf("test-migrate advisory lock: %v", err)
+	}
+	defer func() { _, _ = conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", testMigrateLockID) }()
+	if store.GetSchemaVersion(ctx) == ToolVersion {
+		return // another test binary migrated while we waited
 	}
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 }
+
+// testMigrateLockID serializes testMigrate's check-then-migrate across
+// ALL parallel test binaries. Distinct from MigrateAdvisoryLockID
+// (RunMigrations' own lock — consistently acquired AFTER this one, so
+// no ordering inversion is possible). The collector twin
+// (internal/collector/testmigrate_test.go) MUST use the same value.
+const testMigrateLockID int64 = 0x41564C5854455354 // "AVLXTEST"

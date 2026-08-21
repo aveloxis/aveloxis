@@ -117,7 +117,7 @@ func TestUpsertOAuthUserSourceChecksEmptyLogin(t *testing.T) {
 // TestUpsertOAuthUserEmptyLoginIntegration exercises the live path
 // against a scratch Postgres (gated on AVELOXIS_TEST_DB). Verifies
 // that a blank-login call inserts ZERO rows, regardless of whether
-// other rows already exist with login_name=”.
+// other rows already exist with login_name=''.
 func TestUpsertOAuthUserEmptyLoginIntegration(t *testing.T) {
 	conn := os.Getenv("AVELOXIS_TEST_DB")
 	if conn == "" {

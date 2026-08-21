@@ -20,14 +20,27 @@
 // SQL statements that NAME the audited table, with SQL comments
 // stripped — a column mentioned only in a code comment, a SELECT-only
 // reader, or another table's statement no longer satisfies the check.
+//
+// v0.27.124 (regression-infrastructure Phase 2): the scanning machinery
+// moved to internal/srctest/sqlscan — corpus via srctest.PackageFiles,
+// statements via sqlscan.Statements (comment-stripped AND split at
+// top-level semicolons, so a `SET col =` in an unrelated trailing
+// statement of a multi-statement literal can no longer satisfy "this
+// table writes col"), writer positions via Stmt.WritesColumn (the
+// sqlStatementWritesColumn logic + its fixtures, moved wholesale).
+// Behavior-identity verified at port time: identical zero-violation
+// result on the real corpus, and a fake schema column / stale
+// allowlist entry flag identically before and after.
 package db
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
+	"github.com/aveloxis/aveloxis/internal/srctest/sqlscan"
 )
 
 // auditedTables: the data-bearing entity tables the 2026-08-19 audit
@@ -76,45 +89,14 @@ func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Concatenate every non-test store source file — the writer corpus.
-	var writers strings.Builder
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	files := 0
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Clean(name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		writers.Write(b)
-		writers.WriteByte('\n')
-		files++
-	}
-	if files < 30 {
-		t.Fatalf("self-check: only %d store source files scanned — the corpus walk broke", files)
-	}
-	corpus := writers.String()
-
-	// Pull every backtick-delimited SQL literal out of the corpus, strip
-	// its `--` line comments, and index the INSERT/UPDATE statements per
-	// audited table. Only these blocks count as writers.
-	sqlLitRe := regexp.MustCompile("`[^`]*`")
-	commentRe := regexp.MustCompile(`(?m)--[^\n]*`)
-	writeBlocks := map[string][]string{}
-	for _, lit := range sqlLitRe.FindAllString(corpus, -1) {
-		clean := commentRe.ReplaceAllString(lit, "")
-		for _, tbl := range auditedTables {
-			tblRe := regexp.MustCompile(`(?i)(INSERT\s+INTO|UPDATE)\s+aveloxis_data\.` + regexp.QuoteMeta(tbl) + `\b`)
-			if tblRe.MatchString(clean) {
-				writeBlocks[tbl] = append(writeBlocks[tbl], clean)
-			}
-		}
+	// The writer corpus: every non-test store source file, decomposed
+	// into per-statement, comment-stripped, file-attributed SQL via the
+	// Phase 2 engine. The ≥30-files self-check is PackageFiles' required
+	// minFiles parameter.
+	stmts := sqlscan.Statements(srctest.PackageFiles(t, "internal/db", 30))
+	writeStmts := map[string][]sqlscan.Stmt{}
+	for _, tbl := range auditedTables {
+		writeStmts[tbl] = sqlscan.FindWrites(stmts, "aveloxis_data."+tbl)
 	}
 
 	// Full declaration line captured so SERIAL PKs can be skipped by
@@ -167,10 +149,12 @@ func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {
 			// earlier check matched the name ANYWHERE in the SQL
 			// literal, so a column read only in a WHERE predicate or
 			// RETURNING clause of a write statement passed as
-			// "written".
+			// "written". v0.27.124: per-STATEMENT via sqlscan, so a
+			// SET in an unrelated statement of the same literal no
+			// longer counts either.
 			found := false
-			for _, block := range writeBlocks[tbl] {
-				if sqlStatementWritesColumn(block, tbl, col) {
+			for _, ws := range writeStmts[tbl] {
+				if ws.WritesColumn("aveloxis_data."+tbl, col) {
 					found = true
 					break
 				}
@@ -204,54 +188,8 @@ func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {
 	}
 }
 
-// sqlStatementWritesColumn reports whether a comment-stripped SQL
-// literal that names the audited table writes the given column — i.e.
-// the column appears in a WRITER POSITION:
-//   - an INSERT INTO aveloxis_data.<tbl> (...) column list, or
-//   - an UPDATE SET assignment's LEFT-hand side (`SET col =` or
-//     `, col =` — including ON CONFLICT ... DO UPDATE SET).
-//
-// Appearances in WHERE predicates, RETURNING clauses, RHS expressions
-// (COALESCE(col, ...), subqueries), or qualified references (v.col,
-// c.col) deliberately do NOT count. Column lists never contain
-// parentheses, so the [^)]* capture is safe; SQL WHERE clauses join
-// with AND (never commas), so the `, col =` LHS shape cannot
-// false-match a predicate.
-func sqlStatementWritesColumn(block, tbl, col string) bool {
-	insertListRe := regexp.MustCompile(`(?is)INSERT\s+INTO\s+aveloxis_data\.` + regexp.QuoteMeta(tbl) + `\s*\(([^)]*)\)`)
-	wordRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(col) + `\b`)
-	for _, m := range insertListRe.FindAllStringSubmatch(block, -1) {
-		if wordRe.MatchString(m[1]) {
-			return true
-		}
-	}
-	setLHSRe := regexp.MustCompile(`(?is)(?:\bSET\s+|,\s*)` + regexp.QuoteMeta(col) + `\s*=`)
-	return setLHSRe.MatchString(block)
-}
-
-// TestSQLStatementWritesColumnFixtures — the negative fixtures the
-// round-10 suppressed finding asked for: predicate-only and
-// RETURNING-only appearances must NOT count as writers.
-func TestSQLStatementWritesColumnFixtures(t *testing.T) {
-	cases := []struct {
-		name  string
-		block string
-		tbl   string
-		col   string
-		want  bool
-	}{
-		{"set-lhs", `UPDATE aveloxis_data.repos SET repo_name = $1 WHERE repo_id = $2`, "repos", "repo_name", true},
-		{"where-only", `UPDATE aveloxis_data.repos SET repo_name = $1 WHERE whitespace_head_hash = ''`, "repos", "whitespace_head_hash", false},
-		{"insert-list", `INSERT INTO aveloxis_data.repos (repo_git, repo_name) VALUES ($1, $2) RETURNING repo_id`, "repos", "repo_git", true},
-		{"returning-only", `INSERT INTO aveloxis_data.repos (repo_git) VALUES ($1) RETURNING repo_id`, "repos", "repo_id", false},
-		{"conflict-set", `INSERT INTO aveloxis_data.repos (repo_git) VALUES ($1) ON CONFLICT (repo_git) DO UPDATE SET repo_name = EXCLUDED.repo_name`, "repos", "repo_name", true},
-		{"rhs-only", `UPDATE aveloxis_data.repos SET repo_name = COALESCE(NULLIF(repo_git, ''), repo_name)`, "repos", "repo_git", false},
-		{"multi-assign", `UPDATE aveloxis_data.repos SET repo_name = $1, repo_owner = $2 WHERE repo_id = $3`, "repos", "repo_owner", true},
-		{"qualified-predicate", `UPDATE aveloxis_data.commits c SET cmt_added = v.added FROM (SELECT 1) v WHERE c.cmt_filename = v.filename`, "commits", "cmt_filename", false},
-	}
-	for _, c := range cases {
-		if got := sqlStatementWritesColumn(c.block, c.tbl, c.col); got != c.want {
-			t.Errorf("%s: sqlStatementWritesColumn(%q) = %v, want %v", c.name, c.col, got, c.want)
-		}
-	}
-}
+// sqlStatementWritesColumn and its fixture table moved WHOLESALE to
+// internal/srctest/sqlscan (Stmt.WritesColumn +
+// TestWritesColumnFixtures) in v0.27.124 — Phase 2 of the
+// regression-infrastructure plan. This file keeps only the audit's
+// registry data (auditedTables, documentedEmpty) and the audit itself.

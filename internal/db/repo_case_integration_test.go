@@ -42,11 +42,11 @@ func caseConnect(t *testing.T) (context.Context, *PostgresStore) {
 	}
 	t.Cleanup(store.Close)
 	store.SetMatviewSkip(true)
-	if store.GetSchemaVersion(ctx) != ToolVersion {
-		if err := RunMigrations(ctx, store, logger); err != nil {
-			t.Fatalf("RunMigrations: %v", err)
-		}
-	}
+	// v0.27.125 (round 16): route through the shared lock-and-recheck
+	// helper — the inline stamp check raced RunMigrations' advisory
+	// lock on fresh parallel runs (every binary saw the old stamp and
+	// each still ran the full DDL after queueing).
+	testMigrate(ctx, t, store)
 	return ctx, store
 }
 

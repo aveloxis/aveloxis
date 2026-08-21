@@ -485,12 +485,22 @@ func TestShowcaseCarriesEcosystemAssociation(t *testing.T) {
 			t.Fatalf("%s render: %v", name, err)
 		}
 		out := b.String()
-		if !strings.Contains(out, `class="foot-eco"`) {
+		// v0.27.125 (Copilot round 16, suppressed): scope the host
+		// assertions to the rendered foot-eco <nav> block — on the index
+		// page the same URLs also appear in JSON-LD, so a whole-page
+		// search stayed green even with the visible footer links removed.
+		i := strings.Index(out, `<nav class="foot-eco"`)
+		if i < 0 {
 			t.Errorf("%s page missing the visible CHAOSS ecosystem footer band", name)
+			continue
+		}
+		nav := out[i:]
+		if j := strings.Index(nav, "</nav>"); j >= 0 {
+			nav = nav[:j]
 		}
 		for _, host := range ecoHosts {
-			if !strings.Contains(out, host) {
-				t.Errorf("%s page footer missing %q", name, host)
+			if !strings.Contains(nav, host) {
+				t.Errorf("%s page's foot-eco band missing a VISIBLE link to %q", name, host)
 			}
 		}
 	}

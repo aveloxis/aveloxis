@@ -40,9 +40,18 @@ func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform m
 		return 0, nil
 	}
 	var id int64
+	// v0.27.125 (Copilot round 16, suppressed): the literal
+	// `platform_repo_id <> ''` predicate matches idx_repos_platform_repo_id's
+	// partial-index condition so a GENERIC prepared plan can still use
+	// the index — a bound `$2` alone cannot prove the predicate at plan
+	// time, and without it every org-listing lookup risks a full repos
+	// scan once Postgres switches to a generic plan (the v0.27.54
+	// partial-index lesson, on the parameter side this time).
+	// Semantically free: the Go guard above already rejects "".
 	err := s.pool.QueryRow(ctx, `
 		SELECT repo_id FROM aveloxis_data.repos
 		WHERE platform_id = $1 AND platform_repo_id = $2
+		  AND platform_repo_id <> ''
 		ORDER BY repo_id
 		LIMIT 1`, int16(platform), forgeID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {

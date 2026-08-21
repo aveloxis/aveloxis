@@ -50,15 +50,15 @@ func IsRuntimeScope(scope string) bool {
 // StoredScope normalizes a scope for repo_deps_vulnerabilities'
 // dependency_scope column: runtime (including "" and unknown-future
 // values) stores as the WORD "runtime" — v0.27.51 operator decision:
-// the old ” convention (v0.27.21-50) was uninterpretable for anyone
+// the old '' convention (v0.27.21-50) was uninterpretable for anyone
 // reading the table directly. Non-runtime scopes store fine-grained
-// (decision #5). Legacy ” rows still READ as runtime everywhere
+// (decision #5). Legacy '' rows still READ as runtime everywhere
 // (IsRuntimeScope) and heal to 'runtime' on each repo's next scan
 // via the always-refresh upsert.
 //
 // NOTE: repo_lockfile_packages.dependency_scope deliberately KEEPS
-// the ” convention — its aggregation fold (MIN(CASE ...)) depends
-// on ” sorting before every scope name; the conversion happens at
+// the '' convention — its aggregation fold (MIN(CASE ...)) depends
+// on '' sorting before every scope name; the conversion happens at
 // the finding-write boundary (vulnScanTargets + the transitive
 // target construction), never in the lockfile plumbing.
 func StoredScope(scope string) string {

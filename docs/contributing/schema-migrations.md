@@ -290,8 +290,16 @@ This was added in v0.19.5 specifically for the "iterate on a v0.19.4 schema-erro
    - What the migration does on existing deployments.
    - The operator command sequence to deploy (`aveloxis stop all; aveloxis migrate --skip-views; aveloxis start all`).
    - Any operational concern (long-running CONCURRENTLY index builds, fail-closed startup behavior, etc.).
-7. Run `go test ./...` AND the integration tier.
-8. (Optional but recommended) Run `aveloxis data-test --released-tag <prev> --repo <test-repo>` to verify the new version doesn't lose data vs the prior release. See [`docs/guide/data-test.md`](../guide/data-test.md).
+7. **Register a write policy** for any new column whose write discipline
+   matters (fill-empty-only, insert-only, monotonic, ...) in
+   `internal/db/column_write_policy_test.go` — the v0.27.126 registry.
+   The founding incident: two writers shipped CONFLICTING policies on
+   `platform_repo_id` and silently destroyed a detection signal
+   (v0.27.117). A column registered at introduction can never acquire a
+   conflicting writer unnoticed. Columns with no meaningful policy
+   (free-form display fields) stay unregistered.
+8. Run `go test ./...` AND the integration tier.
+9. (Optional but recommended) Run `aveloxis data-test --released-tag <prev> --repo <test-repo>` to verify the new version doesn't lose data vs the prior release. See [`docs/guide/data-test.md`](../guide/data-test.md).
 
 ## What v0.21.5 made explicit: who can run migrations
 

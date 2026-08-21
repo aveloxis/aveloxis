@@ -170,7 +170,7 @@ type RepoMetadataBackfillTarget struct {
 // for the operator-driven `aveloxis backfill-repo-metadata` sweep.
 // Unlike ReposNeedingMetadataBackfill this does NOT filter on empty
 // fields — the sweep's point is refreshing values that cannot be
-// distinguished from absent (forked_from = ” means both "not a fork"
+// distinguished from absent (forked_from = '' means both "not a fork"
 // and "never checked"), so every repo gets one visit. Archived repos
 // are INCLUDED: they appear in public collections and their fork
 // status matters there.

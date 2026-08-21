@@ -130,6 +130,33 @@ func TestStripSQLComments(t *testing.T) {
 	}
 }
 
+// v0.27.125 (Copilot round 16, suppressed — real): removing an INLINE
+// block comment without replacing its whitespace merged the adjacent
+// tokens (`func/*note*/f` → `funcf`; `SELECT/*note*/FROM` →
+// `SELECTFROM`), so strip-then-match checks could miss valid
+// constructs. A newline-free block comment now leaves ONE space;
+// comments containing newlines keep emitting their newlines (already
+// token-separating).
+func TestStripCommentsPreservesTokenSeparation(t *testing.T) {
+	goOut := StripGoComments("func/*note*/f() {}\nx /*a\nb*/ y")
+	if strings.Contains(goOut, "funcf") {
+		t.Errorf("Go inline block comment must leave a token separator, got %q", goOut)
+	}
+	if !strings.Contains(goOut, "func f()") {
+		t.Errorf("want `func f()` after stripping, got %q", goOut)
+	}
+	if !strings.Contains(goOut, "x \ny") && !strings.Contains(goOut, "x \n y") {
+		t.Errorf("multi-line block comment must keep its newline separation, got %q", goOut)
+	}
+	sqlOut := StripSQLComments("SELECT/*note*/FROM t")
+	if strings.Contains(sqlOut, "SELECTFROM") {
+		t.Errorf("SQL inline block comment must leave a token separator, got %q", sqlOut)
+	}
+	if !strings.Contains(sqlOut, "SELECT FROM") {
+		t.Errorf("want `SELECT FROM` after stripping, got %q", sqlOut)
+	}
+}
+
 func TestBacktickLiterals(t *testing.T) {
 	src := "a := `SELECT 1`\nb := 2\nc := `UPDATE x\nSET y = 1`\n"
 	lits := BacktickLiterals(src)

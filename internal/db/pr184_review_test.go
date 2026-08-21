@@ -114,19 +114,26 @@ func TestRenameHealUsesUpdateRepoURLsAndGatesFallthrough(t *testing.T) {
 // INSERT/UPDATE statements that name the audited table — a column
 // mentioned only in a comment or a SELECT-only reader must NOT count as
 // having a writer.
+//
+// v0.27.124 (Phase 2): re-anchored. The scoping + comment-stripping now
+// live in internal/srctest/sqlscan (FindWrites + Statements — whose own
+// fixture suite pins both behaviors, incl. the moved WritesColumn
+// negative fixtures); the flagship must ROUTE through that engine
+// rather than reimplement it.
 func TestColumnTripwireScopesToWriteStatements(t *testing.T) {
 	src, err := os.ReadFile("column_writer_tripwire_test.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(src)
-	// The table-scoped statement matcher (regex form INSERT\s+INTO|UPDATE
-	// anchored to aveloxis_data.<table>).
-	if !strings.Contains(s, `INSERT\s+INTO|UPDATE`) || !strings.Contains(s, "aveloxis_data") {
-		t.Error("tripwire must scope matches to INSERT/UPDATE statements naming the audited table")
-	}
-	if !strings.Contains(s, "commentRe") {
-		t.Error("tripwire must strip SQL comments so commented mentions can't satisfy the writer check")
+	for _, needle := range []string{
+		"sqlscan.Statements(",
+		"sqlscan.FindWrites(",
+		".WritesColumn(",
+	} {
+		if !strings.Contains(s, needle) {
+			t.Errorf("the column-writer tripwire must use the sqlscan engine (%q) — its statement scoping and literal-aware comment stripping are the round-5 contract", needle)
+		}
 	}
 }
 
@@ -776,5 +783,78 @@ func TestBackfillIdentitiesDocsCoverPRRepoPass(t *testing.T) {
 func TestSchemaDocsDropContributorsOld(t *testing.T) {
 	if strings.Contains(srctest.Read(t, "docs/schema.md"), "contributors_old") {
 		t.Error("docs/schema.md still documents contributors_old — the table was dropped in v0.27.115; remove the section")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round 16 (v0.27.125) — review 4994358938: 0 active + 9 suppressed, all
+// real. Four target the days-old test/scan infrastructure again (the
+// strippers' token concatenation is pinned behaviorally in srctest's own
+// suite; the curly-quote class got a scripts/ tripwire); the rest are
+// pinned here.
+// ---------------------------------------------------------------------------
+
+// Suppressed: FindRepoByPlatformRepoID must carry the partial-index
+// predicate LITERALLY — a generic prepared plan cannot prove `$2 <> ''`
+// at plan time, so without it idx_repos_platform_repo_id (partial WHERE
+// platform_repo_id <> '') is unusable and every org-listing lookup can
+// seq-scan repos. Semantically free: the Go guard already rejects "".
+func TestForgeIDLookupCarriesPartialIndexPredicate(t *testing.T) {
+	src, err := os.ReadFile("repo_forge_id.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) FindRepoByPlatformRepoID(")
+	if !strings.Contains(body, "platform_repo_id <> ''") {
+		t.Error("FindRepoByPlatformRepoID must include the literal partial-index predicate so generic plans can use idx_repos_platform_repo_id")
+	}
+}
+
+// Suppressed ×3: the version-gated test migrate raced RunMigrations'
+// advisory lock on FRESH parallel runs — every binary saw the old stamp
+// and each still ran the full DDL after queueing. Both twins now
+// RECHECK the stamp under a shared test-scoped advisory lock, and the
+// repo-case connect helper routes through testMigrate instead of an
+// inline check.
+func TestTestMigrateRechecksUnderAdvisoryLock(t *testing.T) {
+	for _, f := range []string{"internal/db/testexec_test.go", "internal/collector/testmigrate_test.go"} {
+		s := srctest.Read(t, f)
+		if !strings.Contains(s, "pg_advisory_lock($1)") || !strings.Contains(s, "0x41564C5854455354") {
+			t.Errorf("%s: testMigrate must serialize under the shared test-scoped advisory lock", f)
+		}
+		if strings.Count(s, "GetSchemaVersion(ctx)") < 2 {
+			t.Errorf("%s: testMigrate must RECHECK the stamp after acquiring the lock (fast path + under-lock check)", f)
+		}
+	}
+	rc, err := os.ReadFile("repo_case_integration_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rc), "testMigrate(ctx, t, store)") {
+		t.Error("repo_case_integration_test.go must route through testMigrate, not an inline stamp check")
+	}
+}
+
+// Suppressed: the login-hit branch's identity backfill discarded its
+// Exec error and cached anyway — a deadlocked heal meant node_id /
+// user_type / the identities row never retried for the process lifetime
+// (the v0.27.117 failed-heal rule on its second branch). A failure now
+// logs, returns the resolved contributor, and leaves the key UNCACHED.
+func TestLoginHitIdentityBackfillFailureLeavesCacheCold(t *testing.T) {
+	src, err := os.ReadFile("contributors.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (r *ContributorResolver) Resolve(")
+	needle := "leaving resolver cache cold"
+	if !strings.Contains(body, needle) {
+		t.Errorf("Resolve's login-hit identity backfill must log %q and return WITHOUT caching on failure", needle)
+	}
+	i := strings.Index(body, needle)
+	tail := body[i:]
+	retPos := strings.Index(tail, "return existingID, nil")
+	cachePos := strings.Index(tail, "r.cache[key] = existingID")
+	if retPos < 0 || (cachePos >= 0 && cachePos < retPos) {
+		t.Error("the failure path must RETURN before any cache assignment — caching a failed heal pins the miss for the process lifetime")
 	}
 }

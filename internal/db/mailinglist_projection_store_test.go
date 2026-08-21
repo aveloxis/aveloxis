@@ -309,7 +309,7 @@ func TestProjectionBackfillIndexesDeclared(t *testing.T) {
 	}
 }
 
-// TestBodyMsgIDQueryHasPartialPredicate pins the load-bearing `node_id <> ”`
+// TestBodyMsgIDQueryHasPartialPredicate pins the load-bearing `node_id <> ''`
 // in bodyMsgID — without it the partial idx_messages_node_id is unusable under
 // a generic plan and the lookup seq-scans ~20M messages (66s on prod).
 func TestBodyMsgIDQueryHasPartialPredicate(t *testing.T) {

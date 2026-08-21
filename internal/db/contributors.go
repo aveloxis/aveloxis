@@ -150,7 +150,7 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 			// by (platform_id, platform_user_id) hit the cache directly
 			// instead of falling through to login lookup again.
 			if userID > 0 {
-				_, _ = r.store.pool.Exec(ctx, `
+				if _, herr := r.store.pool.Exec(ctx, `
 					INSERT INTO aveloxis_data.contributor_identities
 						(cntrb_id, platform_id, platform_user_id, login, name, email,
 						 avatar_url, profile_url, node_id, user_type, is_admin)
@@ -165,7 +165,20 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 						node_id = COALESCE(NULLIF(EXCLUDED.node_id, ''), contributor_identities.node_id),
 						user_type = COALESCE(NULLIF(EXCLUDED.user_type, ''), contributor_identities.user_type)`,
 					existingID, platformID, userID, login, name, email,
-					avatarURL, profileURL, nodeID, userType)
+					avatarURL, profileURL, nodeID, userType); herr != nil {
+					// v0.27.125 (Copilot round 16, suppressed): a FAILED
+					// identity backfill must not cache — caching exits at
+					// the step-1 cache check on every later observation,
+					// so the missing identities row (and its node_id /
+					// user_type heal) would never retry for the process
+					// lifetime (the v0.27.117 failed-heal rule, on the
+					// login-hit branch this time). Resolution itself
+					// still succeeds; the next observation retries the
+					// (indexed) login lookup + this backfill.
+					r.store.logger.Warn("contributor identity backfill failed — leaving resolver cache cold so the next observation retries",
+						"cntrb_id", existingID, "login", login, "error", herr)
+					return existingID, nil
+				}
 			}
 			r.cache[key] = existingID
 			return existingID, nil

@@ -68,7 +68,7 @@ func TestServerRegistersAccountEmailRoute(t *testing.T) {
 
 // TestDashboardEnforcesEmail pins that handleDashboard (or a middleware
 // it depends on) redirects to /account/email when the session user has
-// users.email = ”. Without this, the user reaches the dashboard with
+// users.email = ''. Without this, the user reaches the dashboard with
 // no email collected and the operator has no way to coordinate.
 func TestDashboardEnforcesEmail(t *testing.T) {
 	data, err := os.ReadFile("server.go")

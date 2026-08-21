@@ -31,10 +31,18 @@ func StripGoComments(src string) string {
 				if end < 0 {
 					return b.String()
 				}
+				// v0.27.125: a newline-free inline block comment leaves one
+				// space so adjacent tokens stay separated (func/*x*/f must
+				// not become funcf); embedded newlines keep being emitted.
+				wroteNL := false
 				for _, r := range src[i : i+2+end+2] {
 					if r == '\n' {
 						b.WriteByte('\n')
+						wroteNL = true
 					}
+				}
+				if !wroteNL {
+					b.WriteByte(' ')
 				}
 				i += 2 + end + 2
 				continue
@@ -99,10 +107,17 @@ func StripSQLComments(sql string) string {
 			if end < 0 {
 				return b.String()
 			}
+			// v0.27.125: same token-separation contract as StripGoComments
+			// (SELECT/*x*/FROM must not become SELECTFROM).
+			wroteNL := false
 			for _, r := range sql[i : i+2+end+2] {
 				if r == '\n' {
 					b.WriteByte('\n')
+					wroteNL = true
 				}
+			}
+			if !wroteNL {
+				b.WriteByte(' ')
 			}
 			i += 2 + end + 2
 		case c == '\'':

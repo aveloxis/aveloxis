@@ -65,7 +65,7 @@ func SeveritiesAtOrAbove(min string) []string {
 // v0.27.21: includeTransitive=false (the default) keeps
 // dependency_kind='transitive' findings out of the digest — the first
 // transitive-enabled cycles would otherwise blast a 50-item email of
-// utility-package findings. Direct and pre-C1 (”) rows always pass.
+// utility-package findings. Direct and pre-C1 ('') rows always pass.
 // v0.27.46 (summary/19 P3, decision #1): includeDev=false (the
 // default) additionally keeps non-runtime-scope findings
 // (dev/test/build/optional/peer) out — the P2 Python expansion would

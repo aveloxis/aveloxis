@@ -218,9 +218,7 @@ func TestWhitespaceWalkEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	testMigrate(ctx, t, store)
 
 	// Build a real git repo with hand-computable expectations.
 	dir := t.TempDir()

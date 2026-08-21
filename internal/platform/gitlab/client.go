@@ -412,16 +412,27 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 		Name              string `json:"name"`
 		PathWithNamespace string `json:"path_with_namespace"`
 		Visibility        string `json:"visibility"` // "public", "internal", "private"
-		// v0.27.104: owner is present on user-owned projects (the fork
-		// case). v0.27.109 (Copilot PR #184 round 4): owner is the ONLY
-		// OwnerRef source — group-owned projects deliberately stay
-		// UNRESOLVED. A group namespace has no platform user ID (the
-		// canonical, rename-proof identity), and a login-only ref would
-		// resolve through the resolver's GLOBAL cntrb_login fallback —
-		// which ignores platform and type, so a GitLab group named
-		// "acme" could be falsely attributed to a GitHub user "acme".
-		// Honest NULL beats fabricated attribution (the v0.26.5 rule).
-		Owner *glUser `json:"owner"`
+		// v0.27.121 (Copilot round 13, suppressed — verified LIVE
+		// against gitlab.com): the project payload's top-level `owner`
+		// is effectively NEVER present for fleet collection (absent
+		// even on user-namespace projects unless the caller IS the
+		// owner/admin), so the v0.27.109 owner-object-only branch was
+		// dead code and GitLab pr_cntrb_id parity was decorative. The
+		// working route: namespace.kind == "user" guarantees the
+		// namespace PATH is a username; one /users?username= lookup
+		// yields the REAL numeric GitLab user ID → the userID>0
+		// deterministic-PlatformUUID resolver path. GROUP namespaces
+		// deliberately stay UNRESOLVED (a group is an org, not a
+		// person; a login-only ref would cross-match the GLOBAL
+		// cntrb_login table — the v0.27.109 rule stands). Honest NULL
+		// beats fabricated attribution (v0.26.5). The owner-object
+		// branch stays as a free fast path for the rare
+		// authenticated-as-owner case.
+		Owner     *glUser `json:"owner"`
+		Namespace struct {
+			Path string `json:"path"`
+			Kind string `json:"kind"` // "user" or "group"
+		} `json:"namespace"`
 	}
 	if err := c.http.GetJSON(ctx, path, &proj); err != nil {
 		return nil
@@ -434,12 +445,31 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 		Private:      proj.Visibility == "private",
 		Origin:       model.DataOrigin{DataSource: "GitLab API"},
 	}
-	if proj.Owner != nil {
+	switch {
+	case proj.Owner != nil:
 		// glUserToRef carries the numeric GitLab user ID — the userID>0
 		// resolver path with a deterministic PlatformUUID.
 		out.OwnerRef = glUserToRef(*proj.Owner)
+	case proj.Namespace.Kind == "user" && proj.Namespace.Path != "":
+		if ref, ok := c.lookupGLUserRef(ctx, proj.Namespace.Path); ok {
+			out.OwnerRef = ref
+		}
 	}
 	return out
+}
+
+// lookupGLUserRef resolves a username to a UserRef carrying the REAL
+// numeric GitLab user ID via /users?username= (the EnrichContributor
+// endpoint). Returns ok=false on lookup failure or no match — the
+// caller leaves the ref honestly empty rather than minting a
+// login-only ref (never fabricate identity).
+func (c *Client) lookupGLUserRef(ctx context.Context, username string) (model.UserRef, bool) {
+	path := fmt.Sprintf("/users?username=%s", url.QueryEscape(username))
+	var users []glUser
+	if err := c.http.GetJSON(ctx, path, &users); err != nil || len(users) == 0 {
+		return model.UserRef{}, false
+	}
+	return glUserToRef(users[0]), true
 }
 
 // --- EventCollector ---

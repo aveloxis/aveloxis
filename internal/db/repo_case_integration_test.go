@@ -42,8 +42,10 @@ func caseConnect(t *testing.T) (context.Context, *PostgresStore) {
 	}
 	t.Cleanup(store.Close)
 	store.SetMatviewSkip(true)
-	if err := RunMigrations(ctx, store, logger); err != nil {
-		t.Fatalf("RunMigrations: %v", err)
+	if store.GetSchemaVersion(ctx) != ToolVersion {
+		if err := RunMigrations(ctx, store, logger); err != nil {
+			t.Fatalf("RunMigrations: %v", err)
+		}
 	}
 	return ctx, store
 }

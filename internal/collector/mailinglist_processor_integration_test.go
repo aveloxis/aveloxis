@@ -46,9 +46,7 @@ func TestMailingListPipelineEndToEnd(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	testMigrate(ctx, t, store)
 
 	const (
 		listAddr  = "dev@_av_mlpipe.apache.org"

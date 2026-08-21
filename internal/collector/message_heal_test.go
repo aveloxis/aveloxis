@@ -41,9 +41,7 @@ func TestHealMessagesEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	testMigrate(ctx, t, store)
 
 	suffix := time.Now().UnixNano()
 	owner := "_avheal"

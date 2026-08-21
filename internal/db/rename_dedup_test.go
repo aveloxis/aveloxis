@@ -176,9 +176,7 @@ func TestRenameDedupAtAddTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	testMigrate(ctx, t, store)
 
 	const forgeID = "990017731"
 	oldURL := "https://github.com/avrenametest/old-name-xyz"

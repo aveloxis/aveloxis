@@ -383,7 +383,7 @@ raw identity material (platform user ids) was stored at ~100%.
 ```bash
 aveloxis backfill-identities --dry-run          # candidate counts, no writes
 aveloxis backfill-identities                    # all phases
-aveloxis backfill-identities --phase 1          # assignment joins + pr_meta owners (SQL only)
+aveloxis backfill-identities --phase 1          # assignment joins + pr_meta owners + pr_repo owners (SQL only)
 aveloxis backfill-identities --phase 2          # closed_by from issue events (SQL only)
 aveloxis backfill-identities --phase 3          # closed_by GraphQL timeline sweep (needs API keys)
 ```
@@ -394,7 +394,18 @@ Flags: `--dry-run`, `--batch-size` (primary-key window width per UPDATE batch, d
 default 100).
 
 Phases 1–2 are pure SQL derivation (no API calls; measured production
-coverage 99.87–99.98% for assignments). Phase 3 fetches closers the
+coverage 99.87–99.98% for assignments). Since v0.27.104, phase 1 also
+runs the `pull_request_repo.pr_cntrb_id` owner pass — keyset windows
+over `pr_repo_id` on a table that is ~41.2M rows on the production
+fleet, so expect phase 1's wall time to be dominated by it on large
+installations (use `--batch-size 1000000` there). Like the other
+phases it is resumable and idempotent: interrupted runs re-walk
+windows cheaply because filled rows (`pr_cntrb_id IS NOT NULL`) drop
+out of the candidate set. Owner logins that match zero contributors
+(deleted forks) or MORE THAN ONE active contributor (ambiguous —
+v0.27.123) stay NULL; no fabricated attributions. Both owner passes
+are GitHub-only — GitLab rows heal forward via ID-qualified owner
+refs on re-collection. Phase 3 fetches closers the
 history-capped events feed cannot reach, via per-issue
 `timelineItems(itemTypes:[CLOSED_EVENT])` batched ~100 issues per
 GraphQL query (~3 points each). Run phase 2 after the v0.26.3

@@ -1935,14 +1935,23 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	//     migration ran after v0.25.5 — 0 scans ever on production,
 	//     1.2 GB of pure rotation write amplification. The plain
 	//     repo_id copy is KEPT (188 measured scans — dedup-repos'
-	//     hygiene delete) and now declared in schema.sql. Dropped
-	//     names are never re-created (the v0.25.6 rule).
+	//     hygiene delete) and owned by ensureRepoLaborHistoryIndex
+	//     below (v0.27.123: MIGRATION-ONLY per the v0.27.98 rule —
+	//     a schema.sql declaration would block-build it in base DDL
+	//     on fleets lacking the copy). Dropped names are never
+	//     re-created (the v0.25.6 rule).
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.115 drop contributors_old (Augur residue, operator-confirmed)",
 		`DROP TABLE IF EXISTS aveloxis_data.contributors_old`)
+	// v0.27.123 (Copilot round 15, suppressed): CONCURRENTLY — a plain
+	// DROP INDEX takes ACCESS EXCLUSIVE on the 1.2 GB history table and
+	// blocks rotation writers while this migration runs beside a live
+	// serve. Single statement through pool.Exec = implicit transaction,
+	// which DROP INDEX CONCURRENTLY permits.
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.115 drop unused composite index copy on repo_labor_history",
-		`DROP INDEX IF EXISTS aveloxis_data.repo_labor_history_repo_id_rl_analysis_date_idx`)
+		`DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.repo_labor_history_repo_id_rl_analysis_date_idx`)
+	ensureRepoLaborHistoryIndex(ctx, pg, logger, errs)
 
 	// v0.27.63: collections (admin-curated groups-of-groups) — same
 	// DDL as schema.sql so existing fleets pick the tables up on

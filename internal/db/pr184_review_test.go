@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // Finding 1 (the severe one): login-only UserRefs (userID == 0 —
@@ -628,5 +630,151 @@ func TestUpdatedAtNeverRegresses(t *testing.T) {
 		if !strings.Contains(string(src), "updated_at = GREATEST(") {
 			t.Errorf("%s: updated_at must be written via GREATEST — prefer-incoming regresses under out-of-order refreshes", f)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round 15 (v0.27.123) — review 4989260861: 1 active + 5 suppressed, all
+// six real. The active one is a data-integrity hole in the identity
+// backfills; three suppressed ones are the repo's own standing rules
+// applied to the v0.27.115 drift remediation (the migration-only-index
+// rule violated AGAIN, five rounds after round 10 re-affirmed it); one
+// is the "a lookup ERROR is not 'no'" class inside the round-10
+// detector itself; one is docs drift.
+// ---------------------------------------------------------------------------
+
+// Active: both owner-login sweeps used bare DISTINCT ON with no ORDER BY
+// beyond the target id and no uniqueness guard — gh_login is backed only
+// by a NON-unique index, so two active contributor rows matching the same
+// lowered owner login handed the target an ARBITRARY cntrb_id,
+// contradicting the backfill's documented "ambiguous stays NULL" /
+// never-fabricate contract. Both sweeps now GROUP BY the target id and
+// keep only groups with exactly ONE distinct contributor; the dry-run
+// counts apply the same rule. The closers derivation legitimately keeps
+// DISTINCT ON — its ORDER BY (issue_id, e.created_at DESC) makes the
+// pick deterministic ("latest closed event"), not arbitrary.
+func TestLoginSweepsRejectAmbiguousOwnerLogins(t *testing.T) {
+	src, err := os.ReadFile("identity_backfill.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range []string{
+		"func (s *PostgresStore) BackfillPRMetaOwners(",
+		"func (s *PostgresStore) BackfillPRRepoOwners(",
+	} {
+		body := extractFuncBody(t, string(src), fn)
+		if !strings.Contains(body, "HAVING COUNT(DISTINCT c.cntrb_id) = 1") {
+			t.Errorf("%s: the login sweep must keep only owner logins matching exactly ONE distinct contributor (ambiguous stays NULL)", fn)
+		}
+		if strings.Contains(body, "DISTINCT ON (m.pr_meta_id)") ||
+			strings.Contains(body, "DISTINCT ON (pr.pr_repo_id)") {
+			t.Errorf("%s: bare DISTINCT ON without a tiebreak ORDER BY assigns an ARBITRARY contributor on ambiguous logins — banned", fn)
+		}
+	}
+	if !strings.Contains(string(src), "ORDER BY issue_id, e.created_at DESC") {
+		t.Error("closedByCandidates must keep its deterministic ORDER BY (latest closed event) — that DISTINCT ON is ordered, not arbitrary")
+	}
+}
+
+// Drive-by alignment forced by rewriting the same statement:
+// BackfillPRMetaOwners' login sweep never received the v0.27.110
+// platform restriction (only BackfillPRRepoOwners did), so a phase-1
+// re-run could still attribute a GitLab-platform meta row to an
+// unrelated same-name GitHub user — the exact cross-platform
+// fabrication v0.27.109 banned. Same gates as the pr_repo sweep now.
+func TestMetaOwnerSweepIsGitHubOnly(t *testing.T) {
+	src, err := os.ReadFile("identity_backfill.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) BackfillPRMetaOwners(")
+	for _, needle := range []string{
+		"r.platform_id = 1",
+		"COALESCE(c.gl_username, '') = ''",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("BackfillPRMetaOwners login sweep missing %q — the v0.27.110 GitHub-only rule applies to BOTH backfills", needle)
+		}
+	}
+}
+
+// Suppressed #1 + #2: repo_labor_history index lifecycle. The v0.27.115
+// schema.sql declaration violated the v0.27.98 migration-only rule for
+// INTRODUCING releases: base DDL runs before any migration step, so an
+// upgraded fleet that happens to LACK the accidental LIKE copy would
+// block-build the index with a plain CREATE INDEX on a fleet-scale
+// history table. The index is migration-owned (CONCURRENTLY; fresh
+// installs get it through the same step — instant on empty tables), and
+// the composite-copy drop is CONCURRENTLY too (a plain DROP INDEX takes
+// ACCESS EXCLUSIVE and blocks rotation writers beside a live serve).
+func TestHistoryIndexIsMigrationOnlyAndDropIsConcurrent(t *testing.T) {
+	schema, err := os.ReadFile("schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(schema), "repo_labor_history_repo_id_idx") {
+		t.Error("schema.sql must NOT declare repo_labor_history_repo_id_idx — base DDL block-builds it on fleets lacking the LIKE copy (v0.27.98 migration-only rule for introducing releases)")
+	}
+	helper, err := os.ReadFile("repo_labor_history.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(helper), "CREATE INDEX CONCURRENTLY IF NOT EXISTS repo_labor_history_repo_id_idx") {
+		t.Error("ensureRepoLaborHistoryIndex must own repo_labor_history_repo_id_idx via execCreateIndexConcurrently — fresh installs AND upgrades")
+	}
+	mig, err := os.ReadFile("migrate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mig), "ensureRepoLaborHistoryIndex(") {
+		t.Error("RunMigrations must invoke ensureRepoLaborHistoryIndex")
+	}
+	if !strings.Contains(string(mig), "DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.repo_labor_history_repo_id_rl_analysis_date_idx") {
+		t.Error("the composite-copy drop must be DROP INDEX CONCURRENTLY — a plain drop blocks writers on the 1.2 GB history table beside a live serve")
+	}
+}
+
+// Suppressed #5: SetPlatformRepoIDIfEmpty's zero-row verification probe
+// treated a QUERY FAILURE as success — the caller got neither the DB
+// error nor the promised forge-ID conflict signal. Only a genuinely
+// missing row (deleted between UPDATE and probe) may be ignored; every
+// other probe error propagates. The "a lookup ERROR is not 'no'" rule,
+// this time inside the round-10 detector itself.
+func TestForgeIDProbeErrorIsNotSuccess(t *testing.T) {
+	src, err := os.ReadFile("repo_forge_id.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmpty(")
+	if !strings.Contains(body, "errors.Is(perr, pgx.ErrNoRows)") {
+		t.Error("only a genuinely-missing row may be ignored on the verification probe (ErrNoRows)")
+	}
+	if !strings.Contains(body, "verify stored forge ID") {
+		t.Error("a probe failure must propagate wrapped (\"verify stored forge ID\") — silently returning nil loses the error AND the conflict signal")
+	}
+}
+
+// Suppressed #3: docs/guide/commands.md described phase 1 as assignments
+// + pr_meta owners only, while v0.27.104 added the 41.2M-row
+// pull_request_repo pass — operators plan these repairs by phase, so the
+// scope must be accurate.
+func TestBackfillIdentitiesDocsCoverPRRepoPass(t *testing.T) {
+	doc := srctest.Read(t, "docs/guide/commands.md")
+	idx := strings.Index(doc, "backfill-identities")
+	if idx < 0 {
+		t.Fatal("commands.md must document backfill-identities")
+	}
+	section := doc[idx:min(idx+3000, len(doc))]
+	if !strings.Contains(section, "pr_repo") && !strings.Contains(section, "pull_request_repo") {
+		t.Error("commands.md's backfill-identities section must document the v0.27.104 pull_request_repo owner pass in phase 1")
+	}
+}
+
+// Suppressed #4: docs/schema.md still documented contributors_old after
+// v0.27.115 dropped it — operators must not be told to query a table
+// the migration deletes.
+func TestSchemaDocsDropContributorsOld(t *testing.T) {
+	if strings.Contains(srctest.Read(t, "docs/schema.md"), "contributors_old") {
+		t.Error("docs/schema.md still documents contributors_old — the table was dropped in v0.27.115; remove the section")
 	}
 }

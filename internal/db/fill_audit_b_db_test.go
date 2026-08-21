@@ -73,7 +73,10 @@ func TestBackfillPRRepoOwnersShape(t *testing.T) {
 	body := extractFuncBody(t, string(src), "func (s *PostgresStore) BackfillPRRepoOwners(")
 	for _, needle := range []string{
 		"pr.pr_repo_id > $1 AND pr.pr_repo_id <= $2", // keyset windows (v0.26.6 lesson)
-		"DISTINCT ON (pr.pr_repo_id)",
+		// v0.27.123 (round 15): ambiguous owner logins stay NULL — the
+		// sweep groups per target and keeps exactly-one-contributor groups
+		// (the old unordered DISTINCT ON picked arbitrarily).
+		"HAVING COUNT(DISTINCT c.cntrb_id) = 1",
 		"COALESCE(c.cntrb_deleted, 0) = 0",
 		"split_part(pr.pr_repo_full_name, '/', 1)",
 		"pr.pr_cntrb_id IS NULL",
@@ -229,6 +232,56 @@ func TestFillAuditBEndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	// v0.27.123 (Copilot round 15, active): an AMBIGUOUS owner login —
+	// two active contributors both LOWER-matching the owner segment —
+	// must stay NULL. Pre-fix, unordered DISTINCT ON assigned one of
+	// them arbitrarily.
+	for _, row := range [][2]string{
+		{"avfillbambig-a", "AvFillBAmbig"},
+		{"avfillbambig-b", "avfillbambig"},
+	} {
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login, gh_login)
+			VALUES (gen_random_uuid(), $1, $2)
+			ON CONFLICT (cntrb_login) WHERE cntrb_login != '' DO NOTHING`, row[0], row[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ambigPRID, err := store.UpsertPullRequest(ctx, &model.PullRequest{
+		RepoID: repoID, PlatformSrcID: 991002, Number: 2,
+		Title: "ambiguous-owner pr", State: "open",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambigMetaID, err := store.UpsertPRMeta(ctx, &model.PullRequestMeta{
+		PRID: ambigPRID, RepoID: repoID, HeadOrBase: "head", Ref: "amb", SHA: "ccc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertPRRepo(ctx, &model.PullRequestRepo{
+		MetaID: ambigMetaID, HeadOrBase: "head", SrcRepoID: 3,
+		RepoName: "fork", RepoFullName: "avfillbambig/fork",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// v0.27.123: execute BOTH rewritten dry-run compositions (they run
+	// unwindowed SQL the real pass never exercises) — the unambiguous
+	// fixture row must be counted while it is still NULL.
+	dn, err := store.BackfillPRRepoOwners(ctx, 0, 0, true)
+	if err != nil {
+		t.Fatalf("pr_repo dry-run: %v", err)
+	}
+	if dn < 1 {
+		t.Fatalf("pr_repo dry-run counted %d, want >= 1 (the unambiguous fixture row)", dn)
+	}
+	if _, err := store.BackfillPRMetaOwners(ctx, 0, 0, true); err != nil {
+		t.Fatalf("pr_meta dry-run: %v", err)
+	}
+
 	n, err := store.BackfillPRRepoOwners(ctx, 1000000, 0, false)
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +303,9 @@ func TestFillAuditBEndToEnd(t *testing.T) {
 	}
 	if err := store.pool.QueryRow(ctx, `SELECT pr.pr_cntrb_id::text FROM aveloxis_data.pull_request_repo pr WHERE pr.pr_repo_meta_id=$1 AND pr.pr_cntrb_id IS NOT NULL`, baseID).Scan(&cntrb); err == nil {
 		t.Error("deleted-fork row (empty full name) must stay NULL")
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT pr.pr_cntrb_id::text FROM aveloxis_data.pull_request_repo pr WHERE pr.pr_repo_meta_id=$1 AND pr.pr_cntrb_id IS NOT NULL`, ambigMetaID).Scan(&cntrb); err == nil {
+		t.Error("ambiguous owner login (two active contributors match) must stay NULL — the sweep may not pick arbitrarily")
 	}
 	// v0.27.110: a GITLAB-platform row with a perfectly matching owner
 	// login must stay NULL — the backfill is GitHub-only (GitLab rows

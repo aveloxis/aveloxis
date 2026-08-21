@@ -66,16 +66,24 @@ func TestBaseTableViewsRunOnEveryMigrate(t *testing.T) {
 // DESC) copy had ZERO scans ever (1.2 GB of pure rotation write
 // amplification) — dropped everywhere. The plain repo_id copy had 188
 // real scans (dedup-repos' hygiene DELETE ... WHERE repo_id = loser) —
-// kept, and now DELIBERATELY declared in schema.sql under the exact
-// auto-generated name so fresh installs and fleets converge.
+// kept, under the exact auto-generated name so fleets with the copy
+// converge without a rebuild.
+//
+// v0.27.123 (Copilot round 15, suppressed — REVERSED half of this pin):
+// the v0.27.115 schema.sql declaration violated the v0.27.98
+// migration-only rule — base DDL runs first, so an upgraded fleet
+// LACKING the accidental copy would block-build the index with a plain
+// CREATE INDEX on a fleet-scale history table. The index is
+// migration-owned (ensureRepoLaborHistoryIndex, CONCURRENTLY), and the
+// composite drop is CONCURRENTLY too.
 func TestRepoLaborHistoryIndexConvergence(t *testing.T) {
 	schema, err := os.ReadFile("schema.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(schema)
-	if !strings.Contains(s, "CREATE INDEX IF NOT EXISTS repo_labor_history_repo_id_idx") {
-		t.Error("schema.sql must declare repo_labor_history_repo_id_idx — the dedup hygiene-delete path's index, now deliberate instead of accidental")
+	if strings.Contains(s, "CREATE INDEX IF NOT EXISTS repo_labor_history_repo_id_idx") {
+		t.Error("schema.sql must NOT declare repo_labor_history_repo_id_idx — base DDL would block-build it on fleets lacking the LIKE copy (v0.27.98 migration-only rule)")
 	}
 	if strings.Contains(s, "repo_labor_history_repo_id_rl_analysis_date_idx") {
 		t.Error("the composite history index is a dropped name (v0.27.115) — it must never be re-created (0 scans ever; pure write amplification)")
@@ -84,8 +92,11 @@ func TestRepoLaborHistoryIndexConvergence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(mig), "DROP INDEX IF EXISTS aveloxis_data.repo_labor_history_repo_id_rl_analysis_date_idx") {
-		t.Error("migrate must drop the unused composite copy on fleets that have it")
+	if !strings.Contains(string(mig), "DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.repo_labor_history_repo_id_rl_analysis_date_idx") {
+		t.Error("migrate must drop the unused composite copy CONCURRENTLY on fleets that have it (a plain drop blocks rotation writers beside a live serve)")
+	}
+	if !strings.Contains(string(mig), "ensureRepoLaborHistoryIndex(") {
+		t.Error("RunMigrations must invoke ensureRepoLaborHistoryIndex — the migration path owns the kept index for fresh installs AND upgrades")
 	}
 }
 

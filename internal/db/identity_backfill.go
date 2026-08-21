@@ -109,29 +109,47 @@ func (s *PostgresStore) BackfillAssignmentIdentities(ctx context.Context, batchS
 // merge losers excluded). Operator decision 2026-07-09: this identity
 // is high-value; rows whose owner never appears in contributors stay
 // NULL (no fabricated data).
+//
+// v0.27.123 (Copilot round 15, active): the sweep is grouped with
+// HAVING COUNT(DISTINCT cntrb_id) = 1 — gh_login is backed only by a
+// NON-unique index, so an owner login matching TWO active contributor
+// rows previously handed the meta row an ARBITRARY cntrb_id via
+// unordered DISTINCT ON. Ambiguous logins now stay NULL, per the
+// never-fabricate contract; the dry-run count applies the same rule.
+// Also aligned with v0.27.110 while rewriting the statement: the sweep
+// is GitHub-only (repos join, platform_id = 1) with the GitLab-native
+// disqualifier — BackfillPRRepoOwners got both in v0.27.110 but this
+// twin was left platform-blind, so a phase-1 re-run could still
+// attribute a GitLab meta row to a same-name GitHub user.
 func (s *PostgresStore) BackfillPRMetaOwners(ctx context.Context, batchSize int, limit int64, dryRun bool) (int64, error) {
 	if batchSize <= 0 {
 		batchSize = 100000
 	}
-	// Window predicate %s slots the pr_meta_id range bounds in.
-	const candidates = `
-		SELECT DISTINCT ON (m.pr_meta_id) m.pr_meta_id, c.cntrb_id
+	// Shared join/filter body; the sweep and the dry-run compose
+	// different SELECT heads around it. Window predicate %s slots the
+	// pr_meta_id range bounds into the WHERE clause.
+	const candidatesBody = `
 		FROM aveloxis_data.pull_request_meta m
 		JOIN aveloxis_data.pull_request_repo pr
 		  ON pr.pr_repo_meta_id = m.pr_meta_id
 		 AND pr.pr_repo_head_or_base = m.head_or_base
+		JOIN aveloxis_data.repos r
+		  ON r.repo_id = m.repo_id AND r.platform_id = 1
 		JOIN aveloxis_data.contributors c
 		  ON LOWER(COALESCE(NULLIF(c.gh_login, ''), c.cntrb_login)) =
 		     LOWER(split_part(pr.pr_repo_full_name, '/', 1))
 		WHERE m.cntrb_id IS NULL
 		  AND split_part(COALESCE(pr.pr_repo_full_name, ''), '/', 1) <> ''
-		  AND COALESCE(c.cntrb_deleted, 0) = 0%s`
+		  AND COALESCE(c.cntrb_deleted, 0) = 0
+		  AND (c.gh_login <> '' OR COALESCE(c.gl_username, '') = '')%s
+		GROUP BY m.pr_meta_id
+		HAVING COUNT(DISTINCT c.cntrb_id) = 1`
 	if dryRun {
-		// The dry-run count intentionally runs the join UNWINDOWED but
-		// without the DISTINCT-ON sort (COUNT of distinct meta ids).
-		q := `SELECT COUNT(DISTINCT m.pr_meta_id)` + strings.TrimPrefix(
-			fmt.Sprintf(candidates, ""), `
-		SELECT DISTINCT ON (m.pr_meta_id) m.pr_meta_id, c.cntrb_id`)
+		// Unwindowed, counting only the UNAMBIGUOUS groups — the same
+		// rule the sweep applies, so the count matches what a real run
+		// would fill.
+		q := `SELECT COUNT(*) FROM (SELECT m.pr_meta_id` +
+			fmt.Sprintf(candidatesBody, "") + `) unambiguous`
 		var n int64
 		if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
 			return 0, fmt.Errorf("dry-run count pull_request_meta: %w", err)
@@ -147,7 +165,10 @@ func (s *PostgresStore) BackfillPRMetaOwners(ctx context.Context, batchSize int,
 	var total int64
 	window := int64(batchSize)
 	for lo := int64(0); lo < maxID; lo += window {
-		cand := fmt.Sprintf(candidates, " AND m.pr_meta_id > $1 AND m.pr_meta_id <= $2")
+		// (array_agg(DISTINCT ...))[1] is exactly the one contributor the
+		// HAVING guard admitted (Postgres has no min(uuid) aggregate).
+		cand := `SELECT m.pr_meta_id, (array_agg(DISTINCT c.cntrb_id))[1] AS cntrb_id` +
+			fmt.Sprintf(candidatesBody, " AND m.pr_meta_id > $1 AND m.pr_meta_id <= $2")
 		tag, err := s.pool.Exec(ctx, `
 			WITH cand AS (`+cand+`)
 			UPDATE aveloxis_data.pull_request_meta m
@@ -215,8 +236,12 @@ func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int,
 		  AND m.cntrb_id IS NOT NULL
 		  AND pr.pr_cntrb_id IS NULL
 		  AND pr.pr_repo_id > $1 AND pr.pr_repo_id <= $2`
-	const candidates = `
-		SELECT DISTINCT ON (pr.pr_repo_id) pr.pr_repo_id, c.cntrb_id
+	// v0.27.123 (Copilot round 15, active): grouped with
+	// HAVING COUNT(DISTINCT cntrb_id) = 1 — an owner login matching two
+	// active contributors previously assigned an ARBITRARY cntrb_id via
+	// unordered DISTINCT ON. Ambiguous logins stay NULL (never-fabricate);
+	// the dry-run count applies the same rule.
+	const candidatesBody = `
 		FROM aveloxis_data.pull_request_repo pr
 		JOIN aveloxis_data.pull_request_meta pm
 		  ON pm.pr_meta_id = pr.pr_repo_meta_id
@@ -228,7 +253,9 @@ func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int,
 		WHERE pr.pr_cntrb_id IS NULL
 		  AND split_part(COALESCE(pr.pr_repo_full_name, ''), '/', 1) <> ''
 		  AND COALESCE(c.cntrb_deleted, 0) = 0
-		  AND (c.gh_login <> '' OR COALESCE(c.gl_username, '') = '')%s`
+		  AND (c.gh_login <> '' OR COALESCE(c.gl_username, '') = '')%s
+		GROUP BY pr.pr_repo_id
+		HAVING COUNT(DISTINCT c.cntrb_id) = 1`
 	if dryRun {
 		// v0.27.107 (ultrareview bug_003): count BOTH derivation passes —
 		// the pair PK-join fills rows the login sweep cannot see (renamed
@@ -247,9 +274,8 @@ func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int,
 			  AND pr.pr_cntrb_id IS NULL`).Scan(&pair); err != nil {
 			return 0, fmt.Errorf("dry-run pair count pull_request_repo: %w", err)
 		}
-		q := `SELECT COUNT(DISTINCT pr.pr_repo_id)` + strings.TrimPrefix(
-			fmt.Sprintf(candidates, ""), `
-		SELECT DISTINCT ON (pr.pr_repo_id) pr.pr_repo_id, c.cntrb_id`)
+		q := `SELECT COUNT(*) FROM (SELECT pr.pr_repo_id` +
+			fmt.Sprintf(candidatesBody, "") + `) unambiguous`
 		var n int64
 		if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
 			return 0, fmt.Errorf("dry-run count pull_request_repo: %w", err)
@@ -277,8 +303,11 @@ func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int,
 		}
 		total += pairTag.RowsAffected()
 
-		// Pass 2: the login-expression sweep for the remainder.
-		cand := fmt.Sprintf(candidates, " AND pr.pr_repo_id > $1 AND pr.pr_repo_id <= $2")
+		// Pass 2: the login-expression sweep for the remainder. The
+		// (array_agg(DISTINCT ...))[1] is exactly the one contributor the
+		// HAVING guard admitted (Postgres has no min(uuid) aggregate).
+		cand := `SELECT pr.pr_repo_id, (array_agg(DISTINCT c.cntrb_id))[1] AS cntrb_id` +
+			fmt.Sprintf(candidatesBody, " AND pr.pr_repo_id > $1 AND pr.pr_repo_id <= $2")
 		tag, err := s.pool.Exec(ctx, `
 			WITH cand AS (`+cand+`)
 			UPDATE aveloxis_data.pull_request_repo pr

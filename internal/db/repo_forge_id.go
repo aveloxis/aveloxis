@@ -17,6 +17,7 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -82,9 +83,22 @@ func (s *PostgresStore) SetPlatformRepoIDIfEmpty(ctx context.Context, repoID int
 	// pass itself proceeds unchanged.
 	if tag.RowsAffected() == 0 {
 		var stored string
-		if perr := s.pool.QueryRow(ctx,
+		perr := s.pool.QueryRow(ctx,
 			`SELECT COALESCE(platform_repo_id, '') FROM aveloxis_data.repos WHERE repo_id = $1`,
-			repoID).Scan(&stored); perr == nil && stored != "" && stored != forgeID {
+			repoID).Scan(&stored)
+		if errors.Is(perr, pgx.ErrNoRows) {
+			// Row deleted between the UPDATE and the probe — nothing to
+			// verify; the only benign probe miss.
+			return nil
+		}
+		if perr != nil {
+			// v0.27.123 (Copilot round 15, suppressed): a probe FAILURE
+			// is not success — swallowing it lost both the DB error and
+			// the promised conflict signal (the "a lookup ERROR is not
+			// 'no'" rule, inside this function's own detector).
+			return fmt.Errorf("verify stored forge ID for repo %d: %w", repoID, perr)
+		}
+		if stored != "" && stored != forgeID {
 			s.logger.Error("forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row",
 				"repo_id", repoID, "stored_forge_id", stored, "observed_forge_id", forgeID,
 				"remediation", "inspect the row's data eras; a split needs operator action (reconcile-repos consolidates the INVERSE case only)")

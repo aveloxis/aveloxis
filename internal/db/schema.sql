@@ -1857,17 +1857,16 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor (
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor_history (
     LIKE aveloxis_data.repo_labor INCLUDING ALL
 );
--- v0.27.115 (drift audit, finding 3): the ONE deliberate index on the
--- history table — dedup-repos' hygiene delete probes it by repo_id
--- (188 measured scans on production). Declared under the exact
--- auto-generated name a LIKE-INCLUDING-ALL copy produced on fleets
--- whose v0.27.7 migration ran after repo_labor had its indexes, so
--- fresh installs and existing fleets converge without a rebuild. The
--- parent's composite (repo_id, rl_analysis_date DESC) copy is
--- deliberately NOT declared — 0 scans ever, 1.2 GB of pure rotation
--- write amplification; the migration drops it and the name is banned.
-CREATE INDEX IF NOT EXISTS repo_labor_history_repo_id_idx
-    ON aveloxis_data.repo_labor_history (repo_id);
+-- v0.27.115/v0.27.123: the ONE deliberate index on the history table
+-- (the plain repo_id copy — dedup-repos' hygiene delete, 188 measured
+-- scans on production) is MIGRATION-ONLY per the v0.27.98 rule: base
+-- DDL runs before any migration step, so declaring it here would
+-- block-build it with a plain CREATE INDEX on upgraded fleets that
+-- lack the accidental LIKE copy. ensureRepoLaborHistoryIndex in
+-- migrate.go owns it (CONCURRENTLY; instant on fresh empty tables).
+-- The parent's composite (repo_id, rl_analysis_date DESC) copy is
+-- deliberately absent — 0 scans ever, 1.2 GB of pure rotation write
+-- amplification; the migration drops it and the name is banned.
 
 -- ============================================================
 -- Repo meta (key-value metadata)

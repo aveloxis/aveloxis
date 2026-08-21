@@ -760,12 +760,18 @@ Token semantics:
   should lead with direct findings — a repo with 3 direct and 400
   transitive findings must never headline "403 vulnerabilities".
 
-- `introduced_by` (v0.27.133, transitive findings only): up to 3
-  attributions `{"root": "<direct dep>", "chain": ["<root>", ...,
-  "<vulnerable package>"]}` walked from the stored lockfile edges.
-  ABSENT when no edge data exists (knob off, or an edge-less lockfile
-  format) — treat absence as "attribution unavailable", never as "no
-  parents".
+- `introduced_by` (v0.27.133, CURRENT transitive findings only): up
+  to 3 attributions `{"root": "<direct dep>", "chain": ["<root>",
+  ..., "<vulnerable package>"]}` walked from the stored lockfile
+  edges. Each walk stays inside ONE lockfile's graph (v0.27.135) and
+  roots on that lockfile's own direct dependencies plus the repo's
+  manifest-declared set as a repo-wide fallback (v0.27.137) — in a
+  monorepo, a package that is direct in one workspace never
+  terminates another workspace's chain. Resolved-historical findings
+  never carry the field (today's graph cannot explain an older
+  snapshot's finding). ABSENT when no edge data exists (knob off, or
+  an edge-less lockfile format) — treat absence as "attribution
+  unavailable", never as "no parents".
 
   **Version-resolution accuracy (v0.27.11).** Each finding also
   carries `declared_requirement` — the raw manifest requirement

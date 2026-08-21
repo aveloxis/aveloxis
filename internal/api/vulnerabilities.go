@@ -137,12 +137,12 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 			if len(edges) == 0 {
 				break
 			}
-			directNames, derr := s.store.GetRepoDirectPackageNames(r.Context(), repoID)
+			directSets, derr := s.store.GetRepoDirectPackageSets(r.Context(), repoID)
 			if derr != nil {
 				s.logger.Warn("direct-set lookup failed — findings served without attribution", "repo_id", repoID, "error", derr)
 				break
 			}
-			chains = buildChainIndex(edges, directNames)
+			chains = buildChainIndex(edges, directSets)
 			break
 		}
 	}

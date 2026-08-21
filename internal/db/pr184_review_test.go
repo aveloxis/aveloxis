@@ -973,3 +973,32 @@ func TestSBOMGraphResolvesParentByVersionFirst(t *testing.T) {
 		t.Error("both SBOM generators must try the version-exact parent key before the name-level fallback")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 20 (v0.27.137) — review 4998079294: 1 comment, real — the
+// direct-root set was repo-wide while the round-19 walk is
+// per-lockfile.
+// ---------------------------------------------------------------------------
+
+// A package direct in apps/b but TRANSITIVE in apps/a terminated
+// apps/a's walk early, naming a root that lockfile's manifest never
+// declares. GetRepoDirectPackageSets now preserves lockfile_path
+// provenance; the walk roots on the graph's OWN direct set plus the
+// repo-wide DECLARED (manifest) fallback — repo_deps_libyear carries
+// no path column, so path-aware handling is not derivable for it (the
+// review's "explicitly separate fallback" arm). Behavioral proofs:
+// TestChainsForRootsArePerLockfile +
+// TestChainsForDeclaredFallbackRootsAnyGraph.
+func TestChainRootsArePerLockfile(t *testing.T) {
+	s := srctest.Read(t, "internal/api/vuln_chains.go")
+	if !strings.Contains(s, "direct   map[string]map[string]bool") {
+		t.Error("chainIndex.direct must be per-lockfile — a repo-wide root set truncates monorepo chains at non-actionable roots")
+	}
+	if !strings.Contains(s, "lockfileDirect[key] || declared[key]") {
+		t.Error("the walk's root test must be lockfile-own-direct OR repo-wide-declared")
+	}
+	st := srctest.Read(t, "internal/db/lockfile_store.go")
+	if !strings.Contains(st, "ByLockfile map[string]map[string]bool") {
+		t.Error("DirectPackageSets must keep lockfile_path provenance on direct rows")
+	}
+}

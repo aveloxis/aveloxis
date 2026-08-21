@@ -79,16 +79,29 @@ func TestLockfileEdgesSnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("snapshot-replace must leave exactly the fresh edge set: %v %+v", err, got)
 	}
 
-	// The direct set unions lockfile direct rows + declared deps,
-	// keyed lowercase.
-	direct, err := store.GetRepoDirectPackageNames(ctx, repoID)
+	// Round 20: the direct set carries PROVENANCE — lockfile direct
+	// rows keyed by their lockfile_path, declared manifest deps as the
+	// repo-wide fallback, all keyed lowercase.
+	sets, err := store.GetRepoDirectPackageSets(ctx, repoID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !direct["npm|express"] {
-		t.Errorf("direct lockfile row missing from the root set: %v", direct)
+	foundExpress := false
+	for path, m := range sets.ByLockfile {
+		if m["npm|qs"] {
+			t.Errorf("a transitive row must not enter %s's root set", path)
+		}
+		if m["npm|express"] {
+			if path == "" {
+				t.Error("lockfile direct row lost its lockfile_path provenance")
+			}
+			foundExpress = true
+		}
 	}
-	if direct["npm|qs"] {
-		t.Error("a transitive row must not enter the root set")
+	if !foundExpress {
+		t.Errorf("direct lockfile row missing from the per-lockfile root sets: %+v", sets.ByLockfile)
+	}
+	if sets.Declared["npm|qs"] {
+		t.Error("a transitive lockfile row must not enter the declared fallback")
 	}
 }

@@ -18,8 +18,8 @@ func TestChainsForWalksToDirectRoots(t *testing.T) {
 		{Ecosystem: "npm", ParentName: "body-parser", ChildName: "qs"},
 		{Ecosystem: "npm", ParentName: "helmet", ChildName: "qs"},
 	}
-	direct := map[string]bool{"npm|express": true, "npm|helmet": true}
-	idx := buildChainIndex(edges, direct)
+	sets := db.DirectPackageSets{Declared: map[string]bool{"npm|express": true, "npm|helmet": true}}
+	idx := buildChainIndex(edges, sets)
 
 	chains := idx.chainsFor("npm", "qs")
 	if len(chains) != 2 {
@@ -45,7 +45,7 @@ func TestChainsForCycleSafeAndHonest(t *testing.T) {
 		{Ecosystem: "npm", ParentName: "a", ChildName: "b"},
 		{Ecosystem: "npm", ParentName: "b", ChildName: "a"},
 	}
-	idx := buildChainIndex(edges, map[string]bool{})
+	idx := buildChainIndex(edges, db.DirectPackageSets{})
 	if got := idx.chainsFor("npm", "a"); got != nil {
 		t.Errorf("no direct root reachable — chains must be nil (honest absence), got %+v", got)
 	}
@@ -62,8 +62,8 @@ func TestChainsForNeverCrossLockfileGraphs(t *testing.T) {
 		// apps/b: direct express pulls x — but b's graph has no qs.
 		{Ecosystem: "npm", LockfilePath: "apps/b/package-lock.json", ParentName: "express", ChildName: "x"},
 	}
-	direct := map[string]bool{"npm|express": true}
-	idx := buildChainIndex(edges, direct)
+	sets := db.DirectPackageSets{Declared: map[string]bool{"npm|express": true}}
+	idx := buildChainIndex(edges, sets)
 	if got := idx.chainsFor("npm", "qs"); got != nil {
 		t.Errorf("cross-lockfile fabricated chain: %+v — apps/a's qs must not attribute through apps/b's express", got)
 	}
@@ -75,8 +75,8 @@ func TestChainsForDedupsRootsAcrossLockfiles(t *testing.T) {
 		{Ecosystem: "npm", LockfilePath: "apps/b/package-lock.json", ParentName: "express", ChildName: "mid"},
 		{Ecosystem: "npm", LockfilePath: "apps/b/package-lock.json", ParentName: "mid", ChildName: "qs"},
 	}
-	direct := map[string]bool{"npm|express": true}
-	idx := buildChainIndex(edges, direct)
+	sets := db.DirectPackageSets{Declared: map[string]bool{"npm|express": true}}
+	idx := buildChainIndex(edges, sets)
 	chains := idx.chainsFor("npm", "qs")
 	if len(chains) != 1 {
 		t.Fatalf("same root via two lockfiles must report once, got %+v", chains)
@@ -97,7 +97,7 @@ func TestChainsForRootCapAndEcosystemIsolation(t *testing.T) {
 	// Same package name in another ecosystem must not cross over.
 	edges = append(edges, db.RepoLockfileEdge{Ecosystem: "pypi", ParentName: "flask", ChildName: "shared"})
 	direct["pypi|flask"] = true
-	idx := buildChainIndex(edges, direct)
+	idx := buildChainIndex(edges, db.DirectPackageSets{Declared: direct})
 	chains := idx.chainsFor("npm", "shared")
 	if len(chains) != maxChainRoots {
 		t.Errorf("root cap: want %d, got %d", maxChainRoots, len(chains))
@@ -106,5 +106,48 @@ func TestChainsForRootCapAndEcosystemIsolation(t *testing.T) {
 		if c.Root == "flask" {
 			t.Error("ecosystem isolation broken — a pypi parent attributed an npm finding")
 		}
+	}
+}
+
+// Round-20 (Copilot): the direct-root set must be per-lockfile too. A
+// package DIRECT in apps/b but TRANSITIVE in apps/a is not an
+// actionable root in apps/a's graph — the walk must pass THROUGH it to
+// apps/a's own direct root instead of stopping early and naming a root
+// that apps/a's manifest never declares.
+func TestChainsForRootsArePerLockfile(t *testing.T) {
+	edges := []db.RepoLockfileEdge{
+		// apps/a's graph: X (a's direct) -> P -> C.
+		{Ecosystem: "npm", LockfilePath: "apps/a/package-lock.json", ParentName: "x", ChildName: "p"},
+		{Ecosystem: "npm", LockfilePath: "apps/a/package-lock.json", ParentName: "p", ChildName: "c"},
+	}
+	sets := db.DirectPackageSets{
+		ByLockfile: map[string]map[string]bool{
+			"apps/a/package-lock.json": {"npm|x": true},
+			// P is direct ONLY in apps/b — must not root apps/a's walk.
+			"apps/b/package-lock.json": {"npm|p": true},
+		},
+	}
+	idx := buildChainIndex(edges, sets)
+	chains := idx.chainsFor("npm", "c")
+	if len(chains) != 1 || chains[0].Root != "x" {
+		t.Fatalf("walk must continue through apps/b-only direct p to apps/a's root x, got %+v", chains)
+	}
+	if len(chains[0].Chain) != 3 || chains[0].Chain[1] != "p" {
+		t.Errorf("chain must be x -> p -> c, got %v", chains[0].Chain)
+	}
+}
+
+// The declared (manifest) set stays a repo-wide fallback by design —
+// repo_deps_libyear carries no path column, so path-aware handling is
+// not derivable for it. A declared dep roots any lockfile's graph.
+func TestChainsForDeclaredFallbackRootsAnyGraph(t *testing.T) {
+	edges := []db.RepoLockfileEdge{
+		{Ecosystem: "npm", LockfilePath: "apps/a/package-lock.json", ParentName: "d", ChildName: "c"},
+	}
+	sets := db.DirectPackageSets{Declared: map[string]bool{"npm|d": true}}
+	idx := buildChainIndex(edges, sets)
+	chains := idx.chainsFor("npm", "c")
+	if len(chains) != 1 || chains[0].Root != "d" {
+		t.Errorf("manifest-declared dep must root the walk as the repo-wide fallback, got %+v", chains)
 	}
 }

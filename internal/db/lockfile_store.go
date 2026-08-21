@@ -490,29 +490,51 @@ func (s *PostgresStore) GetRepoSelfAdvisoryPackages(ctx context.Context, repoID 
 	return out, rows.Err()
 }
 
-// GetRepoDirectPackageNames returns the repo's DIRECT dependency set
-// as "ecosystem|lowercase(name)" keys (v0.27.133 C2 — the chain
-// walk's root set): the union of direct lockfile resolutions and the
-// declared manifest dependencies (which covers Go — no lockfile by
-// design — and every lockfile-less ecosystem).
-func (s *PostgresStore) GetRepoDirectPackageNames(ctx context.Context, repoID int64) (map[string]bool, error) {
-	out := map[string]bool{}
+// DirectPackageSets is the chain walk's root set with PROVENANCE
+// (round 20 — v0.27.137), keyed "ecosystem|lowercase(name)".
+type DirectPackageSets struct {
+	ByLockfile map[string]map[string]bool // lockfile_path -> ecosystem|lower(name)
+	Declared   map[string]bool            // repo-wide manifest-declared fallback
+}
+
+// GetRepoDirectPackageSets returns the repo's DIRECT dependency set
+// (v0.27.133 C2 — the chain walk's root set): direct lockfile
+// resolutions keyed by their lockfile_path, plus the repo-wide
+// declared manifest set as a separate fallback. The split matters in
+// monorepos: a package direct in apps/b but transitive in apps/a must
+// NOT terminate apps/a's chain walk — it is not an actionable root in
+// that lockfile's graph. Declared manifest deps (repo_deps_libyear)
+// carry no path column, so they stay an explicitly repo-wide fallback
+// (this also covers Go — no lockfile by design — and every
+// lockfile-less ecosystem).
+func (s *PostgresStore) GetRepoDirectPackageSets(ctx context.Context, repoID int64) (DirectPackageSets, error) {
+	out := DirectPackageSets{ByLockfile: map[string]map[string]bool{}, Declared: map[string]bool{}}
 	rows, err := s.pool.Query(ctx, `
-		SELECT ecosystem, package_name FROM aveloxis_data.repo_lockfile_packages
+		SELECT 'lockfile', lockfile_path, ecosystem, package_name
+		FROM aveloxis_data.repo_lockfile_packages
 		WHERE repo_id = $1 AND COALESCE(direct, TRUE)
 		UNION
-		SELECT package_manager, name FROM aveloxis_data.repo_deps_libyear
+		SELECT 'declared', '', package_manager, name
+		FROM aveloxis_data.repo_deps_libyear
 		WHERE repo_id = $1`, repoID)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var eco, name string
-		if err := rows.Scan(&eco, &name); err != nil {
-			return nil, err
+		var source, path, eco, name string
+		if err := rows.Scan(&source, &path, &eco, &name); err != nil {
+			return out, err
 		}
-		out[eco+"|"+strings.ToLower(name)] = true
+		key := eco + "|" + strings.ToLower(name)
+		if source == "declared" {
+			out.Declared[key] = true
+			continue
+		}
+		if out.ByLockfile[path] == nil {
+			out.ByLockfile[path] = map[string]bool{}
+		}
+		out.ByLockfile[path][key] = true
 	}
 	return out, rows.Err()
 }

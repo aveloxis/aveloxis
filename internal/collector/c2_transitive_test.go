@@ -63,7 +63,7 @@ func TestVulnAPIAttachesIntroducedBy(t *testing.T) {
 	s := srctest.Read(t, "internal/api/vulnerabilities.go")
 	for _, needle := range []string{
 		"GetRepoLockfileEdges(",
-		"GetRepoDirectPackageNames(",
+		"GetRepoDirectPackageSets(",
 		"buildChainIndex(",
 		"chains.chainsFor(v.Ecosystem, v.PackageName)",
 		"findings served without attribution",

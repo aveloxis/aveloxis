@@ -50,11 +50,18 @@ const maxChainDepth = 20
 // not derivable from range constraints).
 type chainIndex struct {
 	graphs map[string]map[string][]string // lockfile_path -> (ecosystem|child) -> parent names
-	direct map[string]bool                // ecosystem|name -> is a direct dependency
+	// direct is per-lockfile (round 20): a package direct in apps/b
+	// but TRANSITIVE in apps/a must not terminate apps/a's walk — it
+	// is not an actionable root in that lockfile's graph. declared is
+	// the repo-wide manifest fallback (repo_deps_libyear carries no
+	// path column, so path-aware handling is not derivable for it —
+	// an explicitly separate fallback by design).
+	direct   map[string]map[string]bool // lockfile_path -> ecosystem|name
+	declared map[string]bool            // repo-wide manifest-declared roots
 }
 
-func buildChainIndex(edges []db.RepoLockfileEdge, directNames map[string]bool) *chainIndex {
-	idx := &chainIndex{graphs: map[string]map[string][]string{}, direct: directNames}
+func buildChainIndex(edges []db.RepoLockfileEdge, sets db.DirectPackageSets) *chainIndex {
+	idx := &chainIndex{graphs: map[string]map[string][]string{}, direct: sets.ByLockfile, declared: sets.Declared}
 	seen := map[string]bool{}
 	for _, e := range edges {
 		g := idx.graphs[e.LockfilePath]
@@ -95,7 +102,7 @@ func (idx *chainIndex) chainsFor(ecosystem, pkg string) []vulnChainJSON {
 		if len(out) >= maxChainRoots {
 			break
 		}
-		out = walkChainGraph(idx.graphs[p], idx.direct, ecosystem, pkg, rootSeen, out)
+		out = walkChainGraph(idx.graphs[p], idx.direct[p], idx.declared, ecosystem, pkg, rootSeen, out)
 	}
 	return out
 }
@@ -103,7 +110,7 @@ func (idx *chainIndex) chainsFor(ecosystem, pkg string) []vulnChainJSON {
 // walkChainGraph is the BFS over ONE lockfile's adjacency. rootSeen is
 // shared across lockfiles so the same direct root reached through two
 // lockfiles is reported once (the first — lockfile-path order — wins).
-func walkChainGraph(parents map[string][]string, direct map[string]bool,
+func walkChainGraph(parents map[string][]string, lockfileDirect, declared map[string]bool,
 	ecosystem, pkg string, rootSeen map[string]bool, out []vulnChainJSON) []vulnChainJSON {
 	type node struct {
 		name string
@@ -123,7 +130,8 @@ func walkChainGraph(parents map[string][]string, direct map[string]bool,
 			}
 			visited[parent] = true
 			path := append(append([]string{}, n.path...), parent)
-			if direct[ecosystem+"|"+strings.ToLower(parent)] {
+			key := ecosystem + "|" + strings.ToLower(parent)
+			if lockfileDirect[key] || declared[key] {
 				if rootSeen[parent] {
 					continue // already attributed via another lockfile
 				}

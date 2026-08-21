@@ -175,6 +175,58 @@ Source-contract tests can give false confidence:
 
 If you write a source-contract test for SQL that references a column from a different table, **also** write an integration test that runs the migration against a fresh database. The combination catches both refactor-rename drift (source-contract) and column-name typos (integration).
 
+### Shared helpers: `internal/srctest` (v0.27.118)
+
+All NEW source-contract tests use `internal/srctest` — the single, fixture-tested
+home for the operations that used to be duplicated ad hoc (~40 read helpers, five
+incompatible function-body extractors with *different scan windows*, comment
+strippers, repo-root finders):
+
+- `srctest.Root(t)` / `srctest.Read(t, "docs/...")` — repo-root discovery and
+  root-relative reads (no more `../../` fragility)
+- `srctest.FuncBody(t, src, "func (s *T) Name(")` — THE brace-counting extractor
+  (string/comment-literal aware; excludes trailing comments — the legacy
+  cut-at-next-`func ` windows were a false-match hazard)
+- `srctest.StripGoComments` / `srctest.StripSQLComments` — literal-aware (a `//`
+  inside a string or a `);` inside a SQL comment can no longer corrupt a scan)
+- `srctest.BacktickLiterals`, `srctest.NormalizeWS`, `srctest.ContainsNormalized`
+- `srctest.MinCount(t, what, got, min)` — the mandatory "my own corpus walk
+  broke" guard for any test that scans directories
+
+Adoption is **strangler-only**: legacy tests migrate when touched, tracked by the
+shrink-only ratchet (`scripts/srctest_ratchet_test.go` +
+`scripts/srctest_migration_baseline.txt` — defining a NEW duplicate helper fails
+the build; a migrated site's baseline line must be deleted in the same diff).
+**There is deliberately NO bulk migration of the remaining legacy files** —
+refactoring working pins is itself a regression risk. When you do migrate a pin,
+follow the **re-red protocol**: green → temporarily inject the violation the pin
+exists to catch → confirm RED → revert → green. Interdependent pins (ones that
+read other test files or share allowlists) migrate as a closed cluster in one
+change.
+
+### Analyzer graduation criteria (deliberately deferred)
+
+All cross-cutting checks stay in `go test` (runs identically everywhere, zero
+toolchain maintenance). Build a custom `go/analysis` analyzer ONLY when a rule
+(a) needs type information or call-graph facts a text scan cannot approximate —
+the live candidates are "a lookup ERROR is not 'no'" (`errors.Is`/ErrNoRows
+discipline) and safego adoption — AND (b) has caused ≥2 review-missed incidents,
+AND (c) the text-scan form has produced wrong results twice despite fixture
+fixes.
+
+### SQL parsing: tested micro-parsers now; pg_query_go pilot flagged
+
+The SQL scanning helpers are regex/micro-parser based ON PURPOSE — every recorded
+fragility incident was in a *scattered, untested* copy, which centralization plus
+hostile fixtures addresses. **FLAGGED PILOT (operator, 2026-08-20)**: when the
+write-policy engine lands, a shadow implementation on pg_query_go (real Postgres
+AST) runs in an isolated nested module (`tools/sqlcheck-pilot/`, own go.mod so
+the CGo dep never touches the main module) and is diffed against the regex
+engine over the same corpus. If it actually works (no new false positives,
+catches shapes regex can't, acceptable build friction, shorter check code), the
+operator decides a going-forward migration plan then. Nothing ships on it until
+that decision.
+
 ## Where expected values come from
 
 The 2026-07-21 audit (`summary/17-wrong-answer-tests-audit.md`) found a recurring failure shape across the suite: **both-sides-agree-on-the-wrong-answer tests** — tests whose expected values were derived from the implementation under test, so implementation and expectation could be wrong *together* and the test would pass forever. Three shipped bugs came from this shape: the v0.21.0 backfill column name, the purl non-canonical encodings (pinned as correct by their own tests), and the PEP 639 license drift (every mock fixture predated the ecosystem change).

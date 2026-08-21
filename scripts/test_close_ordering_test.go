@@ -27,12 +27,14 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 var deferPoolClose = regexp.MustCompile(`\bdefer\s+(store|pool|s)\.(pool\.)?Close\(\)`)
 
 func TestNoDeferPoolCloseInTests(t *testing.T) {
-	root := repoRootDir(t)
+	root := srctest.Root(t)
 	var offenders []string
 	var scanned int
 	for _, dir := range []string{"internal", "cmd"} {
@@ -79,24 +81,5 @@ func TestNoDeferPoolCloseInTests(t *testing.T) {
 	}
 	for _, o := range offenders {
 		t.Errorf("%s: `defer <store>.Close()` in a test — deferred calls run BEFORE t.Cleanup callbacks, so any pool-using cleanup silently fails against a closed pool and strands fixture residue (the PR #171 CI failure). Use `t.Cleanup(store.Close)` immediately after connecting instead.", o)
-	}
-}
-
-// repoRootDir walks up from the working directory to the go.mod root.
-func repoRootDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("go.mod not found walking up from the test working directory")
-		}
-		dir = parent
 	}
 }

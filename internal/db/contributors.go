@@ -123,6 +123,20 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 	// logs from 2026-05-02. Skipped when login is empty (matches the
 	// partial unique index's WHERE clause and avoids a meaningless
 	// query).
+	//
+	// DELIBERATELY GLOBAL (not platform-scoped) — v0.27.119, review
+	// finding DECLINED: a contributors row is a PERSON, not a
+	// per-platform account. The schema carries gh_* AND gl_* columns
+	// on ONE row, cntrb_login is globally unique by Augur-heritage
+	// design, and a same-login cross-platform ref merging into the
+	// existing person row is the intended model (the identities table
+	// holds the per-platform accounts pointing at it). The UNSAFE
+	// subset of this heuristic — GitLab GROUP namespaces, which are
+	// orgs, not people — was removed at the source in v0.27.109;
+	// same-login false merges between real users remain the documented
+	// v0.26.5-class accepted risk. Making login uniqueness
+	// platform-aware would be a schema redesign (splitting person
+	// rows), not a lookup tweak.
 	if login != "" {
 		var existingID string
 		err := r.store.pool.QueryRow(ctx, `

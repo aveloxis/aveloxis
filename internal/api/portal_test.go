@@ -14,6 +14,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func portalServer(t *testing.T, store sessionStore) *Server {
@@ -118,18 +120,13 @@ func TestAdminMutationHandlersInvalidateCache(t *testing.T) {
 	}
 }
 
+// v0.27.118: delegates to internal/srctest — the ONE brace-counting
+// extractor. Window change: text AFTER the close brace (trailing
+// comments, the next function's doc comment) is now EXCLUDED — the
+// old cut-at-next-func window was a false-match hazard.
 func extractFuncBody(t *testing.T, src, name string) string {
 	t.Helper()
-	start := strings.Index(src, "func (s *Server) "+name+"(")
-	if start < 0 {
-		t.Fatalf("function %s not found", name)
-	}
-	rest := src[start:]
-	end := strings.Index(rest, "\nfunc ")
-	if end < 0 {
-		end = len(rest)
-	}
-	return rest[:end]
+	return srctest.FuncBody(t, src, "func (s *Server) "+name+"(")
 }
 
 func TestPortalRoutesRegistered(t *testing.T) {

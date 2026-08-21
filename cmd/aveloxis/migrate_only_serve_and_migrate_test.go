@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.21.5 — store.Migrate(ctx) is restricted to two call sites:
@@ -36,32 +38,15 @@ import (
 // ran `aveloxis migrate`; if a column is missing the Postgres error
 // is self-describing.
 
+// v0.27.118: delegates to internal/srctest — the ONE brace-counting
+// extractor (this package's variant was one of five incompatible
+// copies). Behavior kept: comment-stripped result; the window now also
+// includes the declaration line (harmless — no pin needle lives in a
+// signature) and the stripper is literal-aware (a // inside a string
+// no longer truncates the line).
 func extractFuncBody(t *testing.T, src, funcSig string) string {
 	t.Helper()
-	idx := strings.Index(src, funcSig)
-	if idx < 0 {
-		t.Fatalf("cannot find %q in source", funcSig)
-	}
-	tail := src[idx:]
-	// Skip past the func signature line + opening brace, then find
-	// the matching closing brace by counting depth.
-	depth := 0
-	start := -1
-	for i := 0; i < len(tail); i++ {
-		if tail[i] == '{' {
-			if start < 0 {
-				start = i
-			}
-			depth++
-		} else if tail[i] == '}' {
-			depth--
-			if depth == 0 {
-				return stripLineComments(tail[start : i+1])
-			}
-		}
-	}
-	t.Fatalf("could not find closing brace for %q", funcSig)
-	return ""
+	return srctest.StripGoComments(srctest.FuncBody(t, src, funcSig))
 }
 
 // stripLineComments removes `//` line comments so source-contract
@@ -73,16 +58,10 @@ func extractFuncBody(t *testing.T, src, funcSig string) string {
 //
 // Block comments and string literals are not handled; we don't have
 // either of those in the targeted functions.
+// v0.27.118: delegates to the literal-aware srctest stripper (the
+// naive cut-at-// version truncated lines at "//" inside strings).
 func stripLineComments(src string) string {
-	var out strings.Builder
-	for _, line := range strings.Split(src, "\n") {
-		if idx := strings.Index(line, "//"); idx >= 0 {
-			line = line[:idx]
-		}
-		out.WriteString(line)
-		out.WriteByte('\n')
-	}
-	return out.String()
+	return srctest.StripGoComments(src)
 }
 
 func mainSource(t *testing.T) string {

@@ -64,55 +64,56 @@ func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID 
 			removed[i] = int32(c.Removed)
 			ws[i] = int32(c.Whitespace)
 		}
+		// v0.27.119 (Copilot round 12, active): the UPDATE and the
+		// existence probe run as ONE statement — one MVCC snapshot. As
+		// two statements, a commit-file row inserted by a concurrent
+		// collection BETWEEN them counted as "matched" without ever
+		// receiving whitespace values, letting the walker stamp the
+		// marker over a row it never updated (false coverage). In one
+		// statement the probe sees exactly the rows the UPDATE saw.
+		// The probe join stays independent of the IS DISTINCT guard so
+		// a re-run whose values already match still reports full
+		// coverage; both ride idx_commits_repo_hash_file.
 		cerr := s.withRetry(ctx, func(ctx context.Context) error {
-			tag, uerr := s.pool.Exec(ctx, `
-				UPDATE aveloxis_data.commits c
-				SET cmt_added = v.added,
-				    cmt_removed = v.removed,
-				    cmt_whitespace = v.ws
-				FROM (
+			var u, m int64
+			perr := s.pool.QueryRow(ctx, `
+				WITH v AS (
 					SELECT unnest($2::text[]) AS hash,
 					       unnest($3::text[]) AS filename,
 					       unnest($4::int[])  AS added,
 					       unnest($5::int[])  AS removed,
 					       unnest($6::int[])  AS ws
-				) v
-				WHERE c.repo_id = $1
-				  AND c.cmt_commit_hash = v.hash
-				  AND c.cmt_filename = v.filename
-				  AND (c.cmt_added IS DISTINCT FROM v.added
-				    OR c.cmt_removed IS DISTINCT FROM v.removed
-				    OR c.cmt_whitespace IS DISTINCT FROM v.ws)`,
-				repoID, hashes, files, added, removed, ws)
-			if uerr == nil {
-				updated += tag.RowsAffected()
-			}
-			return uerr
-		})
-		if cerr != nil {
-			return updated, matched, fmt.Errorf("whitespace batch update (chunk at %d): %w", start, cerr)
-		}
-		// Existence probe, independent of the IS DISTINCT guard — one
-		// indexed join per chunk via idx_commits_repo_hash_file, so a
-		// re-run whose values all already match still reports full
-		// coverage.
-		cerr = s.withRetry(ctx, func(ctx context.Context) error {
-			var n int64
-			perr := s.pool.QueryRow(ctx, `
-				SELECT COUNT(*)
-				FROM (SELECT unnest($2::text[]) AS hash, unnest($3::text[]) AS filename) v
-				JOIN aveloxis_data.commits c
-				  ON c.repo_id = $1
-				 AND c.cmt_commit_hash = v.hash
-				 AND c.cmt_filename = v.filename`,
-				repoID, hashes, files).Scan(&n)
+				),
+				upd AS (
+					UPDATE aveloxis_data.commits c
+					SET cmt_added = v.added,
+					    cmt_removed = v.removed,
+					    cmt_whitespace = v.ws
+					FROM v
+					WHERE c.repo_id = $1
+					  AND c.cmt_commit_hash = v.hash
+					  AND c.cmt_filename = v.filename
+					  AND (c.cmt_added IS DISTINCT FROM v.added
+					    OR c.cmt_removed IS DISTINCT FROM v.removed
+					    OR c.cmt_whitespace IS DISTINCT FROM v.ws)
+					RETURNING 1
+				)
+				SELECT (SELECT COUNT(*) FROM upd),
+				       (SELECT COUNT(*)
+				        FROM v
+				        JOIN aveloxis_data.commits c
+				          ON c.repo_id = $1
+				         AND c.cmt_commit_hash = v.hash
+				         AND c.cmt_filename = v.filename)`,
+				repoID, hashes, files, added, removed, ws).Scan(&u, &m)
 			if perr == nil {
-				matched += n
+				updated += u
+				matched += m
 			}
 			return perr
 		})
 		if cerr != nil {
-			return updated, matched, fmt.Errorf("whitespace match probe (chunk at %d): %w", start, cerr)
+			return updated, matched, fmt.Errorf("whitespace batch update (chunk at %d): %w", start, cerr)
 		}
 	}
 	return updated, matched, nil

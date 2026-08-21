@@ -85,6 +85,28 @@ func TestUserInlinesSelectNodeID(t *testing.T) {
 	}
 }
 
+// v0.27.119 (Copilot round 12, suppressed — real): the assignee
+// connections are bare `nodes { ... }` selections, NOT `... on User`
+// inlines, so TestUserInlinesSelectNodeID structurally could not see
+// them — and both (initial page at prNodeFragment + paginatePRAssignees)
+// omitted `id`, leaving assignee-sourced identities without node_id
+// despite userRefFromGraphQL promising it since v0.27.103. Pin every
+// assignees connection's node selection carries `id`.
+func TestAssigneeSelectionsCarryNodeID(t *testing.T) {
+	src := readSrc(t, "graphql_pr_batch.go")
+	re := regexp.MustCompile(`assignees\(first: \d+[^)]*\) \{\s*\n\s*nodes \{([^}]*)\}`)
+	matches := re.FindAllStringSubmatch(src, -1)
+	if len(matches) < 2 {
+		t.Fatalf("expected >= 2 assignees selections (initial page + pagination), found %d — the regex or the query moved", len(matches))
+	}
+	for _, m := range matches {
+		fields := " " + strings.Join(strings.Fields(m[1]), " ") + " "
+		if !strings.Contains(fields, " id ") {
+			t.Errorf("assignees node selection %q must select `id` — without it every assignee-sourced identity lands with empty node_id", strings.TrimSpace(m[1]))
+		}
+	}
+}
+
 // A4c — FetchIssueClosers selected __typename but decoded neither it nor
 // `id`, so every closer identity landed with empty user_type/node_id.
 func TestIssueClosersCaptureTypeAndNodeID(t *testing.T) {

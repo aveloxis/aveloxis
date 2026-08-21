@@ -1,0 +1,184 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+package srctest
+
+import (
+	"strings"
+	"testing"
+)
+
+// The fixture suites below are the "violation corpus" for the helper
+// layer itself (v0.27.118, SR-12): every helper carries the historical
+// bug class it exists to prevent as an explicit negative control. If
+// one of these fixtures ever passes the wrong way, the helper's
+// detection power died — fix the helper, never the fixture.
+
+func TestFuncBody(t *testing.T) {
+	src := `package x
+
+// docForA is a comment mentioning func b( which must not confuse anchoring.
+func a(s string) string {
+	if s == "{" { // brace in comment {
+		return "}"
+	}
+	f := func() { _ = '{' }
+	f()
+	return "x` + "`{`" + `y"
+}
+
+// trailing comment after a — the cut-at-next-func variants INCLUDED
+// this text; brace counting must EXCLUDE it. needle: TRAILING_ONLY
+func b() {}
+`
+	body := FuncBody(t, src, "func a(")
+	if !strings.HasPrefix(body, "func a(s string) string {") {
+		t.Errorf("FuncBody must include the declaration line, got prefix %q", body[:min(40, len(body))])
+	}
+	if !strings.HasSuffix(body, "}") {
+		t.Errorf("FuncBody must end at the matching close brace, got suffix %q", body[len(body)-10:])
+	}
+	// Braces inside comments, strings, raw strings, and rune literals
+	// must not desync the depth count.
+	if !strings.Contains(body, `return "x`) {
+		t.Error("FuncBody truncated early — a brace inside a literal desynced the count")
+	}
+	// The scan-window contract that made the 5 legacy variants
+	// interdependent hazards: trailing comments are EXCLUDED.
+	if strings.Contains(body, "TRAILING_ONLY") {
+		t.Error("FuncBody must exclude trailing comments after the close brace (the cut-at-next-func variants' false-match window)")
+	}
+	if strings.Contains(body, "func b()") {
+		t.Error("FuncBody leaked the next function")
+	}
+}
+
+func TestFuncBodyMethodSignature(t *testing.T) {
+	src := "package x\nfunc (s *Server) handleX(w http.ResponseWriter) {\n\tserve()\n}\n"
+	body := FuncBody(t, src, "func (s *Server) handleX(")
+	if !strings.Contains(body, "serve()") {
+		t.Error("method receiver signatures must anchor")
+	}
+}
+
+func TestStripGoComments(t *testing.T) {
+	src := "a := \"http://not-a-comment\" // real comment with needle NEEDLE1\n" +
+		"b := `raw // keeps this`\n" +
+		"/* block NEEDLE2 */ c := 1\n" +
+		"d := '/'\n"
+	out := StripGoComments(src)
+	if strings.Contains(out, "NEEDLE1") || strings.Contains(out, "NEEDLE2") {
+		t.Error("comments must be stripped")
+	}
+	if !strings.Contains(out, "http://not-a-comment") {
+		t.Error("// inside a string literal must survive (the false-strip class)")
+	}
+	if !strings.Contains(out, "raw // keeps this") {
+		t.Error("// inside a raw string must survive")
+	}
+	if !strings.Contains(out, "d := '/'") {
+		t.Error("rune literals must not open a comment")
+	}
+}
+
+func TestStripSQLComments(t *testing.T) {
+	// The v0.27.89 incident, verbatim shape: a `);` inside a SQL
+	// comment truncated naive block extraction. Strip FIRST, extract
+	// SECOND — this fixture pins that the `);` disappears with its
+	// comment.
+	src := "CREATE TABLE t (\n" +
+		"    a TEXT, -- legacy note (moved from x); see docs\n" +
+		"    b TEXT DEFAULT '--not a comment'\n" +
+		"/* block ); comment */\n" +
+		");"
+	out := StripSQLComments(src)
+	if strings.Contains(out, "moved from x") || strings.Contains(out, "block );") {
+		t.Error("SQL comments must be stripped")
+	}
+	if strings.Count(out, ");") != 1 {
+		t.Errorf("exactly the REAL terminator must survive, got %d occurrences in %q", strings.Count(out, ");"), out)
+	}
+	if !strings.Contains(out, "'--not a comment'") {
+		t.Error("-- inside a quoted SQL string must survive")
+	}
+}
+
+func TestBacktickLiterals(t *testing.T) {
+	src := "a := `SELECT 1`\nb := 2\nc := `UPDATE x\nSET y = 1`\n"
+	lits := BacktickLiterals(src)
+	if len(lits) != 2 {
+		t.Fatalf("want 2 literals, got %d: %v", len(lits), lits)
+	}
+	if lits[0] != "`SELECT 1`" || !strings.Contains(lits[1], "SET y = 1") {
+		t.Errorf("unexpected literals: %v", lits)
+	}
+}
+
+func TestNormalizeWSAndContains(t *testing.T) {
+	// The gofmt-realignment class (v0.22.0 phase 5): a struct field
+	// re-aligned by gofmt broke a literal-substring pin.
+	hay := "IssueComments   []MessageWithRef\nIssueLabels     map[int]X"
+	if !ContainsNormalized(hay, "IssueComments []MessageWithRef") {
+		t.Error("gofmt column re-alignment must not break needle matching")
+	}
+	if ContainsNormalized(hay, "IssueComments []Missing") {
+		t.Error("ContainsNormalized must still discriminate")
+	}
+}
+
+func TestRootAndRead(t *testing.T) {
+	root := Root(t)
+	if !strings.HasSuffix(root, "aveloxis") {
+		t.Errorf("Root should end at the repo dir, got %q", root)
+	}
+	gomod := Read(t, "go.mod")
+	if !strings.Contains(gomod, "module github.com/aveloxis/aveloxis") {
+		t.Error("Read must resolve repo-root-relative paths")
+	}
+}
+
+func TestPackageFiles(t *testing.T) {
+	files := PackageFiles(t, "internal/srctest", 1)
+	found := false
+	for path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			t.Errorf("test files must be excluded, got %s", path)
+		}
+		if strings.HasSuffix(path, "srctest.go") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("PackageFiles must include the package's non-test sources with repo-relative paths")
+	}
+}
+
+func TestMinCountGuard(t *testing.T) {
+	// MinCount must be callable on a passing count without side effects.
+	MinCount(t, "fixture items", 5, 3)
+	// The failing arm is exercised via a sub-test runner we can observe.
+	failed := runFails(func(tb testing.TB) { MinCount(tb, "corpus files", 2, 30) })
+	if !failed {
+		t.Error("MinCount must fail when got < min — the corpus-broke guard is the whole point")
+	}
+}
+
+// runFails runs fn against a recording TB and reports whether it
+// flagged a failure (Fatal or Error).
+func runFails(fn func(testing.TB)) (failed bool) {
+	rec := &recordingTB{}
+	defer func() { _ = recover(); failed = rec.failed }()
+	fn(rec)
+	return rec.failed
+}
+
+type recordingTB struct {
+	testing.TB
+	failed bool
+}
+
+func (r *recordingTB) Helper()                   {}
+func (r *recordingTB) Fatalf(f string, a ...any) { r.failed = true; panic("fatal") }
+func (r *recordingTB) Fatal(a ...any)            { r.failed = true; panic("fatal") }
+func (r *recordingTB) Errorf(f string, a ...any) { r.failed = true }
+func (r *recordingTB) Error(a ...any)            { r.failed = true }

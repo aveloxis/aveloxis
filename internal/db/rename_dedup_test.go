@@ -35,6 +35,8 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // --- source-contract pins -------------------------------------------------
@@ -145,20 +147,14 @@ func TestUpdateRepoMetadataBackfillsPlatformRepoID(t *testing.T) {
 	}
 }
 
-// extractFuncBody returns the source from the function declaration to the
-// next top-level `func ` keyword (good enough for needle pins).
+// extractFuncBody — v0.27.118: delegates to internal/srctest, the ONE
+// brace-counting extractor. Window change from the old
+// cut-at-next-`func ` shape: trailing comments and the NEXT function's
+// doc comment are now EXCLUDED (that inclusion was a false-match
+// hazard for every pin in this package).
 func extractFuncBody(t *testing.T, src, decl string) string {
 	t.Helper()
-	i := strings.Index(src, decl)
-	if i < 0 {
-		t.Fatalf("declaration not found: %s", decl)
-	}
-	rest := src[i+len(decl):]
-	j := strings.Index(rest, "\nfunc ")
-	if j < 0 {
-		return decl + rest
-	}
-	return decl + rest[:j]
+	return srctest.FuncBody(t, src, decl)
 }
 
 // --- live-DB end-to-end (gated on AVELOXIS_TEST_DB) ------------------------

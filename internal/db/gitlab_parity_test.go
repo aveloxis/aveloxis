@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestParityMatrixDocumented pins that the architecture doc carries
@@ -14,11 +16,7 @@ import (
 // is the matrix itself plus filed gaps; this test ensures the matrix
 // section exists and the major rows are present.
 func TestParityMatrixDocumented(t *testing.T) {
-	data, err := os.ReadFile(docPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	doc := string(data)
+	doc := srctest.Read(t, docPath)
 
 	if !strings.Contains(doc, "parity matrix") &&
 		!strings.Contains(doc, "Parity matrix") &&

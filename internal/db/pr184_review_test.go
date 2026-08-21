@@ -560,3 +560,46 @@ func TestFailedIdentityHealIsNotCached(t *testing.T) {
 		t.Error("a failed heal must return WITHOUT caching so the next observation re-runs the heal (a cached identity never reaches this branch again)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 12 (2026-08-20): 2 active + 2 suppressed — three real, one
+// DECLINED (its premise doesn't match the tree: no platform-scoped
+// login fallback or cross-platform separation test exists, and the
+// "separation required" assumption contradicts the schema's deliberate
+// one-person-row model — see the DELIBERATELY GLOBAL comment at
+// Resolve's step 2.5, which this round added to make the design
+// decision visible at the site).
+// ---------------------------------------------------------------------------
+
+// Active #2 (real): the whitespace existence probe ran as a SEPARATE
+// statement from the UPDATE — a commit-file row inserted by a
+// concurrent collection between the two snapshots counted as matched
+// without ever receiving values, letting the walker stamp over it.
+// One statement = one snapshot.
+func TestWhitespaceProbeSharesUpdateSnapshot(t *testing.T) {
+	src, err := os.ReadFile("whitespace_store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) UpdateCommitWhitespaceBatch(")
+	if !strings.Contains(body, "WITH v AS") || !strings.Contains(body, "upd AS") {
+		t.Error("the update and the existence probe must run as ONE statement (CTE) — two statements = two snapshots = false coverage from concurrent inserts")
+	}
+	if strings.Count(body, "s.pool.QueryRow") != 1 || strings.Contains(body, "s.pool.Exec") {
+		t.Error("UpdateCommitWhitespaceBatch must issue exactly one SQL statement per chunk")
+	}
+}
+
+// Suppressed #1 (real): the PR-equivalents root lookup must key on ALL
+// of (thread_key, repo_id, list_address) — the threads CTE groups by
+// all three, and two lists reusing a thread id would otherwise serve
+// the OTHER list's subject/sender as this thread's root.
+func TestPREquivalentsRootLookupKeysOnList(t *testing.T) {
+	src, err := os.ReadFile("views.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "em2.list_address = t.list_address") {
+		t.Error("the root LATERAL must match list_address — the thread key includes it")
+	}
+}

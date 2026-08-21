@@ -390,7 +390,7 @@ const prNodeFragment = `
         pageInfo { hasNextPage endCursor }
       }
       assignees(first: 50) {
-        nodes { databaseId login avatarUrl url name email }
+        nodes { id databaseId login avatarUrl url name email }
         pageInfo { hasNextPage endCursor }
       }
       reviewRequests(first: 50) {
@@ -1206,7 +1206,7 @@ func (c *Client) paginatePRAssignees(ctx context.Context, owner, repo string, nu
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       assignees(first: 100, after: $after) {
-        nodes { databaseId login avatarUrl url name email }
+        nodes { id databaseId login avatarUrl url name email }
         pageInfo { hasNextPage endCursor }
       }
     }

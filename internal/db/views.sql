@@ -82,6 +82,11 @@ LEFT JOIN LATERAL (
     FROM aveloxis_data.email_message em2
     WHERE COALESCE(NULLIF(em2.thread_root_id, ''), em2.message_id_header) = t.thread_key
       AND em2.repo_id IS NOT DISTINCT FROM t.repo_id
+      -- v0.27.119 (Copilot round 12, suppressed): the threads CTE is
+      -- keyed by (thread_key, repo_id, list_address) — the root lookup
+      -- must match on ALL THREE, or two lists reusing a thread id
+      -- would pick the OTHER list's root (wrong subject/sender).
+      AND em2.list_address = t.list_address
     ORDER BY (em2.msg_class = 'patch_submission') DESC, em2.sent_at ASC
     LIMIT 1
 ) root ON TRUE

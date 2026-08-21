@@ -819,8 +819,16 @@ func TestForgeIDLookupCarriesPartialIndexPredicate(t *testing.T) {
 func TestTestMigrateRechecksUnderAdvisoryLock(t *testing.T) {
 	for _, f := range []string{"internal/db/testexec_test.go", "internal/collector/testmigrate_test.go"} {
 		s := srctest.Read(t, f)
-		if !strings.Contains(s, "pg_advisory_lock($1)") || !strings.Contains(s, "0x41564C5854455354") {
-			t.Errorf("%s: testMigrate must serialize under the shared test-scoped advisory lock", f)
+		if !strings.Contains(s, "pg_try_advisory_lock($1)") || !strings.Contains(s, "0x41564C5854455354") {
+			t.Errorf("%s: testMigrate must serialize under the shared test-scoped advisory lock via TRY-lock polling", f)
+		}
+		// v0.27.128 (round 17): the BLOCKING form is banned — a waiter
+		// blocked inside pg_advisory_lock holds a snapshot the holder's
+		// CREATE INDEX CONCURRENTLY waits on: the v0.27.20 undetectable
+		// deadlock, recreated here for one release. Poll
+		// pg_try_advisory_lock with ctx-aware sleeps, like RunMigrations.
+		if strings.Contains(s, "SELECT pg_advisory_lock(") {
+			t.Errorf("%s: blocking pg_advisory_lock is banned in testMigrate — it deadlocks against the holder's CREATE INDEX CONCURRENTLY (the v0.27.20 class)", f)
 		}
 		if strings.Count(s, "GetSchemaVersion(ctx)") < 2 {
 			t.Errorf("%s: testMigrate must RECHECK the stamp after acquiring the lock (fast path + under-lock check)", f)
@@ -856,5 +864,32 @@ func TestLoginHitIdentityBackfillFailureLeavesCacheCold(t *testing.T) {
 	cachePos := strings.Index(tail, "r.cache[key] = existingID")
 	if retPos < 0 || (cachePos >= 0 && cachePos < retPos) {
 		t.Error("the failure path must RETURN before any cache assignment — caching a failed heal pins the miss for the process lifetime")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round 17 (v0.27.128) — review 4994845070: 4 active, all four on the
+// day-old Phase 2-4 infrastructure. The lock findings are the v0.27.20
+// advisory-lock/CIC deadlock class RECREATED by the round-16 fix (the
+// blocking-form ban is folded into the round-16 pin above); the
+// meta-test findings are pinned here.
+// ---------------------------------------------------------------------------
+
+// Active #3+#4: the standing-rules meta-test's CLAUDE.md check must
+// soft-skip ONLY on absence (any other read error fails — the SR-5
+// class inside the meta-test itself), and must test EXACT ID
+// membership (a substring check counts a low-numbered ID as present
+// whenever any two-digit ID sharing its prefix appears, so a deleted
+// low-numbered rule slips the drift check).
+func TestStandingRulesMetaTestPrecision(t *testing.T) {
+	s := srctest.Read(t, "scripts/standing_rules_test.go")
+	if !strings.Contains(s, "errors.Is(err, os.ErrNotExist)") {
+		t.Error("the CLAUDE.md soft-skip must be gated on os.ErrNotExist — a permission/IO error is not expected absence")
+	}
+	if !strings.Contains(s, "proseIDs[") {
+		t.Error("the drift check must test EXACT SR-ID membership (regex-extracted set), not substring containment")
+	}
+	if strings.Contains(s, "strings.Contains(prose, r.ID)") {
+		t.Error("substring ID matching is banned — a low-numbered ID matches inside two-digit IDs sharing its prefix")
 	}
 }

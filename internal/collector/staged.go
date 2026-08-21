@@ -536,6 +536,11 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 		mu.Lock()
 		result.Issues += localResult.Issues
 		result.Messages += localResult.Messages
+		// v0.27.128: the inline-comment counters must merge too — the
+		// v0.22.4 collectMessages diagnostic line read them and always
+		// logged 0 in parallel mode (a "log the effective value" bug;
+		// staging itself was never affected).
+		result.InlineIssueComments += localResult.InlineIssueComments
 		result.Errors = append(result.Errors, localResult.Errors...)
 		mu.Unlock()
 	}()
@@ -553,6 +558,7 @@ func (sc *StagedCollector) collectParallel(ctx context.Context, repoID int64, ow
 		mu.Lock()
 		result.PullRequests += localResult.PullRequests
 		result.Messages += localResult.Messages
+		result.InlinePRComments += localResult.InlinePRComments
 		result.Errors = append(result.Errors, localResult.Errors...)
 		mu.Unlock()
 	}()

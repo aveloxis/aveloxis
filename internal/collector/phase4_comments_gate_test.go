@@ -94,3 +94,24 @@ func TestPhase4StagedPRCarriesInlineComments(t *testing.T) {
 			"inline issue conversation comments delivered by phase 4's unified listing")
 	}
 }
+
+// v0.27.128: collectParallel's goroutines must merge the inline-comment
+// counters — without this the v0.22.4 collectMessages diagnostic line
+// always logged issue_inline_comments=0 pr_inline_comments=0 in
+// parallel mode (observed on the 2026-08-21 data-test run; staging was
+// never affected — a "log the effective value" bug).
+func TestParallelMergesInlineCommentCounters(t *testing.T) {
+	src, err := os.ReadFile("staged.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	for _, needle := range []string{
+		"result.InlineIssueComments += localResult.InlineIssueComments",
+		"result.InlinePRComments += localResult.InlinePRComments",
+	} {
+		if !strings.Contains(s, needle) {
+			t.Errorf("collectParallel must merge %q — the collectMessages diagnostic reads these counters", needle)
+		}
+	}
+}

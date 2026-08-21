@@ -1522,6 +1522,32 @@ CREATE INDEX IF NOT EXISTS idx_lockfile_packages_pkg
 CREATE INDEX IF NOT EXISTS idx_repo_lockfile_packages_repo_id
     ON aveloxis_data.repo_lockfile_packages (repo_id);
 
+-- v0.27.133 (C2): parent→child dependency edges from lockfiles — the
+-- substrate for "which DIRECT dependency pulls in this vulnerable
+-- transitive". Child edges are NAME-level (lockfiles express
+-- parent → name@range; exact child resolution joins the package set at
+-- read time — format-uniform and honest). Snapshot-replaced with the
+-- package rows in one transaction. Born empty on every fleet, so the
+-- plain index is safe here (SR-2 covers indexes on EXISTING data).
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfile_edges (
+    lockfile_edge_id BIGSERIAL PRIMARY KEY,
+    repo_id BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    ecosystem TEXT NOT NULL,
+    lockfile_path TEXT NOT NULL,
+    parent_name TEXT NOT NULL,
+    parent_version TEXT NOT NULL DEFAULT '',
+    child_name TEXT NOT NULL,
+    child_constraint TEXT NOT NULL DEFAULT '',
+    tool_source TEXT DEFAULT 'aveloxis',
+    tool_version TEXT DEFAULT '',
+    data_source TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, lockfile_path, parent_name, parent_version, child_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_lockfile_edges_repo_id
+    ON aveloxis_data.repo_lockfile_edges (repo_id);
+
 -- ============================================================
 -- Libraries
 -- ============================================================

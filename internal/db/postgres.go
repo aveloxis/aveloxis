@@ -29,6 +29,7 @@ type PostgresStore struct {
 	matviewOnStartup bool // whether to refresh materialized views during migration
 	matviewSkip      bool // whether to skip the matview block entirely (--skip-views on migrate)
 	migrateNoWait    bool // whether to fail fast on advisory-lock contention (--no-wait on migrate)
+	migrateFastPath  bool // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
 }
 
 // NewPostgresStore connects to PostgreSQL and returns a Store.
@@ -185,6 +186,23 @@ func (s *PostgresStore) SetMatviewSkip(skip bool) {
 // --no-wait`.
 func (s *PostgresStore) SetMigrateNoWait(noWait bool) {
 	s.migrateNoWait = noWait
+}
+
+// SetMigrateFastPath — v0.27.131, the F13 fix. When enabled and the
+// schema_meta stamp equals ToolVersion, RunMigrations returns
+// immediately: the stamp is written ONLY after every migration step
+// succeeded, so a match proves this binary's schema is fully applied.
+// Enabled by `aveloxis serve` startup ONLY — the production
+// observation behind it: serve sat inside RunMigrations for 1h42m
+// after a restart (one-shot keyset backfills re-walking every PK
+// window to find nothing to do) with 141,799 repos queued and zero
+// collection. `aveloxis migrate` NEVER enables it: the explicit
+// command is the operator's full-run self-heal path (hand-edited
+// schema, hand-dropped view/index). A fast-pathed startup also skips
+// views.sql and matview creation — both only change with a version
+// bump, which changes ToolVersion and misses the stamp.
+func (s *PostgresStore) SetMigrateFastPath(enabled bool) {
+	s.migrateFastPath = enabled
 }
 
 func (s *PostgresStore) Migrate(ctx context.Context) error {

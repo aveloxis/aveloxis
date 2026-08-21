@@ -164,12 +164,12 @@ func TestNPMLockV2CarriesDevScope(t *testing.T) {
 			"node_modules/tmpl": {"version": "1.0.5", "dev": true}
 		}
 	}`)
-	entries, directKnown, err := parsePackageLockJSON(data)
-	if err != nil || !directKnown {
-		t.Fatalf("parse: err=%v directKnown=%v", err, directKnown)
+	parsed, err := parsePackageLockJSON(data)
+	if err != nil || !parsed.DirectKnown {
+		t.Fatalf("parse: err=%v directKnown=%v", err, parsed.DirectKnown)
 	}
 	byName := map[string]LockfileEntry{}
-	for _, e := range entries {
+	for _, e := range parsed.Entries {
 		byName[e.Name] = e
 	}
 	if byName["express"].Scope != "" {
@@ -196,12 +196,12 @@ name = "pytest"
 version = "7.4.0"
 category = "dev"
 `)
-	entries, _, err := parsePoetryStyleTOML(data)
+	parsed, err := parsePoetryStyleTOML(data)
 	if err != nil {
 		t.Fatal(err)
 	}
 	byName := map[string]LockfileEntry{}
-	for _, e := range entries {
+	for _, e := range parsed.Entries {
 		byName[e.Name] = e
 	}
 	if byName["flask"].Scope != "" {

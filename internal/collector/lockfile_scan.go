@@ -105,8 +105,32 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 
 	var inventory []*db.RepoLockfileInfo
 	var packages []*db.RepoLockfilePackage
+	var edges []*db.RepoLockfileEdge
 	for _, pl := range parsed {
 		res := pl.Result
+		// v0.27.133 C2: dependency edges — the attribution substrate —
+		// are stored ONLY under the same vuln_scan_transitive knob that
+		// gates transitive package rows (edges without the transitive
+		// closure have nothing to attribute; knob off keeps the exact
+		// pre-C2 write set).
+		if ac.TransitiveLockfiles {
+			edgeSeen := map[string]bool{}
+			for _, ed := range res.Edges {
+				key := ed.ParentName + "@" + ed.ParentVersion + ">" + ed.ChildName
+				if edgeSeen[key] {
+					continue
+				}
+				edgeSeen[key] = true
+				edges = append(edges, &db.RepoLockfileEdge{
+					Ecosystem:       res.Ecosystem,
+					LockfilePath:    pl.Path,
+					ParentName:      ed.ParentName,
+					ParentVersion:   ed.ParentVersion,
+					ChildName:       ed.ChildName,
+					ChildConstraint: ed.Constraint,
+				})
+			}
+		}
 		matched := 0
 		seen := map[string]bool{}
 		directFlagged := 0
@@ -170,14 +194,21 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 		})
 	}
 
-	if err := ac.store.ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages); err != nil {
+	// v0.27.133 C2: Go transitive closure via the toolchain — same knob,
+	// same snapshot transaction. Declared go deps are the direct set.
+	if ac.TransitiveLockfiles {
+		packages, edges = ac.scanGoModGraph(ctx, workDir, declared, packages, edges)
+	}
+
+	if err := ac.store.ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges); err != nil {
 		return err
 	}
 	if len(inventory) > 0 {
 		ac.logger.Info("lockfile scan complete",
 			"repo_id", repoID,
 			"lockfiles", len(inventory),
-			"direct_resolutions", len(packages))
+			"direct_resolutions", len(packages),
+			"edges", len(edges))
 	}
 	result.Lockfiles = len(inventory)
 	result.LockfilePackages = len(packages)

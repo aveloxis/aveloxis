@@ -30,6 +30,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func TestMigrateFastPathContract(t *testing.T) {

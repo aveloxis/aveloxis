@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -74,14 +75,87 @@ func GenerateSBOMWithOptions(ctx context.Context, store *db.PostgresStore, repoI
 	// Non-fatal — if no scancode data exists, we proceed without it.
 	scanData, _ := store.GetScancodeForSBOM(ctx, repoID)
 
+	// v0.27.134 (C2 follow-through): the lockfile closure joins the
+	// document when it exists. The effective gate is DATA PRESENCE —
+	// scanLockfiles only stores transitive rows/edges when
+	// collection.vuln_scan_transitive is on, so knob-off fleets get
+	// today's SBOMs byte-identical with zero config plumbing into the
+	// api process. Lookup failures are FATAL like the deps load (SR-5:
+	// a lookup ERROR is not "no transitives" — silently emitting a
+	// flat document on a transient DB error would make two generations
+	// of the same commit disagree with nothing explaining why).
+	trans, err := store.GetRepoTransitivePackages(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("loading lockfile transitives: %w", err)
+	}
+	edges, err := store.GetRepoLockfileEdges(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("loading lockfile edges: %w", err)
+	}
+	if opts.RuntimeOnly {
+		kept := trans[:0]
+		for _, t := range trans {
+			if model.IsRuntimeScope(t.Scope) {
+				kept = append(kept, t)
+			}
+		}
+		trans = kept
+	}
+	var graph *sbomGraph
+	if len(trans) > 0 || len(edges) > 0 {
+		graph = &sbomGraph{Transitives: trans, Edges: edges}
+	}
+
 	switch format {
 	case FormatCycloneDX:
-		return generateCycloneDX(repo, deps, scanData)
+		return generateCycloneDX(repo, deps, scanData, graph)
 	case FormatSPDX:
-		return generateSPDX(repo, deps, scanData)
+		return generateSPDX(repo, deps, scanData, graph)
 	default:
 		return nil, fmt.Errorf("unknown format: %s", format)
 	}
+}
+
+// sbomGraph carries the C2 lockfile closure (v0.27.133 tables) into
+// SBOM emission: transitive packages become components/packages, and
+// the requirement edges become the REAL dependency graph replacing the
+// synthetic flat root→all shape. nil = pre-v0.27.134 output verbatim.
+type sbomGraph struct {
+	Transitives []db.RepoLockfilePackage
+	Edges       []db.RepoLockfileEdge
+}
+
+// sbomEcoFold collapses the ecosystem-vocabulary split between the
+// libyear writers' package_manager strings and the lockfile roster's
+// ecosystem strings (the same split that motivated the v0.27.133
+// purlEcosystemTypes aliases), so a lockfile edge whose parent is a
+// DIRECT dependency resolves to the direct dep's component even when
+// the two subsystems name the ecosystem differently.
+func sbomEcoFold(eco string) string {
+	switch strings.ToLower(eco) {
+	case "rubygems":
+		return "gem"
+	case "packagist":
+		return "composer"
+	case "swiftpm":
+		return "swift"
+	case "elixir":
+		return "hex"
+	case "dart":
+		return "pub"
+	case "golang":
+		return "go"
+	case "haskell":
+		return "hackage"
+	}
+	return strings.ToLower(eco)
+}
+
+// sbomGraphKey is the name-level resolution key for graph endpoints —
+// folded ecosystem + lockfileMatchKey's name normalization (pypi
+// underscore/dot folding included).
+func sbomGraphKey(eco, name string) string {
+	return lockfileMatchKey(sbomEcoFold(eco), name)
 }
 
 // ============================================================
@@ -163,7 +237,7 @@ type cdxDependency struct {
 	DependsOn []string `json:"dependsOn"`
 }
 
-func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.ScancodeForSBOM) ([]byte, error) {
+func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.ScancodeForSBOM, graph *sbomGraph) ([]byte, error) {
 	rootRef := buildPurl("generic", repo.Owner+"/"+repo.Name, "") // v0.27.29: one purl builder everywhere
 	rootComp := &cdxComponent{
 		Type:   "application",
@@ -232,6 +306,9 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	// previously guarded against colliding refs).
 	var depRefs []string
 	seenRefs := map[string]bool{}
+	// byName resolves graph endpoints (name-level, per the v0.27.133
+	// edge model) to component bom-refs across BOTH populations.
+	byName := map[string][]string{}
 
 	for _, dep := range deps {
 		if dep.Purl != "" && seenRefs[dep.Purl] {
@@ -258,19 +335,78 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 
 		if dep.Purl != "" {
 			depRefs = append(depRefs, dep.Purl)
+			k := sbomGraphKey(dep.PackageManager, dep.Name)
+			byName[k] = append(byName[k], dep.Purl)
 		}
 	}
 
-	// Build the dependencies graph: root depends on all components.
+	// v0.27.134: lockfile transitives join the component list. Purls
+	// come from purlForPackage — the SAME builder the vuln scan uses,
+	// so cross-kind dedup against direct components works by ref.
+	// Unmapped ecosystems yield "" and are honestly omitted (they can
+	// never be referenced by a resolvable graph edge either). NO
+	// license data — lockfiles don't carry it; absence beats guessing.
+	var transRefs []string
+	if graph != nil {
+		for _, t := range graph.Transitives {
+			purl := purlForPackage(t.Ecosystem, t.PackageName, t.ResolvedVersion)
+			if purl == "" {
+				continue
+			}
+			k := sbomGraphKey(t.Ecosystem, t.PackageName)
+			if !sliceContains(byName[k], purl) {
+				byName[k] = append(byName[k], purl)
+			}
+			if seenRefs[purl] {
+				continue // already a direct component (bom-ref must stay unique)
+			}
+			seenRefs[purl] = true
+			bom.Components = append(bom.Components, cdxComponent{
+				Type:    "library",
+				Name:    t.PackageName,
+				Version: t.ResolvedVersion,
+				Purl:    purl,
+				BOMRef:  purl,
+				Scope:   model.CycloneDXScopeForScope(t.Scope),
+			})
+			transRefs = append(transRefs, purl)
+		}
+	}
+
+	// The dependencies graph. Root depends on the DIRECT set (same as
+	// the pre-v0.27.134 flat shape — direct deps were the only
+	// components). With edges present, parent components carry their
+	// REAL children; without them every component stays a leaf, so a
+	// knob-off fleet's output is byte-identical to before.
+	childrenOf := map[string]map[string]bool{}
+	if graph != nil {
+		for _, e := range graph.Edges {
+			for _, pref := range byName[sbomGraphKey(e.Ecosystem, e.ParentName)] {
+				for _, cref := range byName[sbomGraphKey(e.Ecosystem, e.ChildName)] {
+					if cref == pref {
+						continue // self-edge noise
+					}
+					if childrenOf[pref] == nil {
+						childrenOf[pref] = map[string]bool{}
+					}
+					childrenOf[pref][cref] = true
+				}
+			}
+		}
+	}
 	bom.Dependencies = []cdxDependency{{
 		Ref:       rootRef,
 		DependsOn: depRefs,
 	}}
-	// Each dep is a leaf (no transitive info from manifest parsing).
-	for _, ref := range depRefs {
+	for _, ref := range append(append([]string{}, depRefs...), transRefs...) {
+		children := make([]string, 0, len(childrenOf[ref]))
+		for c := range childrenOf[ref] {
+			children = append(children, c)
+		}
+		sort.Strings(children) // deterministic output
 		bom.Dependencies = append(bom.Dependencies, cdxDependency{
 			Ref:       ref,
-			DependsOn: []string{},
+			DependsOn: children,
 		})
 	}
 
@@ -427,7 +563,7 @@ type spdxRelation struct {
 	RelatedSpdxElement string `json:"relatedSpdxElement"`
 }
 
-func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.ScancodeForSBOM) ([]byte, error) {
+func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.ScancodeForSBOM, graph *sbomGraph) ([]byte, error) {
 	// Namespace must be unique per document (SPDX spec requirement).
 	docUUID := uuid.New().String()
 	doc := spdxDoc{
@@ -471,11 +607,21 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 	}
 	doc.Packages = append(doc.Packages, rootPkg)
 
+	// byName resolves graph endpoints to SPDXIDs (v0.27.134 — same
+	// name-level model as the CycloneDX side); seenIDs guards the
+	// document-validity rule that SPDXIDs are unique (a transitive
+	// row matching a direct dep's name@version hashes identically).
+	byName := map[string][]string{}
+	seenIDs := map[string]bool{}
+
 	for _, dep := range deps {
 		// Stable package ID based on a hash of the name+version, not loop index.
 		// This ensures IDs don't change when the dep list is reordered.
 		pkgID := spdxPackageID(dep.Name, dep.CurrentVersion)
 		declared := spdxDeclaredLicense(dep.License) // v0.27.29
+		seenIDs[pkgID] = true
+		k := sbomGraphKey(dep.PackageManager, dep.Name)
+		byName[k] = append(byName[k], pkgID)
 
 		pkg := spdxPackage{
 			SPDXID:      pkgID,
@@ -513,6 +659,58 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 			rel.SpdxElementId, rel.RelatedSpdxElement = pkgID, "SPDXRef-RootPackage"
 		}
 		doc.Relationships = append(doc.Relationships, rel)
+	}
+
+	// v0.27.134: lockfile transitives join the package list (licenses
+	// NOASSERTION — lockfiles carry none), then the requirement edges
+	// become pkg→pkg DEPENDS_ON relationships. Transitives no edge can
+	// reach stay relationship-less on purpose: relating them to root
+	// would fabricate directness. Root's relationships to the DIRECT
+	// set above are unchanged.
+	if graph != nil {
+		for _, t := range graph.Transitives {
+			pkgID := spdxPackageID(t.PackageName, t.ResolvedVersion)
+			k := sbomGraphKey(t.Ecosystem, t.PackageName)
+			if !sliceContains(byName[k], pkgID) {
+				byName[k] = append(byName[k], pkgID)
+			}
+			if seenIDs[pkgID] {
+				continue // SPDXID must stay unique (same name@version as a direct dep)
+			}
+			seenIDs[pkgID] = true
+			pkg := spdxPackage{
+				SPDXID:           pkgID,
+				Name:             t.PackageName,
+				VersionInfo:      t.ResolvedVersion,
+				DownloadLocation: "NOASSERTION",
+				LicenseConcluded: "NOASSERTION",
+				LicenseDeclared:  "NOASSERTION",
+			}
+			if purl := purlForPackage(t.Ecosystem, t.PackageName, t.ResolvedVersion); purl != "" {
+				pkg.ExternalRefs = []spdxExternalRef{{
+					ReferenceCategory: "PACKAGE-MANAGER",
+					ReferenceType:     "purl",
+					ReferenceLocator:  purl,
+				}}
+			}
+			doc.Packages = append(doc.Packages, pkg)
+		}
+		seenRel := map[string]bool{}
+		for _, e := range graph.Edges {
+			for _, pID := range byName[sbomGraphKey(e.Ecosystem, e.ParentName)] {
+				for _, cID := range byName[sbomGraphKey(e.Ecosystem, e.ChildName)] {
+					if pID == cID || seenRel[pID+">"+cID] {
+						continue
+					}
+					seenRel[pID+">"+cID] = true
+					doc.Relationships = append(doc.Relationships, spdxRelation{
+						SpdxElementId:      pID,
+						RelationshipType:   "DEPENDS_ON",
+						RelatedSpdxElement: cID,
+					})
+				}
+			}
+		}
 	}
 
 	// Document describes root package.

@@ -67,6 +67,12 @@ type vulnJSON struct {
 	// v0.27.21 C1: 'direct' | 'transitive' ('' = pre-C1 row, rendered
 	// as direct) + 'dev'/'runtime'/'' scope from the lockfile.
 	DependencyKind  string `json:"dependency_kind,omitempty"`
+	// IntroducedBy — v0.27.133 (C2): for TRANSITIVE findings, the
+	// direct roots that pull the package in, each with one shortest
+	// chain root → … → vulnerable package. Absent when no edge data
+	// exists (knob off, edge-less lockfile format) — the GUI must
+	// treat absence as "attribution unavailable", never "no parents".
+	IntroducedBy []vulnChainJSON `json:"introduced_by,omitempty"`
 	DependencyScope string `json:"dependency_scope,omitempty"`
 }
 
@@ -116,6 +122,31 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "vulnerability lookup failed", http.StatusInternalServerError)
 		return
 	}
+	// v0.27.133 C2: attribution index, built ONCE per request and only
+	// when a transitive finding exists (edges are absent with the knob
+	// off — zero cost on the default path). Best-effort: a lookup
+	// failure degrades to no attribution, never a 500.
+	var chains *chainIndex
+	for _, v := range rows {
+		if v.DependencyKind == "transitive" && v.ResolvedAt == nil {
+			edges, eerr := s.store.GetRepoLockfileEdges(r.Context(), repoID)
+			if eerr != nil {
+				s.logger.Warn("lockfile edge lookup failed — findings served without attribution", "repo_id", repoID, "error", eerr)
+				break
+			}
+			if len(edges) == 0 {
+				break
+			}
+			directNames, derr := s.store.GetRepoDirectPackageNames(r.Context(), repoID)
+			if derr != nil {
+				s.logger.Warn("direct-set lookup failed — findings served without attribution", "repo_id", repoID, "error", derr)
+				break
+			}
+			chains = buildChainIndex(edges, directNames)
+			break
+		}
+	}
+
 	out := make([]vulnJSON, 0, len(rows))
 	current, resolved, critical := 0, 0, 0
 	// v0.27.21 C1 count split (CURRENT findings only): a repo with 3
@@ -169,6 +200,9 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 			DependencyKind:      v.DependencyKind,
 			DependencyScope:     v.DependencyScope,
 		})
+		if chains != nil && v.DependencyKind == "transitive" {
+			out[len(out)-1].IntroducedBy = chains.chainsFor(v.Ecosystem, v.PackageName)
+		}
 	}
 	// v0.27.11: repo-level lockfile certainty — derived at read time
 	// (overall=full iff every ecosystem with dependencies also has a

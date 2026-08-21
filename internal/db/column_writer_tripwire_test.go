@@ -52,7 +52,7 @@ var auditedTables = []string{
 	"pull_request_events", "releases", "contributors", "commits",
 	"pull_request_meta", "pull_request_repo", "pull_request_commits",
 	"pull_request_files", "repo_deps_libyear", "repo_dependencies",
-	"contributor_identities", "repo_labor",
+	"contributor_identities", "repo_labor", "repo_lockfile_edges",
 }
 
 // documentedEmpty: columns with NO writer, kept as Augur schema-parity

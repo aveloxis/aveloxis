@@ -87,8 +87,11 @@ func ParsePodlings(data []byte) ([]Project, error) {
 	}
 	projects := make([]Project, 0, len(raw))
 	for slug, entry := range raw {
-		// Apache INFRA mirrors every podling to github.com/apache/<slug>.
-		repo := "https://github.com/apache/" + slug
+		// v0.27.132: Apache INFRA names podling repos WITH the incubator-
+		// prefix (github.com/apache/incubator-<slug>). The old derived
+		// apache/<slug> URL seeded phantom rows that later 404'd — the
+		// root of the four empty production PMC groups.
+		repo := "https://github.com/apache/incubator-" + slug
 		projects = append(projects, Project{
 			Foundation: "apache",
 			Status:     "incubating",
@@ -131,6 +134,31 @@ type PMC struct {
 	Incubating  bool
 }
 
+// RepoURLVariants returns the candidate catalog URLs for the PMC's
+// repo, primary first. v0.27.132: Apache's incubator- prefix drifts
+// out of step with podlings.json in BOTH directions — a podling's repo
+// carries the prefix while it incubates, and a graduated project may
+// shed (or keep) it before the metadata catches up. When RepoURL is
+// the slug-derived github.com/apache form, the incubator↔plain TWIN is
+// appended so lookups survive either state; a custom URL (from a
+// project's bug-database entry) stays alone — no twin can be derived
+// for it.
+func (p PMC) RepoURLVariants() []string {
+	if p.RepoURL == "" {
+		return nil
+	}
+	out := []string{p.RepoURL}
+	plain := "https://github.com/apache/" + p.Slug
+	incubator := "https://github.com/apache/incubator-" + p.Slug
+	switch p.RepoURL {
+	case plain:
+		out = append(out, incubator)
+	case incubator:
+		out = append(out, plain)
+	}
+	return out
+}
+
 // ListDomain returns the Apache mailing-list domain for the PMC, e.g.
 // "kafka.apache.org". Current podlings live under <slug>.apache.org too
 // (verified for Amoro, 2026-06-02), and graduation preserves the same
@@ -164,7 +192,8 @@ func ParsePodlingPMCs(data []byte) ([]PMC, error) {
 	for slug, e := range raw {
 		out = append(out, PMC{
 			Slug: slug, Name: e.Name, Homepage: e.Homepage,
-			RepoURL: "https://github.com/apache/" + slug, Incubating: true,
+			// v0.27.132: incubator-prefixed — see ParsePodlings.
+			RepoURL: "https://github.com/apache/incubator-" + slug, Incubating: true,
 		})
 	}
 	return out, nil

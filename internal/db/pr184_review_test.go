@@ -893,3 +893,37 @@ func TestStandingRulesMetaTestPrecision(t *testing.T) {
 		t.Error("substring ID matching is banned — a low-numbered ID matches inside two-digit IDs sharing its prefix")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 18 (v0.27.130) — review 4995652021: 3 active + 1 suppressed, all
+// real, all on the days-old harness/infrastructure code again.
+// ---------------------------------------------------------------------------
+
+// Active #2+#3: the testMigrate unlock ran on the possibly-canceled
+// migrate context — a failed pg_advisory_unlock followed by Release()
+// returns a session that still OWNS the test lock to the pool, wedging
+// every other binary's poll loop. Unlock uses a fresh bounded context;
+// an unconfirmed unlock destroys the session (session death releases
+// its advisory locks).
+func TestTestMigrateUnlockSurvivesCanceledContext(t *testing.T) {
+	for _, f := range []string{"internal/db/testexec_test.go", "internal/collector/testmigrate_test.go"} {
+		s := srctest.Read(t, f)
+		if !strings.Contains(s, "uctx, ucancel := context.WithTimeout(context.Background()") {
+			t.Errorf("%s: the unlock must use a FRESH bounded context, never the migrate ctx", f)
+		}
+		if !strings.Contains(s, "conn.Conn().Close(uctx)") {
+			t.Errorf("%s: an unconfirmed unlock must destroy the session — releasing a still-locked session to the pool wedges the twins", f)
+		}
+	}
+}
+
+// Suppressed (real; pinned behaviorally in sqlscan's own suite): backtick
+// literals inside Go COMMENTS must not enter the SQL corpus — the tree
+// really contains a backticked UPDATE in a doc comment, and counting
+// documentation as a writer would let a removed real write pass.
+func TestSQLCorpusStripsGoCommentsFirst(t *testing.T) {
+	s := srctest.Read(t, "internal/srctest/sqlscan/sqlscan.go")
+	if !strings.Contains(s, "srctest.BacktickLiterals(srctest.StripGoComments(") {
+		t.Error("sqlscan.Statements must strip Go comments BEFORE extracting backtick literals")
+	}
+}

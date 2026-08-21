@@ -32,7 +32,7 @@ func scopeFixtureDeps() []db.SBOMDep {
 
 func TestSPDXEmitsTypedScopeRelationships(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "app", Owner: "org", GitURL: "https://github.com/org/app"}
-	data, err := generateSPDX(repo, scopeFixtureDeps(), nil)
+	data, err := generateSPDX(repo, scopeFixtureDeps(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestSPDXEmitsTypedScopeRelationships(t *testing.T) {
 
 func TestCycloneDXComponentScopeMapping(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "app", Owner: "org", GitURL: "https://github.com/org/app"}
-	data, err := generateCycloneDX(repo, scopeFixtureDeps(), nil)
+	data, err := generateCycloneDX(repo, scopeFixtureDeps(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

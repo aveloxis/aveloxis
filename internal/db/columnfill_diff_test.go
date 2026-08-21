@@ -148,8 +148,8 @@ func TestColumnFillDiffHandlesShapeDrift(t *testing.T) {
 		defer ccancel()
 		cleanupExecRetry(cctx, store, `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
 	})
-	mustExecRetry(ctx, t, store, `CREATE TABLE `+schema+`._base (a TEXT, b TEXT)`)
-	mustExecRetry(ctx, t, store, `INSERT INTO `+schema+`._base (a, b) VALUES ('x', 'y'), ('', NULL)`)
+	mustExecRetry(ctx, t, store, `CREATE TABLE `+schema+`._base (a TEXT, b TEXT, c BIGINT)`)
+	mustExecRetry(ctx, t, store, `INSERT INTO `+schema+`._base (a, b, c) VALUES ('x', 'y', 7), ('', NULL, 0)`)
 	mustExecRetry(ctx, t, store, `CREATE TABLE `+schema+`._probe (x TEXT)`)
 	mustExecRetry(ctx, t, store, `INSERT INTO `+schema+`._probe (x) VALUES ('v')`)
 
@@ -178,8 +178,11 @@ func TestColumnFillDiffHandlesShapeDrift(t *testing.T) {
 	t.Cleanup(sidePool.Close)
 	for _, sql := range []string{
 		`CREATE SCHEMA ` + schema,
-		`CREATE TABLE ` + schema + `._base (a TEXT)`,
-		`INSERT INTO ` + schema + `._base (a) VALUES ('x'), ('')`,
+		// v0.27.130 (round 18): column c has a DIFFERENT TYPE on this
+		// side (TEXT vs the main side's BIGINT) — counting must use each
+		// side's OWN metadata or the predicate crashes (bigint <> '').
+		`CREATE TABLE ` + schema + `._base (a TEXT, c TEXT)`,
+		`INSERT INTO ` + schema + `._base (a, c) VALUES ('x', 'v'), ('', '')`,
 	} {
 		if _, err := sidePool.Exec(ctx, sql); err != nil {
 			t.Fatal(err)
@@ -207,6 +210,13 @@ func TestColumnFillDiffHandlesShapeDrift(t *testing.T) {
 	}
 	if !rep.HasFailures() {
 		t.Error("a removed column that carried data is a data-loss shape — HasFailures must be true")
+	}
+
+	// v0.27.130 (round 18): the type-divergent shared column must be
+	// counted with EACH SIDE'S OWN type (released BIGINT: <> 0 → 1;
+	// new TEXT: <> '' → 1) and reported as type drift.
+	if len(rep.TypeChanged) != 1 || !strings.Contains(rep.TypeChanged[0], "_base.c") {
+		t.Errorf("want TypeChanged [_base.c ...], got %v", rep.TypeChanged)
 	}
 
 	// Direction 2: released = B, new = A. The add direction: _probe

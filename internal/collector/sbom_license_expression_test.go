@@ -23,7 +23,7 @@ func TestRegistryLicenseListEmitsAsChoicesNotConjunction(t *testing.T) {
 
 	// CycloneDX: a stored registry list is a genuine SPDX compound
 	// here (both ids valid) → the expression field, machine-readable.
-	data, err := generateCycloneDX(repo, deps, nil)
+	data, err := generateCycloneDX(repo, deps, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestRegistryLicenseListEmitsAsChoicesNotConjunction(t *testing.T) {
 
 	// SPDX: dual-licensing renders as an OR choice, never the
 	// AND-conjunction inversion.
-	sdata, err := generateSPDX(repo, deps, nil)
+	sdata, err := generateSPDX(repo, deps, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestUnmappableLicenseGoesNoAssertionNeverFreeText(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "app", Owner: "org", GitURL: "https://github.com/org/app"}
 	deps := []db.SBOMDep{{Name: "oddpkg", CurrentVersion: "1.0",
 		Purl: "pkg:npm/oddpkg@1.0", License: "MIT AND Custom Corporate License"}}
-	sdata, err := generateSPDX(repo, deps, nil)
+	sdata, err := generateSPDX(repo, deps, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestBomRefsAreUnique(t *testing.T) {
 		{Name: "lodash", CurrentVersion: "4.17.21", Purl: "pkg:npm/lodash@4.17.21", License: "MIT"},
 		{Name: "lodash", CurrentVersion: "4.17.21", Purl: "pkg:npm/lodash@4.17.21", License: "MIT"},
 	}
-	data, err := generateCycloneDX(repo, deps, nil)
+	data, err := generateCycloneDX(repo, deps, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

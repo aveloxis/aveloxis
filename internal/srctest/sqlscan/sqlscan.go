@@ -64,7 +64,13 @@ func Statements(files map[string]string) []Stmt {
 	sort.Strings(names)
 	var out []Stmt
 	for _, name := range names {
-		for _, lit := range srctest.BacktickLiterals(files[name]) {
+		// v0.27.130 (Copilot round 18, suppressed — real): strip Go
+		// comments BEFORE extracting backtick literals. A backticked SQL
+		// statement inside a doc comment (the corpus really has one —
+		// scancode_worker_store.go's operator-recovery UPDATE) would
+		// otherwise count as a live writer and let a removed real write
+		// pass the tripwires. StripGoComments preserves raw strings.
+		for _, lit := range srctest.BacktickLiterals(srctest.StripGoComments(files[name])) {
 			body := strings.Trim(lit, "`")
 			clean := srctest.StripSQLComments(body)
 			for _, piece := range splitStatements(clean) {

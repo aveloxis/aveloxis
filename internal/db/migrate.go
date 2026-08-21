@@ -33,6 +33,20 @@ var schemaSQL string
 // pg_trgm extension creation remain warn-only (they're derived
 // data / performance optimizations, not schema integrity).
 func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
+	// F13 fast path (v0.27.131): with the stamp current, skip everything —
+	// BEFORE the advisory lock, deliberately: the stamp lands only after
+	// a COMPLETE successful run and every step is idempotent, so racing a
+	// concurrent full migration is safe, and a matching stamp needs no
+	// serialization at all. See SetMigrateFastPath for the contract
+	// (serve-only; `aveloxis migrate` always runs fully).
+	if pg.migrateFastPath {
+		if v := pg.GetSchemaVersion(ctx); v == ToolVersion {
+			logger.Info("schema stamp matches binary — skipping migrations (F13 fast path); run `aveloxis migrate` for a full pass",
+				"schema_version", v)
+			return nil
+		}
+	}
+
 	logger.Info("running schema migrations")
 
 	// v0.20.1: acquire a postgres advisory lock so two `aveloxis
@@ -1751,6 +1765,34 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"v0.27.11 index repo_lockfile_packages by repo",
 		`CREATE INDEX IF NOT EXISTS idx_repo_lockfile_packages_repo_id
 			ON aveloxis_data.repo_lockfile_packages (repo_id)`)
+
+	// v0.27.133 (C2): lockfile dependency edges — parent-chain
+	// attribution's substrate. Same DDL as schema.sql so existing
+	// fleets pick the table up on migrate (the v0.27.63 twin pattern).
+	// Born empty everywhere; the plain index builds on an empty table.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.133 create repo_lockfile_edges",
+		`CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfile_edges (
+			lockfile_edge_id BIGSERIAL PRIMARY KEY,
+			repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id)
+			                   ON UPDATE CASCADE ON DELETE RESTRICT
+			                   DEFERRABLE INITIALLY DEFERRED,
+			ecosystem        TEXT NOT NULL,
+			lockfile_path    TEXT NOT NULL,
+			parent_name      TEXT NOT NULL,
+			parent_version   TEXT NOT NULL DEFAULT '',
+			child_name       TEXT NOT NULL,
+			child_constraint TEXT NOT NULL DEFAULT '',
+			tool_source      TEXT DEFAULT 'aveloxis',
+			tool_version     TEXT DEFAULT '',
+			data_source      TEXT DEFAULT '',
+			data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE (repo_id, lockfile_path, parent_name, parent_version, child_name)
+		)`)
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.133 index repo_lockfile_edges by repo",
+		`CREATE INDEX IF NOT EXISTS idx_repo_lockfile_edges_repo_id
+			ON aveloxis_data.repo_lockfile_edges (repo_id)`)
 
 	// v0.27.50: reconcile repos.repo_archived with the forge's actual
 	// archived status. The GraphQL isArchived bit reaches

@@ -95,13 +95,14 @@ func TestParsePodlingsAllIncubating(t *testing.T) {
 		}
 	}
 
-	// amoro → github.com/apache/amoro
-	if !reposContain(projects[0].RepoURLs, "https://github.com/apache/amoro") {
-		t.Errorf("amoro RepoURLs = %v, want https://github.com/apache/amoro", projects[0].RepoURLs)
+	// v0.27.132: podling repos carry the incubator- prefix (Apache INFRA
+	// convention) — the old apache/<slug> derivation seeded phantom rows
+	// that later 404'd (the four wedged production PMC groups).
+	if !reposContain(projects[0].RepoURLs, "https://github.com/apache/incubator-amoro") {
+		t.Errorf("amoro RepoURLs = %v, want https://github.com/apache/incubator-amoro", projects[0].RepoURLs)
 	}
-	// burr → github.com/apache/burr
-	if !reposContain(projects[1].RepoURLs, "https://github.com/apache/burr") {
-		t.Errorf("burr RepoURLs = %v, want https://github.com/apache/burr", projects[1].RepoURLs)
+	if !reposContain(projects[1].RepoURLs, "https://github.com/apache/incubator-burr") {
+		t.Errorf("burr RepoURLs = %v, want https://github.com/apache/incubator-burr", projects[1].RepoURLs)
 	}
 }
 

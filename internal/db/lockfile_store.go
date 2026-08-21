@@ -22,6 +22,7 @@ package db
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -147,9 +148,22 @@ type RepoLockfilePackage struct {
 	Scope string
 }
 
+// RepoLockfileEdge is one stored parent→child dependency edge
+// (v0.27.133 C2 — the parent-chain attribution substrate). Child edges
+// are name-level; ChildConstraint is the raw declared range.
+type RepoLockfileEdge struct {
+	Ecosystem       string
+	LockfilePath    string
+	ParentName      string
+	ParentVersion   string
+	ChildName       string
+	ChildConstraint string
+}
+
 // ReplaceRepoLockfileSnapshot atomically replaces a repo's lockfile
-// inventory + direct-dep resolutions: DELETE both tables' rows for the
-// repo, then INSERT the fresh ones, all in ONE transaction (the
+// inventory + direct-dep resolutions + dependency edges: DELETE the
+// tables' rows for the repo, then INSERT the fresh ones, all in ONE
+// transaction (the
 // v0.27.7 ReplaceRepoLaborSnapshot shape). No history tables exist by
 // design — lockfile state is derivable from git history and has no
 // time-series consumer — so the rotation half is a plain DELETE; the
@@ -161,7 +175,7 @@ type RepoLockfilePackage struct {
 // a snapshot of the last successful analysis walk. Callers must NOT
 // invoke this when the walk itself failed.
 func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID int64,
-	inventory []*RepoLockfileInfo, packages []*RepoLockfilePackage) error {
+	inventory []*RepoLockfileInfo, packages []*RepoLockfilePackage, edges []*RepoLockfileEdge) error {
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
@@ -169,6 +183,10 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 		}
 		defer tx.Rollback(ctx)
 
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM aveloxis_data.repo_lockfile_edges WHERE repo_id = $1`, repoID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx,
 			`DELETE FROM aveloxis_data.repo_lockfile_packages WHERE repo_id = $1`, repoID); err != nil {
 			return err
@@ -204,6 +222,16 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 				repoID, p.Ecosystem, p.PackageName, p.ResolvedVersion, p.LockfilePath,
 				p.Direct, p.Scope)
 		}
+		for _, e := range edges {
+			batch.Queue(`
+				INSERT INTO aveloxis_data.repo_lockfile_edges
+					(repo_id, ecosystem, lockfile_path, parent_name,
+					 parent_version, child_name, child_constraint, data_source, data_collection_date)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, 'analysis', NOW())
+				ON CONFLICT (repo_id, lockfile_path, parent_name, parent_version, child_name) DO NOTHING`,
+				repoID, e.Ecosystem, e.LockfilePath, e.ParentName,
+				e.ParentVersion, e.ChildName, e.ChildConstraint)
+		}
 		if batch.Len() > 0 {
 			if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 				return err
@@ -211,6 +239,32 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 		}
 		return tx.Commit(ctx)
 	})
+}
+
+// GetRepoLockfileEdges returns every stored dependency edge for a repo
+// (v0.27.133 C2). Consumers walk child→parents to attribute a
+// vulnerable transitive to the direct roots that pull it in.
+func (s *PostgresStore) GetRepoLockfileEdges(ctx context.Context, repoID int64) ([]RepoLockfileEdge, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT ecosystem, lockfile_path, parent_name, parent_version,
+		       child_name, COALESCE(child_constraint, '')
+		FROM aveloxis_data.repo_lockfile_edges
+		WHERE repo_id = $1
+		ORDER BY lockfile_path, parent_name, child_name`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RepoLockfileEdge
+	for rows.Next() {
+		var e RepoLockfileEdge
+		if err := rows.Scan(&e.Ecosystem, &e.LockfilePath, &e.ParentName,
+			&e.ParentVersion, &e.ChildName, &e.ChildConstraint); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // GetRepoLockedVersions returns every stored lockfile resolution for a
@@ -432,6 +486,33 @@ func (s *PostgresStore) GetRepoSelfAdvisoryPackages(ctx context.Context, repoID 
 			return nil, err
 		}
 		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// GetRepoDirectPackageNames returns the repo's DIRECT dependency set
+// as "ecosystem|lowercase(name)" keys (v0.27.133 C2 — the chain
+// walk's root set): the union of direct lockfile resolutions and the
+// declared manifest dependencies (which covers Go — no lockfile by
+// design — and every lockfile-less ecosystem).
+func (s *PostgresStore) GetRepoDirectPackageNames(ctx context.Context, repoID int64) (map[string]bool, error) {
+	out := map[string]bool{}
+	rows, err := s.pool.Query(ctx, `
+		SELECT ecosystem, package_name FROM aveloxis_data.repo_lockfile_packages
+		WHERE repo_id = $1 AND COALESCE(direct, TRUE)
+		UNION
+		SELECT package_manager, name FROM aveloxis_data.repo_deps_libyear
+		WHERE repo_id = $1`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var eco, name string
+		if err := rows.Scan(&eco, &name); err != nil {
+			return nil, err
+		}
+		out[eco+"|"+strings.ToLower(name)] = true
 	}
 	return out, rows.Err()
 }

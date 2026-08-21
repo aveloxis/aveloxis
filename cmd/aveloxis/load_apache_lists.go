@@ -86,8 +86,23 @@ func runLoadApacheLists(cfgPath string, dryRun bool, projURL, podURL string) err
 		if pmc.RepoURL == "" {
 			continue
 		}
-		repoID, rerr := store.FindRepoByURL(ctx, pmc.RepoURL)
-		if rerr != nil || repoID == 0 {
+		// v0.27.132: try every URL variant (incubator- prefix drifts in
+		// both directions — the four wedged production podlings' repos
+		// live at apache/incubator-<slug> while the derived URL didn't).
+		// A lookup ERROR propagates (SR-5): a DB failure is not "no repo",
+		// and skipping on it would silently register nothing.
+		var repoID int64
+		for _, u := range pmc.RepoURLVariants() {
+			id, rerr := store.FindRepoByURL(ctx, u)
+			if rerr != nil {
+				return fmt.Errorf("find repo %s for PMC %s: %w", u, pmc.Slug, rerr)
+			}
+			if id != 0 {
+				repoID = id
+				break
+			}
+		}
+		if repoID == 0 {
 			skippedNoRepo++
 			continue
 		}

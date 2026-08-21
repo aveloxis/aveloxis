@@ -32,7 +32,18 @@ func testMigrate(ctx context.Context, t testing.TB, store *db.PostgresStore) {
 	if err != nil {
 		t.Fatalf("acquire conn for test-migrate lock: %v", err)
 	}
-	defer conn.Release()
+	// v0.27.130 (round 18): unlock with a FRESH bounded context and
+	// destroy the session if the unlock cannot be confirmed — releasing
+	// a still-locked session to the pool wedges the db twin's poll loop
+	// (twin of internal/db/testexec_test.go).
+	defer func() {
+		uctx, ucancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ucancel()
+		if _, uerr := conn.Exec(uctx, "SELECT pg_advisory_unlock($1)", testMigrateLockID); uerr != nil {
+			_ = conn.Conn().Close(uctx)
+		}
+		conn.Release()
+	}()
 	// v0.27.128 (Copilot round 17): pg_try_advisory_lock POLLING, never
 	// the blocking form — a blocked waiter holds a snapshot the holder's
 	// CREATE INDEX CONCURRENTLY waits on (the v0.27.20 undetectable
@@ -51,7 +62,6 @@ func testMigrate(ctx context.Context, t testing.TB, store *db.PostgresStore) {
 		case <-time.After(time.Second):
 		}
 	}
-	defer func() { _, _ = conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", testMigrateLockID) }()
 	if store.GetSchemaVersion(ctx) == db.ToolVersion {
 		return // another test binary migrated while we waited
 	}

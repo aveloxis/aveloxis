@@ -83,6 +83,12 @@ type ColumnFillDiffReport struct {
 	TablesOnlyInReleased []string            `json:"tables_only_in_released,omitempty"`
 	TablesOnlyInNew      []string            `json:"tables_only_in_new,omitempty"`
 	AddedColumns         []ColumnFillDiffRow `json:"added_columns,omitempty"` // new-side populated count in NewPopulated
+	// TypeChanged — v0.27.130 (round 18): shared columns whose data
+	// type differs between the sides ("schema.table.column: text ->
+	// bigint"). Counting uses EACH SIDE'S OWN metadata, so a type
+	// change is reportable drift instead of a predicate crash
+	// (`bigint <> ''`).
+	TypeChanged []string `json:"type_changed,omitempty"`
 }
 
 // HasFailures reports whether any column went dark or was removed
@@ -164,6 +170,7 @@ func columnFillDiff(ctx context.Context, released, newSide colFillQuerier, schem
 	tblKey := func(c columnRef) string { return c.schema + "." + c.table }
 	relTables, newTables := map[string]bool{}, map[string]bool{}
 	relColSet, newColSet := map[string]bool{}, map[string]bool{}
+	newType := map[string]string{}
 	for _, c := range relCols {
 		relTables[tblKey(c)] = true
 		relColSet[colKey(c)] = true
@@ -171,6 +178,7 @@ func columnFillDiff(ctx context.Context, released, newSide colFillQuerier, schem
 	for _, c := range newCols {
 		newTables[tblKey(c)] = true
 		newColSet[colKey(c)] = true
+		newType[colKey(c)] = c.dataType
 	}
 
 	report := &ColumnFillDiffReport{Schemas: schemas}
@@ -189,19 +197,29 @@ func columnFillDiff(ctx context.Context, released, newSide colFillQuerier, schem
 	}
 	sort.Strings(report.TablesOnlyInReleased)
 	sort.Strings(report.TablesOnlyInNew)
+	defer func() { sort.Strings(report.TypeChanged) }()
 
 	// Shared columns are compared; released-only columns of SHARED
 	// tables are the removed-column class (queried on released only);
 	// new-only columns of shared tables are additions (queried on new
 	// only). Columns of one-sided tables are covered by the table-level
 	// notes and skipped.
-	var shared, removed, added []columnRef
+	var shared, sharedNew, removed, added []columnRef
 	for _, c := range relCols {
 		if !newTables[tblKey(c)] {
 			continue
 		}
 		if newColSet[colKey(c)] {
 			shared = append(shared, c)
+			// Count the new side with ITS OWN type (round 18: a
+			// TEXT->BIGINT change must not build `bigint <> ''`).
+			nc := c
+			nc.dataType = newType[colKey(c)]
+			sharedNew = append(sharedNew, nc)
+			if nc.dataType != c.dataType {
+				report.TypeChanged = append(report.TypeChanged,
+					colKey(c)+": "+c.dataType+" -> "+nc.dataType)
+			}
 		} else {
 			removed = append(removed, c)
 		}
@@ -217,7 +235,7 @@ func columnFillDiff(ctx context.Context, released, newSide colFillQuerier, schem
 	if err != nil {
 		return nil, fmt.Errorf("released DB fill counts: %w", err)
 	}
-	newFill, err := populatedCounts(ctx, newSide, append(append([]columnRef{}, shared...), added...))
+	newFill, err := populatedCounts(ctx, newSide, append(append([]columnRef{}, sharedNew...), added...))
 	if err != nil {
 		return nil, fmt.Errorf("new DB fill counts: %w", err)
 	}

@@ -359,9 +359,9 @@ Creates or updates the database schema.
 aveloxis migrate
 ```
 
-Creates 141 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 142 tables and 20 materialized views across three PostgreSQL schemas:
 
-- **`aveloxis_data`** (99 tables + 20 materialized views) -- all collected data
+- **`aveloxis_data`** (100 tables + 20 materialized views) -- all collected data
 - **`aveloxis_ops`** (38 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 

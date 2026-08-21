@@ -164,6 +164,8 @@ GET /api/v1/repos/{repoID}/sbom?format=spdx
 
 Generates and downloads a Software Bill of Materials in CycloneDX 1.5 or SPDX 2.3 JSON format. The SBOM is generated on-the-fly from collected dependency data.
 
+Since v0.27.134, repositories with C2 lockfile data (`collection.vuln_scan_transitive` enabled) get the **real dependency graph**: lockfile transitives join the component/package list, CycloneDX's `dependencies` array carries actual parent→child links from the stored edges (root → direct set; parents → their children; unreachable packages stay leaves), and SPDX gains the matching package→package `DEPENDS_ON` relationships. Repositories without C2 data keep the flat pre-v0.27.134 shape byte-identical.
+
 | Parameter | Values | Default | Description |
 |---|---|---|---|
 | `format` | `cyclonedx`, `spdx` | `cyclonedx` | SBOM format |
@@ -757,6 +759,13 @@ Token semantics:
   each repo's next scan). GUIs
   should lead with direct findings — a repo with 3 direct and 400
   transitive findings must never headline "403 vulnerabilities".
+
+- `introduced_by` (v0.27.133, transitive findings only): up to 3
+  attributions `{"root": "<direct dep>", "chain": ["<root>", ...,
+  "<vulnerable package>"]}` walked from the stored lockfile edges.
+  ABSENT when no edge data exists (knob off, or an edge-less lockfile
+  format) — treat absence as "attribution unavailable", never as "no
+  parents".
 
   **Version-resolution accuracy (v0.27.11).** Each finding also
   carries `declared_requirement` — the raw manifest requirement

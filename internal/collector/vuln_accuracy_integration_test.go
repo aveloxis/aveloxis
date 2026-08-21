@@ -103,7 +103,7 @@ func TestVulnScanAccuracyEndToEnd(t *testing.T) {
 		[]*db.RepoLockfileInfo{{Ecosystem: "pypi", LockfilePath: "poetry.lock",
 			LockfileKind: "poetry.lock", EntryCount: 12, DirectCount: 1}},
 		[]*db.RepoLockfilePackage{{Ecosystem: "pypi", PackageName: "flask", Direct: true,
-			ResolvedVersion: "2.5.0", LockfilePath: "poetry.lock"}}); err != nil {
+			ResolvedVersion: "2.5.0", LockfilePath: "poetry.lock"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 

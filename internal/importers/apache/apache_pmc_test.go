@@ -54,4 +54,48 @@ func TestParsePodlingPMCs(t *testing.T) {
 	if pmcs[0].ListDomain() != "amoro.apache.org" {
 		t.Errorf("amoro ListDomain = %q (current podlings live at <slug>.apache.org, not incubator.apache.org)", pmcs[0].ListDomain())
 	}
+	// v0.27.132: Apache INFRA names podling repos with the incubator-
+	// prefix (github.com/apache/incubator-<slug>). The old derived URL
+	// (apache/<slug>) matched nothing — which is exactly how the four
+	// production PMC groups (pegasus/graphar/ponymail/seata) ended up
+	// registered against phantom rows and then empty. This was the
+	// UNPINNED gap that let it ship.
+	if pmcs[0].RepoURL != "https://github.com/apache/incubator-amoro" {
+		t.Errorf("podling RepoURL = %q, want the incubator-prefixed form", pmcs[0].RepoURL)
+	}
+}
+
+// v0.27.132: the lookup variants that make load-apache-lists (and any
+// future consumer) resilient to the incubator-prefix naming in BOTH
+// directions — a graduated podling's repo may keep (or shed) the
+// prefix out of step with podlings.json.
+func TestRepoURLVariants(t *testing.T) {
+	cases := []struct {
+		name string
+		pmc  PMC
+		want []string
+	}{
+		{"podling-primary-incubator", PMC{Slug: "pegasus", Incubating: true,
+			RepoURL: "https://github.com/apache/incubator-pegasus"},
+			[]string{"https://github.com/apache/incubator-pegasus", "https://github.com/apache/pegasus"}},
+		{"tlp-plain-gains-incubator-twin", PMC{Slug: "kafka",
+			RepoURL: "https://github.com/apache/kafka"},
+			[]string{"https://github.com/apache/kafka", "https://github.com/apache/incubator-kafka"}},
+		{"custom-bugdb-url-stays-alone", PMC{Slug: "arrow",
+			RepoURL: "https://github.com/apache/arrow-site"},
+			[]string{"https://github.com/apache/arrow-site"}},
+		{"empty-url", PMC{Slug: "x"}, nil},
+	}
+	for _, c := range cases {
+		got := c.pmc.RepoURLVariants()
+		if len(got) != len(c.want) {
+			t.Errorf("%s: variants = %v, want %v", c.name, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("%s: variant[%d] = %q, want %q", c.name, i, got[i], c.want[i])
+			}
+		}
+	}
 }

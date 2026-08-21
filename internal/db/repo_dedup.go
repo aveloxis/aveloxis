@@ -274,6 +274,7 @@ var loserRepoIDDeletes = []string{
 	// pass — plain per-repo delete is correct.
 	"aveloxis_data.repo_lockfiles",
 	"aveloxis_data.repo_lockfile_packages",
+	"aveloxis_data.repo_lockfile_edges",
 	"aveloxis_data.repo_sbom_scans",
 	"aveloxis_data.libraries",
 	"aveloxis_data.lstm_anomaly_results",

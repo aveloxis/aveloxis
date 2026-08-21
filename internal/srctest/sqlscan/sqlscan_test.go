@@ -251,3 +251,25 @@ func TestWhereGuardsEmpty(t *testing.T) {
 		}
 	}
 }
+
+// v0.27.130 (Copilot round 18, suppressed — real): backticked SQL inside
+// Go COMMENTS must not become statements — the corpus really contains
+// one (internal/db/scancode_worker_store.go doc comment carries a
+// backticked UPDATE), and counting documentation as a writer would let
+// a removed real write pass the tripwires. Statements strips Go
+// comments FIRST (StripGoComments preserves raw strings).
+func TestStatementsIgnoreCommentEmbeddedLiterals(t *testing.T) {
+	files := map[string]string{
+		"doc.go": "package db\n" +
+			"// The old shape was `UPDATE aveloxis_data.repos SET repo_name = $1` —\n" +
+			"// kept here for history only.\n" +
+			"var q = `INSERT INTO aveloxis_data.repos (repo_git) VALUES ($1)`\n",
+	}
+	stmts := Statements(files)
+	if len(stmts) != 1 {
+		t.Fatalf("want 1 statement (the real literal), got %d: %#v", len(stmts), stmts)
+	}
+	if strings.Contains(stmts[0].SQL, "UPDATE") {
+		t.Fatalf("the comment-embedded backtick text leaked into the corpus: %q", stmts[0].SQL)
+	}
+}

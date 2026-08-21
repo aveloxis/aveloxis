@@ -61,6 +61,33 @@ func TestFuncBodyMethodSignature(t *testing.T) {
 	}
 }
 
+func TestFuncBodyIgnoresCommentMentions(t *testing.T) {
+	// v0.27.121 (round 13, suppressed — real): a doc comment mentioning
+	// the requested signature BEFORE the real declaration must not
+	// become the anchor — brace counting from mid-comment returns the
+	// wrong function's body. The fixture's comment "mentioning func b("
+	// precedes both real functions.
+	src := `package x
+
+// helper docs: see func b( below for details on func a( too.
+func a() string {
+	return "A_BODY"
+}
+
+func b() string {
+	return "B_BODY"
+}
+`
+	body := FuncBody(t, src, "func b(")
+	if !strings.Contains(body, "B_BODY") || strings.Contains(body, "A_BODY") {
+		t.Fatalf("FuncBody anchored inside the comment mention — got %q", body)
+	}
+	bodyA := FuncBody(t, src, "func a(")
+	if !strings.Contains(bodyA, "A_BODY") || strings.Contains(bodyA, "B_BODY") {
+		t.Fatalf("func a extraction wrong: %q", bodyA)
+	}
+}
+
 func TestStripGoComments(t *testing.T) {
 	src := "a := \"http://not-a-comment\" // real comment with needle NEEDLE1\n" +
 		"b := `raw // keeps this`\n" +
@@ -127,10 +154,9 @@ func TestNormalizeWSAndContains(t *testing.T) {
 }
 
 func TestRootAndRead(t *testing.T) {
-	root := Root(t)
-	if !strings.HasSuffix(root, "aveloxis") {
-		t.Errorf("Root should end at the repo dir, got %q", root)
-	}
+	// v0.27.121 (round 13): no basename assertion — Root promises "the
+	// directory containing go.mod", not a checkout named "aveloxis";
+	// the module-path check below validates the contents instead.
 	gomod := Read(t, "go.mod")
 	if !strings.Contains(gomod, "module github.com/aveloxis/aveloxis") {
 		t.Error("Read must resolve repo-root-relative paths")

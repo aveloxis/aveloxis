@@ -115,9 +115,23 @@ func PackageFiles(t testing.TB, repoRelDir string, minFiles int) map[string]stri
 // included it, which is a false-match window.
 func FuncBody(t testing.TB, src, sig string) string {
 	t.Helper()
-	start := strings.Index(src, sig)
-	if start < 0 {
-		t.Fatalf("srctest.FuncBody: declaration %q not found", sig)
+	// v0.27.121 (Copilot round 13, suppressed — real): the anchor must
+	// be a start-of-line occurrence. A bare substring search could
+	// anchor INSIDE a doc comment that mentions the signature ("see
+	// func b( below"), and brace counting from mid-comment returns the
+	// WRONG function's body — the exact false-anchor class this helper
+	// exists to eliminate. Top-level declarations always start at
+	// column 0 under gofmt; comment lines start with "//" and can
+	// never match a line-anchored "func ...". (Residual blind spot,
+	// documented: a raw string literal containing a column-0 "func "
+	// line — not a shape that occurs in this codebase's sources.)
+	start := 0
+	if !strings.HasPrefix(src, sig) {
+		idx := strings.Index(src, "\n"+sig)
+		if idx < 0 {
+			t.Fatalf("srctest.FuncBody: declaration %q not found at start of line", sig)
+		}
+		start = idx + 1
 	}
 	depth := 0
 	opened := false

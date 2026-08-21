@@ -47,7 +47,7 @@ import (
 var legacyHelperPatterns = []*regexp.Regexp{
 	// Read helpers: a named func taking testing.T/TB, returning
 	// string/[]byte, whose nearby body calls os.ReadFile.
-	regexp.MustCompile(`(?ms)^func (\w+)\(t \*?testing\.(?:T|TB)[^)]*\) (?:string|\[\]byte) \{.{0,500}?os\.ReadFile`),
+	regexp.MustCompile(`(?ms)^func (\w+)\(\w+ \*?testing\.(?:T|TB)[^)]*\) (?:string|\[\]byte) \{.{0,500}?os\.ReadFile`),
 	// Function-body extractors.
 	regexp.MustCompile(`(?m)^func (extract\w+)\(`),
 	// Comment strippers.

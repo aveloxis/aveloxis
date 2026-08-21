@@ -4,6 +4,7 @@
 package scripts
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"

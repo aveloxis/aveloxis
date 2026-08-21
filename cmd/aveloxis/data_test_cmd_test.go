@@ -220,3 +220,28 @@ func TestScratchDBNamesAreConventional(t *testing.T) {
 			"local-version scratch DB so output is predictable across runs")
 	}
 }
+
+// v0.27.129 — the 2026-08-21 main-vs-branch run spent ~50 minutes
+// collecting both sides and then crashed in the column-fill diff on the
+// first deliberately-dropped table it met (contributors_old, removed in
+// v0.27.115). Two harness affordances came out of it: shape drift is
+// REPORTED (not fatal), and --diff-only regenerates the report against
+// kept scratch DBs without another hour of collection.
+func TestDataTestHasDiffOnlyMode(t *testing.T) {
+	src, err := os.ReadFile("data_test_cmd.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	if !strings.Contains(s, `"diff-only"`) {
+		t.Error("data-test must register --diff-only")
+	}
+	if !strings.Contains(s, "if diffOnly {") {
+		t.Error("--diff-only must gate the build/provision/collect phases (diff + report only)")
+	}
+	for _, needle := range []string{"TablesOnlyInReleased", "TablesOnlyInNew", "AddedColumns", "REMOVED"} {
+		if !strings.Contains(s, needle) {
+			t.Errorf("writeReport must render the v0.27.129 schema-shape drift (%q)", needle)
+		}
+	}
+}

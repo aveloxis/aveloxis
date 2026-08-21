@@ -236,7 +236,8 @@ func TestRatchetAcceptsEmptyBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), `MinCount(t, "baseline entries"`) {
+	needle := `MinCount(t, ` + `"baseline entries"` // split so this pin can't self-match
+	if strings.Contains(string(b), needle) {
 		t.Error("the ratchet must accept an empty baseline — it is the goal state, not a broken scan")
 	}
 }

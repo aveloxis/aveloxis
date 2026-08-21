@@ -23,6 +23,9 @@
 package srctest
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,92 +105,78 @@ func PackageFiles(t testing.TB, repoRelDir string, minFiles int) map[string]stri
 }
 
 // FuncBody returns the source of the function or method whose
-// declaration contains sig (e.g. "func (s *PostgresStore) UpsertRepo("),
-// from the DECLARATION through the MATCHING closing brace.
-//
-// This is THE one extractor (it replaced five incompatible variants
-// whose scan windows disagreed): brace counting is string-, rune-, and
-// comment-literal aware, so a brace inside a literal cannot desync the
-// depth. Comments INSIDE the body are preserved (pins target them —
-// compose with StripGoComments when a pin must not match comment text).
-// Text AFTER the closing brace — trailing comments, the next function's
-// doc comment — is excluded; the legacy cut-at-next-`func ` variants
-// included it, which is a false-match window.
+// declaration STARTS WITH sig (e.g. "func (s *PostgresStore)
+// UpsertRepo("), from the `func` keyword through the body's closing
+// brace — located via the go/ast declaration, sliced from the ORIGINAL
+// source so comments inside the body are preserved (pins target them;
+// compose with StripGoComments when a pin must not match comment
+// text). This is THE one extractor (it replaced five incompatible
+// variants whose scan windows disagreed): the AST route can neither
+// anchor inside a comment that mentions the signature nor stop at a
+// signature type literal's braces, and text after the closing brace
+// (trailing comments, the next function's doc comment) is excluded.
 func FuncBody(t testing.TB, src, sig string) string {
 	t.Helper()
-	// v0.27.121 (Copilot round 13, suppressed — real): the anchor must
-	// be a start-of-line occurrence. A bare substring search could
-	// anchor INSIDE a doc comment that mentions the signature ("see
-	// func b( below"), and brace counting from mid-comment returns the
-	// WRONG function's body — the exact false-anchor class this helper
-	// exists to eliminate. Top-level declarations always start at
-	// column 0 under gofmt; comment lines start with "//" and can
-	// never match a line-anchored "func ...". (Residual blind spot,
-	// documented: a raw string literal containing a column-0 "func "
-	// line — not a shape that occurs in this codebase's sources.)
-	start := 0
-	if !strings.HasPrefix(src, sig) {
-		idx := strings.Index(src, "\n"+sig)
-		if idx < 0 {
-			t.Fatalf("srctest.FuncBody: declaration %q not found at start of line", sig)
-		}
-		start = idx + 1
+	// v0.27.122 (Copilot round 14, active): the extraction is AST-based
+	// (stdlib go/parser — no dependency cost). The two lexical
+	// generations both had real false-window classes: a bare substring
+	// anchor could start inside a doc comment mentioning the signature
+	// (round 13), and brace counting returned early on signatures
+	// containing type literals (`func f(v struct{ X int })` — the
+	// parameter type's braces balance before the body opens). Parsing
+	// kills both structurally: declarations come from the AST, and the
+	// returned span is the ORIGINAL source text from the `func` keyword
+	// through the body's closing brace (token offsets into src), so
+	// comments INSIDE the body are preserved for pins that target them.
+	// The sig contract is unchanged: the declaration's gofmt'd source
+	// must start with sig (e.g. "func (s *PostgresStore) UpsertRepo(").
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "src.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("srctest.FuncBody: source does not parse (%v) — this helper takes whole valid Go files", err)
 	}
-	depth := 0
-	opened := false
-	i := start
-	for i < len(src) {
-		c := src[i]
-		switch c {
-		case '{':
-			depth++
-			opened = true
-		case '}':
-			depth--
-			if opened && depth == 0 {
-				return src[start : i+1]
-			}
-		case '/':
-			if i+1 < len(src) {
-				switch src[i+1] {
-				case '/': // line comment
-					if nl := strings.IndexByte(src[i:], '\n'); nl >= 0 {
-						i += nl
-					} else {
-						i = len(src)
-					}
-				case '*': // block comment
-					if end := strings.Index(src[i+2:], "*/"); end >= 0 {
-						i += 2 + end + 1
-					} else {
-						i = len(src)
-					}
-				}
-			}
-		case '"', '\'': // interpreted string / rune literal
-			q := c
-			j := i + 1
-			for j < len(src) {
-				if src[j] == '\\' {
-					j += 2
-					continue
-				}
-				if src[j] == q || src[j] == '\n' {
-					break
-				}
-				j++
-			}
-			i = j
-		case '`': // raw string
-			if end := strings.IndexByte(src[i+1:], '`'); end >= 0 {
-				i += 1 + end
-			} else {
-				i = len(src)
-			}
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok {
+			continue
 		}
-		i++
+		start := fset.Position(fn.Pos()).Offset // fn.Pos() = the `func` keyword (doc comment excluded)
+		end := fset.Position(fn.End()).Offset
+		decl := src[start:end]
+		if strings.HasPrefix(decl, sig) {
+			return decl
+		}
 	}
-	t.Fatalf("srctest.FuncBody: unbalanced braces after %q", sig)
+	t.Fatalf("srctest.FuncBody: no declaration starts with %q", sig)
+	return ""
+}
+
+// TypeBody returns the source of the named top-level type declaration
+// (struct/interface/alias), from its `type` keyword through its end —
+// the FuncBody sibling for struct-shape pins (v0.27.122). Same AST
+// guarantees: cannot anchor in comments, cannot stop at nested type
+// literals.
+func TypeBody(t testing.TB, src, name string) string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "src.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("srctest.TypeBody: source does not parse (%v)", err)
+	}
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Name.Name != name {
+				continue
+			}
+			return src[fset.Position(gd.Pos()).Offset:fset.Position(gd.End()).Offset]
+		}
+	}
+	t.Fatalf("srctest.TypeBody: type %q not found", name)
 	return ""
 }
 

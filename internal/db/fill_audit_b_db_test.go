@@ -102,7 +102,7 @@ func TestUpdateRepoMetadataWritesCreatedAt(t *testing.T) {
 	if !strings.Contains(s, "created_at = COALESCE(repos.created_at,") {
 		t.Error("UpdateRepoMetadata must write repos.created_at fill-empty-only")
 	}
-	if !strings.Contains(s, "updated_at = COALESCE(") {
+	if !strings.Contains(s, "updated_at = GREATEST(") {
 		t.Error("UpdateRepoMetadata must refresh repos.updated_at from the forge's LastUpdated (nil-safe)")
 	}
 }

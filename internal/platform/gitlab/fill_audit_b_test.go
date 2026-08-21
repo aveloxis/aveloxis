@@ -7,32 +7,16 @@
 package gitlab
 
 import (
-	"os"
 	"strings"
 	"testing"
 
 	"context"
 	"fmt"
 	"net/http"
-)
 
-func glRegion(t *testing.T, decl string) string {
-	t.Helper()
-	b, err := os.ReadFile("client.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(b)
-	i := strings.Index(s, decl)
-	if i < 0 {
-		t.Fatalf("declaration not found: %s", decl)
-	}
-	rest := s[i+len(decl):]
-	if j := strings.Index(rest, "\nfunc "); j > 0 {
-		rest = rest[:j]
-	}
-	return decl + rest
-}
+	"github.com/aveloxis/aveloxis/internal/srctest"
+	"sync/atomic"
+)
 
 // B5 — REVISED in v0.27.121 (Copilot round 13, suppressed — verified
 // LIVE against gitlab.com): the project payload's `owner` object is
@@ -46,7 +30,7 @@ func glRegion(t *testing.T, decl string) string {
 // (it would cross-match the GLOBAL cntrb_login table); groups stay
 // honestly NULL.
 func TestFetchGLProjectAsRepoCapturesOwnerRef(t *testing.T) {
-	body := glRegion(t, "func (c *Client) fetchGLProjectAsRepo")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/gitlab/client.go"), "func (c *Client) fetchGLProjectAsRepo")
 	if !strings.Contains(body, "OwnerRef") {
 		t.Error("fetchGLProjectAsRepo must populate OwnerRef")
 	}
@@ -56,7 +40,7 @@ func TestFetchGLProjectAsRepoCapturesOwnerRef(t *testing.T) {
 	if !strings.Contains(body, "lookupGLUserRef(") {
 		t.Error("user namespaces must resolve through the /users?username= lookup (real numeric ID), never a login-only ref")
 	}
-	helper := glRegion(t, "func (c *Client) lookupGLUserRef")
+	helper := srctest.FuncBody(t, srctest.Read(t, "internal/platform/gitlab/client.go"), "func (c *Client) lookupGLUserRef")
 	if !strings.Contains(helper, "/users?username=") {
 		t.Error("lookupGLUserRef must resolve via the users endpoint")
 	}
@@ -81,7 +65,9 @@ func TestFetchGLProjectAsRepoNamespaceResolution(t *testing.T) {
 		fmt.Fprint(w, `{"id":102,"name":"g","path_with_namespace":"acme/g","visibility":"public",
 			"namespace":{"path":"acme","kind":"group"}}`)
 	})
+	var userLookups atomic.Int64
 	mux.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
+		userLookups.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Query().Get("username") == "alice" {
 			fmt.Fprint(w, `[{"id":4242,"username":"alice"}]`)
@@ -99,11 +85,25 @@ func TestFetchGLProjectAsRepoNamespaceResolution(t *testing.T) {
 	if group == nil || group.OwnerRef.PlatformID != 0 || group.OwnerRef.Login != "" {
 		t.Fatalf("group-namespace project must stay UNRESOLVED, got %+v", group.OwnerRef)
 	}
+
+	// v0.27.122 (round 14, suppressed): the username lookup is cached at
+	// client scope — FetchPRRepos runs per MR against the same target
+	// project, and an uncached lookup issued hundreds of identical
+	// /users calls per listing page. Second fetch of the SAME
+	// user-namespace project must not hit /users again.
+	before := userLookups.Load()
+	again := client.fetchGLProjectAsRepo(context.Background(), 101, "base")
+	if again == nil || again.OwnerRef.PlatformID != 4242 {
+		t.Fatalf("cached lookup must still resolve, got %+v", again)
+	}
+	if userLookups.Load() != before {
+		t.Fatalf("second lookup for the same username re-hit /users (%d -> %d) — the cache is not working", before, userLookups.Load())
+	}
 }
 
 // B7 + B8 — topics + created_at from the project payload we already fetch.
 func TestGitLabRepoInfoMapsKeywordsAndCreatedAt(t *testing.T) {
-	body := glRegion(t, "func (c *Client) FetchRepoInfo")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/gitlab/client.go"), "func (c *Client) FetchRepoInfo")
 	if !strings.Contains(body, "Keywords:") {
 		t.Error("gitlab FetchRepoInfo must populate RepoInfo.Keywords from project topics")
 	}

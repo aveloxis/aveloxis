@@ -14,6 +14,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func TestAddRepoOrgExpansionCapturesForgeRepoID(t *testing.T) {
@@ -24,13 +26,13 @@ func TestAddRepoOrgExpansionCapturesForgeRepoID(t *testing.T) {
 	s := string(src)
 
 	// orgRepo carries the forge ID from lister to consumer.
-	orgRepoDecl := extractRegion(t, s, "type orgRepo struct")
+	orgRepoDecl := srctest.TypeBody(t, s, "orgRepo")
 	if !strings.Contains(orgRepoDecl, "ForgeID") {
 		t.Error("orgRepo must carry ForgeID so the listers' decoded id reaches UpsertRepo")
 	}
 
 	for _, fn := range []string{"func listGitHubOrgRepos", "func listGitLabGroupRepos"} {
-		body := extractRegion(t, s, fn)
+		body := srctest.FuncBody(t, s, fn)
 		if !strings.Contains(body, "`json:\"id\"`") {
 			t.Errorf("%s must decode the listing's numeric `id` field", fn)
 		}
@@ -42,22 +44,8 @@ func TestAddRepoOrgExpansionCapturesForgeRepoID(t *testing.T) {
 	// The consumer passes it into UpsertRepo — which hosts both the
 	// rename-heal (untracked URL + forge-ID hit) and the found-branch
 	// backfill (prefer-nonempty ON CONFLICT).
-	body := extractRegion(t, s, "func addOneRepoWithGroup")
+	body := srctest.FuncBody(t, s, "func addOneRepoWithGroup(")
 	if !strings.Contains(body, "PlatformID:") {
 		t.Error("addOneRepoWithGroup must pass the forge ID into UpsertRepo via model.Repo.PlatformID")
 	}
-}
-
-// extractRegion returns the source from decl to the next top-level func.
-func extractRegion(t *testing.T, src, decl string) string {
-	t.Helper()
-	i := strings.Index(src, decl)
-	if i < 0 {
-		t.Fatalf("declaration not found: %s", decl)
-	}
-	rest := src[i+len(decl):]
-	if j := strings.Index(rest, "\nfunc "); j > 0 {
-		rest = rest[:j]
-	}
-	return decl + rest
 }

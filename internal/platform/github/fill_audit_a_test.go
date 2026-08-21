@@ -7,44 +7,23 @@
 package github
 
 import (
-	"os"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
-
-func readSrc(t *testing.T, name string) string {
-	t.Helper()
-	b, err := os.ReadFile(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-
-func region(t *testing.T, src, decl string) string {
-	t.Helper()
-	i := strings.Index(src, decl)
-	if i < 0 {
-		t.Fatalf("declaration not found: %s", decl)
-	}
-	rest := src[i+len(decl):]
-	if j := strings.Index(rest, "\nfunc "); j > 0 {
-		rest = rest[:j]
-	}
-	return decl + rest
-}
 
 // A2 — the REST fallback dropped `archived`: fetchRepoInfoREST set no
 // Status, so staged.go's `info.Status == "Archived"` was always false on
 // every GraphQL→REST fallback and repos.repo_archived went silently
 // false (the v0.27.50 class, reintroduced by transport asymmetry).
 func TestRESTFallbackMapsArchivedStatus(t *testing.T) {
-	types := readSrc(t, "types.go")
+	types := srctest.Read(t, "internal/platform/github/types.go")
 	if !strings.Contains(types, "`json:\"disabled\"`") {
 		t.Error("ghRepoInfo must decode `disabled` so statusStr gets both inputs on the REST fallback")
 	}
-	body := region(t, readSrc(t, "client.go"), "func (c *Client) fetchRepoInfoREST")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/github/client.go"), "func (c *Client) fetchRepoInfoREST")
 	if !strings.Contains(body, "statusStr(raw.Archived") {
 		t.Error("fetchRepoInfoREST must set Status via statusStr(raw.Archived, raw.Disabled) — parity with the GraphQL mapping")
 	}
@@ -53,7 +32,7 @@ func TestRESTFallbackMapsArchivedStatus(t *testing.T) {
 // A3 — GitHub releases carried no Origin: releases.data_source was empty
 // on all 1,051,111 production rows.
 func TestListReleasesSetsOrigin(t *testing.T) {
-	body := region(t, readSrc(t, "client.go"), "func (c *Client) ListReleases")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/github/client.go"), "func (c *Client) ListReleases")
 	if !strings.Contains(body, `DataSource: "GitHub API"`) {
 		t.Error(`ListReleases must set Origin.DataSource "GitHub API" (the GitLab side's convention)`)
 	}
@@ -63,7 +42,7 @@ func TestListReleasesSetsOrigin(t *testing.T) {
 // contributor_identities.node_id dark on the whole GraphQL rail (26%
 // fill = REST-era rows only).
 func TestUserRefFromGraphQLMapsNodeID(t *testing.T) {
-	body := region(t, readSrc(t, "graphql_pr_batch.go"), "func userRefFromGraphQL")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/github/graphql_pr_batch.go"), "func userRefFromGraphQL")
 	if !strings.Contains(body, "NodeID:") {
 		t.Error("userRefFromGraphQL must map prBatchUser.ID into UserRef.NodeID (REST's ghUserToRef already does)")
 	}
@@ -75,7 +54,7 @@ func TestUserRefFromGraphQLMapsNodeID(t *testing.T) {
 func TestUserInlinesSelectNodeID(t *testing.T) {
 	re := regexp.MustCompile(`\.\.\. on User \{([^}]*)\}`)
 	for _, f := range []string{"graphql_pr_batch.go", "graphql_listing.go"} {
-		src := readSrc(t, f)
+		src := srctest.Read(t, "internal/platform/github/"+f)
 		for _, m := range re.FindAllStringSubmatch(src, -1) {
 			fields := " " + strings.Join(strings.Fields(m[1]), " ") + " "
 			if !strings.Contains(fields, " id ") {
@@ -93,7 +72,7 @@ func TestUserInlinesSelectNodeID(t *testing.T) {
 // despite userRefFromGraphQL promising it since v0.27.103. Pin every
 // assignees connection's node selection carries `id`.
 func TestAssigneeSelectionsCarryNodeID(t *testing.T) {
-	src := readSrc(t, "graphql_pr_batch.go")
+	src := srctest.Read(t, "internal/platform/github/graphql_pr_batch.go")
 	re := regexp.MustCompile(`assignees\(first: \d+[^)]*\) \{\s*\n\s*nodes \{([^}]*)\}`)
 	matches := re.FindAllStringSubmatch(src, -1)
 	if len(matches) < 2 {
@@ -110,14 +89,14 @@ func TestAssigneeSelectionsCarryNodeID(t *testing.T) {
 // A4c — FetchIssueClosers selected __typename but decoded neither it nor
 // `id`, so every closer identity landed with empty user_type/node_id.
 func TestIssueClosersCaptureTypeAndNodeID(t *testing.T) {
-	src := readSrc(t, "issue_closers.go")
+	src := srctest.Read(t, "internal/platform/github/issue_closers.go")
 	if !strings.Contains(src, "`json:\"__typename\"`") {
 		t.Error("issue closer actor decode must capture __typename → UserRef.Type")
 	}
 	if !strings.Contains(src, "`json:\"id\"`") {
 		t.Error("issue closer actor decode must capture id → UserRef.NodeID (select it in the User inline)")
 	}
-	body := region(t, src, "func (c *Client) FetchIssueClosers")
+	body := srctest.FuncBody(t, src, "func (c *Client) FetchIssueClosers")
 	if !strings.Contains(body, "NodeID:") || !strings.Contains(body, "Type:") {
 		t.Error("FetchIssueClosers must map Type and NodeID onto the returned UserRef")
 	}
@@ -132,7 +111,7 @@ func TestIssueClosersCaptureTypeAndNodeID(t *testing.T) {
 func TestBotInlinesSelectNodeID(t *testing.T) {
 	re := regexp.MustCompile(`\.\.\. on Bot \{([^}]*)\}`)
 	for _, f := range []string{"graphql_pr_batch.go", "graphql_listing.go", "issue_closers.go"} {
-		src := readSrc(t, f)
+		src := srctest.Read(t, "internal/platform/github/"+f)
 		hits := re.FindAllStringSubmatch(src, -1)
 		if f != "issue_closers.go" && len(hits) < 3 {
 			t.Errorf("%s: expected Bot inlines on the author fragments (found %d)", f, len(hits))
@@ -150,7 +129,7 @@ func TestBotInlinesSelectNodeID(t *testing.T) {
 // dropped UserRef while the initial-page path mapped it — reviewers past
 // the first page lost contributor identity.
 func TestPaginatedReviewersKeepUserRef(t *testing.T) {
-	body := region(t, readSrc(t, "graphql_pr_batch.go"), "func (c *Client) paginatePRReviewers")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/github/graphql_pr_batch.go"), "func (c *Client) paginatePRReviewers")
 	if !strings.Contains(body, "userRefFromGraphQL(r.RequestedReviewer)") {
 		t.Error("paginatePRReviewers must map UserRef exactly as the initial-page path does")
 	}

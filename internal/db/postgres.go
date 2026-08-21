@@ -407,7 +407,11 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				-- observed ID still fills an empty column.
 				platform_repo_id = COALESCE(NULLIF(repos.platform_repo_id, ''), EXCLUDED.platform_repo_id),
 				repo_archived = EXCLUDED.repo_archived,
-				updated_at = COALESCE(EXCLUDED.updated_at, repos.updated_at),
+				-- v0.27.122 (Copilot round 14, suppressed): GREATEST, not
+				-- prefer-incoming — overlapping refreshes can finish out of
+				-- order, and an older forge response landing last must not
+				-- regress the forge's last-update time (it never decreases).
+				updated_at = GREATEST(COALESCE(EXCLUDED.updated_at, repos.updated_at), COALESCE(repos.updated_at, EXCLUDED.updated_at)),
 				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()
 			RETURNING repo_id`,

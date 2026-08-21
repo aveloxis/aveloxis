@@ -603,3 +603,30 @@ func TestPREquivalentsRootLookupKeysOnList(t *testing.T) {
 		t.Error("the root LATERAL must match list_address — the thread key includes it")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 14 (2026-08-20/21): 2 active + 6 suppressed — all eight real,
+// five of them aimed at the days-old Phase 1 infrastructure (FuncBody
+// went AST-based after two lexical generations each carried a real
+// false-window class; the ratchet detector went AST-based; the three
+// PR-added helpers grandfathered into the baseline were migrated; an
+// empty baseline became the valid GOAL state). The two data-quality
+// items are pinned below; srctest's own fixture suite pins the rest.
+// ---------------------------------------------------------------------------
+
+// Suppressed #5: updated_at must never REGRESS — overlapping metadata
+// refreshes finish out of order, and an older forge response landing
+// last must not overwrite a newer forge timestamp (it only increases).
+// Both writers (UpsertRepo ON CONFLICT + UpdateRepoMetadata) use
+// GREATEST over the nil-safe COALESCE pair.
+func TestUpdatedAtNeverRegresses(t *testing.T) {
+	for _, f := range []string{"postgres.go", "repo_metadata.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(src), "updated_at = GREATEST(") {
+			t.Errorf("%s: updated_at must be written via GREATEST — prefer-incoming regresses under out-of-order refreshes", f)
+		}
+	}
+}

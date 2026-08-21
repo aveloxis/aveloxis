@@ -208,3 +208,35 @@ func (r *recordingTB) Fatalf(f string, a ...any) { r.failed = true; panic("fatal
 func (r *recordingTB) Fatal(a ...any)            { r.failed = true; panic("fatal") }
 func (r *recordingTB) Errorf(f string, a ...any) { r.failed = true }
 func (r *recordingTB) Error(a ...any)            { r.failed = true }
+
+func TestFuncBodySignatureTypeLiterals(t *testing.T) {
+	// v0.27.122 (round 14, active): a signature containing a type
+	// literal balances its braces BEFORE the body opens — the lexical
+	// counter returned the parameter type as the "body".
+	src := `package x
+
+func f(v struct{ X int }) map[string]struct{ Y int } {
+	return nil // REAL_BODY
+}
+`
+	body := FuncBody(t, src, "func f(")
+	if !strings.Contains(body, "REAL_BODY") {
+		t.Fatalf("FuncBody stopped at the signature's type-literal braces: %q", body)
+	}
+}
+
+func TestTypeBody(t *testing.T) {
+	src := `package x
+
+// comment mentioning type orgRepo struct must not anchor.
+type other struct{ A int }
+
+type orgRepo struct {
+	ID int64 // NEEDLE_FIELD
+}
+`
+	body := TypeBody(t, src, "orgRepo")
+	if !strings.Contains(body, "NEEDLE_FIELD") || strings.Contains(body, "A int") {
+		t.Fatalf("TypeBody must return exactly the named type's declaration, got %q", body)
+	}
+}

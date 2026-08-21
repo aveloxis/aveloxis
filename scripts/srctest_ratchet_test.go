@@ -4,6 +4,10 @@
 package scripts
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,20 +44,78 @@ import (
 // (the golden-file pattern from the manifest corpus). Review the diff:
 // it must ONLY DELETE lines.
 
-// legacyHelperPatterns detect DEFINITIONS of the duplicated helper
-// classes in *_test.go files. Inline os.ReadFile calls are fine (plain
-// reads of package-local files stay idiomatic); what ratchets down is
+// v0.27.122 (Copilot round 14, suppressed — real): detection is
+// AST-based (go/parser), replacing regexes whose bounded-lookahead
+// read-helper rule could cross a function boundary (false attribution)
+// and whose name-prefix extractor rule missed non-"extract" names like
+// `region`. Each top-level FuncDecl in a test file is classified from
+// its OWN parsed span. Inline os.ReadFile calls are fine (plain reads
+// of package-local files stay idiomatic); what ratchets down is
 // defining NEW named helpers that duplicate srctest.
-var legacyHelperPatterns = []*regexp.Regexp{
-	// Read helpers: a named func taking testing.T/TB, returning
-	// string/[]byte, whose nearby body calls os.ReadFile.
-	regexp.MustCompile(`(?ms)^func (\w+)\(\w+ \*?testing\.(?:T|TB)[^)]*\) (?:string|\[\]byte) \{.{0,500}?os\.ReadFile`),
-	// Function-body extractors.
-	regexp.MustCompile(`(?m)^func (extract\w+)\(`),
-	// Comment strippers.
-	regexp.MustCompile(`(?m)^func (strip\w*[Cc]omments?\w*)\(`),
-	// Repo-root finders.
-	regexp.MustCompile(`(?m)^func (\w*[Rr]epoRoot\w*)\(`),
+var (
+	stripperNameRe = regexp.MustCompile(`(?i)^strip\w*comment`)
+	extractNameRe  = regexp.MustCompile(`(?i)(extract|region|funcbody)`)
+)
+
+// classifyLegacyHelpers returns the names of legacy-duplicate helper
+// definitions in one parsed test file.
+func classifyLegacyHelpers(src string) ([]string, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "t.go", src, 0)
+	if err != nil {
+		return nil, err
+	}
+	spanOf := func(n ast.Node) string {
+		return src[fset.Position(n.Pos()).Offset:fset.Position(n.End()).Offset]
+	}
+	var out []string
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		name := fn.Name.Name
+		// The ratchet tracks HELPER DEFINITIONS, not test functions —
+		// a Test body inlining a legacy idiom (e.g. the cut-at-next-
+		// func extraction) is fix-when-touched material, but flagging
+		// whole tests would explode the baseline far past the
+		// documented "named helpers duplicating srctest" contract.
+		if strings.HasPrefix(name, "Test") || strings.HasPrefix(name, "Benchmark") || strings.HasPrefix(name, "Fuzz") {
+			continue
+		}
+		body := spanOf(fn.Body)
+		paramsHaveTesting := false
+		for _, p := range fn.Type.Params.List {
+			if strings.Contains(spanOf(p.Type), "testing.") {
+				paramsHaveTesting = true
+			}
+		}
+		resultStringy := false
+		if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
+			rt := spanOf(fn.Type.Results.List[0].Type)
+			resultStringy = rt == "string" || rt == "[]byte"
+		}
+		switch {
+		// Read helpers: takes testing.T/TB, returns string/[]byte,
+		// body reads a file. The BODY-scoped check cannot attribute a
+		// neighboring function's os.ReadFile (the regex flaw).
+		case paramsHaveTesting && resultStringy && strings.Contains(body, "os.ReadFile"):
+			out = append(out, name)
+		// Extractors: any name carrying extract/region/funcbody that
+		// returns a string, OR any body using the cut-at-next-func
+		// idiom regardless of name.
+		case resultStringy && extractNameRe.MatchString(name),
+			strings.Contains(body, "\\nfunc "):
+			out = append(out, name)
+		// Comment strippers.
+		case stripperNameRe.MatchString(name):
+			out = append(out, name)
+		// Repo-root finders: the go.mod walk idiom.
+		case strings.Contains(body, `"go.mod"`):
+			out = append(out, name)
+		}
+	}
+	return out, nil
 }
 
 func detectLegacySites(t *testing.T, root string) map[string]bool {
@@ -76,17 +138,19 @@ func detectLegacySites(t *testing.T, root string) map[string]bool {
 			}
 			rel, _ := filepath.Rel(root, path)
 			if filepath.ToSlash(rel) == "scripts/srctest_ratchet_test.go" {
-				return nil // this file mentions the patterns it detects
+				return nil // the detector itself
 			}
 			b, rerr := os.ReadFile(path)
 			if rerr != nil {
 				return rerr
 			}
 			scanned++
-			for _, re := range legacyHelperPatterns {
-				for _, m := range re.FindAllStringSubmatch(string(b), -1) {
-					sites[filepath.ToSlash(rel)+" "+m[1]] = true
-				}
+			names, cerr := classifyLegacyHelpers(string(b))
+			if cerr != nil {
+				return fmt.Errorf("%s: %w", rel, cerr)
+			}
+			for _, n := range names {
+				sites[filepath.ToSlash(rel)+" "+n] = true
 			}
 			return nil
 		})
@@ -133,7 +197,11 @@ func TestSrctestMigrationRatchet(t *testing.T) {
 		}
 		baseline[line] = true
 	}
-	srctest.MinCount(t, "baseline entries", len(baseline), 1)
+	// v0.27.122 (round 14, active): an EMPTY baseline is the ratchet's
+	// GOAL state, not a broken scan — when every legacy site has
+	// migrated, the detector keeps rejecting new duplication against a
+	// zero-entry baseline forever. Only a missing/unreadable file (the
+	// os.ReadFile fatal above) is an error.
 
 	var newDup, stale []string
 	for s := range detected {
@@ -156,5 +224,19 @@ func TestSrctestMigrationRatchet(t *testing.T) {
 	}
 	if len(newDup) == 0 && len(stale) == 0 {
 		t.Logf("ratchet: %d legacy sites remain", len(baseline))
+	}
+}
+
+// TestRatchetAcceptsEmptyBaseline — v0.27.122 (round 14, active): the
+// burn-down's COMPLETED state is an empty baseline; a minimum-entries
+// guard would make success fail permanently. This pin bans such a
+// guard from returning.
+func TestRatchetAcceptsEmptyBaseline(t *testing.T) {
+	b, err := os.ReadFile("srctest_ratchet_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `MinCount(t, "baseline entries"`) {
+		t.Error("the ratchet must accept an empty baseline — it is the goal state, not a broken scan")
 	}
 }

@@ -10,7 +10,6 @@ cmd/aveloxis/merge_cntrb_collisions_test.go scanMergeCollisionsSources
 cmd/aveloxis/migrate_only_serve_and_migrate_test.go extractFuncBody
 cmd/aveloxis/migrate_only_serve_and_migrate_test.go mainSource
 cmd/aveloxis/migrate_only_serve_and_migrate_test.go stripLineComments
-cmd/aveloxis/org_scan_forge_id_test.go extractRegion
 cmd/aveloxis/scancode_worker_cmd_test.go readScancodeWorkerCmdSource
 cmd/aveloxis/shutdown_join_test.go extractMainFunc
 internal/api/compare_autoadd_test.go stripLineComments
@@ -24,7 +23,9 @@ internal/collector/enrich_batch_test.go mustReadEnrichSource
 internal/collector/facade_cancel_abort_test.go facadeFunctionBody
 internal/collector/identity_capture_test.go mustRead
 internal/collector/lockfile_parser_test.go readLockFixture
+internal/collector/manifest_corpus_test.go parseCorpusFile
 internal/collector/scancode_worker_test.go readScancodeWorkerSource
+internal/collector/scancode_worker_test.go scancodeMethodBody
 internal/collector/stage_flush_test.go extractFuncBody
 internal/db/allocation_bounds_test.go extractStoreFunc
 internal/db/augur_compat_test.go readSchemaSQL
@@ -47,12 +48,13 @@ internal/db/repo_labor_history_test.go extractPlainFunctionBody
 internal/db/repo_labor_history_test.go stripLineComments
 internal/db/repo_stats_cached_test.go extractBatchFunc
 internal/db/scancode_v0276_test.go readScancodeStoreSource
+internal/db/scancode_v0276_test.go scancodeStoreFuncBody
 internal/db/staging_sanitize_test.go readFileForTest
 internal/db/user_created_at_test.go extractListUsersBody
 internal/db/user_created_at_test.go readFileForUserCreatedAt
 internal/db/v025_32_repo_git_ci_test.go extractTopLevelFunc
 internal/db/v025_5_matview_rewrites_test.go extractMatviewBlock
-internal/db/v025_5_matview_rewrites_test.go readMatviewsSQLForV0255
+internal/db/v025_5_matview_rewrites_test.go readSourceFile
 internal/db/v025_6_matview_rewrite_test.go extractEnsureAliasBody
 internal/db/vuln_lifecycle_test.go mustReadFileStr
 internal/db/web_store_oauth_test.go extractFunc
@@ -64,8 +66,7 @@ internal/mailer/mailer_test.go extractMailerFunc
 internal/monitor/dashboard_freshness_test.go extractMonitorFn
 internal/monitor/matview_banner_test.go mustReadMonitorSource
 internal/monitor/queue_stats_cache_test.go mustReadFileMon
-internal/platform/github/fill_audit_a_test.go readSrc
-internal/platform/gitlab/fill_audit_b_test.go glRegion
+internal/platform/github/graphql_listing_test.go readPhase2Source
 internal/scheduler/activity_classification_test.go readSchedulerFile
 internal/scheduler/global_state_ticker_test.go readRunJob
 internal/scheduler/global_state_ticker_test.go readRunMethod

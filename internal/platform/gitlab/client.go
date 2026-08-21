@@ -16,6 +16,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"sync"
 )
 
 // Client implements platform.Client for GitLab (API v4).
@@ -24,6 +25,9 @@ type Client struct {
 	http   *platform.HTTPClient
 	logger *slog.Logger
 	host   string // e.g. "gitlab.com"
+	// userRefCache: username → glUserRefCacheEntry (v0.27.122) — see
+	// lookupGLUserRef. Zero value is ready to use.
+	userRefCache sync.Map
 }
 
 // New creates a GitLab client. baseURL should be like "https://gitlab.com/api/v4".
@@ -458,18 +462,46 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 	return out
 }
 
+// glUserRefCacheEntry caches one username resolution, including
+// negative results (ok=false) — an unknown username stays unknown for
+// the client's lifetime, and re-asking per MR would waste the same
+// call it caches.
+type glUserRefCacheEntry struct {
+	ref model.UserRef
+	ok  bool
+}
+
 // lookupGLUserRef resolves a username to a UserRef carrying the REAL
 // numeric GitLab user ID via /users?username= (the EnrichContributor
 // endpoint). Returns ok=false on lookup failure or no match — the
 // caller leaves the ref honestly empty rather than minting a
 // login-only ref (never fabricate identity).
+//
+// v0.27.122 (Copilot round 14, suppressed): results are CACHED at
+// client scope, negatives included — FetchPRRepos runs per merge
+// request and every MR shares the same target-project owner, so an
+// uncached lookup issued dozens-to-hundreds of identical /users calls
+// per listing page. The key space is project OWNERS (small); the
+// sync.Map is safe under the concurrent worker pool. Transient
+// lookup ERRORS are deliberately NOT cached (only definitive
+// no-match/empty results are) so an API hiccup doesn't pin a user as
+// unknown for the client's lifetime.
 func (c *Client) lookupGLUserRef(ctx context.Context, username string) (model.UserRef, bool) {
+	if v, hit := c.userRefCache.Load(username); hit {
+		e := v.(glUserRefCacheEntry)
+		return e.ref, e.ok
+	}
 	path := fmt.Sprintf("/users?username=%s", url.QueryEscape(username))
 	var users []glUser
-	if err := c.http.GetJSON(ctx, path, &users); err != nil || len(users) == 0 {
-		return model.UserRef{}, false
+	if err := c.http.GetJSON(ctx, path, &users); err != nil {
+		return model.UserRef{}, false // transient — not cached
 	}
-	return glUserToRef(users[0]), true
+	e := glUserRefCacheEntry{}
+	if len(users) > 0 {
+		e = glUserRefCacheEntry{ref: glUserToRef(users[0]), ok: true}
+	}
+	c.userRefCache.Store(username, e)
+	return e.ref, e.ok
 }
 
 // --- EventCollector ---

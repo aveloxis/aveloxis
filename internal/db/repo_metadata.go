@@ -90,7 +90,9 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			    -- v0.27.104: creation date is immutable — fill-empty-only;
 			    -- updated_at refreshes from the forge (nil-safe).
 			    created_at = COALESCE(repos.created_at, $8),
-			    updated_at = COALESCE($9, repos.updated_at),
+			    -- v0.27.122: GREATEST (see UpsertRepo) — an out-of-order
+			    -- older response must not regress the forge timestamp.
+			    updated_at = GREATEST(COALESCE($9, repos.updated_at), COALESCE(repos.updated_at, $9)),
 			    data_collection_date = NOW()
 			WHERE repo_id = $1
 			RETURNING COALESCE(platform_repo_id, '')`,

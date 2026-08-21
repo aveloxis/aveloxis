@@ -12,11 +12,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
-	"sync"
 )
 
 // Client implements platform.Client for GitLab (API v4).

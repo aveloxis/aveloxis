@@ -59,7 +59,7 @@ const contributorActivityBatchSize = 25
 // to resolve even ALONE (actions-user / ghost-class machine accounts)
 // are also ABSENT: they log a WARN and ride the scheduler's existing
 // absent→mark-only path, which stamps them checked without a class
-// ('' = unknown) and retires them from the claim head. That reuse is
+// ("" = unknown) and retires them from the claim head. That reuse is
 // deliberate — retrying an at-cap account next tick can never make it
 // cheaper (the scancode at-cap lesson). The one shape that still
 // FAILS the whole fetch is a full chunk where EVERY account skipped

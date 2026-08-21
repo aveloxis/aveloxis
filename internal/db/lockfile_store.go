@@ -300,7 +300,7 @@ func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64)
 // scan turns into dependency_kind='transitive' purls when
 // collection.vuln_scan_transitive is on. Distinct per (ecosystem,
 // package, version): a package appearing in several lockfiles scans
-// once, and the scope keeps any non-dev observation ('' or 'runtime'
+// once, and the scope keeps any non-dev observation ("" or 'runtime'
 // beats 'dev' — a package pulled in by BOTH a dev tool and a runtime
 // dependency is runtime exposure).
 func (s *PostgresStore) GetRepoTransitivePackages(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {

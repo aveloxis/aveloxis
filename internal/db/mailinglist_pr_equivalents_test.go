@@ -137,9 +137,9 @@ func TestMailingListPREquivalentsOneRowPerThread(t *testing.T) {
 			repoID, node, list, sender, t0, thread)
 	}
 	base := time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC)
-	em("amb@k", "", "shared@_av_preamb.example", base)  // ambiguous → NULL
-	em("uni@k", "", "unique@_av_preamb.example", base)  // unique → resolves
-	em("emp@k", "", "", base)                           // empty sender → NULL, ONE row
+	em("amb@k", "", "shared@_av_preamb.example", base) // ambiguous → NULL
+	em("uni@k", "", "unique@_av_preamb.example", base) // unique → resolves
+	em("emp@k", "", "", base)                          // empty sender → NULL, ONE row
 
 	rows, err := store.pool.Query(ctx, `
 		SELECT thread_key, author_cntrb_id IS NULL

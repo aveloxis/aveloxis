@@ -35,39 +35,80 @@ const maxChainDepth = 20
 
 // chainIndex is the per-repo attribution state, built once per request
 // when transitive findings exist.
+//
+// Round-19: the adjacency is PARTITIONED PER LOCKFILE. A monorepo's
+// lockfiles are INDEPENDENT resolved graphs — one shared adjacency let
+// a parent edge from apps/a's lockfile connect through a child name in
+// apps/b's lockfile, fabricating an introduced_by path no single
+// resolution ever produced. Each walk now stays inside one lockfile's
+// graph; a finding still unions roots across lockfiles (a repo-level
+// finding legitimately has one introduction path per lockfile that
+// contains the package). Within a single lockfile, resolution stays
+// NAME-level (the documented v0.27.133 edge model: lockfiles express
+// parent → name@range, so same-name multi-version conflation inside
+// one graph is the accepted trade-off — a full version-exact walk is
+// not derivable from range constraints).
 type chainIndex struct {
-	parents map[string][]string // ecosystem|child -> parent names
-	direct  map[string]bool     // ecosystem|name -> is a direct dependency
+	graphs map[string]map[string][]string // lockfile_path -> (ecosystem|child) -> parent names
+	direct map[string]bool                // ecosystem|name -> is a direct dependency
 }
 
 func buildChainIndex(edges []db.RepoLockfileEdge, directNames map[string]bool) *chainIndex {
-	idx := &chainIndex{parents: map[string][]string{}, direct: directNames}
+	idx := &chainIndex{graphs: map[string]map[string][]string{}, direct: directNames}
 	seen := map[string]bool{}
 	for _, e := range edges {
+		g := idx.graphs[e.LockfilePath]
+		if g == nil {
+			g = map[string][]string{}
+			idx.graphs[e.LockfilePath] = g
+		}
 		key := e.Ecosystem + "|" + e.ChildName
-		dedup := key + "<" + e.ParentName
+		dedup := e.LockfilePath + "\x00" + key + "<" + e.ParentName
 		if seen[dedup] {
 			continue
 		}
 		seen[dedup] = true
-		idx.parents[key] = append(idx.parents[key], e.ParentName)
+		g[key] = append(g[key], e.ParentName)
 	}
-	for _, ps := range idx.parents {
-		sort.Strings(ps) // deterministic chains
+	for _, g := range idx.graphs {
+		for _, ps := range g {
+			sort.Strings(ps) // deterministic chains
+		}
 	}
 	return idx
 }
 
 // chainsFor walks child→parents from the vulnerable package to direct
-// roots via BFS (shortest chains first), cycle-safe, depth-capped.
+// roots — one BFS per lockfile graph (shortest chains first within
+// each), cycle-safe, depth-capped, roots deduped across lockfiles.
 // Returns nil when no path reaches a direct root — the honest state
 // for edge-less formats and orphaned packages.
 func (idx *chainIndex) chainsFor(ecosystem, pkg string) []vulnChainJSON {
+	paths := make([]string, 0, len(idx.graphs))
+	for p := range idx.graphs {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths) // deterministic lockfile order
+	var out []vulnChainJSON
+	rootSeen := map[string]bool{}
+	for _, p := range paths {
+		if len(out) >= maxChainRoots {
+			break
+		}
+		out = walkChainGraph(idx.graphs[p], idx.direct, ecosystem, pkg, rootSeen, out)
+	}
+	return out
+}
+
+// walkChainGraph is the BFS over ONE lockfile's adjacency. rootSeen is
+// shared across lockfiles so the same direct root reached through two
+// lockfiles is reported once (the first — lockfile-path order — wins).
+func walkChainGraph(parents map[string][]string, direct map[string]bool,
+	ecosystem, pkg string, rootSeen map[string]bool, out []vulnChainJSON) []vulnChainJSON {
 	type node struct {
 		name string
 		path []string // pkg-first, reversed at emit
 	}
-	var out []vulnChainJSON
 	visited := map[string]bool{pkg: true}
 	queue := []node{{name: pkg, path: []string{pkg}}}
 	for len(queue) > 0 && len(out) < maxChainRoots {
@@ -76,13 +117,17 @@ func (idx *chainIndex) chainsFor(ecosystem, pkg string) []vulnChainJSON {
 		if len(n.path) > maxChainDepth {
 			continue
 		}
-		for _, parent := range idx.parents[ecosystem+"|"+n.name] {
+		for _, parent := range parents[ecosystem+"|"+n.name] {
 			if visited[parent] {
 				continue
 			}
 			visited[parent] = true
 			path := append(append([]string{}, n.path...), parent)
-			if idx.direct[ecosystem+"|"+strings.ToLower(parent)] {
+			if direct[ecosystem+"|"+strings.ToLower(parent)] {
+				if rootSeen[parent] {
+					continue // already attributed via another lockfile
+				}
+				rootSeen[parent] = true
 				// Emit root-first.
 				chain := make([]string, 0, len(path))
 				for i := len(path) - 1; i >= 0; i-- {

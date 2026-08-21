@@ -304,10 +304,10 @@ func (s *PostgresStore) FindContributorIDByLogin(ctx context.Context, login stri
 // v0.27.25 — two fixes after a live 2-day-2-hour orphaned run of this
 // statement on aveloxis_large (2026-07-20 diagnostic):
 //
-//  1. BOTH sides now exclude empty strings. Postgres '' = '' is TRUE
+//  1. BOTH sides now exclude empty strings. Postgres "" = "" is TRUE
 //     (the v0.25.6 explorer_new_contributors lesson), and production
-//     carries 10,636 contributors with gh_login = '' — a repo whose
-//     unresolved commits include ''-username rows cross-products
+//     carries 10,636 contributors with gh_login = "" — a repo whose
+//     unresolved commits include ""-username rows cross-products
 //     against all of them inside the join.
 //  2. The v0.20.12 note below said an expression index on
 //     LOWER(gh_login) was "the next step" if this profiled as a

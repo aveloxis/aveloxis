@@ -174,7 +174,7 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 // v0.27.36: (a) query/scan errors propagate instead of silently
 // serving zeros; (b) the vulnerability counts apply the SAME
 // predicates as CountRepoVulnerabilities — `resolved_at IS NULL AND
-// COALESCE(dependency_kind, '') <> 'self'` — so the batch endpoint can
+// COALESCE(dependency_kind, "") <> 'self'` — so the batch endpoint can
 // never disagree with the single-repo endpoint again (summary/18
 // Phase 1e; the pre-fix batch counted resolved + self rows and
 // reported systematically higher, ever-growing totals).

@@ -196,7 +196,7 @@ func TestVulnScanTargetsCarryScope(t *testing.T) {
 // TestMergeDirectTargetRuntimeWinsCollision pins the local-canary
 // catch (2026-07-21, pipenv/setuptools): when the same purl is
 // reachable from a non-runtime AND a runtime declaration, the target
-// scope must fold to runtime ('') regardless of iteration order — a
+// scope must fold to runtime (the empty string) regardless of iteration order — a
 // non-runtime first-writer was re-stamping runtime findings off the
 // headline and out of the digest.
 func TestMergeDirectTargetRuntimeWinsCollision(t *testing.T) {

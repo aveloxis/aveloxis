@@ -11,10 +11,10 @@ import (
 
 // TestResolverInsertUsesCorrectOnConflictSyntax verifies the contributor
 // INSERT in ContributorResolver.Resolve uses the correct partial unique index
-// syntax: ON CONFLICT (cntrb_login) WHERE cntrb_login != ''
+// syntax: ON CONFLICT (cntrb_login) WHERE cntrb_login != ""
 //
 // The bug: the original code used ON CONFLICT ON CONSTRAINT idx_contributors_login
-// WHERE cntrb_login != '' which is invalid PostgreSQL — ON CONSTRAINT doesn't
+// WHERE cntrb_login != "" which is invalid PostgreSQL — ON CONSTRAINT doesn't
 // accept a WHERE clause, and idx_contributors_login is an index not a constraint.
 // This caused EVERY lazy contributor creation to fail with a syntax error,
 // silently producing 131K+ messages with NULL cntrb_id.

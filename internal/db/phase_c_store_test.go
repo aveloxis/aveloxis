@@ -82,7 +82,7 @@ func TestLockedVersionsExcludeTransitives(t *testing.T) {
 
 // TestDigestExcludesTransitiveByDefault pins the v0.27.21 digest
 // filter: transitive findings only enter the operator digest when
-// mail.vuln_digest_include_transitive is set. Pre-C1 ('') and direct
+// mail.vuln_digest_include_transitive is set. Pre-C1 ("") and direct
 // rows always pass.
 func TestDigestExcludesTransitiveByDefault(t *testing.T) {
 	src, err := os.ReadFile("vuln_digest_store.go")

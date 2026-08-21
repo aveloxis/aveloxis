@@ -67,7 +67,7 @@ func (s *PostgresStore) repoTracked(ctx context.Context, repoID int64) (bool, er
 	return exists, err
 }
 
-// GetGroupStatus returns the group's approval status ('' rows default
+// GetGroupStatus returns the group's approval status ("" rows default
 // to 'approved' like every other reader of the column).
 func (s *PostgresStore) GetGroupStatus(ctx context.Context, groupID int64) (string, error) {
 	var status string

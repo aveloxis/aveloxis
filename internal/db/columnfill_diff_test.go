@@ -54,7 +54,7 @@ func TestClassifyColumnFill(t *testing.T) {
 	}
 }
 
-// The "populated" predicate must be type-aware: TEXT DEFAULT '' and
+// The "populated" predicate must be type-aware: TEXT DEFAULT "" and
 // INTEGER DEFAULT 0 are this schema's idioms for "not filled in", so a
 // plain IS NOT NULL check would miss both the platform_label_id=0 case
 // and every empty-string default. Booleans are exempt from the

@@ -795,9 +795,9 @@ func TestSchemaDocsDropContributorsOld(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // Suppressed: FindRepoByPlatformRepoID must carry the partial-index
-// predicate LITERALLY — a generic prepared plan cannot prove `$2 <> ''`
+// predicate LITERALLY — a generic prepared plan cannot prove `$2 <> ""`
 // at plan time, so without it idx_repos_platform_repo_id (partial WHERE
-// platform_repo_id <> '') is unusable and every org-listing lookup can
+// platform_repo_id <> "") is unusable and every org-listing lookup can
 // seq-scan repos. Semantically free: the Go guard already rejects "".
 func TestForgeIDLookupCarriesPartialIndexPredicate(t *testing.T) {
 	src, err := os.ReadFile("repo_forge_id.go")
@@ -925,5 +925,51 @@ func TestSQLCorpusStripsGoCommentsFirst(t *testing.T) {
 	s := srctest.Read(t, "internal/srctest/sqlscan/sqlscan.go")
 	if !strings.Contains(s, "srctest.BacktickLiterals(srctest.StripGoComments(") {
 		t.Error("sqlscan.Statements must strip Go comments BEFORE extracting backtick literals")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round 19 (v0.27.135) — review 4997293831: 4 comments, all real (two
+// substantive on the day-old C2 attribution, two import-grouping style
+// whose CLASS the scripts/import_grouping_test.go tripwire now kills).
+// ---------------------------------------------------------------------------
+
+// Finding 1: the chain index merged every lockfile's edges into ONE
+// adjacency — in a monorepo, a parent from apps/a's lockfile could
+// connect through a child name in apps/b's lockfile, fabricating an
+// introduced_by path no single resolution ever produced. The adjacency
+// is now PARTITIONED PER LOCKFILE and each walk stays inside one graph
+// (behavioral proof: TestChainsForNeverCrossLockfileGraphs).
+func TestChainIndexPartitionsPerLockfile(t *testing.T) {
+	s := srctest.Read(t, "internal/api/vuln_chains.go")
+	if !strings.Contains(s, "graphs map[string]map[string][]string") {
+		t.Error("chainIndex must partition the adjacency by lockfile_path — one merged graph fabricates cross-lockfile chains")
+	}
+	if !strings.Contains(s, "idx.graphs[e.LockfilePath]") {
+		t.Error("buildChainIndex must group edges by e.LockfilePath")
+	}
+}
+
+// Finding 2: introduced_by was attached to RESOLVED historical
+// findings from the CURRENT edge graph — a chain that may never have
+// produced the finding, implying live exposure where none exists.
+// Attribution is now gated to current rows (ResolvedAt == nil);
+// historical edge snapshots are not retained, so absence is honest.
+func TestChainAttributionGatedToCurrentFindings(t *testing.T) {
+	s := srctest.Read(t, "internal/api/vulnerabilities.go")
+	if !strings.Contains(s, `v.DependencyKind == "transitive" && v.ResolvedAt == nil {`) {
+		t.Error("introduced_by must attach ONLY to current transitive findings — today's graph cannot explain a historical snapshot's finding")
+	}
+}
+
+// Finding 1's SBOM sibling (applied while fixing the class): a
+// lockfile edge names the parent's RESOLVED version, so the SBOM graph
+// must attach children to that version's component/package first —
+// name-level only as fallback — or p@2 inherits p@1's dependencies
+// (behavioral proof: TestGenerateCycloneDX_ParentVersionExactAttach).
+func TestSBOMGraphResolvesParentByVersionFirst(t *testing.T) {
+	s := srctest.Read(t, "internal/collector/sbom.go")
+	if strings.Count(s, "byNameVer[pk+\"@\"+e.ParentVersion]") < 2 {
+		t.Error("both SBOM generators must try the version-exact parent key before the name-level fallback")
 	}
 }

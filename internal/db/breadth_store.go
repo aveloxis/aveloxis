@@ -75,7 +75,7 @@ const BreadthCooldownJitterFrac = 0.10
 //
 // Filter on cntrb_deleted = 0 (since v0.20.2 logical merges) so
 // soft-deleted loser rows aren't re-attempted on every cycle.
-// Filter on gh_login IS NOT NULL AND != '' since the breadth
+// Filter on gh_login IS NOT NULL AND != "" since the breadth
 // worker hits the GitHub user events API.
 func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int, cooldown time.Duration) ([]BreadthContributor, error) {
 	if limit <= 0 {

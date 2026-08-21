@@ -65,12 +65,12 @@ func SeveritiesAtOrAbove(min string) []string {
 // v0.27.21: includeTransitive=false (the default) keeps
 // dependency_kind='transitive' findings out of the digest — the first
 // transitive-enabled cycles would otherwise blast a 50-item email of
-// utility-package findings. Direct and pre-C1 ('') rows always pass.
+// utility-package findings. Direct and pre-C1 ("") rows always pass.
 // v0.27.46 (summary/19 P3, decision #1): includeDev=false (the
 // default) additionally keeps non-runtime-scope findings
 // (dev/test/build/optional/peer) out — the P2 Python expansion would
 // otherwise flood the digest with dev-tooling findings the week the
-// knob flips on. Runtime-scope ('' or unrecognized) rows always pass.
+// knob flips on. Runtime-scope ("" or unrecognized) rows always pass.
 func (s *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since time.Time, minSeverity string, includeTransitive, includeDev bool) ([]VulnDigestItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT v.repo_id, r.repo_owner, r.repo_name, v.vuln_id,

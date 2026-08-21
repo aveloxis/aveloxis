@@ -51,6 +51,42 @@ func TestChainsForCycleSafeAndHonest(t *testing.T) {
 	}
 }
 
+// Round-19 (Copilot): a monorepo's lockfiles are independent resolved
+// graphs. Pre-fix, one shared adjacency let apps/b's express→x edge
+// chain through apps/a's x→qs edge — a path no single resolution ever
+// produced. The walk must stay inside one lockfile's graph.
+func TestChainsForNeverCrossLockfileGraphs(t *testing.T) {
+	edges := []db.RepoLockfileEdge{
+		// apps/a: x pulls qs, but x has no parent IN THIS lockfile.
+		{Ecosystem: "npm", LockfilePath: "apps/a/package-lock.json", ParentName: "x", ChildName: "qs"},
+		// apps/b: direct express pulls x — but b's graph has no qs.
+		{Ecosystem: "npm", LockfilePath: "apps/b/package-lock.json", ParentName: "express", ChildName: "x"},
+	}
+	direct := map[string]bool{"npm|express": true}
+	idx := buildChainIndex(edges, direct)
+	if got := idx.chainsFor("npm", "qs"); got != nil {
+		t.Errorf("cross-lockfile fabricated chain: %+v — apps/a's qs must not attribute through apps/b's express", got)
+	}
+}
+
+func TestChainsForDedupsRootsAcrossLockfiles(t *testing.T) {
+	edges := []db.RepoLockfileEdge{
+		{Ecosystem: "npm", LockfilePath: "apps/a/package-lock.json", ParentName: "express", ChildName: "qs"},
+		{Ecosystem: "npm", LockfilePath: "apps/b/package-lock.json", ParentName: "express", ChildName: "mid"},
+		{Ecosystem: "npm", LockfilePath: "apps/b/package-lock.json", ParentName: "mid", ChildName: "qs"},
+	}
+	direct := map[string]bool{"npm|express": true}
+	idx := buildChainIndex(edges, direct)
+	chains := idx.chainsFor("npm", "qs")
+	if len(chains) != 1 {
+		t.Fatalf("same root via two lockfiles must report once, got %+v", chains)
+	}
+	// Lockfile-path order: apps/a sorts first, so the 2-hop a-chain wins.
+	if chains[0].Root != "express" || len(chains[0].Chain) != 2 {
+		t.Errorf("expected apps/a's direct express→qs chain, got %+v", chains[0])
+	}
+}
+
 func TestChainsForRootCapAndEcosystemIsolation(t *testing.T) {
 	var edges []db.RepoLockfileEdge
 	direct := map[string]bool{}

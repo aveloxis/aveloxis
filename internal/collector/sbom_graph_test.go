@@ -193,6 +193,43 @@ func TestGenerateCycloneDX_EcosystemAliasFoldResolvesDirectParent(t *testing.T) 
 	}
 }
 
+// Round-19 (Copilot): an edge names the parent's RESOLVED version —
+// its children must hang off that version's component only, never
+// every same-name component (a multi-version npm tree would otherwise
+// show p@1's dependencies under p@2).
+func TestGenerateCycloneDX_ParentVersionExactAttach(t *testing.T) {
+	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org"}
+	graph := &sbomGraph{
+		Transitives: []db.RepoLockfilePackage{
+			{Ecosystem: "npm", PackageName: "p", ResolvedVersion: "1.0.0"},
+			{Ecosystem: "npm", PackageName: "p", ResolvedVersion: "2.0.0"},
+			{Ecosystem: "npm", PackageName: "c", ResolvedVersion: "3.0.0"},
+		},
+		Edges: []db.RepoLockfileEdge{
+			// Only p@1.0.0 requires c.
+			{Ecosystem: "npm", ParentName: "p", ParentVersion: "1.0.0", ChildName: "c"},
+		},
+	}
+	data, err := generateCycloneDX(repo, nil, nil, graph)
+	if err != nil {
+		t.Fatalf("generateCycloneDX: %v", err)
+	}
+	var bom cycloneDX
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	depsOf := map[string][]string{}
+	for _, d := range bom.Dependencies {
+		depsOf[d.Ref] = d.DependsOn
+	}
+	if got := depsOf["pkg:npm/p@1.0.0"]; len(got) != 1 || got[0] != "pkg:npm/c@3.0.0" {
+		t.Errorf("p@1.0.0 children = %v, want [pkg:npm/c@3.0.0]", got)
+	}
+	if got := depsOf["pkg:npm/p@2.0.0"]; len(got) != 0 {
+		t.Errorf("p@2.0.0 must NOT inherit p@1.0.0's children, got %v", got)
+	}
+}
+
 func TestGenerateSPDX_GraphRelationshipsAndPackages(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org", GitURL: "https://github.com/org/myapp"}
 	deps := []db.SBOMDep{

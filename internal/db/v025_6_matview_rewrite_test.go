@@ -118,7 +118,7 @@ func TestAugurNewContributorsIsViewAlias(t *testing.T) {
 // on (e.g. the BackfillCommitAuthorIDs join on contributors.gh_login,
 // the v0.25.6 migration backfill of cntrb_canonical from aliases).
 //
-// SetContributorCanonical uses COALESCE(NULLIF(cntrb_canonical, ''),
+// SetContributorCanonical uses COALESCE(NULLIF(cntrb_canonical, ""),
 // $2) internally so a non-empty existing canonical is preserved.
 func TestCommitResolverEnsureAliasBackfillsCanonical(t *testing.T) {
 	data, err := os.ReadFile("../collector/commit_resolver.go")
@@ -311,8 +311,8 @@ func TestVersionStampedV0256(t *testing.T) {
 	// three VALUE-checking tripwires added — example-config effective
 	// defaults, commands-doc coverage, schema-count pins).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.27.134"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.27.134\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.27.135"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.27.135\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

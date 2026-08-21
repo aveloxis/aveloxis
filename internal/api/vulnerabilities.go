@@ -66,14 +66,14 @@ type vulnJSON struct {
 	VersionResolution   string `json:"version_resolution,omitempty"`
 	// v0.27.21 C1: 'direct' | 'transitive' ('' = pre-C1 row, rendered
 	// as direct) + 'dev'/'runtime'/'' scope from the lockfile.
-	DependencyKind  string `json:"dependency_kind,omitempty"`
+	DependencyKind string `json:"dependency_kind,omitempty"`
 	// IntroducedBy — v0.27.133 (C2): for TRANSITIVE findings, the
 	// direct roots that pull the package in, each with one shortest
 	// chain root → … → vulnerable package. Absent when no edge data
 	// exists (knob off, edge-less lockfile format) — the GUI must
 	// treat absence as "attribution unavailable", never "no parents".
-	IntroducedBy []vulnChainJSON `json:"introduced_by,omitempty"`
-	DependencyScope string `json:"dependency_scope,omitempty"`
+	IntroducedBy    []vulnChainJSON `json:"introduced_by,omitempty"`
+	DependencyScope string          `json:"dependency_scope,omitempty"`
 }
 
 // scannedVersionFromPurl derives the version a finding was scanned at
@@ -200,7 +200,13 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 			DependencyKind:      v.DependencyKind,
 			DependencyScope:     v.DependencyScope,
 		})
-		if chains != nil && v.DependencyKind == "transitive" {
+		// Round-19: CURRENT findings only. The chain index is built
+		// from the CURRENT lockfile edges; a resolved-historical
+		// finding describes an OLDER snapshot, so attaching today's
+		// graph to it could name a path that never produced the
+		// finding (and implies live exposure where none exists).
+		// Historical edge snapshots are not retained — honest absence.
+		if chains != nil && v.DependencyKind == "transitive" && v.ResolvedAt == nil {
 			out[len(out)-1].IntroducedBy = chains.chainsFor(v.Ecosystem, v.PackageName)
 		}
 	}

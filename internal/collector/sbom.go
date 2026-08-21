@@ -308,7 +308,14 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	seenRefs := map[string]bool{}
 	// byName resolves graph endpoints (name-level, per the v0.27.133
 	// edge model) to component bom-refs across BOTH populations.
+	// byNameVer (round-19) adds a version-exact key for PARENT
+	// resolution: an edge carries the parent's resolved version, and
+	// attaching its children to every same-name component would hang
+	// one version's dependencies off another version's node. Children
+	// stay name-level — lockfiles express parent → name@range, so an
+	// exact child version is not derivable.
 	byName := map[string][]string{}
+	byNameVer := map[string][]string{}
 
 	for _, dep := range deps {
 		if dep.Purl != "" && seenRefs[dep.Purl] {
@@ -337,6 +344,7 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 			depRefs = append(depRefs, dep.Purl)
 			k := sbomGraphKey(dep.PackageManager, dep.Name)
 			byName[k] = append(byName[k], dep.Purl)
+			byNameVer[k+"@"+dep.CurrentVersion] = append(byNameVer[k+"@"+dep.CurrentVersion], dep.Purl)
 		}
 	}
 
@@ -356,6 +364,10 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 			k := sbomGraphKey(t.Ecosystem, t.PackageName)
 			if !sliceContains(byName[k], purl) {
 				byName[k] = append(byName[k], purl)
+			}
+			kv := k + "@" + t.ResolvedVersion
+			if !sliceContains(byNameVer[kv], purl) {
+				byNameVer[kv] = append(byNameVer[kv], purl)
 			}
 			if seenRefs[purl] {
 				continue // already a direct component (bom-ref must stay unique)
@@ -381,7 +393,17 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	childrenOf := map[string]map[string]bool{}
 	if graph != nil {
 		for _, e := range graph.Edges {
-			for _, pref := range byName[sbomGraphKey(e.Ecosystem, e.ParentName)] {
+			// Round-19: version-exact parent match first — the edge
+			// names the parent's RESOLVED version, so its children
+			// belong to that version's component alone. Name-level is
+			// the fallback for direct deps whose recorded (manifest)
+			// version differs from the lockfile-resolved one.
+			pk := sbomGraphKey(e.Ecosystem, e.ParentName)
+			prefs := byNameVer[pk+"@"+e.ParentVersion]
+			if len(prefs) == 0 {
+				prefs = byName[pk]
+			}
+			for _, pref := range prefs {
 				for _, cref := range byName[sbomGraphKey(e.Ecosystem, e.ChildName)] {
 					if cref == pref {
 						continue // self-edge noise
@@ -608,10 +630,12 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 	doc.Packages = append(doc.Packages, rootPkg)
 
 	// byName resolves graph endpoints to SPDXIDs (v0.27.134 — same
-	// name-level model as the CycloneDX side); seenIDs guards the
+	// name-level model as the CycloneDX side, with byNameVer's
+	// round-19 version-exact parent resolution); seenIDs guards the
 	// document-validity rule that SPDXIDs are unique (a transitive
 	// row matching a direct dep's name@version hashes identically).
 	byName := map[string][]string{}
+	byNameVer := map[string][]string{}
 	seenIDs := map[string]bool{}
 
 	for _, dep := range deps {
@@ -622,6 +646,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 		seenIDs[pkgID] = true
 		k := sbomGraphKey(dep.PackageManager, dep.Name)
 		byName[k] = append(byName[k], pkgID)
+		byNameVer[k+"@"+dep.CurrentVersion] = append(byNameVer[k+"@"+dep.CurrentVersion], pkgID)
 
 		pkg := spdxPackage{
 			SPDXID:      pkgID,
@@ -674,6 +699,10 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 			if !sliceContains(byName[k], pkgID) {
 				byName[k] = append(byName[k], pkgID)
 			}
+			kv := k + "@" + t.ResolvedVersion
+			if !sliceContains(byNameVer[kv], pkgID) {
+				byNameVer[kv] = append(byNameVer[kv], pkgID)
+			}
 			if seenIDs[pkgID] {
 				continue // SPDXID must stay unique (same name@version as a direct dep)
 			}
@@ -697,7 +726,14 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 		}
 		seenRel := map[string]bool{}
 		for _, e := range graph.Edges {
-			for _, pID := range byName[sbomGraphKey(e.Ecosystem, e.ParentName)] {
+			// Round-19: version-exact parent match first (see the
+			// CycloneDX side) — name-level only as fallback.
+			pk := sbomGraphKey(e.Ecosystem, e.ParentName)
+			pIDs := byNameVer[pk+"@"+e.ParentVersion]
+			if len(pIDs) == 0 {
+				pIDs = byName[pk]
+			}
+			for _, pID := range pIDs {
 				for _, cID := range byName[sbomGraphKey(e.Ecosystem, e.ChildName)] {
 					if pID == cID || seenRel[pID+">"+cID] {
 						continue

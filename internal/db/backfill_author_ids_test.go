@@ -31,11 +31,11 @@ func backfillSQL(t *testing.T) string {
 }
 
 // TestBackfillExcludesEmptyStringsBothSides pins the v0.25.6 lesson
-// applied here: Postgres '' = '' is TRUE, and production carries
-// 10,636 contributors with gh_login = ''. Without BOTH guards, a repo
-// whose unresolved commits include ''-username rows cross-products
+// applied here: Postgres "" = "" is TRUE, and production carries
+// 10,636 contributors with gh_login = "". Without BOTH guards, a repo
+// whose unresolved commits include ""-username rows cross-products
 // against every one of them inside the join — the shape behind the
-// 2-day runtime. IS NOT NULL alone does not exclude ''.
+// 2-day runtime. IS NOT NULL alone does not exclude "".
 func TestBackfillExcludesEmptyStringsBothSides(t *testing.T) {
 	body := backfillSQL(t)
 	for _, needle := range []string{

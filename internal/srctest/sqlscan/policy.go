@@ -323,7 +323,7 @@ func operandKind(op, col string) string {
 
 var placeholderRe = regexp.MustCompile(`^\$\d+$`)
 
-// nullifEmpty matches `NULLIF(<operand>, '')` and returns the
+// nullifEmpty matches `NULLIF(<operand>, "")` and returns the
 // operand's kind plus its text.
 func nullifEmpty(expr string) (kind, operand string, ok bool) {
 	name, args, isCall := parseCall(strings.TrimSpace(expr))

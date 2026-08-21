@@ -7,15 +7,14 @@
 package gitlab
 
 import (
-	"strings"
-	"testing"
-
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
+	"sync/atomic"
+	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/srctest"
-	"sync/atomic"
 )
 
 // B5 — REVISED in v0.27.121 (Copilot round 13, suppressed — verified

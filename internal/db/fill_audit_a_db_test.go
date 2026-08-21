@@ -13,7 +13,7 @@ import (
 
 // A3 — one-shot backfill for the 1,051,111 releases rows whose
 // data_source was empty (GitHub ListReleases never set Origin).
-// Self-disabling via the data_source = '' predicate.
+// Self-disabling via the data_source = "" predicate.
 func TestMigrationBackfillsReleasesDataSource(t *testing.T) {
 	src, err := os.ReadFile("migrate.go")
 	if err != nil {

@@ -6,6 +6,7 @@ package collector
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 )
@@ -32,8 +33,23 @@ func testMigrate(ctx context.Context, t testing.TB, store *db.PostgresStore) {
 		t.Fatalf("acquire conn for test-migrate lock: %v", err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", testMigrateLockID); err != nil {
-		t.Fatalf("test-migrate advisory lock: %v", err)
+	// v0.27.128 (Copilot round 17): pg_try_advisory_lock POLLING, never
+	// the blocking form — a blocked waiter holds a snapshot the holder's
+	// CREATE INDEX CONCURRENTLY waits on (the v0.27.20 undetectable
+	// deadlock). Twin of internal/db/testexec_test.go.
+	for {
+		var got bool
+		if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", testMigrateLockID).Scan(&got); err != nil {
+			t.Fatalf("test-migrate advisory lock poll: %v", err)
+		}
+		if got {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("context done waiting for test-migrate lock: %v", ctx.Err())
+		case <-time.After(time.Second):
+		}
 	}
 	defer func() { _, _ = conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", testMigrateLockID) }()
 	if store.GetSchemaVersion(ctx) == db.ToolVersion {

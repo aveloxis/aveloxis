@@ -99,19 +99,32 @@ func TestStandingRulesRegistry(t *testing.T) {
 			t.Errorf("%s is cited in %v but names no registered rule — add the rule or fix the citation", id, files)
 		}
 	}
-	// (4) CLAUDE.md carries every active ID (soft-skip when absent).
+	// (4) CLAUDE.md carries every active ID. Soft-skip is for ABSENCE
+	// only (public checkouts don't carry the private file); any other
+	// read error — permissions, I/O — fails the test rather than
+	// masquerading as expected absence (v0.27.128, round 17: the SR-5
+	// class inside this very meta-test).
 	claudePath := filepath.Join(root, "CLAUDE.md")
 	b, err := os.ReadFile(claudePath)
-	if err != nil {
-		t.Logf("CLAUDE.md absent (%v) — soft-skipping the private-half drift check (expected in public checkouts)", err)
+	if errors.Is(err, os.ErrNotExist) {
+		t.Log("CLAUDE.md absent — soft-skipping the private-half drift check (expected in public checkouts)")
 		return
 	}
-	prose := string(b)
+	if err != nil {
+		t.Fatalf("reading CLAUDE.md: %v (only absence soft-skips)", err)
+	}
+	// Exact-ID membership via the same token regex — a substring check
+	// would count SR-1 as present whenever SR-10..SR-19 appear
+	// (v0.27.128, round 17).
+	proseIDs := map[string]bool{}
+	for _, m := range srRe.FindAllStringSubmatch(string(b), -1) {
+		proseIDs["SR-"+m[1]] = true
+	}
 	for _, r := range standingRules {
 		if r.Retired {
 			continue
 		}
-		if !strings.Contains(prose, r.ID) {
+		if !proseIDs[r.ID] {
 			t.Errorf("%s missing from CLAUDE.md — the private prose half must carry every active SR-ID (operator decision: full context stays private, IDs bridge the two halves)", r.ID)
 		}
 	}

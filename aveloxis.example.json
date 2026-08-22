@@ -30,7 +30,7 @@
   "collection": {
     "days_until_recollect": 1,
     "workers": 12,
-    "repo_clone_dir": "~/aveloxis-repos/",
+    "repo_clone_dir": "$HOME/aveloxis-repos/",
     "force_full": false,
     "matview_rebuild_day": "saturday",
     "matview_rebuild_on_startup": false,

@@ -626,3 +626,33 @@ func (s *PostgresStore) GetRepoGoClosureRows(ctx context.Context, repoID int64) 
 	}
 	return pkgs, edges, erows.Err()
 }
+
+// GetRepoTransitivePackagesWithPaths returns transitive package rows
+// WITH their lockfile_path provenance (deduped on the full natural
+// key). v0.27.151 (round 30): the SBOM graph resolves edge endpoints
+// per lockfile — the path-folded GetRepoTransitivePackages (correct
+// for the vuln scan's target dedup) let a monorepo edge attach
+// children resolved from OTHER lockfiles' same-name entries,
+// fabricating dependency relationships in both SBOM formats.
+func (s *PostgresStore) GetRepoTransitivePackagesWithPaths(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT ecosystem, package_name, resolved_version, COALESCE(lockfile_path, ''),
+		       MIN(CASE WHEN COALESCE(dependency_scope, '') IN ('dev','test','build','optional','peer') THEN dependency_scope ELSE '' END)
+		FROM aveloxis_data.repo_lockfile_packages
+		WHERE repo_id = $1 AND NOT COALESCE(direct, TRUE)
+		GROUP BY ecosystem, package_name, resolved_version, COALESCE(lockfile_path, '')
+		ORDER BY package_name, resolved_version, 4`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RepoLockfilePackage
+	for rows.Next() {
+		p := RepoLockfilePackage{Direct: false}
+		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Scope); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

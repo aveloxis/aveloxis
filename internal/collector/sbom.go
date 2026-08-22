@@ -84,7 +84,7 @@ func GenerateSBOMWithOptions(ctx context.Context, store *db.PostgresStore, repoI
 	// a lookup ERROR is not "no transitives" — silently emitting a
 	// flat document on a transient DB error would make two generations
 	// of the same commit disagree with nothing explaining why).
-	trans, err := store.GetRepoTransitivePackages(ctx, repoID)
+	trans, err := store.GetRepoTransitivePackagesWithPaths(ctx, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("loading lockfile transitives: %w", err)
 	}
@@ -131,6 +131,81 @@ type sbomGraph struct {
 // never disagree on endpoint resolution.
 func sbomGraphKey(eco, name string) string {
 	return db.LockfileGraphKey(eco, name)
+}
+
+// sbomGraphIndex resolves edge endpoints WITH lockfile provenance —
+// v0.27.151 (round 30), the round-19 per-lockfile rule applied to the
+// SBOM side: a monorepo's lockfiles are independent resolved graphs,
+// and a repo-wide name index let an edge from apps/a attach children
+// resolved from apps/b's same-name entries, fabricating dependency
+// relationships in both formats. Transitive refs partition per
+// lockfile (an edge resolves inside its OWN lockfile first); DIRECT
+// components stay a repo-wide fallback — manifest rows carry no path
+// column (the round-20 carve-out), and they cover Go-declared deps
+// and manifest-version-differs parents. ONE resolver shared by both
+// generators (SR-17) — the ref vocabulary (purl vs SPDXID) is the
+// only per-format difference.
+type sbomGraphIndex struct {
+	directByName    map[string][]string
+	directByNameVer map[string][]string
+	lockByName      map[string]map[string][]string
+	lockByNameVer   map[string]map[string][]string
+}
+
+func newSBOMGraphIndex() *sbomGraphIndex {
+	return &sbomGraphIndex{
+		directByName:    map[string][]string{},
+		directByNameVer: map[string][]string{},
+		lockByName:      map[string]map[string][]string{},
+		lockByNameVer:   map[string]map[string][]string{},
+	}
+}
+
+func (x *sbomGraphIndex) addDirect(k, version, ref string) {
+	x.directByName[k] = append(x.directByName[k], ref)
+	x.directByNameVer[k+"@"+version] = append(x.directByNameVer[k+"@"+version], ref)
+}
+
+func (x *sbomGraphIndex) addTransitive(lockfile, k, version, ref string) {
+	if x.lockByName[lockfile] == nil {
+		x.lockByName[lockfile] = map[string][]string{}
+		x.lockByNameVer[lockfile] = map[string][]string{}
+	}
+	if !sliceContains(x.lockByName[lockfile][k], ref) {
+		x.lockByName[lockfile][k] = append(x.lockByName[lockfile][k], ref)
+	}
+	kv := k + "@" + version
+	if !sliceContains(x.lockByNameVer[lockfile][kv], ref) {
+		x.lockByNameVer[lockfile][kv] = append(x.lockByNameVer[lockfile][kv], ref)
+	}
+}
+
+// parentRefs — round-19 version-exact-first, now within the edge's own
+// lockfile first: lockfile version-exact → lockfile name-level →
+// direct version-exact → direct name-level.
+func (x *sbomGraphIndex) parentRefs(e db.RepoLockfileEdge) []string {
+	pk := sbomGraphKey(e.Ecosystem, e.ParentName)
+	if refs := x.lockByNameVer[e.LockfilePath][pk+"@"+e.ParentVersion]; len(refs) > 0 {
+		return refs
+	}
+	if refs := x.lockByName[e.LockfilePath][pk]; len(refs) > 0 {
+		return refs
+	}
+	if refs := x.directByNameVer[pk+"@"+e.ParentVersion]; len(refs) > 0 {
+		return refs
+	}
+	return x.directByName[pk]
+}
+
+// childRefs — children stay name-level (lockfiles express
+// parent → name@range), resolved inside the edge's own lockfile with
+// the direct set as the only fallback.
+func (x *sbomGraphIndex) childRefs(e db.RepoLockfileEdge) []string {
+	ck := sbomGraphKey(e.Ecosystem, e.ChildName)
+	if refs := x.lockByName[e.LockfilePath][ck]; len(refs) > 0 {
+		return refs
+	}
+	return x.directByName[ck]
 }
 
 // ============================================================
@@ -281,16 +356,10 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	// previously guarded against colliding refs).
 	var depRefs []string
 	seenRefs := map[string]bool{}
-	// byName resolves graph endpoints (name-level, per the v0.27.133
-	// edge model) to component bom-refs across BOTH populations.
-	// byNameVer (round-19) adds a version-exact key for PARENT
-	// resolution: an edge carries the parent's resolved version, and
-	// attaching its children to every same-name component would hang
-	// one version's dependencies off another version's node. Children
-	// stay name-level — lockfiles express parent → name@range, so an
-	// exact child version is not derivable.
-	byName := map[string][]string{}
-	byNameVer := map[string][]string{}
+	// v0.27.151 (round 30): endpoint resolution goes through the
+	// per-lockfile sbomGraphIndex — see its doc for the fabrication
+	// class the old repo-wide maps produced.
+	gidx := newSBOMGraphIndex()
 
 	for _, dep := range deps {
 		if dep.Purl != "" && seenRefs[dep.Purl] {
@@ -317,9 +386,7 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 
 		if dep.Purl != "" {
 			depRefs = append(depRefs, dep.Purl)
-			k := sbomGraphKey(dep.PackageManager, dep.Name)
-			byName[k] = append(byName[k], dep.Purl)
-			byNameVer[k+"@"+dep.CurrentVersion] = append(byNameVer[k+"@"+dep.CurrentVersion], dep.Purl)
+			gidx.addDirect(sbomGraphKey(dep.PackageManager, dep.Name), dep.CurrentVersion, dep.Purl)
 		}
 	}
 
@@ -336,14 +403,7 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 			if purl == "" {
 				continue
 			}
-			k := sbomGraphKey(t.Ecosystem, t.PackageName)
-			if !sliceContains(byName[k], purl) {
-				byName[k] = append(byName[k], purl)
-			}
-			kv := k + "@" + t.ResolvedVersion
-			if !sliceContains(byNameVer[kv], purl) {
-				byNameVer[kv] = append(byNameVer[kv], purl)
-			}
+			gidx.addTransitive(t.LockfilePath, sbomGraphKey(t.Ecosystem, t.PackageName), t.ResolvedVersion, purl)
 			if seenRefs[purl] {
 				continue // already a direct component (bom-ref must stay unique)
 			}
@@ -368,18 +428,11 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	childrenOf := map[string]map[string]bool{}
 	if graph != nil {
 		for _, e := range graph.Edges {
-			// Round-19: version-exact parent match first — the edge
-			// names the parent's RESOLVED version, so its children
-			// belong to that version's component alone. Name-level is
-			// the fallback for direct deps whose recorded (manifest)
-			// version differs from the lockfile-resolved one.
-			pk := sbomGraphKey(e.Ecosystem, e.ParentName)
-			prefs := byNameVer[pk+"@"+e.ParentVersion]
-			if len(prefs) == 0 {
-				prefs = byName[pk]
-			}
-			for _, pref := range prefs {
-				for _, cref := range byName[sbomGraphKey(e.Ecosystem, e.ChildName)] {
+			// Round-19: version-exact parent first; round-30: both
+			// endpoints resolve inside the edge's OWN lockfile, with
+			// the direct set as the only repo-wide fallback.
+			for _, pref := range gidx.parentRefs(e) {
+				for _, cref := range gidx.childRefs(e) {
 					if cref == pref {
 						continue // self-edge noise
 					}
@@ -604,13 +657,12 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 	}
 	doc.Packages = append(doc.Packages, rootPkg)
 
-	// byName resolves graph endpoints to SPDXIDs (v0.27.134 — same
-	// name-level model as the CycloneDX side, with byNameVer's
-	// round-19 version-exact parent resolution); seenIDs guards the
+	// Graph-endpoint resolution goes through the per-lockfile
+	// sbomGraphIndex (v0.27.151, round 30 — same resolver as the
+	// CycloneDX side, SPDXID vocabulary); seenIDs guards the
 	// document-validity rule that SPDXIDs are unique (a transitive
 	// row matching a direct dep's name@version hashes identically).
-	byName := map[string][]string{}
-	byNameVer := map[string][]string{}
+	gidx := newSBOMGraphIndex()
 	seenIDs := map[string]bool{}
 
 	for _, dep := range deps {
@@ -619,9 +671,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 		pkgID := spdxPackageID(dep.PackageManager, dep.Name, dep.CurrentVersion)
 		declared := spdxDeclaredLicense(dep.License) // v0.27.29
 		seenIDs[pkgID] = true
-		k := sbomGraphKey(dep.PackageManager, dep.Name)
-		byName[k] = append(byName[k], pkgID)
-		byNameVer[k+"@"+dep.CurrentVersion] = append(byNameVer[k+"@"+dep.CurrentVersion], pkgID)
+		gidx.addDirect(sbomGraphKey(dep.PackageManager, dep.Name), dep.CurrentVersion, pkgID)
 
 		pkg := spdxPackage{
 			SPDXID:      pkgID,
@@ -670,14 +720,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 	if graph != nil {
 		for _, t := range graph.Transitives {
 			pkgID := spdxPackageID(t.Ecosystem, t.PackageName, t.ResolvedVersion)
-			k := sbomGraphKey(t.Ecosystem, t.PackageName)
-			if !sliceContains(byName[k], pkgID) {
-				byName[k] = append(byName[k], pkgID)
-			}
-			kv := k + "@" + t.ResolvedVersion
-			if !sliceContains(byNameVer[kv], pkgID) {
-				byNameVer[kv] = append(byNameVer[kv], pkgID)
-			}
+			gidx.addTransitive(t.LockfilePath, sbomGraphKey(t.Ecosystem, t.PackageName), t.ResolvedVersion, pkgID)
 			if seenIDs[pkgID] {
 				continue // SPDXID must stay unique (same name@version as a direct dep)
 			}
@@ -701,15 +744,11 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 		}
 		seenRel := map[string]bool{}
 		for _, e := range graph.Edges {
-			// Round-19: version-exact parent match first (see the
-			// CycloneDX side) — name-level only as fallback.
-			pk := sbomGraphKey(e.Ecosystem, e.ParentName)
-			pIDs := byNameVer[pk+"@"+e.ParentVersion]
-			if len(pIDs) == 0 {
-				pIDs = byName[pk]
-			}
-			for _, pID := range pIDs {
-				for _, cID := range byName[sbomGraphKey(e.Ecosystem, e.ChildName)] {
+			// Round-19: version-exact parent first; round-30: both
+			// endpoints resolve inside the edge's OWN lockfile (see
+			// sbomGraphIndex).
+			for _, pID := range gidx.parentRefs(e) {
+				for _, cID := range gidx.childRefs(e) {
 					if pID == cID || seenRel[pID+">"+cID] {
 						continue
 					}

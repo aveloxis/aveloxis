@@ -970,9 +970,20 @@ func TestChainAttributionGatedToCurrentFindings(t *testing.T) {
 // name-level only as fallback — or p@2 inherits p@1's dependencies
 // (behavioral proof: TestGenerateCycloneDX_ParentVersionExactAttach).
 func TestSBOMGraphResolvesParentByVersionFirst(t *testing.T) {
+	// v0.27.151 (round 30): the version-exact-first ordering moved
+	// into the ONE shared resolver (sbomGraphIndex.parentRefs) both
+	// generators call — pin the ordering THERE: within each
+	// population, the version-exact lookup must precede the
+	// name-level fallback.
 	s := srctest.Read(t, "internal/collector/sbom.go")
-	if strings.Count(s, "byNameVer[pk+\"@\"+e.ParentVersion]") < 2 {
-		t.Error("both SBOM generators must try the version-exact parent key before the name-level fallback")
+	body := srctest.FuncBody(t, s, "func (x *sbomGraphIndex) parentRefs(")
+	lockVer := strings.Index(body, `lockByNameVer[e.LockfilePath][pk+"@"+e.ParentVersion]`)
+	lockName := strings.Index(body, "lockByName[e.LockfilePath][pk]")
+	dirVer := strings.Index(body, `directByNameVer[pk+"@"+e.ParentVersion]`)
+	dirName := strings.Index(body, "directByName[pk]")
+	if lockVer < 0 || lockName < 0 || dirVer < 0 || dirName < 0 ||
+		!(lockVer < lockName && lockName < dirVer && dirVer < dirName) {
+		t.Error("parentRefs must try version-exact before name-level in BOTH populations (lockfile then direct) — attaching children to every same-name component hangs one version's dependencies off another's node")
 	}
 }
 
@@ -1549,5 +1560,68 @@ func TestGapHealCandidatesIncludeSnapshotlessInAll(t *testing.T) {
 	}
 	if !strings.Contains(body, "COALESCE(ri.issues_count, 0)") {
 		t.Error("missing snapshots must COALESCE to zero counts")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round 30 (v0.27.151) — review 5000856729: 2 active + 2 suppressed,
+// all real. The actives are the round-19 cross-lockfile class in the
+// SBOM's costume — the chain index was partitioned in v0.27.135 while
+// the SBOM graph kept repo-wide name maps.
+// ---------------------------------------------------------------------------
+
+// Actives — SBOM edge resolution is per-lockfile via the ONE shared
+// sbomGraphIndex (SR-17: both formats use the same resolver, so they
+// cannot diverge again). Behavioral proofs (red-proven against the
+// repo-wide shape): TestGenerateCycloneDX_EdgesNeverCrossLockfiles +
+// TestGenerateSPDX_EdgesNeverCrossLockfiles.
+func TestSBOMGraphResolvesPerLockfile(t *testing.T) {
+	s := srctest.Read(t, "internal/collector/sbom.go")
+	for _, needle := range []string{
+		"type sbomGraphIndex struct",
+		"lockByName      map[string]map[string][]string",
+		"func (x *sbomGraphIndex) parentRefs(e db.RepoLockfileEdge) []string",
+		"func (x *sbomGraphIndex) childRefs(e db.RepoLockfileEdge) []string",
+	} {
+		if !strings.Contains(s, needle) {
+			t.Errorf("sbom.go missing %q — edge endpoints must resolve inside the edge's own lockfile (repo-wide maps fabricated cross-workspace dependencies)", needle)
+		}
+	}
+	if n := strings.Count(s, "gidx.parentRefs(e)"); n != 2 {
+		t.Errorf("BOTH generators must resolve through the shared index (found %d parentRefs call sites, want 2)", n)
+	}
+}
+
+// Suppressed #1 — the podling probe follows the forge's rename
+// redirect: a validated same-forge /apache/<name> Location resolves
+// directly (an Apache rename can target an ARBITRARY new slug, not
+// just the twin); unsafe/malformed redirects ERROR per the round-25
+// definitive-only rule. Behavioral:
+// TestFetchFollowsRenameRedirectToArbitrarySlug +
+// TestFetchAbortsOnUnsafeRedirectTarget.
+func TestPodlingProbeFollowsValidatedRedirects(t *testing.T) {
+	a := srctest.Read(t, "internal/importers/apache/apache.go")
+	if !strings.Contains(a, "func podlingRedirectTarget(") {
+		t.Fatal("the probe must validate and follow redirect targets — ignoring Location drops renamed podlings as unresolved")
+	}
+	body := srctest.FuncBody(t, a, "func podlingRedirectTarget(")
+	if !strings.Contains(body, "strings.EqualFold(loc.Host, req.URL.Host)") {
+		t.Error("redirect targets must stay on the SAME forge host")
+	}
+	if !strings.Contains(a, "`^/apache/([A-Za-z0-9_.-]+)/?$`") {
+		t.Error("only /apache/<repo> paths are acceptable redirect targets")
+	}
+}
+
+// Suppressed #2 — the data-test report gates AND renders TypeChanged:
+// a release whose only schema drift is a column type change produced
+// no drift section at all despite ColumnFillDiff detecting it.
+func TestDataTestReportRendersTypeChanges(t *testing.T) {
+	d := srctest.Read(t, "cmd/aveloxis/data_test_cmd.go")
+	if !strings.Contains(d, "len(colReport.TypeChanged) > 0 {") {
+		t.Error("TypeChanged must be rendered in the schema-drift section")
+	}
+	if !strings.Contains(d, "+len(colReport.TypeChanged) > 0 {") {
+		t.Error("TypeChanged must be part of the drift-section GATE — type-only drift previously produced no section")
 	}
 }

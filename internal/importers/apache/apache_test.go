@@ -263,3 +263,76 @@ func TestFetchAbortsOnNonDefinitiveProbeResponse(t *testing.T) {
 		t.Errorf("error must name the non-definitive-response rule, got: %v", err)
 	}
 }
+
+// Round-30 (v0.27.151): a rename redirect can name an ARBITRARY new
+// slug, not just the incubator/plain twin — ignoring Location dropped
+// such podlings as unresolved. The forge's redirect target is the
+// canonical answer and must resolve directly.
+func TestFetchFollowsRenameRedirectToArbitrarySlug(t *testing.T) {
+	podlingsJSON := []byte(`{"phoenixling": {"name": "Apache Phoenixling (Incubating)", "podling": true}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "podlings.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(podlingsJSON)
+		case strings.Contains(r.URL.Path, "projects.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{}`))
+		case r.URL.Path == "/apache/incubator-phoenixling":
+			// Renamed to a slug that is NEITHER twin.
+			w.Header().Set("Location", "/apache/phoenix-reborn")
+			w.WriteHeader(http.StatusMovedPermanently)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	oldBase := podlingProbeBase
+	podlingProbeBase = server.URL
+	t.Cleanup(func() { podlingProbeBase = oldBase })
+
+	projects, err := Fetch(context.Background(), server.URL+"/projects.json", server.URL+"/podlings.json")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	for _, p := range projects {
+		if p.Name != "Apache Phoenixling (Incubating)" {
+			continue
+		}
+		if !reposContain(p.RepoURLs, "https://github.com/apache/phoenix-reborn") {
+			t.Fatalf("the forge's rename redirect names the canonical repo — must resolve to it, got %v (unresolved: %v)", p.RepoURLs, p.UnresolvedRepoURLs)
+		}
+		return
+	}
+	t.Fatal("podling project missing from Fetch result")
+}
+
+// A redirect that leaves the forge (or names a non-/apache/ path) is
+// NOT a definitive answer — it must ERROR and abort the import (the
+// round-25 rule), never decide the podling's identity.
+func TestFetchAbortsOnUnsafeRedirectTarget(t *testing.T) {
+	podlingsJSON := []byte(`{"escapeling": {"name": "Apache Escapeling (Incubating)", "podling": true}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "podlings.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(podlingsJSON)
+		case strings.Contains(r.URL.Path, "projects.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{}`))
+		default:
+			w.Header().Set("Location", "https://evil.example.com/apache/escapeling")
+			w.WriteHeader(http.StatusMovedPermanently)
+		}
+	}))
+	defer server.Close()
+
+	oldBase := podlingProbeBase
+	podlingProbeBase = server.URL
+	t.Cleanup(func() { podlingProbeBase = oldBase })
+
+	if _, err := Fetch(context.Background(), server.URL+"/projects.json", server.URL+"/podlings.json"); err == nil {
+		t.Fatal("a cross-host redirect target must abort Fetch — an unvetted redirect must never decide a podling's identity")
+	}
+}

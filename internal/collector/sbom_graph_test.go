@@ -24,8 +24,8 @@ import (
 func sbomGraphFixture() *sbomGraph {
 	return &sbomGraph{
 		Transitives: []db.RepoLockfilePackage{
-			{Ecosystem: "pypi", PackageName: "click", ResolvedVersion: "8.1.7"},
-			{Ecosystem: "pypi", PackageName: "werkzeug", ResolvedVersion: "2.3.7"},
+			{Ecosystem: "pypi", PackageName: "click", ResolvedVersion: "8.1.7", LockfilePath: "poetry.lock"},
+			{Ecosystem: "pypi", PackageName: "werkzeug", ResolvedVersion: "2.3.7", LockfilePath: "poetry.lock"},
 		},
 		Edges: []db.RepoLockfileEdge{
 			{Ecosystem: "pypi", LockfilePath: "poetry.lock", ParentName: "flask", ParentVersion: "2.0.0", ChildName: "werkzeug", ChildConstraint: ">=2.3"},
@@ -313,7 +313,10 @@ func TestGenerateSPDX_TransitiveIDCollisionDedups(t *testing.T) {
 // a DB error must never silently downgrade the document to flat).
 func TestGenerateSBOMLoadsGraphFromStore(t *testing.T) {
 	body := extractFuncBody(t, "sbom.go", "func GenerateSBOMWithOptions(")
-	for _, needle := range []string{"GetRepoTransitivePackages(", "GetRepoLockfileEdges("} {
+	// v0.27.151 (round 30): the PATH-preserving getter — the folded
+	// GetRepoTransitivePackages loses lockfile provenance, and the
+	// graph resolves edges per lockfile.
+	for _, needle := range []string{"GetRepoTransitivePackagesWithPaths(", "GetRepoLockfileEdges("} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("GenerateSBOMWithOptions must call %s", needle)
 		}
@@ -382,5 +385,91 @@ func TestGenerateSPDX_CrossEcosystemNameCollision(t *testing.T) {
 	// Same-package alias spellings still dedup (gem vs rubygems).
 	if spdxPackageID("gem", "rails", "7.0") != spdxPackageID("rubygems", "rails", "7.0") {
 		t.Error("alias-folded ecosystems must produce the SAME ID — that is one real package")
+	}
+}
+
+// Round-30 (v0.27.151): SBOM edge resolution never crosses lockfiles.
+// The round-19 rule reached the chain index but the SBOM's byName maps
+// stayed repo-wide — apps/a's `p@1 -> c` edge attached BOTH c@1.0.0
+// (apps/a) and c@2.0.0 (apps/b) as p's children, fabricating a
+// dependency on a version that exists only in an unrelated workspace.
+func TestGenerateCycloneDX_EdgesNeverCrossLockfiles(t *testing.T) {
+	repo := &db.RepoForSBOM{Name: "mono", Owner: "org", GitURL: "https://github.com/org/mono"}
+	graph := &sbomGraph{
+		Transitives: []db.RepoLockfilePackage{
+			{Ecosystem: "npm", PackageName: "p", ResolvedVersion: "1.0.0", LockfilePath: "apps/a/package-lock.json"},
+			{Ecosystem: "npm", PackageName: "c", ResolvedVersion: "1.0.0", LockfilePath: "apps/a/package-lock.json"},
+			{Ecosystem: "npm", PackageName: "c", ResolvedVersion: "2.0.0", LockfilePath: "apps/b/package-lock.json"},
+		},
+		Edges: []db.RepoLockfileEdge{
+			{Ecosystem: "npm", LockfilePath: "apps/a/package-lock.json",
+				ParentName: "p", ParentVersion: "1.0.0", ChildName: "c"},
+		},
+	}
+	data, err := generateCycloneDX(repo, nil, nil, graph)
+	if err != nil {
+		t.Fatalf("generateCycloneDX: %v", err)
+	}
+	var bom struct {
+		Dependencies []struct {
+			Ref       string   `json:"ref"`
+			DependsOn []string `json:"dependsOn"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range bom.Dependencies {
+		if d.Ref != "pkg:npm/p@1.0.0" {
+			continue
+		}
+		if len(d.DependsOn) != 1 || d.DependsOn[0] != "pkg:npm/c@1.0.0" {
+			t.Fatalf("p@1's children must resolve inside apps/a ONLY, got %v (c@2.0.0 lives in an unrelated lockfile — a fabricated dependency)", d.DependsOn)
+		}
+		return
+	}
+	t.Fatal("p@1.0.0 dependency entry missing")
+}
+
+// The SPDX twin of the cross-lockfile pin — one resolver serves both
+// formats (SR-17), so this guards against the formats diverging again.
+func TestGenerateSPDX_EdgesNeverCrossLockfiles(t *testing.T) {
+	repo := &db.RepoForSBOM{Name: "mono", Owner: "org", GitURL: "https://github.com/org/mono"}
+	graph := &sbomGraph{
+		Transitives: []db.RepoLockfilePackage{
+			{Ecosystem: "npm", PackageName: "p", ResolvedVersion: "1.0.0", LockfilePath: "apps/a/package-lock.json"},
+			{Ecosystem: "npm", PackageName: "c", ResolvedVersion: "1.0.0", LockfilePath: "apps/a/package-lock.json"},
+			{Ecosystem: "npm", PackageName: "c", ResolvedVersion: "2.0.0", LockfilePath: "apps/b/package-lock.json"},
+		},
+		Edges: []db.RepoLockfileEdge{
+			{Ecosystem: "npm", LockfilePath: "apps/a/package-lock.json",
+				ParentName: "p", ParentVersion: "1.0.0", ChildName: "c"},
+		},
+	}
+	data, err := generateSPDX(repo, nil, nil, graph)
+	if err != nil {
+		t.Fatalf("generateSPDX: %v", err)
+	}
+	var doc struct {
+		Relationships []struct {
+			SpdxElementId      string `json:"spdxElementId"`
+			RelationshipType   string `json:"relationshipType"`
+			RelatedSpdxElement string `json:"relatedSpdxElement"`
+		} `json:"relationships"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	pID := spdxPackageID("npm", "p", "1.0.0")
+	c1 := spdxPackageID("npm", "c", "1.0.0")
+	c2 := spdxPackageID("npm", "c", "2.0.0")
+	var got []string
+	for _, r := range doc.Relationships {
+		if r.SpdxElementId == pID && r.RelationshipType == "DEPENDS_ON" {
+			got = append(got, r.RelatedSpdxElement)
+		}
+	}
+	if len(got) != 1 || got[0] != c1 {
+		t.Fatalf("p@1 must DEPENDS_ON apps/a's c@1 only (want [%s], got %v; c@2 is %s from an unrelated lockfile)", c1, got, c2)
 	}
 }

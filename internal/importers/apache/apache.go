@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -214,7 +215,18 @@ func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, sl
 		case resp.StatusCode == http.StatusOK:
 			return candidate, true, nil
 		case resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound:
-			// Exists under another name — the twin is next.
+			// v0.27.151 (round 30): the redirect target IS the forge's
+			// answer — after an Apache rename it can name an ARBITRARY
+			// new slug, not just the incubator/plain twin, and ignoring
+			// Location dropped such podlings as unresolved. A valid
+			// same-forge /apache/<name> target resolves directly; an
+			// unsafe or malformed redirect is NOT definitive → error
+			// (the round-25 rule).
+			target, terr := podlingRedirectTarget(req, resp)
+			if terr != nil {
+				return "", false, fmt.Errorf("probing %s: %w", candidate, terr)
+			}
+			return target, true, nil
 		case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone:
 			// Definitively absent — the twin is next.
 		default:
@@ -222,6 +234,33 @@ func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, sl
 		}
 	}
 	return "", false, nil
+}
+
+// podlingRepoPathRe matches a same-forge /apache/<repo> path — the
+// only redirect targets the podling resolver accepts.
+var podlingRepoPathRe = regexp.MustCompile(`^/apache/([A-Za-z0-9_.-]+)/?$`)
+
+// podlingRedirectTarget validates a probe redirect and returns the
+// canonical github.com repo URL it names. Same-host + /apache/<name>
+// only; anything else (missing/unparseable Location, cross-host,
+// non-apache path) is an error — an unvetted redirect must never
+// decide a podling's identity.
+func podlingRedirectTarget(req *http.Request, resp *http.Response) (string, error) {
+	loc, err := resp.Location()
+	if err != nil {
+		return "", fmt.Errorf("redirect without a usable Location: %w", err)
+	}
+	if !strings.EqualFold(loc.Host, req.URL.Host) {
+		return "", fmt.Errorf("redirect leaves the forge (%s -> %s) — not a definitive answer", req.URL.Host, loc.Host)
+	}
+	m := podlingRepoPathRe.FindStringSubmatch(loc.Path)
+	if m == nil {
+		return "", fmt.Errorf("redirect target %q is not an /apache/<repo> path — not a definitive answer", loc.Path)
+	}
+	// Return the canonical github.com form regardless of the probe
+	// base (the test seam swaps hosts for PROBING only; stored URLs
+	// are always the real forge's).
+	return "https://github.com/apache/" + strings.TrimSuffix(m[1], "/"), nil
 }
 
 // ListDomain returns the Apache mailing-list domain for the PMC, e.g.

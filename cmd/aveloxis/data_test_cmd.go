@@ -608,8 +608,12 @@ func writeReport(path string, report *db.RowCountDiffReport, colReport *db.Colum
 	// v0.27.129 — schema shape drift (the section whose absence crashed
 	// the 2026-08-21 run on contributors_old): one-sided tables and
 	// added columns, visible instead of fatal.
+	// v0.27.151 (round 30): TypeChanged joins the gate — a release
+	// whose ONLY schema drift is a column type change (TEXT -> BIGINT)
+	// previously produced no drift section at all despite the diff
+	// detecting it.
 	if len(colReport.TablesOnlyInReleased)+len(colReport.TablesOnlyInNew)+
-		len(colReport.AddedColumns)+len(colRemovedEmpty) > 0 {
+		len(colReport.AddedColumns)+len(colRemovedEmpty)+len(colReport.TypeChanged) > 0 {
 		fmt.Fprintf(&b, "## Schema shape drift (v0.27.129)\n\n")
 		if len(colReport.TablesOnlyInReleased) > 0 {
 			fmt.Fprintf(&b, "- **Tables only in released** (dropped by the release under test — the row diff FAILs these when they carried rows): %s\n",
@@ -632,6 +636,13 @@ func writeReport(path string, report *db.RowCountDiffReport, colReport *db.Colum
 			fmt.Fprintf(&b, "### Removed columns that were already dark (shape notes)\n\n")
 			for _, r := range colRemovedEmpty {
 				fmt.Fprintf(&b, "- `%s.%s.%s`\n", r.Schema, r.Table, r.Column)
+			}
+			fmt.Fprintln(&b)
+		}
+		if len(colReport.TypeChanged) > 0 {
+			fmt.Fprintf(&b, "### Type changes on shared columns (review the migration path)\n\n")
+			for _, tc := range colReport.TypeChanged {
+				fmt.Fprintf(&b, "- %s\n", tc)
 			}
 			fmt.Fprintln(&b)
 		}

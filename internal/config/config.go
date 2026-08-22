@@ -968,10 +968,6 @@ func (c *CollectionConfig) DistributionTrackingStartInterval() time.Duration {
 	return time.Duration(c.DistributionTrackingStartIntervalSec) * time.Second
 }
 
-// DistributionTrackingCrossCheckSourcesValue returns the effective
-// cross-check setting, defaulting to true when the JSON field is
-// absent. v0.25.0 default. See the field doc on
-// DistributionTrackingCrossCheckSources for the rationale.
 // VulnScanTransitiveValue returns the effective transitive-scan
 // setting. nil (absent from aveloxis.json) means the v0.27.136
 // default: TRUE. An explicit false is the opt-out escape hatch.
@@ -984,6 +980,10 @@ func (c *CollectionConfig) VulnScanTransitiveValue() bool {
 	return *c.VulnScanTransitive
 }
 
+// DistributionTrackingCrossCheckSourcesValue returns the effective
+// cross-check setting, defaulting to true when the JSON field is
+// absent. v0.25.0 default. See the field doc on
+// DistributionTrackingCrossCheckSources for the rationale.
 func (c *CollectionConfig) DistributionTrackingCrossCheckSourcesValue() bool {
 	if c.DistributionTrackingCrossCheckSources == nil {
 		return true

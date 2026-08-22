@@ -1002,3 +1002,19 @@ func TestChainRootsArePerLockfile(t *testing.T) {
 		t.Error("DirectPackageSets must keep lockfile_path provenance on direct rows")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 21 (v0.27.138) — review 4998225609: 2 comments, both real.
+// ---------------------------------------------------------------------------
+
+// #2: with transitive scanning default-on (v0.27.136), the lockfile
+// scan's completion log counted direct + transitive + the Go build
+// list under "direct_resolutions" — a systematically misleading
+// diagnostic. The log must SPLIT the kinds (log-the-effective-value).
+func TestLockfileScanLogSplitsResolutionKinds(t *testing.T) {
+	s := srctest.Read(t, "internal/collector/lockfile_scan.go")
+	if !strings.Contains(s, `"transitive_resolutions", len(packages)-direct`) ||
+		!strings.Contains(s, `"direct_resolutions", direct`) {
+		t.Error("lockfile-scan completion log must report direct and transitive counts separately")
+	}
+}

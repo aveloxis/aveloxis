@@ -37,7 +37,7 @@ import (
 func dataTestCmd(cfgPath *string) *cobra.Command {
 	var (
 		releasedTag string
-		repoURL     string
+		repoURLs    []string
 		keepDBs     bool
 		workDir     string
 		diffOnly    bool
@@ -67,7 +67,7 @@ FAIL (row loss / regression detected).`,
 			ctx := context.Background()
 			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-			if releasedTag == "" || repoURL == "" {
+			if releasedTag == "" || len(repoURLs) == 0 {
 				return fmt.Errorf("both --released-tag and --repo are required")
 			}
 
@@ -80,7 +80,7 @@ FAIL (row loss / regression detected).`,
 				return fmt.Errorf("create work dir: %w", err)
 			}
 			logger.Info("data-test starting", "work_dir", workDir,
-				"released_tag", releasedTag, "repo", repoURL,
+				"released_tag", releasedTag, "repos", strings.Join(repoURLs, ", "),
 				"scratch_db_released", "aveloxis_released",
 				"scratch_db_new", "aveloxis_new")
 
@@ -96,7 +96,7 @@ FAIL (row loss / regression detected).`,
 					return fmt.Errorf("runRowCountDiff: %w", err)
 				}
 				reportPath := filepath.Join(workDir, "report.md")
-				if err := writeReport(reportPath, report, colReport, releasedTag, repoURL); err != nil {
+				if err := writeReport(reportPath, report, colReport, releasedTag, strings.Join(repoURLs, ", ")); err != nil {
 					return fmt.Errorf("writeReport: %w", err)
 				}
 				logger.Info("report written (diff-only)", "path", reportPath,
@@ -157,11 +157,13 @@ FAIL (row loss / regression detected).`,
 				if err := copyAPIKeys(ctx, logger, primaryCfg, scratchDBName); err != nil {
 					return fmt.Errorf("copyAPIKeys(%s): %w", side.name, err)
 				}
-				if err := dtRunAddRepo(ctx, logger, side.name, side.binary, side.cfg, repoURL); err != nil {
-					return fmt.Errorf("dtRunAddRepo(%s): %w", side.name, err)
-				}
-				if err := dtRunCollect(ctx, logger, side.name, side.binary, side.cfg, repoURL); err != nil {
-					return fmt.Errorf("dtRunCollect(%s): %w", side.name, err)
+				for _, repoURL := range repoURLs {
+					if err := dtRunAddRepo(ctx, logger, side.name, side.binary, side.cfg, repoURL); err != nil {
+						return fmt.Errorf("dtRunAddRepo(%s): %w", side.name, err)
+					}
+					if err := dtRunCollect(ctx, logger, side.name, side.binary, side.cfg, repoURL); err != nil {
+						return fmt.Errorf("dtRunCollect(%s): %w", side.name, err)
+					}
 				}
 			}
 
@@ -176,7 +178,7 @@ FAIL (row loss / regression detected).`,
 
 			// Phase 5: report
 			reportPath := filepath.Join(workDir, "report.md")
-			if err := writeReport(reportPath, report, colReport, releasedTag, repoURL); err != nil {
+			if err := writeReport(reportPath, report, colReport, releasedTag, strings.Join(repoURLs, ", ")); err != nil {
 				return fmt.Errorf("writeReport: %w", err)
 			}
 			logger.Info("report written", "path", reportPath,
@@ -207,7 +209,7 @@ FAIL (row loss / regression detected).`,
 		},
 	}
 	cmd.Flags().StringVar(&releasedTag, "released-tag", "", "git tag of the released aveloxis version (e.g., 0.22.6) — REQUIRED")
-	cmd.Flags().StringVar(&repoURL, "repo", "", "git URL of the test repo to collect (e.g., https://github.com/augurlabs/augur) — REQUIRED")
+	cmd.Flags().StringArrayVar(&repoURLs, "repo", nil, "git URL of a test repo to collect; repeatable — every named repo is collected into BOTH sides (at least one REQUIRED)")
 	cmd.Flags().BoolVar(&keepDBs, "keep-dbs", false, "retain aveloxis_released and aveloxis_new after the run (default: drop them)")
 	cmd.Flags().StringVar(&workDir, "work-dir", "", "path for binaries, logs, and report (default: a fresh /tmp/aveloxis-data-test-<ts>)")
 	cmd.Flags().BoolVar(&diffOnly, "diff-only", false, "skip build/provision/collect and re-run only the diff + report against scratch DBs kept by a prior --keep-dbs run")

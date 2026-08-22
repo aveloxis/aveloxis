@@ -204,10 +204,21 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 		return err
 	}
 	if len(inventory) > 0 {
+		// Round-21 (v0.27.138): with transitive scanning on by default,
+		// packages holds direct + transitive + the Go build list —
+		// log the SPLIT, not a mislabeled total (the house
+		// log-the-effective-value rule).
+		direct := 0
+		for _, p := range packages {
+			if p.Direct {
+				direct++
+			}
+		}
 		ac.logger.Info("lockfile scan complete",
 			"repo_id", repoID,
 			"lockfiles", len(inventory),
-			"direct_resolutions", len(packages),
+			"direct_resolutions", direct,
+			"transitive_resolutions", len(packages)-direct,
 			"edges", len(edges))
 	}
 	result.Lockfiles = len(inventory)

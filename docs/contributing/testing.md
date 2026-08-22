@@ -258,6 +258,38 @@ theirs forever). New tripwires that enforce a standing rule cite their
 SR-ID in a comment (`// Enforces SR-11 ...`). ProcessOnly rules are
 review-time discipline and the analyzer candidates below.
 
+### Convergence-contracts registry (v0.27.146 — SR-19 mechanized)
+
+Anything documented as "rerun until done" / "self-draining" / "the
+marker is the resume state" is a **convergence contract**: re-running
+must skip completed work and reach a stable done state. The motivating
+incident: `heal-collection-gaps` promised "rerun until 0 candidates"
+while healed repos never left the candidate set — the contract was
+prose, not a property.
+
+`scripts/convergence_contracts_test.go` keeps every such contract
+paired with a test that DRIVES its loop to done:
+
+- The scanner sweeps every non-test source in `cmd/` + `internal/` +
+  `scripts/` for the marker phrases; every hit must be registered in
+  `convergenceContracts` with at least one **driving test**, or carry a
+  reviewed exemption with a reason.
+- Driving tests are verified as real test FuncDecls via `go/parser`
+  (never a source regex — the round-22 lesson).
+- Staleness both ways: a registered/exempt file that stops carrying a
+  marker fails until the row is removed.
+
+**Registering a site is not the work — the driving test is.** A driving
+test performs the unit of work, applies the SAME completion stamp the
+production path applies, and asserts the claim/candidate/batch query
+stops returning the row. Exemplars: `TestGapHealConvergesToZeroCandidates`
+(the flagship e2e: candidate → threshold-0 fill against an httptest
+forge → `RefreshQueueGatheredCounts` → candidate set empty),
+`TestWhitespaceRewalkClaimDrainsStampedRepos`,
+`TestMessageHealWorklistDrainsOnStamp`, and the dedup e2e's
+candidate-drain assertion. A new resumable command writes its
+convergence test first, then adds the registry row pointing at it.
+
 ### Analyzer graduation criteria (deliberately deferred)
 
 All cross-cutting checks stay in `go test` (runs identically everywhere, zero

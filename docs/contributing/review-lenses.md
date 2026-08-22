@@ -65,7 +65,10 @@ For anything documented as "rerun until done", "self-draining",
 "resume state": **is there a test that drives the loop TO done?** A
 convergence contract without a convergence test is a promise. The
 motivating incident: a healer whose candidate predicate never stopped
-matching healed repos.
+matching healed repos. Mechanized in v0.27.146: the marker phrases are
+scanned by `scripts/convergence_contracts_test.go`, which requires a
+registered driving test per contract site — write the test first, then
+register the site.
 
 ## L6 — Check-then-act and lock lifecycles
 

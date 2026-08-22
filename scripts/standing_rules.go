@@ -99,6 +99,13 @@ var standingRules = []Rule{
 		Statement:  "An invariant is enforced in the layer that OWNS the data, never by caller convention — when a fix adds a rule, add enforcement where a wrong caller cannot succeed.",
 		EnforcedBy: []string{"TestCompleteJobAnchorsLastCollectedAtStart"}},
 	{ID: "SR-19",
-		Statement:   "Anything documented as 'rerun until done' ships a test that drives the loop TO done; a convergence contract without a convergence test is a promise, not a property.",
-		ProcessOnly: true},
+		Statement: "Anything documented as 'rerun until done' ships a test that drives the loop TO done; a convergence contract without a convergence test is a promise, not a property.",
+		// Mechanized in v0.27.146: the contracts registry scans every
+		// non-test source for convergence-marker prose and requires a
+		// registered, existing driving test per site; the three named
+		// drivers are the current sites' loop-to-done tests.
+		EnforcedBy: []string{"TestConvergenceContractsHaveDrivingTests",
+			"TestGapHealConvergesToZeroCandidates",
+			"TestWhitespaceRewalkClaimDrainsStampedRepos",
+			"TestMessageHealWorklistDrainsOnStamp"}},
 }

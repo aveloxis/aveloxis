@@ -1574,7 +1574,16 @@ func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainS
 				"remaining", len(drainSet)-i)
 			return
 		}
+		// v0.27.147 (round 26): heartbeat the drain lock for the whole
+		// drain — production has seen ~33h per repo on backlogged
+		// staging, and the same process's periodic RecoverStaleLocks
+		// (1-hour default) would otherwise reclaim the park mid-drain,
+		// letting fillWorkerSlots hand the repo to routine collection
+		// whose PurgeStagedForRepo wipes the staging being drained.
+		// stop() joins BEFORE the release so no beat races it.
+		stopHB := s.store.StartDrainHeartbeat(ctx, s.logger, repoID, s.workerID)
 		s.drainOneRepo(ctx, repoID)
+		stopHB()
 		if err := s.store.ReleaseDrainLock(ctx, repoID, s.workerID); err != nil {
 			s.logger.Warn("failed to release drain lock; repo stays locked until next restart's RecoverOtherWorkerLocks", "repo_id", repoID, "error", err)
 		}

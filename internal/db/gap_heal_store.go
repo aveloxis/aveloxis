@@ -39,6 +39,15 @@ type GapHealCandidate struct {
 // metadata exceeds stored counts. all=true drops the gap predicate
 // (the completeness sweep). Generic-git repos never appear — they have
 // no API listing to heal from.
+//
+// v0.27.147 (round 26, suppressed finding): repo_info has NO unique on
+// repo_id and its rotation to _history is warn-and-continue, so
+// multiple live snapshots CAN coexist. A bare join then duplicates a
+// candidate and — worse — a stale high count keeps a HEALED repo in
+// the candidate set forever, breaking the SR-19 "rerun until 0
+// candidates" convergence. The LATERAL picks the latest snapshot per
+// repo (indexed via idx_repo_info_repo_id; repo_info_id DESC breaks
+// same-timestamp ties toward the newer insert).
 func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID int64, limit int, all bool) ([]GapHealCandidate, error) {
 	gapPredicate := `AND (ri.issues_count > q.last_issues OR ri.pr_count > q.last_prs)`
 	if all {
@@ -49,8 +58,14 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 		       ri.issues_count, ri.pr_count,
 		       GREATEST(ri.issues_count - q.last_issues, 0) + GREATEST(ri.pr_count - q.last_prs, 0)
 		FROM aveloxis_ops.collection_queue q
-		JOIN aveloxis_data.repo_info ri USING (repo_id)
 		JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id
+		JOIN LATERAL (
+			SELECT ri0.issues_count, ri0.pr_count
+			FROM aveloxis_data.repo_info ri0
+			WHERE ri0.repo_id = q.repo_id
+			ORDER BY ri0.data_collection_date DESC NULLS LAST, ri0.repo_info_id DESC
+			LIMIT 1
+		) ri ON TRUE
 		WHERE q.last_collected IS NOT NULL
 		  AND q.repo_id > $1
 		  AND r.platform_id IN (1, 2)

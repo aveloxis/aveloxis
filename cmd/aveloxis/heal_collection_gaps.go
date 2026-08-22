@@ -133,6 +133,16 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 						logger.Warn("drain unlock failed", "repo_id", c.RepoID, "error", rerr)
 					}
 				}()
+				// v0.27.147 (round 26): heartbeat the drain lock for the
+				// heal's lifetime — a large repo's full listing + per-item
+				// fetch + processing can outlive a running serve's
+				// RecoverStaleLocks timeout (1-hour default), which would
+				// reclaim the park and let routine collection purge the
+				// healer's staging mid-heal. Registered AFTER the release
+				// defer so LIFO runs stop() (cancel + join) BEFORE the
+				// release.
+				stopHB := store.StartDrainHeartbeat(ctx, logger, c.RepoID, workerID)
+				defer stopHB()
 
 				gf := collector.NewGapFillerWithMode(store, client, logger, cfg.Collection.PRChildMode)
 				filled, ferr := gf.AssessAndFillGapsWithThreshold(ctx, c.RepoID, c.Owner, c.Name, c.MetaIssues, c.MetaPRs, threshold)

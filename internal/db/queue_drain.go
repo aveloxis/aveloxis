@@ -21,7 +21,25 @@ package db
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
+
+// drainLockedBy is the ONE spelling of the drain-park lock owner
+// (SR-17): LockReposForDrain, ReleaseDrainLock, and HeartbeatDrainLock
+// must all match the same locked_by string, or a heartbeat/release
+// silently stops finding the row it is supposed to touch.
+func drainLockedBy(workerID string) string {
+	return fmt.Sprintf("%s:drain", workerID)
+}
+
+// drainHeartbeatInterval matches the scheduler's 30-second job
+// heartbeat (HeartbeatJob) — 1/120th of the default 1-hour
+// StaleLockTimeout, so a single missed beat can never cost the lock.
+const drainHeartbeatInterval = 30 * time.Second
 
 // LockReposForDrain marks a set of repo_ids as status='collecting',
 // locked_by='<workerID>:drain', locked_at=NOW() in a single UPDATE.
@@ -44,7 +62,7 @@ func (s *PostgresStore) LockReposForDrain(ctx context.Context, repoIDs []int64, 
 		return nil, nil
 	}
 
-	lockedBy := fmt.Sprintf("%s:drain", workerID)
+	lockedBy := drainLockedBy(workerID)
 
 	rows, err := s.pool.Query(ctx, `
 		UPDATE aveloxis_ops.collection_queue
@@ -87,7 +105,7 @@ func (s *PostgresStore) LockReposForDrain(ctx context.Context, repoIDs []int64, 
 // a repo whose drain was hijacked by a manual operator action (status
 // changed externally) won't be silently overwritten.
 func (s *PostgresStore) ReleaseDrainLock(ctx context.Context, repoID int64, workerID string) error {
-	lockedBy := fmt.Sprintf("%s:drain", workerID)
+	lockedBy := drainLockedBy(workerID)
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
 		SET status = 'queued',
@@ -101,4 +119,58 @@ func (s *PostgresStore) ReleaseDrainLock(ctx context.Context, repoID int64, work
 		return fmt.Errorf("release drain lock for repo %d: %w", repoID, err)
 	}
 	return nil
+}
+
+// HeartbeatDrainLock refreshes locked_at on a drain-parked row to
+// prove the holder is still alive — the drain-lock twin of
+// HeartbeatJob. v0.27.147 (round 26): without it, a running
+// scheduler's periodic RecoverStaleLocks (1-hour default) reclaims
+// any drain lock held longer than the timeout — a multi-hour heal or
+// leftover-staging drain then has its repo flipped back to 'queued',
+// fillWorkerSlots claims it, and routine collection's
+// PurgeStagedForRepo wipes the staging rows the lock exists to
+// protect. The locked_by + status guards make a straggler beat after
+// release (or after a reclaim) a harmless 0-row UPDATE.
+func (s *PostgresStore) HeartbeatDrainLock(ctx context.Context, repoID int64, workerID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_ops.collection_queue
+		SET locked_at = NOW()
+		WHERE repo_id = $1 AND locked_by = $2 AND status = 'collecting'`,
+		repoID, drainLockedBy(workerID))
+	return err
+}
+
+// StartDrainHeartbeat spawns the 30-second heartbeat goroutine for one
+// drain-parked repo and returns a stop function that cancels AND joins
+// it. This is the ONE implementation both drain-lock holders (the
+// scheduler's leftover-staging drain and `aveloxis
+// heal-collection-gaps`) wrap their work in — a second inline copy of
+// the ticker loop is the C4/L3 defect shape. Call stop() BEFORE
+// ReleaseDrainLock so no beat races the release (a late beat is
+// harmless — see HeartbeatDrainLock — but a joined goroutine can't
+// leak either).
+func (s *PostgresStore) StartDrainHeartbeat(ctx context.Context, logger *slog.Logger, repoID int64, workerID string) (stop func()) {
+	hbCtx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer safego.Recover(logger, "drain-heartbeat")
+		ticker := time.NewTicker(drainHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				if err := s.HeartbeatDrainLock(hbCtx, repoID, workerID); err != nil {
+					logger.Warn("drain heartbeat failed", "repo_id", repoID, "error", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		wg.Wait()
+	}
 }

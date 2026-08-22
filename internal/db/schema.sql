@@ -153,8 +153,13 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
 -- migration timestamp).
 ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ;
 
-CREATE INDEX IF NOT EXISTS idx_repos_added_at
-    ON aveloxis_data.repos (added_at DESC);
+-- v0.27.147 (round 26): idx_repos_added_at is MIGRATION-ONLY — built by
+-- the v0.27.60 execCreateIndexConcurrently step, never declared here.
+-- A plain declaration executes in the base schema DDL, which on an
+-- upgraded fleet (a) takes a blocking lock on repos and (b) builds
+-- BEFORE the v0.27.60 legacy-row backfill, after which the CONCURRENTLY
+-- step no-ops — the SR-2 shape the idx_repos_platform_repo_id note
+-- below describes.
 
 -- v0.27.105: whitespace-walk marker — the default-branch head at the
 -- last completed whitespace walk (see internal/collector/whitespace.go).

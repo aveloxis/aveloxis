@@ -1196,3 +1196,146 @@ func TestSchemaAuditDumpCarriesUDTIdentity(t *testing.T) {
 		t.Error("the views note must reflect v0.27.115 (views.sql runs every migrate) — the stale text sent operators to hand-create ordinary views")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 26 (v0.27.147) — review 5000467615: 2 active + 2 suppressed,
+// all real. Both actives are the repo's own standing rules on recent
+// code (SR-2 on the added_at index; the drain-lock/RecoverStaleLocks
+// race); both suppressed break real operator behavior (a stale
+// repo_info snapshot defeating SR-19 convergence; the example config
+// advertising env-var syntax the loader never implements).
+// ---------------------------------------------------------------------------
+
+// Active #2 — drain locks are heartbeated. LockReposForDrain parks a
+// repo as status='collecting' for the WHOLE drain/heal (production has
+// seen ~33h per repo on backlogged staging), while a running serve's
+// periodic RecoverStaleLocks reclaims ANY 'collecting' row older than
+// the 1-hour default — flipping the park back to 'queued' so routine
+// collection's PurgeStagedForRepo wipes the very staging the lock
+// protects. Both holders must wrap their work in StartDrainHeartbeat,
+// and the ':drain' owner string has ONE spelling (SR-17).
+// Behavioral proof: TestDrainHeartbeatDefeatsStaleLockRecovery.
+func TestDrainLocksAreHeartbeated(t *testing.T) {
+	qd := srctest.Read(t, "internal/db/queue_drain.go")
+	if !strings.Contains(qd, "func (s *PostgresStore) HeartbeatDrainLock(") {
+		t.Fatal("HeartbeatDrainLock must exist — without it a long drain loses its park to RecoverStaleLocks")
+	}
+	hb := srctest.FuncBody(t, qd, "func (s *PostgresStore) HeartbeatDrainLock(")
+	if !strings.Contains(hb, "locked_by = $2 AND status = 'collecting'") {
+		t.Error("the heartbeat must guard on locked_by + status so a straggler beat after release/reclaim is a 0-row no-op")
+	}
+	// SR-17: exactly one spelling of the drain owner string — inside
+	// drainLockedBy. A second inline Sprintf WILL drift.
+	if n := strings.Count(srctest.StripGoComments(qd), `"%s:drain"`); n != 1 {
+		t.Errorf("queue_drain.go must build the ':drain' owner in exactly one place (drainLockedBy); found %d spellings", n)
+	}
+	// Both holders wrap their work in the ONE runner.
+	sched := srctest.Read(t, "internal/scheduler/scheduler.go")
+	drain := srctest.FuncBody(t, sched, "func (s *Scheduler) processLeftoverStagingBackground(")
+	if !strings.Contains(drain, "StartDrainHeartbeat(") {
+		t.Error("the leftover-staging drain must heartbeat its drain locks (33h/repo observed in production vs the 1h reclaim)")
+	}
+	healer := srctest.Read(t, "cmd/aveloxis/heal_collection_gaps.go")
+	if !strings.Contains(healer, "StartDrainHeartbeat(") {
+		t.Error("heal-collection-gaps must heartbeat its drain locks for the lifetime of each heal")
+	}
+	// stop() must be registered AFTER the release defer (LIFO: join
+	// the heartbeat BEFORE releasing the lock).
+	relPos := strings.Index(healer, "ReleaseDrainLock(ctx, c.RepoID, workerID)")
+	hbPos := strings.Index(healer, "StartDrainHeartbeat(")
+	if relPos < 0 || hbPos < 0 || hbPos < relPos {
+		t.Error("the healer must register the heartbeat AFTER the release defer so stop() (cancel+join) runs before ReleaseDrainLock")
+	}
+}
+
+// Suppressed #1 — the gap-heal candidate query resolves the LATEST
+// repo_info snapshot. repo_info has no unique on repo_id and its
+// history rotation is warn-and-continue, so multiple live snapshots
+// can coexist; a bare join duplicated candidates and let a stale high
+// count keep a HEALED repo in the candidate set forever — defeating
+// the SR-19 "rerun until 0 candidates" convergence the flagship e2e
+// pins. Behavioral proof: the stale-snapshot fixtures in
+// TestGetGapHealCandidatesEndToEnd (red-proven against the bare join).
+func TestGapHealCandidatesResolveLatestSnapshot(t *testing.T) {
+	src := srctest.Read(t, "internal/db/gap_heal_store.go")
+	body := srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates(")
+	if !strings.Contains(body, "JOIN LATERAL") ||
+		!strings.Contains(body, "ORDER BY ri0.data_collection_date DESC NULLS LAST, ri0.repo_info_id DESC") {
+		t.Error("GetGapHealCandidates must pick the latest repo_info snapshot per repo (LATERAL, date DESC with repo_info_id tiebreak)")
+	}
+	if strings.Contains(body, "JOIN aveloxis_data.repo_info ri USING (repo_id)") {
+		t.Error("the bare repo_info join must not return — multiple live snapshots duplicate candidates and a stale count breaks convergence")
+	}
+}
+
+// TestDrainHeartbeatDefeatsStaleLockRecovery — the behavioral half of
+// round 26 active #2, both directions: a beaten drain lock SURVIVES
+// RecoverStaleLocks past the timeout, and an un-beaten one is
+// reclaimed (the pre-fix failure mode).
+func TestDrainHeartbeatDefeatsStaleLockRecovery(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	store.SetMatviewSkip(true)
+	testMigrate(ctx, t, store)
+
+	repoID := int64(944_147_001)
+	const worker = "_avr26-hb"
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repos (repo_id, repo_git, repo_owner, repo_name, platform_id)
+		VALUES ($1, 'https://github.com/_avr26/hb', '_avr26', 'hb', 1) ON CONFLICT (repo_id) DO NOTHING`, repoID)
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at)
+		VALUES ($1, 100, 'queued', NOW()) ON CONFLICT (repo_id) DO UPDATE SET status = 'queued', locked_by = NULL, locked_at = NULL`, repoID)
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+	})
+
+	locked, err := store.LockReposForDrain(ctx, []int64{repoID}, worker)
+	if err != nil || len(locked) != 1 {
+		t.Fatalf("drain lock: %v (locked %v)", err, locked)
+	}
+	backdate := func() {
+		t.Helper()
+		mustExecRetry(ctx, t, store,
+			`UPDATE aveloxis_ops.collection_queue SET locked_at = NOW() - INTERVAL '2 hours' WHERE repo_id = $1`, repoID)
+	}
+	status := func() (st string, lockedBy *string) {
+		t.Helper()
+		if err := store.pool.QueryRow(ctx,
+			`SELECT status, locked_by FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID).Scan(&st, &lockedBy); err != nil {
+			t.Fatal(err)
+		}
+		return st, lockedBy
+	}
+
+	// Direction 1: beat, then recover — the park must SURVIVE.
+	backdate()
+	if err := store.HeartbeatDrainLock(ctx, repoID, worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecoverStaleLocks(ctx, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if st, lb := status(); st != "collecting" || lb == nil || *lb != worker+":drain" {
+		t.Fatalf("a heartbeated drain lock must survive RecoverStaleLocks; got status=%q locked_by=%v", st, lb)
+	}
+
+	// Direction 2: backdate WITHOUT a beat — the pre-fix failure mode:
+	// the park is reclaimed and the repo re-enters the claim path.
+	backdate()
+	if _, err := store.RecoverStaleLocks(ctx, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := status(); st != "queued" {
+		t.Fatalf("an un-beaten stale drain lock must be reclaimed (that risk is WHY the heartbeat exists); got status=%q", st)
+	}
+}

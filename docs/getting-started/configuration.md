@@ -170,7 +170,7 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 |---|---|---|---|
 | `collection.days_until_recollect` | integer | `1` | Minimum number of days before a repo is re-collected. After a successful job, `due_at = last_collected + days_until_recollect`. Changing this value takes effect on the next `aveloxis serve` restart (v0.16.6's startup-time `RealignDueDates` rewrites queued rows). |
 | `collection.workers` | integer | `12` | Number of concurrent collection workers when running `aveloxis serve`. Each worker may make many concurrent DB calls; the pgx pool is sized as `max(workers + 15, 20)`. |
-| `collection.repo_clone_dir` | string | `$HOME/aveloxis-repos` | Directory for bare git clones used by the facade phase. Can grow to terabytes for large instances (400K+ repos). |
+| `collection.repo_clone_dir` | string | `~/aveloxis-repos` (computed at startup) | Directory for bare git clones used by the facade phase. Can grow to terabytes for large instances (400K+ repos). |
 | `collection.force_full` | boolean | `false` | Fleet-wide: when `true`, every collection pass runs `since=zero` regardless of `last_collected`. Use this once after a systemic bug fix that invalidates collected data, then revert to `false`. For per-repo full re-collection, use `aveloxis recollect <url>` instead (sets a queue flag, doesn't touch this setting). |
 
 **Materialized views**
@@ -374,7 +374,8 @@ N * (5000 - 15) = N * 4985 requests/hour
 
 The `collection.repo_clone_dir` setting controls where bare git clones are stored. These clones are permanent and used for incremental `git fetch` on subsequent collection cycles.
 
-- **Default:** `$HOME/aveloxis-repos`
+- **Default:** `~/aveloxis-repos` — computed from the process's home directory at startup when the key is absent.
+- **No environment expansion:** values in `aveloxis.json` are used LITERALLY — `$HOME` or `~` in the JSON becomes a relative directory named `$HOME`/`~` under the working directory. Use a real absolute path, or omit the key to get the computed default.
 - **Sizing:** Each bare clone is typically 10-500 MB. For 400K repos, plan for multiple terabytes.
 - **Performance:** Use an SSD or fast local storage. NFS can work but may slow the facade phase.
 - **Full clones:** Temporary full checkouts (for analysis) are created inside this directory and deleted after use.

@@ -115,6 +115,24 @@ func TestGetGapHealCandidatesEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// v0.27.147 (round 26): repo_info has no unique on repo_id and its
+	// history rotation is warn-and-continue, so multiple live snapshots
+	// can coexist. Plant STALE extra snapshots (older date, inflated
+	// counts) behind both forge repos: the candidate query must resolve
+	// the LATEST snapshot per repo — pre-fix, the candidate duplicated
+	// with a wrong 999-gap shape, and the CLEAN repo re-entered the
+	// candidate set forever off the stale 500-count (the exact
+	// non-convergence SR-19 exists to prevent).
+	for _, sd := range []struct {
+		id          int64
+		issues, prs int
+	}{{base + 1, 999, 999}, {base + 2, 500, 500}} {
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO aveloxis_data.repo_info (repo_id, issues_count, pr_count, data_collection_date)
+			VALUES ($1, $2, $3, NOW() - INTERVAL '2 days')`, sd.id, sd.issues, sd.prs); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()

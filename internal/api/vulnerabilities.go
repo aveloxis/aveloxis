@@ -72,15 +72,15 @@ type vulnJSON struct {
 	// chain root → … → vulnerable package. Absent when no edge data
 	// exists (knob off, edge-less lockfile format) — the GUI must
 	// treat absence as "attribution unavailable", never "no parents".
-	IntroducedBy    []vulnChainJSON `json:"introduced_by,omitempty"`
+	IntroducedBy []vulnChainJSON `json:"introduced_by,omitempty"`
 	// IntroducedByTotalRoots — v0.27.148 (round 27): the TRUE count of
 	// distinct direct roots pulling this package in. introduced_by is
 	// capped at 3 emitted chains; without the total a consumer cannot
 	// distinguish "exactly 3 roots" from "30 roots, showing 3" and may
 	// present a truncated remediation set as complete. 0 when no chain
 	// resolved (field omitted).
-	IntroducedByTotalRoots int `json:"introduced_by_total_roots,omitempty"`
-	DependencyScope string          `json:"dependency_scope,omitempty"`
+	IntroducedByTotalRoots int    `json:"introduced_by_total_roots,omitempty"`
+	DependencyScope        string `json:"dependency_scope,omitempty"`
 }
 
 // scannedVersionFromPurl derives the version a finding was scanned at

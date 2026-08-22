@@ -236,6 +236,17 @@ func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, sl
 	return "", false, nil
 }
 
+// ResolveRepoURL probes the forge for the canonical form of a
+// slug-derived Apache repo URL: the incubator/plain twins plus
+// validated rename redirects (round 30). Exported for
+// load-apache-lists (v0.27.152, round 31): import-foundations stores
+// the CANONICALIZED redirect target as repo_git, so a DB lookup by
+// the derived twins alone can miss the stored row — the list loader
+// needs the same forge answer before concluding "no repo".
+func ResolveRepoURL(ctx context.Context, client *http.Client, repoURL, slug string) (string, bool, error) {
+	return resolvePodlingRepoURL(ctx, client, repoURL, slug)
+}
+
 // podlingRepoPathRe matches a same-forge /apache/<repo> path — the
 // only redirect targets the podling resolver accepts.
 var podlingRepoPathRe = regexp.MustCompile(`^/apache/([A-Za-z0-9_.-]+)/?$`)

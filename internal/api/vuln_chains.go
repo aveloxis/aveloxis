@@ -136,14 +136,20 @@ func walkChainGraph(parents map[string][]string, lockfileDirect, declared map[st
 			path := append(append([]string{}, n.path...), parent)
 			key := db.LockfileGraphKey(ecosystem, parent)
 			if lockfileDirect[key] || declared[key] {
-				if rootSeen[parent] {
-					continue // already attributed via another lockfile
+				// v0.27.152 (round 31): rootSeen is keyed by the SAME
+				// normalized graph key the lookups fold through — the
+				// raw spelling let `Flask` and `flask` from two PyPI
+				// lockfiles count as two distinct roots, overcounting
+				// introduced_by_total_roots for one logical package
+				// (the SR-17 class inside the round-27 fix).
+				if rootSeen[key] {
+					continue // already attributed via another lockfile/spelling
 				}
 				// v0.27.148: EVERY distinct root is counted (rootSeen is
 				// the total the API reports); only the first
 				// maxChainRoots get an emitted chain. A root terminates
 				// the upward walk either way.
-				rootSeen[parent] = true
+				rootSeen[key] = true
 				if len(out) < maxChainRoots {
 					// Emit root-first.
 					chain := make([]string, 0, len(path))

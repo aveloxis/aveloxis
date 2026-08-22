@@ -58,11 +58,12 @@ const goModGraphTimeout = 5 * time.Minute
 // transitive rows).
 func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string, declared map[string]bool) (
 	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge, complete bool) {
-	goBin, err := exec.LookPath("go")
-	if err != nil {
-		ac.logger.Debug("go toolchain not installed — skipping go mod graph transitive expansion")
-		return nil, nil, false
-	}
+	// v0.27.152 (round 31, suppressed): discover modules BEFORE the
+	// toolchain check. Zero go.mod files is a DEFINITIVELY complete
+	// (empty) expansion regardless of whether go is installed — with
+	// the old order, a toolless host reported incomplete forever, so
+	// a repo that REMOVED all its Go modules kept its stale closure
+	// preserved on every scan.
 	var modDirs []string
 	_ = filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -80,6 +81,14 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string,
 		}
 		return nil
 	})
+	if len(modDirs) == 0 {
+		return nil, nil, true
+	}
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		ac.logger.Debug("go toolchain not installed — skipping go mod graph transitive expansion (incomplete: modules exist but cannot be expanded)")
+		return nil, nil, false
+	}
 	// ONE repo-wide budget; per-module contexts derive from it.
 	rctx, cancel := context.WithTimeout(ctx, goModGraphTimeout)
 	defer cancel()

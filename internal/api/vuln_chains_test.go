@@ -217,3 +217,21 @@ func TestChainsForReportsTotalRootsPastTheCap(t *testing.T) {
 		t.Fatalf("unknown package: want 0 chains / 0 total, got %d/%d", len(chains2), total2)
 	}
 }
+
+// v0.27.152 (round 31): root dedup folds through LockfileGraphKey —
+// the raw parent spelling let `Flask` and `flask` (two PyPI
+// lockfiles' spellings of ONE package) count as two distinct roots,
+// overcounting introduced_by_total_roots.
+func TestChainsForFoldsRootSpellingsAcrossLockfiles(t *testing.T) {
+	edges := []db.RepoLockfileEdge{
+		{Ecosystem: "pypi", LockfilePath: "apps/a/poetry.lock", ParentName: "Flask", ChildName: "werkzeug"},
+		{Ecosystem: "pypi", LockfilePath: "apps/b/poetry.lock", ParentName: "flask", ChildName: "werkzeug"},
+	}
+	sets := db.DirectPackageSets{Declared: map[string]bool{"pypi|flask": true}}
+	idx := buildChainIndex(edges, sets)
+
+	chains, total := idx.chainsFor("pypi", "werkzeug")
+	if len(chains) != 1 || total != 1 {
+		t.Fatalf("Flask/flask are ONE logical root — want 1 chain / total 1, got %d/%d (%+v)", len(chains), total, chains)
+	}
+}

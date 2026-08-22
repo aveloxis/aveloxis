@@ -125,37 +125,12 @@ type sbomGraph struct {
 	Edges       []db.RepoLockfileEdge
 }
 
-// sbomEcoFold collapses the ecosystem-vocabulary split between the
-// libyear writers' package_manager strings and the lockfile roster's
-// ecosystem strings (the same split that motivated the v0.27.133
-// purlEcosystemTypes aliases), so a lockfile edge whose parent is a
-// DIRECT dependency resolves to the direct dep's component even when
-// the two subsystems name the ecosystem differently.
-func sbomEcoFold(eco string) string {
-	switch strings.ToLower(eco) {
-	case "rubygems":
-		return "gem"
-	case "packagist":
-		return "composer"
-	case "swiftpm":
-		return "swift"
-	case "elixir":
-		return "hex"
-	case "dart":
-		return "pub"
-	case "golang":
-		return "go"
-	case "haskell":
-		return "hackage"
-	}
-	return strings.ToLower(eco)
-}
-
-// sbomGraphKey is the name-level resolution key for graph endpoints —
-// folded ecosystem + lockfileMatchKey's name normalization (pypi
-// underscore/dot folding included).
+// sbomGraphKey is the name-level resolution key for graph endpoints.
+// Round 22: delegates to db.LockfileGraphKey — the ONE fold shared
+// with the chain-attribution walk, so the two graph consumers can
+// never disagree on endpoint resolution.
 func sbomGraphKey(eco, name string) string {
-	return lockfileMatchKey(sbomEcoFold(eco), name)
+	return db.LockfileGraphKey(eco, name)
 }
 
 // ============================================================

@@ -11,7 +11,6 @@ package api
 
 import (
 	"sort"
-	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 )
@@ -69,7 +68,7 @@ func buildChainIndex(edges []db.RepoLockfileEdge, sets db.DirectPackageSets) *ch
 			g = map[string][]string{}
 			idx.graphs[e.LockfilePath] = g
 		}
-		key := e.Ecosystem + "|" + e.ChildName
+		key := db.LockfileGraphKey(e.Ecosystem, e.ChildName)
 		dedup := e.LockfilePath + "\x00" + key + "<" + e.ParentName
 		if seen[dedup] {
 			continue
@@ -124,13 +123,13 @@ func walkChainGraph(parents map[string][]string, lockfileDirect, declared map[st
 		if len(n.path) > maxChainDepth {
 			continue
 		}
-		for _, parent := range parents[ecosystem+"|"+n.name] {
+		for _, parent := range parents[db.LockfileGraphKey(ecosystem, n.name)] {
 			if visited[parent] {
 				continue
 			}
 			visited[parent] = true
 			path := append(append([]string{}, n.path...), parent)
-			key := ecosystem + "|" + strings.ToLower(parent)
+			key := db.LockfileGraphKey(ecosystem, parent)
 			if lockfileDirect[key] || declared[key] {
 				if rootSeen[parent] {
 					continue // already attributed via another lockfile

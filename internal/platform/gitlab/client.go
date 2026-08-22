@@ -487,21 +487,41 @@ type glUserRefCacheEntry struct {
 // no-match/empty results are) so an API hiccup doesn't pin a user as
 // unknown for the client's lifetime.
 func (c *Client) lookupGLUserRef(ctx context.Context, username string) (model.UserRef, bool) {
-	if v, hit := c.userRefCache.Load(username); hit {
-		e := v.(glUserRefCacheEntry)
-		return e.ref, e.ok
-	}
-	path := fmt.Sprintf("/users?username=%s", url.QueryEscape(username))
-	var users []glUser
-	if err := c.http.GetJSON(ctx, path, &users); err != nil {
+	// Round-22 (v0.27.141): cold misses COALESCE. The old
+	// load-fetch-store sequence let every concurrent first
+	// encounter of a username issue its own /users request — the
+	// exact burst the cache exists to prevent. LoadOrStore parks
+	// all concurrent callers on ONE flight's sync.Once; the
+	// error rule is retained by DELETING the entry on a failed
+	// flight (this flight's waiters share the miss, the NEXT
+	// caller retries fresh — errors are still never cached).
+	fl, _ := c.userRefCache.LoadOrStore(username, &glUserRefFlight{})
+	flight := fl.(*glUserRefFlight)
+	flight.once.Do(func() {
+		path := fmt.Sprintf("/users?username=%s", url.QueryEscape(username))
+		var users []glUser
+		if err := c.http.GetJSON(ctx, path, &users); err != nil {
+			flight.failed = true
+			c.userRefCache.Delete(username)
+			return
+		}
+		if len(users) > 0 {
+			flight.entry = glUserRefCacheEntry{ref: glUserToRef(users[0]), ok: true}
+		}
+	})
+	if flight.failed {
 		return model.UserRef{}, false // transient — not cached
 	}
-	e := glUserRefCacheEntry{}
-	if len(users) > 0 {
-		e = glUserRefCacheEntry{ref: glUserToRef(users[0]), ok: true}
-	}
-	c.userRefCache.Store(username, e)
-	return e.ref, e.ok
+	return flight.entry.ref, flight.entry.ok
+}
+
+// glUserRefFlight is one coalesced lookup: the first goroutine to
+// LoadOrStore it runs the fetch inside once; everyone else waits on
+// the same once and reads the shared result.
+type glUserRefFlight struct {
+	once   sync.Once
+	entry  glUserRefCacheEntry
+	failed bool
 }
 
 // --- EventCollector ---

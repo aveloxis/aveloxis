@@ -490,6 +490,46 @@ func (s *PostgresStore) GetRepoSelfAdvisoryPackages(ctx context.Context, repoID 
 	return out, rows.Err()
 }
 
+// lockfileEcoFold collapses the ecosystem-vocabulary split between
+// the libyear writers' package_manager strings and the lockfile
+// roster's ecosystem strings (round 22 — previously duplicated as the
+// SBOM side's private fold while the chain walk had NONE, silently
+// dropping rubygems/packagist/swiftpm chains).
+func lockfileEcoFold(eco string) string {
+	switch strings.ToLower(eco) {
+	case "rubygems":
+		return "gem"
+	case "packagist":
+		return "composer"
+	case "swiftpm":
+		return "swift"
+	case "elixir":
+		return "hex"
+	case "dart":
+		return "pub"
+	case "golang":
+		return "go"
+	case "haskell":
+		return "hackage"
+	}
+	return strings.ToLower(eco)
+}
+
+// LockfileGraphKey is THE name-level resolution key for lockfile-graph
+// endpoints (chain attribution, SBOM dependency graphs, direct-root
+// sets): folded ecosystem + lowercased name, with PyPI's
+// underscore/dot folding (PEP 503 treats them as equivalent). Every
+// producer and consumer of graph keys must use this ONE function —
+// mismatched folding between sides silently drops valid edges.
+func LockfileGraphKey(eco, name string) string {
+	e := lockfileEcoFold(eco)
+	n := strings.ToLower(strings.TrimSpace(name))
+	if e == "pypi" {
+		n = strings.NewReplacer("_", "-", ".", "-").Replace(n)
+	}
+	return e + "|" + n
+}
+
 // DirectPackageSets is the chain walk's root set with PROVENANCE
 // (round 20 — v0.27.137), keyed "ecosystem|lowercase(name)".
 type DirectPackageSets struct {
@@ -526,7 +566,7 @@ func (s *PostgresStore) GetRepoDirectPackageSets(ctx context.Context, repoID int
 		if err := rows.Scan(&source, &path, &eco, &name); err != nil {
 			return out, err
 		}
-		key := eco + "|" + strings.ToLower(name)
+		key := LockfileGraphKey(eco, name)
 		if source == "declared" {
 			out.Declared[key] = true
 			continue

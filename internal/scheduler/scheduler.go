@@ -1096,7 +1096,13 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	outcome := s.buildOutcome(result, facadeResult, analysisResult, err, gapFillErr)
 	duration := time.Since(start)
 
-	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, s.cfg.Collection.RecollectAfterDuration(),
+	// v0.27.139: last_collected anchors at THIS job's start on success
+	// (zero on failure — never advanced past data we didn't collect).
+	startAnchor := start
+	if !outcome.success {
+		startAnchor = time.Time{}
+	}
+	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, startAnchor, s.cfg.Collection.RecollectAfterDuration(),
 		outcome.issues, outcome.prs, outcome.messages, outcome.events,
 		outcome.releases, outcome.contributors, outcome.commits,
 		duration.Milliseconds(), outcome.errMsg); err != nil {
@@ -1132,7 +1138,9 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 // failJob marks a job as failed with zero counts. Used for early exits
 // (repo lookup failure, unknown platform, etc.).
 func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
-	if err := s.store.CompleteJob(ctx, repoID, false, s.cfg.Collection.RecollectAfterDuration(),
+	// v0.27.139: zero startedAt — a failed pass never advances
+	// last_collected (due_at still advances for retry pacing).
+	if err := s.store.CompleteJob(ctx, repoID, false, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
 		0, 0, 0, 0, 0, 0, 0, 0, errMsg); err != nil {
 		s.logger.Warn("failed to record job failure", "repo_id", repoID, "error", err)
 	}
@@ -1141,7 +1149,11 @@ func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
 // skipJob marks a job as successfully completed with zero counts and a reason.
 // Used when prelim determines the repo should be skipped (e.g., deleted, duplicate).
 func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
-	if err := s.store.CompleteJob(ctx, repoID, true, s.cfg.Collection.RecollectAfterDuration(),
+	// v0.27.139: zero startedAt — a skip collects nothing, so it must
+	// not stamp "successfully collected at T" (the cohort-A class:
+	// stamped-but-empty passes convert the next round to incremental
+	// over history that was never gathered).
+	if err := s.store.CompleteJob(ctx, repoID, true, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
 		0, 0, 0, 0, 0, 0, 0, 0, reason); err != nil {
 		s.logger.Warn("failed to record job skip", "repo_id", repoID, "error", err)
 	}
@@ -1162,7 +1174,20 @@ func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
 
 // determineSince returns the starting point for incremental collection.
 // For repos that have never been collected, it returns zero time (full collection).
-// For repos previously collected, it returns now minus the recollect window.
+// For repos previously collected, it returns the stored last_collected —
+// which CompleteJob (v0.27.139) anchors at the PREVIOUS ROUND'S START, so
+// consecutive rounds tile the timeline with overlap and never a hole.
+//
+// v0.27.139 (the podman-desktop blind-window incident): the pre-fix
+// expression was `time.Now() − recollect_window`, which never read
+// last_collected at all. Round N covers up to its own start; round N+1
+// began its window at now−D — everything whose FINAL update fell in
+// (roundN_start, now−D) was never listed by any round. The blind window
+// equals the previous round's duration PLUS however far past due_at the
+// fleet backlog delayed the dequeue, and it reopened every cycle
+// (verified to the minute on production: missing-item boundaries at
+// exactly roundTime−D for two independent rounds). last_collected is the
+// only correct lower bound; overlap re-collection is idempotent upserts.
 //
 // Full-recollect overrides (both return zero time, regardless of LastCollected):
 //   - cfg.ForceFullCollection: fleet-wide toggle in aveloxis.json. Used
@@ -1179,7 +1204,7 @@ func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 		return time.Time{} // force full re-collection (this repo only)
 	}
 	if job.LastCollected != nil {
-		return time.Now().Add(-s.cfg.Collection.RecollectAfterDuration())
+		return *job.LastCollected
 	}
 	return time.Time{} // zero = full collection
 }

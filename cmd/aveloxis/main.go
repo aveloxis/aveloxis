@@ -86,6 +86,7 @@ func main() {
 		testMailCmd(&cfgPath),
 		stagingStatsCmd(&cfgPath),
 		healVulnerabilitiesCmd(&cfgPath),
+		healCollectionGapsCmd(&cfgPath),
 		runScorecardCmd(&cfgPath),
 		distributionStatsCmd(&cfgPath),
 		versionCmd(),
@@ -380,11 +381,6 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
 	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
-	var since time.Time
-	if !full {
-		since = time.Now().AddDate(0, 0, -cfg.Collection.DaysUntilRecollect)
-	}
-
 	for _, repoURL := range repoURLs {
 		client, owner, repo, err := collector.ClientForRepo(repoURL, ghClient, glClient)
 		if err != nil {
@@ -401,6 +397,23 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 		if err != nil {
 			logger.Error("failed to upsert repo", "url", repoURL, "error", err)
 			continue
+		}
+
+		// v0.27.139: the incremental lower bound is the queue row's
+		// last_collected (start-anchored by CompleteJob), NEVER
+		// now−days_until_recollect — the old expression skipped
+		// everything last-updated between the previous run and now−D
+		// (the podman-desktop blind-window class, CLI edition). A
+		// never-collected or untracked repo — and any lookup ERROR
+		// (SR-5: an error is not "never collected"; full is the safe
+		// direction) — collects from zero.
+		var since time.Time
+		if !full {
+			if lc, lcErr := store.GetRepoLastCollected(ctx, repoID); lcErr != nil {
+				logger.Warn("last_collected lookup failed — collecting FULL", "url", repoURL, "error", lcErr)
+			} else if lc != nil {
+				since = *lc
+			}
 		}
 
 		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.Collection.RepoCloneDir).

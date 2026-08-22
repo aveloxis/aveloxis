@@ -1518,3 +1518,25 @@ process-limit) exhaustion.
 - [Monitoring](monitoring.md) -- use the dashboard for real-time status
 - [Commands Reference](commands.md) -- CLI command details
 - [Collection Pipeline](collection-pipeline.md) -- understand what each phase does
+
+## Issues or PRs missing after a second collection round
+
+Symptom: a repo's metadata counts (the "Meta" dashboard columns) exceed
+the stored counts, and the missing items cluster in the days
+immediately AFTER a completed collection round — dominated by
+short-lived merged PRs and quickly-closed issues.
+
+Cause (fixed in v0.27.139): the incremental `since` was computed as
+`now − days_until_recollect` instead of the previous round's
+`last_collected`, so whenever the gap between rounds exceeded the
+recollect window (a backlogged queue), items whose FINAL update fell in
+the head of the window were never listed by any round. Items updated
+again later were rescued by later rounds, which is why the losses skew
+quiet. Gap fill did not fire below its 5% threshold.
+
+Recovery: upgrade to ≥ v0.27.139 (stops new gaps forming), then run
+`aveloxis heal-collection-gaps` — it visits only the count-gap
+candidates and fetches exactly the missing items. See the command's
+section in commands.md and the deploy checklist in
+`summary/22-heal-checklist-v0.27.131-140.md`.
+

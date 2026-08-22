@@ -1018,3 +1018,51 @@ func TestLockfileScanLogSplitsResolutionKinds(t *testing.T) {
 		t.Error("lockfile-scan completion log must report direct and transitive counts separately")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 22 (v0.27.141) — review 4998625140: 4 comments, all real (the
+// C2 attribution's third hardening + the day-old tripwires tightened).
+// ---------------------------------------------------------------------------
+
+// #1: graph keys now fold through the ONE shared db.LockfileGraphKey —
+// case, PyPI underscore/dot equivalence, and the rubygems↔gem-class
+// ecosystem vocabulary split. Raw keys silently dropped chains for
+// exactly the packages whose spellings differ between subsystems, and
+// the SBOM side's private fold was a duplicate waiting to drift.
+func TestLockfileGraphKeyIsTheOneFold(t *testing.T) {
+	if got := LockfileGraphKey("rubygems", "Rails"); got != "gem|rails" {
+		t.Errorf("alias+case folding broken: %q", got)
+	}
+	if got := LockfileGraphKey("pypi", "Foo_Bar.baz"); got != "pypi|foo-bar-baz" {
+		t.Errorf("PyPI PEP 503 folding broken: %q", got)
+	}
+	chains := srctest.Read(t, "internal/api/vuln_chains.go")
+	if !strings.Contains(chains, "db.LockfileGraphKey(") {
+		t.Error("the chain walk must key through db.LockfileGraphKey")
+	}
+	sbom := srctest.Read(t, "internal/collector/sbom.go")
+	if !strings.Contains(sbom, "return db.LockfileGraphKey(eco, name)") {
+		t.Error("sbomGraphKey must delegate to db.LockfileGraphKey — a private fold copy WILL drift")
+	}
+	sets := srctest.Read(t, "internal/db/lockfile_store.go")
+	if !strings.Contains(sets, "key := LockfileGraphKey(eco, name)") {
+		t.Error("GetRepoDirectPackageSets must key through LockfileGraphKey")
+	}
+}
+
+// #2 pinned behaviorally in gitlab/userref_singleflight_test.go
+// (8 concurrent cold lookups → 1 HTTP request; failed flight retries).
+// #3 re-red-verified: a stdlib-after-module violation in a SECOND
+// import block now fails scripts/import_grouping_test.go.
+// #4: the standing-rules meta-test collects test names from go/parser
+// FuncDecls — a `func Test...(` in a comment or raw-string fixture can
+// no longer fake a rule's enforcement (re-red-verified).
+func TestStandingRulesMetaTestUsesAST(t *testing.T) {
+	s := srctest.Read(t, "scripts/standing_rules_test.go")
+	if !strings.Contains(s, "parser.ParseFile(") || !strings.Contains(s, "*ast.FuncDecl") {
+		t.Error("the meta-test must collect FuncDecls via go/parser, not a source regex")
+	}
+	if strings.Contains(s, "regexp.MustCompile(`(?m)^func (Test") {
+		t.Error("the regex test-name collector is back — comment/fixture mentions would count as enforcement again")
+	}
+}

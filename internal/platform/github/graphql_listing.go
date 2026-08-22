@@ -511,10 +511,15 @@ func (c *Client) listPullRequestsGraphQL(ctx context.Context, owner, repo string
 		}
 
 		// Iterate in order. Because the connection is ordered UPDATED_AT
-		// DESC, once we see a PR whose updatedAt is on/before `since`,
-		// every subsequent PR is also older — stop paginating.
+		// DESC, once we see a PR whose updatedAt is STRICTLY before
+		// `since`, every subsequent PR is also older — stop paginating.
+		// v0.27.139: the boundary is INCLUSIVE (Before, not !After) to
+		// match the issues connection's filterBy.since semantics — a PR
+		// updated exactly at since must be collected, not used as the
+		// breakout sentinel (equality re-collection is an idempotent
+		// upsert; equality DROPPING is silent loss).
 		for _, n := range resp.Repository.PullRequests.Nodes {
-			if !since.IsZero() && !n.UpdatedAt.After(since) {
+			if !since.IsZero() && n.UpdatedAt.Before(since) {
 				return out, nil
 			}
 			pr := model.PullRequest{

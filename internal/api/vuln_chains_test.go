@@ -151,3 +151,36 @@ func TestChainsForDeclaredFallbackRootsAnyGraph(t *testing.T) {
 		t.Errorf("manifest-declared dep must root the walk as the repo-wide fallback, got %+v", chains)
 	}
 }
+
+// Round-22 (Copilot): graph keys must FOLD — case, PyPI's
+// underscore/dot equivalence (PEP 503), and the libyear↔lockfile
+// ecosystem vocabulary split — via the ONE shared db.LockfileGraphKey.
+// Raw-string keys silently dropped valid chains for exactly the
+// packages whose spellings differ between subsystems.
+func TestChainsForFoldsPyPINames(t *testing.T) {
+	edges := []db.RepoLockfileEdge{
+		// The lockfile spells it foo-bar; the finding (from the libyear
+		// row's manifest spelling) says Foo_Bar.
+		{Ecosystem: "pypi", ParentName: "flask", ChildName: "foo-bar"},
+	}
+	sets := db.DirectPackageSets{Declared: map[string]bool{db.LockfileGraphKey("pypi", "Flask"): true}}
+	idx := buildChainIndex(edges, sets)
+	chains := idx.chainsFor("pypi", "Foo_Bar")
+	if len(chains) != 1 || chains[0].Root != "flask" {
+		t.Errorf("PyPI name folding failed — Foo_Bar must resolve foo-bar edges, got %+v", chains)
+	}
+}
+
+func TestChainsForFoldsEcosystemAliases(t *testing.T) {
+	edges := []db.RepoLockfileEdge{
+		// Gemfile.lock roster emits ecosystem "rubygems"; the declared
+		// root comes from libyear's "gem" vocabulary.
+		{Ecosystem: "rubygems", ParentName: "rails", ChildName: "actionpack"},
+	}
+	sets := db.DirectPackageSets{Declared: map[string]bool{db.LockfileGraphKey("gem", "rails"): true}}
+	idx := buildChainIndex(edges, sets)
+	chains := idx.chainsFor("rubygems", "actionpack")
+	if len(chains) != 1 || chains[0].Root != "rails" {
+		t.Errorf("ecosystem alias folding failed — a rubygems edge must root a gem-declared dep, got %+v", chains)
+	}
+}

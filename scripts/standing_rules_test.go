@@ -5,6 +5,10 @@ package scripts
 
 import (
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -33,7 +37,10 @@ func TestStandingRulesRegistry(t *testing.T) {
 	root := srctest.Root(t)
 
 	// Collect every test-function name + every SR citation in the tree.
-	funcRe := regexp.MustCompile(`(?m)^func (Test\w+)\(`)
+	// Round-22: test-function names come from go/parser FuncDecls, NOT a
+	// source regex — a `func Test...(` line inside a raw-string fixture
+	// or comment previously counted as a real test, so a rule could look
+	// enforced after its actual test was renamed or deleted.
 	srRe := regexp.MustCompile(`\bSR-(\d+)\b`)
 	testFuncs := map[string]bool{}
 	citations := map[string][]string{} // SR-ID -> citing files
@@ -52,8 +59,14 @@ func TestStandingRulesRegistry(t *testing.T) {
 			}
 			scanned++
 			src := string(b)
-			for _, m := range funcRe.FindAllStringSubmatch(src, -1) {
-				testFuncs[m[1]] = true
+			af, perr := parser.ParseFile(token.NewFileSet(), path, b, parser.SkipObjectResolution)
+			if perr != nil {
+				return fmt.Errorf("parse %s: %w", path, perr)
+			}
+			for _, decl := range af.Decls {
+				if fd, ok := decl.(*ast.FuncDecl); ok && fd.Recv == nil && strings.HasPrefix(fd.Name.Name, "Test") {
+					testFuncs[fd.Name.Name] = true
+				}
 			}
 			rel, _ := filepath.Rel(root, path)
 			if filepath.ToSlash(rel) == "scripts/standing_rules_test.go" {

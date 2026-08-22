@@ -132,7 +132,20 @@ func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string, exclud
 // collection after a good pass. Failed completions leave the flag as-is
 // — the scheduler decides separately (via shouldForceFullRecollect) if
 // the error class warrants setting it via SetForceFullCollect.
-func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success bool, recollectAfter time.Duration,
+// v0.27.139 — last_collected semantics (the blind-window fix):
+//   - startedAt is the JOB START time; on a successful pass
+//     last_collected = startedAt (NOT completion NOW()). determineSince
+//     returns last_collected verbatim, so anchoring at the start means
+//     items updated WHILE the round ran get re-listed next round
+//     (idempotent overlap) instead of falling into a hole the size of
+//     the round's duration.
+//   - A ZERO startedAt means "do not advance last_collected" — the
+//     failure and skip paths pass it, so a failed/skipped pass can never
+//     convert the next round to incremental over data it never
+//     collected (the podman-desktop cohort-A class: five failed first
+//     rounds stamped last_collected and stranded pre-existing history).
+//     due_at, attempts, and last_error still advance for retry pacing.
+func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success bool, startedAt time.Time, recollectAfter time.Duration,
 	issues, prs, messages, events, releases, contributors, commits int, durationMs int64, errMsg string) error {
 
 	status := "queued" // re-queue immediately
@@ -140,6 +153,8 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 	if !success {
 		lastErr = &errMsg
 	}
+	// Zero startedAt → NULL → the CASE arm keeps the stored value.
+	startAnchor := NullTime(startedAt)
 
 	// v0.21.2 — last_issues and last_prs are written as the
 	// CUMULATIVE COUNT from the data tables, not the per-cycle
@@ -170,7 +185,7 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 				due_at = NOW() + $3::interval,
 				locked_by = NULL,
 				locked_at = NULL,
-				last_collected = NOW(),
+				last_collected = CASE WHEN $12::timestamptz IS NOT NULL THEN $12::timestamptz ELSE last_collected END,
 				last_error = $4,
 				last_issues = (SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1),
 				last_prs = (SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1),
@@ -185,9 +200,28 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 			WHERE repo_id = $1`,
 			repoID, status, recollectAfter.String(),
 			lastErr, messages, events, releases, contributors, commits, durationMs,
-			success)
+			success, startAnchor)
 		return err
 	})
+}
+
+// GetRepoLastCollected returns the queue row's last_collected for a
+// repo (nil when never collected). ErrNoRows (untracked repo) is
+// returned as (nil, nil) — "no queue row" and "never collected" are
+// the same answer for the caller's purposes; real errors propagate
+// (v0.27.139, the CLI collect incremental bound).
+func (s *PostgresStore) GetRepoLastCollected(ctx context.Context, repoID int64) (*time.Time, error) {
+	var lc *time.Time
+	err := s.pool.QueryRow(ctx,
+		`SELECT last_collected FROM aveloxis_ops.collection_queue WHERE repo_id = $1`,
+		repoID).Scan(&lc)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return lc, nil
 }
 
 // SetForceFullCollect sets the force_full_collect flag for a single repo.

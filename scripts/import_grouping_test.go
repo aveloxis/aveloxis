@@ -49,27 +49,32 @@ func TestImportGroupsKeepStdlibFirst(t *testing.T) {
 			return rerr
 		}
 		scanned++
-		m := importBlockRe.FindStringSubmatch(string(data))
-		if m == nil {
+		// Round-22: Go permits MULTIPLE import declarations per file —
+		// inspect every block, not just the first (a misgrouped stdlib
+		// import in a later block bypassed the tripwire).
+		blocks := importBlockRe.FindAllStringSubmatch(string(data), -1)
+		if len(blocks) == 0 {
 			return nil // single-import or import-free file
 		}
-		seenModule := ""
-		for _, line := range strings.Split(m[1], "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "//") {
-				continue
-			}
-			pm := pathRe.FindStringSubmatch(line)
-			if pm == nil {
-				continue
-			}
-			first, _, _ := strings.Cut(pm[1], "/")
-			if strings.Contains(first, ".") {
-				seenModule = pm[1]
-			} else if seenModule != "" {
-				rel, _ := filepath.Rel(root, path)
-				t.Errorf("%s: stdlib import %q appears after module import %q — move it into the stdlib group (round-19 class)", rel, pm[1], seenModule)
-				break
+		for _, m := range blocks {
+			seenModule := ""
+			for _, line := range strings.Split(m[1], "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "//") {
+					continue
+				}
+				pm := pathRe.FindStringSubmatch(line)
+				if pm == nil {
+					continue
+				}
+				first, _, _ := strings.Cut(pm[1], "/")
+				if strings.Contains(first, ".") {
+					seenModule = pm[1]
+				} else if seenModule != "" {
+					rel, _ := filepath.Rel(root, path)
+					t.Errorf("%s: stdlib import %q appears after module import %q — move it into the stdlib group (round-19 class)", rel, pm[1], seenModule)
+					break
+				}
 			}
 		}
 		return nil

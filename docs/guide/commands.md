@@ -517,6 +517,40 @@ aveloxis merge-cntrb-collisions
 
 ---
 
+## `aveloxis heal-collection-gaps`
+
+```bash
+aveloxis heal-collection-gaps --dry-run          # list candidates + gap sizes
+aveloxis heal-collection-gaps --repo-id 49290    # heal one repo
+aveloxis heal-collection-gaps --workers 4        # the fleet pass
+```
+
+The isolated healer (v0.27.140) for issues/PRs lost to the
+pre-v0.27.139 incremental blind-window bug. Finds repos whose metadata
+issue/PR counts exceed the stored counts and runs a threshold-0 gap
+fill on each: list every issue/PR number from the API, diff against
+the database, fetch ONLY the missing items (with children and
+comments), stage, process.
+
+Targeted by construction — only count-gap candidates are visited
+(~5% of a typical fleet), never a 100% rescan. The candidate query is
+the resume state: healed repos drop out, so the workflow is re-running
+until "0 candidates". Safe beside a running serve: each repo is
+drain-locked for the duration of its heal, and repos mid-collection
+are skipped (a rerun catches them). Neither the lock nor the heal
+touches `last_collected`.
+
+Flags: `--dry-run`, `--limit N`, `--workers N` (default 4),
+`--repo-id N`, `--after-repo-id N` (keyset resume), `--all` (sweep
+every collected repo — the completeness mode for repos whose
+stored-but-deleted rows numerically hide the gap; not recommended for
+routine use). Exits nonzero when any repo's heal failed.
+
+Run it on a binary at v0.27.139 or later — earlier binaries re-open
+the blind window on the next routine cycle. Deploy-time ordering for
+the whole release train is in
+`summary/22-heal-checklist-v0.27.131-140.md`.
+
 ## `aveloxis refresh-views`
 
 Manually refreshes all 20 materialized views.

@@ -73,3 +73,22 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 	}
 	return out, rows.Err()
 }
+
+// RefreshQueueGatheredCounts re-derives the queue row's cached
+// last_issues/last_prs from the data tables — the SAME cumulative
+// subqueries CompleteJob writes (v0.21.2). Round-23: the healer fills
+// rows WITHOUT a CompleteJob pass, so without this refresh a healed
+// repo satisfied the candidate predicate forever and "rerun until 0
+// candidates" never converged. Touches ONLY the two count columns —
+// never last_collected, status, or due_at.
+func (s *PostgresStore) RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE aveloxis_ops.collection_queue
+			SET last_issues = (SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1),
+				last_prs = (SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1),
+				updated_at = NOW()
+			WHERE repo_id = $1`, repoID)
+		return err
+	})
+}

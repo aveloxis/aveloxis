@@ -1538,5 +1538,5 @@ Recovery: upgrade to ≥ v0.27.139 (stops new gaps forming), then run
 `aveloxis heal-collection-gaps` — it visits only the count-gap
 candidates and fetches exactly the missing items. See the command's
 section in commands.md and the deploy checklist in
-`summary/22-heal-checklist-v0.27.131-140.md`.
+`summary/22-deploy-and-heal-runbook-v0.27.131-142.md`.
 

@@ -101,7 +101,7 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 	if job == nil || job.RepoID != repoID {
 		// Another row in the scratch queue may sort first; walk until ours.
 		for job != nil && job.RepoID != repoID {
-			store.CompleteJob(ctx, job.RepoID, false, time.Now(), time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "released by runjob lifecycle test")
+			store.CompleteJob(ctx, job.RepoID, false, time.Time{}, time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "released by runjob lifecycle test")
 			job, err = store.DequeueNext(ctx, s.workerID, nil)
 			if err != nil {
 				t.Fatalf("DequeueNext: %v", err)

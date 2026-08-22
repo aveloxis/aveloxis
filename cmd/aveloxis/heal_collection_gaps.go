@@ -95,6 +95,16 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 
 			var totalFilled, totalFailed, totalSkipped, totalVisited int64
 
+			// Round-23: --all and --repo-id run in FORCE-LIST mode —
+			// threshold 0 still requires metadata > gathered, which
+			// cannot see the count-netting case (retained deleted rows
+			// offsetting missing ones); the completeness modes make the
+			// listing itself the truth source.
+			threshold := 0.0
+			if sweepAll || repoID > 0 {
+				threshold = collector.GapForceList
+			}
+
 			healOne := func(c db.GapHealCandidate) {
 				var client platform.Client
 				switch c.Platform {
@@ -125,13 +135,22 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 				}()
 
 				gf := collector.NewGapFillerWithMode(store, client, logger, cfg.Collection.PRChildMode)
-				filled, ferr := gf.AssessAndFillGapsWithThreshold(ctx, c.RepoID, c.Owner, c.Name, c.MetaIssues, c.MetaPRs, 0)
+				filled, ferr := gf.AssessAndFillGapsWithThreshold(ctx, c.RepoID, c.Owner, c.Name, c.MetaIssues, c.MetaPRs, threshold)
 				atomic.AddInt64(&totalVisited, 1)
 				atomic.AddInt64(&totalFilled, int64(filled))
 				if ferr != nil {
 					logger.Warn("gap heal error", "repo_id", c.RepoID, "owner", c.Owner, "repo", c.Name, "error", ferr)
 					atomic.AddInt64(&totalFailed, 1)
 					return
+				}
+				// Round-23: refresh the queue's cached counts so a healed
+				// repo DROPS OUT of the candidate set — without this,
+				// "rerun until 0 candidates" never converged (the healer
+				// fills rows without a CompleteJob pass). A failed
+				// refresh only means the rerun revisits this repo's
+				// (cheap) listing — warn, don't fail the heal.
+				if rerr := store.RefreshQueueGatheredCounts(ctx, c.RepoID); rerr != nil {
+					logger.Warn("gathered-count refresh failed — repo stays a candidate until rerun", "repo_id", c.RepoID, "error", rerr)
 				}
 				logger.Info("repo healed", "repo_id", c.RepoID, "owner", c.Owner, "repo", c.Name,
 					"count_gap", c.Gap, "filled", filled)

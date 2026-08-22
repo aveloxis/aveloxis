@@ -1066,3 +1066,45 @@ func TestStandingRulesMetaTestUsesAST(t *testing.T) {
 		t.Error("the regex test-name collector is back — comment/fixture mentions would count as enforcement again")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 23 (v0.27.142) — review 5000226546: 5 comments, all real, all
+// on the day-old v0.27.139/140 code (the aggressive-validation loop
+// again).
+// ---------------------------------------------------------------------------
+
+// #3+#5: a failed number LISTING is a failed assessment, not a
+// zero-fill success — both listing errors now enter fillErrs, so the
+// standalone healer's nonzero-exit contract and routine gap fill's
+// v0.20.5 recovery both arm.
+func TestGapFillListingFailuresAreErrors(t *testing.T) {
+	s := srctest.Read(t, "internal/collector/gap_fill.go")
+	for _, needle := range []string{
+		`fillErrs = append(fillErrs, fmt.Errorf("issue number listing: %w", err))`,
+		`fillErrs = append(fillErrs, fmt.Errorf("PR number listing: %w", err))`,
+	} {
+		if !strings.Contains(s, needle) {
+			t.Errorf("gap_fill.go missing %s — a failed listing must not report as a successful zero-fill", needle)
+		}
+	}
+}
+
+// #4: the GapForceList sentinel — threshold 0 still requires
+// metadata > gathered, so completeness sweeps (count-netting: retained
+// upstream-deleted rows offsetting missing ones) need an explicit
+// force-list mode where the listing itself is the truth source.
+func TestGapForceListSentinel(t *testing.T) {
+	s := srctest.Read(t, "internal/collector/gap_fill.go")
+	if !strings.Contains(s, "const GapForceList = -1.0") {
+		t.Error("GapForceList sentinel missing")
+	}
+	body := srctest.FuncBody(t, s, "func gapExceedsThreshold(")
+	if !strings.Contains(body, "if threshold < 0 {") {
+		t.Error("gapExceedsThreshold must short-circuit TRUE in force-list mode before any count comparison")
+	}
+}
+
+// #1 is pinned in since_boundary_test.go (store-enforced failure
+// invariant + the mistaken-caller behavioral case); #2 in
+// gap_heal_test.go (RefreshQueueGatheredCounts after successful heals
+// — rerun-until-0 convergence).

@@ -31,8 +31,16 @@ func TestGapFillThresholdSeam(t *testing.T) {
 		t.Error("gapExceedsThreshold must take the threshold as a parameter")
 	}
 	h := srctest.Read(t, "cmd/aveloxis/heal_collection_gaps.go")
-	if !strings.Contains(h, "AssessAndFillGapsWithThreshold(ctx, c.RepoID, c.Owner, c.Name, c.MetaIssues, c.MetaPRs, 0)") {
-		t.Error("the healer must run at threshold 0 (any gap)")
+	if !strings.Contains(h, "AssessAndFillGapsWithThreshold(ctx, c.RepoID, c.Owner, c.Name, c.MetaIssues, c.MetaPRs, threshold)") {
+		t.Error("the healer must pass its derived threshold (0 = any gap; GapForceList for the completeness modes)")
+	}
+	// Round-23: --all/--repo-id run FORCE-LIST — threshold 0 requires
+	// metadata > gathered and cannot see count-netting.
+	if !strings.Contains(h, "threshold = collector.GapForceList") {
+		t.Error("--all and --repo-id must switch to collector.GapForceList")
+	}
+	if !strings.Contains(h, "RefreshQueueGatheredCounts(ctx, c.RepoID)") {
+		t.Error("a successful heal must refresh the queue's cached counts — otherwise healed repos never leave the candidate set and rerun-until-0 never converges")
 	}
 }
 

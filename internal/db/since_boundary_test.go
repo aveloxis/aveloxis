@@ -33,6 +33,14 @@ func TestCompleteJobAnchorsLastCollectedAtStart(t *testing.T) {
 	if !strings.Contains(s, "last_collected = CASE WHEN $12::timestamptz IS NOT NULL THEN $12::timestamptz ELSE last_collected END") {
 		t.Error("last_collected must advance ONLY to the supplied start anchor, never to NOW(), and never on a zero anchor")
 	}
+	// Round-23: the failure invariant is enforced IN THE STORE — a
+	// mistaken caller passing success=false with a nonzero startedAt
+	// must not create a blind window (the pre-fix runjob_lifecycle_test
+	// release helper did exactly that).
+	body := srctest.FuncBody(t, s, "func (s *PostgresStore) CompleteJob(")
+	if !strings.Contains(body, "if success {") {
+		t.Error("CompleteJob must derive the anchor from success itself, not trust caller discipline")
+	}
 	if strings.Contains(s, "last_collected = NOW()") {
 		t.Error("the pre-v0.27.139 unconditional last_collected = NOW() is back — failed/skipped passes would again stamp coverage they never collected")
 	}
@@ -144,6 +152,16 @@ func TestCompleteJobLastCollectedSemantics(t *testing.T) {
 	lc := readLC()
 	if lc == nil || !lc.Equal(start) {
 		t.Fatalf("success must anchor last_collected at job START %v, got %v", start, lc)
+	}
+
+	// 2b. MISTAKEN CALLER (round-23): success=false with a NONZERO
+	// startedAt must NOT advance the anchor — the store enforces the
+	// failure invariant, not caller discipline.
+	if err := store.CompleteJob(ctx, repoID, false, time.Now(), time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "mistake"); err != nil {
+		t.Fatal(err)
+	}
+	if lcM := readLC(); lcM == nil || !lcM.Equal(start) {
+		t.Fatalf("failure with nonzero startedAt must preserve the anchor %v, got %v", start, lcM)
 	}
 
 	// 3. A LATER failure preserves the successful anchor (and still

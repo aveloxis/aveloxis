@@ -153,8 +153,14 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 	if !success {
 		lastErr = &errMsg
 	}
-	// Zero startedAt → NULL → the CASE arm keeps the stored value.
-	startAnchor := NullTime(startedAt)
+	// Round-23: the failure invariant is enforced HERE, not by caller
+	// discipline — a mistaken caller passing a nonzero startedAt with
+	// success=false must not create a blind window. Anchor only on
+	// (success AND nonzero startedAt); NULL keeps the stored value.
+	var startAnchor *time.Time
+	if success {
+		startAnchor = NullTime(startedAt)
+	}
 
 	// v0.21.2 — last_issues and last_prs are written as the
 	// CUMULATIVE COUNT from the data tables, not the per-cycle

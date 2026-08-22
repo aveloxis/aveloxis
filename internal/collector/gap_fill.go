@@ -110,7 +110,13 @@ func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID 
 		// List all issue numbers from the API.
 		apiIssueNumbers, err := gf.listAPIIssueNumbers(ctx, owner, repo)
 		if err != nil {
+			// Round-23: a failed listing is a FAILED assessment, not a
+			// zero-fill success — without the error, the standalone
+			// healer reported "healed" and exited zero having checked
+			// nothing, and routine gap fill's v0.20.5 recovery never
+			// armed.
 			gf.logger.Warn("failed to list API issue numbers for gap fill", "error", err)
+			fillErrs = append(fillErrs, fmt.Errorf("issue number listing: %w", err))
 		} else {
 			gaps := ComputeGaps(collectedIssues, apiIssueNumbers)
 			if len(gaps) > 0 {
@@ -145,6 +151,7 @@ func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID 
 		apiPRNumbers, err := gf.listAPIPRNumbers(ctx, owner, repo)
 		if err != nil {
 			gf.logger.Warn("failed to list API PR numbers for gap fill", "error", err)
+			fillErrs = append(fillErrs, fmt.Errorf("PR number listing: %w", err))
 		} else {
 			gaps := ComputeGaps(collectedPRs, apiPRNumbers)
 			if len(gaps) > 0 {
@@ -563,7 +570,18 @@ func ExpandGapsWithEdges(gaps []Gap, collected []int, edgeCount int) []int {
 	return result
 }
 
+// GapForceList (round-23) is the threshold sentinel that ALWAYS runs
+// the listing set-diff, regardless of counts. Threshold 0 still
+// requires metadata > gathered, which structurally cannot see the
+// count-netting case (retained upstream-deleted rows offsetting
+// missing ones) — completeness sweeps need the listing itself to be
+// the truth source.
+const GapForceList = -1.0
+
 func gapExceedsThreshold(gathered, metadata int64, threshold float64) bool {
+	if threshold < 0 {
+		return true // force-list mode: the listing is the truth source
+	}
 	if metadata == 0 {
 		return false
 	}

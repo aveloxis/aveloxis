@@ -1713,3 +1713,39 @@ func TestGoModWalkFailureIsIncomplete(t *testing.T) {
 		t.Error("the walk error must not be discarded (SR-16)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 33 (v0.27.154) — review 5001061664: 1 active + 1 suppressed,
+// both real.
+// ---------------------------------------------------------------------------
+
+// Active — SPDX direct deps dedupe by SPDXID: repo_deps_libyear has
+// no unique and the manifest walk appends from every manifest, so a
+// monorepo's duplicate eco/name/version emitted duplicate SPDXIDs (an
+// invalid document) while the transitive loop already guarded.
+// Behavioral (red-proven 2→1):
+// TestGenerateSPDX_DuplicateDirectDepsEmitOnePackage.
+func TestSPDXDirectDepsGuardSeenIDs(t *testing.T) {
+	s := srctest.Read(t, "internal/collector/sbom.go")
+	body := srctest.FuncBody(t, s, "func generateSPDX(")
+	guard := strings.Index(body, "if seenIDs[pkgID] {")
+	mark := strings.Index(body, "seenIDs[pkgID] = true")
+	if guard < 0 || mark < 0 || guard > mark {
+		t.Error("the DIRECT loop must skip an already-seen SPDXID before emitting — duplicates make the document invalid")
+	}
+}
+
+// Suppressed — srctest.TypeBody slices the named TypeSpec inside
+// grouped declarations: the GenDecl spans every sibling, so a shape
+// pin could pass on a field that lives on a DIFFERENT type in the
+// same `type (...)` group (the round-22 AST-precision family).
+// Behavioral (red-proven):
+// TestTypeBodyGroupedDeclarationSlicesTheNamedType.
+func TestTypeBodySlicesGroupedDeclarations(t *testing.T) {
+	s := srctest.Read(t, "internal/srctest/srctest.go")
+	body := srctest.FuncBody(t, s, "func TypeBody(")
+	if !strings.Contains(body, "gd.Lparen.IsValid()") ||
+		!strings.Contains(body, "fset.Position(ts.Pos()).Offset:fset.Position(ts.End()).Offset") {
+		t.Error("TypeBody must slice the matched TypeSpec when the declaration is grouped — the whole-GenDecl span lets pins match sibling types")
+	}
+}

@@ -669,6 +669,15 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 		// Stable package ID based on a hash of the name+version, not loop index.
 		// This ensures IDs don't change when the dep list is reordered.
 		pkgID := spdxPackageID(dep.PackageManager, dep.Name, dep.CurrentVersion)
+		if seenIDs[pkgID] {
+			// v0.27.154 (round 33): repo_deps_libyear has no unique and
+			// the manifest walk appends from EVERY manifest — a monorepo
+			// declaring the same eco/name/version twice emitted duplicate
+			// SPDXIDs (an invalid document). First occurrence wins,
+			// matching the transitive guard below; its package and root
+			// relationship already exist.
+			continue
+		}
 		declared := spdxDeclaredLicense(dep.License) // v0.27.29
 		seenIDs[pkgID] = true
 		gidx.addDirect(sbomGraphKey(dep.PackageManager, dep.Name), dep.CurrentVersion, pkgID)

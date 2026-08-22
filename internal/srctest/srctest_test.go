@@ -267,3 +267,28 @@ type orgRepo struct {
 		t.Fatalf("TypeBody must return exactly the named type's declaration, got %q", body)
 	}
 }
+
+// v0.27.154 (round 33): a grouped `type (...)` declaration's GenDecl
+// spans every sibling — pre-fix, asking for one type returned all of
+// them, so a shape pin could pass because the required field lived on
+// a DIFFERENT type in the same group.
+func TestTypeBodyGroupedDeclarationSlicesTheNamedType(t *testing.T) {
+	src := `package x
+
+type (
+	wanted struct {
+		ID int64 // NEEDLE_FIELD
+	}
+	sibling struct {
+		Sneaky string // SIBLING_FIELD
+	}
+)
+`
+	body := TypeBody(t, src, "wanted")
+	if !strings.Contains(body, "NEEDLE_FIELD") {
+		t.Fatalf("TypeBody must return the named type, got %q", body)
+	}
+	if strings.Contains(body, "SIBLING_FIELD") {
+		t.Fatalf("TypeBody must NOT include grouped siblings — a pin would pass on a field that lives on a different type; got %q", body)
+	}
+}

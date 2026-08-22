@@ -173,6 +173,15 @@ func TypeBody(t testing.TB, src, name string) string {
 			if !ok || ts.Name.Name != name {
 				continue
 			}
+			// v0.27.154 (round 33): a grouped `type (...)` declaration's
+			// GenDecl spans EVERY sibling type — returning it let a
+			// shape pin pass because the required field lived on a
+			// DIFFERENT type in the same group. Grouped declarations
+			// slice the matched TypeSpec alone ("exactly the named
+			// type" is the contract).
+			if gd.Lparen.IsValid() {
+				return src[fset.Position(ts.Pos()).Offset:fset.Position(ts.End()).Offset]
+			}
 			return src[fset.Position(gd.Pos()).Offset:fset.Position(gd.End()).Offset]
 		}
 	}

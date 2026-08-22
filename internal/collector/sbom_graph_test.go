@@ -473,3 +473,49 @@ func TestGenerateSPDX_EdgesNeverCrossLockfiles(t *testing.T) {
 		t.Fatalf("p@1 must DEPENDS_ON apps/a's c@1 only (want [%s], got %v; c@2 is %s from an unrelated lockfile)", c1, got, c2)
 	}
 }
+
+// v0.27.154 (round 33): repo_deps_libyear has no unique and the
+// manifest walk appends from every manifest — a monorepo declaring
+// the same eco/name/version in two manifests emitted DUPLICATE
+// SPDXIDs, making the document invalid. First occurrence wins,
+// matching the transitive guard.
+func TestGenerateSPDX_DuplicateDirectDepsEmitOnePackage(t *testing.T) {
+	repo := &db.RepoForSBOM{Name: "mono", Owner: "org", GitURL: "https://github.com/org/mono"}
+	deps := []db.SBOMDep{
+		{PackageManager: "npm", Name: "left-pad", CurrentVersion: "1.3.0", Purl: "pkg:npm/left-pad@1.3.0"},
+		{PackageManager: "npm", Name: "left-pad", CurrentVersion: "1.3.0", Purl: "pkg:npm/left-pad@1.3.0"},
+	}
+	data, err := generateSPDX(repo, deps, nil, nil)
+	if err != nil {
+		t.Fatalf("generateSPDX: %v", err)
+	}
+	var doc struct {
+		Packages []struct {
+			SPDXID string `json:"SPDXID"`
+		} `json:"packages"`
+		Relationships []struct {
+			RelatedSpdxElement string `json:"relatedSpdxElement"`
+		} `json:"relationships"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	id := spdxPackageID("npm", "left-pad", "1.3.0")
+	pkgCount, relCount := 0, 0
+	for _, p := range doc.Packages {
+		if p.SPDXID == id {
+			pkgCount++
+		}
+	}
+	for _, r := range doc.Relationships {
+		if r.RelatedSpdxElement == id {
+			relCount++
+		}
+	}
+	if pkgCount != 1 {
+		t.Errorf("duplicate direct deps must emit ONE package (SPDXIDs are document-unique per spec), got %d", pkgCount)
+	}
+	if relCount != 1 {
+		t.Errorf("duplicate direct deps must emit ONE root relationship, got %d", relCount)
+	}
+}

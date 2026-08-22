@@ -84,4 +84,21 @@ var standingRules = []Rule{
 	{ID: "SR-15",
 		Statement:  "Go sources carry ASCII quotes only — typographic quotes next to SQL predicates read as real syntax.",
 		EnforcedBy: []string{"TestNoCurlyQuotesInGoSources"}},
+	// SR-16..SR-19 (v0.27.145): distilled from the PR #184 Copilot
+	// retrospective (summary/23) — the four most-recurrent semantic
+	// classes across ~25 review rounds, promoted to standing rules so
+	// the pre-push review lens (docs/contributing/review-lenses.md)
+	// and this registry keep them visible.
+	{ID: "SR-16",
+		Statement:  "A probe/lookup that answers yes/no carries a DISTINCT error arm — transport failures, rate limits, and 5xx must never reach the 'no' branch; only typed/definitive negatives do. (SR-5's generalization to the signature level; ≥8 recurrences.)",
+		EnforcedBy: []string{"TestPodlingProbeDistinguishesAbsenceFromFailure", "TestGapFillListingFailuresAreErrors"}},
+	{ID: "SR-17",
+		Statement:  "Every cross-subsystem key or identity goes through ONE shared, named key/normalizer function; a second inline spelling of an existing key is a defect (wrong-granularity keys silently merge independent domains).",
+		EnforcedBy: []string{"TestLockfileGraphKeyIsTheOneFold", "TestSPDXIDsAreEcosystemScoped"}},
+	{ID: "SR-18",
+		Statement:  "An invariant is enforced in the layer that OWNS the data, never by caller convention — when a fix adds a rule, add enforcement where a wrong caller cannot succeed.",
+		EnforcedBy: []string{"TestCompleteJobAnchorsLastCollectedAtStart"}},
+	{ID: "SR-19",
+		Statement:   "Anything documented as 'rerun until done' ships a test that drives the loop TO done; a convergence contract without a convergence test is a promise, not a property.",
+		ProcessOnly: true},
 }

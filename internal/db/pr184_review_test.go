@@ -1024,6 +1024,7 @@ func TestLockfileScanLogSplitsResolutionKinds(t *testing.T) {
 // C2 attribution's third hardening + the day-old tripwires tightened).
 // ---------------------------------------------------------------------------
 
+// Enforces SR-17 (scripts/standing_rules.go).
 // #1: graph keys now fold through the ONE shared db.LockfileGraphKey —
 // case, PyPI underscore/dot equivalence, and the rubygems↔gem-class
 // ecosystem vocabulary split. Raw keys silently dropped chains for
@@ -1164,6 +1165,7 @@ func TestSPDXIDsAreEcosystemScoped(t *testing.T) {
 // resolver — the class's fifth recurrence in this PR.
 // ---------------------------------------------------------------------------
 
+// Enforces SR-16 (scripts/standing_rules.go).
 // Only DEFINITIVE probe responses (200 / 301 / 404-class) may decide a
 // podling URL's fate; transport failures and 403/429/5xx must ERROR
 // and abort the import, never demote a valid podling to unresolved.

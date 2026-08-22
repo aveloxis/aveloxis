@@ -25,6 +25,7 @@ import (
 
 // Source-contract pins (no DB).
 
+// Enforces SR-18 (scripts/standing_rules.go).
 func TestCompleteJobAnchorsLastCollectedAtStart(t *testing.T) {
 	s := srctest.Read(t, "internal/db/queue.go")
 	if !strings.Contains(s, "startedAt time.Time") {

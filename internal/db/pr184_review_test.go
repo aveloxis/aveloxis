@@ -1625,3 +1625,66 @@ func TestDataTestReportRendersTypeChanges(t *testing.T) {
 		t.Error("TypeChanged must be part of the drift-section GATE — type-only drift previously produced no section")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 31 (v0.27.152) — review 5000913727: 4 active + 1 suppressed,
+// all real; three sit inside rounds 27-30's own fixes (L10).
+// ---------------------------------------------------------------------------
+
+// Suppressed — module discovery precedes the toolchain check: zero
+// go.mod files is a DEFINITIVELY complete (empty) expansion, so a
+// repo that removed all its Go modules can clear its stale closure
+// even on a toolless host. Behavioral:
+// TestGoModuleRemovalClearsStaleClosure.
+func TestGoModDiscoveryPrecedesToolchainCheck(t *testing.T) {
+	s := srctest.Read(t, "internal/collector/gomod_graph.go")
+	body := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph(")
+	walk := strings.Index(body, "filepath.Walk(")
+	zero := strings.Index(body, "if len(modDirs) == 0 {")
+	look := strings.Index(body, `exec.LookPath("go")`)
+	if walk < 0 || zero < 0 || look < 0 || !(walk < zero && zero < look) {
+		t.Error("scanGoModGraph must discover modules, return complete on zero, and only THEN check the toolchain — the old order preserved dead closures forever on toolless hosts")
+	}
+	if !strings.Contains(body[zero:look], "return nil, nil, true") {
+		t.Error("zero modules must report COMPLETE (empty) so the preserve branch does not fire")
+	}
+}
+
+// Active — the chain-root total folds spellings through the ONE graph
+// key (SR-17): raw-spelling dedup let Flask/flask count as two roots.
+// Behavioral (red-proven 2/2 → 1/1):
+// TestChainsForFoldsRootSpellingsAcrossLockfiles.
+func TestChainRootDedupUsesGraphKey(t *testing.T) {
+	s := srctest.Read(t, "internal/api/vuln_chains.go")
+	body := srctest.FuncBody(t, s, "func walkChainGraph(")
+	if !strings.Contains(body, "rootSeen[key]") || strings.Contains(body, "rootSeen[parent]") {
+		t.Error("rootSeen must key on the folded graph key, never the raw parent spelling — introduced_by_total_roots overcounts otherwise")
+	}
+}
+
+// Active — load-apache-lists consults the forge's redirect-aware
+// resolver before concluding "no repo": import-foundations stores the
+// CANONICALIZED redirect target, so twin-only DB lookups miss renamed
+// PMC repos and their mailing lists were never registered.
+func TestLoadApacheListsFallsBackToForgeResolver(t *testing.T) {
+	h := srctest.Read(t, "cmd/aveloxis/load_apache_lists.go")
+	call := strings.Index(h, "apache.ResolveRepoURL(ctx, probeClient, pmc.RepoURL, pmc.Slug)")
+	skip := strings.Index(h, "skippedNoRepo++")
+	if call < 0 || skip < 0 || call > skip {
+		t.Error("the redirect-aware resolver must run BEFORE a PMC is skipped as repo-less")
+	}
+	a := srctest.Read(t, "internal/importers/apache/apache.go")
+	if !strings.Contains(a, "func ResolveRepoURL(ctx context.Context, client *http.Client, repoURL, slug string) (string, bool, error)") {
+		t.Error("the apache package must export the ONE resolver both consumers share (SR-17)")
+	}
+}
+
+// Active — the schema-audit dump fails closed: psql -f continues past
+// SQL errors by default, and a partial dump made the comm steps
+// report phantom drift instead of failing the audit.
+func TestSchemaAuditDumpFailsClosed(t *testing.T) {
+	s := srctest.Read(t, "scripts/schema_structure_dump.sql")
+	if !strings.Contains(s, `\set ON_ERROR_STOP on`) {
+		t.Error("schema_structure_dump.sql must set ON_ERROR_STOP — a partial dump reads as schema drift")
+	}
+}

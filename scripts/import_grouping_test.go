@@ -8,9 +8,10 @@
 // gitlab/client.go's "sync", fill_audit_b_test.go's "sync/atomic",
 // plus collector/vulnerability.go's "net/http" which the review
 // missed) passes every formatter gate while violating the house
-// stdlib-first layout. The rule enforced here: within a file's
-// import declaration, every stdlib path (first segment has no dot)
-// must appear before every module path (first segment has a dot).
+// stdlib-first layout. The rule enforced here is FILE-wide (round
+// 28): across ALL of a file's import declarations, every stdlib path
+// (first segment has no dot) must appear before every module path
+// (first segment has a dot).
 //
 // v0.27.148 (round 27): the scan is AST-based — go/parser ImportSpec
 // values, not a source regex. The regex form ignored legal
@@ -60,12 +61,17 @@ func TestImportGroupsKeepStdlibFirst(t *testing.T) {
 			return nil
 		}
 		scanned++
+		// v0.27.148 (round 28): seenModule persists across ALL of a
+		// file's import declarations — the rule is FILE-wide. A
+		// per-declaration reset let `import "example.com/mod"` followed
+		// by a separate `import "sync"` declaration pass, violating the
+		// stdlib-first layout through declaration splitting.
+		seenModule := ""
 		for _, decl := range af.Decls {
 			gd, ok := decl.(*ast.GenDecl)
 			if !ok || gd.Tok != token.IMPORT {
 				continue
 			}
-			seenModule := ""
 			for _, spec := range gd.Specs {
 				is, ok := spec.(*ast.ImportSpec)
 				if !ok {

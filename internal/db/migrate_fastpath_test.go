@@ -96,6 +96,48 @@ func TestMigrateFastPathSkipsAndFullRunHeals(t *testing.T) {
 		t.Fatalf("precondition: stamp %q != ToolVersion %q", v, ToolVersion)
 	}
 
+	// v0.27.149: serialize the race-sensitive window (drop → fast-path
+	// → absent-assertions) against FULL migrations from parallel test
+	// packages. The first combined run after a version bump re-runs
+	// the full migration in EVERY package (stale stamp), and a
+	// concurrent execCreateIndexConcurrently can recreate the probe
+	// index between our DROP and the check (observed live in the
+	// v0.27.149 gate run). Holding the migrate advisory lock means no
+	// full migration is in flight or can start; the fast-path run
+	// under test never takes the lock (its gate sits BEFORE the lock —
+	// the v0.27.131 design), so no self-deadlock. Try-lock POLLING per
+	// the v0.27.20/v0.27.128 rule: a session blocked inside
+	// pg_advisory_lock() holds a snapshot that mutually deadlocks a
+	// concurrent CREATE INDEX CONCURRENTLY.
+	lockConn, err := store.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockHeld := true
+	unlockMigrate := func() {
+		if !lockHeld {
+			return
+		}
+		lockHeld = false
+		_, _ = lockConn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, MigrateAdvisoryLockID)
+		lockConn.Release()
+	}
+	defer unlockMigrate()
+	for {
+		var got bool
+		if err := lockConn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, MigrateAdvisoryLockID).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Second):
+		}
+	}
+
 	// Drop a small migration-owned index, then fast-path migrate: the
 	// index must STAY absent (proof the steps were skipped).
 	const probeIdx = "idx_repos_added_at"
@@ -138,6 +180,12 @@ func TestMigrateFastPathSkipsAndFullRunHeals(t *testing.T) {
 	if fastDur > 5*time.Second {
 		t.Errorf("fast path took %v — it must be a stamp read, not a migration", fastDur)
 	}
+
+	// Release the migrate lock BEFORE the full run — RunMigrations
+	// acquires it on its own connection and would poll against us
+	// forever. Post-release concurrent recreation can only HELP the
+	// heals-assertion below.
+	unlockMigrate()
 
 	// Full run (fast path off) heals the index — the escape hatch works.
 	store.SetMigrateFastPath(false)

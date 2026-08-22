@@ -1398,3 +1398,25 @@ func TestImportTripwiresParseNotRegex(t *testing.T) {
 		t.Error("the regex import-block scan must not return — it false-negatives backtick paths and false-positives import-shaped text in comments/raw strings")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 28 (v0.27.148) — review 5000711915: 0 active + 2 suppressed,
+// both real, both in the previous rounds' own fixes (L10). The
+// gomod repo-wide budget is pinned in collector/c2_transitive_test.go
+// (TestGoModGraphIsBestEffort + TestScanGoModGraphStopsOnExhaustedBudget);
+// the import-grouping file-wide rule is pinned here.
+// ---------------------------------------------------------------------------
+
+// Suppressed #2 — the stdlib-first rule is FILE-wide: seenModule must
+// persist across ALL import declarations, or declaration splitting
+// (`import "example.com/mod"` then a separate `import "sync"`)
+// bypasses the tripwire the round-27 AST rewrite had just rebuilt.
+func TestImportGroupingRuleIsFileWide(t *testing.T) {
+	ig := srctest.Read(t, "scripts/import_grouping_test.go")
+	body := srctest.FuncBody(t, ig, "func TestImportGroupsKeepStdlibFirst(")
+	declLoop := strings.Index(body, "range af.Decls")
+	seen := strings.Index(body, `seenModule := ""`)
+	if declLoop < 0 || seen < 0 || seen > declLoop {
+		t.Error("seenModule must be declared BEFORE the decl loop (file-wide scope) — a per-declaration reset lets split import declarations bypass the stdlib-first rule")
+	}
+}

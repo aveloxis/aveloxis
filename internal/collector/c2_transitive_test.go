@@ -8,9 +8,14 @@
 package collector
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
@@ -54,6 +59,21 @@ func TestGoModGraphIsBestEffort(t *testing.T) {
 	if !strings.Contains(body, "ac.logger.Warn") {
 		t.Error("toolchain failures must WARN and skip, never propagate")
 	}
+	// v0.27.148 (round 28): the timeout is REPO-WIDE — created once in
+	// scanGoModGraph and shared by every module. A per-module
+	// WithTimeout multiplies the budget by the go.mod count
+	// (kubernetes-class monorepos carry ~30), unbounding the repo's
+	// analysis phase.
+	if strings.Contains(body, "context.WithTimeout") {
+		t.Error("goModGraphOne must NOT create its own timeout — the budget is repo-wide (round 28)")
+	}
+	scan := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph(")
+	if !strings.Contains(scan, "context.WithTimeout(ctx, goModGraphTimeout)") {
+		t.Error("scanGoModGraph must own the ONE repo-wide budget")
+	}
+	if !strings.Contains(scan, "modules_skipped") {
+		t.Error("budget exhaustion must WARN with processed/skipped counts (no silent caps)")
+	}
 }
 
 // The API attributes transitive findings via the chain walk, loaded
@@ -90,5 +110,35 @@ func TestPurlEcosystemAliasesForRosterStrings(t *testing.T) {
 	}
 	if purlForPackage("rubygems", "rails", "7.0.8") == "" {
 		t.Error("a rubygems transitive must produce a purl")
+	}
+}
+
+// v0.27.148 (round 28) behavioral: an exhausted repo-wide budget stops
+// the module loop BEFORE any toolchain invocation — a canceled parent
+// context stands in for the expired deadline (same rctx.Err() branch).
+// Pre-fix, each module got a FRESH 5-minute budget and the loop could
+// hold a worker N×5min on an N-module monorepo.
+func TestScanGoModGraphStopsOnExhaustedBudget(t *testing.T) {
+	dir := t.TempDir()
+	for _, sub := range []string{"a", "b"} {
+		mod := filepath.Join(dir, sub)
+		if err := os.MkdirAll(mod, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(mod, "go.mod"), []byte("module example.com/"+sub+"\n\ngo 1.22\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the repo budget derived from this is already exhausted
+
+	ac := &AnalysisCollector{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	start := time.Now()
+	pkgs, edges := ac.scanGoModGraph(ctx, dir, map[string]bool{}, nil, nil)
+	if pkgs != nil || edges != nil {
+		t.Errorf("exhausted budget must contribute nothing, got %d pkgs / %d edges", len(pkgs), len(edges))
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("the loop must break at the budget check, not grind the modules (took %v)", elapsed)
 	}
 }

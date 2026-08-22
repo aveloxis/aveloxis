@@ -1749,3 +1749,33 @@ func TestTypeBodySlicesGroupedDeclarations(t *testing.T) {
 		t.Error("TypeBody must slice the matched TypeSpec when the declaration is grouped — the whole-GenDecl span lets pins match sibling types")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 34 (v0.27.155) — review 5001096106: 1 active, real — a
+// scope-loss hole in the round-33 dedup (L10), with the same shape in
+// the CycloneDX sibling the review didn't name.
+// ---------------------------------------------------------------------------
+
+// Duplicate declarations of ONE package can carry different scopes
+// across a monorepo's manifests; the round-33 first-wins dedup let
+// manifest-walk order decide — a dev-first order emitted
+// DEV_DEPENDENCY_OF (SPDX) / "excluded" (CDX) for a package that IS
+// in the runtime surface. Both generators now pre-fold duplicate
+// scopes through model.StrongerScope (SR-17: one shared precedence —
+// runtime beats optional/peer beats dev/test/build, fail toward
+// visibility). Behavioral (red-proven, order-independent both ways):
+// TestSBOMDuplicateScopesFoldToStrongest.
+func TestSBOMScopesFoldAcrossDuplicates(t *testing.T) {
+	s := srctest.Read(t, "internal/collector/sbom.go")
+	if strings.Count(s, "model.StrongerScope(") < 2 {
+		t.Error("BOTH generators must fold duplicate scopes through model.StrongerScope — first-observation scope lets manifest order hide runtime deps")
+	}
+	spdx := srctest.FuncBody(t, s, "func generateSPDX(")
+	if !strings.Contains(spdx, "model.SPDXRelationshipForScope(scopeFor[pkgID])") {
+		t.Error("the SPDX relationship must use the FOLDED scope, not dep.Type")
+	}
+	m := srctest.Read(t, "internal/model/depscope.go")
+	if !strings.Contains(m, "func StrongerScope(a, b string) string") {
+		t.Error("the precedence rule lives ONCE in model (StrongerScope)")
+	}
+}

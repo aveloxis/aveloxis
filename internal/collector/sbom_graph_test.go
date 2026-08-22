@@ -519,3 +519,67 @@ func TestGenerateSPDX_DuplicateDirectDepsEmitOnePackage(t *testing.T) {
 		t.Errorf("duplicate direct deps must emit ONE root relationship, got %d", relCount)
 	}
 }
+
+// v0.27.155 (round 34): duplicate declarations with DIFFERENT scopes
+// fold to the strongest — dev-first order previously let the round-33
+// dedup discard the runtime observation entirely: SPDX emitted
+// DEV_DEPENDENCY_OF for a package that IS in the runtime surface, and
+// CycloneDX marked it "excluded". Both documents must be independent
+// of manifest-walk order.
+func TestSBOMDuplicateScopesFoldToStrongest(t *testing.T) {
+	repo := &db.RepoForSBOM{Name: "mono", Owner: "org", GitURL: "https://github.com/org/mono"}
+	devFirst := []db.SBOMDep{
+		{PackageManager: "npm", Name: "left-pad", CurrentVersion: "1.3.0", Purl: "pkg:npm/left-pad@1.3.0", Type: "dev"},
+		{PackageManager: "npm", Name: "left-pad", CurrentVersion: "1.3.0", Purl: "pkg:npm/left-pad@1.3.0", Type: "runtime"},
+	}
+	runtimeFirst := []db.SBOMDep{devFirst[1], devFirst[0]}
+
+	for name, deps := range map[string][]db.SBOMDep{"dev-first": devFirst, "runtime-first": runtimeFirst} {
+		// SPDX: exactly one relationship, and it is the RUNTIME form.
+		data, err := generateSPDX(repo, deps, nil, nil)
+		if err != nil {
+			t.Fatalf("%s generateSPDX: %v", name, err)
+		}
+		var doc struct {
+			Relationships []struct {
+				SpdxElementId      string `json:"spdxElementId"`
+				RelationshipType   string `json:"relationshipType"`
+				RelatedSpdxElement string `json:"relatedSpdxElement"`
+			} `json:"relationships"`
+		}
+		if err := json.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		id := spdxPackageID("npm", "left-pad", "1.3.0")
+		var types []string
+		for _, r := range doc.Relationships {
+			if r.RelatedSpdxElement == id || r.SpdxElementId == id {
+				types = append(types, r.RelationshipType)
+			}
+		}
+		if len(types) != 1 || types[0] != "DEPENDS_ON" {
+			t.Errorf("%s: a runtime observation anywhere makes the package a runtime dep — want exactly [DEPENDS_ON], got %v", name, types)
+		}
+
+		// CycloneDX: the component scope is "required", never
+		// "excluded" (which hides a runtime dep from consumers).
+		cdx, err := generateCycloneDX(repo, deps, nil, nil)
+		if err != nil {
+			t.Fatalf("%s generateCycloneDX: %v", name, err)
+		}
+		var bom struct {
+			Components []struct {
+				Purl  string `json:"purl"`
+				Scope string `json:"scope"`
+			} `json:"components"`
+		}
+		if err := json.Unmarshal(cdx, &bom); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range bom.Components {
+			if c.Purl == "pkg:npm/left-pad@1.3.0" && c.Scope != "required" {
+				t.Errorf("%s: CDX scope must fold to required, got %q", name, c.Scope)
+			}
+		}
+	}
+}

@@ -115,3 +115,32 @@ func CycloneDXScopeForScope(scope string) string {
 		return "required"
 	}
 }
+
+// StrongerScope returns the more security-relevant of two scope
+// observations for ONE package — v0.27.155 (round 34): a monorepo can
+// declare the same package/version with DIFFERENT scopes across its
+// manifests (runtime in apps/a, dev in tools/b), and repo_deps_libyear
+// is not unique, so SBOM emission (which dedupes packages by ID) must
+// fold the duplicates' scopes instead of letting manifest-walk order
+// pick one. Precedence follows the fail-toward-visibility rule the
+// scope system is built on: runtime-class (including "" and
+// unknown-future values) beats optional/peer beats dev/test/build.
+// Equal ranks keep the FIRST observation (deterministic under the
+// store's ordered reads).
+func StrongerScope(a, b string) string {
+	if scopeRank(b) < scopeRank(a) {
+		return b
+	}
+	return a
+}
+
+func scopeRank(scope string) int {
+	switch {
+	case IsRuntimeScope(scope):
+		return 0
+	case scope == ScopeOptional || scope == ScopePeer:
+		return 1
+	default: // dev/test/build
+		return 2
+	}
+}

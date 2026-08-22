@@ -356,6 +356,21 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	// previously guarded against colliding refs).
 	var depRefs []string
 	seenRefs := map[string]bool{}
+	// v0.27.155 (round 34): the same duplicate-scope fold as the SPDX
+	// side — the component's single Scope field must carry the
+	// strongest observation, not whichever manifest the walk met
+	// first (a dev-first order marked a RUNTIME dep "excluded").
+	cdxScopeFor := map[string]string{}
+	for _, dep := range deps {
+		if dep.Purl == "" {
+			continue
+		}
+		if cur, ok := cdxScopeFor[dep.Purl]; ok {
+			cdxScopeFor[dep.Purl] = model.StrongerScope(cur, dep.Type)
+		} else {
+			cdxScopeFor[dep.Purl] = dep.Type
+		}
+	}
 	// v0.27.151 (round 30): endpoint resolution goes through the
 	// per-lockfile sbomGraphIndex — see its doc for the fabrication
 	// class the old repo-wide maps produced.
@@ -378,7 +393,12 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 		// CycloneDX scope describes runtime inclusion (v0.27.46:
 		// mapping centralized in model — required for runtime,
 		// optional for optional/peer, excluded for dev/test/build).
-		comp.Scope = model.CycloneDXScopeForScope(dep.Type)
+		// Round-34: folded across duplicates when a purl exists.
+		compScope := dep.Type
+		if dep.Purl != "" {
+			compScope = cdxScopeFor[dep.Purl]
+		}
+		comp.Scope = model.CycloneDXScopeForScope(compScope)
 		if dep.License != "" {
 			comp.Licenses = makeCDXLicenses(dep.License)
 		}
@@ -665,6 +685,23 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 	gidx := newSBOMGraphIndex()
 	seenIDs := map[string]bool{}
 
+	// v0.27.155 (round 34): duplicates of ONE package can carry
+	// DIFFERENT scopes across a monorepo's manifests (runtime in one,
+	// dev in another). Package emission dedupes by ID (round 33), so
+	// the emitted relationship uses the STRONGEST scope across all
+	// duplicates (model.StrongerScope — fail toward visibility),
+	// making the document independent of manifest-walk order instead
+	// of silently discarding the later DEPENDS_ON/DEV_DEPENDENCY_OF.
+	scopeFor := map[string]string{}
+	for _, dep := range deps {
+		id := spdxPackageID(dep.PackageManager, dep.Name, dep.CurrentVersion)
+		if cur, ok := scopeFor[id]; ok {
+			scopeFor[id] = model.StrongerScope(cur, dep.Type)
+		} else {
+			scopeFor[id] = dep.Type
+		}
+	}
+
 	for _, dep := range deps {
 		// Stable package ID based on a hash of the name+version, not loop index.
 		// This ensures IDs don't change when the dep list is reordered.
@@ -708,7 +745,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 		// (pkg DEV_DEPENDENCY_OF root, etc.); runtime keeps the
 		// baseline root DEPENDS_ON pkg. Mapping lives in model so
 		// this file never branches on literal scope values.
-		relType, inverted := model.SPDXRelationshipForScope(dep.Type)
+		relType, inverted := model.SPDXRelationshipForScope(scopeFor[pkgID])
 		rel := spdxRelation{
 			SpdxElementId:      "SPDXRef-RootPackage",
 			RelationshipType:   relType,

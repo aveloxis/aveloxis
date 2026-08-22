@@ -578,3 +578,51 @@ func (s *PostgresStore) GetRepoDirectPackageSets(ctx context.Context, repoID int
 	}
 	return out, rows.Err()
 }
+
+// GetRepoGoClosureRows returns the CURRENT snapshot's Go-ecosystem
+// transitive package rows and edges verbatim (lockfile_path and scope
+// intact — GetRepoTransitivePackages folds paths away, which would
+// degrade the per-lockfile chain partitioning on carry-forward).
+// v0.27.150 (round 29): this is the preserve source when the go
+// toolchain expansion reports incomplete — replacing the snapshot
+// with a partial closure silently shrank vuln/SBOM output and
+// false-resolved findings.
+func (s *PostgresStore) GetRepoGoClosureRows(ctx context.Context, repoID int64) ([]*RepoLockfilePackage, []*RepoLockfileEdge, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT package_name, resolved_version, COALESCE(lockfile_path, ''), COALESCE(dependency_scope, '')
+		FROM aveloxis_data.repo_lockfile_packages
+		WHERE repo_id = $1 AND ecosystem = 'go' AND NOT COALESCE(direct, TRUE)`, repoID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var pkgs []*RepoLockfilePackage
+	for rows.Next() {
+		p := &RepoLockfilePackage{Ecosystem: "go", Direct: false}
+		if err := rows.Scan(&p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Scope); err != nil {
+			return nil, nil, err
+		}
+		pkgs = append(pkgs, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	erows, err := s.pool.Query(ctx, `
+		SELECT COALESCE(lockfile_path, ''), parent_name, COALESCE(parent_version, ''),
+		       child_name, COALESCE(child_constraint, '')
+		FROM aveloxis_data.repo_lockfile_edges
+		WHERE repo_id = $1 AND ecosystem = 'go'`, repoID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer erows.Close()
+	var edges []*RepoLockfileEdge
+	for erows.Next() {
+		e := &RepoLockfileEdge{Ecosystem: "go"}
+		if err := erows.Scan(&e.LockfilePath, &e.ParentName, &e.ParentVersion, &e.ChildName, &e.ChildConstraint); err != nil {
+			return nil, nil, err
+		}
+		edges = append(edges, e)
+	}
+	return pkgs, edges, erows.Err()
+}

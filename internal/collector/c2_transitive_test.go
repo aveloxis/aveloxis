@@ -34,8 +34,18 @@ func TestEdgesGatedOnTransitiveKnobAndSameSnapshot(t *testing.T) {
 	if !strings.Contains(s, "ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges)") {
 		t.Error("edges must ride the SAME snapshot transaction as the package rows")
 	}
-	if !strings.Contains(s, "ac.scanGoModGraph(ctx, workDir, declared, packages, edges)") {
+	if !strings.Contains(s, "ac.scanGoModGraph(ctx, workDir, declared)") {
 		t.Error("the Go toolchain closure must feed the same snapshot (knob-gated)")
+	}
+	// v0.27.150 (round 29): the expansion's best-effort posture must
+	// not shrink the snapshot — incomplete runs preserve the PRIOR
+	// Go closure, and a failed prior-rows read propagates (the
+	// replace must not run on bad information).
+	if !strings.Contains(s, "GetRepoGoClosureRows(ctx, repoID)") {
+		t.Error("an incomplete Go expansion must carry the prior snapshot's Go closure forward (GetRepoGoClosureRows)")
+	}
+	if !strings.Contains(s, "preserving the prior snapshot's Go closure") {
+		t.Error("the preserve branch must WARN with the discarded/preserved counts")
 	}
 }
 
@@ -134,9 +144,15 @@ func TestScanGoModGraphStopsOnExhaustedBudget(t *testing.T) {
 
 	ac := &AnalysisCollector{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	start := time.Now()
-	pkgs, edges := ac.scanGoModGraph(ctx, dir, map[string]bool{}, nil, nil)
+	pkgs, edges, complete := ac.scanGoModGraph(ctx, dir, map[string]bool{})
 	if pkgs != nil || edges != nil {
 		t.Errorf("exhausted budget must contribute nothing, got %d pkgs / %d edges", len(pkgs), len(edges))
+	}
+	// v0.27.150 (round 29): incompleteness must be REPORTED — the
+	// caller preserves the prior snapshot's Go closure instead of
+	// snapshot-replacing with this empty result.
+	if complete {
+		t.Error("an exhausted budget is an INCOMPLETE expansion — reporting complete=true lets the snapshot replace wipe the prior Go closure")
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("the loop must break at the budget check, not grind the modules (took %v)", elapsed)

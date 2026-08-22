@@ -49,17 +49,22 @@ type GapHealCandidate struct {
 // repo (indexed via idx_repo_info_repo_id; repo_info_id DESC breaks
 // same-timestamp ties toward the newer insert).
 func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID int64, limit int, all bool) ([]GapHealCandidate, error) {
-	gapPredicate := `AND (ri.issues_count > q.last_issues OR ri.pr_count > q.last_prs)`
+	gapPredicate := `AND (COALESCE(ri.issues_count, 0) > q.last_issues OR COALESCE(ri.pr_count, 0) > q.last_prs)`
 	if all {
 		gapPredicate = ""
 	}
+	// v0.27.150 (round 29, suppressed): LEFT lateral + COALESCE — a
+	// collected repo with NO repo_info snapshot (the legacy
+	// stamped-but-empty cohort) must not vanish from the --all sweep,
+	// whose force-list mode needs no metadata counts. Normal gap mode
+	// still excludes them naturally (0 > last_* is never true).
 	rows, err := s.pool.Query(ctx, `
 		SELECT q.repo_id, r.repo_owner, r.repo_name, r.platform_id,
-		       ri.issues_count, ri.pr_count,
-		       GREATEST(ri.issues_count - q.last_issues, 0) + GREATEST(ri.pr_count - q.last_prs, 0)
+		       COALESCE(ri.issues_count, 0), COALESCE(ri.pr_count, 0),
+		       GREATEST(COALESCE(ri.issues_count, 0) - q.last_issues, 0) + GREATEST(COALESCE(ri.pr_count, 0) - q.last_prs, 0)
 		FROM aveloxis_ops.collection_queue q
 		JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id
-		JOIN LATERAL (
+		LEFT JOIN LATERAL (
 			SELECT ri0.issues_count, ri0.pr_count
 			FROM aveloxis_data.repo_info ri0
 			WHERE ri0.repo_id = q.repo_id

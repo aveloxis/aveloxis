@@ -497,6 +497,15 @@ func (c *Client) lookupGLUserRef(ctx context.Context, username string) (model.Us
 	// caller retries fresh — errors are still never cached).
 	fl, _ := c.userRefCache.LoadOrStore(username, &glUserRefFlight{})
 	flight := fl.(*glUserRefFlight)
+	// v0.27.150 (round 29): test seam at the flight-join boundary —
+	// the coalescing proof needs every concurrent caller PAST
+	// LoadOrStore (joined to the one flight) before the flight's
+	// fetch completes; a pre-call signal could not distinguish
+	// coalescing from latecomers riding the warm cache. nil in
+	// production.
+	if glUserRefFlightJoinedHook != nil {
+		glUserRefFlightJoinedHook(username)
+	}
 	flight.once.Do(func() {
 		path := fmt.Sprintf("/users?username=%s", url.QueryEscape(username))
 		var users []glUser
@@ -514,6 +523,11 @@ func (c *Client) lookupGLUserRef(ctx context.Context, username string) (model.Us
 	}
 	return flight.entry.ref, flight.entry.ok
 }
+
+// glUserRefFlightJoinedHook fires after a caller joins a flight
+// (post-LoadOrStore, pre-once.Do). Test-only seam — see the round-29
+// note in lookupGLUserRef; always nil in production.
+var glUserRefFlightJoinedHook func(username string)
 
 // glUserRefFlight is one coalesced lookup: the first goroutine to
 // LoadOrStore it runs the fetch inside once; everyone else waits on

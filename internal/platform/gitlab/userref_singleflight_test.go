@@ -31,18 +31,25 @@ func TestLookupGLUserRefColdMissesCoalesce(t *testing.T) {
 	const callers = 8
 	var wg sync.WaitGroup
 	results := make([]bool, callers)
-	started := make(chan struct{}, callers)
+	// v0.27.150 (round 29): the release gate opens only after every
+	// caller has JOINED the flight (the in-function seam, past
+	// LoadOrStore) — a pre-call signal let the scheduler park
+	// goroutines before the lookup, so the winner completed first and
+	// latecomers rode the WARM cache: hits==1 held even with
+	// coalescing removed, making the test decorative.
+	joined := make(chan struct{}, callers)
+	glUserRefFlightJoinedHook = func(string) { joined <- struct{}{} }
+	t.Cleanup(func() { glUserRefFlightJoinedHook = nil })
 	for i := range callers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			started <- struct{}{}
 			_, ok := client.lookupGLUserRef(context.Background(), "acme")
 			results[i] = ok
 		}()
 	}
 	for range callers {
-		<-started
+		<-joined
 	}
 	close(release)
 	wg.Wait()

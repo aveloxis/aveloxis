@@ -36,6 +36,11 @@ func TestWhitespaceScaleValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
+	// v0.27.150 (round 29, suppressed): every AVELOXIS_TEST_DB test
+	// migrates before seeding (the v0.27.15 rule) — without this the
+	// harness failed on a truly fresh scratch database.
+	store.SetMatviewSkip(true)
+	testMigrate(ctx, t, store)
 
 	repoID, err := store.UpsertRepo(ctx, &model.Repo{
 		Platform: model.PlatformGenericGit,

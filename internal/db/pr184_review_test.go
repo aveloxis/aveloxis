@@ -8,6 +8,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -1217,34 +1219,36 @@ func TestSchemaAuditDumpCarriesUDTIdentity(t *testing.T) {
 // Behavioral proof: TestDrainHeartbeatDefeatsStaleLockRecovery.
 func TestDrainLocksAreHeartbeated(t *testing.T) {
 	qd := srctest.Read(t, "internal/db/queue_drain.go")
-	if !strings.Contains(qd, "func (s *PostgresStore) HeartbeatDrainLock(") {
-		t.Fatal("HeartbeatDrainLock must exist — without it a long drain loses its park to RecoverStaleLocks")
+	// v0.27.150 (round 29): the heartbeat is SET-wide — the scheduler
+	// lock-parks the whole drain set up front and drains sequentially,
+	// so a per-repo beat left the waiting tail's locked_at frozen and
+	// RecoverStaleLocks reclaimed it mid-drain.
+	if !strings.Contains(qd, "func (s *PostgresStore) HeartbeatDrainLocks(ctx context.Context, workerID string)") {
+		t.Fatal("HeartbeatDrainLocks (set-wide) must exist — a per-repo beat leaves the parked tail reclaimable")
 	}
-	hb := srctest.FuncBody(t, qd, "func (s *PostgresStore) HeartbeatDrainLock(")
-	if !strings.Contains(hb, "locked_by = $2 AND status = 'collecting'") {
+	hb := srctest.FuncBody(t, qd, "func (s *PostgresStore) HeartbeatDrainLocks(")
+	if !strings.Contains(hb, "locked_by = $1 AND status = 'collecting'") {
 		t.Error("the heartbeat must guard on locked_by + status so a straggler beat after release/reclaim is a 0-row no-op")
+	}
+	if strings.Contains(hb, "repo_id =") {
+		t.Error("the beat must cover the worker's WHOLE parked set — a repo_id filter recreates the round-29 parked-tail gap")
 	}
 	// SR-17: exactly one spelling of the drain owner string — inside
 	// drainLockedBy. A second inline Sprintf WILL drift.
 	if n := strings.Count(srctest.StripGoComments(qd), `"%s:drain"`); n != 1 {
 		t.Errorf("queue_drain.go must build the ':drain' owner in exactly one place (drainLockedBy); found %d spellings", n)
 	}
-	// Both holders wrap their work in the ONE runner.
+	// Both holders start the ONE runner for their whole run.
 	sched := srctest.Read(t, "internal/scheduler/scheduler.go")
 	drain := srctest.FuncBody(t, sched, "func (s *Scheduler) processLeftoverStagingBackground(")
-	if !strings.Contains(drain, "StartDrainHeartbeat(") {
-		t.Error("the leftover-staging drain must heartbeat its drain locks (33h/repo observed in production vs the 1h reclaim)")
+	hbPos := strings.Index(drain, "StartDrainHeartbeat(")
+	loopPos := strings.Index(drain, "range drainSet")
+	if hbPos < 0 || loopPos < 0 || hbPos > loopPos {
+		t.Error("the leftover-staging drain must start the set-wide heartbeat BEFORE the drain loop (the parked tail is what round 29 protects)")
 	}
 	healer := srctest.Read(t, "cmd/aveloxis/heal_collection_gaps.go")
-	if !strings.Contains(healer, "StartDrainHeartbeat(") {
-		t.Error("heal-collection-gaps must heartbeat its drain locks for the lifetime of each heal")
-	}
-	// stop() must be registered AFTER the release defer (LIFO: join
-	// the heartbeat BEFORE releasing the lock).
-	relPos := strings.Index(healer, "ReleaseDrainLock(ctx, c.RepoID, workerID)")
-	hbPos := strings.Index(healer, "StartDrainHeartbeat(")
-	if relPos < 0 || hbPos < 0 || hbPos < relPos {
-		t.Error("the healer must register the heartbeat AFTER the release defer so stop() (cancel+join) runs before ReleaseDrainLock")
+	if !strings.Contains(healer, "store.StartDrainHeartbeat(ctx, logger, workerID)") {
+		t.Error("heal-collection-gaps must run the set-wide heartbeat for the whole run")
 	}
 }
 
@@ -1286,57 +1290,71 @@ func TestDrainHeartbeatDefeatsStaleLockRecovery(t *testing.T) {
 	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
+	// TWO parked repos (round 29): repoID is "currently draining",
+	// tailID is the WAITING tail whose reclaim was the round-29 gap.
 	repoID := int64(944_147_001)
+	tailID := int64(944_147_002)
 	const worker = "_avr26-hb"
-	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repos (repo_id, repo_git, repo_owner, repo_name, platform_id)
-		VALUES ($1, 'https://github.com/_avr26/hb', '_avr26', 'hb', 1) ON CONFLICT (repo_id) DO NOTHING`, repoID)
-	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at)
-		VALUES ($1, 100, 'queued', NOW()) ON CONFLICT (repo_id) DO UPDATE SET status = 'queued', locked_by = NULL, locked_at = NULL`, repoID)
+	for _, id := range []int64{repoID, tailID} {
+		mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repos (repo_id, repo_git, repo_owner, repo_name, platform_id)
+			VALUES ($1, $2, '_avr26', 'hb', 1) ON CONFLICT (repo_id) DO NOTHING`, id, fmt.Sprintf("https://github.com/_avr26/hb%d", id))
+		mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at)
+			VALUES ($1, 100, 'queued', NOW()) ON CONFLICT (repo_id) DO UPDATE SET status = 'queued', locked_by = NULL, locked_at = NULL`, id)
+	}
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
-		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+		for _, id := range []int64{repoID, tailID} {
+			cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, id)
+			cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+		}
 	})
 
-	locked, err := store.LockReposForDrain(ctx, []int64{repoID}, worker)
-	if err != nil || len(locked) != 1 {
+	locked, err := store.LockReposForDrain(ctx, []int64{repoID, tailID}, worker)
+	if err != nil || len(locked) != 2 {
 		t.Fatalf("drain lock: %v (locked %v)", err, locked)
 	}
 	backdate := func() {
 		t.Helper()
 		mustExecRetry(ctx, t, store,
-			`UPDATE aveloxis_ops.collection_queue SET locked_at = NOW() - INTERVAL '2 hours' WHERE repo_id = $1`, repoID)
+			`UPDATE aveloxis_ops.collection_queue SET locked_at = NOW() - INTERVAL '2 hours' WHERE repo_id = ANY($1)`,
+			[]int64{repoID, tailID})
 	}
-	status := func() (st string, lockedBy *string) {
+	status := func(id int64) (st string, lockedBy *string) {
 		t.Helper()
 		if err := store.pool.QueryRow(ctx,
-			`SELECT status, locked_by FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID).Scan(&st, &lockedBy); err != nil {
+			`SELECT status, locked_by FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, id).Scan(&st, &lockedBy); err != nil {
 			t.Fatal(err)
 		}
 		return st, lockedBy
 	}
 
-	// Direction 1: beat, then recover — the park must SURVIVE.
+	// Direction 1: beat, then recover — the park must SURVIVE. The
+	// set-wide beat takes only the workerID (round 29): it must cover
+	// EVERY row this worker parked, not just a "current" one.
 	backdate()
-	if err := store.HeartbeatDrainLock(ctx, repoID, worker); err != nil {
+	if err := store.HeartbeatDrainLocks(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RecoverStaleLocks(ctx, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if st, lb := status(); st != "collecting" || lb == nil || *lb != worker+":drain" {
-		t.Fatalf("a heartbeated drain lock must survive RecoverStaleLocks; got status=%q locked_by=%v", st, lb)
+	for _, id := range []int64{repoID, tailID} {
+		if st, lb := status(id); st != "collecting" || lb == nil || *lb != worker+":drain" {
+			t.Fatalf("repo %d: a heartbeated drain lock must survive RecoverStaleLocks (the WAITING tail included — the round-29 gap); got status=%q locked_by=%v", id, st, lb)
+		}
 	}
 
 	// Direction 2: backdate WITHOUT a beat — the pre-fix failure mode:
-	// the park is reclaimed and the repo re-enters the claim path.
+	// the park is reclaimed and the repos re-enter the claim path.
 	backdate()
 	if _, err := store.RecoverStaleLocks(ctx, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := status(); st != "queued" {
-		t.Fatalf("an un-beaten stale drain lock must be reclaimed (that risk is WHY the heartbeat exists); got status=%q", st)
+	for _, id := range []int64{repoID, tailID} {
+		if st, _ := status(id); st != "queued" {
+			t.Fatalf("repo %d: an un-beaten stale drain lock must be reclaimed (that risk is WHY the heartbeat exists); got status=%q", id, st)
+		}
 	}
 }
 
@@ -1418,5 +1436,118 @@ func TestImportGroupingRuleIsFileWide(t *testing.T) {
 	seen := strings.Index(body, `seenModule := ""`)
 	if declLoop < 0 || seen < 0 || seen > declLoop {
 		t.Error("seenModule must be declared BEFORE the decl loop (file-wide scope) — a per-declaration reset lets split import declarations bypass the stdlib-first rule")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round 29 (v0.27.150) — review 5000780221: 3 active + 3 suppressed,
+// all real. Actives: the round-26 heartbeat's parked-tail gap (fixed
+// by widening TestDrainLocksAreHeartbeated + the two-repo behavioral
+// test above), host-blind forge-ID identity, and the snapshot replace
+// wiping the Go closure on incomplete expansion (pinned in
+// collector/c2_transitive_test.go + the preserve behavioral test).
+// ---------------------------------------------------------------------------
+
+// Active #2 — the forge-ID lookup is HOST-scoped. detectPlatform
+// classifies ANY gitlab-bearing hostname as PlatformGitLab, and
+// GitLab project IDs are only unique PER INSTANCE — a bare
+// (platform, id) match could read project 123 on two different hosts
+// as a RENAME and rewrite one unrelated row's URL onto the other's
+// project. Enforces SR-6 (never fabricate identity from an ambiguous
+// match).
+func TestForgeIDLookupIsHostScoped(t *testing.T) {
+	src := srctest.Read(t, "internal/db/repo_forge_id.go")
+	body := srctest.FuncBody(t, src, "func (s *PostgresStore) FindRepoByPlatformRepoID(")
+	if !strings.Contains(body, "lower(split_part(repo_git, '/', 3)) = $3") {
+		t.Error("FindRepoByPlatformRepoID must filter by the URL's host — GitLab project IDs are per-instance, not global")
+	}
+	pg := srctest.Read(t, "internal/db/postgres.go")
+	if !strings.Contains(pg, "FindRepoByPlatformRepoID(ctx, r.Platform, r.PlatformID, ForgeHostOf(r.GitURL))") {
+		t.Error("the rename-heal probe must pass the incoming URL's host")
+	}
+}
+
+// TestForgeIDRenameHealNeverCrossesHosts — the behavioral half of
+// round 29 active #2: two platform-2 rows with the SAME numeric
+// project ID on DIFFERENT GitLab instances; upserting a renamed URL
+// on one host must heal ONLY that host's row.
+func TestForgeIDRenameHealNeverCrossesHosts(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	store.SetMatviewSkip(true)
+	testMigrate(ctx, t, store)
+
+	const forgeID = "944150777"
+	comURL := "https://gitlab.com/_avr29/proj"
+	gnomeURL := "https://gitlab.example-gnome.org/_avr29/proj"
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN
+			(SELECT repo_id FROM aveloxis_data.repos WHERE platform_repo_id = $1)`, forgeID)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repos WHERE platform_repo_id = $1`, forgeID)
+	})
+
+	seed := func(gitURL string) int64 {
+		t.Helper()
+		id, serr := store.UpsertRepo(ctx, &model.Repo{
+			Platform: model.PlatformGitLab, GitURL: gitURL,
+			Owner: "_avr29", Name: "proj", PlatformID: forgeID,
+		})
+		if serr != nil {
+			t.Fatal(serr)
+		}
+		return id
+	}
+	comID := seed(comURL)
+	gnomeID := seed(gnomeURL)
+	if comID == gnomeID {
+		t.Fatalf("same project ID on two instances must be two rows — a shared row means the host-blind merge already happened (com=%d gnome=%d)", comID, gnomeID)
+	}
+
+	// A rename on gitlab.com: same forge ID, new gitlab.com URL. The
+	// heal must land on the gitlab.com row and leave the other
+	// instance's row untouched.
+	renamedID, err := store.UpsertRepo(ctx, &model.Repo{
+		Platform: model.PlatformGitLab, GitURL: "https://gitlab.com/_avr29/proj-renamed",
+		Owner: "_avr29", Name: "proj-renamed", PlatformID: forgeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamedID != comID {
+		t.Errorf("the rename must heal the SAME-host row (want %d, got %d)", comID, renamedID)
+	}
+	var gnomeGit string
+	if err := store.pool.QueryRow(ctx,
+		`SELECT repo_git FROM aveloxis_data.repos WHERE repo_id = $1`, gnomeID).Scan(&gnomeGit); err != nil {
+		t.Fatal(err)
+	}
+	if gnomeGit != gnomeURL {
+		t.Errorf("the OTHER instance's row must be untouched by a same-ID rename elsewhere — got %q (host-blind heal rewrote an unrelated project)", gnomeGit)
+	}
+}
+
+// Suppressed #1 — the candidate query LEFT-joins repo_info so the
+// --all completeness sweep includes collected repos with NO snapshot
+// (force-list mode needs no counts); gap mode still excludes them via
+// the COALESCE-to-zero predicate. Behavioral: the nosnap fixture in
+// TestGetGapHealCandidatesEndToEnd.
+func TestGapHealCandidatesIncludeSnapshotlessInAll(t *testing.T) {
+	src := srctest.Read(t, "internal/db/gap_heal_store.go")
+	body := srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates(")
+	if !strings.Contains(body, "LEFT JOIN LATERAL") {
+		t.Error("repo_info must LEFT-join — an inner join drops snapshotless collected repos from the --all sweep")
+	}
+	if !strings.Contains(body, "COALESCE(ri.issues_count, 0)") {
+		t.Error("missing snapshots must COALESCE to zero counts")
 	}
 }

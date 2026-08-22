@@ -133,6 +133,18 @@ func TestGetGapHealCandidatesEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// v0.27.150 (round 29, suppressed): a collected forge repo with NO
+	// repo_info snapshot at all (legacy stamped-but-empty cohort) —
+	// excluded from gap mode, but --all is documented as "every
+	// collected forge repo" and its force-list mode needs no counts.
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repos (repo_id, repo_git, repo_owner, repo_name, platform_id)
+		VALUES ($1, 'https://example.com/_avheal/nosnap', '_avheal', 'nosnap', 1)
+		ON CONFLICT (repo_id) DO NOTHING`, base+5)
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at, last_collected, last_issues, last_prs)
+		VALUES ($1, 100, 'queued', NOW(), NOW() - INTERVAL '1 day', 0, 0)
+		ON CONFLICT (repo_id) DO UPDATE SET last_collected = NOW() - INTERVAL '1 day', status = 'queued'`, base+5)
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -175,6 +187,9 @@ func TestGetGapHealCandidatesEndToEnd(t *testing.T) {
 	}
 	if !seen[base+1] || !seen[base+2] || seen[base+3] {
 		t.Errorf("--all must include clean forge repos and still exclude generic git, got %v", seen)
+	}
+	if !seen[base+5] {
+		t.Error("--all must include a collected repo with NO repo_info snapshot (round 29: the inner join dropped the stamped-but-empty cohort from the completeness sweep)")
 	}
 
 	// Drain-lock exclusion path (the healer's skip-if-collecting):

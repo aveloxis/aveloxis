@@ -12,6 +12,7 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -196,8 +197,36 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 
 	// v0.27.133 C2: Go transitive closure via the toolchain — same knob,
 	// same snapshot transaction. Declared go deps are the direct set.
+	//
+	// v0.27.150 (round 29): the expansion is best-effort, but the
+	// snapshot REPLACE below is not — an incomplete run (missing
+	// toolchain, module failure, repo budget exhausted) used to wipe
+	// the previously valid Go closure, silently shrinking vuln and
+	// SBOM output and FALSE-RESOLVING findings whose packages
+	// vanished (they then flip-flopped back on the next healthy
+	// scan). On incomplete: discard this run's partial Go rows and
+	// carry the PRIOR snapshot's Go closure forward unchanged —
+	// whole-and-stale beats partial-and-mixed. A failed prior-rows
+	// read propagates (SR-5): failing the phase leaves the prior
+	// snapshot intact, which is strictly better than replacing it
+	// with a shrunken one.
 	if ac.TransitiveLockfiles {
-		packages, edges = ac.scanGoModGraph(ctx, workDir, declared, packages, edges)
+		goPkgs, goEdges, goComplete := ac.scanGoModGraph(ctx, workDir, declared)
+		if goComplete {
+			packages = append(packages, goPkgs...)
+			edges = append(edges, goEdges...)
+		} else {
+			prevPkgs, prevEdges, perr := ac.store.GetRepoGoClosureRows(ctx, repoID)
+			if perr != nil {
+				return fmt.Errorf("go expansion incomplete and prior-closure read failed (snapshot NOT replaced): %w", perr)
+			}
+			ac.logger.Warn("go mod graph expansion incomplete — preserving the prior snapshot's Go closure",
+				"repo_id", repoID,
+				"prior_packages", len(prevPkgs), "prior_edges", len(prevEdges),
+				"discarded_partial_packages", len(goPkgs), "discarded_partial_edges", len(goEdges))
+			packages = append(packages, prevPkgs...)
+			edges = append(edges, prevEdges...)
+		}
 	}
 
 	if err := ac.store.ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges); err != nil {

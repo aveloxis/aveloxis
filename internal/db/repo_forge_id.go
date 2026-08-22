@@ -19,10 +19,23 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/jackc/pgx/v5"
 )
+
+// ForgeHostOf extracts the lowercased host from a git URL for the
+// host-scoped forge-ID lookup ("" when unparseable — the lookup then
+// answers "not found" and the caller takes the safe insert path).
+func ForgeHostOf(gitURL string) string {
+	u, err := url.Parse(gitURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Host)
+}
 
 // FindRepoByPlatformRepoID resolves a repo by the forge's numeric
 // repository/project ID — the only identity that survives renames and
@@ -35,8 +48,8 @@ import (
 // residue that reconcile-repos hasn't consolidated yet), the OLDEST row
 // wins — it has been referenced by child FKs the longest, matching the
 // v0.20.2 merge-winner rule.
-func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform model.Platform, forgeID string) (int64, error) {
-	if forgeID == "" {
+func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform model.Platform, forgeID, host string) (int64, error) {
+	if forgeID == "" || host == "" {
 		return 0, nil
 	}
 	var id int64
@@ -48,12 +61,23 @@ func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform m
 	// scan once Postgres switches to a generic plan (the v0.27.54
 	// partial-index lesson, on the parameter side this time).
 	// Semantically free: the Go guard above already rejects "".
+	//
+	// v0.27.150 (round 29): the lookup is HOST-scoped. detectPlatform
+	// classifies ANY gitlab-bearing hostname as PlatformGitLab, and
+	// GitLab project IDs are only unique PER INSTANCE — project 123 on
+	// gitlab.com and on gitlab.gnome.org are unrelated repositories.
+	// A bare (platform, id) match could read the pair as a RENAME and
+	// rewrite one row's URL onto the other's project. The host filter
+	// costs nothing (applied after the index narrows to a handful of
+	// rows); split_part(repo_git, '/', 3) is the URL's authority
+	// segment ("https:", "", host, ...).
 	err := s.pool.QueryRow(ctx, `
 		SELECT repo_id FROM aveloxis_data.repos
 		WHERE platform_id = $1 AND platform_repo_id = $2
 		  AND platform_repo_id <> ''
+		  AND lower(split_part(repo_git, '/', 3)) = $3
 		ORDER BY repo_id
-		LIMIT 1`, int16(platform), forgeID).Scan(&id)
+		LIMIT 1`, int16(platform), forgeID, strings.ToLower(host)).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}

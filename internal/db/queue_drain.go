@@ -29,7 +29,7 @@ import (
 )
 
 // drainLockedBy is the ONE spelling of the drain-park lock owner
-// (SR-17): LockReposForDrain, ReleaseDrainLock, and HeartbeatDrainLock
+// (SR-17): LockReposForDrain, ReleaseDrainLock, and HeartbeatDrainLocks
 // must all match the same locked_by string, or a heartbeat/release
 // silently stops finding the row it is supposed to touch.
 func drainLockedBy(workerID string) string {
@@ -121,35 +121,39 @@ func (s *PostgresStore) ReleaseDrainLock(ctx context.Context, repoID int64, work
 	return nil
 }
 
-// HeartbeatDrainLock refreshes locked_at on a drain-parked row to
-// prove the holder is still alive — the drain-lock twin of
-// HeartbeatJob. v0.27.147 (round 26): without it, a running
-// scheduler's periodic RecoverStaleLocks (1-hour default) reclaims
-// any drain lock held longer than the timeout — a multi-hour heal or
-// leftover-staging drain then has its repo flipped back to 'queued',
-// fillWorkerSlots claims it, and routine collection's
-// PurgeStagedForRepo wipes the staging rows the lock exists to
-// protect. The locked_by + status guards make a straggler beat after
-// release (or after a reclaim) a harmless 0-row UPDATE.
-func (s *PostgresStore) HeartbeatDrainLock(ctx context.Context, repoID int64, workerID string) error {
+// HeartbeatDrainLocks refreshes locked_at on EVERY drain-parked row
+// this worker holds — the drain-lock twin of HeartbeatJob.
+// v0.27.147 (round 26) introduced the heartbeat; v0.27.150 (round 29)
+// widened it from one repo to the worker's whole parked SET: the
+// scheduler lock-parks the entire leftover-drain set up front and
+// drains it sequentially, so with a per-repo beat the WAITING repos'
+// locked_at never refreshed — one long drain (production has seen
+// ~33h) let RecoverStaleLocks (1-hour default) reclaim the parked
+// tail, and those repos were later drained without a valid lock while
+// routine collection could purge their staging. One UPDATE per beat
+// covers the current repo and every waiting one. The locked_by +
+// status guards make a straggler beat after release (or after a
+// reclaim) a harmless 0-row UPDATE.
+func (s *PostgresStore) HeartbeatDrainLocks(ctx context.Context, workerID string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
 		SET locked_at = NOW()
-		WHERE repo_id = $1 AND locked_by = $2 AND status = 'collecting'`,
-		repoID, drainLockedBy(workerID))
+		WHERE locked_by = $1 AND status = 'collecting'`,
+		drainLockedBy(workerID))
 	return err
 }
 
-// StartDrainHeartbeat spawns the 30-second heartbeat goroutine for one
-// drain-parked repo and returns a stop function that cancels AND joins
-// it. This is the ONE implementation both drain-lock holders (the
-// scheduler's leftover-staging drain and `aveloxis
-// heal-collection-gaps`) wrap their work in — a second inline copy of
-// the ticker loop is the C4/L3 defect shape. Call stop() BEFORE
-// ReleaseDrainLock so no beat races the release (a late beat is
-// harmless — see HeartbeatDrainLock — but a joined goroutine can't
-// leak either).
-func (s *PostgresStore) StartDrainHeartbeat(ctx context.Context, logger *slog.Logger, repoID int64, workerID string) (stop func()) {
+// StartDrainHeartbeat spawns the 30-second heartbeat goroutine for
+// ALL of a worker's drain-parked repos and returns a stop function
+// that cancels AND joins it. This is the ONE implementation both
+// drain-lock holders (the scheduler's leftover-staging drain and
+// `aveloxis heal-collection-gaps`) wrap their work in — a second
+// inline copy of the ticker loop is the C4/L3 defect shape. Start it
+// ONCE for the whole drain/heal (immediately after the first
+// LockReposForDrain, covering repos parked later under the same
+// workerID too); call stop() after the last ReleaseDrainLock. Beats
+// on an empty set are harmless 0-row UPDATEs.
+func (s *PostgresStore) StartDrainHeartbeat(ctx context.Context, logger *slog.Logger, workerID string) (stop func()) {
 	hbCtx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -163,8 +167,8 @@ func (s *PostgresStore) StartDrainHeartbeat(ctx context.Context, logger *slog.Lo
 			case <-hbCtx.Done():
 				return
 			case <-ticker.C:
-				if err := s.HeartbeatDrainLock(hbCtx, repoID, workerID); err != nil {
-					logger.Warn("drain heartbeat failed", "repo_id", repoID, "error", err)
+				if err := s.HeartbeatDrainLocks(hbCtx, workerID); err != nil {
+					logger.Warn("drain heartbeat failed", "worker_id", workerID, "error", err)
 				}
 			}
 		}

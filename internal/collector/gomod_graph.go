@@ -45,17 +45,23 @@ import (
 // the WARN-and-skip posture keeps partial results honest.
 const goModGraphTimeout = 5 * time.Minute
 
-// scanGoModGraph appends Go transitive package rows + requirement
-// edges for every go.mod module under workDir. Best-effort: a missing
-// go binary, a broken module, or a timeout logs and contributes
-// nothing. declared holds the repo's declared-dep match keys (the
-// direct set — its members are never written as transitive rows).
-func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string, declared map[string]bool,
-	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge) ([]*db.RepoLockfilePackage, []*db.RepoLockfileEdge) {
+// scanGoModGraph returns Go transitive package rows + requirement
+// edges for every go.mod module under workDir, plus a COMPLETE flag.
+// Best-effort: a missing go binary, a broken module, or the shared
+// repo budget logs and contributes nothing — but v0.27.150 (round
+// 29) that best-effort posture must never SHRINK the stored
+// snapshot: complete=false tells the caller to preserve the prior
+// snapshot's Go closure instead of replacing it with a partial (or
+// empty) one, which silently deflated vuln and SBOM output and
+// false-resolved findings. declared holds the repo's declared-dep
+// match keys (the direct set — its members are never written as
+// transitive rows).
+func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string, declared map[string]bool) (
+	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge, complete bool) {
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		ac.logger.Debug("go toolchain not installed — skipping go mod graph transitive expansion")
-		return packages, edges
+		return nil, nil, false
 	}
 	var modDirs []string
 	_ = filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
@@ -77,20 +83,26 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string,
 	// ONE repo-wide budget; per-module contexts derive from it.
 	rctx, cancel := context.WithTimeout(ctx, goModGraphTimeout)
 	defer cancel()
+	complete = true
 	for i, dir := range modDirs {
 		if rctx.Err() != nil {
 			// No silent caps: say exactly what the budget dropped.
 			ac.logger.Warn("go mod graph repo budget exhausted — skipping remaining modules",
 				"budget", goModGraphTimeout, "modules_processed", i, "modules_skipped", len(modDirs)-i)
+			complete = false
 			break
 		}
-		packages, edges = ac.goModGraphOne(rctx, goBin, workDir, dir, declared, packages, edges)
+		var modOK bool
+		packages, edges, modOK = ac.goModGraphOne(rctx, goBin, workDir, dir, declared, packages, edges)
+		if !modOK {
+			complete = false
+		}
 	}
-	return packages, edges
+	return packages, edges, complete
 }
 
 func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, goBin, workDir, dir string, declared map[string]bool,
-	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge) ([]*db.RepoLockfilePackage, []*db.RepoLockfileEdge) {
+	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge) ([]*db.RepoLockfilePackage, []*db.RepoLockfileEdge, bool) {
 	// ctx carries the REPO-WIDE deadline (round 28) — no per-module
 	// timeout here, or N modules would multiply the budget.
 	rel, _ := filepath.Rel(workDir, filepath.Join(dir, "go.mod"))
@@ -113,7 +125,7 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, goBin, workDir, 
 	// line is the main module (no version) and is skipped.
 	listOut, ok := run("list", "-m", "all")
 	if !ok {
-		return packages, edges
+		return packages, edges, false
 	}
 	seenPkg := map[string]bool{}
 	for _, line := range strings.Split(listOut, "\n") {
@@ -140,7 +152,7 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, goBin, workDir, 
 	// which the declared deps already cover, so they are skipped).
 	graphOut, ok := run("mod", "graph")
 	if !ok {
-		return packages, edges
+		return packages, edges, false
 	}
 	seenEdge := map[string]bool{}
 	for _, line := range strings.Split(graphOut, "\n") {
@@ -167,5 +179,5 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, goBin, workDir, 
 			ChildConstraint: cVer,
 		})
 	}
-	return packages, edges
+	return packages, edges, true
 }

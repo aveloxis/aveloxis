@@ -320,7 +320,9 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 			// rule) — falling through to the insert on a transient DB
 			// error could mint the exact rename duplicate this branch
 			// prevents. Propagate; the caller retries next scan.
-			existing, ferr := s.FindRepoByPlatformRepoID(ctx, r.Platform, r.PlatformID)
+			// v0.27.150 (round 29): host-scoped — a same-numbered
+			// project on a DIFFERENT GitLab instance is not a rename.
+			existing, ferr := s.FindRepoByPlatformRepoID(ctx, r.Platform, r.PlatformID, ForgeHostOf(r.GitURL))
 			if ferr != nil {
 				return 0, fmt.Errorf("rename-heal forge-id lookup: %w", ferr)
 			}

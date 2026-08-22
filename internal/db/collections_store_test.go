@@ -4,9 +4,11 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // v0.27.63 — collections: admin-curated groups-of-groups. Source pins
@@ -314,16 +316,20 @@ func TestCollectionsEndToEnd(t *testing.T) {
 		rid                  int64
 		issues, prs, commits int64
 	}{{r1, 10, 5, 100}, {r2, 30, 2, 50}, {r3, 20, 9, 75}} {
-		if _, err := store.pool.Exec(ctx, `
+		// v0.27.144: this seed was a 40P01 victim in a combined run
+		// (the v0.27.114 class) — converted to the bounded-retry
+		// helpers per the v0.27.120 "victims convert as they appear"
+		// convention.
+		mustExecRetry(ctx, t, store, `
 			INSERT INTO aveloxis_ops.collection_queue (repo_id, status, last_issues, last_prs, last_commits, last_collected)
 			VALUES ($1, 'queued', $2, $3, $4, NOW())
 			ON CONFLICT (repo_id) DO UPDATE SET last_issues = $2, last_prs = $3, last_commits = $4, last_collected = NOW()`,
-			seed.rid, seed.issues, seed.prs, seed.commits); err != nil {
-			t.Fatal(err)
-		}
+			seed.rid, seed.issues, seed.prs, seed.commits)
 	}
 	t.Cleanup(func() {
-		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN ($1,$2,$3)`, r1, r2, r3)
+		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN ($1,$2,$3)`, r1, r2, r3)
 	})
 	if err := store.StarRepo(ctx, plainID, r3); err != nil {
 		t.Fatal(err)

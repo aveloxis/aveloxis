@@ -181,12 +181,16 @@ var podlingProbeBase = "https://github.com"
 // resolvePodlingRepoURL probes which variant of a slug-derived podling
 // URL actually EXISTS, so the importer never upserts a phantom row
 // (the v0.27.132 wedge origin: guessed URLs 404'd, prelim dequeued
-// them, and the PMC groups emptied). Probe rules, per variant in
-// order (the guessed form first): HTTP 200 → that variant is
-// canonical; 301/302 → the repo exists under ANOTHER name, try the
-// twin; anything else → try the next variant. No variant resolves →
-// ("", false) and the caller skips WITHOUT inserting.
-func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, slug string) (string, bool) {
+// them, and the PMC groups emptied).
+//
+// Round-25 (SR-5, this resolver's own edition): only DEFINITIVE
+// responses decide. 200 → canonical; 301/302 → exists under another
+// name, try the twin; 404/410 → definitively absent, try the twin.
+// EVERYTHING ELSE — transport failures, 403/429 rate limits, 5xx
+// outages — is an ERROR: a transient forge problem must abort the
+// import (which re-runs cleanly), never silently classify a valid
+// podling as unresolvable.
+func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, slug string) (string, bool, error) {
 	noRedirect := &http.Client{
 		Timeout:       client.Timeout,
 		Transport:     client.Transport,
@@ -199,19 +203,25 @@ func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, sl
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodHead, probeURL, nil)
 		if err != nil {
-			continue
+			return "", false, fmt.Errorf("building probe for %s: %w", candidate, err)
 		}
 		resp, err := noRedirect.Do(req)
 		if err != nil {
-			continue
+			return "", false, fmt.Errorf("probing %s: %w", candidate, err)
 		}
 		resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			return candidate, true
+		switch {
+		case resp.StatusCode == http.StatusOK:
+			return candidate, true, nil
+		case resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound:
+			// Exists under another name — the twin is next.
+		case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone:
+			// Definitively absent — the twin is next.
+		default:
+			return "", false, fmt.Errorf("probing %s: status %d (not a definitive answer — aborting rather than misclassifying the podling)", candidate, resp.StatusCode)
 		}
-		// 301/302: exists under another name — the twin is next.
 	}
-	return "", false
+	return "", false, nil
 }
 
 // ListDomain returns the Apache mailing-list domain for the PMC, e.g.
@@ -309,7 +319,14 @@ func Fetch(ctx context.Context, projectsURL, podlingsURL string) ([]Project, err
 		p := &podProjects[i]
 		resolved := p.RepoURLs[:0]
 		for _, rurl := range p.RepoURLs {
-			if canonical, ok := resolvePodlingRepoURL(ctx, client, rurl, p.Slug); ok {
+			canonical, ok, rerr := resolvePodlingRepoURL(ctx, client, rurl, p.Slug)
+			if rerr != nil {
+				// Round-25: a transient forge failure aborts the whole
+				// import (it re-runs cleanly) — it must never demote a
+				// valid podling to UnresolvedRepoURLs.
+				return tlpProjects, fmt.Errorf("resolving podling %s: %w", p.Name, rerr)
+			}
+			if ok {
 				resolved = append(resolved, canonical)
 			} else {
 				p.UnresolvedRepoURLs = append(p.UnresolvedRepoURLs, rurl)

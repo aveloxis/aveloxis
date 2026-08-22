@@ -230,3 +230,36 @@ func reposContain(urls []string, want string) bool {
 	}
 	return false
 }
+
+// Round-25 (SR-5 in the resolver itself): only DEFINITIVE probe
+// responses decide. A transient forge failure (5xx, 403/429,
+// transport error) must ABORT the import — never silently demote a
+// valid podling to UnresolvedRepoURLs.
+func TestFetchAbortsOnNonDefinitiveProbeResponse(t *testing.T) {
+	podlingsJSON := []byte(`{"flaky": {"name": "Apache Flaky (Incubating)", "podling": true}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "podlings.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(podlingsJSON)
+		case strings.Contains(r.URL.Path, "projects.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusInternalServerError) // forge outage
+		}
+	}))
+	defer server.Close()
+
+	oldBase := podlingProbeBase
+	podlingProbeBase = server.URL
+	t.Cleanup(func() { podlingProbeBase = oldBase })
+
+	_, err := Fetch(context.Background(), server.URL+"/projects.json", server.URL+"/podlings.json")
+	if err == nil {
+		t.Fatal("a 5xx probe must ABORT Fetch — treating it as 'repo does not exist' drops valid podlings from the import")
+	}
+	if !strings.Contains(err.Error(), "not a definitive answer") {
+		t.Errorf("error must name the non-definitive-response rule, got: %v", err)
+	}
+}

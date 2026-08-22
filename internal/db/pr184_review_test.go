@@ -1157,3 +1157,40 @@ func TestSPDXIDsAreEcosystemScoped(t *testing.T) {
 		t.Error("the ID hash must scope by the alias-folded graph key — bare name@version collides across ecosystems")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 25 (v0.27.144) — review 5000342003: 1 active + 2 suppressed,
+// all real. The active one is SR-5 INSIDE the day-old round-24
+// resolver — the class's fifth recurrence in this PR.
+// ---------------------------------------------------------------------------
+
+// Only DEFINITIVE probe responses (200 / 301 / 404-class) may decide a
+// podling URL's fate; transport failures and 403/429/5xx must ERROR
+// and abort the import, never demote a valid podling to unresolved.
+// Behavioral proof: TestFetchAbortsOnNonDefinitiveProbeResponse.
+func TestPodlingProbeDistinguishesAbsenceFromFailure(t *testing.T) {
+	a := srctest.Read(t, "internal/importers/apache/apache.go")
+	if !strings.Contains(a, "func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, slug string) (string, bool, error)") {
+		t.Error("the resolver must return an error arm — a bool alone conflates 'absent' with 'the forge is down'")
+	}
+	if !strings.Contains(a, "not a definitive answer") {
+		t.Error("non-definitive statuses must ERROR, not fall through to the next variant")
+	}
+	body := srctest.FuncBody(t, a, "func Fetch(")
+	if !strings.Contains(body, "return tlpProjects, fmt.Errorf(\"resolving podling") {
+		t.Error("Fetch must ABORT on a probe error — the import re-runs cleanly; silent demotion loses podlings")
+	}
+}
+
+// Suppressed ×2 pinned by content: the audit dump's stale views note
+// corrected (plain views run every migrate since v0.27.115) and array/
+// UDT columns carry their udt_name so TEXT[] vs INTEGER[] drift shows.
+func TestSchemaAuditDumpCarriesUDTIdentity(t *testing.T) {
+	s := srctest.Read(t, "scripts/schema_structure_dump.sql")
+	if !strings.Contains(s, "THEN data_type || ':' || udt_name") {
+		t.Error("array/user-defined columns must carry udt_name — bare 'ARRAY' lets real type drift pass as identical")
+	}
+	if !strings.Contains(s, "PLAIN views run from") {
+		t.Error("the views note must reflect v0.27.115 (views.sql runs every migrate) — the stale text sent operators to hand-create ordinary views")
+	}
+}

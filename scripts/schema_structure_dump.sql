@@ -40,8 +40,15 @@ ORDER BY 1;
 
 -- COLUMNS (keyed by name — ordinal position deliberately ignored;
 -- ALTER-added columns land at different positions per install history)
+-- Round-25: data_type alone reports every array as the bare word
+-- 'ARRAY' (and every enum/domain as 'USER-DEFINED'), so TEXT[] vs
+-- INTEGER[] drift passed as identical — carry the UDT identity for
+-- those classes.
 SELECT 'COL|' || table_schema || '.' || table_name || '.' || column_name
-  || '|' || data_type || '|null=' || is_nullable || '|def=' || COALESCE(column_default,'')
+  || '|' || CASE WHEN data_type IN ('ARRAY','USER-DEFINED')
+                 THEN data_type || ':' || udt_name
+                 ELSE data_type END
+  || '|null=' || is_nullable || '|def=' || COALESCE(column_default,'')
 FROM information_schema.columns
 WHERE table_schema IN ('aveloxis_data','aveloxis_ops','aveloxis_scan','aveloxis_augur_data')
   AND table_name IN (SELECT tablename FROM pg_tables WHERE schemaname = table_schema)
@@ -62,13 +69,14 @@ WHERE n.nspname IN ('aveloxis_data','aveloxis_ops','aveloxis_scan','aveloxis_aug
 ORDER BY 1;
 
 -- VIEWS + MATVIEWS (existence; definitions drift legitimately with
--- version, so names only — a MISSING one is the drift signal. NOTE the
--- structural gap this audit found: on a populated fleet NO automatic
--- path creates a NEWLY-ADDED view/matview — CreateMaterializedViewsIfNotExist
--- probes one sentinel and skips the whole file; refresh-views and the
--- weekly rebuild only REFRESH known names; `migrate --skip-views` skips
--- entirely. New views must be created by hand or by a full
--- `aveloxis migrate` until that gap is closed.)
+-- version, so names only — a MISSING one is the drift signal.
+-- (Round-25 doc correction: since v0.27.115, PLAIN views run from
+-- views.sql on EVERY migrate — including --skip-views — so ordinary
+-- views self-heal. Only NEWLY-ADDED MATERIALIZED views remain subject
+-- to the sentinel/skip behavior: CreateMaterializedViewsIfNotExist
+-- probes one sentinel and skips the whole file, and refresh-views /
+-- the weekly rebuild only REFRESH known names — a new matview needs a
+-- full `aveloxis migrate` or hand creation.)
 SELECT 'VIEW|' || schemaname || '.' || viewname FROM pg_views
 WHERE schemaname IN ('aveloxis_data','aveloxis_ops','aveloxis_scan','aveloxis_augur_data') ORDER BY 1;
 SELECT 'MATVIEW|' || schemaname || '.' || matviewname FROM pg_matviews

@@ -1339,3 +1339,62 @@ func TestDrainHeartbeatDefeatsStaleLockRecovery(t *testing.T) {
 		t.Fatalf("an un-beaten stale drain lock must be reclaimed (that risk is WHY the heartbeat exists); got status=%q", st)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 27 (v0.27.148) — review 5000533981: 1 active + 3 suppressed,
+// all real. The active one is a quantization edge INSIDE the
+// day-old v0.27.139 blind-window fix (L10 again); two suppressed are
+// the round-22 parse-don't-regex rule applied to its own tripwires.
+// ---------------------------------------------------------------------------
+
+// Active — the last_collected anchor is FLOORED to the whole second.
+// Go's start timestamp is nanosecond-precision; forge timestamps
+// serialize at second/millisecond precision truncated DOWN, so a
+// sub-second anchor lets an item updated in the boundary second come
+// back as updated_at == floor(start), compare Before(since) on the
+// next round's breakout, and be permanently skipped — pagination
+// terminating behind it. Enforces SR-18 (the floor lives in
+// CompleteJob, not caller discipline). Behavioral proof: the
+// fractional-start fixture in TestCompleteJobLastCollectedSemantics.
+func TestCompleteJobFloorsAnchorToSecond(t *testing.T) {
+	src := srctest.Read(t, "internal/db/queue.go")
+	body := srctest.FuncBody(t, src, "func (s *PostgresStore) CompleteJob(")
+	if !strings.Contains(body, "NullTime(startedAt.Truncate(time.Second))") {
+		t.Error("CompleteJob must floor the anchor to the whole second — forge timestamps truncate DOWN, so a sub-second since re-opens the boundary second as a blind window")
+	}
+	if strings.Contains(body, "NullTime(startedAt)\n") {
+		t.Error("the bare un-floored anchor must not return")
+	}
+}
+
+// Suppressed #3 — the chain-root cap carries the TRUE total.
+// Behavioral proof: TestChainsForReportsTotalRootsPastTheCap.
+func TestVulnChainsExposeTotalRoots(t *testing.T) {
+	v := srctest.Read(t, "internal/api/vulnerabilities.go")
+	if !strings.Contains(v, "`json:\"introduced_by_total_roots,omitempty\"`") {
+		t.Error("findings must expose introduced_by_total_roots — a capped introduced_by without the total presents a truncated remediation set as complete")
+	}
+	c := srctest.Read(t, "internal/api/vuln_chains.go")
+	if !strings.Contains(c, "func (idx *chainIndex) chainsFor(ecosystem, pkg string) ([]vulnChainJSON, int)") {
+		t.Error("chainsFor must return (chains, totalRoots) — the walk counts every root; only emitted chains are capped")
+	}
+}
+
+// Suppressed #1+#2 — the import tripwires PARSE, never regex (the
+// round-22 rule applied to its own kind): a backtick-quoted import
+// path is legal Go that a textual scan misses, and an import-shaped
+// sequence inside a comment/raw string is data a regex wrongly
+// matches. Both re-red-verified with the exact bypass shapes.
+func TestImportTripwiresParseNotRegex(t *testing.T) {
+	sg := srctest.Read(t, "internal/srctest/selfguard_test.go")
+	if !strings.Contains(sg, "parser.ImportsOnly") || !strings.Contains(sg, "strconv.Unquote(imp.Path.Value)") {
+		t.Error("the srctest selfguard must verify PARSED ImportSpec paths — a raw-string import bypasses a textual search")
+	}
+	ig := srctest.Read(t, "scripts/import_grouping_test.go")
+	if !strings.Contains(ig, "parser.ImportsOnly") || !strings.Contains(ig, "*ast.ImportSpec") {
+		t.Error("the import-grouping tripwire must walk parsed ImportSpecs")
+	}
+	if strings.Contains(ig, "regexp.MustCompile") {
+		t.Error("the regex import-block scan must not return — it false-negatives backtick paths and false-positives import-shaped text in comments/raw strings")
+	}
+}

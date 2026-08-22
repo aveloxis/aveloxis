@@ -21,7 +21,7 @@ func TestChainsForWalksToDirectRoots(t *testing.T) {
 	sets := db.DirectPackageSets{Declared: map[string]bool{"npm|express": true, "npm|helmet": true}}
 	idx := buildChainIndex(edges, sets)
 
-	chains := idx.chainsFor("npm", "qs")
+	chains, _ := idx.chainsFor("npm", "qs")
 	if len(chains) != 2 {
 		t.Fatalf("qs is pulled by two direct roots, got %+v", chains)
 	}
@@ -46,7 +46,7 @@ func TestChainsForCycleSafeAndHonest(t *testing.T) {
 		{Ecosystem: "npm", ParentName: "b", ChildName: "a"},
 	}
 	idx := buildChainIndex(edges, db.DirectPackageSets{})
-	if got := idx.chainsFor("npm", "a"); got != nil {
+	if got, _ := idx.chainsFor("npm", "a"); got != nil {
 		t.Errorf("no direct root reachable — chains must be nil (honest absence), got %+v", got)
 	}
 }
@@ -64,7 +64,7 @@ func TestChainsForNeverCrossLockfileGraphs(t *testing.T) {
 	}
 	sets := db.DirectPackageSets{Declared: map[string]bool{"npm|express": true}}
 	idx := buildChainIndex(edges, sets)
-	if got := idx.chainsFor("npm", "qs"); got != nil {
+	if got, _ := idx.chainsFor("npm", "qs"); got != nil {
 		t.Errorf("cross-lockfile fabricated chain: %+v — apps/a's qs must not attribute through apps/b's express", got)
 	}
 }
@@ -77,7 +77,7 @@ func TestChainsForDedupsRootsAcrossLockfiles(t *testing.T) {
 	}
 	sets := db.DirectPackageSets{Declared: map[string]bool{"npm|express": true}}
 	idx := buildChainIndex(edges, sets)
-	chains := idx.chainsFor("npm", "qs")
+	chains, _ := idx.chainsFor("npm", "qs")
 	if len(chains) != 1 {
 		t.Fatalf("same root via two lockfiles must report once, got %+v", chains)
 	}
@@ -98,7 +98,7 @@ func TestChainsForRootCapAndEcosystemIsolation(t *testing.T) {
 	edges = append(edges, db.RepoLockfileEdge{Ecosystem: "pypi", ParentName: "flask", ChildName: "shared"})
 	direct["pypi|flask"] = true
 	idx := buildChainIndex(edges, db.DirectPackageSets{Declared: direct})
-	chains := idx.chainsFor("npm", "shared")
+	chains, _ := idx.chainsFor("npm", "shared")
 	if len(chains) != maxChainRoots {
 		t.Errorf("root cap: want %d, got %d", maxChainRoots, len(chains))
 	}
@@ -128,7 +128,7 @@ func TestChainsForRootsArePerLockfile(t *testing.T) {
 		},
 	}
 	idx := buildChainIndex(edges, sets)
-	chains := idx.chainsFor("npm", "c")
+	chains, _ := idx.chainsFor("npm", "c")
 	if len(chains) != 1 || chains[0].Root != "x" {
 		t.Fatalf("walk must continue through apps/b-only direct p to apps/a's root x, got %+v", chains)
 	}
@@ -146,7 +146,7 @@ func TestChainsForDeclaredFallbackRootsAnyGraph(t *testing.T) {
 	}
 	sets := db.DirectPackageSets{Declared: map[string]bool{"npm|d": true}}
 	idx := buildChainIndex(edges, sets)
-	chains := idx.chainsFor("npm", "c")
+	chains, _ := idx.chainsFor("npm", "c")
 	if len(chains) != 1 || chains[0].Root != "d" {
 		t.Errorf("manifest-declared dep must root the walk as the repo-wide fallback, got %+v", chains)
 	}
@@ -165,7 +165,7 @@ func TestChainsForFoldsPyPINames(t *testing.T) {
 	}
 	sets := db.DirectPackageSets{Declared: map[string]bool{db.LockfileGraphKey("pypi", "Flask"): true}}
 	idx := buildChainIndex(edges, sets)
-	chains := idx.chainsFor("pypi", "Foo_Bar")
+	chains, _ := idx.chainsFor("pypi", "Foo_Bar")
 	if len(chains) != 1 || chains[0].Root != "flask" {
 		t.Errorf("PyPI name folding failed — Foo_Bar must resolve foo-bar edges, got %+v", chains)
 	}
@@ -179,8 +179,41 @@ func TestChainsForFoldsEcosystemAliases(t *testing.T) {
 	}
 	sets := db.DirectPackageSets{Declared: map[string]bool{db.LockfileGraphKey("gem", "rails"): true}}
 	idx := buildChainIndex(edges, sets)
-	chains := idx.chainsFor("rubygems", "actionpack")
+	chains, _ := idx.chainsFor("rubygems", "actionpack")
 	if len(chains) != 1 || chains[0].Root != "rails" {
 		t.Errorf("ecosystem alias folding failed — a rubygems edge must root a gem-declared dep, got %+v", chains)
+	}
+}
+
+// v0.27.148 (round 27, suppressed finding): the emitted-chain cap must
+// come with the TRUE root count — a consumer cannot otherwise tell
+// "exactly 3 roots" from "dozens, showing 3" and may present a
+// truncated remediation set as complete.
+func TestChainsForReportsTotalRootsPastTheCap(t *testing.T) {
+	edges := []db.RepoLockfileEdge{
+		{Ecosystem: "npm", ParentName: "r1", ChildName: "shared-util"},
+		{Ecosystem: "npm", ParentName: "r2", ChildName: "shared-util"},
+		{Ecosystem: "npm", ParentName: "r3", ChildName: "shared-util"},
+		{Ecosystem: "npm", ParentName: "r4", ChildName: "shared-util"},
+		{Ecosystem: "npm", ParentName: "r5", ChildName: "shared-util"},
+	}
+	sets := db.DirectPackageSets{Declared: map[string]bool{
+		"npm|r1": true, "npm|r2": true, "npm|r3": true, "npm|r4": true, "npm|r5": true,
+	}}
+	idx := buildChainIndex(edges, sets)
+
+	chains, total := idx.chainsFor("npm", "shared-util")
+	if len(chains) != maxChainRoots {
+		t.Fatalf("emitted chains must cap at %d, got %d", maxChainRoots, len(chains))
+	}
+	if total != 5 {
+		t.Fatalf("total roots must count PAST the cap (5 direct parents), got %d", total)
+	}
+
+	// Under the cap the two numbers agree — a consumer can rely on
+	// total == len(introduced_by) meaning "complete".
+	chains2, total2 := idx.chainsFor("npm", "qs")
+	if len(chains2) != 0 || total2 != 0 {
+		t.Fatalf("unknown package: want 0 chains / 0 total, got %d/%d", len(chains2), total2)
 	}
 }

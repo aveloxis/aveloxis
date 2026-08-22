@@ -145,14 +145,22 @@ func TestCompleteJobLastCollectedSemantics(t *testing.T) {
 		t.Fatalf("failed first pass must keep last_collected NULL, got %v", lc)
 	}
 
-	// 2. SUCCESS: last_collected = the supplied start anchor exactly.
-	start := time.Now().Add(-45 * time.Minute).UTC().Truncate(time.Microsecond)
-	if err := store.CompleteJob(ctx, repoID, true, start, time.Hour, 1, 1, 0, 0, 0, 0, 0, 100, ""); err != nil {
+	// 2. SUCCESS: last_collected = the supplied start anchor FLOORED to
+	// the whole second (v0.27.148, round 27). The fixture start carries
+	// a deliberate 700ms fraction: forge timestamps serialize at
+	// second precision truncated DOWN, so a sub-second anchor would let
+	// an item updated in the boundary second come back as
+	// updated_at == floor(start), compare Before(since) on the next
+	// round's breakout, and be permanently skipped — the quantization
+	// re-opening of the exact blind window v0.27.139 closed.
+	startRaw := time.Now().Add(-45 * time.Minute).UTC().Truncate(time.Second).Add(700 * time.Millisecond)
+	start := startRaw.Truncate(time.Second)
+	if err := store.CompleteJob(ctx, repoID, true, startRaw, time.Hour, 1, 1, 0, 0, 0, 0, 0, 100, ""); err != nil {
 		t.Fatal(err)
 	}
 	lc := readLC()
 	if lc == nil || !lc.Equal(start) {
-		t.Fatalf("success must anchor last_collected at job START %v, got %v", start, lc)
+		t.Fatalf("success must anchor last_collected at floor-to-second of job START (%v -> %v), got %v", startRaw, start, lc)
 	}
 
 	// 2b. MISTAKEN CALLER (round-23): success=false with a NONZERO

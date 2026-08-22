@@ -9,15 +9,26 @@
 // plus collector/vulnerability.go's "net/http" which the review
 // missed) passes every formatter gate while violating the house
 // stdlib-first layout. The rule enforced here: within a file's
-// import block, every stdlib path (first segment has no dot) must
-// appear before every module path (first segment has a dot).
+// import declaration, every stdlib path (first segment has no dot)
+// must appear before every module path (first segment has a dot).
+//
+// v0.27.148 (round 27): the scan is AST-based — go/parser ImportSpec
+// values, not a source regex. The regex form ignored legal
+// backtick-quoted import paths (false negative) and could match an
+// `import (` sequence inside a block comment or raw string (false CI
+// failure). The round-22 rule (meta-tests parse, never regex), and it
+// subsumes the round-22 fix here too: parsing yields EVERY import
+// declaration, not just the first block.
 
 package scripts
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -26,8 +37,6 @@ import (
 
 func TestImportGroupsKeepStdlibFirst(t *testing.T) {
 	root := srctest.Root(t)
-	importBlockRe := regexp.MustCompile(`(?ms)^import \(\n(.*?)^\)`)
-	pathRe := regexp.MustCompile(`"([^"]+)"`)
 
 	scanned := 0
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -44,36 +53,34 @@ func TestImportGroupsKeepStdlibFirst(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
-		data, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
+		af, perr := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if perr != nil {
+			rel, _ := filepath.Rel(root, path)
+			t.Errorf("parse %s: %v — an unparseable file cannot be verified", rel, perr)
+			return nil
 		}
 		scanned++
-		// Round-22: Go permits MULTIPLE import declarations per file —
-		// inspect every block, not just the first (a misgrouped stdlib
-		// import in a later block bypassed the tripwire).
-		blocks := importBlockRe.FindAllStringSubmatch(string(data), -1)
-		if len(blocks) == 0 {
-			return nil // single-import or import-free file
-		}
-		for _, m := range blocks {
+		for _, decl := range af.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.IMPORT {
+				continue
+			}
 			seenModule := ""
-			for _, line := range strings.Split(m[1], "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "//") {
+			for _, spec := range gd.Specs {
+				is, ok := spec.(*ast.ImportSpec)
+				if !ok {
 					continue
 				}
-				pm := pathRe.FindStringSubmatch(line)
-				if pm == nil {
+				p, uerr := strconv.Unquote(is.Path.Value)
+				if uerr != nil {
 					continue
 				}
-				first, _, _ := strings.Cut(pm[1], "/")
+				first, _, _ := strings.Cut(p, "/")
 				if strings.Contains(first, ".") {
-					seenModule = pm[1]
+					seenModule = p
 				} else if seenModule != "" {
 					rel, _ := filepath.Rel(root, path)
-					t.Errorf("%s: stdlib import %q appears after module import %q — move it into the stdlib group (round-19 class)", rel, pm[1], seenModule)
-					break
+					t.Errorf("%s: stdlib import %q appears after module import %q — move it into the stdlib group (round-19 class)", rel, p, seenModule)
 				}
 			}
 		}

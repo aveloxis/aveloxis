@@ -4,8 +4,11 @@
 package srctest
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -25,7 +28,12 @@ import (
 // srctest/sqlscan from production is caught by the same scan below).
 func TestSrctestIsTestOnly(t *testing.T) {
 	root := Root(t)
-	const importPath = `"github.com/aveloxis/aveloxis/internal/srctest`
+	// v0.27.148 (round 27): the guard inspects PARSED ImportSpec paths,
+	// not source text. Go import paths are string_lits — the backtick
+	// raw-string form is legal — so a textual search for the quoted
+	// spelling could be bypassed by valid syntax. The round-22 rule
+	// (meta-tests parse, never regex) applied to imports.
+	const banned = "github.com/aveloxis/aveloxis/internal/srctest"
 	scanned := 0
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -33,7 +41,7 @@ func TestSrctestIsTestOnly(t *testing.T) {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" || name == "_build" {
+			if strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" || name == "_build" || name == "testdata" {
 				return filepath.SkipDir
 			}
 			if strings.HasSuffix(filepath.ToSlash(path), "internal/srctest") {
@@ -44,13 +52,21 @@ func TestSrctestIsTestOnly(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		b, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
+		af, perr := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if perr != nil {
+			t.Errorf("parse %s: %v — an unparseable non-test file cannot be verified", path, perr)
+			return nil
 		}
 		scanned++
-		if strings.Contains(string(b), importPath) {
-			t.Errorf("%s: NON-TEST file imports internal/srctest — the package is test-only; production code must never link the source-scanning helpers", path)
+		for _, imp := range af.Imports {
+			p, uerr := strconv.Unquote(imp.Path.Value)
+			if uerr != nil {
+				t.Errorf("%s: cannot unquote import %s: %v", path, imp.Path.Value, uerr)
+				continue
+			}
+			if p == banned || strings.HasPrefix(p, banned+"/") {
+				t.Errorf("%s: NON-TEST file imports %s — the package is test-only; production code must never link the source-scanning helpers", path, p)
+			}
 		}
 		return nil
 	})

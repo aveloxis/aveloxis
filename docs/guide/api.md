@@ -773,6 +773,14 @@ Token semantics:
   an edge-less lockfile format) — treat absence as "attribution
   unavailable", never as "no parents".
 
+- `introduced_by_total_roots` (v0.27.148): the TRUE count of distinct
+  direct roots pulling the package in. `introduced_by` caps at 3
+  emitted chains; this field is how a consumer distinguishes "exactly
+  3 roots" from "30 roots, showing 3". When
+  `introduced_by_total_roots == len(introduced_by)` the attribution
+  set is complete; when it is larger, bumping the named roots alone
+  may not remove the package. Omitted (0) when no chain resolved.
+
   **Version-resolution accuracy (v0.27.11).** Each finding also
   carries `declared_requirement` — the raw manifest requirement
   string (`apache-airflow>=3.0.0`) — and `version_resolution`, how

@@ -157,9 +157,20 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 	// discipline — a mistaken caller passing a nonzero startedAt with
 	// success=false must not create a blind window. Anchor only on
 	// (success AND nonzero startedAt); NULL keeps the stored value.
+	//
+	// v0.27.148 (round 27): the anchor is FLOORED to the whole second.
+	// Go's start timestamp has nanosecond precision but forge
+	// timestamps serialize at second (GitHub) or millisecond (GitLab)
+	// precision, truncated DOWN — an item updated at start+0.2s can
+	// come back as updated_at == floor(start), which the next round's
+	// breakout compares Before(since) and permanently skips,
+	// terminating pagination behind it. Flooring the anchor makes the
+	// boundary second re-listed instead (idempotent upserts make the
+	// ≤1s overlap free). Truncate(0) of the zero time is still zero,
+	// so the failure/skip don't-advance contract is unchanged.
 	var startAnchor *time.Time
 	if success {
-		startAnchor = NullTime(startedAt)
+		startAnchor = NullTime(startedAt.Truncate(time.Second))
 	}
 
 	// v0.21.2 — last_issues and last_prs are written as the

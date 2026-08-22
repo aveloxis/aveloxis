@@ -22,10 +22,11 @@ type vulnChainJSON struct {
 	Chain []string `json:"chain"`
 }
 
-// maxChainRoots bounds how many distinct direct roots are reported per
-// finding (widely-shared utility packages can be pulled by dozens —
-// three named roots plus the count tells the operator what to bump
-// without drowning the payload).
+// maxChainRoots bounds how many distinct direct roots get an EMITTED
+// chain per finding (widely-shared utility packages can be pulled by
+// dozens). The walk still counts every root — the finding carries
+// introduced_by_total_roots so three named roots plus the true count
+// tell the operator what to bump without drowning the payload.
 const maxChainRoots = 3
 
 // maxChainDepth bounds the upward walk (npm graphs can be cyclic;
@@ -89,7 +90,14 @@ func buildChainIndex(edges []db.RepoLockfileEdge, sets db.DirectPackageSets) *ch
 // each), cycle-safe, depth-capped, roots deduped across lockfiles.
 // Returns nil when no path reaches a direct root — the honest state
 // for edge-less formats and orphaned packages.
-func (idx *chainIndex) chainsFor(ecosystem, pkg string) []vulnChainJSON {
+// chainsFor returns up to maxChainRoots attribution chains plus the
+// TOTAL number of distinct direct roots found. v0.27.148 (round 27):
+// the cap alone was dishonest — a consumer could not tell "exactly 3
+// roots" from "30 roots, showing 3" and might present a truncated
+// remediation set as complete. The walk now runs to exhaustion (still
+// depth- and cycle-bounded) so the total is real; only the EMITTED
+// chains are capped.
+func (idx *chainIndex) chainsFor(ecosystem, pkg string) ([]vulnChainJSON, int) {
 	paths := make([]string, 0, len(idx.graphs))
 	for p := range idx.graphs {
 		paths = append(paths, p)
@@ -98,12 +106,9 @@ func (idx *chainIndex) chainsFor(ecosystem, pkg string) []vulnChainJSON {
 	var out []vulnChainJSON
 	rootSeen := map[string]bool{}
 	for _, p := range paths {
-		if len(out) >= maxChainRoots {
-			break
-		}
 		out = walkChainGraph(idx.graphs[p], idx.direct[p], idx.declared, ecosystem, pkg, rootSeen, out)
 	}
-	return out
+	return out, len(rootSeen)
 }
 
 // walkChainGraph is the BFS over ONE lockfile's adjacency. rootSeen is
@@ -117,7 +122,7 @@ func walkChainGraph(parents map[string][]string, lockfileDirect, declared map[st
 	}
 	visited := map[string]bool{pkg: true}
 	queue := []node{{name: pkg, path: []string{pkg}}}
-	for len(queue) > 0 && len(out) < maxChainRoots {
+	for len(queue) > 0 {
 		n := queue[0]
 		queue = queue[1:]
 		if len(n.path) > maxChainDepth {
@@ -134,15 +139,18 @@ func walkChainGraph(parents map[string][]string, lockfileDirect, declared map[st
 				if rootSeen[parent] {
 					continue // already attributed via another lockfile
 				}
+				// v0.27.148: EVERY distinct root is counted (rootSeen is
+				// the total the API reports); only the first
+				// maxChainRoots get an emitted chain. A root terminates
+				// the upward walk either way.
 				rootSeen[parent] = true
-				// Emit root-first.
-				chain := make([]string, 0, len(path))
-				for i := len(path) - 1; i >= 0; i-- {
-					chain = append(chain, path[i])
-				}
-				out = append(out, vulnChainJSON{Root: parent, Chain: chain})
-				if len(out) >= maxChainRoots {
-					break
+				if len(out) < maxChainRoots {
+					// Emit root-first.
+					chain := make([]string, 0, len(path))
+					for i := len(path) - 1; i >= 0; i-- {
+						chain = append(chain, path[i])
+					}
+					out = append(out, vulnChainJSON{Root: parent, Chain: chain})
 				}
 				continue
 			}

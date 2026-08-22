@@ -108,34 +108,110 @@ func TestParsePodlingsAllIncubating(t *testing.T) {
 
 // TestFetchHitsBothEndpoints — Fetch must combine projects.json + podlings.json
 // results into a single list, using the URLs we pass in so tests can stub the
-// server.
+// server. Round-24: Fetch also PROBES podling repo URLs against the
+// forge (via the podlingProbeBase seam — a bare run would otherwise
+// hit live github.com from a unit test) and resolves the moving-target
+// incubator- prefix: amoro is served as the GRADUATED-rename shape
+// (incubator- 301s, plain 200s — the exact production example) and
+// must come back PLAIN; burr stays incubator-.
 func TestFetchHitsBothEndpoints(t *testing.T) {
 	projectsJSON, _ := os.ReadFile("testdata/projects_mini.json")
 	podlingsJSON, _ := os.ReadFile("testdata/podlings_mini.json")
 
-	var hits int
+	var jsonHits int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.Contains(r.URL.Path, "podlings"):
+		case strings.Contains(r.URL.Path, "podlings.json"):
+			jsonHits++
+			w.Header().Set("Content-Type", "application/json")
 			w.Write(podlingsJSON)
-		default:
+		case strings.Contains(r.URL.Path, "projects.json"):
+			jsonHits++
+			w.Header().Set("Content-Type", "application/json")
 			w.Write(projectsJSON)
+		// Forge probes (HEAD): amoro graduated — the incubator- form
+		// redirects, the plain form exists; burr is still incubating.
+		case r.URL.Path == "/apache/incubator-amoro":
+			w.Header().Set("Location", "/apache/amoro")
+			w.WriteHeader(http.StatusMovedPermanently)
+		case r.URL.Path == "/apache/amoro":
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/apache/incubator-burr":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
+
+	oldBase := podlingProbeBase
+	podlingProbeBase = server.URL
+	t.Cleanup(func() { podlingProbeBase = oldBase })
 
 	projects, err := Fetch(context.Background(), server.URL+"/projects.json", server.URL+"/podlings.json")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if hits != 2 {
-		t.Errorf("server hit %d times, want exactly 2 (projects + podlings)", hits)
+	if jsonHits != 2 {
+		t.Errorf("JSON endpoints hit %d times, want exactly 2 (projects + podlings)", jsonHits)
 	}
 	// 3 TLPs + 2 podlings = 5.
 	if len(projects) != 5 {
 		t.Errorf("got %d projects, want 5 (3 TLPs + 2 podlings)", len(projects))
+	}
+	byName := map[string][]string{}
+	for _, p := range projects {
+		byName[p.Name] = p.RepoURLs
+	}
+	if !reposContain(byName["Apache Amoro (Incubating)"], "https://github.com/apache/amoro") {
+		t.Errorf("graduated-rename podling must resolve to the PLAIN form, got %v", byName["Apache Amoro (Incubating)"])
+	}
+	if !reposContain(byName["Apache Burr (Incubating)"], "https://github.com/apache/incubator-burr") {
+		t.Errorf("in-incubation podling must keep the incubator- form, got %v", byName["Apache Burr (Incubating)"])
+	}
+}
+
+// TestFetchDropsUnresolvablePodlingURLs — a podling neither variant of
+// which exists on the forge must move its URL to UnresolvedRepoURLs
+// (the importer skips it) instead of shipping a phantom catalog row.
+func TestFetchDropsUnresolvablePodlingURLs(t *testing.T) {
+	podlingsJSON := []byte(`{"ghostling": {"name": "Apache Ghostling (Incubating)", "podling": true}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "podlings.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(podlingsJSON)
+		case strings.Contains(r.URL.Path, "projects.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusNotFound) // no variant exists
+		}
+	}))
+	defer server.Close()
+
+	oldBase := podlingProbeBase
+	podlingProbeBase = server.URL
+	t.Cleanup(func() { podlingProbeBase = oldBase })
+
+	projects, err := Fetch(context.Background(), server.URL+"/projects.json", server.URL+"/podlings.json")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	var ghost *Project
+	for i := range projects {
+		if projects[i].Name == "Apache Ghostling (Incubating)" {
+			ghost = &projects[i]
+		}
+	}
+	if ghost == nil {
+		t.Fatal("podling project missing from Fetch result")
+	}
+	if len(ghost.RepoURLs) != 0 {
+		t.Errorf("unresolvable podling must ship ZERO repo URLs (no phantom rows), got %v", ghost.RepoURLs)
+	}
+	if len(ghost.UnresolvedRepoURLs) != 1 {
+		t.Errorf("the guessed URL must be surfaced in UnresolvedRepoURLs, got %v", ghost.UnresolvedRepoURLs)
 	}
 }
 

@@ -19,6 +19,14 @@ type Project struct {
 	Name       string   // display name, e.g. "Kubernetes" or "Apache Accumulo"
 	Homepage   string   // homepage URL (may be empty)
 	RepoURLs   []string // one or more normalized repo URLs
+	// Slug (round-24, apache podlings only): the podlings.json key,
+	// carried so the forge probe can build the incubator↔plain twin.
+	Slug string
+	// UnresolvedRepoURLs (round-24): slug-derived URLs whose FORGE
+	// probe found no existing repo under either naming variant —
+	// surfaced so the importer logs and SKIPS them instead of
+	// upserting phantom catalog rows (the v0.27.132 wedge origin).
+	UnresolvedRepoURLs []string
 }
 
 // NormalizeRepoURL canonicalizes a URL to the form the rest of the

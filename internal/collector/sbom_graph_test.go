@@ -322,3 +322,65 @@ func TestGenerateSBOMLoadsGraphFromStore(t *testing.T) {
 		t.Error("C2 lookups must FAIL generation on error, not degrade silently")
 	}
 }
+
+// Round-24 (Copilot): spdxPackageID hashed bare name@version, so
+// npm/foo@1.0.0 and pypi/foo@1.0.0 shared one SPDXID — seenIDs
+// dropped the second package while its graph key kept the shared ID,
+// silently pointing one ecosystem's relationships at the other's
+// purl. IDs are now ecosystem-scoped (alias-folded, so gem/rubygems
+// spellings of the SAME package still deduplicate).
+func TestGenerateSPDX_CrossEcosystemNameCollision(t *testing.T) {
+	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org", GitURL: "https://github.com/org/myapp"}
+	graph := &sbomGraph{
+		Transitives: []db.RepoLockfilePackage{
+			{Ecosystem: "npm", PackageName: "foo", ResolvedVersion: "1.0.0"},
+			{Ecosystem: "pypi", PackageName: "foo", ResolvedVersion: "1.0.0"},
+		},
+		Edges: []db.RepoLockfileEdge{
+			{Ecosystem: "pypi", ParentName: "flask", ChildName: "foo"},
+		},
+	}
+	deps := []db.SBOMDep{
+		{Name: "flask", CurrentVersion: "2.0.0", PackageManager: "pypi", Purl: "pkg:pypi/flask@2.0.0"},
+	}
+	data, err := generateSPDX(repo, deps, nil, graph)
+	if err != nil {
+		t.Fatalf("generateSPDX: %v", err)
+	}
+	var doc spdxDoc
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	// root + flask + BOTH foos = 4 packages, with distinct SPDXIDs and
+	// each carrying its OWN ecosystem's purl.
+	if len(doc.Packages) != 4 {
+		t.Fatalf("expected 4 packages (cross-eco collision must NOT dedup), got %d", len(doc.Packages))
+	}
+	purlByID := map[string]string{}
+	for _, p := range doc.Packages {
+		if len(p.ExternalRefs) == 1 {
+			purlByID[p.SPDXID] = p.ExternalRefs[0].ReferenceLocator
+		}
+	}
+	npmID := spdxPackageID("npm", "foo", "1.0.0")
+	pypiID := spdxPackageID("pypi", "foo", "1.0.0")
+	if npmID == pypiID {
+		t.Fatal("SPDXIDs must be ecosystem-scoped")
+	}
+	if purlByID[npmID] != "pkg:npm/foo@1.0.0" || purlByID[pypiID] != "pkg:pypi/foo@1.0.0" {
+		t.Errorf("each collision package must carry its own ecosystem's purl: npm=%q pypi=%q", purlByID[npmID], purlByID[pypiID])
+	}
+	// The pypi edge must relate flask to the PYPI foo, never npm's.
+	flaskID := spdxPackageID("pypi", "flask", "2.0.0")
+	for _, r := range doc.Relationships {
+		if r.RelationshipType == "DEPENDS_ON" && r.SpdxElementId == flaskID {
+			if r.RelatedSpdxElement != pypiID {
+				t.Errorf("pypi edge resolved to the wrong ecosystem's package: %s", r.RelatedSpdxElement)
+			}
+		}
+	}
+	// Same-package alias spellings still dedup (gem vs rubygems).
+	if spdxPackageID("gem", "rails", "7.0") != spdxPackageID("rubygems", "rails", "7.0") {
+		t.Error("alias-folded ecosystems must produce the SAME ID — that is one real package")
+	}
+}

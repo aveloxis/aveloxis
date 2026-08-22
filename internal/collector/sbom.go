@@ -616,7 +616,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 	for _, dep := range deps {
 		// Stable package ID based on a hash of the name+version, not loop index.
 		// This ensures IDs don't change when the dep list is reordered.
-		pkgID := spdxPackageID(dep.Name, dep.CurrentVersion)
+		pkgID := spdxPackageID(dep.PackageManager, dep.Name, dep.CurrentVersion)
 		declared := spdxDeclaredLicense(dep.License) // v0.27.29
 		seenIDs[pkgID] = true
 		k := sbomGraphKey(dep.PackageManager, dep.Name)
@@ -669,7 +669,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 	// set above are unchanged.
 	if graph != nil {
 		for _, t := range graph.Transitives {
-			pkgID := spdxPackageID(t.PackageName, t.ResolvedVersion)
+			pkgID := spdxPackageID(t.Ecosystem, t.PackageName, t.ResolvedVersion)
 			k := sbomGraphKey(t.Ecosystem, t.PackageName)
 			if !sliceContains(byName[k], pkgID) {
 				byName[k] = append(byName[k], pkgID)
@@ -734,11 +734,19 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 	return json.MarshalIndent(doc, "", "  ")
 }
 
-// spdxPackageID generates a stable SPDX package identifier from the package
-// name and version. Uses a truncated SHA-256 hash to ensure stability across
-// regenerations regardless of dep ordering.
-func spdxPackageID(name, version string) string {
-	h := sha256.Sum256([]byte(name + "@" + version))
+// spdxPackageID generates a stable SPDX package identifier. Uses a
+// truncated SHA-256 hash to ensure stability across regenerations
+// regardless of dep ordering. Round-24: the hash input is the
+// ECOSYSTEM-SCOPED graph key (db.LockfileGraphKey — alias-folded, so
+// the same real package reached via the gem/rubygems vocabulary split
+// still deduplicates) + "@" + version. A bare name@version hash
+// collided npm/foo@1.0.0 with pypi/foo@1.0.0: seenIDs dropped the
+// second package while its graph key kept the shared ID, silently
+// pointing one ecosystem's relationships at the other's purl. IDs are
+// document-scoped per the SPDX spec, so the scheme change only means
+// regenerated documents carry new (still deterministic) SPDXIDs.
+func spdxPackageID(eco, name, version string) string {
+	h := sha256.Sum256([]byte(db.LockfileGraphKey(eco, name) + "@" + version))
 	return fmt.Sprintf("SPDXRef-Package-%x", h[:8])
 }
 

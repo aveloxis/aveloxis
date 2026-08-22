@@ -98,6 +98,7 @@ func ParsePodlings(data []byte) ([]Project, error) {
 			Name:       entry.Name,
 			Homepage:   entry.Homepage,
 			RepoURLs:   []string{repo},
+			Slug:       slug,
 		})
 	}
 	return projects, nil
@@ -147,16 +148,70 @@ func (p PMC) RepoURLVariants() []string {
 	if p.RepoURL == "" {
 		return nil
 	}
-	out := []string{p.RepoURL}
-	plain := "https://github.com/apache/" + p.Slug
-	incubator := "https://github.com/apache/incubator-" + p.Slug
-	switch p.RepoURL {
+	return RepoURLVariants(p.RepoURL, p.Slug)
+}
+
+// RepoURLVariants returns the URL plus its incubator↔plain twin when
+// the URL is the slug-derived form (round-24, extracted from the PMC
+// method so the podling repo-URL RESOLUTION shares it).
+//
+// The Apache domain rule (operator, 2026-08-22): repos carry the
+// `incubator-` prefix WHILE a project is in the incubator, lose it at
+// graduation, and the prefix never returns; some projects never
+// leave. podlings.json lags renames in both directions, so which form
+// exists is by design a moving target — the FORGE, not the naming
+// convention, is the authority (resolvePodlingRepoURL probes it).
+func RepoURLVariants(repoURL, slug string) []string {
+	out := []string{repoURL}
+	plain := "https://github.com/apache/" + slug
+	incubator := "https://github.com/apache/incubator-" + slug
+	switch repoURL {
 	case plain:
 		out = append(out, incubator)
 	case incubator:
 		out = append(out, plain)
 	}
 	return out
+}
+
+// podlingProbeBase is the forge base the resolver probes; a test seam
+// (the npmRegistryBase precedent) — production always github.com.
+var podlingProbeBase = "https://github.com"
+
+// resolvePodlingRepoURL probes which variant of a slug-derived podling
+// URL actually EXISTS, so the importer never upserts a phantom row
+// (the v0.27.132 wedge origin: guessed URLs 404'd, prelim dequeued
+// them, and the PMC groups emptied). Probe rules, per variant in
+// order (the guessed form first): HTTP 200 → that variant is
+// canonical; 301/302 → the repo exists under ANOTHER name, try the
+// twin; anything else → try the next variant. No variant resolves →
+// ("", false) and the caller skips WITHOUT inserting.
+func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, slug string) (string, bool) {
+	noRedirect := &http.Client{
+		Timeout:       client.Timeout,
+		Transport:     client.Transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	for _, candidate := range RepoURLVariants(repoURL, slug) {
+		probeURL := candidate
+		if podlingProbeBase != "https://github.com" {
+			probeURL = strings.Replace(candidate, "https://github.com", podlingProbeBase, 1)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, probeURL, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return candidate, true
+		}
+		// 301/302: exists under another name — the twin is next.
+	}
+	return "", false
 }
 
 // ListDomain returns the Apache mailing-list domain for the PMC, e.g.
@@ -242,6 +297,25 @@ func Fetch(ctx context.Context, projectsURL, podlingsURL string) ([]Project, err
 	podProjects, err := ParsePodlings(pods)
 	if err != nil {
 		return tlpProjects, err
+	}
+
+	// Round-24: podling repo URLs are GUESSES (the incubator- prefix
+	// is a moving target by design — present while incubating, shed at
+	// graduation, never returns; podlings.json lags both directions).
+	// Probe the forge and keep only the variant that EXISTS; a URL no
+	// variant resolves moves to UnresolvedRepoURLs so the importer
+	// skips it instead of seeding a phantom catalog row.
+	for i := range podProjects {
+		p := &podProjects[i]
+		resolved := p.RepoURLs[:0]
+		for _, rurl := range p.RepoURLs {
+			if canonical, ok := resolvePodlingRepoURL(ctx, client, rurl, p.Slug); ok {
+				resolved = append(resolved, canonical)
+			} else {
+				p.UnresolvedRepoURLs = append(p.UnresolvedRepoURLs, rurl)
+			}
+		}
+		p.RepoURLs = resolved
 	}
 
 	combined := make([]Project, 0, len(tlpProjects)+len(podProjects))

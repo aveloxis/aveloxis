@@ -1108,3 +1108,52 @@ func TestGapForceListSentinel(t *testing.T) {
 // invariant + the mistaken-caller behavioral case); #2 in
 // gap_heal_test.go (RefreshQueueGatheredCounts after successful heals
 // — rerun-until-0 convergence).
+
+// ---------------------------------------------------------------------------
+// Round 24 (v0.27.143) — review 5000294838: 1 active + 1 suppressed,
+// both real.
+// ---------------------------------------------------------------------------
+
+// Suppressed: hardcoding every podling to the incubator- form still
+// seeded phantom rows for podlings whose canonical repo is plain
+// (apache/amoro exists; apache/incubator-amoro does not) — the
+// v0.27.132 variants only protected load-apache-lists, while
+// import-foundations upserted the guess directly. The operator's
+// domain rule: the prefix exists WHILE incubating, is shed at
+// graduation, never returns, and podlings.json lags both directions —
+// so the FORGE probe, not the naming convention, is the authority.
+// Fetch now resolves each podling URL against the forge (test seam:
+// podlingProbeBase) and moves no-variant-exists URLs to
+// UnresolvedRepoURLs, which the importer logs and SKIPS.
+func TestPodlingRepoURLsAreForgeResolved(t *testing.T) {
+	a := srctest.Read(t, "internal/importers/apache/apache.go")
+	for _, needle := range []string{
+		"func resolvePodlingRepoURL(",
+		"var podlingProbeBase",
+		"p.UnresolvedRepoURLs = append(p.UnresolvedRepoURLs, rurl)",
+	} {
+		if !strings.Contains(a, needle) {
+			t.Errorf("apache.go missing %s", needle)
+		}
+	}
+	imp := srctest.Read(t, "cmd/aveloxis/import_foundations.go")
+	if !strings.Contains(imp, "p.UnresolvedRepoURLs") {
+		t.Error("import-foundations must log+skip unresolved podling URLs — upserting the guess is how the phantom rows were born")
+	}
+}
+
+// Active: spdxPackageID hashed bare name@version — npm/foo@1.0.0 and
+// pypi/foo@1.0.0 shared one SPDXID, and the second ecosystem's graph
+// key pointed relationships at the first's package/purl. IDs are now
+// ecosystem-scoped through the SAME alias-folded graph key everything
+// else uses (behavioral proof:
+// TestGenerateSPDX_CrossEcosystemNameCollision).
+func TestSPDXIDsAreEcosystemScoped(t *testing.T) {
+	s := srctest.Read(t, "internal/collector/sbom.go")
+	if !strings.Contains(s, "func spdxPackageID(eco, name, version string) string") {
+		t.Error("spdxPackageID must take the ecosystem")
+	}
+	if !strings.Contains(s, `sha256.Sum256([]byte(db.LockfileGraphKey(eco, name) + "@" + version))`) {
+		t.Error("the ID hash must scope by the alias-folded graph key — bare name@version collides across ecosystems")
+	}
+}

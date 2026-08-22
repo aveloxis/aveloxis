@@ -26,8 +26,8 @@ func TestStrongerScope(t *testing.T) {
 		{ScopeDev, "", ""},                       // "" is runtime-class
 		{ScopeDev, ScopeOptional, ScopeOptional}, // optional beats dev
 		{ScopeOptional, ScopeRuntime, ScopeRuntime},
-		{ScopeTest, ScopeBuild, ScopeTest},           // equal rank: first wins
-		{ScopeRuntime, "", ScopeRuntime},             // equal rank: first wins
+		{ScopeTest, ScopeBuild, ScopeTest},             // equal rank: first wins
+		{ScopeRuntime, "", ScopeRuntime},               // equal rank: first wins
 		{ScopeDev, "future-unknown", "future-unknown"}, // unknown reads as runtime (visibility)
 	}
 	for _, c := range cases {

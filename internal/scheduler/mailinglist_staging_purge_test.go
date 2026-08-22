@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestRunStagingCleanupPurgesMailingListStaging pins that the hourly staging
@@ -30,15 +32,10 @@ func TestRunStagingCleanupPurgesMailingListStaging(t *testing.T) {
 // extractFuncBody returns the text from the function signature to its first
 // top-level closing brace at column 0 (good enough for source-contract scans
 // of a single gofmt'd function).
+// v0.27.118: delegates to internal/srctest — the ONE brace-counting
+// extractor (this package's cut-at-first-`\n}\n` variant agreed with
+// brace counting only on gofmt'd top-level functions).
 func extractFuncBody(t *testing.T, src, sig string) string {
 	t.Helper()
-	i := strings.Index(src, sig)
-	if i < 0 {
-		t.Fatalf("function %q not found", sig)
-	}
-	rest := src[i:]
-	if j := strings.Index(rest, "\n}\n"); j >= 0 {
-		return rest[:j]
-	}
-	return rest
+	return srctest.FuncBody(t, src, sig)
 }

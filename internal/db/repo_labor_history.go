@@ -131,3 +131,25 @@ func rotateRepoLaborSnapshotWindows(ctx context.Context, pg *PostgresStore, logg
 	}
 	return moved, windows, nil
 }
+
+// ensureRepoLaborHistoryIndex builds the plain repo_id index on
+// repo_labor_history — the ONE deliberate index on the history table
+// (dedup-repos' hygiene delete probes it; 188 measured scans on
+// production). Declared under the exact auto-generated name a
+// LIKE-INCLUDING-ALL copy produced on fleets whose v0.27.7 migration
+// ran after repo_labor had its indexes, so those fleets no-op via
+// IF NOT EXISTS.
+//
+// v0.27.123 (Copilot round 15, suppressed — the v0.27.98 rule): this
+// index is MIGRATION-ONLY. A schema.sql declaration executes in base
+// DDL before any migration step and would block-build with a plain
+// CREATE INDEX on upgraded fleets that LACK the accidental copy —
+// blocking rotation writers on a fleet-scale history table for the
+// build. Fresh installs get it through this same step (CONCURRENTLY
+// on an empty table is instant — the v0.27.98 precedent).
+func ensureRepoLaborHistoryIndex(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "repo_labor_history_repo_id_idx",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS repo_labor_history_repo_id_idx
+		 ON aveloxis_data.repo_labor_history (repo_id)`)
+}

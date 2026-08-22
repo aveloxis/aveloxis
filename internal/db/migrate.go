@@ -33,6 +33,20 @@ var schemaSQL string
 // pg_trgm extension creation remain warn-only (they're derived
 // data / performance optimizations, not schema integrity).
 func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
+	// F13 fast path (v0.27.131): with the stamp current, skip everything —
+	// BEFORE the advisory lock, deliberately: the stamp lands only after
+	// a COMPLETE successful run and every step is idempotent, so racing a
+	// concurrent full migration is safe, and a matching stamp needs no
+	// serialization at all. See SetMigrateFastPath for the contract
+	// (serve-only; `aveloxis migrate` always runs fully).
+	if pg.migrateFastPath {
+		if v := pg.GetSchemaVersion(ctx); v == ToolVersion {
+			logger.Info("schema stamp matches binary — skipping migrations (F13 fast path); run `aveloxis migrate` for a full pass",
+				"schema_version", v)
+			return nil
+		}
+	}
+
 	logger.Info("running schema migrations")
 
 	// v0.20.1: acquire a postgres advisory lock so two `aveloxis
@@ -122,14 +136,19 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	go watchBlockers(ctx, pg, logger, migrateDone)
 	defer close(migrateDone)
 
-	if _, err := pg.pool.Exec(ctx, schemaSQL); err != nil {
-		// The base DDL block is the foundation — if it fails, every
-		// subsequent step is operating against an unknown schema. We
-		// still keep going to surface as many follow-up errors as
-		// possible, but record this one first.
-		logger.Error("schema migration error", "step", "base schema DDL", "error", err)
-		errs = append(errs, fmt.Errorf("base schema DDL: %w", err))
-	}
+	// The base DDL block is the foundation — if it fails, every
+	// subsequent step operates against an unknown schema; we still keep
+	// going to surface as many follow-up errors as possible, and this
+	// one is recorded first. v0.27.114: routed through execMigrationStep
+	// so the base DDL gets the same bounded 40P01 retry every OTHER step
+	// has had since v0.27.18 — the multi-statement Exec's ALTER/CREATE
+	// statements can be picked as the deadlock victim against another
+	// session's ordinary statements (parallel test packages on the
+	// shared scratch DB reproduced it on every combined run; `aveloxis
+	// migrate` beside a live serve is the production shape), and every
+	// schema.sql statement is IF NOT EXISTS-idempotent, so the v0.27.18
+	// retry rationale applies verbatim.
+	execMigrationStep(ctx, pg, logger, &errs, "base schema DDL", schemaSQL)
 
 	// Run data cleanup for any garbage timestamps from prior versions.
 	if err := cleanupBadTimestamps(ctx, pg, logger); err != nil {
@@ -150,6 +169,18 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	migrateStage8FKHardening(ctx, pg, logger, &errs)
 	migrateStage9DataQuality(ctx, pg, logger, &errs)
 	migrateStage10RecentReleases(ctx, pg, logger, &errs)
+
+	// v0.27.115 (drift-audit finding 1): base-table plain views run on
+	// EVERY migrate, unconditionally — including --skip-views. They
+	// cost nothing (no storage, no refresh, CREATE OR REPLACE), and
+	// this is the ONLY path that reaches a populated fleet: the matview
+	// block below is sentinel-gated or skipped, so a view stranded in
+	// matviews.sql never materializes on an existing installation
+	// (mailing_list_pr_equivalents was missing on production from
+	// v0.25.7 until this fix). Runs after all stages so every base
+	// table + column the views reference exists.
+	execMigrationStep(ctx, pg, logger, &errs, "base-table views", viewsSQL)
+
 	// Create/update materialized views for 8Knot and analytics.
 	// Skipped by default on startup (can take minutes on large databases).
 	// Set collection.matview_rebuild_on_startup=true in aveloxis.json to enable,
@@ -1179,6 +1210,47 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// see perf_indexes.go for the measurements.
 	ensurePerfWaveIndexes(ctx, pg, logger, errs)
 
+	// v0.27.102: forge-numeric-ID lookup index (rename/transfer dedup —
+	// see repo_forge_id.go). Partial on non-empty so it stays tiny until
+	// Phase 0 backfills the fleet's platform_repo_id values.
+	ensureForgeIDIndex(ctx, pg, logger, errs)
+
+	// v0.27.103 backfill releases.data_source: GitHub's ListReleases never
+	// set Origin, so data_source was empty on every GitHub release row
+	// (1,051,111 of 1,051,111 on production — 2026-08-19 fill audit).
+	// Value derived from the owning repo's platform. Self-disabling via
+	// the empty-data_source predicate; ~1M rows = one pass, no windows.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.103 backfill releases.data_source from repo platform", `
+		UPDATE aveloxis_data.releases rel
+		SET data_source = CASE r.platform_id
+			WHEN 2 THEN 'GitLab API'
+			ELSE 'GitHub API'
+		END
+		FROM aveloxis_data.repos r
+		WHERE r.repo_id = rel.repo_id
+		  AND COALESCE(rel.data_source, '') = ''`)
+
+	// v0.27.104: backfill pull_requests.meta_head_id/meta_base_id from
+	// pull_request_meta (100% derivable locally — see pr_meta_links.go).
+	ensurePRMetaLinks(ctx, pg, logger, errs)
+
+	// v0.27.105: whitespace-walk marker (fill-audit Workstream C).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "whitespace_head_hash", "TEXT DEFAULT ''")
+
+	// v0.27.108: delete poisoned (platform, 0) identity rows — the
+	// pre-fix Resolve created ONE shared identity row for every
+	// login-only ref (userID==0), its login churning per observation
+	// while cntrb_id stayed pinned to the first contributor (production
+	// carried exactly one: the codecov Bot actor). Identity rows are
+	// meaningless without a real platform_user_id; nothing reads them
+	// post-v0.27.106. Self-disabling: once deleted, the fixed writer
+	// never recreates them.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.108 delete poisoned platform_user_id=0 identity rows", `
+		DELETE FROM aveloxis_data.contributor_identities
+		WHERE platform_user_id = 0`)
+
 	// v0.22.7: apply ON UPDATE CASCADE ON DELETE RESTRICT
 	// DEFERRABLE INITIALLY DEFERRED to the same 50 FKs. RESTRICT
 	// prevents orphaned-child rows by blocking parent DELETEs;
@@ -1694,6 +1766,34 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		`CREATE INDEX IF NOT EXISTS idx_repo_lockfile_packages_repo_id
 			ON aveloxis_data.repo_lockfile_packages (repo_id)`)
 
+	// v0.27.133 (C2): lockfile dependency edges — parent-chain
+	// attribution's substrate. Same DDL as schema.sql so existing
+	// fleets pick the table up on migrate (the v0.27.63 twin pattern).
+	// Born empty everywhere; the plain index builds on an empty table.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.133 create repo_lockfile_edges",
+		`CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfile_edges (
+			lockfile_edge_id BIGSERIAL PRIMARY KEY,
+			repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id)
+			                   ON UPDATE CASCADE ON DELETE RESTRICT
+			                   DEFERRABLE INITIALLY DEFERRED,
+			ecosystem        TEXT NOT NULL,
+			lockfile_path    TEXT NOT NULL,
+			parent_name      TEXT NOT NULL,
+			parent_version   TEXT NOT NULL DEFAULT '',
+			child_name       TEXT NOT NULL,
+			child_constraint TEXT NOT NULL DEFAULT '',
+			tool_source      TEXT DEFAULT 'aveloxis',
+			tool_version     TEXT DEFAULT '',
+			data_source      TEXT DEFAULT '',
+			data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE (repo_id, lockfile_path, parent_name, parent_version, child_name)
+		)`)
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.133 index repo_lockfile_edges by repo",
+		`CREATE INDEX IF NOT EXISTS idx_repo_lockfile_edges_repo_id
+			ON aveloxis_data.repo_lockfile_edges (repo_id)`)
+
 	// v0.27.50: reconcile repos.repo_archived with the forge's actual
 	// archived status. The GraphQL isArchived bit reaches
 	// repo_info.status ('Archived') but was NEVER propagated to the
@@ -1865,6 +1965,35 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"aveloxis_data", "idx_pull_request_review_message_ref_msg_id",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_request_review_message_ref_msg_id
 		 ON aveloxis_data.pull_request_review_message_ref (msg_id)`)
+
+	// v0.27.115 (2026-08-20 schema-drift audit remediation, operator
+	// decisions on findings 3 + 4):
+	//   - contributors_old: Augur-import residue — zero writers ever,
+	//     zero readers, zero rows on production. Dropped from
+	//     schema.sql and from existing installations.
+	//   - the composite repo_labor_history index: an accidental
+	//     LIKE-INCLUDING-ALL copy of the parent's (repo_id,
+	//     rl_analysis_date DESC) index on fleets whose v0.27.7
+	//     migration ran after v0.25.5 — 0 scans ever on production,
+	//     1.2 GB of pure rotation write amplification. The plain
+	//     repo_id copy is KEPT (188 measured scans — dedup-repos'
+	//     hygiene delete) and owned by ensureRepoLaborHistoryIndex
+	//     below (v0.27.123: MIGRATION-ONLY per the v0.27.98 rule —
+	//     a schema.sql declaration would block-build it in base DDL
+	//     on fleets lacking the copy). Dropped names are never
+	//     re-created (the v0.25.6 rule).
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.115 drop contributors_old (Augur residue, operator-confirmed)",
+		`DROP TABLE IF EXISTS aveloxis_data.contributors_old`)
+	// v0.27.123 (Copilot round 15, suppressed): CONCURRENTLY — a plain
+	// DROP INDEX takes ACCESS EXCLUSIVE on the 1.2 GB history table and
+	// blocks rotation writers while this migration runs beside a live
+	// serve. Single statement through pool.Exec = implicit transaction,
+	// which DROP INDEX CONCURRENTLY permits.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.115 drop unused composite index copy on repo_labor_history",
+		`DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.repo_labor_history_repo_id_rl_analysis_date_idx`)
+	ensureRepoLaborHistoryIndex(ctx, pg, logger, errs)
 
 	// v0.27.63: collections (admin-curated groups-of-groups) — same
 	// DDL as schema.sql so existing fleets pick the tables up on

@@ -168,7 +168,7 @@ func (s *PostgresStore) GetRepoLicenses(ctx context.Context, repoID int64) ([]Li
 // runtime-scope filter (v0.27.46, summary/19 P3 — decision #8:
 // license COMPLIANCE obligations attach overwhelmingly to distributed
 // runtime deps; dev tooling licenses are informational). runtimeOnly
-// excludes rows whose type is a known non-runtime scope; '' and
+// excludes rows whose type is a known non-runtime scope; "" and
 // unrecognized values count as runtime (the IsRuntimeScope semantic,
 // expressed in SQL).
 func (s *PostgresStore) GetRepoLicensesScoped(ctx context.Context, repoID int64, runtimeOnly bool) ([]LicenseCount, error) {

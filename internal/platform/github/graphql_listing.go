@@ -92,7 +92,7 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
           totalCount
           nodes {
             databaseId id body createdAt updatedAt url authorAssociation
-            author { __typename login ... on User { databaseId avatarUrl url name email } }
+            author { __typename login ... on User { id databaseId avatarUrl url name email } ... on Bot { id databaseId avatarUrl url } }
           }
           pageInfo { hasNextPage endCursor }
         }
@@ -106,8 +106,8 @@ func (c *Client) listIssuesGraphQL(ctx context.Context, owner, repo string, sinc
         }
         author {
           __typename login
-          ... on User { databaseId avatarUrl url name email }
-          ... on Bot { databaseId avatarUrl url }
+          ... on User { id databaseId avatarUrl url name email }
+          ... on Bot { id databaseId avatarUrl url }
         }
       }
       pageInfo { hasNextPage endCursor }
@@ -386,7 +386,7 @@ func (c *Client) paginateIssueComments(ctx context.Context, owner, repo string, 
       comments(first: 100, after: $after) {
         nodes {
           databaseId id body createdAt updatedAt url authorAssociation
-          author { __typename login ... on User { databaseId avatarUrl url name email } }
+          author { __typename login ... on User { id databaseId avatarUrl url name email } ... on Bot { id databaseId avatarUrl url } }
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -461,8 +461,8 @@ func (c *Client) listPullRequestsGraphQL(ctx context.Context, owner, repo string
         mergeCommit { oid }
         author {
           __typename login
-          ... on User { databaseId avatarUrl url name email }
-          ... on Bot { databaseId avatarUrl url }
+          ... on User { id databaseId avatarUrl url name email }
+          ... on Bot { id databaseId avatarUrl url }
         }
       }
       pageInfo { hasNextPage endCursor }
@@ -511,10 +511,15 @@ func (c *Client) listPullRequestsGraphQL(ctx context.Context, owner, repo string
 		}
 
 		// Iterate in order. Because the connection is ordered UPDATED_AT
-		// DESC, once we see a PR whose updatedAt is on/before `since`,
-		// every subsequent PR is also older — stop paginating.
+		// DESC, once we see a PR whose updatedAt is STRICTLY before
+		// `since`, every subsequent PR is also older — stop paginating.
+		// v0.27.139: the boundary is INCLUSIVE (Before, not !After) to
+		// match the issues connection's filterBy.since semantics — a PR
+		// updated exactly at since must be collected, not used as the
+		// breakout sentinel (equality re-collection is an idempotent
+		// upsert; equality DROPPING is silent loss).
 		for _, n := range resp.Repository.PullRequests.Nodes {
-			if !since.IsZero() && !n.UpdatedAt.After(since) {
+			if !since.IsZero() && n.UpdatedAt.Before(since) {
 				return out, nil
 			}
 			pr := model.PullRequest{

@@ -284,57 +284,6 @@ Records contributor activity events tied to specific repositories. Tracks which 
 
 ---
 
-#### contributors_old
-
-Legacy backup table for contributor data. Holds a snapshot of contributor records before a migration or schema change. Structure mirrors the `contributors` table.
-
-| Column | Type | Source | Description |
-|--------|------|--------|-------------|
-| `cntrb_id` | UUID (PK) | Augur import | Primary key (not auto-generated; copied from contributors). |
-| `cntrb_login` | TEXT | Augur import | Platform login. |
-| `cntrb_email` | TEXT | Augur import | Email address. |
-| `cntrb_full_name` | TEXT | Augur import | Full display name. |
-| `cntrb_company` | TEXT | Augur import | Company affiliation. |
-| `cntrb_created_at` | TIMESTAMPTZ | Augur import | Account creation timestamp. |
-| `cntrb_type` | TEXT | Augur import | Account type. |
-| `cntrb_fake` | SMALLINT | Augur import | Fake flag. |
-| `cntrb_deleted` | SMALLINT | Augur import | Soft-delete flag. |
-| `cntrb_long` | NUMERIC(11,8) | Augur import | Longitude. |
-| `cntrb_lat` | NUMERIC(10,8) | Augur import | Latitude. |
-| `cntrb_country_code` | CHAR(3) | Augur import | ISO country code. |
-| `cntrb_state` | TEXT | Augur import | State/province. |
-| `cntrb_city` | TEXT | Augur import | City. |
-| `cntrb_location` | TEXT | Augur import | Location string. |
-| `cntrb_canonical` | TEXT | Augur import | Canonical email. |
-| `cntrb_last_used` | TIMESTAMPTZ | Augur import | Last activity timestamp. |
-| `gh_user_id` | BIGINT | Augur import | GitHub user ID. |
-| `gh_login` | TEXT | Augur import | GitHub login. |
-| `gh_url` | TEXT | Augur import | GitHub API URL. |
-| `gh_html_url` | TEXT | Augur import | GitHub profile URL. |
-| `gh_node_id` | TEXT | Augur import | GitHub node ID. |
-| `gh_avatar_url` | TEXT | Augur import | GitHub avatar URL. |
-| `gh_gravatar_id` | TEXT | Augur import | Gravatar ID. |
-| `gh_followers_url` | TEXT | Augur import | Followers API URL. |
-| `gh_following_url` | TEXT | Augur import | Following API URL. |
-| `gh_gists_url` | TEXT | Augur import | Gists API URL. |
-| `gh_starred_url` | TEXT | Augur import | Starred API URL. |
-| `gh_subscriptions_url` | TEXT | Augur import | Subscriptions API URL. |
-| `gh_organizations_url` | TEXT | Augur import | Organizations API URL. |
-| `gh_repos_url` | TEXT | Augur import | Repos API URL. |
-| `gh_events_url` | TEXT | Augur import | Events API URL. |
-| `gh_received_events_url` | TEXT | Augur import | Received events API URL. |
-| `gh_type` | TEXT | Augur import | GitHub account type. |
-| `gh_site_admin` | TEXT | Augur import | Site admin flag. |
-| `gl_web_url` | TEXT | Augur import | GitLab web URL. |
-| `gl_avatar_url` | TEXT | Augur import | GitLab avatar URL. |
-| `gl_state` | TEXT | Augur import | GitLab account state. |
-| `gl_username` | TEXT | Augur import | GitLab username. |
-| `gl_full_name` | TEXT | Augur import | GitLab full name. |
-| `gl_id` | BIGINT | Augur import | GitLab user ID. |
-| | | | *Standard metadata columns* |
-
----
-
 #### unresolved_commit_emails
 
 Holds email addresses found in git commits that could not be resolved to a known contributor. The commit resolver processes these to attempt matching.

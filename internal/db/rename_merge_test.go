@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestLinkContributorDetectsRenameAndMerges pins the v0.20.2 multi-row
@@ -168,11 +170,7 @@ func TestResolveLookupByLoginFiltersDeleted(t *testing.T) {
 // limitation"; v0.20.2 lifts that limitation and the doc must explain
 // the new logical-merge behavior.
 func TestRenameMergeDocumentedInArchitectureDoc(t *testing.T) {
-	data, err := os.ReadFile(docPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	doc := strings.ToLower(string(data))
+	doc := strings.ToLower(srctest.Read(t, docPath))
 	if !strings.Contains(doc, "cntrb_deleted") {
 		t.Error("docs/architecture/contributor-resolution.md must explain " +
 			"`cntrb_deleted` semantics — when it gets set, what it means, " +

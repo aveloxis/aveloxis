@@ -118,7 +118,7 @@ func TestArchivedStatusAndLastActivityEndToEnd(t *testing.T) {
 
 	// (b) reconciliation write path: UpdateRepoMetadata propagates
 	// archived BOTH directions onto repos.repo_archived.
-	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, true, ""); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, true, "", "", time.Time{}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	var flag bool
@@ -129,7 +129,7 @@ func TestArchivedStatusAndLastActivityEndToEnd(t *testing.T) {
 	if !flag {
 		t.Error("UpdateRepoMetadata(archived=true) must set repos.repo_archived")
 	}
-	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, ""); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, "", "", time.Time{}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.pool.QueryRow(ctx,
@@ -187,7 +187,7 @@ func TestMetadataCallersPassForgeArchived(t *testing.T) {
 }
 
 // TestScopeRuntimeWordBackfillMigration pins the v0.27.51 backfill:
-// ” → 'runtime' on direct/transitive findings, self rows untouched
+// "" → 'runtime' on direct/transitive findings, self rows untouched
 // (scope vocabulary does not apply to a project's own advisories).
 func TestScopeRuntimeWordBackfillMigration(t *testing.T) {
 	src, err := os.ReadFile("migrate.go")

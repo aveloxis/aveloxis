@@ -22,13 +22,19 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
 // exampleValueAllowlist: fields where aveloxis.example.json may
 // legitimately differ from the compiled default. Keep this SHORT.
 var exampleValueAllowlist = map[string]string{
-	"RepoCloneDir": "default is $HOME-dependent (defaultCloneDir); the example uses the portable ~ form",
+	// v0.27.147 (round 26): the example previously advertised
+	// "$HOME/aveloxis-repos/" — but config.Load never expands env vars,
+	// so a copied config created a relative directory literally named
+	// $HOME. The example now uses a real absolute path (/data/...),
+	// which legitimately differs from the computed home-dir default.
+	"RepoCloneDir": "default is home-dir-dependent (defaultCloneDir); the example uses a literal absolute path because aveloxis.json values are never env-expanded",
 }
 
 // effectiveAccessors maps accessor-backed fields to their effective
@@ -36,6 +42,7 @@ var exampleValueAllowlist = map[string]string{
 // vs zero-in-default equivalence work (defaults applied at the
 // accessor layer, per the config-knob end-to-end lesson).
 var effectiveAccessors = map[string]func(c *CollectionConfig) any{
+	"VulnScanTransitive":                          func(c *CollectionConfig) any { return c.VulnScanTransitiveValue() },
 	"MailingListProcessorWorkers":                 func(c *CollectionConfig) any { return c.MailingListProcessorWorkersOrDefault() },
 	"MailingListCadenceDays":                      func(c *CollectionConfig) any { return c.MailingListCadenceDuration() },
 	"MailingListWorkers":                          func(c *CollectionConfig) any { return c.MailingListWorkersOrDefault() },
@@ -120,4 +127,29 @@ func jsonTag(f reflect.StructField) string {
 		return f.Name
 	}
 	return tag
+}
+
+// TestExampleConfigsCarryNoEnvVarSyntax — v0.27.147 (round 26,
+// suppressed finding): config.Load only JSON-unmarshals; nothing ever
+// calls os.ExpandEnv. aveloxis.example.json advertised
+// "$HOME/aveloxis-repos/", which a copying operator got LITERALLY — a
+// relative directory named $HOME under the working directory. The
+// committed example configs must never teach env-var syntax the
+// loader does not implement.
+func TestExampleConfigsCarryNoEnvVarSyntax(t *testing.T) {
+	for _, f := range []string{
+		"../../aveloxis.example.json",
+		"../../aveloxis.docker.example.json",
+		"../../aveloxis.sharded.example.json",
+	} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("reading %s: %v", f, err)
+		}
+		for _, needle := range []string{"$HOME", "${", "\"~/"} {
+			if strings.Contains(string(b), needle) {
+				t.Errorf("%s contains %q — aveloxis.json values are used literally (no env/tilde expansion); use a real absolute path or omit the key for the computed default", f, needle)
+			}
+		}
+	}
 }

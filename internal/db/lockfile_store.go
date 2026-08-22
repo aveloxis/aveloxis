@@ -22,6 +22,7 @@ package db
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -147,9 +148,22 @@ type RepoLockfilePackage struct {
 	Scope string
 }
 
+// RepoLockfileEdge is one stored parent→child dependency edge
+// (v0.27.133 C2 — the parent-chain attribution substrate). Child edges
+// are name-level; ChildConstraint is the raw declared range.
+type RepoLockfileEdge struct {
+	Ecosystem       string
+	LockfilePath    string
+	ParentName      string
+	ParentVersion   string
+	ChildName       string
+	ChildConstraint string
+}
+
 // ReplaceRepoLockfileSnapshot atomically replaces a repo's lockfile
-// inventory + direct-dep resolutions: DELETE both tables' rows for the
-// repo, then INSERT the fresh ones, all in ONE transaction (the
+// inventory + direct-dep resolutions + dependency edges: DELETE the
+// tables' rows for the repo, then INSERT the fresh ones, all in ONE
+// transaction (the
 // v0.27.7 ReplaceRepoLaborSnapshot shape). No history tables exist by
 // design — lockfile state is derivable from git history and has no
 // time-series consumer — so the rotation half is a plain DELETE; the
@@ -161,7 +175,7 @@ type RepoLockfilePackage struct {
 // a snapshot of the last successful analysis walk. Callers must NOT
 // invoke this when the walk itself failed.
 func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID int64,
-	inventory []*RepoLockfileInfo, packages []*RepoLockfilePackage) error {
+	inventory []*RepoLockfileInfo, packages []*RepoLockfilePackage, edges []*RepoLockfileEdge) error {
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
@@ -169,6 +183,10 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 		}
 		defer tx.Rollback(ctx)
 
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM aveloxis_data.repo_lockfile_edges WHERE repo_id = $1`, repoID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx,
 			`DELETE FROM aveloxis_data.repo_lockfile_packages WHERE repo_id = $1`, repoID); err != nil {
 			return err
@@ -204,6 +222,16 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 				repoID, p.Ecosystem, p.PackageName, p.ResolvedVersion, p.LockfilePath,
 				p.Direct, p.Scope)
 		}
+		for _, e := range edges {
+			batch.Queue(`
+				INSERT INTO aveloxis_data.repo_lockfile_edges
+					(repo_id, ecosystem, lockfile_path, parent_name,
+					 parent_version, child_name, child_constraint, data_source, data_collection_date)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, 'analysis', NOW())
+				ON CONFLICT (repo_id, lockfile_path, parent_name, parent_version, child_name) DO NOTHING`,
+				repoID, e.Ecosystem, e.LockfilePath, e.ParentName,
+				e.ParentVersion, e.ChildName, e.ChildConstraint)
+		}
 		if batch.Len() > 0 {
 			if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 				return err
@@ -211,6 +239,32 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 		}
 		return tx.Commit(ctx)
 	})
+}
+
+// GetRepoLockfileEdges returns every stored dependency edge for a repo
+// (v0.27.133 C2). Consumers walk child→parents to attribute a
+// vulnerable transitive to the direct roots that pull it in.
+func (s *PostgresStore) GetRepoLockfileEdges(ctx context.Context, repoID int64) ([]RepoLockfileEdge, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT ecosystem, lockfile_path, parent_name, parent_version,
+		       child_name, COALESCE(child_constraint, '')
+		FROM aveloxis_data.repo_lockfile_edges
+		WHERE repo_id = $1
+		ORDER BY lockfile_path, parent_name, child_name`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RepoLockfileEdge
+	for rows.Next() {
+		var e RepoLockfileEdge
+		if err := rows.Scan(&e.Ecosystem, &e.LockfilePath, &e.ParentName,
+			&e.ParentVersion, &e.ChildName, &e.ChildConstraint); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // GetRepoLockedVersions returns every stored lockfile resolution for a
@@ -246,7 +300,7 @@ func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64)
 // scan turns into dependency_kind='transitive' purls when
 // collection.vuln_scan_transitive is on. Distinct per (ecosystem,
 // package, version): a package appearing in several lockfiles scans
-// once, and the scope keeps any non-dev observation (” or 'runtime'
+// once, and the scope keeps any non-dev observation ("" or 'runtime'
 // beats 'dev' — a package pulled in by BOTH a dev tool and a runtime
 // dependency is runtime exposure).
 func (s *PostgresStore) GetRepoTransitivePackages(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
@@ -429,6 +483,173 @@ func (s *PostgresStore) GetRepoSelfAdvisoryPackages(ctx context.Context, repoID 
 	for rows.Next() {
 		var p SelfAdvisoryPackage
 		if err := rows.Scan(&p.Ecosystem, &p.PackageName); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// lockfileEcoFold collapses the ecosystem-vocabulary split between
+// the libyear writers' package_manager strings and the lockfile
+// roster's ecosystem strings (round 22 — previously duplicated as the
+// SBOM side's private fold while the chain walk had NONE, silently
+// dropping rubygems/packagist/swiftpm chains).
+func lockfileEcoFold(eco string) string {
+	switch strings.ToLower(eco) {
+	case "rubygems":
+		return "gem"
+	case "packagist":
+		return "composer"
+	case "swiftpm":
+		return "swift"
+	case "elixir":
+		return "hex"
+	case "dart":
+		return "pub"
+	case "golang":
+		return "go"
+	case "haskell":
+		return "hackage"
+	}
+	return strings.ToLower(eco)
+}
+
+// LockfileGraphKey is THE name-level resolution key for lockfile-graph
+// endpoints (chain attribution, SBOM dependency graphs, direct-root
+// sets): folded ecosystem + lowercased name, with PyPI's
+// underscore/dot folding (PEP 503 treats them as equivalent). Every
+// producer and consumer of graph keys must use this ONE function —
+// mismatched folding between sides silently drops valid edges.
+func LockfileGraphKey(eco, name string) string {
+	e := lockfileEcoFold(eco)
+	n := strings.ToLower(strings.TrimSpace(name))
+	if e == "pypi" {
+		n = strings.NewReplacer("_", "-", ".", "-").Replace(n)
+	}
+	return e + "|" + n
+}
+
+// DirectPackageSets is the chain walk's root set with PROVENANCE
+// (round 20 — v0.27.137), keyed "ecosystem|lowercase(name)".
+type DirectPackageSets struct {
+	ByLockfile map[string]map[string]bool // lockfile_path -> ecosystem|lower(name)
+	Declared   map[string]bool            // repo-wide manifest-declared fallback
+}
+
+// GetRepoDirectPackageSets returns the repo's DIRECT dependency set
+// (v0.27.133 C2 — the chain walk's root set): direct lockfile
+// resolutions keyed by their lockfile_path, plus the repo-wide
+// declared manifest set as a separate fallback. The split matters in
+// monorepos: a package direct in apps/b but transitive in apps/a must
+// NOT terminate apps/a's chain walk — it is not an actionable root in
+// that lockfile's graph. Declared manifest deps (repo_deps_libyear)
+// carry no path column, so they stay an explicitly repo-wide fallback
+// (this also covers Go — no lockfile by design — and every
+// lockfile-less ecosystem).
+func (s *PostgresStore) GetRepoDirectPackageSets(ctx context.Context, repoID int64) (DirectPackageSets, error) {
+	out := DirectPackageSets{ByLockfile: map[string]map[string]bool{}, Declared: map[string]bool{}}
+	rows, err := s.pool.Query(ctx, `
+		SELECT 'lockfile', lockfile_path, ecosystem, package_name
+		FROM aveloxis_data.repo_lockfile_packages
+		WHERE repo_id = $1 AND COALESCE(direct, TRUE)
+		UNION
+		SELECT 'declared', '', package_manager, name
+		FROM aveloxis_data.repo_deps_libyear
+		WHERE repo_id = $1`, repoID)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var source, path, eco, name string
+		if err := rows.Scan(&source, &path, &eco, &name); err != nil {
+			return out, err
+		}
+		key := LockfileGraphKey(eco, name)
+		if source == "declared" {
+			out.Declared[key] = true
+			continue
+		}
+		if out.ByLockfile[path] == nil {
+			out.ByLockfile[path] = map[string]bool{}
+		}
+		out.ByLockfile[path][key] = true
+	}
+	return out, rows.Err()
+}
+
+// GetRepoGoClosureRows returns the CURRENT snapshot's Go-ecosystem
+// transitive package rows and edges verbatim (lockfile_path and scope
+// intact — GetRepoTransitivePackages folds paths away, which would
+// degrade the per-lockfile chain partitioning on carry-forward).
+// v0.27.150 (round 29): this is the preserve source when the go
+// toolchain expansion reports incomplete — replacing the snapshot
+// with a partial closure silently shrank vuln/SBOM output and
+// false-resolved findings.
+func (s *PostgresStore) GetRepoGoClosureRows(ctx context.Context, repoID int64) ([]*RepoLockfilePackage, []*RepoLockfileEdge, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT package_name, resolved_version, COALESCE(lockfile_path, ''), COALESCE(dependency_scope, '')
+		FROM aveloxis_data.repo_lockfile_packages
+		WHERE repo_id = $1 AND ecosystem = 'go' AND NOT COALESCE(direct, TRUE)`, repoID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var pkgs []*RepoLockfilePackage
+	for rows.Next() {
+		p := &RepoLockfilePackage{Ecosystem: "go", Direct: false}
+		if err := rows.Scan(&p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Scope); err != nil {
+			return nil, nil, err
+		}
+		pkgs = append(pkgs, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	erows, err := s.pool.Query(ctx, `
+		SELECT COALESCE(lockfile_path, ''), parent_name, COALESCE(parent_version, ''),
+		       child_name, COALESCE(child_constraint, '')
+		FROM aveloxis_data.repo_lockfile_edges
+		WHERE repo_id = $1 AND ecosystem = 'go'`, repoID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer erows.Close()
+	var edges []*RepoLockfileEdge
+	for erows.Next() {
+		e := &RepoLockfileEdge{Ecosystem: "go"}
+		if err := erows.Scan(&e.LockfilePath, &e.ParentName, &e.ParentVersion, &e.ChildName, &e.ChildConstraint); err != nil {
+			return nil, nil, err
+		}
+		edges = append(edges, e)
+	}
+	return pkgs, edges, erows.Err()
+}
+
+// GetRepoTransitivePackagesWithPaths returns transitive package rows
+// WITH their lockfile_path provenance (deduped on the full natural
+// key). v0.27.151 (round 30): the SBOM graph resolves edge endpoints
+// per lockfile — the path-folded GetRepoTransitivePackages (correct
+// for the vuln scan's target dedup) let a monorepo edge attach
+// children resolved from OTHER lockfiles' same-name entries,
+// fabricating dependency relationships in both SBOM formats.
+func (s *PostgresStore) GetRepoTransitivePackagesWithPaths(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT ecosystem, package_name, resolved_version, COALESCE(lockfile_path, ''),
+		       MIN(CASE WHEN COALESCE(dependency_scope, '') IN ('dev','test','build','optional','peer') THEN dependency_scope ELSE '' END)
+		FROM aveloxis_data.repo_lockfile_packages
+		WHERE repo_id = $1 AND NOT COALESCE(direct, TRUE)
+		GROUP BY ecosystem, package_name, resolved_version, COALESCE(lockfile_path, '')
+		ORDER BY package_name, resolved_version, 4`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RepoLockfilePackage
+	for rows.Next() {
+		p := RepoLockfilePackage{Direct: false}
+		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Scope); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

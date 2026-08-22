@@ -213,19 +213,23 @@ type ghFile struct {
 }
 
 type ghRepoInfo struct {
-	FullName        string `json:"full_name"` // v0.25.32 — canonical owner/name for the case self-heal
-	ForksCount      int    `json:"forks_count"`
-	StargazersCount int    `json:"stargazers_count"`
-	WatchersCount   int    `json:"watchers_count"`
-	OpenIssuesCount int    `json:"open_issues_count"`
-	DefaultBranch   string `json:"default_branch"`
-	HasIssues       bool   `json:"has_issues"`
-	HasWiki         bool   `json:"has_wiki"`
-	HasPages        bool   `json:"has_pages"`
-	Archived        bool   `json:"archived"`
-	Fork            bool   `json:"fork"`
-	Description     string `json:"description"` // v0.23.0
-	Language        string `json:"language"`    // v0.23.0 — top-1; REST does not expose breakdown
+	ID              int64     `json:"id"`        // v0.27.102 — rename-proof numeric identity (REST fallback transport)
+	FullName        string    `json:"full_name"` // v0.25.32 — canonical owner/name for the case self-heal
+	ForksCount      int       `json:"forks_count"`
+	StargazersCount int       `json:"stargazers_count"`
+	WatchersCount   int       `json:"watchers_count"`
+	OpenIssuesCount int       `json:"open_issues_count"`
+	DefaultBranch   string    `json:"default_branch"`
+	HasIssues       bool      `json:"has_issues"`
+	HasWiki         bool      `json:"has_wiki"`
+	HasPages        bool      `json:"has_pages"`
+	Archived        bool      `json:"archived"`
+	Disabled        bool      `json:"disabled"` // v0.27.103 — statusStr input on the REST fallback
+	Fork            bool      `json:"fork"`
+	Description     string    `json:"description"` // v0.23.0
+	Language        string    `json:"language"`    // v0.23.0 — top-1; REST does not expose breakdown
+	Topics          []string  `json:"topics"`      // v0.27.104 — repo_info.keywords
+	CreatedAt       time.Time `json:"created_at"`  // v0.27.104 — repos.created_at
 	Parent          *struct {
 		FullName string `json:"full_name"`
 	} `json:"parent"`

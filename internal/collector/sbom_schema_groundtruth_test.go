@@ -77,7 +77,7 @@ func dig(node any, keys ...string) any {
 func sbomSeedInputs() (*db.RepoForSBOM, []db.SBOMDep, *db.ScancodeForSBOM) {
 	repo := &db.RepoForSBOM{Name: "schema-probe", Owner: "_avgt", GitURL: "https://github.com/_avgt/schema-probe"}
 	deps := []db.SBOMDep{
-		{Name: "flask", CurrentVersion: "2.0.0", Purl: "pkg:pypi/flask@2.0.0", Type: "runtime", License: "BSD-3-Clause"},
+		{Name: "flask", CurrentVersion: "2.0.0", PackageManager: "pypi", Purl: "pkg:pypi/flask@2.0.0", Type: "runtime", License: "BSD-3-Clause"},
 		{Name: "cryptography", CurrentVersion: "42.0.0", Purl: "pkg:pypi/cryptography@42.0.0", Type: "runtime", License: "Apache-2.0 AND MIT"},
 		{Name: "weird", CurrentVersion: "1.0", Purl: "pkg:npm/weird@1.0", Type: "runtime", License: "Custom Corp License"},
 		{Name: "dual", CurrentVersion: "3.1", Purl: "pkg:npm/dual@3.1", Type: "dev", License: "MIT, Apache-2.0"},
@@ -86,10 +86,24 @@ func sbomSeedInputs() (*db.RepoForSBOM, []db.SBOMDep, *db.ScancodeForSBOM) {
 	return repo, deps, scan
 }
 
+// sbomSeedGraph (v0.27.134) adds a C2 lockfile closure to the probe
+// document so the schema constraints run against the graph-emission
+// paths too: a transitive component/package plus a real edge.
+func sbomSeedGraph() *sbomGraph {
+	return &sbomGraph{
+		Transitives: []db.RepoLockfilePackage{
+			{Ecosystem: "pypi", PackageName: "werkzeug", ResolvedVersion: "2.3.7"},
+		},
+		Edges: []db.RepoLockfileEdge{
+			{Ecosystem: "pypi", LockfilePath: "poetry.lock", ParentName: "flask", ParentVersion: "2.0.0", ChildName: "werkzeug"},
+		},
+	}
+}
+
 func TestCycloneDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 	schema := loadSchema(t, "bom-1.5.schema.json")
 	repo, deps, scan := sbomSeedInputs()
-	raw, err := generateCycloneDX(repo, deps, scan)
+	raw, err := generateCycloneDX(repo, deps, scan, sbomSeedGraph())
 	if err != nil {
 		t.Fatalf("generateCycloneDX: %v", err)
 	}
@@ -124,8 +138,8 @@ func TestCycloneDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 	if list, ok := doc["components"].([]any); ok {
 		comps = append(comps, list...)
 	}
-	if len(comps) < 5 {
-		t.Fatalf("expected root + 4 dep components, got %d", len(comps))
+	if len(comps) < 6 {
+		t.Fatalf("expected root + 4 dep + 1 transitive components, got %d", len(comps))
 	}
 	for i, c := range comps {
 		cm := c.(map[string]any)
@@ -216,7 +230,7 @@ func containsExpression(node any) bool {
 func TestSPDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 	schema := loadSchema(t, "spdx-2.3.schema.json")
 	repo, deps, scan := sbomSeedInputs()
-	raw, err := generateSPDX(repo, deps, scan)
+	raw, err := generateSPDX(repo, deps, scan, sbomSeedGraph())
 	if err != nil {
 		t.Fatalf("generateSPDX: %v", err)
 	}
@@ -233,8 +247,8 @@ func TestSPDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 
 	pkgReq := requiredList(t, dig(schema, "properties", "packages", "items"), "packages.items")
 	pkgs, _ := doc["packages"].([]any)
-	if len(pkgs) < 5 {
-		t.Fatalf("expected root + 4 dep packages, got %d", len(pkgs))
+	if len(pkgs) < 6 {
+		t.Fatalf("expected root + 4 dep + 1 transitive packages, got %d", len(pkgs))
 	}
 	for i, p := range pkgs {
 		pm := p.(map[string]any)

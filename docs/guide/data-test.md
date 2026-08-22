@@ -354,3 +354,40 @@ an ETag self-aliasing bug (two paginations of the same GitHub events
 endpoint per cycle; the second got 304 and dropped the PR-event
 history). v0.26.3's single-pass feed fixes it, so `pull_request_events`
 FLAGging as new > released against those tags is likewise expected.
+
+## `--diff-only`: re-running the diff against kept databases (v0.27.129)
+
+A run with `--keep-dbs` leaves `aveloxis_released` and `aveloxis_new` in
+place. `--diff-only` skips the builds, provisioning, and collection
+phases entirely and re-runs ONLY the row-count + column-fill diff and
+the report against those databases:
+
+```bash
+aveloxis data-test --diff-only \
+  --released-tag main --repo https://github.com/augurlabs/augur \
+  --work-dir /path/from/the/original/run
+```
+
+It exists because a diff-layer bug after a ~50-minute two-side
+collection used to cost another full hour to re-verify. Exit-code
+semantics are unchanged.
+
+## Schema shape drift in the report (v0.27.129)
+
+Cross-version runs routinely compare DIFFERENT schema shapes — the
+release under test may drop or add tables and columns. The column-fill
+diff compares the INTERSECTION and reports the drift instead of
+crashing on it:
+
+- **Tables only in released** — dropped by the release under test. The
+  row-count diff already FAILs these when they carried rows; empty
+  deliberate drops (e.g. `contributors_old`, v0.27.115) appear here as
+  visible notes.
+- **Tables only in new** — added by the release.
+- **Added columns** — new-side-only columns of both-sides tables, with
+  their new-side populated counts (new coverage the FLAG mechanism
+  cannot see, since FLAGs need a released baseline).
+- **REMOVED** rows in the column section — a column dropped while it
+  carried data in the released side. This is a data-loss shape and
+  fails the run; a dropped column that was already dark is listed as a
+  shape note only.

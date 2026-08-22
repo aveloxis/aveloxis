@@ -12,8 +12,15 @@
 package db
 
 import (
+	"context"
+	"io"
+	"log/slog"
+	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestClassifyColumnFill(t *testing.T) {
@@ -47,7 +54,7 @@ func TestClassifyColumnFill(t *testing.T) {
 	}
 }
 
-// The "populated" predicate must be type-aware: TEXT DEFAULT ” and
+// The "populated" predicate must be type-aware: TEXT DEFAULT "" and
 // INTEGER DEFAULT 0 are this schema's idioms for "not filled in", so a
 // plain IS NOT NULL check would miss both the platform_label_id=0 case
 // and every empty-string default. Booleans are exempt from the
@@ -103,5 +110,129 @@ func TestDataTestRunsColumnFillDiff(t *testing.T) {
 			t.Errorf("data_test_cmd.go must contain %q — the column-fill diff has to "+
 				"run after the row-count diff and participate in the exit code.", needle)
 		}
+	}
+}
+
+// TestColumnFillDiffHandlesShapeDrift — v0.27.129. The 2026-08-21
+// main-vs-branch data-test crashed on the first deliberate table drop
+// it met (contributors_old, removed in v0.27.115): enumeration was
+// released-side-only and every released table was queried against the
+// new side (SQLSTATE 42P01). Shape drift must be REPORTED, not fatal.
+//
+// Asymmetry is manufactured with a SECOND scratch database (committed
+// shapes on both sides — a first draft used transactional DDL, whose
+// ACCESS EXCLUSIVE lock deadlocked the other side's count query). The
+// dedicated schema/database keep parallel tests from perturbing counts
+// (the v0.26.1 self-comparison lesson).
+func TestColumnFillDiffHandlesShapeDrift(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	const schema = "_avcolfill_s"
+	const sideDB = "_avcolfill_sidedb"
+
+	// Side A lives in a dedicated schema of the main scratch DB.
+	mustExecRetry(ctx, t, store, `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
+	mustExecRetry(ctx, t, store, `CREATE SCHEMA `+schema)
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		cleanupExecRetry(cctx, store, `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
+	})
+	mustExecRetry(ctx, t, store, `CREATE TABLE `+schema+`._base (a TEXT, b TEXT, c BIGINT)`)
+	mustExecRetry(ctx, t, store, `INSERT INTO `+schema+`._base (a, b, c) VALUES ('x', 'y', 7), ('', NULL, 0)`)
+	mustExecRetry(ctx, t, store, `CREATE TABLE `+schema+`._probe (x TEXT)`)
+	mustExecRetry(ctx, t, store, `INSERT INTO `+schema+`._probe (x) VALUES ('v')`)
+
+	// Side B is a second scratch DATABASE carrying the narrower shape:
+	// _base without column b, no _probe at all.
+	if _, err := store.pool.Exec(ctx, `DROP DATABASE IF EXISTS `+sideDB+` WITH (FORCE)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `CREATE DATABASE `+sideDB); err != nil {
+		t.Skipf("cannot create the side database (role lacks CREATEDB?): %v", err)
+	}
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		cleanupExecRetry(cctx, store, `DROP DATABASE IF EXISTS `+sideDB+` WITH (FORCE)`)
+	})
+	sideCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sideCfg.ConnConfig.Database = sideDB
+	sidePool, err := pgxpool.NewWithConfig(ctx, sideCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sidePool.Close)
+	for _, sql := range []string{
+		`CREATE SCHEMA ` + schema,
+		// v0.27.130 (round 18): column c has a DIFFERENT TYPE on this
+		// side (TEXT vs the main side's BIGINT) — counting must use each
+		// side's OWN metadata or the predicate crashes (bigint <> '').
+		`CREATE TABLE ` + schema + `._base (a TEXT, c TEXT)`,
+		`INSERT INTO ` + schema + `._base (a, c) VALUES ('x', 'v'), ('', '')`,
+	} {
+		if _, err := sidePool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Direction 1: released = A (richer), new = B. The drop direction:
+	// _probe is a released-only table; _base.b a removed column that
+	// CARRIED DATA (populated=1) → REMOVED, a failure.
+	rep, err := columnFillDiff(ctx, store.pool, sidePool, []string{schema})
+	if err != nil {
+		t.Fatalf("released-richer diff must not error (the 42P01 crash class): %v", err)
+	}
+	if len(rep.TablesOnlyInReleased) != 1 || rep.TablesOnlyInReleased[0] != schema+"._probe" {
+		t.Errorf("want TablesOnlyInReleased [_probe], got %v", rep.TablesOnlyInReleased)
+	}
+	var removedRow *ColumnFillDiffRow
+	for i := range rep.Rows {
+		if rep.Rows[i].Column == "b" {
+			removedRow = &rep.Rows[i]
+		}
+	}
+	if removedRow == nil || removedRow.Status != "REMOVED" || removedRow.ReleasedPopulated != 1 {
+		t.Errorf("released-only populated column must be REMOVED with its count, got %+v", removedRow)
+	}
+	if !rep.HasFailures() {
+		t.Error("a removed column that carried data is a data-loss shape — HasFailures must be true")
+	}
+
+	// v0.27.130 (round 18): the type-divergent shared column must be
+	// counted with EACH SIDE'S OWN type (released BIGINT: <> 0 → 1;
+	// new TEXT: <> '' → 1) and reported as type drift.
+	if len(rep.TypeChanged) != 1 || !strings.Contains(rep.TypeChanged[0], "_base.c") {
+		t.Errorf("want TypeChanged [_base.c ...], got %v", rep.TypeChanged)
+	}
+
+	// Direction 2: released = B, new = A. The add direction: _probe
+	// only-in-new, _base.b an ADDED column with its new-side count. No
+	// failures.
+	rep2, err := columnFillDiff(ctx, sidePool, store.pool, []string{schema})
+	if err != nil {
+		t.Fatalf("new-richer diff must not error: %v", err)
+	}
+	if len(rep2.TablesOnlyInNew) != 1 || rep2.TablesOnlyInNew[0] != schema+"._probe" {
+		t.Errorf("want TablesOnlyInNew [_probe], got %v", rep2.TablesOnlyInNew)
+	}
+	if len(rep2.AddedColumns) != 1 || rep2.AddedColumns[0].Column != "b" || rep2.AddedColumns[0].NewPopulated != 1 {
+		t.Errorf("want AddedColumns [_base.b populated=1], got %+v", rep2.AddedColumns)
+	}
+	if rep2.HasFailures() {
+		t.Errorf("additions are never failures, got rows %+v", rep2.Rows)
 	}
 }

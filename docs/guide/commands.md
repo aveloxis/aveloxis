@@ -383,7 +383,7 @@ raw identity material (platform user ids) was stored at ~100%.
 ```bash
 aveloxis backfill-identities --dry-run          # candidate counts, no writes
 aveloxis backfill-identities                    # all phases
-aveloxis backfill-identities --phase 1          # assignment joins + pr_meta owners (SQL only)
+aveloxis backfill-identities --phase 1          # assignment joins + pr_meta owners + pr_repo owners (SQL only)
 aveloxis backfill-identities --phase 2          # closed_by from issue events (SQL only)
 aveloxis backfill-identities --phase 3          # closed_by GraphQL timeline sweep (needs API keys)
 ```
@@ -394,7 +394,18 @@ Flags: `--dry-run`, `--batch-size` (primary-key window width per UPDATE batch, d
 default 100).
 
 Phases 1–2 are pure SQL derivation (no API calls; measured production
-coverage 99.87–99.98% for assignments). Phase 3 fetches closers the
+coverage 99.87–99.98% for assignments). Since v0.27.104, phase 1 also
+runs the `pull_request_repo.pr_cntrb_id` owner pass — keyset windows
+over `pr_repo_id` on a table that is ~41.2M rows on the production
+fleet, so expect phase 1's wall time to be dominated by it on large
+installations (use `--batch-size 1000000` there). Like the other
+phases it is resumable and idempotent: interrupted runs re-walk
+windows cheaply because filled rows (`pr_cntrb_id IS NOT NULL`) drop
+out of the candidate set. Owner logins that match zero contributors
+(deleted forks) or MORE THAN ONE active contributor (ambiguous —
+v0.27.123) stay NULL; no fabricated attributions. Both owner passes
+are GitHub-only — GitLab rows heal forward via ID-qualified owner
+refs on re-collection. Phase 3 fetches closers the
 history-capped events feed cannot reach, via per-issue
 `timelineItems(itemTypes:[CLOSED_EVENT])` batched ~100 issues per
 GraphQL query (~3 points each). Run phase 2 after the v0.26.3
@@ -505,6 +516,40 @@ aveloxis merge-cntrb-collisions
 | `--limit` | `0` | Cap total pairs merged this run. |
 
 ---
+
+## `aveloxis heal-collection-gaps`
+
+```bash
+aveloxis heal-collection-gaps --dry-run          # list candidates + gap sizes
+aveloxis heal-collection-gaps --repo-id 49290    # heal one repo
+aveloxis heal-collection-gaps --workers 4        # the fleet pass
+```
+
+The isolated healer (v0.27.140) for issues/PRs lost to the
+pre-v0.27.139 incremental blind-window bug. Finds repos whose metadata
+issue/PR counts exceed the stored counts and runs a threshold-0 gap
+fill on each: list every issue/PR number from the API, diff against
+the database, fetch ONLY the missing items (with children and
+comments), stage, process.
+
+Targeted by construction — only count-gap candidates are visited
+(~5% of a typical fleet), never a 100% rescan. The candidate query is
+the resume state: healed repos drop out, so the workflow is re-running
+until "0 candidates". Safe beside a running serve: each repo is
+drain-locked for the duration of its heal, and repos mid-collection
+are skipped (a rerun catches them). Neither the lock nor the heal
+touches `last_collected`.
+
+Flags: `--dry-run`, `--limit N`, `--workers N` (default 4),
+`--repo-id N`, `--after-repo-id N` (keyset resume), `--all` (sweep
+every collected repo — the completeness mode for repos whose
+stored-but-deleted rows numerically hide the gap; not recommended for
+routine use). Exits nonzero when any repo's heal failed.
+
+Run it on a binary at v0.27.139 or later — earlier binaries re-open
+the blind window on the next routine cycle. Typical ordering after an
+upgrade across the v0.27.13x train: `aveloxis migrate` first, then
+this command, then `aveloxis refresh-views` once the heal settles.
 
 ## `aveloxis refresh-views`
 
@@ -841,6 +886,41 @@ progress lines and the summary print the last repo_id processed;
 re-run with `--after-repo-id` after an interruption. Repos that 404
 (renamed/deleted/private) are skipped and left to prelim's normal
 rename/dead-repo handling. Does not run migrations (v0.21.5 policy).
+
+## `aveloxis rewalk-whitespace`
+
+One-time full-history whitespace bootstrap (v0.27.105 — the fill-audit
+Workstream C). `commits.cmt_whitespace` was never measured while
+`SUM(cmt_whitespace)` feeds six live aggregate queries; the facade now
+measures it per cycle with Augur-parity semantics (an added blank line
+counts as whitespace, not added; a whitespace-only reformat of a
+>8-character line counts as whitespace instead of an add/remove pair —
+so `cmt_added`/`cmt_removed` on walked rows become the ADJUSTED Augur
+numbers). The per-cycle phase is incremental past a stamped marker
+(`repos.whitespace_head_hash`); this command does the full-history walk
+per repo, reusing the facade's persistent bare clones, and stamps the
+marker so every later cycle stays incremental.
+
+```bash
+aveloxis rewalk-whitespace --limit 5            # canary first
+aveloxis rewalk-whitespace --workers 8          # fleet run
+aveloxis rewalk-whitespace --repo-id 12345      # single repo
+aveloxis rewalk-whitespace --after-repo-id 51234  # keyset skip-ahead
+```
+
+**Runtime expectation** (grounded 2026-08-19): `git log -p` measured
+~209 MB/s single-threaded; the fleet's patch volume estimates at
+~5–10 TB (162.7M commits, ~146B changed lines). At 8 workers expect
+roughly **8–24 hours wall-clock** (outer bound ~2 days if disk-bound);
+the per-repo progress lines and every-50-repos running totals let you
+extrapolate from the first hour. Safe alongside a running serve —
+repos mid-collection are skipped this pass, and overlapping updates
+are same-value idempotent. Resumable by construction: the marker IS
+the resume state, so a re-run skips every already-walked repo. After
+the fleet run, `aveloxis refresh-views` (or the next scheduled
+aggregate rebuild) picks the corrected sums into the `dm_` tables.
+Does not run migrations (v0.21.5 policy) — run `aveloxis migrate`
+first so the marker column exists.
 
 ## `aveloxis data-verify`
 

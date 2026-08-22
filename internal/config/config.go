@@ -533,13 +533,23 @@ type CollectionConfig struct {
 
 	// VulnScanTransitive (v0.27.21 Phase C1, summary/14): scan the
 	// FULL transitive closure each committed lockfile enumerates, not
-	// just declared direct dependencies. Default false (opt-in): the
-	// findings-volume and OSV-load multipliers are canary-validated
-	// before any fleet rollout. Requires nothing else — the C0 OSV
-	// cache is always active. Transitive findings carry
-	// dependency_kind='transitive' and are excluded from the operator
-	// digest unless mail.vuln_digest_include_transitive is set.
-	VulnScanTransitive bool `json:"vuln_scan_transitive"`
+	// just declared direct dependencies — and (v0.27.133 C2) store
+	// the dependency EDGES that power introduced_by attribution and
+	// the SBOM graphs. DEFAULT FLIPPED TO TRUE in v0.27.136 on the
+	// 2026-08-21 canary evidence (operator decision): +242 transitive
+	// findings on the 22-repo canary AND -81 range-floor false
+	// positives on junit5 alone (lockfile-locked resolution deflates
+	// advisory-history matches), 93.5% chain-attribution floor,
+	// +45% scan targets well inside the C0 cache's dedup envelope.
+	// Pointer-to-bool (the v0.25.0 cross_check_sources pattern) so
+	// the decoder distinguishes "absent" (use the default = true)
+	// from an explicit false — the escape hatch for fleets that want
+	// declared-direct-only scanning. Read via
+	// VulnScanTransitiveValue(), never the raw field. Transitive
+	// findings carry dependency_kind='transitive' and are excluded
+	// from the operator digest unless
+	// mail.vuln_digest_include_transitive is set.
+	VulnScanTransitive *bool `json:"vuln_scan_transitive,omitempty"`
 
 	// DevBuildDeps (v0.27.45, summary/19 P2): expand Python dependency
 	// collection to the dev/test/build/optional manifest families —
@@ -956,6 +966,18 @@ func (c *CollectionConfig) DistributionTrackingStartInterval() time.Duration {
 		return 30 * time.Second
 	}
 	return time.Duration(c.DistributionTrackingStartIntervalSec) * time.Second
+}
+
+// VulnScanTransitiveValue returns the effective transitive-scan
+// setting. nil (absent from aveloxis.json) means the v0.27.136
+// default: TRUE. An explicit false is the opt-out escape hatch.
+// This accessor is the SINGLE default layer (SR-10) — consumers must
+// never read the raw pointer.
+func (c *CollectionConfig) VulnScanTransitiveValue() bool {
+	if c.VulnScanTransitive == nil {
+		return true
+	}
+	return *c.VulnScanTransitive
 }
 
 // DistributionTrackingCrossCheckSourcesValue returns the effective

@@ -52,6 +52,7 @@ Every Go file carries an SPDX header (enforced by a tripwire test in `scripts/`)
 - [`development-setup.md`](development-setup.md) — get a local PostgreSQL, build the binary, run the test suite, set up `aveloxis.runlocal.json`
 - [`code-conventions.md`](code-conventions.md) — SPDX headers, file/package layout, error handling, slog, version bumping, commit style
 - [`testing.md`](testing.md) — TDD discipline, source-contract pattern, integration tier via `AVELOXIS_TEST_DB`, the `data-test` harness for cross-version verification
+- [`review-lenses.md`](review-lenses.md) — the adversarial pre-push pass: ten lenses distilled from ~70 verified external-review findings; every diff gets this pass BEFORE it ships
 
 ### Extending Aveloxis
 

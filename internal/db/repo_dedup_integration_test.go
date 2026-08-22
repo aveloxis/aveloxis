@@ -381,7 +381,20 @@ func cleanupDedupRepos(ctx context.Context, t *testing.T, store *PostgresStore, 
 		`DELETE FROM aveloxis_ops.user_groups WHERE name ILIKE $1`,
 		`DELETE FROM aveloxis_ops.users WHERE login_name ILIKE $1`,
 	} {
-		if _, err := store.pool.Exec(ctx, sql, like); err != nil {
+		// v0.27.114: bounded 40P01 retry per statement — one
+		// deadlock-killed DELETE orphans every LATER parent delete in
+		// this ordered chain (RESTRICT FKs), and the residue then
+		// poisons the NEXT run's seeds (23505) and data-verify
+		// (case-dup groups) — observed live 2026-08-20 on consecutive
+		// combined integration runs.
+		var err error
+		for attempt := 0; attempt < 4; attempt++ {
+			if _, err = store.pool.Exec(ctx, sql, like); err == nil || !strings.Contains(err.Error(), "40P01") {
+				break
+			}
+			time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+		}
+		if err != nil {
 			t.Logf("cleanup (non-fatal): %v", err)
 		}
 	}

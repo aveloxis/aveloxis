@@ -25,7 +25,7 @@ import (
 // the end of every CommitResolver.ResolveCommits, so the index
 // speeds up that UPDATE too.
 //
-// Partial: WHERE gh_login != ” — empty gh_login is the email-only
+// Partial: WHERE gh_login != "" — empty gh_login is the email-only
 // contributor cohort and shouldn't bloat the index. Mirrors the
 // existing idx_contributors_login partial-index pattern.
 func TestMigrationCreatesGhLoginIndex(t *testing.T) {

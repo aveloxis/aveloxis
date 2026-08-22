@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // Background
@@ -29,22 +31,17 @@ import (
 // extractFuncBody returns the body of the named method/function from the
 // given file (roughly — from the `func X(` line up to the next top-level
 // `\nfunc `). Enough for the substring checks below.
+// v0.27.118: delegates to internal/srctest — the ONE brace-counting
+// extractor. Window change: text AFTER the close brace (trailing
+// comments, the next function's doc comment) is now EXCLUDED — the
+// old cut-at-next-func window was a false-match hazard.
 func extractFuncBody(t *testing.T, path, sig string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	src := string(data)
-	idx := strings.Index(src, sig)
-	if idx < 0 {
-		t.Fatalf("cannot find %q in %s", sig, path)
-	}
-	body := src[idx:]
-	if end := strings.Index(body, "\nfunc "); end > 0 {
-		body = body[:end]
-	}
-	return body
+	return srctest.FuncBody(t, string(data), sig)
 }
 
 // assertFlushBeforeProcess fails the test if the function body invokes

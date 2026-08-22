@@ -37,9 +37,10 @@ import (
 func dataTestCmd(cfgPath *string) *cobra.Command {
 	var (
 		releasedTag string
-		repoURL     string
+		repoURLs    []string
 		keepDBs     bool
 		workDir     string
+		diffOnly    bool
 	)
 
 	cmd := &cobra.Command{
@@ -66,7 +67,7 @@ FAIL (row loss / regression detected).`,
 			ctx := context.Background()
 			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-			if releasedTag == "" || repoURL == "" {
+			if releasedTag == "" || len(repoURLs) == 0 {
 				return fmt.Errorf("both --released-tag and --repo are required")
 			}
 
@@ -79,9 +80,37 @@ FAIL (row loss / regression detected).`,
 				return fmt.Errorf("create work dir: %w", err)
 			}
 			logger.Info("data-test starting", "work_dir", workDir,
-				"released_tag", releasedTag, "repo", repoURL,
+				"released_tag", releasedTag, "repos", strings.Join(repoURLs, ", "),
 				"scratch_db_released", "aveloxis_released",
 				"scratch_db_new", "aveloxis_new")
+
+			// v0.27.129: --diff-only re-runs ONLY the diff + report
+			// against scratch DBs a prior --keep-dbs run left behind —
+			// no builds, no provisioning, no collection. Exists because
+			// the 2026-08-21 run spent ~50 minutes collecting both sides
+			// and then crashed in the (since-fixed) column-fill diff;
+			// regenerating the report must not cost another hour.
+			if diffOnly {
+				report, colReport, err := runRowCountDiff(ctx, logger, primaryCfg)
+				if err != nil {
+					return fmt.Errorf("runRowCountDiff: %w", err)
+				}
+				reportPath := filepath.Join(workDir, "report.md")
+				if err := writeReport(reportPath, report, colReport, releasedTag, strings.Join(repoURLs, ", ")); err != nil {
+					return fmt.Errorf("writeReport: %w", err)
+				}
+				logger.Info("report written (diff-only)", "path", reportPath,
+					"row_failures", report.HasFailures(),
+					"column_failures", colReport.HasFailures())
+				if report.HasFailures() {
+					return fmt.Errorf("data-test FAILED: at least one table has row loss (see %s)", reportPath)
+				}
+				if colReport.HasFailures() {
+					return fmt.Errorf("data-test FAILED: at least one column went dark or was dropped with data (see %s)", reportPath)
+				}
+				logger.Info("data-test PASSED", "report", reportPath)
+				return nil
+			}
 
 			// Phase 1: binaries
 			releasedBin, err := resolveReleasedBinary(ctx, logger, workDir, releasedTag)
@@ -128,11 +157,13 @@ FAIL (row loss / regression detected).`,
 				if err := copyAPIKeys(ctx, logger, primaryCfg, scratchDBName); err != nil {
 					return fmt.Errorf("copyAPIKeys(%s): %w", side.name, err)
 				}
-				if err := dtRunAddRepo(ctx, logger, side.name, side.binary, side.cfg, repoURL); err != nil {
-					return fmt.Errorf("dtRunAddRepo(%s): %w", side.name, err)
-				}
-				if err := dtRunCollect(ctx, logger, side.name, side.binary, side.cfg, repoURL); err != nil {
-					return fmt.Errorf("dtRunCollect(%s): %w", side.name, err)
+				for _, repoURL := range repoURLs {
+					if err := dtRunAddRepo(ctx, logger, side.name, side.binary, side.cfg, repoURL); err != nil {
+						return fmt.Errorf("dtRunAddRepo(%s): %w", side.name, err)
+					}
+					if err := dtRunCollect(ctx, logger, side.name, side.binary, side.cfg, repoURL); err != nil {
+						return fmt.Errorf("dtRunCollect(%s): %w", side.name, err)
+					}
 				}
 			}
 
@@ -147,7 +178,7 @@ FAIL (row loss / regression detected).`,
 
 			// Phase 5: report
 			reportPath := filepath.Join(workDir, "report.md")
-			if err := writeReport(reportPath, report, colReport, releasedTag, repoURL); err != nil {
+			if err := writeReport(reportPath, report, colReport, releasedTag, strings.Join(repoURLs, ", ")); err != nil {
 				return fmt.Errorf("writeReport: %w", err)
 			}
 			logger.Info("report written", "path", reportPath,
@@ -178,9 +209,10 @@ FAIL (row loss / regression detected).`,
 		},
 	}
 	cmd.Flags().StringVar(&releasedTag, "released-tag", "", "git tag of the released aveloxis version (e.g., 0.22.6) — REQUIRED")
-	cmd.Flags().StringVar(&repoURL, "repo", "", "git URL of the test repo to collect (e.g., https://github.com/augurlabs/augur) — REQUIRED")
+	cmd.Flags().StringArrayVar(&repoURLs, "repo", nil, "git URL of a test repo to collect; repeatable — every named repo is collected into BOTH sides (at least one REQUIRED)")
 	cmd.Flags().BoolVar(&keepDBs, "keep-dbs", false, "retain aveloxis_released and aveloxis_new after the run (default: drop them)")
 	cmd.Flags().StringVar(&workDir, "work-dir", "", "path for binaries, logs, and report (default: a fresh /tmp/aveloxis-data-test-<ts>)")
+	cmd.Flags().BoolVar(&diffOnly, "diff-only", false, "skip build/provision/collect and re-run only the diff + report against scratch DBs kept by a prior --keep-dbs run")
 	return cmd
 }
 
@@ -540,16 +572,22 @@ func writeReport(path string, report *db.RowCountDiffReport, colReport *db.Colum
 	// partial differences — expected in small numbers because the two
 	// collections run against a live repo minutes apart.
 	fmt.Fprintf(&b, "## Column fill (values, not rows — v0.26.1)\n\n")
-	var colFailed, colFlagged []db.ColumnFillDiffRow
+	var colFailed, colRemoved, colRemovedEmpty, colFlagged []db.ColumnFillDiffRow
 	for _, r := range colReport.Rows {
-		if r.Status == "FAIL" {
+		switch r.Status {
+		case "FAIL":
 			colFailed = append(colFailed, r)
-		} else {
+		case "REMOVED":
+			colRemoved = append(colRemoved, r)
+		case "REMOVED-EMPTY":
+			colRemovedEmpty = append(colRemovedEmpty, r)
+		default:
 			colFlagged = append(colFlagged, r)
 		}
 	}
-	fmt.Fprintf(&b, "- **Columns checked**: %d\n", colReport.ColumnsChecked)
+	fmt.Fprintf(&b, "- **Columns checked** (present on both sides): %d\n", colReport.ColumnsChecked)
 	fmt.Fprintf(&b, "- **FAIL** (column went dark under the new binary): %d\n", len(colFailed))
+	fmt.Fprintf(&b, "- **REMOVED** (column dropped while carrying data — data loss shape): %d\n", len(colRemoved))
 	fmt.Fprintf(&b, "- **FLAG** (fill counts differ — review): %d\n\n", len(colFlagged))
 	writeColSection := func(name string, rows []db.ColumnFillDiffRow) {
 		if len(rows) == 0 {
@@ -564,7 +602,51 @@ func writeReport(path string, report *db.RowCountDiffReport, colReport *db.Colum
 		fmt.Fprintln(&b)
 	}
 	writeColSection("FAIL — columns that went dark", colFailed)
+	writeColSection("REMOVED — dropped columns that carried data (investigate)", colRemoved)
 	writeColSection("FLAG — fill differences to review", colFlagged)
+
+	// v0.27.129 — schema shape drift (the section whose absence crashed
+	// the 2026-08-21 run on contributors_old): one-sided tables and
+	// added columns, visible instead of fatal.
+	// v0.27.151 (round 30): TypeChanged joins the gate — a release
+	// whose ONLY schema drift is a column type change (TEXT -> BIGINT)
+	// previously produced no drift section at all despite the diff
+	// detecting it.
+	if len(colReport.TablesOnlyInReleased)+len(colReport.TablesOnlyInNew)+
+		len(colReport.AddedColumns)+len(colRemovedEmpty)+len(colReport.TypeChanged) > 0 {
+		fmt.Fprintf(&b, "## Schema shape drift (v0.27.129)\n\n")
+		if len(colReport.TablesOnlyInReleased) > 0 {
+			fmt.Fprintf(&b, "- **Tables only in released** (dropped by the release under test — the row diff FAILs these when they carried rows): %s\n",
+				"`"+strings.Join(colReport.TablesOnlyInReleased, "`, `")+"`")
+		}
+		if len(colReport.TablesOnlyInNew) > 0 {
+			fmt.Fprintf(&b, "- **Tables only in new** (added by the release): %s\n",
+				"`"+strings.Join(colReport.TablesOnlyInNew, "`, `")+"`")
+		}
+		fmt.Fprintln(&b)
+		if len(colReport.AddedColumns) > 0 {
+			fmt.Fprintf(&b, "### Added columns (new side only)\n\n")
+			fmt.Fprintf(&b, "| Column | New populated |\n|---|---|\n")
+			for _, r := range colReport.AddedColumns {
+				fmt.Fprintf(&b, "| `%s.%s.%s` | %d |\n", r.Schema, r.Table, r.Column, r.NewPopulated)
+			}
+			fmt.Fprintln(&b)
+		}
+		if len(colRemovedEmpty) > 0 {
+			fmt.Fprintf(&b, "### Removed columns that were already dark (shape notes)\n\n")
+			for _, r := range colRemovedEmpty {
+				fmt.Fprintf(&b, "- `%s.%s.%s`\n", r.Schema, r.Table, r.Column)
+			}
+			fmt.Fprintln(&b)
+		}
+		if len(colReport.TypeChanged) > 0 {
+			fmt.Fprintf(&b, "### Type changes on shared columns (review the migration path)\n\n")
+			for _, tc := range colReport.TypeChanged {
+				fmt.Fprintf(&b, "- %s\n", tc)
+			}
+			fmt.Fprintln(&b)
+		}
+	}
 
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

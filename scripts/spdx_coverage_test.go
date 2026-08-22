@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.20.16: every Go source file in the repo must carry the two
@@ -40,14 +42,11 @@ func TestEveryGoFileHasSPDXHeader(t *testing.T) {
 	// Walk up from this test's working directory to find the
 	// repository root. We anchor on the presence of go.mod so
 	// the test is robust to being run from any cwd.
-	repoRoot, err := findRepoRoot()
-	if err != nil {
-		t.Fatalf("finding repo root: %v", err)
-	}
+	repoRoot := srctest.Root(t)
 
 	var missing []string
 
-	err = filepath.WalkDir(repoRoot, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(repoRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -92,25 +91,5 @@ func TestEveryGoFileHasSPDXHeader(t *testing.T) {
 			spdxCopyrightLine,
 			spdxLicenseLine,
 			strings.Join(missing, "\n  "))
-	}
-}
-
-// findRepoRoot walks up from the current working directory until
-// it finds a go.mod file. Allows the test to be run from any cwd.
-func findRepoRoot() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	dir := cwd
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", os.ErrNotExist
-		}
-		dir = parent
 	}
 }

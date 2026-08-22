@@ -100,9 +100,7 @@ func retentionConnect(t *testing.T) (*PostgresStore, context.Context) {
 	// House rule (2026-07): every integration test migrates BEFORE
 	// seeding — three fresh-DB races were fixed the week of 2026-07-08
 	// from tests that assumed the schema was already present.
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	testMigrate(ctx, t, store)
 	return store, ctx
 }
 

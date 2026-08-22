@@ -231,9 +231,7 @@ func v0251Connect(t *testing.T) (*PostgresStore, context.Context) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	testMigrate(ctx, t, store)
 	// Consumers of this helper seed repos with a hardcoded
 	// repo_group_id = 1. On a POPULATED scratch DB group 1 has always
 	// existed; on a truly FRESH database (the CI / fresh-DB-gate tier,

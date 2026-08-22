@@ -341,7 +341,7 @@ func TestCompleteJob_BakesDueAtFromRecollectAfter(t *testing.T) {
 
 	recollect := 7 * 24 * time.Hour
 	before := time.Now().UTC()
-	if err := store.CompleteJob(ctx, repoID, true, recollect,
+	if err := store.CompleteJob(ctx, repoID, true, time.Now(), recollect,
 		0, 0, 0, 0, 0, 0, 0, 0, ""); err != nil {
 		t.Fatalf("CompleteJob: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestCompleteJob_ThenRealign_FullConfigChangeScenario(t *testing.T) {
 
 	// Old setting: 1 day.
 	oldInterval := 24 * time.Hour
-	if err := store.CompleteJob(ctx, repoID, true, oldInterval,
+	if err := store.CompleteJob(ctx, repoID, true, time.Now(), oldInterval,
 		0, 0, 0, 0, 0, 0, 0, 0, ""); err != nil {
 		t.Fatalf("CompleteJob(1d): %v", err)
 	}

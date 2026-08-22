@@ -164,6 +164,8 @@ GET /api/v1/repos/{repoID}/sbom?format=spdx
 
 Generates and downloads a Software Bill of Materials in CycloneDX 1.5 or SPDX 2.3 JSON format. The SBOM is generated on-the-fly from collected dependency data.
 
+Since v0.27.134, repositories with C2 lockfile data (`collection.vuln_scan_transitive` enabled) get the **real dependency graph**: lockfile transitives join the component/package list, CycloneDX's `dependencies` array carries actual parent→child links from the stored edges (root → direct set; parents → their children; unreachable packages stay leaves), and SPDX gains the matching package→package `DEPENDS_ON` relationships. Repositories without C2 data keep the flat pre-v0.27.134 shape byte-identical.
+
 | Parameter | Values | Default | Description |
 |---|---|---|---|
 | `format` | `cyclonedx`, `spdx` | `cyclonedx` | SBOM format |
@@ -757,6 +759,27 @@ Token semantics:
   each repo's next scan). GUIs
   should lead with direct findings — a repo with 3 direct and 400
   transitive findings must never headline "403 vulnerabilities".
+
+- `introduced_by` (v0.27.133, CURRENT transitive findings only): up
+  to 3 attributions `{"root": "<direct dep>", "chain": ["<root>",
+  ..., "<vulnerable package>"]}` walked from the stored lockfile
+  edges. Each walk stays inside ONE lockfile's graph (v0.27.135) and
+  roots on that lockfile's own direct dependencies plus the repo's
+  manifest-declared set as a repo-wide fallback (v0.27.137) — in a
+  monorepo, a package that is direct in one workspace never
+  terminates another workspace's chain. Resolved-historical findings
+  never carry the field (today's graph cannot explain an older
+  snapshot's finding). ABSENT when no edge data exists (knob off, or
+  an edge-less lockfile format) — treat absence as "attribution
+  unavailable", never as "no parents".
+
+- `introduced_by_total_roots` (v0.27.148): the TRUE count of distinct
+  direct roots pulling the package in. `introduced_by` caps at 3
+  emitted chains; this field is how a consumer distinguishes "exactly
+  3 roots" from "30 roots, showing 3". When
+  `introduced_by_total_roots == len(introduced_by)` the attribution
+  set is complete; when it is larger, bumping the named roots alone
+  may not remove the package. Omitted (0) when no chain resolved.
 
   **Version-resolution accuracy (v0.27.11).** Each finding also
   carries `declared_requirement` — the raw manifest requirement

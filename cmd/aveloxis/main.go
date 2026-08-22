@@ -86,6 +86,7 @@ func main() {
 		testMailCmd(&cfgPath),
 		stagingStatsCmd(&cfgPath),
 		healVulnerabilitiesCmd(&cfgPath),
+		healCollectionGapsCmd(&cfgPath),
 		runScorecardCmd(&cfgPath),
 		distributionStatsCmd(&cfgPath),
 		versionCmd(),
@@ -94,6 +95,7 @@ func main() {
 		dataVerifyCmd(&cfgPath),
 		generateShowcaseCmd(&cfgPath),
 		backfillRepoMetadataCmd(&cfgPath),
+		rewalkWhitespaceCmd(&cfgPath),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -174,6 +176,11 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	}
 	defer store.Close()
 
+	// F13 (v0.27.131): serve startup trusts a current schema stamp and
+	// skips the migration re-walk (observed 1h42m of backfill-window
+	// re-walking on kate with zero collection). `aveloxis migrate`
+	// remains the full-run self-heal path and never fast-paths.
+	store.SetMigrateFastPath(true)
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrating database: %w", err)
 	}
@@ -374,11 +381,6 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
 	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
-	var since time.Time
-	if !full {
-		since = time.Now().AddDate(0, 0, -cfg.Collection.DaysUntilRecollect)
-	}
-
 	for _, repoURL := range repoURLs {
 		client, owner, repo, err := collector.ClientForRepo(repoURL, ghClient, glClient)
 		if err != nil {
@@ -395,6 +397,23 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 		if err != nil {
 			logger.Error("failed to upsert repo", "url", repoURL, "error", err)
 			continue
+		}
+
+		// v0.27.139: the incremental lower bound is the queue row's
+		// last_collected (start-anchored by CompleteJob), NEVER
+		// now−days_until_recollect — the old expression skipped
+		// everything last-updated between the previous run and now−D
+		// (the podman-desktop blind-window class, CLI edition). A
+		// never-collected or untracked repo — and any lookup ERROR
+		// (SR-5: an error is not "never collected"; full is the safe
+		// direction) — collects from zero.
+		var since time.Time
+		if !full {
+			if lc, lcErr := store.GetRepoLastCollected(ctx, repoID); lcErr != nil {
+				logger.Warn("last_collected lookup failed — collecting FULL", "url", repoURL, "error", lcErr)
+			} else if lc != nil {
+				since = *lc
+			}
 		}
 
 		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.Collection.RepoCloneDir).
@@ -538,7 +557,7 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 				logger.Warn("failed to look up user_groups for org", "org_url", repoURL, "error", ugErr)
 			}
 			for _, r := range repos {
-				addOneRepoWithGroup(ctx, store, logger, r.URL, r.Owner, r.Name, plat, priority, groupID)
+				addOneRepoWithGroup(ctx, store, logger, r, plat, priority, groupID)
 				if len(userGroupIDs) == 0 {
 					continue
 				}
@@ -567,23 +586,27 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 	return nil
 }
 
-func addOneRepoWithGroup(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, repoURL, owner, name string, plat model.Platform, priority int, groupID int64) {
+func addOneRepoWithGroup(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, r orgRepo, plat model.Platform, priority int, groupID int64) {
 	repoID, err := store.UpsertRepo(ctx, &model.Repo{
 		Platform: plat,
-		GitURL:   repoURL,
-		Name:     name,
-		Owner:    owner,
+		GitURL:   r.URL,
+		Name:     r.Name,
+		Owner:    r.Owner,
 		GroupID:  groupID,
+		// v0.27.103: the forge numeric ID enables UpsertRepo's
+		// rename-heal (untracked URL + forge-ID hit) and backfills
+		// already-tracked rows via the prefer-nonempty conflict clause.
+		PlatformID: r.ForgeID,
 	})
 	if err != nil {
-		logger.Error("failed to register repo", "url", repoURL, "error", err)
+		logger.Error("failed to register repo", "url", r.URL, "error", err)
 		return
 	}
 	if err := store.EnqueueRepo(ctx, repoID, priority); err != nil {
-		logger.Error("failed to enqueue repo", "url", repoURL, "error", err)
+		logger.Error("failed to enqueue repo", "url", r.URL, "error", err)
 		return
 	}
-	logger.Info("repo added to queue", "url", repoURL, "repo_id", repoID, "priority", priority)
+	logger.Info("repo added to queue", "url", r.URL, "repo_id", repoID, "priority", priority)
 }
 
 func addOneRepo(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, repoURL, owner, name string, plat model.Platform, priority int) {
@@ -608,6 +631,10 @@ type orgRepo struct {
 	URL   string
 	Owner string
 	Name  string
+	// ForgeID is the forge's numeric repository ID from the listing
+	// JSON (v0.27.103 — this path was the one org-scan site the
+	// v0.27.102 rename-dedup fix missed). UpsertRepo dedups on it.
+	ForgeID string
 }
 
 // listGitHubOrgRepos calls GET /orgs/{org}/repos to list all public repos.
@@ -621,6 +648,7 @@ func listGitHubOrgRepos(ctx context.Context, http *platform.HTTPClient, org stri
 			return repos, err
 		}
 		var items []struct {
+			ID       int64  `json:"id"` // v0.27.103 — rename-proof numeric identity
 			FullName string `json:"full_name"`
 			HTMLURL  string `json:"html_url"`
 			Name     string `json:"name"`
@@ -641,9 +669,10 @@ func listGitHubOrgRepos(ctx context.Context, http *platform.HTTPClient, org stri
 		}
 		for _, item := range items {
 			repos = append(repos, orgRepo{
-				URL:   item.HTMLURL,
-				Owner: item.Owner.Login,
-				Name:  item.Name,
+				URL:     item.HTMLURL,
+				Owner:   item.Owner.Login,
+				Name:    item.Name,
+				ForgeID: model.ForgeIDString(item.ID),
 			})
 		}
 		page++
@@ -663,6 +692,7 @@ func listGitLabGroupRepos(ctx context.Context, http *platform.HTTPClient, group 
 			return repos, err
 		}
 		var items []struct {
+			ID                int64  `json:"id"` // v0.27.103 — rename-proof numeric identity
 			PathWithNamespace string `json:"path_with_namespace"`
 			WebURL            string `json:"web_url"`
 			Name              string `json:"name"`
@@ -681,9 +711,10 @@ func listGitLabGroupRepos(ctx context.Context, http *platform.HTTPClient, group 
 		}
 		for _, item := range items {
 			repos = append(repos, orgRepo{
-				URL:   item.WebURL,
-				Owner: item.Namespace.FullPath,
-				Name:  item.Name,
+				URL:     item.WebURL,
+				Owner:   item.Namespace.FullPath,
+				Name:    item.Name,
+				ForgeID: model.ForgeIDString(item.ID),
 			})
 		}
 		page++

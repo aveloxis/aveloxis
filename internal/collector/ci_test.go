@@ -8,12 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestCIWorkflowsExist verifies all required GitHub Actions workflow files are present.
 func TestCIWorkflowsExist(t *testing.T) {
 	// Find the repo root by walking up from the test directory.
-	root := findRepoRoot(t)
+	root := srctest.Root(t)
 	if root == "" {
 		t.Skip("could not find repo root")
 	}
@@ -36,7 +38,7 @@ func TestCIWorkflowsExist(t *testing.T) {
 
 // TestDockerfileExists verifies the Dockerfile is present for container builds.
 func TestDockerfileExists(t *testing.T) {
-	root := findRepoRoot(t)
+	root := srctest.Root(t)
 	if root == "" {
 		t.Skip("could not find repo root")
 	}
@@ -48,7 +50,7 @@ func TestDockerfileExists(t *testing.T) {
 
 // TestCIBadgesInREADME verifies the README has CI status badges.
 func TestCIBadgesInREADME(t *testing.T) {
-	root := findRepoRoot(t)
+	root := srctest.Root(t)
 	if root == "" {
 		t.Skip("could not find repo root")
 	}
@@ -63,20 +65,5 @@ func TestCIBadgesInREADME(t *testing.T) {
 		if !strings.Contains(readme, badge) {
 			t.Errorf("README.md missing badge for %s", badge)
 		}
-	}
-}
-
-func findRepoRoot(t *testing.T) string {
-	t.Helper()
-	dir, _ := os.Getwd()
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
 	}
 }

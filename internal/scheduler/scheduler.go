@@ -1082,7 +1082,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// Phase 7: Vulnerability scanning via OSV.dev.
 	// Uses purls from libyear data to query for known CVEs.
 	vulnResult, vulnErr := collector.ScanVulnerabilities(ctx, s.store, job.RepoID, s.logger,
-		s.osvCache, s.cfg.Collection.VulnScanTransitive)
+		s.osvCache, s.cfg.Collection.VulnScanTransitiveValue())
 	if vulnErr != nil {
 		s.logger.Warn("vulnerability scan failed", "repo_id", job.RepoID, "error", vulnErr)
 	} else if vulnResult != nil && vulnResult.VulnsFound > 0 {
@@ -1096,7 +1096,13 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	outcome := s.buildOutcome(result, facadeResult, analysisResult, err, gapFillErr)
 	duration := time.Since(start)
 
-	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, s.cfg.Collection.RecollectAfterDuration(),
+	// v0.27.139: last_collected anchors at THIS job's start on success
+	// (zero on failure — never advanced past data we didn't collect).
+	startAnchor := start
+	if !outcome.success {
+		startAnchor = time.Time{}
+	}
+	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, startAnchor, s.cfg.Collection.RecollectAfterDuration(),
 		outcome.issues, outcome.prs, outcome.messages, outcome.events,
 		outcome.releases, outcome.contributors, outcome.commits,
 		duration.Milliseconds(), outcome.errMsg); err != nil {
@@ -1132,7 +1138,9 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 // failJob marks a job as failed with zero counts. Used for early exits
 // (repo lookup failure, unknown platform, etc.).
 func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
-	if err := s.store.CompleteJob(ctx, repoID, false, s.cfg.Collection.RecollectAfterDuration(),
+	// v0.27.139: zero startedAt — a failed pass never advances
+	// last_collected (due_at still advances for retry pacing).
+	if err := s.store.CompleteJob(ctx, repoID, false, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
 		0, 0, 0, 0, 0, 0, 0, 0, errMsg); err != nil {
 		s.logger.Warn("failed to record job failure", "repo_id", repoID, "error", err)
 	}
@@ -1141,7 +1149,11 @@ func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
 // skipJob marks a job as successfully completed with zero counts and a reason.
 // Used when prelim determines the repo should be skipped (e.g., deleted, duplicate).
 func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
-	if err := s.store.CompleteJob(ctx, repoID, true, s.cfg.Collection.RecollectAfterDuration(),
+	// v0.27.139: zero startedAt — a skip collects nothing, so it must
+	// not stamp "successfully collected at T" (the cohort-A class:
+	// stamped-but-empty passes convert the next round to incremental
+	// over history that was never gathered).
+	if err := s.store.CompleteJob(ctx, repoID, true, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
 		0, 0, 0, 0, 0, 0, 0, 0, reason); err != nil {
 		s.logger.Warn("failed to record job skip", "repo_id", repoID, "error", err)
 	}
@@ -1162,7 +1174,20 @@ func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
 
 // determineSince returns the starting point for incremental collection.
 // For repos that have never been collected, it returns zero time (full collection).
-// For repos previously collected, it returns now minus the recollect window.
+// For repos previously collected, it returns the stored last_collected —
+// which CompleteJob (v0.27.139) anchors at the PREVIOUS ROUND'S START, so
+// consecutive rounds tile the timeline with overlap and never a hole.
+//
+// v0.27.139 (the podman-desktop blind-window incident): the pre-fix
+// expression was `time.Now() − recollect_window`, which never read
+// last_collected at all. Round N covers up to its own start; round N+1
+// began its window at now−D — everything whose FINAL update fell in
+// (roundN_start, now−D) was never listed by any round. The blind window
+// equals the previous round's duration PLUS however far past due_at the
+// fleet backlog delayed the dequeue, and it reopened every cycle
+// (verified to the minute on production: missing-item boundaries at
+// exactly roundTime−D for two independent rounds). last_collected is the
+// only correct lower bound; overlap re-collection is idempotent upserts.
 //
 // Full-recollect overrides (both return zero time, regardless of LastCollected):
 //   - cfg.ForceFullCollection: fleet-wide toggle in aveloxis.json. Used
@@ -1179,7 +1204,7 @@ func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 		return time.Time{} // force full re-collection (this repo only)
 	}
 	if job.LastCollected != nil {
-		return time.Now().Add(-s.cfg.Collection.RecollectAfterDuration())
+		return *job.LastCollected
 	}
 	return time.Time{} // zero = full collection
 }
@@ -1282,7 +1307,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	ac.RetainClone = true
 	// v0.27.21 C1: store the full lockfile closure when transitive
 	// scanning is on (read at point of use — the v0.25.37 rule).
-	ac.TransitiveLockfiles = s.cfg.Collection.VulnScanTransitive
+	ac.TransitiveLockfiles = s.cfg.Collection.VulnScanTransitiveValue()
 	ac.DevBuildDeps = s.cfg.Collection.DevBuildDeps
 	ac.GitHubActionsDeps = s.cfg.Collection.GitHubActionsDeps
 	aResult, aErr := ac.AnalyzeRepo(ctx, repoID)
@@ -1543,6 +1568,16 @@ func (s *Scheduler) processLeftoverStaging(ctx context.Context) {
 // the next process startup's RecoverOtherWorkerLocks will release them
 // and the drain set will be re-identified and re-parked.
 func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainSet []int64) {
+	// v0.27.147 (round 26)/v0.27.150 (round 29): heartbeat the WHOLE
+	// parked set for the drain's lifetime — the set is lock-parked up
+	// front and drained sequentially, so a per-repo beat left the
+	// waiting tail's locked_at frozen: one long drain (production has
+	// seen ~33h per repo on backlogged staging) let the same process's
+	// periodic RecoverStaleLocks (1-hour default) reclaim the tail,
+	// which was then drained without a valid lock while routine
+	// collection could purge its staging. stop() joins after the loop.
+	stopHB := s.store.StartDrainHeartbeat(ctx, s.logger, s.workerID)
+	defer stopHB()
 	for i, repoID := range drainSet {
 		if ctx.Err() != nil {
 			s.logger.Info("background drain interrupted by ctx cancel; remaining repos will be re-parked on next startup",
@@ -1652,6 +1687,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		var items []struct {
+			ID      int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
 			HTMLURL string `json:"html_url"`
 			Name    string `json:"name"`
 			Owner   struct {
@@ -1679,13 +1715,19 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 			}
 			if existing > 0 {
 				repoID = existing
+				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
+				// only) — see refreshUserOrgs for the rationale.
+				if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID)); idErr != nil {
+					s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
+				}
 			} else {
 				rid, err := s.store.UpsertRepo(ctx, &model.Repo{
-					Platform: model.PlatformGitHub,
-					GitURL:   item.HTMLURL,
-					Name:     item.Name,
-					Owner:    item.Owner.Login,
-					GroupID:  g.ID,
+					Platform:   model.PlatformGitHub,
+					GitURL:     item.HTMLURL,
+					Name:       item.Name,
+					Owner:      item.Owner.Login,
+					GroupID:    g.ID,
+					PlatformID: model.ForgeIDString(item.ID), // v0.27.102
 				})
 				if err != nil {
 					continue
@@ -1743,6 +1785,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		var items []struct {
+			ID        int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
 			WebURL    string `json:"web_url"`
 			Name      string `json:"name"`
 			Namespace struct {
@@ -1766,13 +1809,19 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 			}
 			if existing > 0 {
 				repoID = existing
+				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
+				// only) — see refreshUserOrgs for the rationale.
+				if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID)); idErr != nil {
+					s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
+				}
 			} else {
 				rid, err := s.store.UpsertRepo(ctx, &model.Repo{
-					Platform: model.PlatformGitLab,
-					GitURL:   item.WebURL,
-					Name:     item.Name,
-					Owner:    item.Namespace.FullPath,
-					GroupID:  g.ID,
+					Platform:   model.PlatformGitLab,
+					GitURL:     item.WebURL,
+					Name:       item.Name,
+					Owner:      item.Namespace.FullPath,
+					GroupID:    g.ID,
+					PlatformID: model.ForgeIDString(item.ID), // v0.27.102
 				})
 				if err != nil {
 					continue
@@ -2022,7 +2071,9 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 	for _, key := range order {
 		g := grouped[key]
 
-		var repos []struct{ URL, Owner, Name string }
+		// ForgeID (v0.27.102) is the forge's numeric repo ID from the
+		// listing JSON — the rename-proof identity UpsertRepo dedups on.
+		var repos []struct{ URL, Owner, Name, ForgeID string }
 		switch g.platform {
 		case "github":
 			if s.ghKeys == nil {
@@ -2044,6 +2095,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 						break
 					}
 					var items []struct {
+						ID      int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
 						HTMLURL string `json:"html_url"`
 						Name    string `json:"name"`
 						Owner   struct {
@@ -2059,7 +2111,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 					}
 					found = true
 					for _, item := range items {
-						repos = append(repos, struct{ URL, Owner, Name string }{item.HTMLURL, item.Owner.Login, item.Name})
+						repos = append(repos, struct{ URL, Owner, Name, ForgeID string }{item.HTMLURL, item.Owner.Login, item.Name, model.ForgeIDString(item.ID)})
 					}
 					page++
 				}
@@ -2091,16 +2143,27 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 			if repoID == 0 {
 				var err error
 				repoID, err = s.store.UpsertRepo(ctx, &model.Repo{
-					Platform: model.PlatformGitHub,
-					GitURL:   repo.URL,
-					Name:     repo.Name,
-					Owner:    repo.Owner,
+					Platform:   model.PlatformGitHub,
+					GitURL:     repo.URL,
+					Name:       repo.Name,
+					Owner:      repo.Owner,
+					PlatformID: repo.ForgeID, // v0.27.102 — enables the rename-heal inside UpsertRepo
 				})
 				if err != nil {
 					continue
 				}
 				if enqErr := s.store.EnqueueRepo(ctx, repoID, 100); enqErr != nil {
 					s.logger.Warn("failed to enqueue repo", "repo_id", repoID, "error", enqErr)
+				}
+			} else if repo.ForgeID != "" {
+				// v0.27.102: opportunistic forge-ID backfill on already-
+				// tracked rows. The org-tracked cohort is EXACTLY the
+				// population at risk of rename re-discovery, so filling
+				// its IDs on every scan pass closes the protection gap
+				// now instead of waiting for each repo's Phase 0 cycle.
+				// Fill-empty-only; best-effort.
+				if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, repo.ForgeID); idErr != nil {
+					s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
 				}
 			}
 			// Link into every registered group (ON CONFLICT DO NOTHING).

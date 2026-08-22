@@ -50,15 +50,15 @@ func IsRuntimeScope(scope string) bool {
 // StoredScope normalizes a scope for repo_deps_vulnerabilities'
 // dependency_scope column: runtime (including "" and unknown-future
 // values) stores as the WORD "runtime" — v0.27.51 operator decision:
-// the old ” convention (v0.27.21-50) was uninterpretable for anyone
+// the old "" convention (v0.27.21-50) was uninterpretable for anyone
 // reading the table directly. Non-runtime scopes store fine-grained
-// (decision #5). Legacy ” rows still READ as runtime everywhere
+// (decision #5). Legacy "" rows still READ as runtime everywhere
 // (IsRuntimeScope) and heal to 'runtime' on each repo's next scan
 // via the always-refresh upsert.
 //
 // NOTE: repo_lockfile_packages.dependency_scope deliberately KEEPS
-// the ” convention — its aggregation fold (MIN(CASE ...)) depends
-// on ” sorting before every scope name; the conversion happens at
+// the "" convention — its aggregation fold (MIN(CASE ...)) depends
+// on "" sorting before every scope name; the conversion happens at
 // the finding-write boundary (vulnScanTargets + the transitive
 // target construction), never in the lockfile plumbing.
 func StoredScope(scope string) string {
@@ -113,5 +113,34 @@ func CycloneDXScopeForScope(scope string) string {
 		return "excluded"
 	default:
 		return "required"
+	}
+}
+
+// StrongerScope returns the more security-relevant of two scope
+// observations for ONE package — v0.27.155 (round 34): a monorepo can
+// declare the same package/version with DIFFERENT scopes across its
+// manifests (runtime in apps/a, dev in tools/b), and repo_deps_libyear
+// is not unique, so SBOM emission (which dedupes packages by ID) must
+// fold the duplicates' scopes instead of letting manifest-walk order
+// pick one. Precedence follows the fail-toward-visibility rule the
+// scope system is built on: runtime-class (including "" and
+// unknown-future values) beats optional/peer beats dev/test/build.
+// Equal ranks keep the FIRST observation (deterministic under the
+// store's ordered reads).
+func StrongerScope(a, b string) string {
+	if scopeRank(b) < scopeRank(a) {
+		return b
+	}
+	return a
+}
+
+func scopeRank(scope string) int {
+	switch {
+	case IsRuntimeScope(scope):
+		return 0
+	case scope == ScopeOptional || scope == ScopePeer:
+		return 1
+	default: // dev/test/build
+		return 2
 	}
 }

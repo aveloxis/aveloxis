@@ -110,6 +110,14 @@ var purlEcosystemTypes = map[string]string{
 	"pub":      "pub",
 	"swift":    "swift",
 	"haskell":  "hackage",
+	// v0.27.133 (C2 exploration find): the LOCKFILE roster emits these
+	// ecosystem strings — without the aliases, every rubygems/packagist/
+	// swiftpm/hackage transitive produced "" and was SILENTLY dropped
+	// from the vuln scan.
+	"rubygems":  "gem",
+	"packagist": "composer",
+	"swiftpm":   "swift",
+	"hackage":   "hackage",
 }
 
 // purlForPackage builds a purl for a transitive lockfile resolution.

@@ -101,9 +101,7 @@ func scorecardModeConnect(t *testing.T) (*PostgresStore, context.Context) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	testMigrate(ctx, t, store)
 	return store, ctx
 }
 

@@ -27,7 +27,11 @@ func forkCaptureSrc(t *testing.T, file string) string {
 
 func TestUpdateRepoMetadataWritesForkedFrom(t *testing.T) {
 	src := forkCaptureSrc(t, "repo_metadata.go")
-	if !strings.Contains(src, "forkedFrom string") {
+	// v0.27.102 widened the signature to `forkedFrom, platformRepoID
+	// string`, so pin the parameter NAME rather than the exact `name
+	// type` pair — the intent (Phase 0 carries the fork lineage) is
+	// unchanged.
+	if !strings.Contains(src, "forkedFrom") {
 		t.Error("UpdateRepoMetadata must take the forkedFrom value (Phase 0 is the forked_from writer)")
 	}
 	if !strings.Contains(src, "forked_from") {

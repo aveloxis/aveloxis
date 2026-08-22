@@ -66,8 +66,21 @@ type vulnJSON struct {
 	VersionResolution   string `json:"version_resolution,omitempty"`
 	// v0.27.21 C1: 'direct' | 'transitive' ('' = pre-C1 row, rendered
 	// as direct) + 'dev'/'runtime'/'' scope from the lockfile.
-	DependencyKind  string `json:"dependency_kind,omitempty"`
-	DependencyScope string `json:"dependency_scope,omitempty"`
+	DependencyKind string `json:"dependency_kind,omitempty"`
+	// IntroducedBy — v0.27.133 (C2): for TRANSITIVE findings, the
+	// direct roots that pull the package in, each with one shortest
+	// chain root → … → vulnerable package. Absent when no edge data
+	// exists (knob off, edge-less lockfile format) — the GUI must
+	// treat absence as "attribution unavailable", never "no parents".
+	IntroducedBy []vulnChainJSON `json:"introduced_by,omitempty"`
+	// IntroducedByTotalRoots — v0.27.148 (round 27): the TRUE count of
+	// distinct direct roots pulling this package in. introduced_by is
+	// capped at 3 emitted chains; without the total a consumer cannot
+	// distinguish "exactly 3 roots" from "30 roots, showing 3" and may
+	// present a truncated remediation set as complete. 0 when no chain
+	// resolved (field omitted).
+	IntroducedByTotalRoots int    `json:"introduced_by_total_roots,omitempty"`
+	DependencyScope        string `json:"dependency_scope,omitempty"`
 }
 
 // scannedVersionFromPurl derives the version a finding was scanned at
@@ -116,6 +129,31 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "vulnerability lookup failed", http.StatusInternalServerError)
 		return
 	}
+	// v0.27.133 C2: attribution index, built ONCE per request and only
+	// when a transitive finding exists (edges are absent with the knob
+	// off — zero cost on the default path). Best-effort: a lookup
+	// failure degrades to no attribution, never a 500.
+	var chains *chainIndex
+	for _, v := range rows {
+		if v.DependencyKind == "transitive" && v.ResolvedAt == nil {
+			edges, eerr := s.store.GetRepoLockfileEdges(r.Context(), repoID)
+			if eerr != nil {
+				s.logger.Warn("lockfile edge lookup failed — findings served without attribution", "repo_id", repoID, "error", eerr)
+				break
+			}
+			if len(edges) == 0 {
+				break
+			}
+			directSets, derr := s.store.GetRepoDirectPackageSets(r.Context(), repoID)
+			if derr != nil {
+				s.logger.Warn("direct-set lookup failed — findings served without attribution", "repo_id", repoID, "error", derr)
+				break
+			}
+			chains = buildChainIndex(edges, directSets)
+			break
+		}
+	}
+
 	out := make([]vulnJSON, 0, len(rows))
 	current, resolved, critical := 0, 0, 0
 	// v0.27.21 C1 count split (CURRENT findings only): a repo with 3
@@ -169,6 +207,15 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 			DependencyKind:      v.DependencyKind,
 			DependencyScope:     v.DependencyScope,
 		})
+		// Round-19: CURRENT findings only. The chain index is built
+		// from the CURRENT lockfile edges; a resolved-historical
+		// finding describes an OLDER snapshot, so attaching today's
+		// graph to it could name a path that never produced the
+		// finding (and implies live exposure where none exists).
+		// Historical edge snapshots are not retained — honest absence.
+		if chains != nil && v.DependencyKind == "transitive" && v.ResolvedAt == nil {
+			out[len(out)-1].IntroducedBy, out[len(out)-1].IntroducedByTotalRoots = chains.chainsFor(v.Ecosystem, v.PackageName)
+		}
 	}
 	// v0.27.11: repo-level lockfile certainty — derived at read time
 	// (overall=full iff every ecosystem with dependencies also has a

@@ -24,9 +24,11 @@ func TestAssessAndFillGapsReturnsFillErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	start := strings.Index(s, "func (gf *GapFiller) AssessAndFillGaps(")
+	// v0.27.140: the body moved into the threshold variant (the
+	// v0.27.139 healer's seam); the bare name is now a delegate.
+	start := strings.Index(s, "func (gf *GapFiller) AssessAndFillGapsWithThreshold(")
 	if start < 0 {
-		t.Fatal("AssessAndFillGaps not found")
+		t.Fatal("AssessAndFillGapsWithThreshold not found")
 	}
 	body := s[start:]
 	if end := strings.Index(body[1:], "\nfunc "); end > 0 {

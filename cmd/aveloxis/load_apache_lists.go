@@ -7,8 +7,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/importers/apache"
@@ -80,14 +82,53 @@ func runLoadApacheLists(cfgPath string, dryRun bool, projURL, podURL string) err
 
 	const system = "apache_ponymail"
 	backend := mailinglist.NewPonyMail("", "") // lists.apache.org, default UA
+	// Forge probe for canonical repo names (round 31) — same timeout
+	// class as the importer's own probes.
+	probeClient := &http.Client{Timeout: 60 * time.Second}
 
 	var registered, skippedNoRepo, listsAdded int
 	for _, pmc := range pmcs {
 		if pmc.RepoURL == "" {
 			continue
 		}
-		repoID, rerr := store.FindRepoByURL(ctx, pmc.RepoURL)
-		if rerr != nil || repoID == 0 {
+		// v0.27.132: try every URL variant (incubator- prefix drifts in
+		// both directions — the four wedged production podlings' repos
+		// live at apache/incubator-<slug> while the derived URL didn't).
+		// A lookup ERROR propagates (SR-5): a DB failure is not "no repo",
+		// and skipping on it would silently register nothing.
+		var repoID int64
+		for _, u := range pmc.RepoURLVariants() {
+			id, rerr := store.FindRepoByURL(ctx, u)
+			if rerr != nil {
+				return fmt.Errorf("find repo %s for PMC %s: %w", u, pmc.Slug, rerr)
+			}
+			if id != 0 {
+				repoID = id
+				break
+			}
+		}
+		if repoID == 0 {
+			// v0.27.152 (round 31): the variants cover only the
+			// incubator/plain twins, but import-foundations stores the
+			// forge's CANONICALIZED redirect target — an Apache rename
+			// to an arbitrary new slug matches neither twin, and this
+			// command then never registered the PMC's lists. Ask the
+			// forge (the same redirect-aware resolver the importer
+			// uses) before concluding "no repo". A probe error aborts
+			// (round-25 definitive-only): the command re-runs cleanly.
+			canonical, okc, perr := apache.ResolveRepoURL(ctx, probeClient, pmc.RepoURL, pmc.Slug)
+			if perr != nil {
+				return fmt.Errorf("resolving canonical repo for PMC %s: %w", pmc.Slug, perr)
+			}
+			if okc {
+				id, rerr := store.FindRepoByURL(ctx, canonical)
+				if rerr != nil {
+					return fmt.Errorf("find repo %s for PMC %s: %w", canonical, pmc.Slug, rerr)
+				}
+				repoID = id
+			}
+		}
+		if repoID == 0 {
 			skippedNoRepo++
 			continue
 		}

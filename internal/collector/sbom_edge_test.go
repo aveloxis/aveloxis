@@ -16,7 +16,7 @@ import (
 
 func TestGenerateCycloneDX_NoDeps(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org", GitURL: "https://github.com/org/myapp"}
-	data, err := generateCycloneDX(repo, nil, nil)
+	data, err := generateCycloneDX(repo, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("generateCycloneDX: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestGenerateCycloneDX_WithDeps(t *testing.T) {
 		{Name: "flask", CurrentVersion: "2.0.0", Purl: "pkg:pypi/flask@2.0.0", Type: "runtime", License: "BSD-3-Clause"},
 		{Name: "pytest", CurrentVersion: "7.0", Purl: "pkg:pypi/pytest@7.0", Type: "dev", License: "MIT"},
 	}
-	data, err := generateCycloneDX(repo, deps, nil)
+	data, err := generateCycloneDX(repo, deps, nil, nil)
 	if err != nil {
 		t.Fatalf("generateCycloneDX: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestGenerateCycloneDX_WithScancode(t *testing.T) {
 		ConcludedLicenseSPDX: "Apache-2.0",
 		Copyrights:           []string{"Copyright 2024 ACME Corp", "Copyright 2023 Other Inc"},
 	}
-	data, err := generateCycloneDX(repo, nil, scanData)
+	data, err := generateCycloneDX(repo, nil, scanData, nil)
 	if err != nil {
 		t.Fatalf("generateCycloneDX: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestGenerateCycloneDX_NoLicense(t *testing.T) {
 	deps := []db.SBOMDep{
 		{Name: "unknown-lib", CurrentVersion: "1.0", Purl: "pkg:pypi/unknown-lib@1.0", Type: "runtime"},
 	}
-	data, err := generateCycloneDX(repo, deps, nil)
+	data, err := generateCycloneDX(repo, deps, nil, nil)
 	if err != nil {
 		t.Fatalf("generateCycloneDX: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestGenerateCycloneDX_NoLicense(t *testing.T) {
 
 func TestGenerateSPDX_NoDeps(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org", GitURL: "https://github.com/org/myapp", License: "MIT"}
-	data, err := generateSPDX(repo, nil, nil)
+	data, err := generateSPDX(repo, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("generateSPDX: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestGenerateSPDX_WithDeps(t *testing.T) {
 		{Name: "flask", CurrentVersion: "2.0", Purl: "pkg:pypi/flask@2.0", License: "BSD-3-Clause"},
 		{Name: "requests", CurrentVersion: "2.28", License: ""}, // no purl, no license
 	}
-	data, err := generateSPDX(repo, deps, nil)
+	data, err := generateSPDX(repo, deps, nil, nil)
 	if err != nil {
 		t.Fatalf("generateSPDX: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestGenerateSPDX_WithScancode(t *testing.T) {
 		ConcludedLicenseSPDX: "Apache-2.0 AND MIT",
 		Copyrights:           []string{"Copyright 2024 ACME"},
 	}
-	data, err := generateSPDX(repo, nil, scanData)
+	data, err := generateSPDX(repo, nil, scanData, nil)
 	if err != nil {
 		t.Fatalf("generateSPDX: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestGenerateSPDX_WithScancode(t *testing.T) {
 
 func TestGenerateSPDX_NoLicense(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org", GitURL: "https://github.com/org/myapp"}
-	data, err := generateSPDX(repo, nil, nil)
+	data, err := generateSPDX(repo, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("generateSPDX: %v", err)
 	}

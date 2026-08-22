@@ -67,6 +67,10 @@ td.name a:hover { color: #0369a1; }
   display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
 .foot { margin-top: 40px; color: #66739a; font-size: 12.5px; display: flex;
   justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.foot-eco { margin-top: 12px; color: #66739a; font-size: 12.5px; display: flex;
+  gap: 16px; flex-wrap: wrap; align-items: center;
+  padding-top: 12px; border-top: 1px solid rgba(102,115,154,0.2); }
+.foot-eco-label { text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
 td.name a.ext { color: #66739a; font-weight: 400; font-size: 12px; margin-left: 6px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 26px; }
 .stat { padding: 16px 18px; border: 1px solid rgba(37,99,235,0.16); border-radius: 12px;
@@ -129,6 +133,15 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
 </div>
 {{end}}
 
+{{define "foot-eco"}}<nav class="foot-eco" aria-label="CHAOSS ecosystem">
+  <span class="foot-eco-label">CHAOSS ecosystem:</span>
+  <a href="https://chaoss.community" target="_blank" rel="noopener">CHAOSS community</a>
+  <a href="https://chaoss.io" target="_blank" rel="noopener">CHAOSS.io</a>
+  <a href="https://metrix.chaoss.io" target="_blank" rel="noopener">CHAOSS Metrix</a>
+  <a href="https://ai.chaoss.io" target="_blank" rel="noopener">CHAOSS AI</a>
+  <a href="https://www.seangoggins.net/" target="_blank" rel="noopener">Sean Goggins</a>
+</nav>{{end}}
+
 {{define "index"}}{{template "shell-head" .}}
 <title>Open source health showcase — Aveloxis</title>
 <meta name="description" content="Public open source health snapshots for curated collections — Apache, CNCF, NumFocus and more. CHAOSS-style metrics from the Aveloxis production fleet, updated hourly." />
@@ -143,7 +156,20 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   "@type": "CollectionPage",
   "name": "Open source health showcase",
   "url": "{{.BaseURL}}/showcase/index.html",
-  "isPartOf": { "@type": "WebSite", "name": "Aveloxis", "url": "{{.BaseURL}}/" }
+  "isPartOf": { "@type": "WebSite", "name": "Aveloxis", "url": "{{.BaseURL}}/" },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Aveloxis",
+    "url": "{{.BaseURL}}/",
+    "memberOf": { "@type": "Organization", "name": "CHAOSS", "url": "https://chaoss.community" }
+  },
+  "relatedLink": [
+    "https://chaoss.community",
+    "https://chaoss.io",
+    "https://metrix.chaoss.io",
+    "https://ai.chaoss.io",
+    "https://github.com/chaoss/augur"
+  ]
 }
 </script>
 </head>
@@ -173,6 +199,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
     <span>© 2026 University of Missouri · MIT License</span>
     <span><a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a> · <a href="https://aveloxis.readthedocs.io">Docs</a></span>
   </div>
+  {{template "foot-eco"}}
 </div>
 </body>
 </html>
@@ -249,6 +276,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
     <span>© 2026 University of Missouri · MIT License</span>
     <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
   </div>
+  {{template "foot-eco"}}
 </div>
 </body>
 </html>
@@ -373,6 +401,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
     <span>© 2026 University of Missouri · MIT License</span>
     <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
   </div>
+  {{template "foot-eco"}}
 </div>
 </body>
 </html>
@@ -434,6 +463,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
     <span>© 2026 University of Missouri · MIT License</span>
     <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
   </div>
+  {{template "foot-eco"}}
 </div>
 </body>
 </html>

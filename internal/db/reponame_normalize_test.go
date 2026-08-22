@@ -55,9 +55,25 @@ func TestUpdateRepoURLNormalizesName(t *testing.T) {
 	if end > 0 {
 		fnBody = fnBody[:end]
 	}
-	if !strings.Contains(fnBody, "NormalizeRepoName") {
-		t.Error("UpdateRepoURL must call model.NormalizeRepoName on the parsed name — " +
+	// v0.27.111: the parse+normalize moved into the shared
+	// parseRepoURLOwnerName helper (used by both UpdateRepoURL and the
+	// transactional UpdateRepoURLs). The guarantee is unchanged — pin
+	// that UpdateRepoURL routes through the helper AND that the helper
+	// itself normalizes.
+	if !strings.Contains(fnBody, "parseRepoURLOwnerName(") {
+		t.Error("UpdateRepoURL must derive owner/name via parseRepoURLOwnerName — " +
 			"redirects should also produce clean slugs in the DB")
+	}
+	hIdx := strings.Index(code, "func parseRepoURLOwnerName(")
+	if hIdx < 0 {
+		t.Fatal("cannot find parseRepoURLOwnerName in postgres.go")
+	}
+	hBody := code[hIdx:]
+	if hEnd := strings.Index(hBody, "\n}\n"); hEnd > 0 {
+		hBody = hBody[:hEnd]
+	}
+	if !strings.Contains(hBody, "NormalizeRepoName") {
+		t.Error("parseRepoURLOwnerName must call model.NormalizeRepoName on the parsed name")
 	}
 }
 

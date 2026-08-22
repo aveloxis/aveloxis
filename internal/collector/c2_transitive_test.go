@@ -158,3 +158,32 @@ func TestScanGoModGraphStopsOnExhaustedBudget(t *testing.T) {
 		t.Errorf("the loop must break at the budget check, not grind the modules (took %v)", elapsed)
 	}
 }
+
+// v0.27.153 (round 32): a discovery-walk failure must report
+// INCOMPLETE — the swallow-everything walk let an unreadable subtree
+// produce complete=true with empty/partial modDirs, and the caller
+// then replaced the valid prior Go closure (SR-16: a walk error is
+// not "zero modules").
+func TestScanGoModGraphReportsWalkFailureAsIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.MkdirAll(filepath.Join(locked, "mod"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "mod", "go.mod"), []byte("module example.com/hidden\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) }) // let TempDir cleanup succeed
+
+	ac := &AnalysisCollector{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	pkgs, edges, complete := ac.scanGoModGraph(context.Background(), dir, map[string]bool{})
+	if complete {
+		t.Fatal("an unreadable subtree must report INCOMPLETE — complete=true here lets the snapshot replace wipe the prior Go closure on a transient permission/IO failure")
+	}
+	if pkgs != nil || edges != nil {
+		t.Errorf("a failed discovery must contribute nothing (partial output is discarded by the caller anyway), got %d pkgs / %d edges", len(pkgs), len(edges))
+	}
+}

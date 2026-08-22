@@ -64,10 +64,21 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string,
 	// the old order, a toolless host reported incomplete forever, so
 	// a repo that REMOVED all its Go modules kept its stale closure
 	// preserved on every scan.
+	// v0.27.153 (round 32): a DISCOVERY failure is an INCOMPLETE scan
+	// (SR-16 — a walk error is not "zero modules"). The old
+	// swallow-everything walk let an unreadable root/subtree produce
+	// empty-or-partial modDirs with complete=true, and the caller then
+	// REPLACED the valid prior closure — the exact false-resolve the
+	// preserve contract exists to prevent. Partial discovery is
+	// discarded outright: incomplete output is thrown away by the
+	// caller anyway, so expanding the modules we happened to find
+	// would be wasted toolchain time.
 	var modDirs []string
-	_ = filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
+	walkFailed := false
+	walkErr := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil
+			walkFailed = true
+			return nil // note the failure; keep walking what we can for the log
 		}
 		if info.IsDir() {
 			base := info.Name()
@@ -81,6 +92,11 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string,
 		}
 		return nil
 	})
+	if walkErr != nil || walkFailed {
+		ac.logger.Warn("go.mod discovery walk failed — treating the expansion as INCOMPLETE (prior closure preserved)",
+			"dir", workDir, "walk_error", walkErr, "partial_modules_found", len(modDirs))
+		return nil, nil, false
+	}
 	if len(modDirs) == 0 {
 		return nil, nil, true
 	}

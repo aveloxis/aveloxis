@@ -1688,3 +1688,28 @@ func TestSchemaAuditDumpFailsClosed(t *testing.T) {
 		t.Error("schema_structure_dump.sql must set ON_ERROR_STOP — a partial dump reads as schema drift")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 32 (v0.27.153) — review 5000954335: 3 active, all real; the
+// first is SR-16 inside the round-31 fix (L10's fifth consecutive
+// round).
+// ---------------------------------------------------------------------------
+
+// A go.mod discovery-walk failure must report INCOMPLETE — the
+// swallow-everything walk let an unreadable subtree produce
+// complete=true with empty/partial modDirs, and the caller then
+// REPLACED the valid prior Go closure (a walk error is not "zero
+// modules"). Behavioral: TestScanGoModGraphReportsWalkFailureAsIncomplete.
+// Enforces SR-16 (scripts/standing_rules.go).
+func TestGoModWalkFailureIsIncomplete(t *testing.T) {
+	s := srctest.Read(t, "internal/collector/gomod_graph.go")
+	body := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph(")
+	failCheck := strings.Index(body, "if walkErr != nil || walkFailed {")
+	zeroCheck := strings.Index(body, "if len(modDirs) == 0 {")
+	if failCheck < 0 || zeroCheck < 0 || failCheck > zeroCheck {
+		t.Error("the walk-failure check must precede the zero-modules COMPLETE return — otherwise a failed walk clears the prior closure as if the repo dropped Go")
+	}
+	if strings.Contains(body, "_ = filepath.Walk(") {
+		t.Error("the walk error must not be discarded (SR-16)")
+	}
+}

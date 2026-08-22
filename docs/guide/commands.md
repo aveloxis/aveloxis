@@ -547,9 +547,9 @@ stored-but-deleted rows numerically hide the gap; not recommended for
 routine use). Exits nonzero when any repo's heal failed.
 
 Run it on a binary at v0.27.139 or later — earlier binaries re-open
-the blind window on the next routine cycle. Deploy-time ordering for
-the whole release train is in
-`summary/22-deploy-and-heal-runbook-v0.27.131-143.md`.
+the blind window on the next routine cycle. Typical ordering after an
+upgrade across the v0.27.13x train: `aveloxis migrate` first, then
+this command, then `aveloxis refresh-views` once the heal settles.
 
 ## `aveloxis refresh-views`
 

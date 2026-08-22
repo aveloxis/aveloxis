@@ -30,6 +30,12 @@
 --     that fresh installs (which create the history table before the
 --     parent's indexes) do not. Definition-level noise; decide per case.
 
+-- v0.27.152 (round 31): FAIL CLOSED — psql -f keeps going after SQL
+-- errors by default, so a permission/catalog failure produced a
+-- PARTIAL dump and the comm steps then reported phantom schema drift
+-- instead of failing the audit.
+\set ON_ERROR_STOP on
+
 \t on
 \pset format unaligned
 

@@ -96,6 +96,12 @@ endpoints can no longer disagree about a vanished repository. The
 fallback runs only for that rare queueless subset; every tracked repo
 stays on the cached queue counts.
 
+Since v0.28.10 the id list is capped at **500 per request** (requests
+above the cap get a 400) — the queueless fallback makes per-id cost
+non-trivial for gone repos, so the batch stays bounded. Every real
+consumer (monitor at 200/page, group pages at 100/page) sits well
+under the cap.
+
 ### Time Series
 
 ```

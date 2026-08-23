@@ -21,6 +21,7 @@ package github
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -291,4 +292,28 @@ func TestHistoryWindowConcurrencyDefaultsSerial(t *testing.T) {
 	if got := c.historyWindowConc.Load(); got != 1 {
 		t.Errorf("SetHistoryWindowConcurrency(0) must clamp to 1, got %d", got)
 	}
+}
+
+// v0.28.5 (Copilot round): a canceled PARENT context must surface as
+// an ERROR, never as a partial-success — workers that exit at the
+// semaphore/entry checks record no fetch error, and pre-fix the
+// function returned the partial accumulator with err == nil, letting
+// the scheduler store truncated history and stamp the contributor
+// backfilled for a full cooldown.
+func TestFetchContributorDailyHistoryCanceledCtxIsError(t *testing.T) {
+	client, hits := newHistoryTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, historyResponse(false, false))
+	})
+	client.SetHistoryWindowConcurrency(4)
+	wins := []HistoryWindow{
+		{From: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)},
+		{From: time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled: workers drain without recording a fetch error
+	_, _, err := client.FetchContributorDailyHistory(ctx, "sgoggins", wins)
+	if err == nil {
+		t.Fatal("canceled parent ctx returned success — partial/empty history would be stored and the contributor stamped backfilled")
+	}
+	_ = hits
 }

@@ -84,7 +84,7 @@ func hostileRepoPage() RepoPageData {
 			{Name: "Fuzzing", Score: 1},
 			{Name: "CI-Tests", Score: -1},
 		},
-		DepsScanned:  true,
+		VulnScanned:  true,
 		VulnTotal:    3,
 		VulnCritical: 1,
 	}
@@ -140,7 +140,7 @@ func TestRenderRepoHonestEmptyStates(t *testing.T) {
 	}
 
 	// Scanned with zero findings is a genuinely clean state and says so.
-	d.DepsScanned = true
+	d.VulnScanned = true
 	b.Reset()
 	if err := RenderRepo(&b, d); err != nil {
 		t.Fatalf("render: %v", err)

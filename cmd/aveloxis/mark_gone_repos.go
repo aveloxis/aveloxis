@@ -131,17 +131,31 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 				cleared++
 				continue
 			}
-			if err := store.ClearRepoGone(ctx, c.RepoID); err != nil {
-				// Still gone-stamped: count as skipped ONLY (not
-				// alive) so the completion line's alive_unstamped
-				// stays accurate (v0.28.4 review-lens finding).
-				logger.Warn("failed to clear gone stamp", "repo_id", c.RepoID, "error", err)
+			// v0.28.5 (Copilot round): ENQUEUE BEFORE CLEAR — the
+			// order is what makes every partial failure recoverable
+			// by a plain rerun. Clear-then-failed-enqueue would leave
+			// the repo un-stamped AND queueless, and the rerun's 2xx
+			// branch exits at the !GoneStamped check above without
+			// ever retrying the enqueue (permanently stranded).
+			// Enqueue-then-failed-clear leaves the repo stamped, so
+			// the rerun re-enters this branch: EnqueueRepo is an
+			// idempotent upsert (no-op) and the clear retries. A
+			// queued-but-still-stamped window is also self-healing in
+			// routine collection — prelim's 2xx path clears the stamp
+			// (or a 404 re-stamps and dequeues).
+			if err := store.EnqueueRepo(ctx, c.RepoID, 10); err != nil {
+				logger.Warn("failed to re-enqueue resurrected repo — stamp retained, rerun retries",
+					"repo_id", c.RepoID, "error", err)
 				skipped++
 				continue
 			}
-			if err := store.EnqueueRepo(ctx, c.RepoID, 10); err != nil {
-				logger.Warn("cleared gone but failed to re-enqueue — add-repo can requeue manually",
-					"repo_id", c.RepoID, "error", err)
+			if err := store.ClearRepoGone(ctx, c.RepoID); err != nil {
+				// Still gone-stamped: count as skipped ONLY (not
+				// alive) so the completion line's alive_unstamped
+				// stays accurate; the rerun re-enters this branch.
+				logger.Warn("failed to clear gone stamp — rerun retries", "repo_id", c.RepoID, "error", err)
+				skipped++
+				continue
 			}
 			cleared++
 		default:

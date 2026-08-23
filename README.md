@@ -1,6 +1,6 @@
 # Aveloxis
 
-**Open source community health analytics at fleet scale — the Go successor to [Augur](https://github.com/chaoss/augur), built by CHAOSS's co-founder.** CHAOSS metrics, contributor analytics, SBOMs, and vulnerability scanning for GitHub and GitLab. Live at [aveloxis.io](https://aveloxis.io).
+**Open source community health analytics at fleet scale — the Go successor to [Augur](https://github.com/augurlabs/augur), built by CHAOSS co-founders, as a solution to [CHAOSS governance removing protections for software creators](https://www.seangoggins.net/open-source-software-health-and-sustainability/).** CHAOSS metrics, contributor analytics, SBOMs, and vulnerability scanning for GitHub and GitLab. Live at [aveloxis.io](https://aveloxis.io).
 
 [![Tests](https://github.com/aveloxis/aveloxis/actions/workflows/test.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/test.yml)
 [![Lint](https://github.com/aveloxis/aveloxis/actions/workflows/lint.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/lint.yml)
@@ -104,7 +104,7 @@ Then run migrations:
 aveloxis migrate
 ```
 
-This creates 143 tables (100 in `aveloxis_data`, 38 in `aveloxis_ops`, 4 in `aveloxis_scan`) with full parity to Augur's schema. All DDL uses `CREATE ... IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so `migrate` is safe to run repeatedly.
+This creates 143 tables (100 in `aveloxis_data`, 39 in `aveloxis_ops`, 4 in `aveloxis_scan`) with full parity to Augur's schema. All DDL uses `CREATE ... IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so `migrate` is safe to run repeatedly.
 
 ### OAUTH App Setup
 You will need a github OAUTH application for login to work on the web view. And there's nothing available without login. You can also use GitLab's OAUTH, or configure both. 

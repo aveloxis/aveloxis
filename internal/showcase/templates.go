@@ -85,6 +85,7 @@ td.name a.ext { color: #66739a; font-weight: 400; font-size: 12px; margin-left: 
    this page's HTML. user-select:none keeps the teaser copy-proof. */
 .blur-name { filter: blur(5px); user-select: none; -webkit-user-select: none; color: #3b4f7e; }
 .class-chip { font-size: 10.5px; color: #46557a; border: 1px solid rgba(70,85,122,0.3); border-radius: 8px; padding: 1px 7px; }
+.pending { color: #6b7794; font-style: italic; }
 .section-h { font-size: 15px; font-weight: 700; margin: 30px 0 12px; }
 .chip { display: inline-block; min-width: 42px; text-align: center; padding: 2px 10px;
   border-radius: 999px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
@@ -336,14 +337,14 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   </p>
   {{/* v0.28.2 (PDF items 1c+4): the SAME six-tile top line as the
        authenticated repo page — gathered counts with "metadata N"
-       sub-lines, plus the vulnerabilities tile (DepsScanned guard:
+       sub-lines, plus the vulnerabilities tile (VulnScanned guard:
        an unscanned repo says "analysis pending", never a fabricated
        clean 0). */}}
   <div class="tiles">
     <div class="stat"><div class="v">{{comma .Commits}}</div><div class="k">Commits</div>{{if .MetaCommits}}<div class="s">metadata {{commaInt .MetaCommits}}</div>{{end}}</div>
     <div class="stat"><div class="v">{{comma .Issues}}</div><div class="k">Issues</div>{{if .MetaIssues}}<div class="s">metadata {{commaInt .MetaIssues}}</div>{{end}}</div>
     <div class="stat"><div class="v">{{comma .PRs}}</div><div class="k">Pull requests</div>{{if .MetaPRs}}<div class="s">metadata {{commaInt .MetaPRs}}</div>{{end}}</div>
-    {{if .DepsScanned}}<div class="stat"><div class="v">{{commaInt .VulnTotal}}</div><div class="k">Vulnerabilities</div>{{if gt .VulnCritical 0}}<div class="s crit">{{.VulnCritical}} critical</div>{{end}}</div>
+    {{if .VulnScanned}}<div class="stat"><div class="v">{{commaInt .VulnTotal}}</div><div class="k">Vulnerabilities</div>{{if gt .VulnCritical 0}}<div class="s crit">{{.VulnCritical}} critical</div>{{end}}</div>
     {{else}}<div class="stat"><div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">analysis pending</div></div>
     {{end}}<div class="stat"><div class="v">{{if .LastActivity}}{{.LastActivity}}{{else}}—{{end}}</div><div class="k">Last activity</div></div>
     <div class="stat"><div class="v">{{if .LastCollected}}{{.LastCollected}}{{else}}—{{end}}</div><div class="k">Last collected</div></div>
@@ -372,7 +373,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
 
   <div class="section-h">Security posture</div>
   <p class="note-line">
-    {{- if .DepsScanned -}}
+    {{- if .VulnScanned -}}
       {{- if gt .VulnTotal 0 -}}
         {{.VulnTotal}} open {{if eq .VulnTotal 1}}vulnerability{{else}}vulnerabilities{{end}} in dependencies{{if gt .VulnCritical 0}} ({{.VulnCritical}} critical){{end}}.
       {{- else -}}
@@ -402,7 +403,10 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
       <td>{{commaInt .PRs}}</td>
       <td>{{commaInt .Reviews}}</td>
       <td>{{commaInt .Comments}}</td>
-      <td>{{if .ElsewhereRepos}}{{range $i, $r := .ElsewhereRepos}}{{if $i}}, {{end}}{{$r}}{{end}}{{else}}—{{end}}</td>
+      {{/* v0.28.5 (Copilot round): nil backfill stamp renders as
+           "history pending", never as an em-dash that reads "active
+           nowhere else" — the v0.27.58 honesty rule. */}}
+      <td>{{if .HistoryPending}}<span class="pending">history pending</span>{{else if .ElsewhereRepos}}{{range $i, $r := .ElsewhereRepos}}{{if $i}}, {{end}}{{$r}}{{end}}{{else}}—{{end}}</td>
     </tr>
     {{end}}
     </tbody>

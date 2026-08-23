@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -311,9 +312,28 @@ type ScancodeFileEntry struct {
 	Copyright string `json:"copyright"`
 }
 
+// scancodeRootSegRe matches the leading clone-directory segment of a
+// scancode path: the worker clones into repo_<repoID>_<unixNanos>
+// (scancode_worker.go) and scancode emits paths relative to the scan
+// root's PARENT, so pre-v0.28.1 stored paths carry that noise segment.
+var scancodeRootSegRe = regexp.MustCompile(`^repo_\d+_\d+/`)
+
+// StripScancodeRootPrefix makes scancode paths repository-root-relative
+// (v0.28.1 item 5; hoisted here in v0.28.5 as the ONE shared strip,
+// SR-17). Applied at BOTH boundaries: collector ingest (new scans
+// store clean paths) and the API read below (historical prefixed rows
+// serve clean to every consumer without waiting for their next
+// 180-day-cadence rescan). The aveloxis-gui display-side strip
+// remains as a belt for cached payloads.
+func StripScancodeRootPrefix(p string) string {
+	return scancodeRootSegRe.ReplaceAllString(p, "")
+}
+
 // GetScancodeFileEntries returns per-file license and copyright data for the
 // web GUI table. Each row is: file path, SPDX license expression, first
-// copyright holder (truncated). Sorted by path for deterministic display.
+// copyright holder (truncated). Sorted by path for deterministic display
+// (historical rows all share one scan-root prefix per scan, so stripping
+// preserves the sorted order).
 func (s *PostgresStore) GetScancodeFileEntries(ctx context.Context, repoID int64) ([]ScancodeFileEntry, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT path,
@@ -336,7 +356,7 @@ func (s *PostgresStore) GetScancodeFileEntries(ctx context.Context, repoID int64
 		}
 		copyright := truncateCopyright(extractFirstCopyrightHolder(copyrightsJSON), 120)
 		result = append(result, ScancodeFileEntry{
-			Path:      path,
+			Path:      StripScancodeRootPrefix(path),
 			License:   NormalizeLicenseToSPDX(lic),
 			Copyright: copyright,
 		})

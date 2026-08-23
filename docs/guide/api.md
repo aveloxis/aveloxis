@@ -831,9 +831,14 @@ Token semantics:
   The envelope carries `scanned_at` (v0.28.1) — the timestamp of the
   most recent COMPLETED vulnerability scan. `null` means the repo has
   never been scanned; a date on a zero-finding repo means "scanned,
-  clean". The stamp is written only at completed-scan exits, never on
-  scan errors, so it never overstates freshness. Frontends must
-  render `null` distinctly (e.g. "not yet scanned"), never as a
+  clean". The stamp is written only where OSV was actually consulted
+  or the dependency universe was genuinely empty (v0.28.5): scan
+  errors never stamp, and neither do the two degenerate passes that
+  query nothing — a repo whose dependencies all lack purl mappings,
+  or whose legacy targets were all dropped as malformed. Those stay
+  `null` (honestly "not yet scanned") until a real scan runs, so a
+  date + zero findings genuinely means "checked and clean". Frontends
+  must render `null` distinctly (e.g. "not yet scanned"), never as a
   clean result.
 
   The envelope also gains `lockfile_certainty`, derived at read time:

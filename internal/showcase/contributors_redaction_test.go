@@ -15,16 +15,40 @@ import (
 // forge identities; the guarantee is STRUCTURAL — the row type
 // cannot hold an identity.
 
-// The struct-shape pin: adding Login/FullName/Email/AvatarURL to
-// ShowcaseContributor is a deliberate privacy-contract change and
-// must fail the build until this test is consciously revised.
+// The struct-shape pin, WHITELIST form (v0.28.5, Copilot round): a
+// banned-substring blacklist can't anticipate every identity spelling
+// (Username, Name, Handle, UserID, …), so the pin freezes the EXACT
+// field set instead — adding ANY field to ShowcaseContributor fails
+// the build until it passes an explicit privacy review and is added
+// here. Only non-identifying fields may ever join this list.
 func TestShowcaseContributorTypeCarriesNoIdentity(t *testing.T) {
+	allowed := []string{
+		"Placeholder",    // deterministic FAKE name (never derived from identity)
+		"ActivityClass",  // v0.27.57 class label
+		"Commits",        // count
+		"Issues",         // count
+		"PRs",            // count
+		"Reviews",        // count
+		"Comments",       // count
+		"Total",          // count
+		"ElsewhereRepos", // repo names (operator-accepted fingerprint tradeoff)
+		"HistoryPending", // bool — the v0.27.58 honesty signal
+	}
 	typ := reflect.TypeOf(ShowcaseContributor{})
+	var got []string
 	for i := 0; i < typ.NumField(); i++ {
-		name := strings.ToLower(typ.Field(i).Name)
-		for _, banned := range []string{"login", "fullname", "full_name", "email", "avatar", "cntrb"} {
-			if strings.Contains(name, banned) {
-				t.Errorf("ShowcaseContributor.%s is an identity field — the redaction contract is that this type CANNOT hold one", typ.Field(i).Name)
+		got = append(got, typ.Field(i).Name)
+	}
+	if !reflect.DeepEqual(got, allowed) {
+		t.Errorf("ShowcaseContributor field set changed:\n  got  %v\n  want %v\nEvery addition is a privacy-contract change: review that the new field cannot carry identity, then add it to the whitelist here.", got, allowed)
+	}
+	// Belt on top of the whitelist: no field may be identity-shaped
+	// even if the whitelist is edited carelessly.
+	for _, name := range got {
+		lower := strings.ToLower(name)
+		for _, banned := range []string{"login", "name", "handle", "email", "avatar", "cntrb", "user", "id"} {
+			if name != "Placeholder" && strings.Contains(lower, banned) {
+				t.Errorf("ShowcaseContributor.%s is identity-shaped — the redaction contract is that this type CANNOT hold one", name)
 			}
 		}
 	}
@@ -41,12 +65,16 @@ func TestRepoPageRendersRedactedContributors(t *testing.T) {
 		{Placeholder: "Contributor #1", ActivityClass: "public-active",
 			Commits: 1200, Issues: 34, PRs: 56, Reviews: 78, Comments: 90, Total: 1458,
 			ElsewhereRepos: []string{"other-org/other-repo", "second/repo"}},
-		{Placeholder: "Contributor #2", Total: 3},
+		// v0.28.5 (Copilot round): a nil backfill stamp renders as
+		// "history pending" — never as an em-dash implying "active
+		// nowhere else" (the v0.27.58 honesty rule).
+		{Placeholder: "Contributor #2", Total: 3, HistoryPending: true},
 	}
 	html := renderRepoToString(t, d)
 	for _, needle := range []string{
 		`class="blur-name"`, "Contributor #1", "Contributor #2",
 		"1,200", "other-org/other-repo",
+		"history pending",
 		"Sign in to see contributor identities",
 		"showcase-login-cta",
 		"Contributor identities are redacted",

@@ -110,10 +110,13 @@ type RepoPageData struct {
 	ScorecardAsOf    string // YYYY-MM-DD or ""
 	ScorecardChecks  []RepoScorecardRow
 
-	// Dependency / vulnerability posture. DepsScanned=false means the
-	// analysis phase hasn't run — the page says "pending", never "0
-	// vulnerabilities" (a fabricated clean bill).
-	DepsScanned  bool
+	// Vulnerability posture. VulnScanned=false means no OSV scan has
+	// completed for this repo (the repos.vuln_scan_last_run stamp is
+	// NULL and no findings exist) — the page says "pending", never
+	// "0 vulnerabilities" (a fabricated clean bill). v0.28.5 (Copilot
+	// round): dependency-row presence is NOT the gate — analysis can
+	// run cycles before the first OSV scan does.
+	VulnScanned  bool
 	VulnTotal    int
 	VulnCritical int
 
@@ -161,6 +164,13 @@ type ShowcaseContributor struct {
 	Comments       int
 	Total          int
 	ElsewhereRepos []string // other repos they're active in (names only; operator-accepted)
+	// HistoryPending — the cross-repo history backfill hasn't reached
+	// this contributor (gh_history_backfilled_at IS NULL) or the
+	// elsewhere lookup was unavailable this run. THE HONESTY RULE
+	// (v0.27.58): an empty elsewhere list must render as "history
+	// pending", never as "active nowhere else". Boolean only — it
+	// carries no identity.
+	HistoryPending bool
 }
 
 // CollectionData drives one public collection page.

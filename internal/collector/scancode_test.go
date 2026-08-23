@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // TestScancodeOutputParsing verifies we can parse ScanCode JSON output.
@@ -265,8 +267,9 @@ func TestScancodeHistoryRotation(t *testing.T) {
 // v0.28.1 (A5) — scancode paths are stored repository-root-relative:
 // the clone-dir segment (repo_<id>_<nanos>, the scan root's basename
 // that scancode emits relative to the root's PARENT) is stripped at
-// ingest. Historical rows keep the prefix until rescan; the GUI
-// strips display-side for both shapes.
+// ingest. v0.28.5 (Copilot round): the strip is the ONE shared
+// db.StripScancodeRootPrefix (SR-17), also applied at the API read
+// path so historical prefixed rows serve clean to every consumer.
 func TestStripScanRootPrefix(t *testing.T) {
 	cases := map[string]string{
 		"repo_4366_1780813842500810892/.ci/docker/install_cuda.sh": ".ci/docker/install_cuda.sh",
@@ -276,8 +279,8 @@ func TestStripScanRootPrefix(t *testing.T) {
 		"repo_abc_123/notreally": "repo_abc_123/notreally", // non-numeric — untouched
 	}
 	for in, want := range cases {
-		if got := stripScanRootPrefix(in); got != want {
-			t.Errorf("stripScanRootPrefix(%q) = %q, want %q", in, got, want)
+		if got := db.StripScancodeRootPrefix(in); got != want {
+			t.Errorf("StripScancodeRootPrefix(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -288,7 +291,15 @@ func TestIngestStripsScanRootPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "Path:                          stripScanRootPrefix(f.Path)") {
-		t.Error("ingest must store stripScanRootPrefix(f.Path), not the raw scancode path")
+	if !strings.Contains(string(data), "db.StripScancodeRootPrefix(f.Path)") {
+		t.Error("ingest must store db.StripScancodeRootPrefix(f.Path), not the raw scancode path")
+	}
+	// And the READ path serves historical prefixed rows clean too.
+	storeSrc, err := os.ReadFile("../db/scancode_store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(storeSrc), "Path:      StripScancodeRootPrefix(path)") {
+		t.Error("GetScancodeFileEntries must strip the scan-root prefix at read time — historical rows keep it in storage until their next rescan")
 	}
 }

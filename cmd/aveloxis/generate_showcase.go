@@ -483,11 +483,19 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, logger *slog.Lo
 	for _, c := range checks {
 		d.ScorecardChecks = append(d.ScorecardChecks, showcase.RepoScorecardRow{Name: c.Name, Score: c.Score})
 	}
-	if d.DepsScanned, err = store.HasDependencyData(ctx, t.repoID); err != nil {
-		return d, fmt.Errorf("dependency presence: %w", err)
-	}
 	if d.VulnTotal, d.VulnCritical, err = store.CountRepoVulnerabilities(ctx, t.repoID); err != nil {
 		return d, fmt.Errorf("vulnerability counts: %w", err)
+	}
+	// v0.28.5 (Copilot round): the "scanned" gate is the OSV scan
+	// STAMP (v0.28.1 A4), not dependency-row presence — analysis can
+	// run cycles before the first OSV scan, and gating on
+	// HasDependencyData rendered a fabricated clean 0 for
+	// analyzed-but-never-scanned repos. Findings also prove a scan
+	// (pre-v0.28.1 rows have a NULL stamp until their next scan).
+	if ts, terr := store.GetVulnScanLastRun(ctx, t.repoID); terr != nil {
+		return d, fmt.Errorf("vuln scan stamp: %w", terr)
+	} else {
+		d.VulnScanned = ts != nil || d.VulnTotal > 0
 	}
 	// v0.28.2 (items 1c+4): the forge's metadata totals for the tile
 	// sub-lines — one cheap cached read (GetRepoStats reads queue
@@ -537,12 +545,22 @@ func buildShowcaseContributors(ctx context.Context, store *db.PostgresStore, log
 	}
 	// Cross-repo names ride the same ranking; keyed by cntrb_id so
 	// the two reads can't misalign. Best-effort on its own: without
-	// it the rows still render (empty elsewhere lists).
+	// it the rows still render — but as "history pending", never as
+	// an empty list (see below).
 	elsewhereOf := map[string][]string{}
+	pendingOf := map[string]bool{}
+	elsewhereUnavailable := false
 	if els, eerr := store.ContributorsElsewhere(ctx, repoID, since, 5, 3, true); eerr != nil {
-		logger.Warn("showcase contributors-elsewhere lookup failed — cross-repo lists omitted", "repo_id", repoID, "error", eerr)
+		logger.Warn("showcase contributors-elsewhere lookup failed — cross-repo lists render as history pending", "repo_id", repoID, "error", eerr)
+		elsewhereUnavailable = true
 	} else {
 		for _, e := range els {
+			// v0.28.5 (Copilot round): carry the v0.27.58 honesty
+			// signal — a nil gh_history_backfilled_at means the
+			// backfill hasn't reached this contributor, so an empty
+			// elsewhere list is "history pending", NOT "active
+			// nowhere else".
+			pendingOf[e.CntrbID] = e.BackfilledAt == nil
 			for _, r := range e.Elsewhere {
 				elsewhereOf[e.CntrbID] = append(elsewhereOf[e.CntrbID], r.RepoFullName)
 			}
@@ -550,6 +568,10 @@ func buildShowcaseContributors(ctx context.Context, store *db.PostgresStore, log
 	}
 	out := make([]showcase.ShowcaseContributor, 0, len(top))
 	for i, c := range top {
+		// Unknown state (contributor absent from the elsewhere read,
+		// or the read failed) counts as pending too — "no data
+		// available" must never render as "nothing elsewhere".
+		pending, known := pendingOf[c.CntrbID]
 		out = append(out, showcase.ShowcaseContributor{
 			// Deterministic fake name — byte-stable across hourly
 			// regenerations, illegible under the template's blur, and
@@ -563,6 +585,7 @@ func buildShowcaseContributors(ctx context.Context, store *db.PostgresStore, log
 			Comments:       c.Comments,
 			Total:          c.Total,
 			ElsewhereRepos: elsewhereOf[c.CntrbID],
+			HistoryPending: elsewhereUnavailable || !known || pending,
 		})
 	}
 	return out

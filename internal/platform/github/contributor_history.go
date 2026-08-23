@@ -230,6 +230,15 @@ func (c *Client) FetchContributorDailyHistory(ctx context.Context, login string,
 	if firstErr != nil {
 		return nil, nil, firstErr
 	}
+	// v0.28.5 (Copilot round): a canceled PARENT context can drain
+	// every worker at the semaphore/entry checks without any fetch
+	// recording an error — returning the partial accumulator as
+	// success would let the scheduler store it AND stamp the
+	// contributor backfilled for a full cooldown period, silently
+	// truncating their history. Cancellation is a failed fetch.
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	days := make([]model.ContributorDayActivity, 0, len(acc.days))
 	for _, r := range acc.days {
 		days = append(days, *r)

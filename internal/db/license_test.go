@@ -116,9 +116,20 @@ func TestUnversionedLicenseFamiliesAreOSI(t *testing.T) {
 	// EPL/Artistic have no SPDX any-version expression (or-later is
 	// GNU-only) — the bare family labels stay and are OSI-approved
 	// (every released version of each family is).
-	for _, lic := range []string{"LGPL", "LGPL-2.0-or-later", "EPL", "Artistic"} {
+	// v0.28.8 (operator correction, SPDX-verified): the ENTIRE LGPL
+	// family is OSI-approved — spdx.org/licenses marks every
+	// LGPL-2.0/2.1/3.0 -only and -or-later id isOsiApproved=true, so
+	// the bucket AND every versioned id the classifier can emit must
+	// read approved (LGPL-2.0-only was missing, so LGPLv2-exact
+	// packages wrongly read "not OSI").
+	for _, lic := range []string{
+		"LGPL",
+		"LGPL-2.0-only", "LGPL-2.1-only", "LGPL-3.0-only",
+		"LGPL-2.0-or-later", "LGPL-2.1-or-later", "LGPL-3.0-or-later",
+		"EPL", "Artistic",
+	} {
 		if !isOSILicense(lic) {
-			t.Errorf("%s must be OSI-approved", lic)
+			t.Errorf("%s must be OSI-approved (SPDX ground truth: the whole LGPL family is)", lic)
 		}
 	}
 	// -or-later SPDX ids are expressions over approved licenses.

@@ -64,7 +64,7 @@ func TestVulnScanStampSites(t *testing.T) {
 		if end := strings.Index(region, "// v0.27.73: the wire gate"); end > 0 {
 			region = region[:end]
 		}
-		resolvePos := strings.Index(region, "MarkStaleVulnerabilitiesResolved(ctx, repoID, nil)")
+		resolvePos := strings.Index(region, "MarkStaleVulnerabilitiesResolved(ctx, repoID, nil, nil)")
 		gatePos := strings.Index(region, "if blankPurlSkipped == 0 {")
 		if resolvePos < 0 || gatePos < 0 || resolvePos < gatePos {
 			t.Errorf("the dep-less exit's MarkStaleVulnerabilitiesResolved must sit INSIDE the blankPurlSkipped==0 arm (resolve=%d gate=%d) — resolving findings nothing scanned is the false-clean class", resolvePos, gatePos)
@@ -110,5 +110,25 @@ func TestVulnScanStampIsNonFatal(t *testing.T) {
 	}
 	if !strings.Contains(body, "logger.Warn") || strings.Contains(body, "return err") {
 		t.Error("the stamp must WARN on failure and never propagate — a failed stamp must not fail a successful scan")
+	}
+}
+
+// v0.28.8 (Copilot round 4) — MIXED scans must not adjudicate what
+// they never sent: blank-purl deps' names ride every stale-resolution
+// call that can touch their findings (the final success exit AND the
+// all-malformed exit — both are reachable with purl-less deps
+// present). "Absent from the seen-set" is not evidence for a dep that
+// was never queried, and purl-less deps never rescan, so a wrong
+// resolution is PERMANENT false-clean.
+func TestStaleResolutionPreservesBlankPurlDeps(t *testing.T) {
+	src := vulnScanSrc(t)
+	if !strings.Contains(src, "blankPurlNames = append(blankPurlNames, dep.Name)") {
+		t.Fatal("the construction loop must collect blank-purl dep NAMES for the preserve list")
+	}
+	if !strings.Contains(src, "MarkStaleVulnerabilitiesResolved(ctx, repoID, seen, blankPurlNames)") {
+		t.Error("the final-exit resolution must preserve blank-purl deps' findings")
+	}
+	if !strings.Contains(src, "MarkStaleVulnerabilitiesResolved(ctx, repoID, nil, blankPurlNames)") {
+		t.Error("the all-malformed exit's (deliberate) resolution must still preserve blank-purl deps' findings")
 	}
 }

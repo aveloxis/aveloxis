@@ -89,8 +89,15 @@ func runHealMessages(cfgPath string, limit int, dryRun, useAugurKeys bool) error
 	}
 	fmt.Printf("heal-messages: healed %d of %d pending (parents fetched: %d, parent errors: %d)\n",
 		res.Healed, res.Pending, res.ParentsFetched, res.ParentErrors)
-	if res.ParentErrors > 0 || int64(res.Healed) < res.Pending {
-		fmt.Println("re-run to continue; failed parents retry on the next pass")
+	if int64(res.Healed) < res.Pending {
+		fmt.Println("re-run to continue; failed parents retry on the next run")
+	}
+	// v0.28.8 (Copilot round 4): failed parents mean the run is
+	// INCOMPLETE — exit nonzero so cron/scripts notice (the v0.27.106
+	// rewalk convention). Their rows stay pending; a re-run retries
+	// them from the bottom of the worklist.
+	if res.ParentErrors > 0 {
+		return fmt.Errorf("%d parent refetches failed — their worklist rows remain pending; re-run to retry", res.ParentErrors)
 	}
 	return nil
 }

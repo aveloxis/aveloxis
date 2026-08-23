@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.28.1 (A8) — heal-messages stamps as it goes. The 2026-08
@@ -33,10 +35,23 @@ func TestHealMessagesLoopsInBoundedPasses(t *testing.T) {
 	if !strings.Contains(loop, "runMessageHealPass(") {
 		t.Error("HealMessages must drive runMessageHealPass in a loop")
 	}
-	// Zero-progress passes must STOP the loop (a fully-failing batch
-	// re-claims the same rows forever otherwise).
-	if !strings.Contains(loop, "res.Healed == 0") {
-		t.Error("a zero-progress pass must terminate the loop")
+	// v0.28.8 (Copilot round 4): the loop walks by a strictly
+	// increasing msg_id CURSOR. The old zero-progress termination
+	// starved: failed rows stay pending, each pass reselected the
+	// same lowest 25K ids, and once failures filled the first batch
+	// the run exited "successfully" without visiting higher ids.
+	if strings.Contains(loop, "res.Healed == 0") {
+		t.Error("the zero-progress termination must be GONE — it permanently starved every row above a fully-failing first batch")
+	}
+	if !strings.Contains(loop, "cursor = res.MaxMsgID") {
+		t.Error("the loop must advance the cursor to the batch's MaxMsgID (strictly increasing — termination guaranteed)")
+	}
+	if !strings.Contains(loop, "res.Batch == 0") {
+		t.Error("the loop must terminate when a pass claims ZERO rows above the cursor (the walk is done; failed rows stay pending for the next RUN)")
+	}
+	storeSrc := srctest.Read(t, "internal/db/message_heal_store.go")
+	if !strings.Contains(storeSrc, "AND w.msg_id > $1") {
+		t.Error("GetMessageHealBatch must select above the cursor (w.msg_id > $1)")
 	}
 	// The STAMP lives inside the per-pass function — that's the whole
 	// point: progress persists per pass, not per run.

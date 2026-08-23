@@ -304,14 +304,22 @@ contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: trailing 2 years; `until` is
 inclusive); `limit` defaults to 20 and is capped at 100.
 
-`?bots=hide` (v0.27.69) filters bot identities by three markers:
-`gh_type='Bot'` (GitHub App accounts like `dependabot[bot]`), the
-`[bot]` login suffix, and the hyphenated `-bot`/`-robot`
-machine-account convention (the `k8s-ci-robot` class, which GitHub
-types as a regular User — verified live). The separator requirement
-keeps human surnames (talbot) safe. Deliberately broader than the
-`contributor_retention` metric's bot exclusion, which is pinned to
-8Knot parity; this one is a display filter. The same parameter works
+`?bots=hide` (v0.27.69; widened v0.28.1) filters automation
+identities by four markers: the non-human account types
+`gh_type IN ('Bot', 'ProgrammaticAccessBot', 'Organization')`
+(GitHub App accounts like `dependabot[bot]`; fine-grained-PAT
+actors; org accounts acting as contributors — the codecov shape,
+whose enriched row is typed Organization), the `[bot]` login
+suffix, the hyphenated `-bot`/`-robot` machine-account convention
+(the `k8s-ci-robot` class, which GitHub types as a regular User —
+verified live), and the curated system-account list (actions-user,
+web-flow, ghost, codecov, codecov-io, codecov-commenter — machine
+accounts GitHub types as plain User). `Mannequin` rows are
+deliberately NOT hidden: mannequins are import placeholders
+standing in for unmatched humans, not automation. The separator
+requirement keeps human surnames (talbot) safe. Deliberately
+broader than the `contributor_retention` metric's bot exclusion,
+which is pinned to 8Knot parity; this one is a display filter. The same parameter works
 on `/contributors/elsewhere` so the two surfaces stay consistent. Requires the
 same repo scope as every other per-repo endpoint; responses are served
 from a 60-second cache (the underlying data only changes per
@@ -390,8 +398,10 @@ Response rows per contributor:
 the v0.27.58 history backfill has not reached this contributor yet —
 their empty `elsewhere` array is "history pending", NOT "active
 nowhere else". Frontends must render the two differently. Exception
-(v0.27.81): bot accounts and GitHub system accounts (actions-user,
-web-flow, ghost) are excluded from the backfill claim entirely —
+(v0.27.81; widened v0.28.1): accounts typed Bot /
+ProgrammaticAccessBot / Organization and the curated system-account
+list (actions-user, web-flow, ghost, codecov, codecov-io,
+codecov-commenter) are excluded from the backfill claim entirely —
 their stamps stay `null` permanently by design (their histories are
 the most expensive to fetch and the contributor surfaces exclude
 bots from display anyway). `repo_id`
@@ -584,6 +594,27 @@ Per-repo metrics (all under `/api/v1/repos/{repoID}/`):
 | Popularity | `stars`, `stars-count`, `forks`, `fork-count`, `watchers`, `watchers-count` |
 | Code / deps | `languages`, `project-languages`, `project-files`, `project-lines`, `deps`, `libyear` |
 | Other | `repo-messages`, `releases` |
+
+### License drill-down on `/deps` (v0.28.1)
+
+`GET /api/v1/repos/{repoID}/deps` accepts two optional parameters
+that turn it into the drill-down behind the dependency-licenses
+table:
+
+- `license=<canonical>` — only rows whose license normalizes to the
+  given canonical bucket (the same `NormalizeLicenseToSPDX` merge the
+  licenses aggregate applies, so "MIT License"-spelled rows match the
+  `MIT` bucket). Pass the `license` value exactly as the
+  `/repos/{id}/licenses` response returned it.
+- `scope=runtime|all` — the same scope filter as `/licenses`
+  (`runtime` excludes dev/test/build/optional/peer rows). Invalid
+  values are a 400.
+
+With EITHER parameter present, the row universe mirrors the licenses
+aggregate exactly (GitHub-Actions rows excluded — they carry no
+license data), so a license bucket counting N always drills down to
+exactly N rows. With NEITHER parameter, the legacy behavior is
+unchanged: the full raw dependency list, unfiltered.
 
 ## CORS
 
@@ -797,6 +828,14 @@ Token semantics:
   Both fields are absent (`""`) on findings last touched by a
   pre-v0.27.11 scan and heal on the repo's next scan.
 
+  The envelope carries `scanned_at` (v0.28.1) — the timestamp of the
+  most recent COMPLETED vulnerability scan. `null` means the repo has
+  never been scanned; a date on a zero-finding repo means "scanned,
+  clean". The stamp is written only at completed-scan exits, never on
+  scan errors, so it never overstates freshness. Frontends must
+  render `null` distinctly (e.g. "not yet scanned"), never as a
+  clean result.
+
   The envelope also gains `lockfile_certainty`, derived at read time:
 
   ```json
@@ -837,7 +876,17 @@ Token semantics:
   and the historical chart window from these. v0.27.84 adds
   `last_collected` (omitted when the repo has never completed a
   collection pass) — the GUI's signal to render the "queued for
-  first collection" banner instead of misleading zeros.
+  first collection" banner instead of misleading zeros. v0.28.1
+  adds `gone_at` (omitted unless prelim's probe got a definitive
+  404/410 — the repo no longer resolves on its forge; the GUI must
+  suppress the queued banner and render the no-longer-available
+  notice, with gone taking precedence over the archived chip) and
+  `metadata_as_of` (the repo_info snapshot date behind the
+  metadata_* counts, so gone repos can date their frozen metadata
+  honestly). Also v0.28.1: for QUEUELESS repos (no collection_queue
+  row — the prelim-dequeued gone cohort) the gathered counts fall
+  back to live row counts instead of fabricated zeros; tracked
+  repos keep the cached-count read.
 - `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
   `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
   dependency-analysis phase has not recorded anything for this repo

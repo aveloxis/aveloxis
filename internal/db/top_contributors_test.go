@@ -70,6 +70,34 @@ func TestTopContributorsIdentityJoin(t *testing.T) {
 	}
 }
 
+// v0.28.1 (A1): the hide-bots filter covers every non-human account
+// TYPE, not just 'Bot'. Production 2026-08-23: codecov's contributor
+// row is gh_type='Organization' — enrichment-by-login resolved the
+// legacy login-only Bot actor "codecov" to Codecov's ORG account
+// (id 8226205) — so the narrow = 'Bot' test let it through the
+// hide-bots toggle. Organizations and fine-grained-PAT bot actors
+// appearing as "contributors" are definitionally automation.
+// Mannequin deliberately survives: import placeholders standing in
+// for unmatched humans, not automation. Machine accounts GitHub
+// types as plain 'User' (codecov-io, codecov-commenter) are caught
+// by the shared githubSystemAccounts curated list instead.
+func TestTopContributorsBotFilterCoversNonHumanTypes(t *testing.T) {
+	src := topContributorsSQL(t)
+	if !strings.Contains(src, `COALESCE(c.gh_type, '') IN ('Bot', 'ProgrammaticAccessBot', 'Organization')`) {
+		t.Error("excludeBots must test gh_type IN ('Bot','ProgrammaticAccessBot','Organization') — codecov is typed Organization")
+	}
+	if strings.Contains(src, `COALESCE(c.gh_type, '') = 'Bot'`) {
+		t.Error("the narrow = 'Bot' form must be gone from TopContributors (superseded by the IN list)")
+	}
+	if !strings.Contains(src, "githubSystemAccounts") ||
+		!strings.Contains(src, `LOWER(c.cntrb_login) = ANY(`) {
+		t.Error("excludeBots must also exclude the curated githubSystemAccounts list by login (machine accounts typed 'User')")
+	}
+	if strings.Contains(src, `'Mannequin'`) {
+		t.Error("Mannequin must NOT appear in the filter — mannequins stand in for unmatched humans")
+	}
+}
+
 // ─── Integration (AVELOXIS_TEST_DB) ─────────────────────────────
 
 func TestTopContributorsEndToEnd(t *testing.T) {
@@ -238,6 +266,14 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 	seedBot("_avtopc_x-bot", "0100abcd-0000-0000-0000-0000000000b3", "User")      // hyphen-bot machine user
 	seedBot("_avtopc_xtalbot", "0100abcd-0000-0000-0000-0000000000b4", "User")    // HUMAN surname — must survive
 
+	// v0.28.1 (A1): non-human account TYPES. Organization is the
+	// codecov production shape; ProgrammaticAccessBot is the
+	// fine-grained-PAT actor type; Mannequin is an import
+	// placeholder for an unmatched HUMAN and must survive.
+	seedBot("_avtopc_xorg", "0100abcd-0000-0000-0000-0000000000b5", "Organization")
+	seedBot("_avtopc_xpab", "0100abcd-0000-0000-0000-0000000000b6", "ProgrammaticAccessBot")
+	seedBot("_avtopc_xmann", "0100abcd-0000-0000-0000-0000000000b7", "Mannequin")
+
 	all, err := store.TopContributors(ctx, repoID, time.Time{}, time.Time{}, 20, false)
 	if err != nil {
 		t.Fatal(err)
@@ -246,22 +282,23 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != len(filtered)+3 {
-		t.Errorf("excludeBots must drop exactly the 3 bot rows: all=%d filtered=%d", len(all), len(filtered))
+	if len(all) != len(filtered)+5 {
+		t.Errorf("excludeBots must drop exactly the 5 automation rows: all=%d filtered=%d", len(all), len(filtered))
 	}
 	for _, r := range filtered {
 		switch r.Login {
-		case "_avtopc_x[bot]", "_avtopc_x-ci-robot", "_avtopc_x-bot":
-			t.Errorf("bot %q survived the filter", r.Login)
+		case "_avtopc_x[bot]", "_avtopc_x-ci-robot", "_avtopc_x-bot", "_avtopc_xorg", "_avtopc_xpab":
+			t.Errorf("automation account %q survived the filter", r.Login)
 		}
 	}
-	var talbotSurvives bool
+	survivors := map[string]bool{}
 	for _, r := range filtered {
-		if r.Login == "_avtopc_xtalbot" {
-			talbotSurvives = true
-		}
+		survivors[r.Login] = true
 	}
-	if !talbotSurvives {
+	if !survivors["_avtopc_xtalbot"] {
 		t.Error("human login ending in 'bot' without a separator (talbot) must NOT be filtered")
+	}
+	if !survivors["_avtopc_xmann"] {
+		t.Error("Mannequin rows must NOT be filtered — they stand in for unmatched humans")
 	}
 }

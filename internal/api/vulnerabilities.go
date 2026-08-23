@@ -226,9 +226,18 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 		s.logger.Warn("lockfile certainty lookup failed", "repo_id", repoID, "error", cerr)
 		certainty = &db.LockfileCertainty{Overall: "none", Ecosystems: []db.LockfileEcosystemCertainty{}}
 	}
+	// v0.28.1 (A4): the completed-scan stamp. null = never scanned —
+	// the GUI must render that distinctly from a dated clean scan.
+	// Best-effort: a lookup failure degrades to null, never a 500.
+	scannedAt, serr := s.store.GetVulnScanLastRun(r.Context(), repoID)
+	if serr != nil {
+		s.logger.Warn("vuln scan stamp lookup failed", "repo_id", repoID, "error", serr)
+		scannedAt = nil
+	}
 	jsonResponse(w, map[string]any{
 		"repo_id":            repoID,
 		"vulnerabilities":    out,
+		"scanned_at":         scannedAt,
 		"lockfile_certainty": certainty,
 		"counts": map[string]int{
 			"current": current, "resolved": resolved, "critical": critical,

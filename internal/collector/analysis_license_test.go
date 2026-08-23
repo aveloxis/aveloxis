@@ -61,6 +61,37 @@ func TestParsePyPIClassifierLicense(t *testing.T) {
 			want:        "GPL-3.0",
 		},
 		{
+			// v0.28.1 (A2): the trove classifier reads "GNU Library
+			// or Lesser…" — the old Contains("GNU Lesser General
+			// Public License") arm missed it and the default arm
+			// returned the 50-char string verbatim, which nothing
+			// downstream normalized (the operator's LGPL-shown-as-
+			// not-OSI report).
+			name:        "LGPL library-or-lesser trove wording",
+			classifiers: []string{"License :: OSI Approved :: GNU Library or Lesser General Public License (LGPL)"},
+			want:        "LGPL",
+		},
+		{
+			// v0.28.4 (review-lens finding): version-carrying
+			// classifiers keep their version — a v3-only declaration
+			// must not collapse to bare LGPL (which downstream
+			// canonicalizes to LGPL-2.0-or-later, granting a 2.0/2.1
+			// choice the declaration never made).
+			name:        "LGPL modern lesser wording keeps v3",
+			classifiers: []string{"License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)"},
+			want:        "LGPL-3.0-only",
+		},
+		{
+			name:        "LGPL v3-or-later keeps the or-later form",
+			classifiers: []string{"License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)"},
+			want:        "LGPL-3.0-or-later",
+		},
+		{
+			name:        "LGPL v2.1 keeps its version",
+			classifiers: []string{"License :: OSI Approved :: GNU Lesser General Public License v2.1 (LGPLv2.1)"},
+			want:        "LGPL-2.1-only",
+		},
+		{
 			name:        "no license classifier",
 			classifiers: []string{"Programming Language :: Python :: 3"},
 			want:        "",

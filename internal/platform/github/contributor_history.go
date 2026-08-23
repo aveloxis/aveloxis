@@ -6,10 +6,25 @@ package github
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 )
+
+// SetHistoryWindowConcurrency bounds how many history windows fetch
+// concurrently per contributor (v0.28.3; wired each sweep tick from
+// collection.activity_history_window_concurrency — the platform
+// package stays config-free). Unset/zero = 1, the legacy serial
+// shape, so standalone callers and tests are behavior-identical
+// until wired. Atomic: the sweep sets it while pool workers may be
+// mid-fetch.
+func (c *Client) SetHistoryWindowConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	c.historyWindowConc.Store(int32(n))
+}
 
 // contributor_history.go — v0.27.58 daily contributor-history fetch.
 // One GraphQL query per (user, window) returns, at rate-limit cost 1
@@ -102,8 +117,12 @@ func (c *Client) FetchContributorHistoryMeta(ctx context.Context, login string) 
 }
 
 // historyAccumulator merges per-window results across windows and
-// subdivision levels.
+// subdivision levels. v0.28.3: windows fetch CONCURRENTLY, so the
+// merge sections lock mu — safe because the merge uses ASSIGNMENT
+// semantics (order-independent; boundary days arrive identical from
+// both neighboring windows).
 type historyAccumulator struct {
+	mu     sync.Mutex
 	days   map[string]*model.ContributorDayActivity // key: day + "\x00" + repo
 	totals map[string]int                           // day → calendar total
 }
@@ -163,12 +182,53 @@ type historyRepoEntry struct {
 // FetchContributorDailyHistory fetches and merges every window,
 // subdividing on cap hits. Errors abort (nothing is fabricated); the
 // caller retries the contributor on its next claim.
+//
+// v0.28.3: windows fetch CONCURRENTLY (bounded by
+// SetHistoryWindowConcurrency; default 1 = the legacy serial shape).
+// The serial chain was the sweep's throughput floor — a 10-year
+// account is ~20 windows ≈ 20 sequential round-trips. Windows are
+// independent spans and the accumulator's assignment-semantics merge
+// is order-independent, so concurrency needs only the accumulator
+// mutex. First error cancels the remaining windows and aborts the
+// contributor — unchanged failure semantics, reached faster.
 func (c *Client) FetchContributorDailyHistory(ctx context.Context, login string, windows []HistoryWindow) ([]model.ContributorDayActivity, []model.ContributorDayTotal, error) {
 	acc := newHistoryAccumulator()
+	conc := int(c.historyWindowConc.Load())
+	if conc < 1 {
+		conc = 1
+	}
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sem := make(chan struct{}, conc)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
 	for _, w := range windows {
-		if err := c.fetchHistoryWindow(ctx, login, w, acc); err != nil {
-			return nil, nil, err
-		}
+		wg.Add(1)
+		go func(w HistoryWindow) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-wctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			if wctx.Err() != nil {
+				return
+			}
+			if err := c.fetchHistoryWindow(wctx, login, w, acc); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				cancel()
+			}
+		}(w)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, nil, firstErr
 	}
 	days := make([]model.ContributorDayActivity, 0, len(acc.days))
 	for _, r := range acc.days {
@@ -215,6 +275,9 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 		// Fall through: keep what WAS returned — partial beats nothing.
 	}
 
+	// v0.28.3: the merge region locks — windows merge concurrently.
+	acc.mu.Lock()
+	defer acc.mu.Unlock()
 	for _, week := range cc.ContributionCalendar.Weeks {
 		for _, d := range week.ContributionDays {
 			if d.ContributionCount > 0 {

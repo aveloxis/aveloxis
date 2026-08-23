@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -20,6 +21,10 @@ import (
 type Client struct {
 	http   *platform.HTTPClient
 	logger *slog.Logger
+	// historyWindowConc bounds per-contributor history-window
+	// concurrency (v0.28.3; see SetHistoryWindowConcurrency).
+	// Zero = serial.
+	historyWindowConc atomic.Int32
 }
 
 // New creates a GitHub client. baseURL is typically "https://api.github.com"

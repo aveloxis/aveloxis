@@ -301,11 +301,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// within seconds of restart. The fillWorkerSlots invariant (no new
 	// claims until staging is drained) is still enforced by the explicit
 	// call order below.
-	if realigned, err := s.store.RealignDueDates(ctx, s.cfg.Collection.RecollectAfterDuration()); err != nil {
+	if realigned, err := s.store.RealignDueDates(ctx, s.cfg.Collection.RecollectAfterDuration(),
+		s.cfg.Collection.ArchivedRecollectMultiplierValue()); err != nil {
 		s.logger.Error("failed to realign queue due_at from config", "error", err)
 	} else if realigned > 0 {
+		// v0.28.1 (A7): log the EFFECTIVE multiplier alongside — the
+		// stretch is applied inside the store's due_at writers.
 		s.logger.Info("realigned queue due_at from current days_until_recollect",
-			"rows_updated", realigned, "recollect_after", s.cfg.Collection.RecollectAfterDuration())
+			"rows_updated", realigned, "recollect_after", s.cfg.Collection.RecollectAfterDuration(),
+			"archived_recollect_multiplier", s.cfg.Collection.ArchivedRecollectMultiplierValue())
 	}
 
 	// v0.27.39 (summary/18 Phase 2): stranded-repo gauge. Non-archived
@@ -377,7 +381,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// v0.27.58: daily contributor-history sweep (bootstrap + quarterly
 	// re-audit in one claim mechanism; constants derived in
 	// activity_history.go).
-	historyTicker := time.NewTicker(activityHistoryInterval)
+	historyTicker := time.NewTicker(s.cfg.Collection.ActivityHistoryIntervalValue())
 	defer historyTicker.Stop()
 	defer breadthTicker.Stop()
 	// v0.27.18: construct the breadth worker ONCE, here (not lazily in
@@ -1105,7 +1109,8 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, startAnchor, s.cfg.Collection.RecollectAfterDuration(),
 		outcome.issues, outcome.prs, outcome.messages, outcome.events,
 		outcome.releases, outcome.contributors, outcome.commits,
-		duration.Milliseconds(), outcome.errMsg); err != nil {
+		duration.Milliseconds(), outcome.errMsg,
+		s.cfg.Collection.ArchivedRecollectMultiplierValue()); err != nil {
 		s.logger.Warn("failed to complete job", "repo_id", job.RepoID, "error", err)
 	}
 
@@ -1141,7 +1146,8 @@ func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
 	// v0.27.139: zero startedAt — a failed pass never advances
 	// last_collected (due_at still advances for retry pacing).
 	if err := s.store.CompleteJob(ctx, repoID, false, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
-		0, 0, 0, 0, 0, 0, 0, 0, errMsg); err != nil {
+		0, 0, 0, 0, 0, 0, 0, 0, errMsg,
+		s.cfg.Collection.ArchivedRecollectMultiplierValue()); err != nil {
 		s.logger.Warn("failed to record job failure", "repo_id", repoID, "error", err)
 	}
 }
@@ -1154,7 +1160,8 @@ func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
 	// stamped-but-empty passes convert the next round to incremental
 	// over history that was never gathered).
 	if err := s.store.CompleteJob(ctx, repoID, true, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
-		0, 0, 0, 0, 0, 0, 0, 0, reason); err != nil {
+		0, 0, 0, 0, 0, 0, 0, 0, reason,
+		s.cfg.Collection.ArchivedRecollectMultiplierValue()); err != nil {
 		s.logger.Warn("failed to record job skip", "repo_id", repoID, "error", err)
 	}
 }

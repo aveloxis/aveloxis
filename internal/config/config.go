@@ -189,6 +189,17 @@ func (w WebConfig) AutoApproveAddLimitValue() int {
 type CollectionConfig struct {
 	// DaysUntilRecollect is how many days before re-collecting a repo.
 	DaysUntilRecollect int `json:"days_until_recollect"`
+	// ArchivedRecollectMultiplier (v0.28.1 A7) stretches the recollect
+	// interval for ARCHIVED repos: their due_at becomes
+	// days_until_recollect × this multiplier. On the 2026-08 fleet,
+	// 19,497 archived repos consumed ~21% of queue churn on
+	// mostly-304 cycles; 6× recovers most of that for live repos while
+	// still re-checking archived repos (they can be unarchived or
+	// gain activity). Set 1 to disable the stretch. 0/absent = the
+	// default 6. Applied inside BOTH due_at writers (CompleteJob +
+	// RealignDueDates), so changing it takes effect fleet-wide on the
+	// next serve restart.
+	ArchivedRecollectMultiplier int `json:"archived_recollect_multiplier"`
 
 	// Workers is the number of concurrent collection goroutines.
 	Workers int `json:"workers"`
@@ -228,6 +239,22 @@ type CollectionConfig struct {
 	// windows below this at runtime when a window hits the 100-repo or
 	// page caps, so this is the STARTING span, not a guarantee.
 	ActivityHistoryWindowDays int `json:"activity_history_window_days"`
+
+	// v0.28.3 (the "breadth worker slow" PDF item — actually the
+	// history backfill): the sweep's four knobs, promoted from
+	// hardcoded constants after the serial design measured
+	// ~1,170 contributors/day against a 2.4M pool (~5.6 years).
+	// Rate limit was never the constraint — request serialization
+	// was (each contributor is ~21 GraphQL round-trips; the old loop
+	// ran them ALL on one goroutine). Defaults are derived:
+	// concurrency 8 × window-concurrency 4 × batch 150 ≈ 6-minute
+	// cycles ≈ 35-50K contributors/day ≈ 13-18% of a 54-key pool's
+	// GraphQL point budget (each contributor ≈ 21 one-point queries).
+	ActivityHistoryIntervalMinutes   int `json:"activity_history_interval_minutes"`
+	ActivityHistoryBatch             int `json:"activity_history_batch"`
+	ActivityHistoryConcurrency       int `json:"activity_history_concurrency"`
+	ActivityHistoryWindowConcurrency int `json:"activity_history_window_concurrency"`
+	ActivityHistoryCooldownDays      int `json:"activity_history_cooldown_days"`
 
 	// MatviewRebuildOnStartup controls whether materialized views are created/refreshed
 	// during schema migration (startup). For large databases this can take minutes.
@@ -867,6 +894,21 @@ func (c *CollectionConfig) RecollectAfterDuration() time.Duration {
 	return time.Duration(c.DaysUntilRecollect) * 24 * time.Hour
 }
 
+// ArchivedRecollectMultiplierValue is the SINGLE default layer for
+// the archived-cadence stretch (SR-10): 0/absent → 6; negative
+// (nonsense for a multiplier) → 1 (no stretch); 1 disables the
+// stretch explicitly.
+func (c *CollectionConfig) ArchivedRecollectMultiplierValue() int {
+	switch {
+	case c.ArchivedRecollectMultiplier == 0:
+		return 6
+	case c.ArchivedRecollectMultiplier < 1:
+		return 1
+	default:
+		return c.ArchivedRecollectMultiplier
+	}
+}
+
 func (c *CollectionConfig) EnrichIntervalDuration() time.Duration {
 	if c.EnrichIntervalMinutes <= 0 {
 		return 30 * time.Minute
@@ -1263,6 +1305,44 @@ func (c *CollectionConfig) ActivityHistoryWindowDaysOrDefault() int {
 	}
 }
 
+// The v0.28.3 history-sweep accessors — each the SINGLE default
+// layer (SR-10) for its knob.
+
+func (c *CollectionConfig) ActivityHistoryIntervalValue() time.Duration {
+	if c.ActivityHistoryIntervalMinutes <= 0 {
+		return time.Minute
+	}
+	return time.Duration(c.ActivityHistoryIntervalMinutes) * time.Minute
+}
+
+func (c *CollectionConfig) ActivityHistoryBatchValue() int {
+	if c.ActivityHistoryBatch <= 0 {
+		return 150
+	}
+	return c.ActivityHistoryBatch
+}
+
+func (c *CollectionConfig) ActivityHistoryConcurrencyValue() int {
+	if c.ActivityHistoryConcurrency <= 0 {
+		return 8
+	}
+	return c.ActivityHistoryConcurrency
+}
+
+func (c *CollectionConfig) ActivityHistoryWindowConcurrencyValue() int {
+	if c.ActivityHistoryWindowConcurrency <= 0 {
+		return 4
+	}
+	return c.ActivityHistoryWindowConcurrency
+}
+
+func (c *CollectionConfig) ActivityHistoryCooldownValue() time.Duration {
+	if c.ActivityHistoryCooldownDays <= 0 {
+		return 90 * 24 * time.Hour
+	}
+	return time.Duration(c.ActivityHistoryCooldownDays) * 24 * time.Hour
+}
+
 func (c *CollectionConfig) MatviewRebuildWeekday() int {
 	switch strings.ToLower(c.MatviewRebuildDay) {
 	case "sunday":
@@ -1329,12 +1409,18 @@ func DefaultConfig() *Config {
 			APIInternalURL: "http://127.0.0.1:8383",
 		},
 		Collection: CollectionConfig{
-			DaysUntilRecollect:        1,
-			Workers:                   12,
-			RepoCloneDir:              defaultCloneDir(),
-			MatviewRebuildDay:         "saturday",
-			ActivityHistoryWindowDays: 180,
-			MatviewRebuildOnStartup:   false,
+			DaysUntilRecollect:               1,
+			ArchivedRecollectMultiplier:      6,
+			ActivityHistoryIntervalMinutes:   1,
+			ActivityHistoryBatch:             150,
+			ActivityHistoryConcurrency:       8,
+			ActivityHistoryWindowConcurrency: 4,
+			ActivityHistoryCooldownDays:      90,
+			Workers:                          12,
+			RepoCloneDir:                     defaultCloneDir(),
+			MatviewRebuildDay:                "saturday",
+			ActivityHistoryWindowDays:        180,
+			MatviewRebuildOnStartup:          false,
 			// v0.26.0 (tech-debt Action 3, phase A): GraphQL is the
 			// default for GitHub PR-child fetch and issue+PR listing —
 			// the flip the v0.19.0 sunset plan scheduled but never

@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -231,5 +232,63 @@ func TestFetchContributorHistoryMeta(t *testing.T) {
 	}
 	if created.Year() != 2010 || len(years) != 3 || years[0] != 2026 {
 		t.Errorf("meta decoded wrong: created=%s years=%v", created, years)
+	}
+}
+
+// v0.28.3 — window-level concurrency. The serial chain was the
+// sweep's per-contributor floor (~20 sequential RTTs on a 10-year
+// account). The barrier handler releases only once BOTH requests are
+// in flight: a serialized implementation times out at max=1 and
+// fails. Run under -race: the shared accumulator's merge is the
+// hazard the mutex exists for.
+func TestFetchContributorDailyHistoryWindowsConcurrently(t *testing.T) {
+	var mu sync.Mutex
+	cur, peak := 0, 0
+	release := make(chan struct{})
+	var once sync.Once
+	client, _ := newHistoryTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		cur++
+		if cur > peak {
+			peak = cur
+		}
+		if cur == 2 {
+			once.Do(func() { close(release) })
+		}
+		mu.Unlock()
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second): // serialized — peak stays 1
+		}
+		fmt.Fprint(w, historyResponse(false, false))
+		mu.Lock()
+		cur--
+		mu.Unlock()
+	})
+	client.SetHistoryWindowConcurrency(2)
+	wins := []HistoryWindow{
+		{From: day("2026-01-01"), To: day("2026-06-30")},
+		{From: day("2026-06-30"), To: day("2026-07-30")},
+	}
+	if _, _, err := client.FetchContributorDailyHistory(t.Context(), "sgoggins", wins); err != nil {
+		t.Fatalf("FetchContributorDailyHistory: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if peak != 2 {
+		t.Errorf("windows must fetch concurrently (peak in-flight = %d, want 2)", peak)
+	}
+}
+
+// Unset concurrency = the legacy serial shape — standalone callers
+// and every pre-v0.28.3 test are behavior-identical until wired.
+func TestHistoryWindowConcurrencyDefaultsSerial(t *testing.T) {
+	c := &Client{}
+	if got := c.historyWindowConc.Load(); got != 0 {
+		t.Errorf("unset concurrency raw value = %d, want 0 (treated as 1)", got)
+	}
+	c.SetHistoryWindowConcurrency(0)
+	if got := c.historyWindowConc.Load(); got != 1 {
+		t.Errorf("SetHistoryWindowConcurrency(0) must clamp to 1, got %d", got)
 	}
 }

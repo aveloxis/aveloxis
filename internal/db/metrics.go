@@ -750,6 +750,47 @@ func (s *PostgresStore) Deps(ctx context.Context, repoID int64) ([]DepRow, error
 	return result, rows.Err()
 }
 
+// DepsFiltered is the license drill-down behind the licenses table
+// (v0.28.1, item 7a): it restricts the dependency rows to the SAME
+// row universe GetRepoLicensesScoped aggregates, so clicking a
+// license bucket of N lists exactly N rows. The githubactions
+// exclusion applies unconditionally (those rows carry no license
+// data and the aggregate excludes them in BOTH scopes); runtimeOnly
+// applies the aggregate's non-runtime-type exclusion; a non-empty
+// license keeps only rows whose NORMALIZED license equals it — the
+// aggregate's buckets are post-normalization (synonyms merged via
+// normalizeLicense in Go), so matching must happen post-normalization
+// too. Raw SQL string matching would orphan synonym-form rows
+// ("MIT License" never matching the "MIT" bucket) — the documented
+// client-side trap this method exists to avoid.
+func (s *PostgresStore) DepsFiltered(ctx context.Context, repoID int64, license string, runtimeOnly bool) ([]DepRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT name, COALESCE(requirement, ''), COALESCE(type, ''),
+		       COALESCE(package_manager, ''), COALESCE(current_version, ''),
+		       COALESCE(latest_version, ''), COALESCE(libyear, 0),
+		       COALESCE(license, ''), COALESCE(purl, '')
+		FROM aveloxis_data.repo_deps_libyear
+		WHERE repo_id = $1`+licenseRowUniverseSQL+`
+		ORDER BY name`, repoID, runtimeOnly)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []DepRow
+	for rows.Next() {
+		var r DepRow
+		if err := rows.Scan(&r.Name, &r.Requirement, &r.Type, &r.PackageManager,
+			&r.CurrentVersion, &r.LatestVersion, &r.Libyear, &r.License, &r.Purl); err != nil {
+			return nil, err
+		}
+		if license != "" && normalizeLicense(r.License) != license {
+			continue
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
 // ============================================================
 // Message metrics
 // ============================================================

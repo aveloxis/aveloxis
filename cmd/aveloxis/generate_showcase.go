@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/api"
+	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/showcase"
 	"github.com/spf13/cobra"
@@ -70,7 +71,12 @@ type repoTarget struct {
 	slug          string
 	row           showcase.RepoRow
 	lastCollected string
-	collections   []showcase.RepoLink
+	// lastCollectedAt is the typed twin of lastCollected (v0.28.2,
+	// item 1a): the chart windows clamp to it so pages stop rendering
+	// a trailing cliff of zero-weeks between the last collection and
+	// generation time.
+	lastCollectedAt time.Time
+	collections     []showcase.RepoLink
 }
 
 func generateShowcaseCmd(cfgPath *string) *cobra.Command {
@@ -288,9 +294,37 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 	emittedRepos := map[string]bool{}
 	for _, rslug := range repoSlugs {
 		t := targets[repoSlugToID[rslug]]
-		page, err := buildRepoPage(ctx, store, opts.BaseURL, now, t)
+		page, err := buildRepoPage(ctx, store, logger, opts.BaseURL, now, t)
 		if err != nil {
 			return sum, fmt.Errorf("repo page %s (repo %d): %w", rslug, t.repoID, err)
+		}
+		// v0.28.2 (item 1b): static SBOM downloads for featured repos —
+		// the API endpoint is auth-gated by design, so the public route
+		// is files beside the snapshot page. Generated fresh each run
+		// (~27 repos × 2 formats; per-repo failure WARNs and omits the
+		// buttons — never fails the run, the v0.27.88 posture). The
+		// button flags must be known BEFORE the page renders.
+		for _, f := range []struct {
+			format collector.SBOMFormat
+			suffix string
+			flag   *bool
+		}{
+			{collector.FormatCycloneDX, ".cyclonedx.json", &page.HasCycloneDX},
+			{collector.FormatSPDX, ".spdx.json", &page.HasSPDX},
+		} {
+			data, serr := collector.GenerateSBOM(ctx, store, t.repoID, f.format)
+			if serr != nil {
+				logger.Warn("showcase SBOM generation failed — download button omitted",
+					"repo", rslug, "format", f.suffix, "error", serr)
+				continue
+			}
+			if werr := writeAtomic(filepath.Join(reposDir, rslug+f.suffix), data); werr != nil {
+				logger.Warn("showcase SBOM write failed — download button omitted",
+					"repo", rslug, "format", f.suffix, "error", werr)
+				continue
+			}
+			emittedRepos[rslug+f.suffix] = true
+			*f.flag = true
 		}
 		var rb strings.Builder
 		if err := showcase.RenderRepo(&rb, page); err != nil {
@@ -303,13 +337,19 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 		sum.RepoPages++
 	}
 	// Prune repo pages whose repo fell out of every top-N (or whose
-	// collection was deleted/renamed).
+	// collection was deleted/renamed). v0.28.2: the emitted set now
+	// carries the SBOM .json files too, so stale SBOMs prune with
+	// their pages (the .html-only suffix check would have leaked them
+	// forever).
 	repoEntries, err := os.ReadDir(reposDir)
 	if err != nil {
 		return sum, fmt.Errorf("reading repos dir for prune: %w", err)
 	}
 	for _, e := range repoEntries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".html") || emittedRepos[e.Name()] {
+		prunable := strings.HasSuffix(e.Name(), ".html") ||
+			strings.HasSuffix(e.Name(), ".cyclonedx.json") ||
+			strings.HasSuffix(e.Name(), ".spdx.json")
+		if e.IsDir() || !prunable || emittedRepos[e.Name()] {
 			continue
 		}
 		if err := os.Remove(filepath.Join(reposDir, e.Name())); err != nil {
@@ -411,6 +451,7 @@ func registerFeaturedRepo(targets map[int64]*repoTarget, repoSlugToID map[string
 		collections: []showcase.RepoLink{coll}}
 	if r.LastCollected != nil {
 		t.lastCollected = r.LastCollected.UTC().Format("2006-01-02")
+		t.lastCollectedAt = *r.LastCollected
 	}
 	targets[r.RepoID] = t
 	return slug
@@ -419,7 +460,7 @@ func registerFeaturedRepo(targets map[int64]*repoTarget, repoSlugToID map[string
 // buildRepoPage assembles one repo snapshot page's data from the
 // repo-level detail reads. All queries are repo-scoped — nothing
 // user-scoped can reach the page (the showcase privacy contract).
-func buildRepoPage(ctx context.Context, store *db.PostgresStore, baseURL string, now time.Time, t *repoTarget) (showcase.RepoPageData, error) {
+func buildRepoPage(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, baseURL string, now time.Time, t *repoTarget) (showcase.RepoPageData, error) {
 	d := showcase.RepoPageData{
 		BaseURL: baseURL, Slug: t.slug,
 		Owner: t.row.Owner, Name: t.row.Name, ForgeURL: t.row.ForgeURL,
@@ -448,13 +489,83 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, baseURL string,
 	if d.VulnTotal, d.VulnCritical, err = store.CountRepoVulnerabilities(ctx, t.repoID); err != nil {
 		return d, fmt.Errorf("vulnerability counts: %w", err)
 	}
-	if d.ActivityChart, err = buildActivityChart(ctx, store, t.repoID, now); err != nil {
+	// v0.28.2 (items 1c+4): the forge's metadata totals for the tile
+	// sub-lines — one cheap cached read (GetRepoStats reads queue
+	// cache + latest repo_info snapshot; ~27 featured repos per run).
+	if st, serr := store.GetRepoStats(ctx, t.repoID); serr != nil {
+		return d, fmt.Errorf("repo stats (metadata counts): %w", serr)
+	} else {
+		d.MetaIssues, d.MetaPRs, d.MetaCommits = st.MetadataIssues, st.MetadataPRs, st.MetadataCommits
+	}
+	// v0.28.2 (item 1e): the REDACTED contributors section. Real
+	// counts + classes + cross-repo names; the generator NEVER emits
+	// forge identities (server-side redaction — the operator's
+	// decision; CSS-blurring real logins would leave them in the
+	// indexable page source). Degrades per-repo non-fatally: a query
+	// failure WARNs and the section is omitted (never fails the run —
+	// the v0.27.88 posture for new sections).
+	d.Contributors = buildShowcaseContributors(ctx, store, logger, t.repoID, now)
+	if d.ActivityChart, err = buildActivityChart(ctx, store, t.repoID, now, t.lastCollectedAt); err != nil {
 		return d, fmt.Errorf("activity chart: %w", err)
 	}
-	if d.MetricCharts, err = buildMetricCharts(ctx, store, t.repoID, now); err != nil {
+	if d.MetricCharts, err = buildMetricCharts(ctx, store, t.repoID, now, t.lastCollectedAt); err != nil {
 		return d, fmt.Errorf("metric charts: %w", err)
 	}
 	return d, nil
+}
+
+// buildShowcaseContributors assembles the redacted top-contributors
+// section (v0.28.2, item 1e): the top 5 humans by trailing-year
+// activity (excludeBots=true — the same server-side filter as the
+// authenticated matrix), each carrying per-kind counts, the v0.27.57
+// activity class, and up to 3 other-repo names from the history
+// tables. Identities are DROPPED here, at generation time — the
+// Placeholder is a fake deterministic name the template blur-styles;
+// the real login never reaches the returned data (the
+// ShowcaseContributor struct cannot hold it). Best-effort: a lookup
+// failure WARNs and returns nil (section omitted), never failing the
+// run.
+func buildShowcaseContributors(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, repoID int64, now time.Time) []showcase.ShowcaseContributor {
+	since := now.AddDate(-1, 0, 0)
+	top, err := store.TopContributors(ctx, repoID, since, now, 5, true)
+	if err != nil {
+		logger.Warn("showcase contributors lookup failed — section omitted", "repo_id", repoID, "error", err)
+		return nil
+	}
+	if len(top) == 0 {
+		return nil
+	}
+	// Cross-repo names ride the same ranking; keyed by cntrb_id so
+	// the two reads can't misalign. Best-effort on its own: without
+	// it the rows still render (empty elsewhere lists).
+	elsewhereOf := map[string][]string{}
+	if els, eerr := store.ContributorsElsewhere(ctx, repoID, since, 5, 3, true); eerr != nil {
+		logger.Warn("showcase contributors-elsewhere lookup failed — cross-repo lists omitted", "repo_id", repoID, "error", eerr)
+	} else {
+		for _, e := range els {
+			for _, r := range e.Elsewhere {
+				elsewhereOf[e.CntrbID] = append(elsewhereOf[e.CntrbID], r.RepoFullName)
+			}
+		}
+	}
+	out := make([]showcase.ShowcaseContributor, 0, len(top))
+	for i, c := range top {
+		out = append(out, showcase.ShowcaseContributor{
+			// Deterministic fake name — byte-stable across hourly
+			// regenerations, illegible under the template's blur, and
+			// never derived from the real identity.
+			Placeholder:    fmt.Sprintf("Contributor #%d", i+1),
+			ActivityClass:  c.ActivityClass,
+			Commits:        c.Commits,
+			Issues:         c.Issues,
+			PRs:            c.PRs,
+			Reviews:        c.Reviews,
+			Comments:       c.Comments,
+			Total:          c.Total,
+			ElsewhereRepos: elsewhereOf[c.CntrbID],
+		})
+	}
+	return out
 }
 
 // weekStartUTC returns the Monday 00:00 UTC of t's ISO week — the
@@ -465,12 +576,33 @@ func weekStartUTC(t time.Time) time.Time {
 	return d.AddDate(0, 0, -((int(d.Weekday()) + 6) % 7))
 }
 
-// showcaseChartWindow is the static charts' trailing-12-month weekly
-// window: 52 Monday buckets plus the current partial week.
-func showcaseChartWindow(now time.Time) (since, until time.Time) {
+// clampedChartWindow is the static charts' 52-Monday-bucket weekly
+// window, ENDING at the repo's last-collected week rather than
+// wall-clock now (v0.28.2, item 1a). DensifyWeekly zero-fills every
+// missing bucket, so weeks after last_collected used to render as a
+// real cliff of zeros at the right edge — and those trailing zeros
+// fed FitTrend as honest data (only LEADING zeros are skipped via
+// FirstActiveIndex), dragging every slope down. The clamp lands on
+// the BUCKET boundary (weekStartUTC + 7d) so DensifyWeekly's
+// date-string join still matches (the 2026-07-10 flat-line lesson).
+// since stays 52 buckets before the clamped until — pages always
+// show 52 weeks of real data. A zero lastCollected degrades to the
+// unclamped now-anchored window.
+func clampedChartWindow(now, lastCollected time.Time) (since, until time.Time) {
 	until = weekStartUTC(now).AddDate(0, 0, 7)
+	if !lastCollected.IsZero() {
+		if lcUntil := weekStartUTC(lastCollected).AddDate(0, 0, 7); lcUntil.Before(until) {
+			until = lcUntil
+		}
+	}
 	since = until.AddDate(0, 0, -52*7)
 	return since, until
+}
+
+// windowEndLabel names the window's last day for chart captions —
+// always accurate whether or not the clamp fired.
+func windowEndLabel(until time.Time) string {
+	return until.AddDate(0, 0, -1).Format("Jan 2, 2006")
 }
 
 func weeklyChartPoints(pts []db.WeeklyDataPoint, since, until time.Time) []showcase.ChartPoint {
@@ -488,8 +620,8 @@ func weeklyChartPoints(pts []db.WeeklyDataPoint, since, until time.Time) []showc
 // stacking it would double-count). Nil chart = zero collected
 // activity in the window — the template renders the honest empty
 // state.
-func buildActivityChart(ctx context.Context, store *db.PostgresStore, repoID int64, now time.Time) (*showcase.RepoChart, error) {
-	since, until := showcaseChartWindow(now)
+func buildActivityChart(ctx context.Context, store *db.PostgresStore, repoID int64, now, lastCollected time.Time) (*showcase.RepoChart, error) {
+	since, until := clampedChartWindow(now, lastCollected)
 	ts, err := store.GetRepoTimeSeries(ctx, repoID, since, until)
 	if err != nil {
 		return nil, err
@@ -511,8 +643,9 @@ func buildActivityChart(ctx context.Context, store *db.PostgresStore, repoID int
 		return nil, nil
 	}
 	chart := &showcase.RepoChart{
-		Caption: "Weekly activity, trailing 12 months — sign in for 3y/5y windows and interactive charts.",
-		SVG:     template.HTML(svg), // produced only by the svgchart renderers
+		Caption: "Weekly activity, 52 weeks ending " + windowEndLabel(until) +
+			" — sign in for 3y/5y windows and interactive charts.",
+		SVG: template.HTML(svg), // produced only by the svgchart renderers
 	}
 	for _, s := range bars {
 		chart.Legend = append(chart.Legend, showcase.LegendItem{Label: s.Label, Color: s.Color})
@@ -559,10 +692,11 @@ func weeklyToChartPoints(pts []db.WeeklyPoint) []showcase.ChartPoint {
 // v0.27.80 — and db.ContributorRetentionSeries at the 8Knot-parity
 // default threshold), so the public snapshots can never disagree
 // with the signed-in charts.
-func buildMetricCharts(ctx context.Context, store *db.PostgresStore, repoID int64, now time.Time) ([]showcase.RepoChart, error) {
-	since, until := showcaseChartWindow(now)
+func buildMetricCharts(ctx context.Context, store *db.PostgresStore, repoID int64, now, lastCollected time.Time) ([]showcase.RepoChart, error) {
+	since, until := clampedChartWindow(now, lastCollected)
 	lineColor := showcase.ChartPalette[0]
-	caption := "Trailing 12 months, weekly — sign in for longer windows, trend analysis, and comparisons."
+	caption := "52 weeks ending " + windowEndLabel(until) +
+		", weekly — sign in for longer windows, trend analysis, and comparisons."
 
 	// The live per-metric grammar (lib/trend.js, v0.27.16): raw weekly
 	// line with point markers, dashed green OLS trend, dashed amber
@@ -678,7 +812,21 @@ func buildCompareDemo(ctx context.Context, store *db.PostgresStore, opts showcas
 		return false, nil
 	}
 
-	since, until := showcaseChartWindow(now)
+	// v0.28.2 (item 1a): the shared 4-repo window clamps to the
+	// EARLIEST of the picks' last-collected times — the safest end
+	// for a shared x-axis (no pick renders trailing fabricated
+	// zeros).
+	var minLC time.Time
+	for _, c := range picked {
+		t := targets[repoSlugToID[c.Slug]]
+		if t.lastCollectedAt.IsZero() {
+			continue
+		}
+		if minLC.IsZero() || t.lastCollectedAt.Before(minLC) {
+			minLC = t.lastCollectedAt
+		}
+	}
+	since, until := clampedChartWindow(now, minLC)
 	refs := make([]showcase.CompareRepoRef, 0, len(picked))
 	legend := make([]showcase.LegendItem, 0, len(picked))
 	for i, c := range picked {
@@ -725,7 +873,7 @@ func buildCompareDemo(ctx context.Context, store *db.PostgresStore, opts showcas
 	var b strings.Builder
 	if err := showcase.RenderComparePage(&b, showcase.ComparePageData{
 		BaseURL: opts.BaseURL, GeneratedAt: now,
-		WindowLabel: "trailing 12 months, weekly",
+		WindowLabel: "52 weeks ending " + windowEndLabel(until) + ", weekly",
 		Repos:       refs, Charts: charts,
 	}); err != nil {
 		return false, fmt.Errorf("rendering compare demo: %w", err)

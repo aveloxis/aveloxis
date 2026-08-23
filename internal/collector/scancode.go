@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 )
@@ -98,7 +99,7 @@ func ingestScancodeOutput(ctx context.Context, store *db.PostgresStore, repoID i
 		packageJSON, _ := json.Marshal(f.PackageData)
 		errorsJSON, _ := json.Marshal(f.ScanErrors)
 		dbRows = append(dbRows, &db.ScancodeFileRow{
-			Path:                          f.Path,
+			Path:                          stripScanRootPrefix(f.Path),
 			FileType:                      f.FileType,
 			ProgrammingLanguage:           f.ProgrammingLanguage,
 			DetectedLicenseExpression:     f.DetectedLicenseExpression,
@@ -116,6 +117,22 @@ func ingestScancodeOutput(ctx context.Context, store *db.PostgresStore, repoID i
 		return version, fmt.Errorf("inserting scancode file results: %w", err)
 	}
 	return version, nil
+}
+
+// scanRootSegRe matches the leading clone-directory segment of a
+// scancode path. The worker clones into repo_<repoID>_<unixNanos>
+// (scancode_worker.go) and scancode emits paths relative to the scan
+// root's PARENT, so every stored path carried that noise segment.
+var scanRootSegRe = regexp.MustCompile(`^repo_\d+_\d+/`)
+
+// stripScanRootPrefix makes stored scancode paths
+// repository-root-relative (v0.28.1, item 5 — the operator's "long
+// repo identification string consumes a lot of space and provides
+// little value"). Applied at ingest for NEW scans only; historical
+// rows keep the prefix until their next 180-day-cadence rescan, so
+// the GUI also strips display-side to cover both shapes.
+func stripScanRootPrefix(p string) string {
+	return scanRootSegRe.ReplaceAllString(p, "")
 }
 
 // hasFindings returns true if a scancode file entry has any

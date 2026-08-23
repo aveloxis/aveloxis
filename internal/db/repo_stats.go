@@ -46,6 +46,17 @@ type RepoStats struct {
 	// (nil → prominent queued banner) from "collected, zero activity"
 	// (honest zeros). Absent when the repo has no queue row too.
 	LastCollected *time.Time `json:"last_collected,omitempty"`
+	// GoneAt (v0.28.1 A6) — repos.repo_gone_at: the repo no longer
+	// resolves on its forge (prelim's probe got a definitive 404/410;
+	// privatized or deleted upstream). The GUI must suppress the
+	// queued banner and render the no-longer-available notice, with
+	// gone taking precedence over the archived chip.
+	GoneAt *time.Time `json:"gone_at,omitempty"`
+	// MetadataAsOf (v0.28.1 A6) — the repo_info snapshot date behind
+	// the Metadata* counts. On gone repos the metadata is a frozen
+	// pre-disappearance snapshot; this field lets the GUI date it
+	// honestly ("metadata N (as of Jul 24, 2026)").
+	MetadataAsOf *time.Time `json:"metadata_as_of,omitempty"`
 }
 
 // SearchRepoResult is a minimal repo record for search results.
@@ -112,20 +123,34 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 		       COALESCE(last_commits, 0), last_collected
 		FROM aveloxis_ops.collection_queue
 		WHERE repo_id = $1`, repoID).
-		Scan(&st.GatheredIssues, &st.GatheredPRs, &st.GatheredCommits, &st.LastCollected); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("queue cached counts: %w", err)
+		Scan(&st.GatheredIssues, &st.GatheredPRs, &st.GatheredCommits, &st.LastCollected); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("queue cached counts: %w", err)
+		}
+		// v0.28.1 (A6): no queue row = the QUEUELESS cohort — prelim
+		// dequeues gone repos (privatized/deleted upstream), taking
+		// the cached counts with the queue row, so the tiles showed
+		// fabricated zeros over real collected data (the
+		// department-of-veterans-affairs report: 477 repos). Count
+		// the actual stored rows instead — gated to this rare cohort
+		// only; every tracked repo keeps the v0.27.85 cached read.
+		if lcErr := s.queuelessLiveCounts(ctx, repoID, st); lcErr != nil {
+			return nil, fmt.Errorf("queueless live counts: %w", lcErr)
+		}
 	}
 
 	// Metadata counts — from the most recent repo_info snapshot.
 	// ErrNoRows = never collected; zeros are the honest answer.
+	// v0.28.1 (A6): the snapshot date rides along as MetadataAsOf so
+	// gone repos can date their frozen metadata.
 	var status string
 	err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(pr_count, 0), COALESCE(issues_count, 0), COALESCE(commit_count, 0),
-		       COALESCE(status, '')
+		       COALESCE(status, ''), data_collection_date
 		FROM aveloxis_data.repo_info
 		WHERE repo_id = $1
 		ORDER BY data_collection_date DESC
-		LIMIT 1`, repoID).Scan(&st.MetadataPRs, &st.MetadataIssues, &st.MetadataCommits, &status)
+		LIMIT 1`, repoID).Scan(&st.MetadataPRs, &st.MetadataIssues, &st.MetadataCommits, &status, &st.MetadataAsOf)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("metadata counts: %w", err)
 	}
@@ -134,9 +159,10 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 	// v0.27.79: fork lineage for the GUI chip. ErrNoRows cannot happen
 	// for a repo the caller already resolved, but degrade the same way
 	// the metadata block does rather than 500 the whole stats payload.
+	// v0.28.1 (A6): repo_gone_at rides the same repos read.
 	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(forked_from, '') FROM aveloxis_data.repos WHERE repo_id = $1`,
-		repoID).Scan(&st.ForkedFrom); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		`SELECT COALESCE(forked_from, ''), repo_gone_at FROM aveloxis_data.repos WHERE repo_id = $1`,
+		repoID).Scan(&st.ForkedFrom, &st.GoneAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("fork lineage: %w", err)
 	}
 
@@ -154,6 +180,23 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 	}
 
 	return st, nil
+}
+
+// queuelessLiveCounts fills gathered counts by counting the actual
+// stored rows — reached ONLY from GetRepoStats' queue-row-ErrNoRows
+// branch (v0.28.1 A6). The live aggregates are exactly what v0.27.85
+// removed from the hot path (~23,500 buffer pages on a kernel-class
+// repo), which is why this lives in its own method OUTSIDE
+// GetRepoStats' body: the dashboard-alignment pin keeps banning the
+// aggregates from the main path, and this gated fallback runs only
+// for the rare queueless cohort (prelim-dequeued gone repos,
+// operator-removed rows — hundreds fleet-wide, none kernel-class).
+func (s *PostgresStore) queuelessLiveCounts(ctx context.Context, repoID int64, st *RepoStats) error {
+	return s.pool.QueryRow(ctx, `
+		SELECT (SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1),
+		       (SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1),
+		       (SELECT COUNT(DISTINCT cmt_commit_hash) FROM aveloxis_data.commits WHERE repo_id = $1)`,
+		repoID).Scan(&st.GatheredIssues, &st.GatheredPRs, &st.GatheredCommits)
 }
 
 // GetRepoStatsBatch returns stats for multiple repos in fewer queries.

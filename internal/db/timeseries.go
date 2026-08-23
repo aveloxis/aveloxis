@@ -147,6 +147,19 @@ var osiLicenses = map[string]bool{
 	"Unlicense": true, "0BSD": true, "BSL-1.0": true, "PostgreSQL": true,
 	"OFL-1.1": true, "NCSA": true, "MulanPSL-2.0": true, "EUPL-1.2": true,
 	"CC0-1.0": true, "BlueOak-1.0.0": true, "UPL-1.0": true, "PSF-2.0": true,
+	// v0.28.1: -or-later SPDX ids. LGPL-2.0-or-later (the canonical
+	// for version-unspecified LGPL declarations) is approved because
+	// or-later lets the consumer choose the OSI-approved 2.1/3.0.
+	"LGPL-2.0-or-later": true, "LGPL-2.1-or-later": true,
+	"LGPL-3.0-or-later": true,
+	"GPL-2.0-or-later":  true, "GPL-3.0-or-later": true,
+	"AGPL-3.0-or-later": true,
+	// v0.28.1: unversioned family labels for families with NO SPDX
+	// "any version" expression (the or-later suffix exists only for
+	// the GNU family). Produced by version-less upstream
+	// declarations; safe to approve because every released version
+	// of these families is OSI-approved.
+	"EPL": true, "Artistic": true,
 }
 
 // normalizeLicense maps license strings to canonical SPDX identifiers.
@@ -164,6 +177,19 @@ func (s *PostgresStore) GetRepoLicenses(ctx context.Context, repoID int64) ([]Li
 	return s.GetRepoLicensesScoped(ctx, repoID, false)
 }
 
+// licenseRowUniverseSQL is the ONE spelling (SR-17) of the licenses
+// table's row-universe predicates, shared by the aggregate
+// (GetRepoLicensesScoped) and the drill-down (DepsFiltered) so the
+// "clicking a bucket of N lists exactly N rows" reconciliation cannot
+// drift when either side is edited. Positional contract: $1 = repo_id
+// (consumed by the caller's WHERE), $2 = runtimeOnly. v0.27.47: the
+// githubactions exclusion applies in BOTH scopes — those rows carry no
+// license data, and counting them as 'Unknown' would pollute the
+// compliance view (runtime already excludes them via type='build').
+const licenseRowUniverseSQL = `
+		  AND ($2 = FALSE OR COALESCE(type, '') NOT IN ('dev','test','build','optional','peer'))
+		  AND package_manager <> 'githubactions'`
+
 // GetRepoLicensesScoped is GetRepoLicenses with an optional
 // runtime-scope filter (v0.27.46, summary/19 P3 — decision #8:
 // license COMPLIANCE obligations attach overwhelmingly to distributed
@@ -176,13 +202,7 @@ func (s *PostgresStore) GetRepoLicensesScoped(ctx context.Context, repoID int64,
 		SELECT COALESCE(NULLIF(TRIM(license), ''), 'Unknown') AS lic,
 			COUNT(*) AS cnt
 		FROM aveloxis_data.repo_deps_libyear
-		WHERE repo_id = $1
-		  AND ($2 = FALSE OR COALESCE(type, '') NOT IN ('dev','test','build','optional','peer'))
-		  -- v0.27.47: GitHub Actions rows carry no license data —
-		  -- counting them as 'Unknown' would pollute the compliance
-		  -- view in the All scope (runtime already excludes them via
-		  -- type='build').
-		  AND package_manager <> 'githubactions'
+		WHERE repo_id = $1`+licenseRowUniverseSQL+`
 		GROUP BY lic
 		ORDER BY cnt DESC`, repoID, runtimeOnly)
 	if err != nil {
@@ -225,6 +245,25 @@ func (s *PostgresStore) GetRepoLicensesScoped(ctx context.Context, repoID int64,
 
 // isOSILicense checks if a license string matches a known OSI-approved license.
 // The input should already be normalized via NormalizeLicenseToSPDX.
+//
+// v0.28.1: multi-license declarations are stored joined with " AND "
+// (the v0.27.29 storage decision; the SBOM generator's
+// makeCDXLicenses splits on the same separator). A compound
+// expression is approved iff EVERY part — individually re-normalized,
+// since synonym forms can appear inside a compound — is approved; an
+// empty part never counts, so "MIT AND " can't slip through.
 func isOSILicense(license string) bool {
-	return osiLicenses[license]
+	if osiLicenses[license] {
+		return true
+	}
+	if !strings.Contains(license, " AND ") {
+		return false
+	}
+	for _, part := range strings.Split(license, " AND ") {
+		part = strings.TrimSpace(part)
+		if part == "" || !osiLicenses[NormalizeLicenseToSPDX(part)] {
+			return false
+		}
+	}
+	return true
 }

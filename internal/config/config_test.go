@@ -4,10 +4,12 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -154,5 +156,43 @@ func TestLoad_MergesWithDefaults(t *testing.T) {
 	}
 	if cfg.GitHub.BaseURL != "https://api.github.com" {
 		t.Errorf("GitHub.BaseURL = %q, want default %q", cfg.GitHub.BaseURL, "https://api.github.com")
+	}
+}
+
+// v0.28.3 (SR-10) — the history-sweep knobs, JSON → effective value.
+// Three states each: absent (accessor default), explicit value,
+// nonsense (falls back).
+func TestActivityHistoryKnobsEndToEnd(t *testing.T) {
+	// Absent → defaults.
+	var c CollectionConfig
+	if c.ActivityHistoryIntervalValue() != time.Minute ||
+		c.ActivityHistoryBatchValue() != 150 ||
+		c.ActivityHistoryConcurrencyValue() != 8 ||
+		c.ActivityHistoryWindowConcurrencyValue() != 4 ||
+		c.ActivityHistoryCooldownValue() != 90*24*time.Hour {
+		t.Error("absent knobs must yield the documented defaults (1m/150/8/4/90d)")
+	}
+	// Explicit JSON values flow through.
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"collection":{
+		"activity_history_interval_minutes": 5,
+		"activity_history_batch": 300,
+		"activity_history_concurrency": 16,
+		"activity_history_window_concurrency": 2,
+		"activity_history_cooldown_days": 30}}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cc := cfg.Collection
+	if cc.ActivityHistoryIntervalValue() != 5*time.Minute ||
+		cc.ActivityHistoryBatchValue() != 300 ||
+		cc.ActivityHistoryConcurrencyValue() != 16 ||
+		cc.ActivityHistoryWindowConcurrencyValue() != 2 ||
+		cc.ActivityHistoryCooldownValue() != 30*24*time.Hour {
+		t.Errorf("explicit JSON knobs must flow to the accessors: %+v", cc)
+	}
+	// Nonsense falls back (never zero-duration tickers).
+	c = CollectionConfig{ActivityHistoryIntervalMinutes: -1, ActivityHistoryConcurrency: -3}
+	if c.ActivityHistoryIntervalValue() != time.Minute || c.ActivityHistoryConcurrencyValue() != 8 {
+		t.Error("negative knobs must fall back to defaults")
 	}
 }

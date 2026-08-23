@@ -29,7 +29,17 @@ import (
 // actions-user through repeated GraphQL 500s — throughput the
 // contributor surfaces can't use, since bots are excluded from
 // display (v0.27.69).
-var githubSystemAccounts = []string{"actions-user", "web-flow", "ghost"}
+// v0.28.1 adds the codecov trio: codecov-io and codecov-commenter are
+// machine accounts GitHub types as plain 'User' (invisible to every
+// type- and pattern-based marker); 'codecov' itself is typed
+// Organization on its enriched row — the list entry is
+// belt-and-suspenders for un-enriched login-only rows. The list is
+// shared with TopContributors' hide-bots filter (v0.28.1), so one
+// addition covers both the claim and the display surfaces.
+var githubSystemAccounts = []string{
+	"actions-user", "web-flow", "ghost",
+	"codecov", "codecov-io", "codecov-commenter",
+}
 
 // GetContributorsForHistoryBackfill claims contributors for the daily
 // history sweep: never-backfilled first, then oldest — with
@@ -62,7 +72,7 @@ func (s *PostgresStore) GetContributorsForHistoryBackfill(ctx context.Context, l
 			  AND gh_login != ''
 			  AND COALESCE(cntrb_deleted, 0) = 0
 			  AND NOT (
-			      COALESCE(gh_type, '') = 'Bot'
+			      COALESCE(gh_type, '') IN ('Bot', 'ProgrammaticAccessBot', 'Organization')
 			      OR gh_login ILIKE '%[bot]%'
 			      OR gh_login ~* '[-_](bot|robot)[0-9]*$'
 			      OR LOWER(gh_login) = ANY($4::text[])

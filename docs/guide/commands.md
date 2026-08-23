@@ -359,15 +359,31 @@ Creates or updates the database schema.
 aveloxis migrate
 ```
 
-Creates 142 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 143 tables and 20 materialized views across three PostgreSQL schemas:
 
 - **`aveloxis_data`** (100 tables + 20 materialized views) -- all collected data
-- **`aveloxis_ops`** (38 tables) -- operational state
+- **`aveloxis_ops`** (39 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.
 
 Safe to run repeatedly. All DDL uses `CREATE ... IF NOT EXISTS` and inserts use `ON CONFLICT DO NOTHING`. Does not touch Augur schemas if sharing a database.
+
+### The completed-backfill ledger (v0.28.4)
+
+Expensive **one-shot data steps** — keyset backfills, history rotations, dedups, the timestamp cleanup — record their completion in `aveloxis_ops.migration_ledger` and are skipped on every later migrate. Before the ledger, every version bump re-walked all of them as no-ops (~1.5–2.5 hours on a fleet-scale database). DDL steps (tables, columns, indexes, views) are deliberately **not** ledgered: an explicit `aveloxis migrate` still heals hand-dropped objects on every run.
+
+A step is recorded only after it completes with zero errors — a failed step re-runs on the next migrate automatically. To force a specific step to re-run (for example after hand-repairing data it targets), delete its ledger row and migrate again:
+
+```sql
+-- See what has been recorded:
+SELECT step_label, completed_at, tool_version FROM aveloxis_ops.migration_ledger ORDER BY completed_at;
+
+-- Replay one step:
+DELETE FROM aveloxis_ops.migration_ledger WHERE step_label = 'v0.27.104 backfill pull_requests.meta_head_id/meta_base_id';
+```
+
+then run `aveloxis migrate --skip-views`. Every ledgered step is idempotent, so replays are always safe.
 
 ---
 
@@ -967,6 +983,12 @@ deletes the stale cross-kind bridge links, and stamps `healed_at`.
 Failed parents leave their rows pending; re-run until "nothing
 pending".
 
+Since v0.28.1 the command loops internally in 25,000-row passes and
+stamps `healed_at` at the end of EACH pass, so an interrupted run
+(Ctrl-C, reboot, kill) keeps everything already healed — at most one
+pass of progress attribution is lost. Hand-chunking with `--limit`
+is no longer load-bearing; `--limit` is now just a total cap.
+
 ```bash
 aveloxis heal-messages --dry-run       # plan: pending rows, distinct parents
 aveloxis heal-messages --limit 1000    # canary pass
@@ -1004,6 +1026,42 @@ Idempotent (prefer-nonempty upserts never downgrade filled data) and
 safe alongside a running `serve`. Without this command the same
 healing happens gradually as each repo's next scheduled collection
 cycle re-scans it.
+
+## `aveloxis mark-gone-repos`
+
+Probes repositories that have no collection-queue row against their
+forge and maintains the "gone" state (v0.28.1). Background: when a
+tracked repository is deleted — or its whole organization goes
+private, as the US Department of Veterans Affairs did in mid-2026 —
+the URL returns 404 and prelim sidelines it permanently (archives +
+removes from the queue). All collected data is kept, but before
+v0.28.1 nothing distinguished that state from "never collected", so
+the GUI showed a false "queued for first collection" banner over
+real data.
+
+The probe is bidirectional and only DEFINITIVE answers decide:
+
+- **404/410** → stamp `repos.repo_gone_at`. The repo page then shows
+  "This repository is no longer publicly available or traceable on
+  GitHub" over the data we hold.
+- **200 on a previously-stamped repo** → clear the stamp and
+  re-enqueue: if the organization re-publicizes, collection resumes
+  automatically on the next run of this command.
+- **Anything else** (transport errors, rate limits, 5xx,
+  unresolvable redirects) → the repo is skipped and a re-run
+  retries it.
+
+```bash
+aveloxis mark-gone-repos --dry-run    # list what each probe would do
+aveloxis mark-gone-repos              # stamp / clear / re-enqueue
+aveloxis mark-gone-repos --limit 100  # bounded canary
+```
+
+Idempotent and re-runnable on any cadence. Dataless stranded rows
+(no queue row, no data, no archived flag) are not candidates — there
+is nothing to display for them either way. New gone repos are
+stamped automatically by prelim at collection time; this command
+exists for the historical cohort and for resurrection checks.
 
 ## `aveloxis run-scorecard`
 

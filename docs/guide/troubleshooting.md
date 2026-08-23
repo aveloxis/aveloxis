@@ -1513,6 +1513,35 @@ process-limit) exhaustion.
 2. Only then restart `aveloxis serve` — restarting into a memory-starved host
    reproduces the crash on the next pool reconnect.
 
+## A one-shot migration backfill needs to re-run
+
+Since v0.28.4, expensive one-shot data steps (keyset backfills,
+history rotations, dedups, the garbage-timestamp cleanup) record
+their completion in `aveloxis_ops.migration_ledger` and are skipped
+by every later `aveloxis migrate` — that's what keeps a version-bump
+migrate at seconds instead of hours. If you hand-repaired data that
+one of those steps targets (or suspect a recorded step ran against
+bad data), replay it:
+
+```sql
+-- 1. Find the step's exact label:
+SELECT step_label, completed_at, tool_version
+FROM aveloxis_ops.migration_ledger ORDER BY completed_at;
+
+-- 2. Delete its row:
+DELETE FROM aveloxis_ops.migration_ledger WHERE step_label = '<label>';
+```
+
+then run `aveloxis migrate --skip-views`. The step re-runs (all
+ledgered steps are idempotent, so this is always safe) and re-records
+on success. A step that FAILS is never recorded in the first place —
+it retries automatically on every migrate until it succeeds, per the
+fail-closed contract.
+
+Note the boundary: DDL (tables, columns, indexes, views) is never
+ledgered. A hand-dropped index or view still heals on the next
+explicit `aveloxis migrate` with no ledger surgery needed.
+
 ## Next steps
 
 - [Monitoring](monitoring.md) -- use the dashboard for real-time status

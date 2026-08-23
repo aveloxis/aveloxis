@@ -78,6 +78,13 @@ td.name a.ext { color: #66739a; font-weight: 400; font-size: 12px; margin-left: 
 .stat .v { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums;
   font-family: ui-monospace, 'JetBrains Mono', monospace; }
 .stat .k { font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: #46557a; margin-top: 2px; }
+.stat .s { font-size: 11px; color: #66739a; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.stat .s.crit { color: #b91c1c; }
+/* v0.28.2 (item 1e): redacted contributor names — the blur is an
+   AESTHETIC over a FAKE placeholder; the real identity never reaches
+   this page's HTML. user-select:none keeps the teaser copy-proof. */
+.blur-name { filter: blur(5px); user-select: none; -webkit-user-select: none; color: #3b4f7e; }
+.class-chip { font-size: 10.5px; color: #46557a; border: 1px solid rgba(70,85,122,0.3); border-radius: 8px; padding: 1px 7px; }
 .section-h { font-size: 15px; font-weight: 700; margin: 30px 0 12px; }
 .chip { display: inline-block; min-width: 42px; text-align: center; padding: 2px 10px;
   border-radius: 999px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
@@ -327,13 +334,30 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
     {{end -}}
     updated {{.GeneratedAt.UTC.Format "Jan 2, 2006 15:04"}} UTC
   </p>
+  {{/* v0.28.2 (PDF items 1c+4): the SAME six-tile top line as the
+       authenticated repo page — gathered counts with "metadata N"
+       sub-lines, plus the vulnerabilities tile (DepsScanned guard:
+       an unscanned repo says "analysis pending", never a fabricated
+       clean 0). */}}
   <div class="tiles">
-    <div class="stat"><div class="v">{{comma .Commits}}</div><div class="k">Commits</div></div>
-    <div class="stat"><div class="v">{{comma .Issues}}</div><div class="k">Issues</div></div>
-    <div class="stat"><div class="v">{{comma .PRs}}</div><div class="k">Pull requests</div></div>
-    <div class="stat"><div class="v">{{if .LastActivity}}{{.LastActivity}}{{else}}—{{end}}</div><div class="k">Last activity</div></div>
+    <div class="stat"><div class="v">{{comma .Commits}}</div><div class="k">Commits</div>{{if .MetaCommits}}<div class="s">metadata {{commaInt .MetaCommits}}</div>{{end}}</div>
+    <div class="stat"><div class="v">{{comma .Issues}}</div><div class="k">Issues</div>{{if .MetaIssues}}<div class="s">metadata {{commaInt .MetaIssues}}</div>{{end}}</div>
+    <div class="stat"><div class="v">{{comma .PRs}}</div><div class="k">Pull requests</div>{{if .MetaPRs}}<div class="s">metadata {{commaInt .MetaPRs}}</div>{{end}}</div>
+    {{if .DepsScanned}}<div class="stat"><div class="v">{{commaInt .VulnTotal}}</div><div class="k">Vulnerabilities</div>{{if gt .VulnCritical 0}}<div class="s crit">{{.VulnCritical}} critical</div>{{end}}</div>
+    {{else}}<div class="stat"><div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">analysis pending</div></div>
+    {{end}}<div class="stat"><div class="v">{{if .LastActivity}}{{.LastActivity}}{{else}}—{{end}}</div><div class="k">Last activity</div></div>
     <div class="stat"><div class="v">{{if .LastCollected}}{{.LastCollected}}{{else}}—{{end}}</div><div class="k">Last collected</div></div>
   </div>
+  {{/* v0.28.2 (item 1b): static SBOM downloads — files generated
+       beside this page by the hourly showcase run; buttons render
+       only for formats that generated successfully. */}}
+  {{if or .HasCycloneDX .HasSPDX}}
+  <p class="note-line">Software bill of materials:
+    {{if .HasCycloneDX}}<a href="{{.Slug}}.cyclonedx.json" download>CycloneDX 1.5 (JSON)</a>{{end -}}
+    {{if and .HasCycloneDX .HasSPDX}} · {{end -}}
+    {{if .HasSPDX}}<a href="{{.Slug}}.spdx.json" download>SPDX 2.3 (JSON)</a>{{end}}
+  </p>
+  {{end}}
 
   <div class="section-h">Weekly activity</div>
   {{if .ActivityChart}}
@@ -358,6 +382,37 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
       Dependency analysis pending — vulnerability data arrives with this repository's next analysis cycle.
     {{- end -}}
   </p>
+
+  {{/* v0.28.2 (item 1e): the REDACTED contributors section — real
+       counts, classes, and cross-repo names; identities are dropped
+       at GENERATION time (the data type cannot hold them) and the
+       placeholder renders blur-styled. The CTA is the conversion
+       device: sign in to see who. */}}
+  <div class="section-h">Top contributors</div>
+  {{if .Contributors}}
+  <div class="card"><div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Contributor</th><th>Commits</th><th>Issues</th><th>PRs</th><th>Reviews</th><th>Comments</th><th>Also active in</th></tr></thead>
+    <tbody>
+    {{range .Contributors}}
+    <tr>
+      <td><span class="blur-name">{{.Placeholder}}</span>{{if .ActivityClass}} <span class="class-chip">{{.ActivityClass}}</span>{{end}}</td>
+      <td>{{commaInt .Commits}}</td>
+      <td>{{commaInt .Issues}}</td>
+      <td>{{commaInt .PRs}}</td>
+      <td>{{commaInt .Reviews}}</td>
+      <td>{{commaInt .Comments}}</td>
+      <td>{{if .ElsewhereRepos}}{{range $i, $r := .ElsewhereRepos}}{{if $i}}, {{end}}{{$r}}{{end}}{{else}}—{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div></div>
+  <p class="note-line">Contributor identities are redacted on public pages —
+    <a href="/login.html" onclick="window.avTrack&&avTrack('showcase-login-cta')">Sign in to see contributor identities →</a></p>
+  {{else}}
+  <p class="note-line">Contributor analytics pending — data arrives as collection cycles complete.</p>
+  {{end}}
 
   <div class="section-h">OpenSSF Scorecard</div>
   {{if .ScorecardChecks}}

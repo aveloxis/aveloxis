@@ -2176,6 +2176,37 @@ func parsePyPIClassifierLicense(classifiers []string) string {
 			return "MIT"
 		case strings.Contains(name, "Apache"):
 			return "Apache-2.0"
+		// v0.28.1: the Lesser arm must run BEFORE the GPLv3/GPLv2
+		// arms — "LGPLv3" CONTAINS "GPLv3" as a substring, so the
+		// old ordering misclassified every LGPL-v3 classifier as
+		// GPL-3.0. The single "Lesser General Public License"
+		// needle also covers the legacy trove wording "GNU Library
+		// or Lesser General Public License (LGPL)" (the operator's
+		// LGPL-shown-as-not-OSI report — "Library OR Lesser" misses
+		// a "GNU Lesser…" prefix match).
+		case strings.Contains(name, "Lesser General Public License"):
+			// v0.28.4 (review-lens finding): keep the VERSION the
+			// classifier carries — collapsing "LGPLv3" to bare LGPL
+			// (→ LGPL-2.0-or-later downstream) would claim a 2.0/2.1
+			// choice a v3-only declaration never granted. Or-later
+			// forms first ("LGPLv3+" also Contains "v3").
+			switch {
+			case strings.Contains(name, "v3 or later"), strings.Contains(name, "LGPLv3+"):
+				return "LGPL-3.0-or-later"
+			case strings.Contains(name, "v3"):
+				return "LGPL-3.0-only"
+			case strings.Contains(name, "v2 or later"), strings.Contains(name, "LGPLv2+"):
+				return "LGPL-2.0-or-later"
+			case strings.Contains(name, "v2.1"):
+				return "LGPL-2.1-only"
+			case strings.Contains(name, "v2"):
+				return "LGPL-2.0-only"
+			default:
+				// Version-unspecified ("GNU Library or Lesser
+				// General Public License (LGPL)") — the synonym map
+				// canonicalizes bare LGPL to LGPL-2.0-or-later.
+				return "LGPL"
+			}
 		case strings.Contains(name, "GPLv3"):
 			return "GPL-3.0"
 		case strings.Contains(name, "GPLv2"):
@@ -2184,8 +2215,6 @@ func parsePyPIClassifierLicense(classifiers []string) string {
 			return "GPL-3.0"
 		case strings.Contains(name, "GNU General Public License v2"):
 			return "GPL-2.0"
-		case strings.Contains(name, "GNU Lesser General Public License"):
-			return "LGPL"
 		case strings.Contains(name, "BSD"):
 			return "BSD"
 		case strings.Contains(name, "ISC"):

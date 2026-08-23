@@ -50,10 +50,68 @@ type healParentKey struct {
 	side   string // "issue-conv" | "pr-conv" | "pr-review-side"
 }
 
-// HealMessages runs one bounded healing pass. limit caps the number of
-// worklist rows considered (0 = all pending). dryRun reports the plan
-// without fetching or mutating.
+// healPassSize bounds one internal pass — the unit that gets fetched,
+// processed, and STAMPED before the next batch starts (v0.28.1 A8).
+// Pre-A8, healed_at stamped once at the very end of the whole run:
+// the 2026-08 full-batch run was killed ~20% done after 6 days having
+// stamped NOTHING, and the operator's recovery was hand-chunked
+// --limit 25000 passes. This constant makes that chunking automatic
+// and load-bearing: an interrupted run loses at most one pass of
+// attribution. 25,000 is the operator-proven chunk from that recovery
+// (~4s batch SELECT on the production worklist post-v0.27.67 index).
+const healPassSize = 25000
+
+// HealMessages heals up to limit worklist rows (0 = all pending),
+// looping in healPassSize internal passes so progress persists
+// incrementally (SR-3: each pass stamps only rows proven processed —
+// and stamps them as soon as they ARE proven, not at run end). A pass
+// that heals zero rows stops the loop: the same pending rows would be
+// re-claimed forever otherwise (a fully-failing batch must surface,
+// not spin). dryRun reports the first pass's plan without mutating.
 func HealMessages(ctx context.Context, store *db.PostgresStore, client platform.Client, logger *slog.Logger, limit int, dryRun bool) (*MessageHealResult, error) {
+	total := &MessageHealResult{}
+	remaining := limit // 0 = unbounded
+	for pass := 1; ; pass++ {
+		passLimit := healPassSize
+		if remaining > 0 && remaining < passLimit {
+			passLimit = remaining
+		}
+		res, err := runMessageHealPass(ctx, store, client, logger, passLimit, dryRun)
+		if res != nil {
+			if pass == 1 {
+				total.Pending = res.Pending
+			}
+			total.Healed += res.Healed
+			total.ParentsFetched += res.ParentsFetched
+			total.ParentErrors += res.ParentErrors
+		}
+		if err != nil {
+			return total, err
+		}
+		if dryRun {
+			return total, nil
+		}
+		if res.Pending == 0 || res.Healed == 0 {
+			// Drained, or a zero-progress pass (every row's parents
+			// failed) — either way another pass cannot help.
+			return total, nil
+		}
+		if remaining > 0 {
+			remaining -= res.Healed
+			if remaining <= 0 {
+				return total, nil
+			}
+		}
+		if int64(res.Healed) >= res.Pending {
+			return total, nil // that pass covered everything pending
+		}
+	}
+}
+
+// runMessageHealPass is one bounded healing pass. limit caps the
+// number of worklist rows considered (0 = all pending). The pass
+// stamps its own healed rows before returning.
+func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client platform.Client, logger *slog.Logger, limit int, dryRun bool) (*MessageHealResult, error) {
 	res := &MessageHealResult{}
 	var err error
 	res.Pending, err = store.CountMessageHealPending(ctx)

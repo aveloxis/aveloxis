@@ -145,8 +145,25 @@ func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string, exclud
 //     collected (the podman-desktop cohort-A class: five failed first
 //     rounds stamped last_collected and stranded pre-existing history).
 //     due_at, attempts, and last_error still advance for retry pacing.
+//
+// archivedStretchCaseSQL — v0.28.1 (A7): the ONE spelling (SR-17) of
+// the archived-repo cadence stretch, shared by BOTH due_at writers
+// (CompleteJob + RealignDueDates — fix-every-site made structural).
+// Multiplies the recollect interval when repos.repo_archived is set;
+// %s is the caller's multiplier parameter position. The correlated
+// subselect is a single PK lookup per row.
+const archivedStretchCaseSQL = `CASE WHEN COALESCE((SELECT r.repo_archived FROM aveloxis_data.repos r WHERE r.repo_id = collection_queue.repo_id), FALSE) THEN %s ELSE 1 END`
+
 func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success bool, startedAt time.Time, recollectAfter time.Duration,
-	issues, prs, messages, events, releases, contributors, commits int, durationMs int64, errMsg string) error {
+	issues, prs, messages, events, releases, contributors, commits int, durationMs int64, errMsg string,
+	archivedMultiplier int) error {
+	// v0.28.1 (A7): the stretch is enforced HERE (SR-18 — the due_at
+	// writer owns the invariant; a caller that forgets cannot bypass
+	// it). Clamp defensively so a zero from a legacy caller can never
+	// produce a never-due row.
+	if archivedMultiplier < 1 {
+		archivedMultiplier = 1
+	}
 
 	status := "queued" // re-queue immediately
 	var lastErr *string
@@ -199,7 +216,7 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 			UPDATE aveloxis_ops.collection_queue
 			SET status = $2,
 				priority = 100,
-				due_at = NOW() + $3::interval,
+				due_at = NOW() + ($3::interval * `+fmt.Sprintf(archivedStretchCaseSQL, "$13")+`),
 				locked_by = NULL,
 				locked_at = NULL,
 				last_collected = CASE WHEN $12::timestamptz IS NOT NULL THEN $12::timestamptz ELSE last_collected END,
@@ -217,7 +234,7 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 			WHERE repo_id = $1`,
 			repoID, status, recollectAfter.String(),
 			lastErr, messages, events, releases, contributors, commits, durationMs,
-			success, startAnchor)
+			success, startAnchor, archivedMultiplier)
 		return err
 	})
 }
@@ -297,15 +314,25 @@ func (s *PostgresStore) MakeQueuedReposDue(ctx context.Context) (int64, error) {
 //
 // Idempotent: the <> predicate skips rows already in the correct shape, so
 // updated_at stays stable across repeated startups.
-func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time.Duration) (int64, error) {
+func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time.Duration, archivedMultiplier int) (int64, error) {
+	// v0.28.1 (A7): the same archived stretch as CompleteJob (the
+	// shared archivedStretchCaseSQL spelling), so a restart realigns
+	// archived repos onto the stretched cadence and config changes to
+	// the multiplier take effect fleet-wide. The idempotency
+	// predicate uses the identical expression so already-aligned rows
+	// stay untouched.
+	if archivedMultiplier < 1 {
+		archivedMultiplier = 1
+	}
+	stretch := fmt.Sprintf(archivedStretchCaseSQL, "$2")
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
-		SET due_at = last_collected + $1::interval,
+		SET due_at = last_collected + ($1::interval * `+stretch+`),
 			updated_at = NOW()
 		WHERE status = 'queued'
 		  AND last_collected IS NOT NULL
-		  AND due_at <> last_collected + $1::interval`,
-		recollectAfter.String())
+		  AND due_at <> last_collected + ($1::interval * `+stretch+`)`,
+		recollectAfter.String(), archivedMultiplier)
 	if err != nil {
 		return 0, err
 	}

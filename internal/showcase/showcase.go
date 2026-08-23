@@ -95,7 +95,11 @@ type RepoPageData struct {
 	// snapshot (v0.28.2, PDF items 1c+4): the tiles pair "gathered"
 	// with "metadata N" sub-lines exactly like the authenticated repo
 	// page, so the two surfaces show the same six-tile top line.
-	// Zero = no snapshot yet; the sub-line is omitted.
+	// HasMetadata (v0.28.6, Copilot round 2) is the PRESENCE signal —
+	// a snapshot can legitimately report 0 issues or PRs, so gating
+	// each sub-line on its own count conflated "zero" with "no
+	// snapshot" and dropped real zeros the authenticated page shows.
+	HasMetadata   bool
 	MetaIssues    int
 	MetaPRs       int
 	MetaCommits   int

@@ -254,3 +254,45 @@ func TestRepoGoneEndToEnd(t *testing.T) {
 		t.Errorf("candidate flags wrong: %+v", *found)
 	}
 }
+
+// v0.28.6 (Copilot round 2) — resurrection is ONE transaction: the
+// clear + re-enqueue either both commit or neither does, so no
+// partial-failure ordering can strand a repo (un-stamped+queueless)
+// or drop it out of the queueless candidate set (queued+stamped).
+func TestResurrectRepoIsAtomicEndToEnd(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+
+	repoID := seedRepoForDeps(t, store, ctx, "_avresurrect", "fixture")
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
+	})
+
+	if err := store.MarkRepoGone(ctx, repoID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResurrectRepo(ctx, repoID, 10); err != nil {
+		t.Fatal(err)
+	}
+	ga, err := store.GetRepoGoneAt(ctx, repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ga != nil {
+		t.Error("ResurrectRepo must clear the gone stamp")
+	}
+	var status string
+	var priority int
+	if err := store.Pool().QueryRow(ctx,
+		`SELECT status, priority FROM aveloxis_ops.collection_queue WHERE repo_id = $1`,
+		repoID).Scan(&status, &priority); err != nil {
+		t.Fatalf("ResurrectRepo must create the queue row in the same transaction: %v", err)
+	}
+	if status != "queued" || priority != 10 {
+		t.Errorf("queue row: status=%q priority=%d, want queued/10", status, priority)
+	}
+	// Idempotent re-run (the rerun-after-partial-failure shape).
+	if err := store.ResurrectRepo(ctx, repoID, 10); err != nil {
+		t.Fatalf("ResurrectRepo must be idempotent: %v", err)
+	}
+}

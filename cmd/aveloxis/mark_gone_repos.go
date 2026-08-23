@@ -131,29 +131,18 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 				cleared++
 				continue
 			}
-			// v0.28.5 (Copilot round): ENQUEUE BEFORE CLEAR — the
-			// order is what makes every partial failure recoverable
-			// by a plain rerun. Clear-then-failed-enqueue would leave
-			// the repo un-stamped AND queueless, and the rerun's 2xx
-			// branch exits at the !GoneStamped check above without
-			// ever retrying the enqueue (permanently stranded).
-			// Enqueue-then-failed-clear leaves the repo stamped, so
-			// the rerun re-enters this branch: EnqueueRepo is an
-			// idempotent upsert (no-op) and the clear retries. A
-			// queued-but-still-stamped window is also self-healing in
-			// routine collection — prelim's 2xx path clears the stamp
-			// (or a 404 re-stamps and dequeues).
-			if err := store.EnqueueRepo(ctx, c.RepoID, 10); err != nil {
-				logger.Warn("failed to re-enqueue resurrected repo — stamp retained, rerun retries",
+			// v0.28.6 (Copilot round): clear + re-enqueue are ONE
+			// store transaction — no two-statement ordering leaves a
+			// recoverable failure here (clear-then-failed-enqueue
+			// stranded the repo; enqueue-then-failed-clear dropped it
+			// out of the queueless candidate set). On failure nothing
+			// committed: the repo stays gone-stamped and queueless,
+			// and a plain rerun retries.
+			if err := store.ResurrectRepo(ctx, c.RepoID, 10); err != nil {
+				// Counted as skipped ONLY (not alive) so the
+				// completion line's alive_unstamped stays accurate.
+				logger.Warn("failed to resurrect repo — nothing committed, rerun retries",
 					"repo_id", c.RepoID, "error", err)
-				skipped++
-				continue
-			}
-			if err := store.ClearRepoGone(ctx, c.RepoID); err != nil {
-				// Still gone-stamped: count as skipped ONLY (not
-				// alive) so the completion line's alive_unstamped
-				// stays accurate; the rerun re-enters this branch.
-				logger.Warn("failed to clear gone stamp — rerun retries", "repo_id", c.RepoID, "error", err)
 				skipped++
 				continue
 			}

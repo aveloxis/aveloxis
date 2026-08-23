@@ -198,16 +198,18 @@ var licenseSynonyms = func() map[string]string {
 	add("LGPL-3.0-only",
 		"LGPL-3.0", "LGPL-3.0-only", "GNU Lesser General Public License v3.0", "LGPLv3",
 	)
-	// v0.28.1: version-unspecified LGPL. The PyPI trove classifier
-	// "GNU Library or Lesser General Public License (LGPL)" names no
-	// version — and its wording literally spans the whole family:
-	// "Library" IS the 2.0-era name, "Lesser" the 2.1+/3.0 name. The
-	// exact SPDX translation of "some LGPL version" is therefore
-	// LGPL-2.0-or-later (a real SPDX id — the synonym-canonical
-	// groundtruth tripwire enforces that), not a fabricated specific
-	// version.
-	add("LGPL-2.0-or-later",
-		"LGPL", "GNU Library or Lesser General Public License (LGPL)",
+	// v0.28.6 (Copilot round 2, revising v0.28.1): version-unspecified
+	// LGPL normalizes to the bare "LGPL" FAMILY BUCKET — the same
+	// treatment the classifier gives EPL/Artistic — NOT to
+	// LGPL-2.0-or-later. The "-or-later" SPDX id specifically asserts
+	// that recipients may choose later versions; version-unspecified
+	// metadata may describe a version-only license, so mapping it to
+	// -or-later invents a permission the source never granted. "LGPL"
+	// is not an SPDX id (the groundtruth tripwire carries a reviewed
+	// family-bucket exemption for it); explicit "or later" wordings
+	// keep their exact -or-later ids via the classifier arms.
+	add("LGPL",
+		"GNU Library or Lesser General Public License (LGPL)",
 		"GNU Lesser General Public License",
 	)
 

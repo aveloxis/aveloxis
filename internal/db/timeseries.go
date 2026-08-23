@@ -151,6 +151,13 @@ var osiLicenses = map[string]bool{
 	// for version-unspecified LGPL declarations) is approved because
 	// or-later lets the consumer choose the OSI-approved 2.1/3.0.
 	"LGPL-2.0-or-later": true, "LGPL-2.1-or-later": true,
+	// v0.28.6: the version-unspecified family bucket (see
+	// license_normalize.go). Marked approved per the operator's 7b
+	// intent — the real-world LGPL population is overwhelmingly
+	// 2.1/3.0 (both OSI-approved); the 2.0-only corner (not on the
+	// OSI list) is accepted as the cost of not inventing an
+	// -or-later grant.
+	"LGPL":              true,
 	"LGPL-3.0-or-later": true,
 	"GPL-2.0-or-later":  true, "GPL-3.0-or-later": true,
 	"AGPL-3.0-or-later": true,

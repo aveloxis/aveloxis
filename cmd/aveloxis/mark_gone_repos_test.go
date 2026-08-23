@@ -75,9 +75,18 @@ func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 	if !strings.Contains(errArm, "skipped++") || !strings.Contains(errArm, "continue") {
 		t.Error("a probe ERROR must skip the repo (SR-16), never stamp or clear")
 	}
-	// Resurrection is bidirectional: 200 on a gone-stamped repo
-	// clears + re-enqueues.
-	if !strings.Contains(src, "ClearRepoGone(") || !strings.Contains(src, "EnqueueRepo(") {
-		t.Error("a definitive 200 on a gone-stamped repo must clear the stamp and re-enqueue")
+	// Resurrection is bidirectional AND atomic (v0.28.6, Copilot
+	// round 2): 200 on a gone-stamped repo clears + re-enqueues via
+	// the single-transaction ResurrectRepo — no two-statement
+	// ordering exists whose partial failure a rerun can't recover
+	// (clear-then-failed-enqueue stranded the repo; enqueue-then-
+	// failed-clear dropped it out of the queueless candidate set).
+	if !strings.Contains(src, "store.ResurrectRepo(") {
+		t.Error("a definitive 200 on a gone-stamped repo must clear + re-enqueue ATOMICALLY via store.ResurrectRepo")
+	}
+	for _, banned := range []string{"store.ClearRepoGone(", "store.EnqueueRepo("} {
+		if strings.Contains(src, banned) {
+			t.Errorf("mark-gone-repos must not call %s directly — the split writes are exactly the unrecoverable-partial-failure shape ResurrectRepo exists to prevent", banned)
+		}
 	}
 }

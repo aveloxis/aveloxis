@@ -104,18 +104,19 @@ func TestUnversionedLicenseFamiliesAreOSI(t *testing.T) {
 	// Version-unspecified LGPL translates to the exact SPDX
 	// expression for "some LGPL version": the classifier's wording
 	// spans "Library" (2.0) and "Lesser" (2.1+/3.0), i.e.
-	// LGPL-2.0-or-later — a REAL SPDX id (the synonym-canonical
+	// The bare-LGPL family bucket (v0.28.6 — the -or-later id would
+	// invent a choose-later-versions grant; see the synonym-canonical
 	// groundtruth tripwire bans invented labels).
-	if got := NormalizeLicenseToSPDX("GNU Library or Lesser General Public License (LGPL)"); got != "LGPL-2.0-or-later" {
-		t.Errorf("trove LGPL wording normalized to %q, want LGPL-2.0-or-later", got)
+	if got := NormalizeLicenseToSPDX("GNU Library or Lesser General Public License (LGPL)"); got != "LGPL" {
+		t.Errorf("trove LGPL wording normalized to %q, want the LGPL family bucket", got)
 	}
-	if got := NormalizeLicenseToSPDX("LGPL"); got != "LGPL-2.0-or-later" {
-		t.Errorf("bare LGPL normalized to %q, want LGPL-2.0-or-later", got)
+	if got := NormalizeLicenseToSPDX("LGPL"); got != "LGPL" {
+		t.Errorf("bare LGPL normalized to %q, want the LGPL family bucket (never a version-specific or -or-later id)", got)
 	}
 	// EPL/Artistic have no SPDX any-version expression (or-later is
 	// GNU-only) — the bare family labels stay and are OSI-approved
 	// (every released version of each family is).
-	for _, lic := range []string{"LGPL-2.0-or-later", "EPL", "Artistic"} {
+	for _, lic := range []string{"LGPL", "LGPL-2.0-or-later", "EPL", "Artistic"} {
 		if !isOSILicense(lic) {
 			t.Errorf("%s must be OSI-approved", lic)
 		}

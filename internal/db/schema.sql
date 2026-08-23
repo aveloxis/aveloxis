@@ -73,11 +73,16 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     scancode_last_run       TIMESTAMPTZ,
     scancode_version        TEXT,
     -- v0.28.1 (A4): wall-clock time of the most recent COMPLETED
-    -- vulnerability scan (full success, or the legitimate dep-less /
-    -- all-malformed completions). Distinguishes "scanned, clean"
-    -- from "never scanned" — per-finding last_seen_at cannot, since
-    -- a clean scan touches zero vuln rows. NEVER stamped on scan
-    -- errors (a partial view must not claim freshness).
+    -- vulnerability scan. Stamped ONLY where OSV was actually
+    -- consulted or the dependency universe was genuinely empty
+    -- (v0.28.5): the full-success exit, and the dep-less exit when
+    -- zero deps were skipped for blank purls. NEVER stamped on scan
+    -- errors, on the all-malformed exit, or when unscannable
+    -- (purl-less) deps were skipped — a date + zero findings must
+    -- genuinely mean "checked and clean", never "nothing was
+    -- queryable". Distinguishes that from "never scanned" —
+    -- per-finding last_seen_at cannot, since a clean scan touches
+    -- zero vuln rows.
     vuln_scan_last_run      TIMESTAMPTZ,
     -- v0.28.1 (A6): the repo no longer resolves on its forge —
     -- prelim's probe got a DEFINITIVE 404/410 (privatized or deleted

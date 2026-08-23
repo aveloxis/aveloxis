@@ -341,9 +341,9 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
        an unscanned repo says "analysis pending", never a fabricated
        clean 0). */}}
   <div class="tiles">
-    <div class="stat"><div class="v">{{comma .Commits}}</div><div class="k">Commits</div>{{if .MetaCommits}}<div class="s">metadata {{commaInt .MetaCommits}}</div>{{end}}</div>
-    <div class="stat"><div class="v">{{comma .Issues}}</div><div class="k">Issues</div>{{if .MetaIssues}}<div class="s">metadata {{commaInt .MetaIssues}}</div>{{end}}</div>
-    <div class="stat"><div class="v">{{comma .PRs}}</div><div class="k">Pull requests</div>{{if .MetaPRs}}<div class="s">metadata {{commaInt .MetaPRs}}</div>{{end}}</div>
+    <div class="stat"><div class="v">{{comma .Commits}}</div><div class="k">Commits</div>{{if .HasMetadata}}<div class="s">metadata {{commaInt .MetaCommits}}</div>{{end}}</div>
+    <div class="stat"><div class="v">{{comma .Issues}}</div><div class="k">Issues</div>{{if .HasMetadata}}<div class="s">metadata {{commaInt .MetaIssues}}</div>{{end}}</div>
+    <div class="stat"><div class="v">{{comma .PRs}}</div><div class="k">Pull requests</div>{{if .HasMetadata}}<div class="s">metadata {{commaInt .MetaPRs}}</div>{{end}}</div>
     {{if .VulnScanned}}<div class="stat"><div class="v">{{commaInt .VulnTotal}}</div><div class="k">Vulnerabilities</div>{{if gt .VulnCritical 0}}<div class="s crit">{{.VulnCritical}} critical</div>{{end}}</div>
     {{else}}<div class="stat"><div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">analysis pending</div></div>
     {{end}}<div class="stat"><div class="v">{{if .LastActivity}}{{.LastActivity}}{{else}}—{{end}}</div><div class="k">Last activity</div></div>

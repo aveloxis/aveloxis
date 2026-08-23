@@ -504,6 +504,10 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, logger *slog.Lo
 		return d, fmt.Errorf("repo stats (metadata counts): %w", serr)
 	} else {
 		d.MetaIssues, d.MetaPRs, d.MetaCommits = st.MetadataIssues, st.MetadataPRs, st.MetadataCommits
+		// v0.28.6 (Copilot round 2): snapshot PRESENCE gates the
+		// sub-lines — a real snapshot's zero renders "metadata 0"
+		// (matching the authenticated page) instead of vanishing.
+		d.HasMetadata = st.MetadataAsOf != nil
 	}
 	// v0.28.2 (item 1e): the REDACTED contributors section. Real
 	// counts + classes + cross-repo names; the generator NEVER emits

@@ -14,8 +14,10 @@ import (
 // distribution, the vuln scanner recorded NO completion time, so the
 // GUI could not distinguish "scanned, clean" from "never scanned"
 // (per-finding last_seen_at cannot: a clean scan touches zero rows).
-// These pins hold the stamp to its contract: exactly the three
-// completed-scan exits, never the error paths.
+// These pins hold the stamp to its contract (revised v0.28.5): only
+// where OSV was actually consulted or the universe was genuinely
+// empty — exactly two stamp sites — never the error paths, never the
+// no-query degenerate exits.
 
 func vulnScanSrc(t *testing.T) string {
 	t.Helper()
@@ -46,8 +48,35 @@ func TestVulnScanStampSites(t *testing.T) {
 	if i < 0 {
 		t.Fatal("the zero-purl exit must log blank_purl_skipped")
 	}
-	if !strings.Contains(src, "if blankPurlSkipped == 0 {") {
+	gate := strings.Index(src, "if blankPurlSkipped == 0 {")
+	if gate < 0 {
 		t.Error("the dep-less exit must stamp ONLY when zero deps were skipped for blank purls (genuinely empty universe)")
+	}
+	// v0.28.6 (Copilot round 2): the STALE-RESOLUTION shares the gate
+	// — with unscannable deps skipped, resolving every current finding
+	// claims "fixed" with no evidence, and blank-purl deps never
+	// rescan, so the false-clean would be permanent. Pin the dep-less
+	// exit's resolve call INSIDE the gated arm (after the gate, before
+	// the stamp call that closes the arm).
+	if gate >= 0 {
+		depless := strings.Index(src, "if len(purls) == 0 {")
+		region := src[depless:]
+		if end := strings.Index(region, "// v0.27.73: the wire gate"); end > 0 {
+			region = region[:end]
+		}
+		resolvePos := strings.Index(region, "MarkStaleVulnerabilitiesResolved(ctx, repoID, nil)")
+		gatePos := strings.Index(region, "if blankPurlSkipped == 0 {")
+		if resolvePos < 0 || gatePos < 0 || resolvePos < gatePos {
+			t.Errorf("the dep-less exit's MarkStaleVulnerabilitiesResolved must sit INSIDE the blankPurlSkipped==0 arm (resolve=%d gate=%d) — resolving findings nothing scanned is the false-clean class", resolvePos, gatePos)
+		}
+	}
+	// Contrast pin: the all-malformed exit's resolution is DELIBERATE
+	// (the zephyr garbage-born-findings heal, v0.27.71-73) and must
+	// stay — malformed purls rewrite on the next analysis, so a real
+	// finding re-detects within one cycle.
+	j2 := strings.Index(src, "all-malformed repo")
+	if j2 < 0 {
+		t.Error("the all-malformed exit must keep its deliberate stale-resolution (the v0.27.73 heal) — see the DELIBERATE comment at the site")
 	}
 	// The all-malformed exit must NOT stamp — pin the region between
 	// its log line and its return.

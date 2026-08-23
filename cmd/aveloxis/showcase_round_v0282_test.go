@@ -119,16 +119,29 @@ func TestShowcaseRepoPageReadsMetadataCounts(t *testing.T) {
 	if !strings.Contains(src, "store.GetRepoStats(ctx, t.repoID)") {
 		t.Error("buildRepoPage must read the metadata counts via GetRepoStats")
 	}
+	// v0.28.6 (Copilot round 2): snapshot PRESENCE (HasMetadata from
+	// MetadataAsOf) gates every sub-line — a real snapshot can report
+	// 0 issues/PRs, and per-count gates dropped those genuine zeros
+	// (conflating "zero" with "no snapshot", diverging from the
+	// authenticated six-tile view).
+	if !strings.Contains(src, "d.HasMetadata = st.MetadataAsOf != nil") {
+		t.Error("buildRepoPage must derive HasMetadata from snapshot presence (MetadataAsOf), not per-count truthiness")
+	}
 	tpl := srctest.Read(t, "internal/showcase/templates.go")
 	for _, needle := range []string{
-		"metadata {{commaInt .MetaCommits}}",
-		"metadata {{commaInt .MetaIssues}}",
-		"metadata {{commaInt .MetaPRs}}",
+		"{{if .HasMetadata}}<div class=\"s\">metadata {{commaInt .MetaCommits}}</div>{{end}}",
+		"{{if .HasMetadata}}<div class=\"s\">metadata {{commaInt .MetaIssues}}</div>{{end}}",
+		"{{if .HasMetadata}}<div class=\"s\">metadata {{commaInt .MetaPRs}}</div>{{end}}",
 		`<div class="k">Vulnerabilities</div>`,
 		"analysis pending",
 	} {
 		if !strings.Contains(tpl, needle) {
 			t.Errorf("repo template missing %q", needle)
+		}
+	}
+	for _, banned := range []string{"{{if .MetaCommits}}", "{{if .MetaIssues}}", "{{if .MetaPRs}}"} {
+		if strings.Contains(tpl, banned) {
+			t.Errorf("per-count sub-line gate %q must be gone — it drops genuine metadata zeros", banned)
 		}
 	}
 }

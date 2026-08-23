@@ -48,6 +48,45 @@ func (s *PostgresStore) ClearRepoGone(ctx context.Context, repoID int64) error {
 	return err
 }
 
+// ResurrectRepo is mark-gone-repos' 2xx recovery as ONE transaction
+// (v0.28.6, Copilot round; SR-18 — the atomicity lives in the owning
+// layer so a wrong caller cannot half-apply): clear the gone stamp AND
+// re-enqueue for collection together. The two-statement sequence had
+// no recoverable ordering — clear-then-failed-enqueue stranded the
+// repo un-stamped and queueless (the rerun's !GoneStamped check never
+// retried), while enqueue-then-failed-clear dropped it out of
+// GetGoneProbeCandidates' queueless candidate set (only prelim's next
+// probe would heal it). Atomic: either both commit or the rerun sees
+// the untouched gone-stamped queueless state and retries cleanly.
+// The queue upsert mirrors EnqueueRepo verbatim (collecting rows are
+// left alone).
+func (s *PostgresStore) ResurrectRepo(ctx context.Context, repoID int64, priority int) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `
+			UPDATE aveloxis_data.repos
+			SET repo_gone_at = NULL
+			WHERE repo_id = $1 AND repo_gone_at IS NOT NULL`, repoID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at)
+			VALUES ($1, $2, 'queued', NOW())
+			ON CONFLICT (repo_id) DO UPDATE SET
+				priority = LEAST(collection_queue.priority, EXCLUDED.priority),
+				status = CASE WHEN collection_queue.status = 'collecting' THEN collection_queue.status ELSE 'queued' END,
+				due_at = CASE WHEN collection_queue.status = 'collecting' THEN collection_queue.due_at ELSE NOW() END,
+				updated_at = NOW()`, repoID, priority); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	})
+}
+
 // GoneProbeCandidate is one row of the mark-gone-repos work list.
 type GoneProbeCandidate struct {
 	RepoID      int64

@@ -469,6 +469,29 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// and a date on a zero-finding repo means "scanned, clean".
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "vuln_scan_last_run", "TIMESTAMPTZ")
 
+	// v0.28.7 (Copilot round 3): upgraded fleets get the column as
+	// NULL for every repo, but the API documents NULL as "never
+	// scanned" — a repo with STORED findings would serve active
+	// findings alongside scanned_at:null until its next scan. A
+	// finding's last_seen_at PROVES an OSV scan touched the repo at
+	// that time (resolved findings included — they were seen once
+	// too), so backfill the stamp from the latest finding evidence.
+	// Historically CLEAN scans left no evidence and honestly stay
+	// NULL until the repo's next scan stamps for real. Ledgered: a
+	// one-shot GROUP BY over the fleet's vuln table.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.28.7 backfill vuln_scan_last_run from finding evidence (a scan provably ran)", `
+		UPDATE aveloxis_data.repos r
+		SET vuln_scan_last_run = sub.last_seen
+		FROM (
+		    SELECT repo_id, MAX(last_seen_at) AS last_seen
+		    FROM aveloxis_data.repo_deps_vulnerabilities
+		    WHERE last_seen_at IS NOT NULL
+		    GROUP BY repo_id
+		) sub
+		WHERE r.repo_id = sub.repo_id
+		  AND r.vuln_scan_last_run IS NULL`)
+
 	// v0.28.1 (A6): the distinct "gone" state — prelim's 404/410
 	// sideline stamps it alongside repo_archived so the GUI can say
 	// "no longer publicly available" instead of misreading the

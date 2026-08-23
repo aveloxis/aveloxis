@@ -2185,11 +2185,13 @@ func parsePyPIClassifierLicense(classifiers []string) string {
 		// LGPL-shown-as-not-OSI report — "Library OR Lesser" misses
 		// a "GNU Lesser…" prefix match).
 		case strings.Contains(name, "Lesser General Public License"):
-			// v0.28.4 (review-lens finding): keep the VERSION the
-			// classifier carries — collapsing "LGPLv3" to bare LGPL
-			// (→ LGPL-2.0-or-later downstream) would claim a 2.0/2.1
-			// choice a v3-only declaration never granted. Or-later
-			// forms first ("LGPLv3+" also Contains "v3").
+			// v0.28.5 (review-lens finding; rationale updated
+			// v0.28.7): keep the VERSION the classifier carries —
+			// collapsing "LGPLv3" to bare LGPL would discard the
+			// v3-only information into the ambiguous version-
+			// unspecified family bucket (v0.28.6) that downstream
+			// consumers cannot narrow back. Or-later forms first
+			// ("LGPLv3+" also Contains "v3").
 			switch {
 			case strings.Contains(name, "v3 or later"), strings.Contains(name, "LGPLv3+"):
 				return "LGPL-3.0-or-later"
@@ -2203,8 +2205,11 @@ func parsePyPIClassifierLicense(classifiers []string) string {
 				return "LGPL-2.0-only"
 			default:
 				// Version-unspecified ("GNU Library or Lesser
-				// General Public License (LGPL)") — the synonym map
-				// canonicalizes bare LGPL to LGPL-2.0-or-later.
+				// General Public License (LGPL)") — stays the bare
+				// "LGPL" family bucket (v0.28.6): no specific SPDX
+				// id (incl. -or-later, which would assert a
+				// choose-later-versions grant) matches what the
+				// source actually says.
 				return "LGPL"
 			}
 		case strings.Contains(name, "GPLv3"):

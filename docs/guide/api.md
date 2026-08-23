@@ -88,6 +88,14 @@ GET /api/v1/repos/stats?ids=1,2,3,42
 
 Returns stats for multiple repos in one call. Response is a map keyed by repo ID.
 
+Since v0.28.7 the batch rows carry the same `gone_at` and
+`metadata_as_of` fields as the single-repo endpoint, and requested ids
+with no collection-queue row (the prelim-dequeued "gone" cohort) fall
+back to live gathered counts instead of serving zeros — the two
+endpoints can no longer disagree about a vanished repository. The
+fallback runs only for that rare queueless subset; every tracked repo
+stays on the cached queue counts.
+
 ### Time Series
 
 ```

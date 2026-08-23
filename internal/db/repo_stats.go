@@ -199,6 +199,59 @@ func (s *PostgresStore) queuelessLiveCounts(ctx context.Context, repoID int64, s
 		repoID).Scan(&st.GatheredIssues, &st.GatheredPRs, &st.GatheredCommits)
 }
 
+// queuelessLiveCountsBatch is queuelessLiveCounts' set-based twin for
+// GetRepoStatsBatch (v0.28.7, Copilot round 3): one query over ONLY
+// the requested ids that had no collection_queue row, filling live
+// gathered counts PLUS gone_at + the latest repo_info metadata —
+// without it, /repos/stats?ids= served the prelim-dequeued gone
+// cohort as all-zeros and disagreed with the single-repo endpoint.
+// Same cost posture as the single-repo fallback: the aggregates run
+// only for the rare queueless subset, never for tracked repos (the
+// v0.27.85 cached read stays the sole hot path).
+func (s *PostgresStore) queuelessLiveCountsBatch(ctx context.Context, repoIDs []int64, result map[int64]*RepoStats) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.repo_id, r.repo_gone_at, ri.data_collection_date,
+		       COALESCE(ri.pr_count, 0), COALESCE(ri.issues_count, 0), COALESCE(ri.commit_count, 0),
+		       (SELECT COUNT(*) FROM aveloxis_data.issues i WHERE i.repo_id = r.repo_id),
+		       (SELECT COUNT(*) FROM aveloxis_data.pull_requests p WHERE p.repo_id = r.repo_id),
+		       (SELECT COUNT(DISTINCT c.cmt_commit_hash) FROM aveloxis_data.commits c WHERE c.repo_id = r.repo_id)
+		FROM aveloxis_data.repos r
+		LEFT JOIN LATERAL (
+		    SELECT pr_count, issues_count, commit_count, data_collection_date
+		    FROM aveloxis_data.repo_info
+		    WHERE repo_id = r.repo_id
+		    ORDER BY data_collection_date DESC
+		    LIMIT 1
+		) ri ON TRUE
+		WHERE r.repo_id = ANY($1)`, repoIDs)
+	if err != nil {
+		return fmt.Errorf("batch queueless fallback: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var goneAt, metaAsOf *time.Time
+		var mPRs, mIssues, mCommits, gIssues, gPRs, gCommits int
+		if err := rows.Scan(&id, &goneAt, &metaAsOf, &mPRs, &mIssues, &mCommits, &gIssues, &gPRs, &gCommits); err != nil {
+			return fmt.Errorf("batch queueless scan: %w", err)
+		}
+		if st, ok := result[id]; ok {
+			st.GoneAt = goneAt
+			st.MetadataAsOf = metaAsOf
+			st.MetadataPRs = mPRs
+			st.MetadataIssues = mIssues
+			st.MetadataCommits = mCommits
+			st.GatheredIssues = gIssues
+			st.GatheredPRs = gPRs
+			st.GatheredCommits = gCommits
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("batch queueless iteration: %w", err)
+	}
+	return nil
+}
+
 // GetRepoStatsBatch returns stats for multiple repos in fewer queries.
 // Used by the web GUI group detail page and the monitor dashboard.
 //
@@ -236,6 +289,13 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	// collection_queue's pre-computed cache. Metadata counts come from
 	// the latest repo_info snapshot. Single query, single scan of the
 	// queue index, single index lookup per repo into repo_info.
+	// v0.28.7 (Copilot round 3): the batch rows carry gone_at +
+	// metadata_as_of like the single-repo endpoint, and ids with NO
+	// queue row fall through to the batch live-count fallback below —
+	// pre-fix, /repos/stats?ids= served the queueless gone cohort as
+	// all-zeros and could not expose the gone state, disagreeing with
+	// the fixed single-repo endpoint.
+	seen := make(map[int64]bool, len(repoIDs))
 	rows, err := s.pool.Query(ctx, `
 		SELECT q.repo_id,
 		       COALESCE(q.last_issues, 0),
@@ -244,10 +304,13 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 		       q.last_collected,
 		       COALESCE(ri.pr_count, 0),
 		       COALESCE(ri.issues_count, 0),
-		       COALESCE(ri.commit_count, 0)
+		       COALESCE(ri.commit_count, 0),
+		       ri.data_collection_date,
+		       r.repo_gone_at
 		FROM aveloxis_ops.collection_queue q
+		JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id
 		LEFT JOIN LATERAL (
-		    SELECT pr_count, issues_count, commit_count
+		    SELECT pr_count, issues_count, commit_count, data_collection_date
 		    FROM aveloxis_data.repo_info
 		    WHERE repo_id = q.repo_id
 		    ORDER BY data_collection_date DESC
@@ -261,11 +324,12 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	for rows.Next() {
 		var id int64
 		var gIssues, gPRs, gCommits, mPRs, mIssues, mCommits int
-		var lastCollected *time.Time
-		if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &lastCollected, &mPRs, &mIssues, &mCommits); err != nil {
+		var lastCollected, metaAsOf, goneAt *time.Time
+		if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &lastCollected, &mPRs, &mIssues, &mCommits, &metaAsOf, &goneAt); err != nil {
 			return nil, fmt.Errorf("batch stats scan: %w", err)
 		}
 		if st, ok := result[id]; ok {
+			seen[id] = true
 			st.GatheredIssues = gIssues
 			st.GatheredPRs = gPRs
 			st.GatheredCommits = gCommits
@@ -273,10 +337,23 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 			st.MetadataPRs = mPRs
 			st.MetadataIssues = mIssues
 			st.MetadataCommits = mCommits
+			st.MetadataAsOf = metaAsOf
+			st.GoneAt = goneAt
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("batch stats iteration: %w", err)
+	}
+	var missing []int64
+	for _, id := range repoIDs {
+		if !seen[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		if err := s.queuelessLiveCountsBatch(ctx, missing, result); err != nil {
+			return nil, err
+		}
 	}
 
 	// Vulnerability counts. Scoped subquery: only scans rows whose

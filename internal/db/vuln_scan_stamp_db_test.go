@@ -4,6 +4,9 @@
 package db
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -53,5 +56,63 @@ func TestVulnEnvelopeCarriesScannedAt(t *testing.T) {
 	}
 	if !strings.Contains(src, "GetVulnScanLastRun(") {
 		t.Error("the handler must read the stamp via GetVulnScanLastRun")
+	}
+}
+
+// v0.28.7 (Copilot round 3) — the migration backfill pin: upgraded
+// fleets have NULL stamps everywhere, but stored findings PROVE a
+// scan ran (their last_seen_at is when OSV was consulted). Without
+// the backfill, a repo serves active findings alongside
+// scanned_at:null ("never scanned") until its next scan.
+func TestVulnScanStampBackfillRegistered(t *testing.T) {
+	src := readSourceFile(t, "migrate.go")
+	for _, needle := range []string{
+		"v0.28.7 backfill vuln_scan_last_run from finding evidence (a scan provably ran)",
+		"MAX(last_seen_at) AS last_seen",
+		"AND r.vuln_scan_last_run IS NULL", // fill-empty-only: never clobber a real stamp
+	} {
+		if !strings.Contains(src, needle) {
+			t.Errorf("migrate.go missing vuln-stamp backfill needle %q", needle)
+		}
+	}
+}
+
+// Behavioral (AVELOXIS_TEST_DB): findings-bearing repo gets the
+// evidence-derived stamp via the operator-replay flow; a clean repo
+// (no findings — no evidence) honestly stays NULL.
+func TestVulnScanStampBackfillEndToEnd(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	withFindings := seedRepoForDeps(t, store, ctx, "_avvstamp", "evidence")
+	clean := seedRepoForDeps(t, store, ctx, "_avvstamp", "clean")
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repo_deps_vulnerabilities
+			(repo_id, vuln_id, package_name, severity, dependency_kind, last_seen_at)
+		VALUES ($1, 'GHSA-avvstamp-1', 'pkg', 'HIGH', 'direct', '2026-06-01T12:00:00Z')`, withFindings)
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repo_deps_vulnerabilities WHERE repo_id = $1`, withFindings)
+	})
+
+	// Replay the ledgered step exactly the way an operator would.
+	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_ops.migration_ledger WHERE step_label LIKE 'v0.28.7 backfill vuln_scan_last_run%'`)
+	if err := RunMigrations(ctx, store, logger); err != nil {
+		t.Fatalf("backfill migrate: %v", err)
+	}
+
+	got, err := store.GetVulnScanLastRun(ctx, withFindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.UTC().Format("2006-01-02") != "2026-06-01" {
+		t.Errorf("findings-bearing repo must get the evidence-derived stamp, got %v", got)
+	}
+	cleanStamp, err := store.GetVulnScanLastRun(ctx, clean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanStamp != nil {
+		t.Errorf("evidence-less repo must honestly stay NULL (unknown), got %v", cleanStamp)
 	}
 }

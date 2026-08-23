@@ -296,3 +296,67 @@ func TestResurrectRepoIsAtomicEndToEnd(t *testing.T) {
 		t.Fatalf("ResurrectRepo must be idempotent: %v", err)
 	}
 }
+
+// v0.28.7 (Copilot round 3) — batch/single parity: GetRepoStatsBatch
+// must expose gone_at + metadata_as_of and fall back to live counts
+// for requested ids with no queue row, or /repos/stats?ids= disagrees
+// with the single-repo endpoint on the entire gone cohort.
+func TestRepoStatsBatchGoneParityPins(t *testing.T) {
+	src := readSourceFile(t, "repo_stats.go")
+	for _, needle := range []string{
+		"func (s *PostgresStore) queuelessLiveCountsBatch(",
+		"queuelessLiveCountsBatch(ctx, missing, result)",
+		"r.repo_gone_at", // both the queue-rooted query and the fallback carry it
+	} {
+		if !strings.Contains(src, needle) {
+			t.Errorf("repo_stats.go must contain %q — the batch endpoint's gone-cohort parity (v0.28.7)", needle)
+		}
+	}
+	// The fallback fires ONLY for ids the queue scan didn't cover.
+	i := strings.Index(src, "if len(missing) > 0 {")
+	j := strings.Index(src, "queuelessLiveCountsBatch(ctx, missing, result)")
+	if i < 0 || j < 0 || j < i {
+		t.Error("the batch live-count fallback must be gated on the queue-missing subset only — the v0.27.85 cached read stays the sole tracked-repo path")
+	}
+}
+
+// Behavioral: a queueless gone-stamped repo served through the BATCH
+// path carries live counts + the gone stamp, alongside a tracked repo
+// whose row stays queue-cached.
+func TestRepoStatsBatchGoneEndToEnd(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+
+	gone := seedRepoForDeps(t, store, ctx, "_avgonebatch", "gone")
+	tracked := seedRepoForDeps(t, store, ctx, "_avgonebatch", "tracked")
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number, issue_title, created_at)
+		VALUES ($1, 990002, 1, '_avgonebatch issue', NOW())`, gone)
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, gone)
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, tracked)
+	})
+	if err := store.MarkRepoGone(ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	// The tracked repo has a queue row with cached counts.
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_ops.collection_queue (repo_id, status, priority, last_issues)
+		VALUES ($1, 'queued', 100, 7)
+		ON CONFLICT (repo_id) DO UPDATE SET last_issues = 7`, tracked)
+
+	stats, err := store.GetRepoStatsBatch(ctx, []int64{gone, tracked})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := stats[gone]
+	if g.GoneAt == nil {
+		t.Error("batch row for the gone repo must carry gone_at")
+	}
+	if g.GatheredIssues != 1 {
+		t.Errorf("batch queueless fallback must serve live counts (want issues=1, got %d)", g.GatheredIssues)
+	}
+	if tr := stats[tracked]; tr.GatheredIssues != 7 || tr.GoneAt != nil {
+		t.Errorf("tracked repo must stay on the queue cache (issues=%d gone=%v)", tr.GatheredIssues, tr.GoneAt)
+	}
+}

@@ -338,14 +338,14 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   {{/* v0.28.2 (PDF items 1c+4): the SAME six-tile top line as the
        authenticated repo page — gathered counts with "metadata N"
        sub-lines, plus the vulnerabilities tile (VulnScanned guard:
-       an unscanned repo says "analysis pending", never a fabricated
+       an unscanned repo says "scan pending", never a fabricated
        clean 0). */}}
   <div class="tiles">
     <div class="stat"><div class="v">{{comma .Commits}}</div><div class="k">Commits</div>{{if .HasMetadata}}<div class="s">metadata {{commaInt .MetaCommits}}</div>{{end}}</div>
     <div class="stat"><div class="v">{{comma .Issues}}</div><div class="k">Issues</div>{{if .HasMetadata}}<div class="s">metadata {{commaInt .MetaIssues}}</div>{{end}}</div>
     <div class="stat"><div class="v">{{comma .PRs}}</div><div class="k">Pull requests</div>{{if .HasMetadata}}<div class="s">metadata {{commaInt .MetaPRs}}</div>{{end}}</div>
     {{if .VulnScanned}}<div class="stat"><div class="v">{{commaInt .VulnTotal}}</div><div class="k">Vulnerabilities</div>{{if gt .VulnCritical 0}}<div class="s crit">{{.VulnCritical}} critical</div>{{end}}</div>
-    {{else}}<div class="stat"><div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">analysis pending</div></div>
+    {{else}}<div class="stat"><div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">scan pending</div></div>
     {{end}}<div class="stat"><div class="v">{{if .LastActivity}}{{.LastActivity}}{{else}}—{{end}}</div><div class="k">Last activity</div></div>
     <div class="stat"><div class="v">{{if .LastCollected}}{{.LastCollected}}{{else}}—{{end}}</div><div class="k">Last collected</div></div>
   </div>
@@ -380,7 +380,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
         No open vulnerabilities recorded in scanned dependencies.
       {{- end -}}
     {{- else -}}
-      Dependency analysis pending — vulnerability data arrives with this repository's next analysis cycle.
+      Vulnerability scan pending — results arrive with this repository's next collection cycle.
     {{- end -}}
   </p>
 

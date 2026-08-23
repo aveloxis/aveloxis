@@ -72,11 +72,12 @@ func TestParsePyPIClassifierLicense(t *testing.T) {
 			want:        "LGPL",
 		},
 		{
-			// v0.28.4 (review-lens finding): version-carrying
-			// classifiers keep their version — a v3-only declaration
-			// must not collapse to bare LGPL (which downstream
-			// canonicalizes to LGPL-2.0-or-later, granting a 2.0/2.1
-			// choice the declaration never made).
+			// v0.28.5 (review-lens finding; rationale updated
+			// v0.28.7): version-carrying classifiers keep their
+			// version — a v3-only declaration must not collapse into
+			// the ambiguous version-unspecified "LGPL" family bucket
+			// (v0.28.6), which loses the v3-only information for
+			// every downstream consumer.
 			name:        "LGPL modern lesser wording keeps v3",
 			classifiers: []string{"License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)"},
 			want:        "LGPL-3.0-only",

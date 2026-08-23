@@ -114,6 +114,7 @@ var ledgeredStepLabels = []string{
 	"v0.27.79 re-null activity-check stamps from the resource-limits incident",
 	"v0.27.103 backfill releases.data_source from repo platform",
 	"v0.27.108 delete poisoned platform_user_id=0 identity rows",
+	"v0.28.7 backfill vuln_scan_last_run from finding evidence (a scan provably ran)",
 }
 
 // TestLedgeredStepRegistry verifies every registered label is present

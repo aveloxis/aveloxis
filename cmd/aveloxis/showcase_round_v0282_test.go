@@ -133,7 +133,10 @@ func TestShowcaseRepoPageReadsMetadataCounts(t *testing.T) {
 		"{{if .HasMetadata}}<div class=\"s\">metadata {{commaInt .MetaIssues}}</div>{{end}}",
 		"{{if .HasMetadata}}<div class=\"s\">metadata {{commaInt .MetaPRs}}</div>{{end}}",
 		`<div class="k">Vulnerabilities</div>`,
-		"analysis pending",
+		// v0.28.7: with the VulnScanned stamp gate the honest pending
+		// state is the SCAN, not analysis (which may have completed
+		// cycles earlier) — same wording as the authenticated tile.
+		"scan pending",
 	} {
 		if !strings.Contains(tpl, needle) {
 			t.Errorf("repo template missing %q", needle)

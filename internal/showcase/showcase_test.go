@@ -135,8 +135,8 @@ func TestRenderRepoHonestEmptyStates(t *testing.T) {
 	if !strings.Contains(out, "not yet scanned") {
 		t.Error("missing scorecard 'not yet scanned' empty state")
 	}
-	if !strings.Contains(out, "analysis pending") {
-		t.Error("missing dependency 'analysis pending' empty state")
+	if !strings.Contains(out, "scan pending") {
+		t.Error("missing vulnerability 'scan pending' empty state (v0.28.7 wording — the SCAN is what's pending under the stamp gate)")
 	}
 
 	// Scanned with zero findings is a genuinely clean state and says so.

@@ -147,9 +147,11 @@ var osiLicenses = map[string]bool{
 	"Unlicense": true, "0BSD": true, "BSL-1.0": true, "PostgreSQL": true,
 	"OFL-1.1": true, "NCSA": true, "MulanPSL-2.0": true, "EUPL-1.2": true,
 	"CC0-1.0": true, "BlueOak-1.0.0": true, "UPL-1.0": true, "PSF-2.0": true,
-	// v0.28.1: -or-later SPDX ids. LGPL-2.0-or-later (the canonical
-	// for version-unspecified LGPL declarations) is approved because
-	// or-later lets the consumer choose the OSI-approved 2.1/3.0.
+	// v0.28.1: -or-later SPDX ids, produced by EXPLICIT "or later"
+	// declarations (e.g. the LGPLv2+ trove classifier — since
+	// v0.28.6 version-UNSPECIFIED LGPL maps to the bare family
+	// bucket below instead). Approved because or-later lets the
+	// consumer choose the OSI-approved 2.1/3.0.
 	"LGPL-2.0-or-later": true, "LGPL-2.1-or-later": true,
 	// v0.28.6: the version-unspecified family bucket (see
 	// license_normalize.go). Marked approved per the operator's 7b

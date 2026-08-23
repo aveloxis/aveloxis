@@ -436,7 +436,7 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, needle := range []string{"not yet scanned", "analysis pending", "No collected activity"} {
+	for _, needle := range []string{"not yet scanned", "scan pending", "No collected activity"} {
 		if !strings.Contains(string(alphaPage), needle) {
 			t.Errorf("unscanned repo page missing honest empty state %q", needle)
 		}

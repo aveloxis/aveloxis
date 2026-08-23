@@ -987,7 +987,16 @@ Since v0.28.1 the command loops internally in 25,000-row passes and
 stamps `healed_at` at the end of EACH pass, so an interrupted run
 (Ctrl-C, reboot, kill) keeps everything already healed — at most one
 pass of progress attribution is lost. Hand-chunking with `--limit`
-is no longer load-bearing; `--limit` is now just a total cap.
+is no longer load-bearing; `--limit` caps the rows CONSIDERED this
+run (claimed rows + parent refetches — a failure-heavy canary stays
+a canary).
+
+Since v0.28.8 passes walk the worklist by a strictly increasing
+msg_id cursor: a fully-failing batch no longer stops the run (or
+starves the rows behind it) — the run continues past it, failed rows
+stay pending, and a re-run retries them from the bottom. The command
+exits **nonzero** whenever any claimed row failed to heal, so
+cron/scripts notice incomplete runs.
 
 ```bash
 aveloxis heal-messages --dry-run       # plan: pending rows, distinct parents

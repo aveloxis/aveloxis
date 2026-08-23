@@ -53,6 +53,23 @@ func TestHealMessagesLoopsInBoundedPasses(t *testing.T) {
 	if !strings.Contains(storeSrc, "AND w.msg_id > $1") {
 		t.Error("GetMessageHealBatch must select above the cursor (w.msg_id > $1)")
 	}
+	// v0.28.8 (Copilot round 5): --limit bounds rows CONSIDERED, not
+	// rows healed — decrementing by healed-only let a failure-heavy
+	// canary run traverse the whole worklist (refetching parents all
+	// the way), exactly the cohort a canary probes.
+	if !strings.Contains(loop, "remaining -= res.Batch") {
+		t.Error("the limit must decrement by res.Batch (rows considered)")
+	}
+	if strings.Contains(loop, "remaining -= res.Healed") {
+		t.Error("decrementing the limit by healed-only must be gone — it breaks the canary cap under failures")
+	}
+	// And the CLI exits nonzero on ANY claimed-but-unstamped row —
+	// Batch > Healed covers the failure paths that never touch
+	// ParentErrors (staging flush, ProcessRepo, stale-link cleanup).
+	cmdSrc := srctest.Read(t, "cmd/aveloxis/heal_messages.go")
+	if !strings.Contains(cmdSrc, "if res.Batch > res.Healed {") {
+		t.Error("heal-messages must exit nonzero when any claimed row failed to heal (Batch > Healed)")
+	}
 	// The STAMP lives inside the per-pass function — that's the whole
 	// point: progress persists per pass, not per run.
 	passBody := src[j:]

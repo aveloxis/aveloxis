@@ -343,7 +343,7 @@ func (s *PostgresStore) GetCollectionRepos(ctx context.Context, collectionID int
 		LEFT JOIN LATERAL (
 			SELECT last_updated FROM aveloxis_data.repo_info
 			WHERE repo_id = r.repo_id
-			ORDER BY data_collection_date DESC LIMIT 1
+			ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC LIMIT 1
 		) ri ON TRUE
 		LEFT JOIN aveloxis_ops.user_repo_stars ucs
 			ON ucs.repo_id = r.repo_id AND ucs.user_id = $2

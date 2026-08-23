@@ -149,7 +149,7 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 		       COALESCE(status, ''), data_collection_date
 		FROM aveloxis_data.repo_info
 		WHERE repo_id = $1
-		ORDER BY data_collection_date DESC
+		ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC
 		LIMIT 1`, repoID).Scan(&st.MetadataPRs, &st.MetadataIssues, &st.MetadataCommits, &status, &st.MetadataAsOf)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("metadata counts: %w", err)
@@ -220,7 +220,7 @@ func (s *PostgresStore) queuelessLiveCountsBatch(ctx context.Context, repoIDs []
 		    SELECT pr_count, issues_count, commit_count, data_collection_date
 		    FROM aveloxis_data.repo_info
 		    WHERE repo_id = r.repo_id
-		    ORDER BY data_collection_date DESC
+		    ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC
 		    LIMIT 1
 		) ri ON TRUE
 		WHERE r.repo_id = ANY($1)`, repoIDs)
@@ -313,7 +313,7 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 		    SELECT pr_count, issues_count, commit_count, data_collection_date
 		    FROM aveloxis_data.repo_info
 		    WHERE repo_id = q.repo_id
-		    ORDER BY data_collection_date DESC
+		    ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC
 		    LIMIT 1
 		) ri ON TRUE
 		WHERE q.repo_id = ANY($1)`, repoIDs)

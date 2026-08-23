@@ -644,7 +644,7 @@ func (s *PostgresStore) LatestCount(ctx context.Context, repoID int64, column st
 		FROM aveloxis_data.repo_info ri
 		JOIN aveloxis_data.repos r ON ri.repo_id = r.repo_id
 		WHERE ri.repo_id = $1
-		ORDER BY ri.data_collection_date DESC
+		ORDER BY ri.data_collection_date DESC NULLS LAST, ri.repo_info_id DESC
 		LIMIT 1`, column), repoID).Scan(&count, &name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No repo_info snapshot yet (repo not collected) — zero, not 500.

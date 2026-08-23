@@ -67,7 +67,12 @@ type healParentKey struct {
 // (~4s batch SELECT on the production worklist post-v0.27.67 index).
 const healPassSize = 25000
 
-// HealMessages heals up to limit worklist rows (0 = all pending),
+// HealMessages CONSIDERS up to limit worklist rows (0 = all pending)
+// — the cap bounds the WORK (rows claimed + parents refetched), not
+// just successes: a failure-heavy canary run must stay a canary
+// (v0.28.8, Copilot round 5 — decrementing by healed-only let a
+// bounded run traverse the whole worklist when failures dominated,
+// exactly the cohort a canary probes). It loops
 // looping in healPassSize internal passes so progress persists
 // incrementally (SR-3: each pass stamps only rows proven processed —
 // and stamps them as soon as they ARE proven, not at run end).
@@ -115,7 +120,7 @@ func HealMessages(ctx context.Context, store *db.PostgresStore, client platform.
 		}
 		cursor = res.MaxMsgID // strictly increases: the loop terminates
 		if remaining > 0 {
-			remaining -= res.Healed
+			remaining -= res.Batch // rows CONSIDERED, not just healed
 			if remaining <= 0 {
 				return total, nil
 			}

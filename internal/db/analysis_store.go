@@ -73,7 +73,7 @@ func (s *PostgresStore) GetRepoForSBOM(ctx context.Context, repoID int64) (*Repo
 		FROM aveloxis_data.repos r
 		LEFT JOIN (
 			SELECT repo_id, license FROM aveloxis_data.repo_info
-			WHERE repo_id = $1 ORDER BY data_collection_date DESC LIMIT 1
+			WHERE repo_id = $1 ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC LIMIT 1
 		) ri ON ri.repo_id = r.repo_id
 		WHERE r.repo_id = $1`, repoID).Scan(&r.Name, &r.Owner, &r.GitURL, &r.License)
 	return r, err

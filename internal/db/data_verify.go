@@ -233,7 +233,7 @@ func (s *PostgresStore) postSchemaProbes(ctx context.Context, opts VerifyOptions
 			SELECT DISTINCT ON (ri.repo_id) ri.repo_id, ri.issues_count, ri.pr_count
 			FROM aveloxis_data.repo_info ri
 			JOIN sample s ON s.repo_id = ri.repo_id
-			ORDER BY ri.repo_id, ri.data_collection_date DESC
+			ORDER BY ri.repo_id, ri.data_collection_date DESC NULLS LAST, ri.repo_info_id DESC
 		)
 		SELECT COUNT(*) FILTER (WHERE
 			(m.issues_count > 0 AND abs(s.last_issues - m.issues_count)::float / m.issues_count > $2 / 100.0)

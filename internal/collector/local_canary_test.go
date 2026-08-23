@@ -134,9 +134,7 @@ func TestLocalDevBuildDepsCanary(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	testMigrate(ctx, t, store)
 
 	bareDir := filepath.Join(os.TempDir(), "aveloxis-canary19-bare")
 	if err := os.MkdirAll(bareDir, 0o755); err != nil {

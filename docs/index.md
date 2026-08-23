@@ -73,6 +73,7 @@ contributing/README
 contributing/development-setup
 contributing/code-conventions
 contributing/testing
+contributing/review-lenses
 contributing/schema-migrations
 contributing/adding-a-platform
 contributing/adding-a-rest-endpoint

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -24,6 +25,9 @@ type Client struct {
 	http   *platform.HTTPClient
 	logger *slog.Logger
 	host   string // e.g. "gitlab.com"
+	// userRefCache: username → glUserRefCacheEntry (v0.27.122) — see
+	// lookupGLUserRef. Zero value is ready to use.
+	userRefCache sync.Map
 }
 
 // New creates a GitLab client. baseURL should be like "https://gitlab.com/api/v4".
@@ -412,11 +416,32 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 		Name              string `json:"name"`
 		PathWithNamespace string `json:"path_with_namespace"`
 		Visibility        string `json:"visibility"` // "public", "internal", "private"
+		// v0.27.121 (Copilot round 13, suppressed — verified LIVE
+		// against gitlab.com): the project payload's top-level `owner`
+		// is effectively NEVER present for fleet collection (absent
+		// even on user-namespace projects unless the caller IS the
+		// owner/admin), so the v0.27.109 owner-object-only branch was
+		// dead code and GitLab pr_cntrb_id parity was decorative. The
+		// working route: namespace.kind == "user" guarantees the
+		// namespace PATH is a username; one /users?username= lookup
+		// yields the REAL numeric GitLab user ID → the userID>0
+		// deterministic-PlatformUUID resolver path. GROUP namespaces
+		// deliberately stay UNRESOLVED (a group is an org, not a
+		// person; a login-only ref would cross-match the GLOBAL
+		// cntrb_login table — the v0.27.109 rule stands). Honest NULL
+		// beats fabricated attribution (v0.26.5). The owner-object
+		// branch stays as a free fast path for the rare
+		// authenticated-as-owner case.
+		Owner     *glUser `json:"owner"`
+		Namespace struct {
+			Path string `json:"path"`
+			Kind string `json:"kind"` // "user" or "group"
+		} `json:"namespace"`
 	}
 	if err := c.http.GetJSON(ctx, path, &proj); err != nil {
 		return nil
 	}
-	return &model.PullRequestRepo{
+	out := &model.PullRequestRepo{
 		HeadOrBase:   headOrBase,
 		SrcRepoID:    proj.ID,
 		RepoName:     proj.Name,
@@ -424,6 +449,93 @@ func (c *Client) fetchGLProjectAsRepo(ctx context.Context, projectID int64, head
 		Private:      proj.Visibility == "private",
 		Origin:       model.DataOrigin{DataSource: "GitLab API"},
 	}
+	switch {
+	case proj.Owner != nil:
+		// glUserToRef carries the numeric GitLab user ID — the userID>0
+		// resolver path with a deterministic PlatformUUID.
+		out.OwnerRef = glUserToRef(*proj.Owner)
+	case proj.Namespace.Kind == "user" && proj.Namespace.Path != "":
+		if ref, ok := c.lookupGLUserRef(ctx, proj.Namespace.Path); ok {
+			out.OwnerRef = ref
+		}
+	}
+	return out
+}
+
+// glUserRefCacheEntry caches one username resolution, including
+// negative results (ok=false) — an unknown username stays unknown for
+// the client's lifetime, and re-asking per MR would waste the same
+// call it caches.
+type glUserRefCacheEntry struct {
+	ref model.UserRef
+	ok  bool
+}
+
+// lookupGLUserRef resolves a username to a UserRef carrying the REAL
+// numeric GitLab user ID via /users?username= (the EnrichContributor
+// endpoint). Returns ok=false on lookup failure or no match — the
+// caller leaves the ref honestly empty rather than minting a
+// login-only ref (never fabricate identity).
+//
+// v0.27.122 (Copilot round 14, suppressed): results are CACHED at
+// client scope, negatives included — FetchPRRepos runs per merge
+// request and every MR shares the same target-project owner, so an
+// uncached lookup issued dozens-to-hundreds of identical /users calls
+// per listing page. The key space is project OWNERS (small); the
+// sync.Map is safe under the concurrent worker pool. Transient
+// lookup ERRORS are deliberately NOT cached (only definitive
+// no-match/empty results are) so an API hiccup doesn't pin a user as
+// unknown for the client's lifetime.
+func (c *Client) lookupGLUserRef(ctx context.Context, username string) (model.UserRef, bool) {
+	// Round-22 (v0.27.141): cold misses COALESCE. The old
+	// load-fetch-store sequence let every concurrent first
+	// encounter of a username issue its own /users request — the
+	// exact burst the cache exists to prevent. LoadOrStore parks
+	// all concurrent callers on ONE flight's sync.Once; the
+	// error rule is retained by DELETING the entry on a failed
+	// flight (this flight's waiters share the miss, the NEXT
+	// caller retries fresh — errors are still never cached).
+	fl, _ := c.userRefCache.LoadOrStore(username, &glUserRefFlight{})
+	flight := fl.(*glUserRefFlight)
+	// v0.27.150 (round 29): test seam at the flight-join boundary —
+	// the coalescing proof needs every concurrent caller PAST
+	// LoadOrStore (joined to the one flight) before the flight's
+	// fetch completes; a pre-call signal could not distinguish
+	// coalescing from latecomers riding the warm cache. nil in
+	// production.
+	if glUserRefFlightJoinedHook != nil {
+		glUserRefFlightJoinedHook(username)
+	}
+	flight.once.Do(func() {
+		path := fmt.Sprintf("/users?username=%s", url.QueryEscape(username))
+		var users []glUser
+		if err := c.http.GetJSON(ctx, path, &users); err != nil {
+			flight.failed = true
+			c.userRefCache.Delete(username)
+			return
+		}
+		if len(users) > 0 {
+			flight.entry = glUserRefCacheEntry{ref: glUserToRef(users[0]), ok: true}
+		}
+	})
+	if flight.failed {
+		return model.UserRef{}, false // transient — not cached
+	}
+	return flight.entry.ref, flight.entry.ok
+}
+
+// glUserRefFlightJoinedHook fires after a caller joins a flight
+// (post-LoadOrStore, pre-once.Do). Test-only seam — see the round-29
+// note in lookupGLUserRef; always nil in production.
+var glUserRefFlightJoinedHook func(username string)
+
+// glUserRefFlight is one coalesced lookup: the first goroutine to
+// LoadOrStore it runs the fetch inside once; everyone else waits on
+// the same once and reads the shared result.
+type glUserRefFlight struct {
+	once   sync.Once
+	entry  glUserRefCacheEntry
+	failed bool
 }
 
 // --- EventCollector ---
@@ -1053,6 +1165,9 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 
 	return &model.RepoInfo{
 		FullName:          raw.PathWithNamespace,
+		PlatformRepoID:    model.ForgeIDString(raw.ID), // v0.27.102 — rename-proof numeric identity
+		CreatedAt:         raw.CreatedAt,               // v0.27.104
+		Keywords:          strings.Join(raw.Topics, ","),
 		LastUpdated:       raw.LastActivityAt,
 		IssuesEnabled:     raw.IssuesEnabled,
 		PRsEnabled:        raw.MergeRequestsEnabled,

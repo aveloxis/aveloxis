@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.20.18 removed the dead `batch_size` config field. The field
@@ -68,10 +70,7 @@ func TestDeadBatchSizeFieldNotReintroduced(t *testing.T) {
 // re-adding `"batch_size": N` to an example file fails CI even
 // before config.go gets a matching field.
 func TestNoExampleConfigsCarryDeadBatchSize(t *testing.T) {
-	repoRoot, err := findCfgRepoRoot()
-	if err != nil {
-		t.Fatalf("finding repo root: %v", err)
-	}
+	repoRoot := srctest.Root(t)
 	candidates := []string{
 		"aveloxis.example.json",
 		"aveloxis.docker.example.json",
@@ -89,26 +88,5 @@ func TestNoExampleConfigsCarryDeadBatchSize(t *testing.T) {
 		if strings.Contains(string(body), `"batch_size"`) {
 			t.Errorf(`%s still contains the removed "batch_size" key — v0.20.18 dropped the field because no code reads it. Remove the key from this example.`, name)
 		}
-	}
-}
-
-// findCfgRepoRoot walks up looking for go.mod. Independent of
-// the helper in scripts/spdx_coverage_test.go (different package)
-// so this test stays self-contained.
-func findCfgRepoRoot() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	dir := cwd
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", os.ErrNotExist
-		}
-		dir = parent
 	}
 }

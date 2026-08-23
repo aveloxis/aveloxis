@@ -112,9 +112,15 @@ func (s *PostgresStore) LinkOrCreateIssueFromEmail(ctx context.Context, repoID i
 	}
 
 	// CREATE: synthetic issue, idempotent on (repo_id, platform_issue_id).
+	// v0.27.114: wrapped in withRetry (40P01) — the processor's
+	// drop-for-progress policy turns any unretried deadlock into a
+	// DROPPED message (the v0.25.36 pre-decision; the v0.27.112 wave
+	// covered the email_message writers, this projection writer was the
+	// missed half — the counter trended again 2026-08-20).
 	pid := syntheticIssueID(externalKey)
 	num := issueNumberFromKey(externalKey)
-	cerr := s.pool.QueryRow(ctx, `
+	cerr := s.withRetry(ctx, func(ctx context.Context) error {
+		return s.pool.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.issues
 			(repo_id, platform_issue_id, issue_number, issue_title, issue_body, issue_state,
 			 external_key, reporter_id, created_at,
@@ -127,8 +133,9 @@ func (s *PostgresStore) LinkOrCreateIssueFromEmail(ctx context.Context, repoID i
 			reporter_id  = COALESCE(aveloxis_data.issues.reporter_id, EXCLUDED.reporter_id),
 			data_collection_date = NOW()
 		RETURNING issue_id`,
-		repoID, pid, num, SanitizeText(title), SanitizeText(body),
-		externalKey, reporterID, NullTime(createdAt), dataSource, ToolVersion).Scan(&issueID)
+			repoID, pid, num, SanitizeText(title), SanitizeText(body),
+			externalKey, reporterID, NullTime(createdAt), dataSource, ToolVersion).Scan(&issueID)
+	})
 	if cerr != nil {
 		return 0, false, fmt.Errorf("link-or-create issue: create %q: %w", externalKey, cerr)
 	}
@@ -218,17 +225,28 @@ func (s *PostgresStore) FindIssueForThread(ctx context.Context, threadRoot strin
 // projected issue (issue_message_ref) and recomputes the issue's comment_count
 // so per-repo issue analytics see the thread. Idempotent on (issue_id, msg_id).
 func (s *PostgresStore) BridgeEmailToIssue(ctx context.Context, issueID, repoID, msgID int64) error {
-	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_data.issue_message_ref (issue_id, repo_id, msg_id, data_source)
-		VALUES ($1, $2, $3,
-		        COALESCE((SELECT m.data_source FROM aveloxis_data.messages m WHERE m.msg_id = $3), ''))
-		ON CONFLICT (issue_id, msg_id) DO NOTHING`, issueID, repoID, msgID); err != nil {
+	// v0.27.114: both statements ride withRetry (40P01) — the
+	// processor's drop-for-progress policy turns an unretried deadlock
+	// into a DROPPED message (observed live 2026-08-20: "bridge email
+	// to issue: deadlock detected" → dropped=1). Both statements are
+	// idempotent (ON CONFLICT DO NOTHING; recount is a pure recompute).
+	if err := s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+			INSERT INTO aveloxis_data.issue_message_ref (issue_id, repo_id, msg_id, data_source)
+			VALUES ($1, $2, $3,
+			        COALESCE((SELECT m.data_source FROM aveloxis_data.messages m WHERE m.msg_id = $3), ''))
+			ON CONFLICT (issue_id, msg_id) DO NOTHING`, issueID, repoID, msgID)
+		return err
+	}); err != nil {
 		return fmt.Errorf("bridge email to issue: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx, `
-		UPDATE aveloxis_data.issues
-		SET comment_count = (SELECT count(*) FROM aveloxis_data.issue_message_ref WHERE issue_id = $1)
-		WHERE issue_id = $1`, issueID); err != nil {
+	if err := s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE aveloxis_data.issues
+			SET comment_count = (SELECT count(*) FROM aveloxis_data.issue_message_ref WHERE issue_id = $1)
+			WHERE issue_id = $1`, issueID)
+		return err
+	}); err != nil {
 		return fmt.Errorf("bridge email to issue: recount: %w", err)
 	}
 	return nil

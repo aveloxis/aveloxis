@@ -5,15 +5,20 @@ package db
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
-// docPath is the canonical location of the contributor resolution
-// architecture document. The Phase A refactor commits to keeping this
+// docPath is the canonical REPO-ROOT-RELATIVE location of the
+// contributor resolution architecture document (v0.27.118: reads go
+// through srctest.Read — the "../../docs/..." relative-path fragility
+// class is retired). The Phase A refactor commits to keeping this
 // document in sync with the code; these tests fail loudly if the doc
 // drifts out of date.
-const docPath = "../../docs/architecture/contributor-resolution.md"
+const docPath = "docs/architecture/contributor-resolution.md"
 
 // TestContributorResolutionDocExists pins that the architecture doc
 // for contributor resolution exists at the expected location. Phase A
@@ -21,7 +26,7 @@ const docPath = "../../docs/architecture/contributor-resolution.md"
 // commits to publishing the contract publicly so operators can validate
 // data quality against a written spec.
 func TestContributorResolutionDocExists(t *testing.T) {
-	if _, err := os.Stat(docPath); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(srctest.Root(t), docPath)); os.IsNotExist(err) {
 		t.Fatalf("docs/architecture/contributor-resolution.md must exist (Phase A deliverable). " +
 			"This document is the public contract for contributor resolution and is " +
 			"referenced from docs/index.md's architecture toctree.")
@@ -35,11 +40,7 @@ func TestContributorResolutionDocExists(t *testing.T) {
 // without updating the doc, this test fails — the doc and code stay
 // in lockstep.
 func TestContributorResolutionDocReferencesCanonicalFunctions(t *testing.T) {
-	data, err := os.ReadFile(docPath)
-	if err != nil {
-		t.Fatalf("cannot read %s: %v", docPath, err)
-	}
-	doc := string(data)
+	doc := srctest.Read(t, docPath)
 
 	// Required function references. If any of these is renamed in code
 	// but not in the doc (or vice versa), the test fails.
@@ -61,11 +62,7 @@ func TestContributorResolutionDocReferencesCanonicalFunctions(t *testing.T) {
 // Without this, a future edit could silently drop a rule from the
 // public contract while leaving the source of truth in summary/.
 func TestContributorResolutionDocCoversAllRules(t *testing.T) {
-	data, err := os.ReadFile(docPath)
-	if err != nil {
-		t.Fatalf("cannot read %s: %v", docPath, err)
-	}
-	doc := string(data)
+	doc := srctest.Read(t, docPath)
 
 	// The doc should reference each rule by ID. The exact phrasing of
 	// the heading isn't pinned (operators may want to change the title
@@ -90,11 +87,7 @@ func TestContributorResolutionDocCoversAllRules(t *testing.T) {
 // operator-facing sections required by Phase A's definition of done.
 // Phrases chosen to be descriptive without locking exact heading text.
 func TestContributorResolutionDocHasOperatorSections(t *testing.T) {
-	data, err := os.ReadFile(docPath)
-	if err != nil {
-		t.Fatalf("cannot read %s: %v", docPath, err)
-	}
-	doc := strings.ToLower(string(data))
+	doc := strings.ToLower(srctest.Read(t, docPath))
 
 	sections := map[string]string{
 		"FAQ / data-quality":      "data quality",

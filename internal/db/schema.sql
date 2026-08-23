@@ -153,8 +153,27 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
 -- migration timestamp).
 ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ;
 
-CREATE INDEX IF NOT EXISTS idx_repos_added_at
-    ON aveloxis_data.repos (added_at DESC);
+-- v0.27.147 (round 26): idx_repos_added_at is MIGRATION-ONLY — built by
+-- the v0.27.60 execCreateIndexConcurrently step, never declared here.
+-- A plain declaration executes in the base schema DDL, which on an
+-- upgraded fleet (a) takes a blocking lock on repos and (b) builds
+-- BEFORE the v0.27.60 legacy-row backfill, after which the CONCURRENTLY
+-- step no-ops — the SR-2 shape the idx_repos_platform_repo_id note
+-- below describes.
+
+-- v0.27.105: whitespace-walk marker — the default-branch head at the
+-- last completed whitespace walk (see internal/collector/whitespace.go).
+-- '' / NULL = never walked; the facade's per-cycle phase is incremental
+-- past this hash, and `aveloxis rewalk-whitespace` is the bulk bootstrap.
+ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS whitespace_head_hash TEXT DEFAULT '';
+
+-- v0.27.102/v0.27.116: the forge-numeric-ID lookup index
+-- (idx_repos_platform_repo_id) is MIGRATION-ONLY — built by
+-- ensureForgeIDIndex via CONCURRENTLY for fresh installs AND upgrades.
+-- Deliberately NOT declared here (the v0.27.98 rule): a plain
+-- declaration executes in the base schema DDL BEFORE the CONCURRENTLY
+-- helper, so a live fleet's introducing upgrade would block-build it
+-- and the helper would no-op.
 
 -- ============================================================
 -- Repo groups list serve (mailing lists)
@@ -423,57 +442,6 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_login_history (
     UNIQUE (cntrb_id, platform_id, login)
 );
 
--- ============================================================
--- Contributors old (legacy backup)
--- ============================================================
-CREATE TABLE IF NOT EXISTS aveloxis_data.contributors_old (
-    cntrb_id       UUID PRIMARY KEY,
-    cntrb_login    TEXT DEFAULT '',
-    cntrb_email    TEXT DEFAULT '',
-    cntrb_full_name TEXT DEFAULT '',
-    cntrb_company  TEXT DEFAULT '',
-    cntrb_created_at TIMESTAMPTZ,
-    cntrb_type     TEXT DEFAULT '',
-    cntrb_fake     SMALLINT DEFAULT 0,
-    cntrb_deleted  SMALLINT DEFAULT 0,
-    cntrb_long     NUMERIC(11,8),
-    cntrb_lat      NUMERIC(10,8),
-    cntrb_country_code CHAR(3),
-    cntrb_state    TEXT DEFAULT '',
-    cntrb_city     TEXT DEFAULT '',
-    cntrb_location TEXT DEFAULT '',
-    cntrb_canonical TEXT DEFAULT '',
-    cntrb_last_used TIMESTAMPTZ,
-    gh_user_id     BIGINT,
-    gh_login       TEXT DEFAULT '',
-    gh_url         TEXT DEFAULT '',
-    gh_html_url    TEXT DEFAULT '',
-    gh_node_id     TEXT DEFAULT '',
-    gh_avatar_url  TEXT DEFAULT '',
-    gh_gravatar_id TEXT DEFAULT '',
-    gh_followers_url TEXT DEFAULT '',
-    gh_following_url TEXT DEFAULT '',
-    gh_gists_url   TEXT DEFAULT '',
-    gh_starred_url TEXT DEFAULT '',
-    gh_subscriptions_url TEXT DEFAULT '',
-    gh_organizations_url TEXT DEFAULT '',
-    gh_repos_url   TEXT DEFAULT '',
-    gh_events_url  TEXT DEFAULT '',
-    gh_received_events_url TEXT DEFAULT '',
-    gh_type        TEXT DEFAULT '',
-    gh_site_admin  TEXT DEFAULT '',
-    gh_state       TEXT DEFAULT '',
-    gl_web_url     TEXT DEFAULT '',
-    gl_avatar_url  TEXT DEFAULT '',
-    gl_state       TEXT DEFAULT '',
-    gl_username    TEXT DEFAULT '',
-    gl_full_name   TEXT DEFAULT '',
-    gl_id          BIGINT,
-    tool_source    TEXT DEFAULT 'aveloxis',
-    tool_version   TEXT DEFAULT '',
-    data_source    TEXT DEFAULT '',
-    data_collection_date TIMESTAMPTZ DEFAULT NOW()
-);
 
 -- ============================================================
 -- Contributor aliases
@@ -1559,6 +1527,32 @@ CREATE INDEX IF NOT EXISTS idx_lockfile_packages_pkg
 CREATE INDEX IF NOT EXISTS idx_repo_lockfile_packages_repo_id
     ON aveloxis_data.repo_lockfile_packages (repo_id);
 
+-- v0.27.133 (C2): parent→child dependency edges from lockfiles — the
+-- substrate for "which DIRECT dependency pulls in this vulnerable
+-- transitive". Child edges are NAME-level (lockfiles express
+-- parent → name@range; exact child resolution joins the package set at
+-- read time — format-uniform and honest). Snapshot-replaced with the
+-- package rows in one transaction. Born empty on every fleet, so the
+-- plain index is safe here (SR-2 covers indexes on EXISTING data).
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfile_edges (
+    lockfile_edge_id BIGSERIAL PRIMARY KEY,
+    repo_id BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    ecosystem TEXT NOT NULL,
+    lockfile_path TEXT NOT NULL,
+    parent_name TEXT NOT NULL,
+    parent_version TEXT NOT NULL DEFAULT '',
+    child_name TEXT NOT NULL,
+    child_constraint TEXT NOT NULL DEFAULT '',
+    tool_source TEXT DEFAULT 'aveloxis',
+    tool_version TEXT DEFAULT '',
+    data_source TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, lockfile_path, parent_name, parent_version, child_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_lockfile_edges_repo_id
+    ON aveloxis_data.repo_lockfile_edges (repo_id);
+
 -- ============================================================
 -- Libraries
 -- ============================================================
@@ -1894,6 +1888,16 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor (
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor_history (
     LIKE aveloxis_data.repo_labor INCLUDING ALL
 );
+-- v0.27.115/v0.27.123: the ONE deliberate index on the history table
+-- (the plain repo_id copy — dedup-repos' hygiene delete, 188 measured
+-- scans on production) is MIGRATION-ONLY per the v0.27.98 rule: base
+-- DDL runs before any migration step, so declaring it here would
+-- block-build it with a plain CREATE INDEX on upgraded fleets that
+-- lack the accidental LIKE copy. ensureRepoLaborHistoryIndex in
+-- migrate.go owns it (CONCURRENTLY; instant on fresh empty tables).
+-- The parent's composite (repo_id, rl_analysis_date DESC) copy is
+-- deliberately absent — 0 scans ever, 1.2 GB of pure rotation write
+-- amplification; the migration drops it and the name is banned.
 
 -- ============================================================
 -- Repo meta (key-value metadata)

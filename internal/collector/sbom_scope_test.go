@@ -32,7 +32,7 @@ func scopeFixtureDeps() []db.SBOMDep {
 
 func TestSPDXEmitsTypedScopeRelationships(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "app", Owner: "org", GitURL: "https://github.com/org/app"}
-	data, err := generateSPDX(repo, scopeFixtureDeps(), nil)
+	data, err := generateSPDX(repo, scopeFixtureDeps(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestSPDXEmitsTypedScopeRelationships(t *testing.T) {
 
 func TestCycloneDXComponentScopeMapping(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "app", Owner: "org", GitURL: "https://github.com/org/app"}
-	data, err := generateCycloneDX(repo, scopeFixtureDeps(), nil)
+	data, err := generateCycloneDX(repo, scopeFixtureDeps(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestVulnScanTargetsCarryScope(t *testing.T) {
 // TestMergeDirectTargetRuntimeWinsCollision pins the local-canary
 // catch (2026-07-21, pipenv/setuptools): when the same purl is
 // reachable from a non-runtime AND a runtime declaration, the target
-// scope must fold to runtime (”) regardless of iteration order — a
+// scope must fold to runtime (the empty string) regardless of iteration order — a
 // non-runtime first-writer was re-stamping runtime findings off the
 // headline and out of the digest.
 func TestMergeDirectTargetRuntimeWinsCollision(t *testing.T) {

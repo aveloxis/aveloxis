@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -87,14 +88,18 @@ func ParsePodlings(data []byte) ([]Project, error) {
 	}
 	projects := make([]Project, 0, len(raw))
 	for slug, entry := range raw {
-		// Apache INFRA mirrors every podling to github.com/apache/<slug>.
-		repo := "https://github.com/apache/" + slug
+		// v0.27.132: Apache INFRA names podling repos WITH the incubator-
+		// prefix (github.com/apache/incubator-<slug>). The old derived
+		// apache/<slug> URL seeded phantom rows that later 404'd — the
+		// root of the four empty production PMC groups.
+		repo := "https://github.com/apache/incubator-" + slug
 		projects = append(projects, Project{
 			Foundation: "apache",
 			Status:     "incubating",
 			Name:       entry.Name,
 			Homepage:   entry.Homepage,
 			RepoURLs:   []string{repo},
+			Slug:       slug,
 		})
 	}
 	return projects, nil
@@ -131,6 +136,144 @@ type PMC struct {
 	Incubating  bool
 }
 
+// RepoURLVariants returns the candidate catalog URLs for the PMC's
+// repo, primary first. v0.27.132: Apache's incubator- prefix drifts
+// out of step with podlings.json in BOTH directions — a podling's repo
+// carries the prefix while it incubates, and a graduated project may
+// shed (or keep) it before the metadata catches up. When RepoURL is
+// the slug-derived github.com/apache form, the incubator↔plain TWIN is
+// appended so lookups survive either state; a custom URL (from a
+// project's bug-database entry) stays alone — no twin can be derived
+// for it.
+func (p PMC) RepoURLVariants() []string {
+	if p.RepoURL == "" {
+		return nil
+	}
+	return RepoURLVariants(p.RepoURL, p.Slug)
+}
+
+// RepoURLVariants returns the URL plus its incubator↔plain twin when
+// the URL is the slug-derived form (round-24, extracted from the PMC
+// method so the podling repo-URL RESOLUTION shares it).
+//
+// The Apache domain rule (operator, 2026-08-22): repos carry the
+// `incubator-` prefix WHILE a project is in the incubator, lose it at
+// graduation, and the prefix never returns; some projects never
+// leave. podlings.json lags renames in both directions, so which form
+// exists is by design a moving target — the FORGE, not the naming
+// convention, is the authority (resolvePodlingRepoURL probes it).
+func RepoURLVariants(repoURL, slug string) []string {
+	out := []string{repoURL}
+	plain := "https://github.com/apache/" + slug
+	incubator := "https://github.com/apache/incubator-" + slug
+	switch repoURL {
+	case plain:
+		out = append(out, incubator)
+	case incubator:
+		out = append(out, plain)
+	}
+	return out
+}
+
+// podlingProbeBase is the forge base the resolver probes; a test seam
+// (the npmRegistryBase precedent) — production always github.com.
+var podlingProbeBase = "https://github.com"
+
+// resolvePodlingRepoURL probes which variant of a slug-derived podling
+// URL actually EXISTS, so the importer never upserts a phantom row
+// (the v0.27.132 wedge origin: guessed URLs 404'd, prelim dequeued
+// them, and the PMC groups emptied).
+//
+// Round-25 (SR-5, this resolver's own edition): only DEFINITIVE
+// responses decide. 200 → canonical; 301/302 → exists under another
+// name, try the twin; 404/410 → definitively absent, try the twin.
+// EVERYTHING ELSE — transport failures, 403/429 rate limits, 5xx
+// outages — is an ERROR: a transient forge problem must abort the
+// import (which re-runs cleanly), never silently classify a valid
+// podling as unresolvable.
+func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, slug string) (string, bool, error) {
+	noRedirect := &http.Client{
+		Timeout:       client.Timeout,
+		Transport:     client.Transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	for _, candidate := range RepoURLVariants(repoURL, slug) {
+		probeURL := candidate
+		if podlingProbeBase != "https://github.com" {
+			probeURL = strings.Replace(candidate, "https://github.com", podlingProbeBase, 1)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, probeURL, nil)
+		if err != nil {
+			return "", false, fmt.Errorf("building probe for %s: %w", candidate, err)
+		}
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			return "", false, fmt.Errorf("probing %s: %w", candidate, err)
+		}
+		resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusOK:
+			return candidate, true, nil
+		case resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound:
+			// v0.27.151 (round 30): the redirect target IS the forge's
+			// answer — after an Apache rename it can name an ARBITRARY
+			// new slug, not just the incubator/plain twin, and ignoring
+			// Location dropped such podlings as unresolved. A valid
+			// same-forge /apache/<name> target resolves directly; an
+			// unsafe or malformed redirect is NOT definitive → error
+			// (the round-25 rule).
+			target, terr := podlingRedirectTarget(req, resp)
+			if terr != nil {
+				return "", false, fmt.Errorf("probing %s: %w", candidate, terr)
+			}
+			return target, true, nil
+		case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone:
+			// Definitively absent — the twin is next.
+		default:
+			return "", false, fmt.Errorf("probing %s: status %d (not a definitive answer — aborting rather than misclassifying the podling)", candidate, resp.StatusCode)
+		}
+	}
+	return "", false, nil
+}
+
+// ResolveRepoURL probes the forge for the canonical form of a
+// slug-derived Apache repo URL: the incubator/plain twins plus
+// validated rename redirects (round 30). Exported for
+// load-apache-lists (v0.27.152, round 31): import-foundations stores
+// the CANONICALIZED redirect target as repo_git, so a DB lookup by
+// the derived twins alone can miss the stored row — the list loader
+// needs the same forge answer before concluding "no repo".
+func ResolveRepoURL(ctx context.Context, client *http.Client, repoURL, slug string) (string, bool, error) {
+	return resolvePodlingRepoURL(ctx, client, repoURL, slug)
+}
+
+// podlingRepoPathRe matches a same-forge /apache/<repo> path — the
+// only redirect targets the podling resolver accepts.
+var podlingRepoPathRe = regexp.MustCompile(`^/apache/([A-Za-z0-9_.-]+)/?$`)
+
+// podlingRedirectTarget validates a probe redirect and returns the
+// canonical github.com repo URL it names. Same-host + /apache/<name>
+// only; anything else (missing/unparseable Location, cross-host,
+// non-apache path) is an error — an unvetted redirect must never
+// decide a podling's identity.
+func podlingRedirectTarget(req *http.Request, resp *http.Response) (string, error) {
+	loc, err := resp.Location()
+	if err != nil {
+		return "", fmt.Errorf("redirect without a usable Location: %w", err)
+	}
+	if !strings.EqualFold(loc.Host, req.URL.Host) {
+		return "", fmt.Errorf("redirect leaves the forge (%s -> %s) — not a definitive answer", req.URL.Host, loc.Host)
+	}
+	m := podlingRepoPathRe.FindStringSubmatch(loc.Path)
+	if m == nil {
+		return "", fmt.Errorf("redirect target %q is not an /apache/<repo> path — not a definitive answer", loc.Path)
+	}
+	// Return the canonical github.com form regardless of the probe
+	// base (the test seam swaps hosts for PROBING only; stored URLs
+	// are always the real forge's).
+	return "https://github.com/apache/" + strings.TrimSuffix(m[1], "/"), nil
+}
+
 // ListDomain returns the Apache mailing-list domain for the PMC, e.g.
 // "kafka.apache.org". Current podlings live under <slug>.apache.org too
 // (verified for Amoro, 2026-06-02), and graduation preserves the same
@@ -164,7 +307,8 @@ func ParsePodlingPMCs(data []byte) ([]PMC, error) {
 	for slug, e := range raw {
 		out = append(out, PMC{
 			Slug: slug, Name: e.Name, Homepage: e.Homepage,
-			RepoURL: "https://github.com/apache/" + slug, Incubating: true,
+			// v0.27.132: incubator-prefixed — see ParsePodlings.
+			RepoURL: "https://github.com/apache/incubator-" + slug, Incubating: true,
 		})
 	}
 	return out, nil
@@ -213,6 +357,32 @@ func Fetch(ctx context.Context, projectsURL, podlingsURL string) ([]Project, err
 	podProjects, err := ParsePodlings(pods)
 	if err != nil {
 		return tlpProjects, err
+	}
+
+	// Round-24: podling repo URLs are GUESSES (the incubator- prefix
+	// is a moving target by design — present while incubating, shed at
+	// graduation, never returns; podlings.json lags both directions).
+	// Probe the forge and keep only the variant that EXISTS; a URL no
+	// variant resolves moves to UnresolvedRepoURLs so the importer
+	// skips it instead of seeding a phantom catalog row.
+	for i := range podProjects {
+		p := &podProjects[i]
+		resolved := p.RepoURLs[:0]
+		for _, rurl := range p.RepoURLs {
+			canonical, ok, rerr := resolvePodlingRepoURL(ctx, client, rurl, p.Slug)
+			if rerr != nil {
+				// Round-25: a transient forge failure aborts the whole
+				// import (it re-runs cleanly) — it must never demote a
+				// valid podling to UnresolvedRepoURLs.
+				return tlpProjects, fmt.Errorf("resolving podling %s: %w", p.Name, rerr)
+			}
+			if ok {
+				resolved = append(resolved, canonical)
+			} else {
+				p.UnresolvedRepoURLs = append(p.UnresolvedRepoURLs, rurl)
+			}
+		}
+		p.RepoURLs = resolved
 	}
 
 	combined := make([]Project, 0, len(tlpProjects)+len(podProjects))

@@ -54,15 +54,22 @@ func TestAddedAtSchemaDeclarations(t *testing.T) {
 	if !strings.Contains(flat, "added_at TIMESTAMPTZ DEFAULT NOW()") {
 		t.Error("schema.sql repos CREATE TABLE must declare added_at TIMESTAMPTZ DEFAULT NOW() (fresh installs)")
 	}
-	// The v0.27.58 existing-fleet lesson: an index on a same-release
-	// new column needs an ALTER guard ahead of it in schema.sql.
-	guard := strings.Index(flat, "ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS added_at")
-	idx := strings.Index(flat, "CREATE INDEX IF NOT EXISTS idx_repos_added_at")
-	if guard < 0 {
-		t.Fatal("schema.sql must guard added_at with ALTER TABLE ... ADD COLUMN IF NOT EXISTS before its index (existing fleets no-op the CREATE TABLE)")
+	// The v0.27.58 existing-fleet lesson: the same-release new column
+	// needs an ALTER guard in schema.sql (existing fleets no-op the
+	// CREATE TABLE).
+	if !strings.Contains(flat, "ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS added_at") {
+		t.Fatal("schema.sql must guard added_at with ALTER TABLE ... ADD COLUMN IF NOT EXISTS (existing fleets no-op the CREATE TABLE)")
 	}
-	if idx >= 0 && guard > idx {
-		t.Error("the added_at guard must precede idx_repos_added_at")
+	// v0.27.147 (round 26, Enforces SR-2): the index is MIGRATION-ONLY.
+	// A plain schema.sql declaration executes in the base DDL, which on
+	// an upgraded fleet block-builds it on repos BEFORE the v0.27.60
+	// legacy-row backfill and turns the CONCURRENTLY step into a no-op.
+	if strings.Contains(flat, "CREATE INDEX IF NOT EXISTS idx_repos_added_at") {
+		t.Error("idx_repos_added_at must NOT be declared in schema.sql — it is migration-only via execCreateIndexConcurrently (SR-2; the introducing upgrade would block-build it in the base DDL)")
+	}
+	migrateSrc := readSourceFile(t, "migrate.go")
+	if !strings.Contains(migrateSrc, "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_added_at") {
+		t.Error("migrate.go must own idx_repos_added_at via CREATE INDEX CONCURRENTLY (fresh installs AND upgrades)")
 	}
 }
 

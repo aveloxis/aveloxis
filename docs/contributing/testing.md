@@ -175,6 +175,144 @@ Source-contract tests can give false confidence:
 
 If you write a source-contract test for SQL that references a column from a different table, **also** write an integration test that runs the migration against a fresh database. The combination catches both refactor-rename drift (source-contract) and column-name typos (integration).
 
+### Shared helpers: `internal/srctest` (v0.27.118)
+
+All NEW source-contract tests use `internal/srctest` — the single, fixture-tested
+home for the operations that used to be duplicated ad hoc (~40 read helpers, five
+incompatible function-body extractors with *different scan windows*, comment
+strippers, repo-root finders):
+
+- `srctest.Root(t)` / `srctest.Read(t, "docs/...")` — repo-root discovery and
+  root-relative reads (no more `../../` fragility)
+- `srctest.FuncBody(t, src, "func (s *T) Name(")` — THE brace-counting extractor
+  (string/comment-literal aware; excludes trailing comments — the legacy
+  cut-at-next-`func ` windows were a false-match hazard)
+- `srctest.StripGoComments` / `srctest.StripSQLComments` — literal-aware (a `//`
+  inside a string or a `);` inside a SQL comment can no longer corrupt a scan)
+- `srctest.BacktickLiterals`, `srctest.NormalizeWS`, `srctest.ContainsNormalized`
+- `srctest.MinCount(t, what, got, min)` — the mandatory "my own corpus walk
+  broke" guard for any test that scans directories
+
+Adoption is **strangler-only**: legacy tests migrate when touched, tracked by the
+shrink-only ratchet (`scripts/srctest_ratchet_test.go` +
+`scripts/srctest_migration_baseline.txt` — defining a NEW duplicate helper fails
+the build; a migrated site's baseline line must be deleted in the same diff).
+**There is deliberately NO bulk migration of the remaining legacy files** —
+refactoring working pins is itself a regression risk. When you do migrate a pin,
+follow the **re-red protocol**: green → temporarily inject the violation the pin
+exists to catch → confirm RED → revert → green. Interdependent pins (ones that
+read other test files or share allowlists) migrate as a closed cluster in one
+change.
+
+### SQL write scanning: `internal/srctest/sqlscan` (v0.27.124)
+
+Tests that reason about SQL WRITE statements use the Phase 2 engine
+instead of ad-hoc regexes:
+
+- `sqlscan.Statements(srctest.PackageFiles(t, "internal/db", 30))` — every
+  backtick SQL literal in a package, comment-stripped (literal-aware), SPLIT at
+  quote-/`$$`-aware top-level semicolons, and attributed to its source file.
+  Splitting matters: in the old concatenated-literal scan, a `SET col =` in an
+  unrelated trailing statement of a multi-statement literal counted as a writer
+  for the leading statement's table.
+- `sqlscan.FindWrites(stmts, "aveloxis_data.repos")` — the INSERT/UPDATE
+  statements naming a schema-qualified table (aveloxis_ops works too).
+- `Stmt.WritesColumn(table, col)` — writer-position detection (INSERT column
+  list or UPDATE SET left-hand side; WHERE/RETURNING/RHS appearances do NOT
+  count — the v0.27.116 contract, fixtures moved wholesale).
+- `Stmt.SetExprs(col)` — the depth-counting, quote-aware RHS extractor the
+  Phase 3 write-policy matchers classify.
+- `Stmt.WhereGuardsEmpty(col)` — recognizes the guarded fill-empty shape
+  (`SET col = $N ... WHERE COALESCE(col, '') = ''` / `col IS NULL`).
+
+Known blind spots are documented in the package doc (concatenated SQL is
+invisible; tagged dollar-quotes untracked). The flagship consumer is
+`internal/db/column_writer_tripwire_test.go`; port verified behavior-identical
+(same zero-violation pass on the real corpus; fake-column and stale-allowlist
+mutations flag identically).
+
+### Column write-policy registry (v0.27.126)
+
+`internal/db/column_write_policy_test.go` declares each protected column's ONE
+write policy (`FillEmptyOnly` / `PreferNonemptyIncoming` /
+`PreferNonNullIncoming` / `GreatestNonNull` / `AlwaysRefresh` / `InsertOnly`);
+the sqlscan policy engine verifies every UPDATE SET assignment in the store
+corpus conforms. Matchers are ORDER-SENSITIVE — the verbatim shipped round-11
+bug (`COALESCE(NULLIF(EXCLUDED.platform_repo_id, ''), repos.platform_repo_id)`,
+incoming-first where fill-empty-only was intended) is a permanent canary
+fixture in the engine's suite, and re-red-verified against the live registry.
+Triage protocol for a red run (in the failure message; never weaken a
+matcher): fix the SQL | correct the registered policy | add an `Exception`
+WITH a reason. Exceptions that suppress nothing are reported STALE and fail
+the run. New schema columns with a meaningful write discipline register at
+introduction (schema-migrations.md checklist step 7).
+
+### Standing-rules registry (v0.27.127)
+
+`scripts/standing_rules.go` is the machine-readable table of the project's
+cross-cutting rules — {ID, one-line Statement, EnforcedBy test names,
+ProcessOnly, Retired}. `TestStandingRulesRegistry` keeps it true: every
+active rule's enforcing tests must exist; every `SR-<n>` citation in any
+test must name a registered rule; IDs are never reused (Retired rules keep
+theirs forever). New tripwires that enforce a standing rule cite their
+SR-ID in a comment (`// Enforces SR-11 ...`). ProcessOnly rules are
+review-time discipline and the analyzer candidates below.
+
+### Convergence-contracts registry (v0.27.146 — SR-19 mechanized)
+
+Anything documented as "rerun until done" / "self-draining" / "the
+marker is the resume state" is a **convergence contract**: re-running
+must skip completed work and reach a stable done state. The motivating
+incident: `heal-collection-gaps` promised "rerun until 0 candidates"
+while healed repos never left the candidate set — the contract was
+prose, not a property.
+
+`scripts/convergence_contracts_test.go` keeps every such contract
+paired with a test that DRIVES its loop to done:
+
+- The scanner sweeps every non-test source in `cmd/` + `internal/` +
+  `scripts/` for the marker phrases; every hit must be registered in
+  `convergenceContracts` with at least one **driving test**, or carry a
+  reviewed exemption with a reason.
+- Driving tests are verified as real test FuncDecls via `go/parser`
+  (never a source regex — the round-22 lesson).
+- Staleness both ways: a registered/exempt file that stops carrying a
+  marker fails until the row is removed.
+
+**Registering a site is not the work — the driving test is.** A driving
+test performs the unit of work, applies the SAME completion stamp the
+production path applies, and asserts the claim/candidate/batch query
+stops returning the row. Exemplars: `TestGapHealConvergesToZeroCandidates`
+(the flagship e2e: candidate → threshold-0 fill against an httptest
+forge → `RefreshQueueGatheredCounts` → candidate set empty),
+`TestWhitespaceRewalkClaimDrainsStampedRepos`,
+`TestMessageHealWorklistDrainsOnStamp`, and the dedup e2e's
+candidate-drain assertion. A new resumable command writes its
+convergence test first, then adds the registry row pointing at it.
+
+### Analyzer graduation criteria (deliberately deferred)
+
+All cross-cutting checks stay in `go test` (runs identically everywhere, zero
+toolchain maintenance). Build a custom `go/analysis` analyzer ONLY when a rule
+(a) needs type information or call-graph facts a text scan cannot approximate —
+the live candidates are "a lookup ERROR is not 'no'" (`errors.Is`/ErrNoRows
+discipline) and safego adoption — AND (b) has caused ≥2 review-missed incidents,
+AND (c) the text-scan form has produced wrong results twice despite fixture
+fixes.
+
+### SQL parsing: tested micro-parsers now; pg_query_go pilot flagged
+
+The SQL scanning helpers are regex/micro-parser based ON PURPOSE — every recorded
+fragility incident was in a *scattered, untested* copy, which centralization plus
+hostile fixtures addresses. **FLAGGED PILOT (operator, 2026-08-20)**: when the
+write-policy engine lands, a shadow implementation on pg_query_go (real Postgres
+AST) runs in an isolated nested module (`tools/sqlcheck-pilot/`, own go.mod so
+the CGo dep never touches the main module) and is diffed against the regex
+engine over the same corpus. If it actually works (no new false positives,
+catches shapes regex can't, acceptable build friction, shorter check code), the
+operator decides a going-forward migration plan then. Nothing ships on it until
+that decision.
+
 ## Where expected values come from
 
 The 2026-07-21 audit (`summary/17-wrong-answer-tests-audit.md`) found a recurring failure shape across the suite: **both-sides-agree-on-the-wrong-answer tests** — tests whose expected values were derived from the implementation under test, so implementation and expectation could be wrong *together* and the test would pass forever. Three shipped bugs came from this shape: the v0.21.0 backfill column name, the purl non-canonical encodings (pinned as correct by their own tests), and the PEP 639 license drift (every mock fixture predated the ecosystem change).

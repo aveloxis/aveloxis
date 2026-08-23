@@ -57,16 +57,45 @@ type ColumnFillDiffRow struct {
 // ColumnFillDiffReport is the structured result of the per-column
 // comparison. Only non-PASS rows are retained — with ~2,500 columns
 // across the schemas, an all-rows report would bury the signal.
+//
+// v0.27.129: the report also carries SCHEMA-SHAPE drift between the
+// sides. The 2026-08-21 main-vs-branch run crashed on the first
+// deliberate table drop it met (contributors_old, removed in
+// v0.27.115) because enumeration was released-side-only and every
+// released table was queried against the new side. Shape drift is
+// exactly what a cross-version harness must REPORT, never crash on:
+//   - TablesOnlyInReleased: tables the release under test DROPPED
+//     (the row-count diff already FAILs these when they carried rows;
+//     here they are visible as shape notes and their columns are
+//     skipped).
+//   - TablesOnlyInNew: tables the release ADDED (columns skipped —
+//     no baseline exists).
+//   - AddedColumns: new-side-only columns of BOTH-SIDES tables, with
+//     their new-side populated counts (informational — the FLAG
+//     mechanism only covers columns present on both sides).
+//   - Removed columns (released-only columns of both-sides tables)
+//     land in Rows: Status REMOVED when they carried data (a data-loss
+//     shape — counts as a failure) or REMOVED-EMPTY when dark.
 type ColumnFillDiffReport struct {
-	Schemas        []string            `json:"schemas"`
-	ColumnsChecked int                 `json:"columns_checked"`
-	Rows           []ColumnFillDiffRow `json:"rows"` // FAIL + FLAG only
+	Schemas              []string            `json:"schemas"`
+	ColumnsChecked       int                 `json:"columns_checked"`
+	Rows                 []ColumnFillDiffRow `json:"rows"` // FAIL + FLAG + REMOVED*
+	TablesOnlyInReleased []string            `json:"tables_only_in_released,omitempty"`
+	TablesOnlyInNew      []string            `json:"tables_only_in_new,omitempty"`
+	AddedColumns         []ColumnFillDiffRow `json:"added_columns,omitempty"` // new-side populated count in NewPopulated
+	// TypeChanged — v0.27.130 (round 18): shared columns whose data
+	// type differs between the sides ("schema.table.column: text ->
+	// bigint"). Counting uses EACH SIDE'S OWN metadata, so a type
+	// change is reportable drift instead of a predicate crash
+	// (`bigint <> ''`).
+	TypeChanged []string `json:"type_changed,omitempty"`
 }
 
-// HasFailures reports whether any column went dark.
+// HasFailures reports whether any column went dark or was removed
+// while still carrying data in the released side.
 func (r *ColumnFillDiffReport) HasFailures() bool {
 	for _, row := range r.Rows {
-		if row.Status == "FAIL" {
+		if row.Status == "FAIL" || row.Status == "REMOVED" {
 			return true
 		}
 	}
@@ -115,11 +144,10 @@ type colFillQuerier interface {
 }
 
 // ColumnFillDiff enumerates every column of every base table in the
-// given schemas (default: the same set as RowCountDiff) and compares
-// per-column populated counts between the two databases. Column
-// enumeration comes from the RELEASED database — a column that exists
-// only in the new schema has no baseline to regress from (it surfaces
-// as FLAG via the count comparison when present in both).
+// given schemas (default: the same set as RowCountDiff) on BOTH
+// databases and compares per-column populated counts over the
+// INTERSECTION; one-sided tables and columns are reported as schema
+// shape drift (v0.27.129 — a dropped table used to crash the diff).
 func ColumnFillDiff(ctx context.Context, released, newPool *pgxpool.Pool, schemas []string) (*ColumnFillDiffReport, error) {
 	return columnFillDiff(ctx, released, newPool, schemas)
 }
@@ -129,23 +157,91 @@ func columnFillDiff(ctx context.Context, released, newSide colFillQuerier, schem
 		schemas = []string{"aveloxis_data", "aveloxis_ops", "aveloxis_scan"}
 	}
 
-	cols, err := enumerateColumns(ctx, released, schemas)
+	relCols, err := enumerateColumns(ctx, released, schemas)
 	if err != nil {
 		return nil, fmt.Errorf("enumerate released columns: %w", err)
 	}
+	newCols, err := enumerateColumns(ctx, newSide, schemas)
+	if err != nil {
+		return nil, fmt.Errorf("enumerate new columns: %w", err)
+	}
 
-	releasedFill, err := populatedCounts(ctx, released, cols)
+	colKey := func(c columnRef) string { return c.schema + "." + c.table + "." + c.column }
+	tblKey := func(c columnRef) string { return c.schema + "." + c.table }
+	relTables, newTables := map[string]bool{}, map[string]bool{}
+	relColSet, newColSet := map[string]bool{}, map[string]bool{}
+	newType := map[string]string{}
+	for _, c := range relCols {
+		relTables[tblKey(c)] = true
+		relColSet[colKey(c)] = true
+	}
+	for _, c := range newCols {
+		newTables[tblKey(c)] = true
+		newColSet[colKey(c)] = true
+		newType[colKey(c)] = c.dataType
+	}
+
+	report := &ColumnFillDiffReport{Schemas: schemas}
+	seenTbl := map[string]bool{}
+	for _, c := range relCols {
+		if tk := tblKey(c); !newTables[tk] && !seenTbl[tk] {
+			seenTbl[tk] = true
+			report.TablesOnlyInReleased = append(report.TablesOnlyInReleased, tk)
+		}
+	}
+	for _, c := range newCols {
+		if tk := tblKey(c); !relTables[tk] && !seenTbl[tk] {
+			seenTbl[tk] = true
+			report.TablesOnlyInNew = append(report.TablesOnlyInNew, tk)
+		}
+	}
+	sort.Strings(report.TablesOnlyInReleased)
+	sort.Strings(report.TablesOnlyInNew)
+	defer func() { sort.Strings(report.TypeChanged) }()
+
+	// Shared columns are compared; released-only columns of SHARED
+	// tables are the removed-column class (queried on released only);
+	// new-only columns of shared tables are additions (queried on new
+	// only). Columns of one-sided tables are covered by the table-level
+	// notes and skipped.
+	var shared, sharedNew, removed, added []columnRef
+	for _, c := range relCols {
+		if !newTables[tblKey(c)] {
+			continue
+		}
+		if newColSet[colKey(c)] {
+			shared = append(shared, c)
+			// Count the new side with ITS OWN type (round 18: a
+			// TEXT->BIGINT change must not build `bigint <> ''`).
+			nc := c
+			nc.dataType = newType[colKey(c)]
+			sharedNew = append(sharedNew, nc)
+			if nc.dataType != c.dataType {
+				report.TypeChanged = append(report.TypeChanged,
+					colKey(c)+": "+c.dataType+" -> "+nc.dataType)
+			}
+		} else {
+			removed = append(removed, c)
+		}
+	}
+	for _, c := range newCols {
+		if relTables[tblKey(c)] && !relColSet[colKey(c)] {
+			added = append(added, c)
+		}
+	}
+	report.ColumnsChecked = len(shared)
+
+	releasedFill, err := populatedCounts(ctx, released, append(append([]columnRef{}, shared...), removed...))
 	if err != nil {
 		return nil, fmt.Errorf("released DB fill counts: %w", err)
 	}
-	newFill, err := populatedCounts(ctx, newSide, cols)
+	newFill, err := populatedCounts(ctx, newSide, append(append([]columnRef{}, sharedNew...), added...))
 	if err != nil {
 		return nil, fmt.Errorf("new DB fill counts: %w", err)
 	}
 
-	report := &ColumnFillDiffReport{Schemas: schemas, ColumnsChecked: len(cols)}
-	for _, c := range cols {
-		key := c.schema + "." + c.table + "." + c.column
+	for _, c := range shared {
+		key := colKey(c)
 		row := ColumnFillDiffRow{
 			Schema:            c.schema,
 			Table:             c.table,
@@ -158,13 +254,36 @@ func columnFillDiff(ctx context.Context, released, newSide colFillQuerier, schem
 			report.Rows = append(report.Rows, row)
 		}
 	}
-	sort.Slice(report.Rows, func(i, j int) bool {
-		order := func(s string) int {
-			if s == "FAIL" {
-				return 0
-			}
-			return 1
+	for _, c := range removed {
+		row := ColumnFillDiffRow{
+			Schema: c.schema, Table: c.table, Column: c.column,
+			ReleasedPopulated: releasedFill[colKey(c)],
 		}
+		if row.ReleasedPopulated > 0 {
+			row.Status = "REMOVED" // carried data — a data-loss shape
+		} else {
+			row.Status = "REMOVED-EMPTY" // dark column dropped — shape note
+		}
+		report.Rows = append(report.Rows, row)
+	}
+	for _, c := range added {
+		report.AddedColumns = append(report.AddedColumns, ColumnFillDiffRow{
+			Schema: c.schema, Table: c.table, Column: c.column,
+			NewPopulated: newFill[colKey(c)], Status: "ADDED",
+		})
+	}
+
+	order := func(s string) int {
+		switch s {
+		case "FAIL":
+			return 0
+		case "REMOVED":
+			return 1
+		default:
+			return 2
+		}
+	}
+	sort.Slice(report.Rows, func(i, j int) bool {
 		oi, oj := order(report.Rows[i].Status), order(report.Rows[j].Status)
 		if oi != oj {
 			return oi < oj
@@ -172,6 +291,10 @@ func columnFillDiff(ctx context.Context, released, newSide colFillQuerier, schem
 		ki := report.Rows[i].Schema + "." + report.Rows[i].Table + "." + report.Rows[i].Column
 		kj := report.Rows[j].Schema + "." + report.Rows[j].Table + "." + report.Rows[j].Column
 		return ki < kj
+	})
+	sort.Slice(report.AddedColumns, func(i, j int) bool {
+		return report.AddedColumns[i].Schema+"."+report.AddedColumns[i].Table+"."+report.AddedColumns[i].Column <
+			report.AddedColumns[j].Schema+"."+report.AddedColumns[j].Table+"."+report.AddedColumns[j].Column
 	})
 	return report, nil
 }

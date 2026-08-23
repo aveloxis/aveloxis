@@ -72,7 +72,18 @@ func NewGapFillerWithMode(store *db.PostgresStore, client platform.Client, logge
 
 // AssessAndFillGaps checks for collection gaps and fills them if needed.
 // Called after each collection pass completes. Returns the number of items filled.
+// Routine collection keeps the 5% GapThreshold; the v0.27.140 heal
+// command calls the threshold variant with 0 (any gap).
 func (gf *GapFiller) AssessAndFillGaps(ctx context.Context, repoID int64, owner, repo string, metaIssues, metaPRs int64) (int, error) {
+	return gf.AssessAndFillGapsWithThreshold(ctx, repoID, owner, repo, metaIssues, metaPRs, GapThreshold)
+}
+
+// AssessAndFillGapsWithThreshold is AssessAndFillGaps with an explicit
+// gap-percentage trigger. threshold 0 fires on ANY positive
+// metadata-vs-stored gap — the `aveloxis heal-collection-gaps` mode
+// (v0.27.140): the listing set-diff then finds the TRUE missing numbers
+// even where stored-but-deleted rows numerically hid the count gap.
+func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID int64, owner, repo string, metaIssues, metaPRs int64, threshold float64) (int, error) {
 	totalFilled := 0
 	// v0.27.37 (summary/18 Phase 1c): fill errors are COLLECTED and
 	// returned. Pre-fix they were Warn'd and dropped, which made the
@@ -89,7 +100,7 @@ func (gf *GapFiller) AssessAndFillGaps(ctx context.Context, repoID int64, owner,
 		return 0, fmt.Errorf("querying collected issues: %w", err)
 	}
 
-	if gapExceedsThreshold(int64(len(collectedIssues)), metaIssues) {
+	if gapExceedsThreshold(int64(len(collectedIssues)), metaIssues, threshold) {
 		gf.logger.Info("issue gap detected",
 			"repo_id", repoID,
 			"collected", len(collectedIssues),
@@ -99,7 +110,13 @@ func (gf *GapFiller) AssessAndFillGaps(ctx context.Context, repoID int64, owner,
 		// List all issue numbers from the API.
 		apiIssueNumbers, err := gf.listAPIIssueNumbers(ctx, owner, repo)
 		if err != nil {
+			// Round-23: a failed listing is a FAILED assessment, not a
+			// zero-fill success — without the error, the standalone
+			// healer reported "healed" and exited zero having checked
+			// nothing, and routine gap fill's v0.20.5 recovery never
+			// armed.
 			gf.logger.Warn("failed to list API issue numbers for gap fill", "error", err)
+			fillErrs = append(fillErrs, fmt.Errorf("issue number listing: %w", err))
 		} else {
 			gaps := ComputeGaps(collectedIssues, apiIssueNumbers)
 			if len(gaps) > 0 {
@@ -124,7 +141,7 @@ func (gf *GapFiller) AssessAndFillGaps(ctx context.Context, repoID int64, owner,
 		return totalFilled, fmt.Errorf("querying collected PRs: %w", err)
 	}
 
-	if gapExceedsThreshold(int64(len(collectedPRs)), metaPRs) {
+	if gapExceedsThreshold(int64(len(collectedPRs)), metaPRs, threshold) {
 		gf.logger.Info("PR gap detected",
 			"repo_id", repoID,
 			"collected", len(collectedPRs),
@@ -134,6 +151,7 @@ func (gf *GapFiller) AssessAndFillGaps(ctx context.Context, repoID int64, owner,
 		apiPRNumbers, err := gf.listAPIPRNumbers(ctx, owner, repo)
 		if err != nil {
 			gf.logger.Warn("failed to list API PR numbers for gap fill", "error", err)
+			fillErrs = append(fillErrs, fmt.Errorf("PR number listing: %w", err))
 		} else {
 			gaps := ComputeGaps(collectedPRs, apiPRNumbers)
 			if len(gaps) > 0 {
@@ -552,11 +570,22 @@ func ExpandGapsWithEdges(gaps []Gap, collected []int, edgeCount int) []int {
 	return result
 }
 
-func gapExceedsThreshold(gathered, metadata int64) bool {
+// GapForceList (round-23) is the threshold sentinel that ALWAYS runs
+// the listing set-diff, regardless of counts. Threshold 0 still
+// requires metadata > gathered, which structurally cannot see the
+// count-netting case (retained upstream-deleted rows offsetting
+// missing ones) — completeness sweeps need the listing itself to be
+// the truth source.
+const GapForceList = -1.0
+
+func gapExceedsThreshold(gathered, metadata int64, threshold float64) bool {
+	if threshold < 0 {
+		return true // force-list mode: the listing is the truth source
+	}
 	if metadata == 0 {
 		return false
 	}
-	return float64(metadata-gathered)/float64(metadata) > GapThreshold
+	return float64(metadata-gathered)/float64(metadata) > threshold
 }
 
 func gapPercent(gathered, metadata int64) float64 {

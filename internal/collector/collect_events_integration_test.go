@@ -51,9 +51,7 @@ func TestCollectStoresEventsEndToEnd(t *testing.T) {
 	// callbacks, and the seed-row cleanup below needs the pool alive.
 	t.Cleanup(store.Close)
 	store.SetMatviewSkip(true)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	testMigrate(ctx, t, store)
 
 	const owner, repo = "aveloxis-it", "collect-events"
 

@@ -6,6 +6,10 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // UpdateRepoMetadata writes description + primary_language + languages
@@ -33,7 +37,19 @@ import (
 // representation). Written unconditionally like the other fields:
 // the forge's current statement of fork lineage is the truth, and a
 // repo detaching from its upstream honestly clears the column.
-func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool, forkedFrom string) error {
+//
+// v0.27.102 adds platformRepoID (model.RepoInfo.PlatformRepoID — the
+// forge's numeric repository identity, the rename-proof key UpsertRepo
+// dedups on). Written PREFER-NONEMPTY, unlike the fields above: the ID
+// never changes for a given repo, and a transport that didn't provide
+// it must never clear a captured value. This is the fleet backfill —
+// every repo's next Phase 0 cycle fills its platform_repo_id.
+//
+// v0.27.104 adds createdAt (FILL-EMPTY-ONLY — a repository's creation
+// date is an immutable fact; repos.created_at was 0% populated) and
+// updatedAt (prefer-new, nil-safe — the forge's last-updated timestamp,
+// also 0% populated). Zero time.Time values are nil-safe no-ops.
+func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool, forkedFrom, platformRepoID string, createdAt, updatedAt time.Time) error {
 	langJSON := []byte("{}")
 	if len(languages) > 0 {
 		b, err := json.Marshal(languages)
@@ -43,7 +59,8 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 		langJSON = b
 	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, `
+		var storedForgeID string
+		err := s.pool.QueryRow(ctx, `
 			UPDATE aveloxis_data.repos
 			SET repo_description = $2,
 			    primary_language = $3,
@@ -61,10 +78,43 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			    -- a deleted upstream, '' for a non-fork). The showcase
 			    -- fork filter and future GUI fork badges read this.
 			    forked_from      = $6,
+			    -- v0.27.117: forge numeric ID backfill — FILL-EMPTY-ONLY
+			    -- (prefer the STORED value). The ID never changes for a
+			    -- given repo; a DIFFERENT incoming ID means an upstream
+			    -- delete-and-recreate under the same URL, and this
+			    -- "backfill" overwriting the stored value would erase the
+			    -- exact mismatch signal SetPlatformRepoIDIfEmpty surfaces.
+			    -- The RETURNING below makes Phase 0 the fleet-wide
+			    -- detector instead.
+			    platform_repo_id = COALESCE(NULLIF(repos.platform_repo_id, ''), $7),
+			    -- v0.27.104: creation date is immutable — fill-empty-only;
+			    -- updated_at refreshes from the forge (nil-safe).
+			    created_at = COALESCE(repos.created_at, $8),
+			    -- v0.27.122: GREATEST (see UpsertRepo) — an out-of-order
+			    -- older response must not regress the forge timestamp.
+			    updated_at = GREATEST(COALESCE($9, repos.updated_at), COALESCE(repos.updated_at, $9)),
 			    data_collection_date = NOW()
-			WHERE repo_id = $1`,
-			repoID, description, primaryLanguage, langJSON, archived, forkedFrom)
-		return err
+			WHERE repo_id = $1
+			RETURNING COALESCE(platform_repo_id, '')`,
+			repoID, description, primaryLanguage, langJSON, archived, forkedFrom, platformRepoID,
+			NullTime(createdAt), NullTime(updatedAt)).Scan(&storedForgeID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// v0.27.117 (Copilot round 11, active): identity-conflict
+		// detection on the Phase 0 path — fires within one collection
+		// cycle for every affected repo, fleet-wide. OBSERVATION-ONLY
+		// (the house never-auto-mutate rule); same message class as
+		// SetPlatformRepoIDIfEmpty's scan-time detector.
+		if storedForgeID != "" && platformRepoID != "" && storedForgeID != platformRepoID {
+			s.logger.Error("forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row",
+				"repo_id", repoID, "stored_forge_id", storedForgeID, "observed_forge_id", platformRepoID,
+				"remediation", "inspect the row's data eras; a split needs operator action (reconcile-repos consolidates the INVERSE case only)")
+		}
+		return nil
 	})
 }
 
@@ -120,7 +170,7 @@ type RepoMetadataBackfillTarget struct {
 // for the operator-driven `aveloxis backfill-repo-metadata` sweep.
 // Unlike ReposNeedingMetadataBackfill this does NOT filter on empty
 // fields — the sweep's point is refreshing values that cannot be
-// distinguished from absent (forked_from = ” means both "not a fork"
+// distinguished from absent (forked_from = "" means both "not a fork"
 // and "never checked"), so every repo gets one visit. Archived repos
 // are INCLUDED: they appear in public collections and their fork
 // status matters there.

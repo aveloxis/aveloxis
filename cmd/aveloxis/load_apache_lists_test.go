@@ -32,6 +32,7 @@ func TestLoadApacheListsCmdShape(t *testing.T) {
 	// collect policy, and the per-PMC group + list registration store methods.
 	for _, needle := range []string{
 		"apache.FetchPMCs(",
+		"RepoURLVariants()", // v0.27.132: incubator-aware lookup — both prefix directions
 		"UpsertRepoGroup(",
 		"SetRepoGroup(",
 		"RegisterMailingList(",

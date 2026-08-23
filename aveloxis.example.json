@@ -30,7 +30,7 @@
   "collection": {
     "days_until_recollect": 1,
     "workers": 12,
-    "repo_clone_dir": "~/aveloxis-repos/",
+    "repo_clone_dir": "/data/aveloxis-repos",
     "force_full": false,
     "matview_rebuild_day": "saturday",
     "matview_rebuild_on_startup": false,
@@ -57,7 +57,7 @@
     "scancode_run_timeout_hours": 2,
     "scancode_run_timeout_cap_hours": 24,
     "scancode_max_in_memory": 5000,
-    "vuln_scan_transitive": false,
+    "vuln_scan_transitive": true,
     "dev_build_deps": false,
     "github_actions_deps": false,
     "skip_largest_percent": 0,

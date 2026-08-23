@@ -181,14 +181,18 @@ func TestDetermineSince(t *testing.T) {
 		t.Errorf("determineSince(nil LastCollected) = %v, want zero time", since)
 	}
 
-	// Previously collected repo: should return ~now minus recollect window.
-	now := time.Now()
-	job.LastCollected = &now
+	// Previously collected repo (v0.27.139): since is EXACTLY the stored
+	// last_collected — which CompleteJob anchors at the previous round's
+	// START, so there is no blind window between rounds. The pre-fix
+	// `now − recollect_window` skipped everything whose final update fell
+	// between the previous round's start and now−D (the podman-desktop
+	// incident: blind window = previous round duration + queue backlog,
+	// verified to the minute on production).
+	collected := time.Now().Add(-72 * time.Hour)
+	job.LastCollected = &collected
 	since = s.determineSince(job)
-	expected := time.Now().Add(-24 * time.Hour)
-	// Allow 1 second of clock skew.
-	if since.Sub(expected).Abs() > time.Second {
-		t.Errorf("determineSince(collected) = %v, want ~%v", since, expected)
+	if !since.Equal(collected) {
+		t.Errorf("determineSince(collected) = %v, want exactly last_collected %v — computing since from now-minus-window reopens the blind-window class", since, collected)
 	}
 }
 

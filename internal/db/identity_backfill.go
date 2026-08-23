@@ -109,29 +109,47 @@ func (s *PostgresStore) BackfillAssignmentIdentities(ctx context.Context, batchS
 // merge losers excluded). Operator decision 2026-07-09: this identity
 // is high-value; rows whose owner never appears in contributors stay
 // NULL (no fabricated data).
+//
+// v0.27.123 (Copilot round 15, active): the sweep is grouped with
+// HAVING COUNT(DISTINCT cntrb_id) = 1 — gh_login is backed only by a
+// NON-unique index, so an owner login matching TWO active contributor
+// rows previously handed the meta row an ARBITRARY cntrb_id via
+// unordered DISTINCT ON. Ambiguous logins now stay NULL, per the
+// never-fabricate contract; the dry-run count applies the same rule.
+// Also aligned with v0.27.110 while rewriting the statement: the sweep
+// is GitHub-only (repos join, platform_id = 1) with the GitLab-native
+// disqualifier — BackfillPRRepoOwners got both in v0.27.110 but this
+// twin was left platform-blind, so a phase-1 re-run could still
+// attribute a GitLab meta row to a same-name GitHub user.
 func (s *PostgresStore) BackfillPRMetaOwners(ctx context.Context, batchSize int, limit int64, dryRun bool) (int64, error) {
 	if batchSize <= 0 {
 		batchSize = 100000
 	}
-	// Window predicate %s slots the pr_meta_id range bounds in.
-	const candidates = `
-		SELECT DISTINCT ON (m.pr_meta_id) m.pr_meta_id, c.cntrb_id
+	// Shared join/filter body; the sweep and the dry-run compose
+	// different SELECT heads around it. Window predicate %s slots the
+	// pr_meta_id range bounds into the WHERE clause.
+	const candidatesBody = `
 		FROM aveloxis_data.pull_request_meta m
 		JOIN aveloxis_data.pull_request_repo pr
 		  ON pr.pr_repo_meta_id = m.pr_meta_id
 		 AND pr.pr_repo_head_or_base = m.head_or_base
+		JOIN aveloxis_data.repos r
+		  ON r.repo_id = m.repo_id AND r.platform_id = 1
 		JOIN aveloxis_data.contributors c
 		  ON LOWER(COALESCE(NULLIF(c.gh_login, ''), c.cntrb_login)) =
 		     LOWER(split_part(pr.pr_repo_full_name, '/', 1))
 		WHERE m.cntrb_id IS NULL
 		  AND split_part(COALESCE(pr.pr_repo_full_name, ''), '/', 1) <> ''
-		  AND COALESCE(c.cntrb_deleted, 0) = 0%s`
+		  AND COALESCE(c.cntrb_deleted, 0) = 0
+		  AND (c.gh_login <> '' OR COALESCE(c.gl_username, '') = '')%s
+		GROUP BY m.pr_meta_id
+		HAVING COUNT(DISTINCT c.cntrb_id) = 1`
 	if dryRun {
-		// The dry-run count intentionally runs the join UNWINDOWED but
-		// without the DISTINCT-ON sort (COUNT of distinct meta ids).
-		q := `SELECT COUNT(DISTINCT m.pr_meta_id)` + strings.TrimPrefix(
-			fmt.Sprintf(candidates, ""), `
-		SELECT DISTINCT ON (m.pr_meta_id) m.pr_meta_id, c.cntrb_id`)
+		// Unwindowed, counting only the UNAMBIGUOUS groups — the same
+		// rule the sweep applies, so the count matches what a real run
+		// would fill.
+		q := `SELECT COUNT(*) FROM (SELECT m.pr_meta_id` +
+			fmt.Sprintf(candidatesBody, "") + `) unambiguous`
 		var n int64
 		if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
 			return 0, fmt.Errorf("dry-run count pull_request_meta: %w", err)
@@ -147,7 +165,10 @@ func (s *PostgresStore) BackfillPRMetaOwners(ctx context.Context, batchSize int,
 	var total int64
 	window := int64(batchSize)
 	for lo := int64(0); lo < maxID; lo += window {
-		cand := fmt.Sprintf(candidates, " AND m.pr_meta_id > $1 AND m.pr_meta_id <= $2")
+		// (array_agg(DISTINCT ...))[1] is exactly the one contributor the
+		// HAVING guard admitted (Postgres has no min(uuid) aggregate).
+		cand := `SELECT m.pr_meta_id, (array_agg(DISTINCT c.cntrb_id))[1] AS cntrb_id` +
+			fmt.Sprintf(candidatesBody, " AND m.pr_meta_id > $1 AND m.pr_meta_id <= $2")
 		tag, err := s.pool.Exec(ctx, `
 			WITH cand AS (`+cand+`)
 			UPDATE aveloxis_data.pull_request_meta m
@@ -161,6 +182,145 @@ func (s *PostgresStore) BackfillPRMetaOwners(ctx context.Context, batchSize int,
 		if n > 0 {
 			s.logger.Info("backfill-identities progress",
 				"table", "pull_request_meta", "updated", total, "window_hi", lo+window, "max_id", maxID)
+		}
+		if limit > 0 && total >= limit {
+			break
+		}
+	}
+	return total, nil
+}
+
+// BackfillPRRepoOwners fills pull_request_repo.pr_cntrb_id — the fork/
+// upstream repo OWNER identity, 0 of 41.2M rows populated when the
+// 2026-08-19 fill audit ran (the owner object was decoded on both rails
+// and dropped before storage; v0.27.104's OwnerRef mappers fix the
+// forward path). Two passes per keyset window over pr_repo_id:
+//
+//  1. The cheap PK-join: the paired pull_request_meta row's cntrb_id
+//     (v0.26.5 filled those FROM this table's owner segment, and
+//     forward-collected meta carries deterministic platform-ID
+//     resolutions).
+//  2. The login-expression sweep for rows the pair couldn't cover:
+//     case-insensitive owner-segment match against contributors
+//     (gh_login with cntrb_login fallback, soft-deleted merge losers
+//     excluded — the exact BackfillPRMetaOwners shape).
+//
+// Rows whose owner never appears in contributors (deleted forks) stay
+// NULL — no fabricated data.
+func (s *PostgresStore) BackfillPRRepoOwners(ctx context.Context, batchSize int, limit int64, dryRun bool) (int64, error) {
+	if batchSize <= 0 {
+		batchSize = 100000
+	}
+	// v0.27.110 (Copilot PR #184 round 5): BOTH passes are restricted to
+	// GITHUB-platform rows (meta → repos join, platform_id = 1). The
+	// login sweep matches the GLOBAL contributor table, and v0.26.5-era
+	// pull_request_meta.cntrb_id values came from the same global login
+	// join — so on GitLab rows either pass could attribute a group-owned
+	// project to an unrelated same-name GitHub user, the exact
+	// cross-platform fabrication v0.27.109 banned from the forward path.
+	// GitLab rows stay NULL here and heal FORWARD-ONLY via the
+	// ID-qualified owner-object refs on re-collection. The sweep's
+	// bare-cntrb_login fallback arm additionally disqualifies
+	// GitLab-native contributors (gl_username set): a GitLab user's
+	// cntrb_login colliding with a GitHub owner name must not win.
+	// GitHub-vs-GitHub login matching keeps the documented v0.26.5
+	// accepted risk, unchanged.
+	const pairSQL = `
+		UPDATE aveloxis_data.pull_request_repo pr
+		SET pr_cntrb_id = m.cntrb_id
+		FROM aveloxis_data.pull_request_meta m
+		JOIN aveloxis_data.repos r
+		  ON r.repo_id = m.repo_id AND r.platform_id = 1
+		WHERE m.pr_meta_id = pr.pr_repo_meta_id
+		  AND m.head_or_base = pr.pr_repo_head_or_base
+		  AND m.cntrb_id IS NOT NULL
+		  AND pr.pr_cntrb_id IS NULL
+		  AND pr.pr_repo_id > $1 AND pr.pr_repo_id <= $2`
+	// v0.27.123 (Copilot round 15, active): grouped with
+	// HAVING COUNT(DISTINCT cntrb_id) = 1 — an owner login matching two
+	// active contributors previously assigned an ARBITRARY cntrb_id via
+	// unordered DISTINCT ON. Ambiguous logins stay NULL (never-fabricate);
+	// the dry-run count applies the same rule.
+	const candidatesBody = `
+		FROM aveloxis_data.pull_request_repo pr
+		JOIN aveloxis_data.pull_request_meta pm
+		  ON pm.pr_meta_id = pr.pr_repo_meta_id
+		JOIN aveloxis_data.repos r
+		  ON r.repo_id = pm.repo_id AND r.platform_id = 1
+		JOIN aveloxis_data.contributors c
+		  ON LOWER(COALESCE(NULLIF(c.gh_login, ''), c.cntrb_login)) =
+		     LOWER(split_part(pr.pr_repo_full_name, '/', 1))
+		WHERE pr.pr_cntrb_id IS NULL
+		  AND split_part(COALESCE(pr.pr_repo_full_name, ''), '/', 1) <> ''
+		  AND COALESCE(c.cntrb_deleted, 0) = 0
+		  AND (c.gh_login <> '' OR COALESCE(c.gl_username, '') = '')%s
+		GROUP BY pr.pr_repo_id
+		HAVING COUNT(DISTINCT c.cntrb_id) = 1`
+	if dryRun {
+		// v0.27.107 (ultrareview bug_003): count BOTH derivation passes —
+		// the pair PK-join fills rows the login sweep cannot see (renamed
+		// owners whose meta row was resolved by platform id), so a
+		// login-only count systematically under-reports the job's scope.
+		var pair int64
+		if err := s.pool.QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM aveloxis_data.pull_request_repo pr
+			JOIN aveloxis_data.pull_request_meta m
+			  ON m.pr_meta_id = pr.pr_repo_meta_id
+			 AND m.head_or_base = pr.pr_repo_head_or_base
+			JOIN aveloxis_data.repos r
+			  ON r.repo_id = m.repo_id AND r.platform_id = 1
+			WHERE m.cntrb_id IS NOT NULL
+			  AND pr.pr_cntrb_id IS NULL`).Scan(&pair); err != nil {
+			return 0, fmt.Errorf("dry-run pair count pull_request_repo: %w", err)
+		}
+		q := `SELECT COUNT(*) FROM (SELECT pr.pr_repo_id` +
+			fmt.Sprintf(candidatesBody, "") + `) unambiguous`
+		var n int64
+		if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
+			return 0, fmt.Errorf("dry-run count pull_request_repo: %w", err)
+		}
+		// pair+n is an upper bound (the sets overlap); precise enough
+		// for operator scoping and cheaper than a UNION-DISTINCT sort.
+		s.logger.Info("backfill-identities dry-run", "table", "pull_request_repo",
+			"pair_derivable", pair, "login_derivable", n, "derivable_max", pair+n)
+		return pair + n, nil
+	}
+	var maxID int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(pr_repo_id), 0) FROM aveloxis_data.pull_request_repo`).Scan(&maxID); err != nil {
+		return 0, fmt.Errorf("max pr_repo_id: %w", err)
+	}
+	var total int64
+	window := int64(batchSize)
+	for lo := int64(0); lo < maxID; lo += window {
+		// Pass 1: the paired-meta PK join (far cheaper than the login
+		// expression; covers everything v0.26.5 + forward collection
+		// already resolved on the meta side).
+		pairTag, err := s.pool.Exec(ctx, pairSQL, lo, lo+window)
+		if err != nil {
+			return total, fmt.Errorf("backfill pull_request_repo (meta pair) window %d: %w", lo, err)
+		}
+		total += pairTag.RowsAffected()
+
+		// Pass 2: the login-expression sweep for the remainder. The
+		// (array_agg(DISTINCT ...))[1] is exactly the one contributor the
+		// HAVING guard admitted (Postgres has no min(uuid) aggregate).
+		cand := `SELECT pr.pr_repo_id, (array_agg(DISTINCT c.cntrb_id))[1] AS cntrb_id` +
+			fmt.Sprintf(candidatesBody, " AND pr.pr_repo_id > $1 AND pr.pr_repo_id <= $2")
+		tag, err := s.pool.Exec(ctx, `
+			WITH cand AS (`+cand+`)
+			UPDATE aveloxis_data.pull_request_repo pr
+			SET pr_cntrb_id = cand.cntrb_id
+			FROM cand WHERE pr.pr_repo_id = cand.pr_repo_id`, lo, lo+window)
+		if err != nil {
+			return total, fmt.Errorf("backfill pull_request_repo (owner login) window %d: %w", lo, err)
+		}
+		n := pairTag.RowsAffected() + tag.RowsAffected()
+		total += tag.RowsAffected()
+		if n > 0 {
+			s.logger.Info("backfill-identities progress",
+				"table", "pull_request_repo", "updated", total, "window_hi", lo+window, "max_id", maxID)
 		}
 		if limit > 0 && total >= limit {
 			break

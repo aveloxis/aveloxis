@@ -29,9 +29,7 @@ func v0276Connect(t *testing.T) (*PostgresStore, context.Context) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	testMigrate(ctx, t, store)
 	// t.Cleanup runs LIFO and AFTER the test's deferred calls would —
 	// registering the pool close here (before any per-row cleanup is
 	// registered) guarantees the row deletes still have a live pool.

@@ -394,6 +394,7 @@ func (c *Client) FetchPRRepos(ctx context.Context, owner, repo string, prNumber 
 			RepoName:     raw.Head.Repo.Name,
 			RepoFullName: raw.Head.Repo.FullName,
 			Private:      raw.Head.Repo.Private,
+			OwnerRef:     ghUserToRef(raw.Head.Repo.Owner), // v0.27.104 — fork-owner identity
 			Origin:       model.DataOrigin{DataSource: "GitHub API"},
 		}
 	}
@@ -405,6 +406,7 @@ func (c *Client) FetchPRRepos(ctx context.Context, owner, repo string, prNumber 
 			RepoName:     raw.Base.Repo.Name,
 			RepoFullName: raw.Base.Repo.FullName,
 			Private:      raw.Base.Repo.Private,
+			OwnerRef:     ghUserToRef(raw.Base.Repo.Owner), // v0.27.104 — fork-owner identity
 			Origin:       model.DataOrigin{DataSource: "GitHub API"},
 		}
 	}
@@ -747,6 +749,13 @@ func (c *Client) ListReleases(ctx context.Context, owner, repo string) iter.Seq2
 				IsDraft:      raw.Draft,
 				IsPrerelease: raw.Prerelease,
 				TagOnly:      false,
+				// v0.27.103: Origin was never set here, leaving
+				// releases.data_source empty on every GitHub release
+				// (1.05M production rows — 2026-08-19 fill audit).
+				Origin: model.DataOrigin{
+					ToolSource: "aveloxis",
+					DataSource: "GitHub API",
+				},
 			}, nil) {
 				return
 			}
@@ -912,8 +921,18 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		forkParent = r.Parent.NameWithOwner
 	}
 
+	topics := make([]string, 0, len(r.RepositoryTopics.Nodes))
+	for _, n := range r.RepositoryTopics.Nodes {
+		if n.Topic.Name != "" {
+			topics = append(topics, n.Topic.Name)
+		}
+	}
+
 	return &model.RepoInfo{
 		FullName:          r.NameWithOwner,
+		PlatformRepoID:    model.ForgeIDString(r.DatabaseID), // v0.27.102
+		CreatedAt:         r.CreatedAt,                       // v0.27.104
+		Keywords:          strings.Join(topics, ","),         // v0.27.104 — comma-joined topics
 		LastUpdated:       r.UpdatedAt,
 		IssuesEnabled:     r.HasIssuesEnabled,
 		WikiEnabled:       r.HasWikiEnabled,
@@ -977,6 +996,9 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 	}
 	return &model.RepoInfo{
 		FullName:        raw.FullName,
+		PlatformRepoID:  model.ForgeIDString(raw.ID), // v0.27.102
+		CreatedAt:       raw.CreatedAt,               // v0.27.104
+		Keywords:        strings.Join(raw.Topics, ","),
 		LastUpdated:     raw.UpdatedAt,
 		IssuesEnabled:   raw.HasIssues,
 		WikiEnabled:     raw.HasWiki,
@@ -993,6 +1015,11 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 		Description:     raw.Description,
 		PrimaryLanguage: raw.Language,
 		Languages:       languages,
+		// v0.27.103: the REST fallback dropped `archived` — Status was
+		// never set, so staged.go's `info.Status == "Archived"` read
+		// false on every GraphQL→REST fallback and repos.repo_archived
+		// went silently false (the 2026-08-19 fill audit, Workstream A).
+		Status: statusStr(raw.Archived, raw.Disabled),
 		Origin: model.DataOrigin{
 			ToolSource: "aveloxis",
 			DataSource: "GitHub REST",
@@ -1008,6 +1035,8 @@ func repoInfoGraphQL(owner, repo string) string {
 	return fmt.Sprintf(`{
   repository(owner: "%s", name: "%s") {
     nameWithOwner
+    databaseId
+    createdAt
     updatedAt
     description
     hasIssuesEnabled
@@ -1036,6 +1065,7 @@ func repoInfoGraphQL(owner, repo string) string {
     }
     licenseInfo { name spdxId }
     primaryLanguage { name }
+    repositoryTopics(first: 20) { nodes { topic { name } } }
     languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {
       edges {
         size
@@ -1052,12 +1082,21 @@ func repoInfoGraphQL(owner, repo string) string {
 
 type graphQLRepo struct {
 	NameWithOwner    string    `json:"nameWithOwner"` // v0.25.32 — canonical owner/name for the case self-heal
+	DatabaseID       int64     `json:"databaseId"`    // v0.27.102 — rename-proof numeric identity
+	CreatedAt        time.Time `json:"createdAt"`     // v0.27.104 — repos.created_at
 	UpdatedAt        time.Time `json:"updatedAt"`
-	HasIssuesEnabled bool      `json:"hasIssuesEnabled"`
-	HasWikiEnabled   bool      `json:"hasWikiEnabled"`
-	IsArchived       bool      `json:"isArchived"`
-	IsDisabled       bool      `json:"isDisabled"`
-	IsFork           bool      `json:"isFork"` // v0.27.78 — fork capture
+	RepositoryTopics struct {
+		Nodes []struct {
+			Topic struct {
+				Name string `json:"name"`
+			} `json:"topic"`
+		} `json:"nodes"`
+	} `json:"repositoryTopics"` // v0.27.104 — repo_info.keywords
+	HasIssuesEnabled bool `json:"hasIssuesEnabled"`
+	HasWikiEnabled   bool `json:"hasWikiEnabled"`
+	IsArchived       bool `json:"isArchived"`
+	IsDisabled       bool `json:"isDisabled"`
+	IsFork           bool `json:"isFork"` // v0.27.78 — fork capture
 	Parent           *struct {
 		NameWithOwner string `json:"nameWithOwner"`
 	} `json:"parent"`

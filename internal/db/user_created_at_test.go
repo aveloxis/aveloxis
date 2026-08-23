@@ -151,9 +151,7 @@ func TestUserCreatedAtEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
+	testMigrate(ctx, t, store)
 
 	const login = "_avcreated_at_probe"
 	clean := func() {

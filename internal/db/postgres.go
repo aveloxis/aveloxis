@@ -29,6 +29,7 @@ type PostgresStore struct {
 	matviewOnStartup bool // whether to refresh materialized views during migration
 	matviewSkip      bool // whether to skip the matview block entirely (--skip-views on migrate)
 	migrateNoWait    bool // whether to fail fast on advisory-lock contention (--no-wait on migrate)
+	migrateFastPath  bool // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
 }
 
 // NewPostgresStore connects to PostgreSQL and returns a Store.
@@ -187,6 +188,23 @@ func (s *PostgresStore) SetMigrateNoWait(noWait bool) {
 	s.migrateNoWait = noWait
 }
 
+// SetMigrateFastPath — v0.27.131, the F13 fix. When enabled and the
+// schema_meta stamp equals ToolVersion, RunMigrations returns
+// immediately: the stamp is written ONLY after every migration step
+// succeeded, so a match proves this binary's schema is fully applied.
+// Enabled by `aveloxis serve` startup ONLY — the production
+// observation behind it: serve sat inside RunMigrations for 1h42m
+// after a restart (one-shot keyset backfills re-walking every PK
+// window to find nothing to do) with 141,799 repos queued and zero
+// collection. `aveloxis migrate` NEVER enables it: the explicit
+// command is the operator's full-run self-heal path (hand-edited
+// schema, hand-dropped view/index). A fast-pathed startup also skips
+// views.sql and matview creation — both only change with a version
+// bump, which changes ToolVersion and misses the stamp.
+func (s *PostgresStore) SetMigrateFastPath(enabled bool) {
+	s.migrateFastPath = enabled
+}
+
 func (s *PostgresStore) Migrate(ctx context.Context) error {
 	return RunMigrations(ctx, s, s.logger)
 }
@@ -274,6 +292,76 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 		}
 	}
 
+	// Rename/transfer dedup (v0.27.102): when the caller supplies the
+	// forge's numeric repository ID (org scans decode it from the
+	// listing JSON) and the URL is untracked, a forge-ID hit means the
+	// repo was RENAMED or TRANSFERRED upstream — the existing row IS
+	// this repository under its old URL. Heal that row's URL via the
+	// established UpdateRepoURL writer (same authority class as the
+	// v0.25.32 HealRepoCaseDrift carve-out: the forge itself is telling
+	// us the canonical current URL for this numeric identity) instead
+	// of minting a data-splitting duplicate. The 2026-08-19 audit
+	// proved all 12 reconcile-repos consolidation pairs were exactly
+	// this shape (dio/eaigw → dio/ai-gateway, 18F/api.data.gov →
+	// GSA/api.data.gov, ...). URL-tracked rows never reach this branch
+	// — the ON CONFLICT (repo_git) DO UPDATE below owns those.
+	if r.PlatformID != "" && (r.Platform == model.PlatformGitHub || r.Platform == model.PlatformGitLab) {
+		var urlTracked int64
+		// v0.27.112 (wrongly-suppressed Copilot finding): only ErrNoRows
+		// means "untracked" — a transient probe failure must not steer
+		// us into the heal path on bad information.
+		if perr := s.pool.QueryRow(ctx,
+			`SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1`,
+			r.GitURL).Scan(&urlTracked); perr != nil && !errors.Is(perr, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("rename-heal URL probe: %w", perr)
+		}
+		if urlTracked == 0 {
+			// v0.27.111: a LOOKUP error is not "not found" (the v0.27.36
+			// rule) — falling through to the insert on a transient DB
+			// error could mint the exact rename duplicate this branch
+			// prevents. Propagate; the caller retries next scan.
+			// v0.27.150 (round 29): host-scoped — a same-numbered
+			// project on a DIFFERENT GitLab instance is not a rename.
+			existing, ferr := s.FindRepoByPlatformRepoID(ctx, r.Platform, r.PlatformID, ForgeHostOf(r.GitURL))
+			if ferr != nil {
+				return 0, fmt.Errorf("rename-heal forge-id lookup: %w", ferr)
+			}
+			if existing > 0 {
+				// v0.27.106 (PR #184 review): heal via UpdateRepoURLs
+				// (PLURAL) — the renamed repo's child rows (issue/PR/
+				// release URLs) carry the OLD owner/repo path and must
+				// heal alongside repo_git, matching the prelim rename
+				// path. Needs the old URL for the find-and-replace.
+				var oldURL string
+				// v0.27.111: an ignored error here passed oldURL="" to
+				// UpdateRepoURLs, whose repo-only fallback then skipped
+				// every child-URL rewrite while reporting success.
+				if serr := s.pool.QueryRow(ctx,
+					`SELECT repo_git FROM aveloxis_data.repos WHERE repo_id = $1`,
+					existing).Scan(&oldURL); serr != nil {
+					return 0, fmt.Errorf("rename-heal old-URL lookup for repo %d: %w", existing, serr)
+				}
+				uerr := s.UpdateRepoURLs(ctx, existing, oldURL, r.GitURL)
+				if uerr == nil {
+					s.logger.Info("rename detected at add time — healed existing repo URL instead of creating a duplicate",
+						"repo_id", existing, "old_url", oldURL, "new_url", r.GitURL, "platform_repo_id", r.PlatformID)
+					return existing, nil
+				}
+				// ONLY a genuine uniqueness race (another writer landed
+				// the new URL between our probe and the UPDATE — 23505
+				// on repo_git's unique) may fall through to the INSERT
+				// below, which then routes to that row via ON CONFLICT
+				// (repo_git) DO UPDATE. Any OTHER failure (transient DB
+				// error) must propagate — falling through would mint
+				// the very duplicate this branch exists to prevent.
+				var healPgErr *pgconn.PgError
+				if !errors.As(uerr, &healPgErr) || healPgErr.Code != "23505" {
+					return 0, fmt.Errorf("rename-heal URL update for repo %d: %w", existing, uerr)
+				}
+			}
+		}
+	}
+
 	var id int64
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		// Ensure a default repo group exists if no group is specified.
@@ -329,8 +417,21 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				-- bare EXCLUDED overwrite wiped the captured value on every
 				-- scan tick. Phase 0 still clears it when a repo un-forks.
 				forked_from = COALESCE(NULLIF(EXCLUDED.forked_from, ''), repos.forked_from),
+				-- v0.27.116/117: FILL-EMPTY-ONLY (prefer the STORED value) —
+				-- the forge numeric ID never changes for a given repo, so a
+				-- DIFFERENT incoming ID means an upstream delete-and-recreate
+				-- under the same URL, and overwriting the stored ID would
+				-- destroy the mismatch signal SetPlatformRepoIDIfEmpty and
+				-- Phase 0 (UpdateRepoMetadata) now surface. An id-less
+				-- re-upsert still can't wipe a captured value, and the first
+				-- observed ID still fills an empty column.
+				platform_repo_id = COALESCE(NULLIF(repos.platform_repo_id, ''), EXCLUDED.platform_repo_id),
 				repo_archived = EXCLUDED.repo_archived,
-				updated_at = COALESCE(EXCLUDED.updated_at, repos.updated_at),
+				-- v0.27.122 (Copilot round 14, suppressed): GREATEST, not
+				-- prefer-incoming — overlapping refreshes can finish out of
+				-- order, and an older forge response landing last must not
+				-- regress the forge's last-update time (it never decreases).
+				updated_at = GREATEST(COALESCE(EXCLUDED.updated_at, repos.updated_at), COALESCE(repos.updated_at, EXCLUDED.updated_at)),
 				tool_version = EXCLUDED.tool_version,
 				data_collection_date = NOW()
 			RETURNING repo_id`,
@@ -571,6 +672,14 @@ func (s *PostgresStore) ArchiveRepo(ctx context.Context, repoID int64) error {
 // (issue html_urls, PR html_urls, etc.) that contain the old org/repo path.
 // This handles GitHub/GitLab repo renames/transfers where all URLs change.
 func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL, newURL string) error {
+	// v0.27.113 (Copilot round 9): normalize the stored URL exactly like
+	// UpdateRepoURL does — prelim passes the RAW redirect target, so a
+	// redirect to ".../name.git" (or a trailing slash) would otherwise
+	// persist a noncanonical repo_git and undermine the URL-dedup
+	// invariant. extractRepoPath already trims internally, so only the
+	// direct repo_git write was exposed.
+	newURL = strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")
+
 	// Extract the path portions for find-and-replace.
 	// e.g., "https://github.com/old-org/old-repo" -> "old-org/old-repo"
 	oldPath := extractRepoPath(oldURL)
@@ -581,38 +690,66 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 		return s.UpdateRepoURL(ctx, repoID, newURL)
 	}
 
-	// Update repo_git first.
-	if err := s.UpdateRepoURL(ctx, repoID, newURL); err != nil {
-		return err
-	}
-
-	// Bulk-update all URL columns that contain the old path.
-	updates := []struct {
-		table  string
-		column string
-	}{
-		{"aveloxis_data.issues", "issue_url"},
-		{"aveloxis_data.issues", "html_url"},
-		{"aveloxis_data.pull_requests", "pr_url"},
-		{"aveloxis_data.pull_requests", "pr_html_url"},
-		{"aveloxis_data.pull_requests", "pr_diff_url"},
-		{"aveloxis_data.pull_request_reviews", "html_url"},
-		{"aveloxis_data.review_comments", "html_url"},
-		{"aveloxis_data.releases", "release_url"},
-	}
-
-	for _, u := range updates {
-		_, err := s.pool.Exec(ctx, fmt.Sprintf(
-			`UPDATE %s SET %s = REPLACE(%s, $1, $2) WHERE repo_id = $3 AND %s LIKE '%%' || $1 || '%%'`,
-			u.table, u.column, u.column, u.column),
-			oldPath, newPath, repoID)
+	// v0.27.111 (Copilot PR #184 round 6, active finding): the repo_git
+	// update and the child-URL rewrites run in ONE transaction. The old
+	// shape updated repo_git first and swallowed every child-update
+	// error (the "no matching rows" comment was wrong — a zero-row
+	// UPDATE succeeds; an ERROR is a real failure), so a mid-child
+	// failure returned success with repo_git already changed — later
+	// scans saw the new URL and never retried, leaving issue/PR/release
+	// URLs permanently stale. Now any failure rolls the whole rename
+	// back and the caller retries next cycle.
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
 		if err != nil {
-			// Non-fatal — some tables may not have matching rows.
-			continue
+			return err
 		}
-	}
+		defer tx.Rollback(ctx)
 
-	return nil
+		owner, name := parseRepoURLOwnerName(newURL)
+		if _, err := tx.Exec(ctx,
+			`UPDATE aveloxis_data.repos
+			 SET repo_git = $2, repo_owner = $3, repo_name = $4, data_collection_date = NOW()
+			 WHERE repo_id = $1`,
+			repoID, newURL, owner, name); err != nil {
+			return fmt.Errorf("rename repos row: %w", err)
+		}
+
+		// Bulk-update all URL columns that contain the old path.
+		updates := []struct {
+			table  string
+			column string
+		}{
+			{"aveloxis_data.issues", "issue_url"},
+			{"aveloxis_data.issues", "html_url"},
+			{"aveloxis_data.pull_requests", "pr_url"},
+			{"aveloxis_data.pull_requests", "pr_html_url"},
+			{"aveloxis_data.pull_requests", "pr_diff_url"},
+			{"aveloxis_data.pull_request_reviews", "html_url"},
+			{"aveloxis_data.review_comments", "html_url"},
+			{"aveloxis_data.releases", "release_url"},
+		}
+		for _, u := range updates {
+			if _, err := tx.Exec(ctx, fmt.Sprintf(
+				`UPDATE %s SET %s = REPLACE(%s, $1, $2) WHERE repo_id = $3 AND %s LIKE '%%' || $1 || '%%'`,
+				u.table, u.column, u.column, u.column),
+				oldPath, newPath, repoID); err != nil {
+				return fmt.Errorf("rename %s.%s: %w", u.table, u.column, err)
+			}
+		}
+		return tx.Commit(ctx)
+	})
+}
+
+// parseRepoURLOwnerName extracts the normalized owner/name pair for a
+// repos-row URL update — the single parse both UpdateRepoURL and the
+// transactional UpdateRepoURLs use (v0.27.111).
+func parseRepoURLOwnerName(newURL string) (owner, name string) {
+	if ru, perr := platform.ParseAnyRepoURL(newURL); perr == nil {
+		owner = ru.Owner
+		name = ru.Repo
+	}
+	return owner, model.NormalizeRepoName(name)
 }
 
 // extractRepoPath extracts "owner/repo" from a URL like "https://github.com/owner/repo".
@@ -636,15 +773,7 @@ func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL 
 	// consolidation; unparseable URLs keep empty owner/name — the URL
 	// column still updates, matching the historical permissiveness).
 	newURL = strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")
-	owner := ""
-	name := ""
-	if ru, perr := platform.ParseAnyRepoURL(newURL); perr == nil {
-		owner = ru.Owner
-		name = ru.Repo
-	}
-	// Defense in depth: even after the parser's trimming, normalize the
-	// extracted slug so every write path produces the same canonical form.
-	name = model.NormalizeRepoName(name)
+	owner, name := parseRepoURLOwnerName(newURL)
 
 	_, err := s.pool.Exec(ctx,
 		`UPDATE aveloxis_data.repos
@@ -1040,6 +1169,27 @@ func (s *PostgresStore) UpsertPRMeta(ctx context.Context, meta *model.PullReques
 		).Scan(&id)
 	})
 	return id, err
+}
+
+// SetPRMetaLinks stamps pull_requests.meta_head_id/meta_base_id from the
+// upserted meta rows' PKs (v0.27.104 — processStagedPR held both ids
+// since inception and discarded them; the columns were 100% dark).
+// Zero-valued ids leave the column untouched; a real id may replace a
+// stale one (meta row recreated under a new PK). The IS DISTINCT FROM
+// guard makes steady-state re-collection a no-op read: UpsertPRMeta's
+// ON CONFLICT RETURNING yields the same PK every cycle.
+func (s *PostgresStore) SetPRMetaLinks(ctx context.Context, prID, headMetaID, baseMetaID int64) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE aveloxis_data.pull_requests
+			SET meta_head_id = COALESCE(NULLIF($2::bigint, 0), meta_head_id),
+			    meta_base_id = COALESCE(NULLIF($3::bigint, 0), meta_base_id)
+			WHERE pull_request_id = $1
+			  AND (meta_head_id IS DISTINCT FROM COALESCE(NULLIF($2::bigint, 0), meta_head_id)
+			    OR meta_base_id IS DISTINCT FROM COALESCE(NULLIF($3::bigint, 0), meta_base_id))`,
+			prID, headMetaID, baseMetaID)
+		return err
+	})
 }
 
 // UpsertPRRepo inserts or updates a pull_request_repo row, storing fork/upstream

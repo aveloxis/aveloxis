@@ -173,7 +173,7 @@ func TestLockfileSnapshotRoundTrip(t *testing.T) {
 		// legitimate (two apps in a monorepo) — both must survive.
 		{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "3.0.0", LockfilePath: "svc2/poetry.lock", Direct: true},
 	}
-	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, inv, pkgs); err != nil {
+	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, inv, pkgs, nil); err != nil {
 		t.Fatal(err)
 	}
 	locked, err := store.GetRepoLockedVersions(ctx, repoID)
@@ -188,6 +188,7 @@ func TestLockfileSnapshotRoundTrip(t *testing.T) {
 	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID,
 		[]*RepoLockfileInfo{{Ecosystem: "npm", LockfilePath: "package-lock.json", LockfileKind: "package-lock.json", EntryCount: 5, DirectCount: 1}},
 		[]*RepoLockfilePackage{{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "5.0.0", LockfilePath: "package-lock.json", Direct: true}},
+		nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +201,7 @@ func TestLockfileSnapshotRoundTrip(t *testing.T) {
 	}
 
 	// Empty snapshot clears everything (last successful walk found none).
-	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, nil); err != nil {
+	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	locked, _ = store.GetRepoLockedVersions(ctx, repoID)
@@ -325,7 +326,7 @@ func TestLockfileCertaintyDerivation(t *testing.T) {
 		[]*RepoLockfilePackage{
 			{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "4.19.2", LockfilePath: "package-lock.json", Direct: true},
 			{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "2.3.3", LockfilePath: "poetry.lock", Direct: true},
-		}); err != nil {
+		}, nil); err != nil {
 		t.Fatal(err)
 	}
 	c, err = store.GetRepoLockfileCertainty(ctx, repoID)

@@ -27,9 +27,11 @@ import (
 // A hand-rolled line scanner (house style — the manifest parsers in
 // analysis.go do the same) is reliable here because lockfiles are
 // machine-generated with completely regular layout.
-func parsePoetryStyleTOML(data []byte) ([]LockfileEntry, bool, error) {
-	var entries []LockfileEntry
+func parsePoetryStyleTOML(data []byte) (parsedLockfileData, error) {
+	var out parsedLockfileData
 	inPackage := false
+	inDepsTable := false // poetry: [package.dependencies] sub-table
+	inDepsArray := false // Cargo: dependencies = [ "name", ... ]
 	name, version, category := "", "", ""
 	flush := func() {
 		if name != "" && version != "" {
@@ -37,9 +39,14 @@ func parsePoetryStyleTOML(data []byte) ([]LockfileEntry, bool, error) {
 			if category == "dev" {
 				scope = "dev"
 			}
-			entries = append(entries, LockfileEntry{Name: name, Version: version, Scope: scope})
+			out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: version, Scope: scope})
 		}
 		name, version, category = "", "", ""
+	}
+	addEdge := func(child, constraint string) {
+		if name != "" && child != "" {
+			out.Edges = append(out.Edges, LockfileEdge{ParentName: name, ParentVersion: version, ChildName: child, Constraint: constraint})
+		}
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -47,15 +54,61 @@ func parsePoetryStyleTOML(data []byte) ([]LockfileEntry, bool, error) {
 		case trimmed == "[[package]]":
 			flush()
 			inPackage = true
+			inDepsTable, inDepsArray = false, false
+			continue
+		case trimmed == "[package.dependencies]":
+			// v0.27.133 C2: poetry's per-package dependency sub-table —
+			// previously this branch fell into the generic "[" case,
+			// terminating the block and discarding the edges. The parent
+			// name/version are already parsed (they precede sub-tables
+			// in poetry's output ordering).
+			inDepsTable = true
 			continue
 		case strings.HasPrefix(trimmed, "["):
-			// Any other section ([metadata], [package.dependencies],
-			// [package.metadata], …) ends the top-level key scan.
+			// Any other section ([metadata], [package.metadata], …) ends
+			// the scan for this package.
 			flush()
 			inPackage = false
+			inDepsTable, inDepsArray = false, false
 			continue
 		}
 		if !inPackage {
+			continue
+		}
+		if inDepsTable {
+			// `child = "constraint"` or `child = {version = "...", ...}`.
+			if k, v, ok := strings.Cut(trimmed, "="); ok {
+				child := strings.Trim(strings.TrimSpace(k), `"`)
+				constraint := strings.Trim(strings.TrimSpace(v), `" `)
+				if strings.HasPrefix(constraint, "{") {
+					if inner, iok := tomlStringValue(strings.Trim(constraint, "{}"), "version"); iok {
+						constraint = inner
+					} else {
+						constraint = ""
+					}
+				}
+				addEdge(child, constraint)
+			}
+			continue
+		}
+		if inDepsArray {
+			// Cargo: quoted array elements "name" or "name version".
+			if trimmed == "]" {
+				inDepsArray = false
+				continue
+			}
+			el := strings.Trim(strings.TrimSuffix(trimmed, ","), `" `)
+			if el != "" {
+				child, constraint, _ := strings.Cut(el, " ")
+				addEdge(child, constraint)
+			}
+			continue
+		}
+		if trimmed == "dependencies = [" {
+			// v0.27.133 C2: Cargo.lock's per-package dependency array —
+			// previously ignored (array elements fell through
+			// tomlStringValue).
+			inDepsArray = true
 			continue
 		}
 		if v, ok := tomlStringValue(trimmed, "name"); ok {
@@ -69,7 +122,7 @@ func parsePoetryStyleTOML(data []byte) ([]LockfileEntry, bool, error) {
 		}
 	}
 	flush()
-	return entries, false, nil
+	return out, nil
 }
 
 // tomlStringValue extracts `key = "value"` from a single TOML line.
@@ -95,7 +148,7 @@ func tomlStringValue(line, key string) (string, bool) {
 // "develop" sections mapping package → {"version": "==1.2.3"}. The
 // sections hold the FULL resolved closure, so direct deps are not
 // distinguished.
-func parsePipfileLock(data []byte) ([]LockfileEntry, bool, error) {
+func parsePipfileLock(data []byte) (parsedLockfileData, error) {
 	var doc struct {
 		Default map[string]struct {
 			Version string `json:"version"`
@@ -105,7 +158,7 @@ func parsePipfileLock(data []byte) ([]LockfileEntry, bool, error) {
 		} `json:"develop"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, false, err
+		return parsedLockfileData{}, err
 	}
 	var entries []LockfileEntry
 	add := func(section map[string]struct {
@@ -120,7 +173,7 @@ func parsePipfileLock(data []byte) ([]LockfileEntry, bool, error) {
 	}
 	add(doc.Default)
 	add(doc.Develop)
-	return entries, false, nil
+	return parsedLockfileData{Entries: entries}, nil
 }
 
 // ============================================================
@@ -136,23 +189,40 @@ var gemfileLockSpecRe = regexp.MustCompile(`^    ([A-Za-z0-9_.-]+) \(([^)]+)\)\s
 // name with optional "!" pin marker and optional constraint parens.
 var gemfileLockDepRe = regexp.MustCompile(`^  ([A-Za-z0-9_.-]+)!?( \(.*\))?\s*$`)
 
+// gemfileLockChildRe matches a gem's own constraint line under a spec:
+// exactly 6-space indentation, "name (constraint)" or bare "name"
+// (v0.27.133 C2 — these lines are the specs section's edges).
+var gemfileLockChildRe = regexp.MustCompile(`^      ([A-Za-z0-9_.-]+)( \([^)]*\))?\s*$`)
+
 // parseGemfileLock handles Bundler's Gemfile.lock. Resolved packages
 // come from the GEM/specs section (4-space indent); the DEPENDENCIES
 // section lists the direct gems, so direct IS distinguished.
-func parseGemfileLock(data []byte) ([]LockfileEntry, bool, error) {
-	var entries []LockfileEntry
+func parseGemfileLock(data []byte) (parsedLockfileData, error) {
+	var out parsedLockfileData
 	direct := map[string]bool{}
 	section := ""
+	parentName, parentVersion := "", ""
 	for _, raw := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(raw)
 		if trimmed != "" && !strings.HasPrefix(raw, " ") {
 			section = trimmed // GEM / GIT / PATH / PLATFORMS / DEPENDENCIES / BUNDLED WITH
+			parentName, parentVersion = "", ""
 			continue
 		}
 		switch section {
 		case "GEM", "GIT", "PATH":
 			if m := gemfileLockSpecRe.FindStringSubmatch(raw); m != nil {
-				entries = append(entries, LockfileEntry{Name: m[1], Version: m[2]})
+				out.Entries = append(out.Entries, LockfileEntry{Name: m[1], Version: m[2]})
+				parentName, parentVersion = m[1], m[2]
+				continue
+			}
+			// v0.27.133 C2: 6-space lines under a 4-space spec are the
+			// gem's OWN dependency constraints — edges, previously
+			// deliberately unmatched.
+			if parentName != "" {
+				if m := gemfileLockChildRe.FindStringSubmatch(raw); m != nil {
+					out.Edges = append(out.Edges, LockfileEdge{ParentName: parentName, ParentVersion: parentVersion, ChildName: m[1], Constraint: strings.Trim(m[2], "() ")})
+				}
 			}
 		case "DEPENDENCIES":
 			if m := gemfileLockDepRe.FindStringSubmatch(raw); m != nil {
@@ -160,10 +230,11 @@ func parseGemfileLock(data []byte) ([]LockfileEntry, bool, error) {
 			}
 		}
 	}
-	for i := range entries {
-		entries[i].Direct = direct[entries[i].Name]
+	for i := range out.Entries {
+		out.Entries[i].Direct = direct[out.Entries[i].Name]
 	}
-	return entries, true, nil
+	out.DirectKnown = true
+	return out, nil
 }
 
 // ============================================================
@@ -174,36 +245,45 @@ func parseGemfileLock(data []byte) ([]LockfileEntry, bool, error) {
 // "packages-dev" of {name, version}. The arrays hold the full resolved
 // closure — direct deps are not distinguished. Leading "v" on versions
 // (v7.8.1) is stripped to match manifest/purl conventions.
-func parseComposerLock(data []byte) ([]LockfileEntry, bool, error) {
+func parseComposerLock(data []byte) (parsedLockfileData, error) {
+	type composerPkg struct {
+		Name       string            `json:"name"`
+		Version    string            `json:"version"`
+		Require    map[string]string `json:"require"`
+		RequireDev map[string]string `json:"require-dev"`
+	}
 	var doc struct {
-		Packages []struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-		} `json:"packages"`
-		PackagesDev []struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-		} `json:"packages-dev"`
+		Packages    []composerPkg `json:"packages"`
+		PackagesDev []composerPkg `json:"packages-dev"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, false, err
+		return parsedLockfileData{}, err
 	}
-	var entries []LockfileEntry
-	for _, list := range [][]struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
-	}{doc.Packages, doc.PackagesDev} {
+	var out parsedLockfileData
+	for _, list := range [][]composerPkg{doc.Packages, doc.PackagesDev} {
 		for _, p := range list {
 			version := p.Version
 			if len(version) > 1 && version[0] == 'v' && version[1] >= '0' && version[1] <= '9' {
 				version = version[1:]
 			}
-			if p.Name != "" && version != "" {
-				entries = append(entries, LockfileEntry{Name: p.Name, Version: version})
+			if p.Name == "" || version == "" {
+				continue
+			}
+			out.Entries = append(out.Entries, LockfileEntry{Name: p.Name, Version: version})
+			// v0.27.133 C2: each package's require map — platform
+			// pseudo-packages (php, ext-*, lib-*) carry no "/" and are
+			// not composer packages; skip them.
+			for _, req := range []map[string]string{p.Require, p.RequireDev} {
+				for child, constraint := range req {
+					if !strings.Contains(child, "/") {
+						continue
+					}
+					out.Edges = append(out.Edges, LockfileEdge{ParentName: p.Name, ParentVersion: version, ChildName: child, Constraint: constraint})
+				}
 			}
 		}
 	}
-	return entries, false, nil
+	return out, nil
 }
 
 // ============================================================
@@ -217,12 +297,25 @@ func parseComposerLock(data []byte) ([]LockfileEntry, bool, error) {
 // :git and :path entries carry no registry version and are skipped.
 var mixLockHexRe = regexp.MustCompile(`"([^"]+)":\s*\{:hex,\s*:[A-Za-z0-9_]+,\s*"([^"]+)"`)
 
-func parseMixLock(data []byte) ([]LockfileEntry, bool, error) {
-	var entries []LockfileEntry
-	for _, m := range mixLockHexRe.FindAllStringSubmatch(string(data), -1) {
-		entries = append(entries, LockfileEntry{Name: m[1], Version: m[2]})
+// mixLockDepTupleRe matches a dependency tuple INSIDE an entry's deps
+// list: `{:castore, "~> 1.0", [...]}`. The entry's own `{:hex, :name`
+// head cannot match — after `{:hex,` comes an atom, not a quoted
+// requirement (v0.27.133 C2).
+var mixLockDepTupleRe = regexp.MustCompile(`\{:([a-z0-9_]+),\s*"([^"]*)"`)
+
+func parseMixLock(data []byte) (parsedLockfileData, error) {
+	var out parsedLockfileData
+	for _, line := range strings.Split(string(data), "\n") {
+		m := mixLockHexRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		out.Entries = append(out.Entries, LockfileEntry{Name: m[1], Version: m[2]})
+		for _, dm := range mixLockDepTupleRe.FindAllStringSubmatch(line, -1) {
+			out.Edges = append(out.Edges, LockfileEdge{ParentName: m[1], ParentVersion: m[2], ChildName: dm[1], Constraint: dm[2]})
+		}
 	}
-	return entries, false, nil
+	return out, nil
 }
 
 // ============================================================
@@ -232,7 +325,7 @@ func parseMixLock(data []byte) ([]LockfileEntry, bool, error) {
 // parsePubspecLock handles pubspec.lock: YAML "packages" map whose
 // entries carry dependency: "direct main" / "direct dev" /
 // "direct overridden" / "transitive" — direct IS distinguished.
-func parsePubspecLock(data []byte) ([]LockfileEntry, bool, error) {
+func parsePubspecLock(data []byte) (parsedLockfileData, error) {
 	var doc struct {
 		Packages map[string]struct {
 			Dependency string `yaml:"dependency"`
@@ -240,7 +333,7 @@ func parsePubspecLock(data []byte) ([]LockfileEntry, bool, error) {
 		} `yaml:"packages"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, false, err
+		return parsedLockfileData{}, err
 	}
 	var entries []LockfileEntry
 	for name, pkg := range doc.Packages {
@@ -253,7 +346,7 @@ func parsePubspecLock(data []byte) ([]LockfileEntry, bool, error) {
 			Direct:  strings.HasPrefix(pkg.Dependency, "direct"),
 		})
 	}
-	return entries, true, nil
+	return parsedLockfileData{Entries: entries, DirectKnown: true}, nil
 }
 
 // ============================================================
@@ -266,7 +359,7 @@ func parsePubspecLock(data []byte) ([]LockfileEntry, bool, error) {
 // Package.swift manifest parser's repo-name extraction after the
 // case-insensitive lockfileMatchKey). Direct deps are not
 // distinguished.
-func parsePackageResolved(data []byte) ([]LockfileEntry, bool, error) {
+func parsePackageResolved(data []byte) (parsedLockfileData, error) {
 	type pin struct {
 		Identity string `json:"identity"` // v2/v3
 		Package  string `json:"package"`  // v1
@@ -281,7 +374,7 @@ func parsePackageResolved(data []byte) ([]LockfileEntry, bool, error) {
 		} `json:"object"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, false, err
+		return parsedLockfileData{}, err
 	}
 	pins := doc.Pins
 	if len(pins) == 0 {
@@ -297,7 +390,7 @@ func parsePackageResolved(data []byte) ([]LockfileEntry, bool, error) {
 			entries = append(entries, LockfileEntry{Name: name, Version: p.State.Version})
 		}
 	}
-	return entries, false, nil
+	return parsedLockfileData{Entries: entries}, nil
 }
 
 // ============================================================
@@ -308,18 +401,21 @@ func parsePackageResolved(data []byte) ([]LockfileEntry, bool, error) {
 // "dependencies" → target framework → package → {type, resolved}.
 // type "Direct" vs "Transitive" distinguishes direct deps; entries are
 // deduped across target frameworks (Direct anywhere wins).
-func parseDotnetPackagesLock(data []byte) ([]LockfileEntry, bool, error) {
+func parseDotnetPackagesLock(data []byte) (parsedLockfileData, error) {
 	var doc struct {
 		Dependencies map[string]map[string]struct {
-			Type     string `json:"type"`
-			Resolved string `json:"resolved"`
+			Type         string            `json:"type"`
+			Resolved     string            `json:"resolved"`
+			Dependencies map[string]string `json:"dependencies"`
 		} `json:"dependencies"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, false, err
+		return parsedLockfileData{}, err
 	}
 	type key struct{ name, version string }
 	seen := map[key]bool{} // key → direct
+	edgeSeen := map[string]bool{}
+	var out parsedLockfileData
 	for _, framework := range doc.Dependencies {
 		for name, pkg := range framework {
 			if pkg.Resolved == "" {
@@ -327,13 +423,23 @@ func parseDotnetPackagesLock(data []byte) ([]LockfileEntry, bool, error) {
 			}
 			k := key{name, pkg.Resolved}
 			seen[k] = seen[k] || strings.EqualFold(pkg.Type, "Direct")
+			// v0.27.133 C2: per-package dependency maps, deduped across
+			// target frameworks.
+			for child, constraint := range pkg.Dependencies {
+				ek := name + "@" + pkg.Resolved + ">" + child
+				if edgeSeen[ek] {
+					continue
+				}
+				edgeSeen[ek] = true
+				out.Edges = append(out.Edges, LockfileEdge{ParentName: name, ParentVersion: pkg.Resolved, ChildName: child, Constraint: constraint})
+			}
 		}
 	}
-	var entries []LockfileEntry
 	for k, direct := range seen {
-		entries = append(entries, LockfileEntry{Name: k.name, Version: k.version, Direct: direct})
+		out.Entries = append(out.Entries, LockfileEntry{Name: k.name, Version: k.version, Direct: direct})
 	}
-	return entries, true, nil
+	out.DirectKnown = true
+	return out, nil
 }
 
 // ============================================================
@@ -346,7 +452,7 @@ func parseDotnetPackagesLock(data []byte) ([]LockfileEntry, bool, error) {
 // build.gradle manifest parsers produce, so matching lines up. The
 // "empty=..." bookkeeping line and # comments are skipped. Direct deps
 // are not distinguished.
-func parseGradleLockfile(data []byte) ([]LockfileEntry, bool, error) {
+func parseGradleLockfile(data []byte) (parsedLockfileData, error) {
 	var entries []LockfileEntry
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -363,7 +469,7 @@ func parseGradleLockfile(data []byte) ([]LockfileEntry, bool, error) {
 		}
 		entries = append(entries, LockfileEntry{Name: parts[0] + ":" + parts[1], Version: parts[2]})
 	}
-	return entries, false, nil
+	return parsedLockfileData{Entries: entries}, nil
 }
 
 // ============================================================
@@ -379,7 +485,7 @@ var stackHackageNameVersionRe = regexp.MustCompile(`^(.+)-([0-9][0-9.]*)$`)
 // deps are not distinguished (the lock covers extra-deps, all of which
 // are declared, but the snapshot resolution model doesn't map onto a
 // direct/transitive split).
-func parseStackYamlLock(data []byte) ([]LockfileEntry, bool, error) {
+func parseStackYamlLock(data []byte) (parsedLockfileData, error) {
 	var doc struct {
 		Packages []struct {
 			Completed struct {
@@ -388,7 +494,7 @@ func parseStackYamlLock(data []byte) ([]LockfileEntry, bool, error) {
 		} `yaml:"packages"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, false, err
+		return parsedLockfileData{}, err
 	}
 	var entries []LockfileEntry
 	for _, p := range doc.Packages {
@@ -400,5 +506,5 @@ func parseStackYamlLock(data []byte) ([]LockfileEntry, bool, error) {
 			entries = append(entries, LockfileEntry{Name: m[1], Version: m[2]})
 		}
 	}
-	return entries, false, nil
+	return parsedLockfileData{Entries: entries}, nil
 }

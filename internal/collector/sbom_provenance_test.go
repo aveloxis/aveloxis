@@ -25,7 +25,7 @@ func TestCycloneDXRecordsScancodeVersionWhenEvidencePresent(t *testing.T) {
 		ConcludedLicenseSPDX: "MIT",
 		ScancodeVersion:      "32.4.0",
 	}
-	data, err := generateCycloneDX(repo, nil, scan)
+	data, err := generateCycloneDX(repo, nil, scan, nil)
 	if err != nil {
 		t.Fatalf("generateCycloneDX: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestCycloneDXOmitsScancodeToolWithoutEvidence(t *testing.T) {
 		"nil scanData":   nil,
 		"version absent": {ConcludedLicenseSPDX: "MIT"}, // pre-version-column scan
 	} {
-		data, err := generateCycloneDX(repo, nil, scan)
+		data, err := generateCycloneDX(repo, nil, scan, nil)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -76,7 +76,7 @@ func TestCycloneDXOmitsScancodeToolWithoutEvidence(t *testing.T) {
 func TestSPDXRecordsScancodeCreatorWhenEvidencePresent(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org", GitURL: "https://github.com/org/myapp"}
 	scan := &db.ScancodeForSBOM{ConcludedLicenseSPDX: "MIT", ScancodeVersion: "32.4.0"}
-	data, err := generateSPDX(repo, nil, scan)
+	data, err := generateSPDX(repo, nil, scan, nil)
 	if err != nil {
 		t.Fatalf("generateSPDX: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestSPDXRecordsScancodeCreatorWhenEvidencePresent(t *testing.T) {
 
 func TestSPDXOmitsScancodeCreatorWithoutEvidence(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org", GitURL: "https://github.com/org/myapp"}
-	data, err := generateSPDX(repo, nil, nil)
+	data, err := generateSPDX(repo, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("generateSPDX: %v", err)
 	}

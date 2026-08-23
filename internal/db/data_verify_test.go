@@ -61,40 +61,38 @@ func TestBatchSingleStatsAgreementSeeded(t *testing.T) {
 	}
 	store, ctx := v0251Connect(t)
 	t.Cleanup(func() { store.pool.Close() })
-	pool := store.pool
 	suffix := time.Now().UnixNano()
 
+	// Seeds + cleanups ride the bounded 40P01 retry (testexec_test.go)
+	// — this test's vuln seed was CI's deadlock victim on 2026-08-21
+	// (a concurrent package's migration DDL; the v0.27.114 class).
 	var repoID int64
-	if err := pool.QueryRow(ctx, `
+	mustQueryRowRetry(ctx, t, store, `
 		INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id, repo_group_id)
-		VALUES ($1, '_avbss', $2, 1, 1) RETURNING repo_id`,
-		fmt.Sprintf("https://github.com/_avbss/r%d", suffix), fmt.Sprintf("r%d", suffix)).Scan(&repoID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `
+		VALUES ($1, '_avbss', $2, 1, 1) RETURNING repo_id`, &repoID,
+		fmt.Sprintf("https://github.com/_avbss/r%d", suffix), fmt.Sprintf("r%d", suffix))
+	mustExecRetry(ctx, t, store, `
 		INSERT INTO aveloxis_ops.collection_queue (repo_id, status, priority, due_at, last_collected)
-		VALUES ($1, 'queued', 0, NOW(), NOW())`, repoID); err != nil {
-		t.Fatal(err)
-	}
+		VALUES ($1, 'queued', 0, NOW(), NOW())`, repoID)
 	seed := func(vulnID, kind string, resolved bool) {
 		resolvedAt := "NULL"
 		if resolved {
 			resolvedAt = "NOW()"
 		}
-		if _, err := pool.Exec(ctx, fmt.Sprintf(`
+		mustExecRetry(ctx, t, store, fmt.Sprintf(`
 			INSERT INTO aveloxis_data.repo_deps_vulnerabilities
 				(repo_id, vuln_id, package_name, severity, dependency_kind, resolved_at)
-			VALUES ($1, $2, 'pkg', 'HIGH', $3, %s)`, resolvedAt), repoID, vulnID, kind); err != nil {
-			t.Fatal(err)
-		}
+			VALUES ($1, $2, 'pkg', 'HIGH', $3, %s)`, resolvedAt), repoID, vulnID, kind)
 	}
 	seed(fmt.Sprintf("GHSA-cur-%d", suffix), "direct", false)
 	seed(fmt.Sprintf("GHSA-res-%d", suffix), "direct", true)
 	seed(fmt.Sprintf("GHSA-self-%d", suffix), "self", false)
 	t.Cleanup(func() {
-		pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_deps_vulnerabilities WHERE repo_id = $1`, repoID)
-		pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
-		pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repo_deps_vulnerabilities WHERE repo_id = $1`, repoID)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
 
 	singleTotal, singleCrit, err := store.CountRepoVulnerabilities(ctx, repoID)
@@ -119,5 +117,4 @@ func TestBatchSingleStatsAgreementSeeded(t *testing.T) {
 		t.Errorf("agreement probe reports FAIL on agreeing data: %s", res.Detail)
 	}
 
-	_ = context.Background
 }

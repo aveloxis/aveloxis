@@ -21,7 +21,25 @@ package db
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
+
+// drainLockedBy is the ONE spelling of the drain-park lock owner
+// (SR-17): LockReposForDrain, ReleaseDrainLock, and HeartbeatDrainLocks
+// must all match the same locked_by string, or a heartbeat/release
+// silently stops finding the row it is supposed to touch.
+func drainLockedBy(workerID string) string {
+	return fmt.Sprintf("%s:drain", workerID)
+}
+
+// drainHeartbeatInterval matches the scheduler's 30-second job
+// heartbeat (HeartbeatJob) — 1/120th of the default 1-hour
+// StaleLockTimeout, so a single missed beat can never cost the lock.
+const drainHeartbeatInterval = 30 * time.Second
 
 // LockReposForDrain marks a set of repo_ids as status='collecting',
 // locked_by='<workerID>:drain', locked_at=NOW() in a single UPDATE.
@@ -44,7 +62,7 @@ func (s *PostgresStore) LockReposForDrain(ctx context.Context, repoIDs []int64, 
 		return nil, nil
 	}
 
-	lockedBy := fmt.Sprintf("%s:drain", workerID)
+	lockedBy := drainLockedBy(workerID)
 
 	rows, err := s.pool.Query(ctx, `
 		UPDATE aveloxis_ops.collection_queue
@@ -87,7 +105,7 @@ func (s *PostgresStore) LockReposForDrain(ctx context.Context, repoIDs []int64, 
 // a repo whose drain was hijacked by a manual operator action (status
 // changed externally) won't be silently overwritten.
 func (s *PostgresStore) ReleaseDrainLock(ctx context.Context, repoID int64, workerID string) error {
-	lockedBy := fmt.Sprintf("%s:drain", workerID)
+	lockedBy := drainLockedBy(workerID)
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
 		SET status = 'queued',
@@ -101,4 +119,62 @@ func (s *PostgresStore) ReleaseDrainLock(ctx context.Context, repoID int64, work
 		return fmt.Errorf("release drain lock for repo %d: %w", repoID, err)
 	}
 	return nil
+}
+
+// HeartbeatDrainLocks refreshes locked_at on EVERY drain-parked row
+// this worker holds — the drain-lock twin of HeartbeatJob.
+// v0.27.147 (round 26) introduced the heartbeat; v0.27.150 (round 29)
+// widened it from one repo to the worker's whole parked SET: the
+// scheduler lock-parks the entire leftover-drain set up front and
+// drains it sequentially, so with a per-repo beat the WAITING repos'
+// locked_at never refreshed — one long drain (production has seen
+// ~33h) let RecoverStaleLocks (1-hour default) reclaim the parked
+// tail, and those repos were later drained without a valid lock while
+// routine collection could purge their staging. One UPDATE per beat
+// covers the current repo and every waiting one. The locked_by +
+// status guards make a straggler beat after release (or after a
+// reclaim) a harmless 0-row UPDATE.
+func (s *PostgresStore) HeartbeatDrainLocks(ctx context.Context, workerID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_ops.collection_queue
+		SET locked_at = NOW()
+		WHERE locked_by = $1 AND status = 'collecting'`,
+		drainLockedBy(workerID))
+	return err
+}
+
+// StartDrainHeartbeat spawns the 30-second heartbeat goroutine for
+// ALL of a worker's drain-parked repos and returns a stop function
+// that cancels AND joins it. This is the ONE implementation both
+// drain-lock holders (the scheduler's leftover-staging drain and
+// `aveloxis heal-collection-gaps`) wrap their work in — a second
+// inline copy of the ticker loop is the C4/L3 defect shape. Start it
+// ONCE for the whole drain/heal (immediately after the first
+// LockReposForDrain, covering repos parked later under the same
+// workerID too); call stop() after the last ReleaseDrainLock. Beats
+// on an empty set are harmless 0-row UPDATEs.
+func (s *PostgresStore) StartDrainHeartbeat(ctx context.Context, logger *slog.Logger, workerID string) (stop func()) {
+	hbCtx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer safego.Recover(logger, "drain-heartbeat")
+		ticker := time.NewTicker(drainHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				if err := s.HeartbeatDrainLocks(hbCtx, workerID); err != nil {
+					logger.Warn("drain heartbeat failed", "worker_id", workerID, "error", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		wg.Wait()
+	}
 }

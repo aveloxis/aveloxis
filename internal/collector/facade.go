@@ -52,6 +52,17 @@ type FacadeResult struct {
 	Commits        int
 	CommitMessages int
 	Errors         []error
+	// CommitWriteFailures counts commit ROWS that failed to persist and
+	// were swallowed (warn-and-continue) — the batch path's per-row
+	// fallback failures and its ctx-cancel bail. v0.27.107 (ultrareview
+	// round 2, bug_005): the v0.27.106 whitespace-phase gate checked
+	// result.Errors, but insertCommitBatch NEVER returns non-nil for DB
+	// failures, so the gate was decorative. The whitespace phase gates
+	// on this counter instead — stamping the marker over missing commit
+	// rows would exclude them from every future incremental walk.
+	// Message/parent write failures deliberately don't count: they
+	// don't remove commits rows, which is all the whitespace join needs.
+	CommitWriteFailures int
 }
 
 // CollectRepo clones (or fetches) the repo and parses git log for commit data.
@@ -69,6 +80,26 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 	// Parse git log.
 	if err := f.parseGitLog(ctx, repoID, clonePath, result); err != nil {
 		return result, fmt.Errorf("git log: %w", err)
+	}
+
+	// v0.27.105: whitespace measurement (Augur parity — see
+	// whitespace.go). Incremental past the stamped marker; full history
+	// when unmarked. Warn-don't-fail: whitespace is a refinement of the
+	// counts the numstat pass already stored, never a reason to fail
+	// the facade phase.
+	//
+	// v0.27.106 (PR #184 review): gated on a CLEAN numstat pass. A
+	// batch-insert failure leaves commit rows missing; stamping the
+	// marker anyway would exclude those commits from every future
+	// incremental walk once a later cycle inserts them — their
+	// whitespace would stay zero forever. Skipping keeps the marker
+	// empty so the next clean cycle does the full walk.
+	if len(result.Errors) == 0 && result.CommitWriteFailures == 0 {
+		f.runWhitespacePhase(ctx, repoID, clonePath)
+	} else {
+		f.logger.Warn("whitespace phase skipped — numstat pass lost commit rows; marker stays unstamped for a full walk next cycle",
+			"repo_id", repoID, "numstat_errors", len(result.Errors),
+			"commit_write_failures", result.CommitWriteFailures)
 	}
 
 	// dm_repo_* aggregates are NOT refreshed here. Running them per repo on
@@ -295,7 +326,13 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 	f.logger.Info("using default branch for git log", "repo_id", repoID, "branch", defaultBranch)
 
 	// Run git log with --numstat for per-file stats on the default branch only.
-	cmd := exec.CommandContext(ctx, "git", "-C", clonePath, "log",
+	// Derived context (v0.27.105 ultrareview, same class as the
+	// whitespace walker's bug_001): a scanner error (token too long)
+	// exits the read loop with git still writing; cmd.Wait() on an
+	// undrained pipe then blocks forever. Cancelling kills git first.
+	logCtx, cancelLog := context.WithCancel(ctx)
+	defer cancelLog()
+	cmd := exec.CommandContext(logCtx, "git", "-C", clonePath, "log",
 		defaultBranch,
 		"--numstat",
 		"--format="+gitLogFormat,
@@ -388,11 +425,19 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 		}
 	}
 
+	if scanErr := scanner.Err(); scanErr != nil {
+		// Early scanner exit — kill git so Wait() below can return
+		// instead of deadlocking on the undrained pipe.
+		cancelLog()
+		_ = cmd.Wait()
+		return fmt.Errorf("scanning git log: %w", scanErr)
+	}
+
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("git log exited with error: %w", err)
 	}
 
-	return scanner.Err()
+	return nil
 }
 
 type parsedCommit struct {
@@ -616,10 +661,12 @@ func (f *FacadeCollector) upsertCommitRowsFallback(ctx context.Context, repoID i
 		if ctx.Err() != nil {
 			f.logger.Warn("commit fallback aborted — context canceled, skipping remaining rows",
 				"repo_id", repoID, "remaining", len(rows)-i, "cause", ctx.Err())
+			result.CommitWriteFailures += len(rows) - i
 			break
 		}
 		if err := f.store.UpsertCommit(ctx, commit); err != nil {
 			f.logger.Warn("failed to upsert commit", "hash", commit.Hash, "file", commit.Filename, "error", err)
+			result.CommitWriteFailures++
 			continue
 		}
 		insertedByHash[commit.Hash] = true

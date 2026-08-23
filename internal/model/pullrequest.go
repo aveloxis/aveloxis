@@ -141,7 +141,12 @@ type PullRequestRepo struct {
 	RepoFullName string // full name (e.g., "contributor/my-fork")
 	Private      bool
 	ContribID    *string // contributor UUID of the repo owner
-	Origin       DataOrigin
+	// OwnerRef is the fork/upstream repo OWNER as delivered by the API —
+	// input to contributor resolution, never persisted directly
+	// (v0.27.104: the owner object was decoded on both rails since
+	// v0.18.1 and dropped, leaving pr_cntrb_id at 0 of 41.2M rows).
+	OwnerRef UserRef
+	Origin   DataOrigin
 }
 
 // PullRequestEvent records a state change on a PR/MR.

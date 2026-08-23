@@ -12,6 +12,7 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -105,8 +106,32 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 
 	var inventory []*db.RepoLockfileInfo
 	var packages []*db.RepoLockfilePackage
+	var edges []*db.RepoLockfileEdge
 	for _, pl := range parsed {
 		res := pl.Result
+		// v0.27.133 C2: dependency edges — the attribution substrate —
+		// are stored ONLY under the same vuln_scan_transitive knob that
+		// gates transitive package rows (edges without the transitive
+		// closure have nothing to attribute; knob off keeps the exact
+		// pre-C2 write set).
+		if ac.TransitiveLockfiles {
+			edgeSeen := map[string]bool{}
+			for _, ed := range res.Edges {
+				key := ed.ParentName + "@" + ed.ParentVersion + ">" + ed.ChildName
+				if edgeSeen[key] {
+					continue
+				}
+				edgeSeen[key] = true
+				edges = append(edges, &db.RepoLockfileEdge{
+					Ecosystem:       res.Ecosystem,
+					LockfilePath:    pl.Path,
+					ParentName:      ed.ParentName,
+					ParentVersion:   ed.ParentVersion,
+					ChildName:       ed.ChildName,
+					ChildConstraint: ed.Constraint,
+				})
+			}
+		}
 		matched := 0
 		seen := map[string]bool{}
 		directFlagged := 0
@@ -170,14 +195,60 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 		})
 	}
 
-	if err := ac.store.ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages); err != nil {
+	// v0.27.133 C2: Go transitive closure via the toolchain — same knob,
+	// same snapshot transaction. Declared go deps are the direct set.
+	//
+	// v0.27.150 (round 29): the expansion is best-effort, but the
+	// snapshot REPLACE below is not — an incomplete run (missing
+	// toolchain, module failure, repo budget exhausted) used to wipe
+	// the previously valid Go closure, silently shrinking vuln and
+	// SBOM output and FALSE-RESOLVING findings whose packages
+	// vanished (they then flip-flopped back on the next healthy
+	// scan). On incomplete: discard this run's partial Go rows and
+	// carry the PRIOR snapshot's Go closure forward unchanged —
+	// whole-and-stale beats partial-and-mixed. A failed prior-rows
+	// read propagates (SR-5): failing the phase leaves the prior
+	// snapshot intact, which is strictly better than replacing it
+	// with a shrunken one.
+	if ac.TransitiveLockfiles {
+		goPkgs, goEdges, goComplete := ac.scanGoModGraph(ctx, workDir, declared)
+		if goComplete {
+			packages = append(packages, goPkgs...)
+			edges = append(edges, goEdges...)
+		} else {
+			prevPkgs, prevEdges, perr := ac.store.GetRepoGoClosureRows(ctx, repoID)
+			if perr != nil {
+				return fmt.Errorf("go expansion incomplete and prior-closure read failed (snapshot NOT replaced): %w", perr)
+			}
+			ac.logger.Warn("go mod graph expansion incomplete — preserving the prior snapshot's Go closure",
+				"repo_id", repoID,
+				"prior_packages", len(prevPkgs), "prior_edges", len(prevEdges),
+				"discarded_partial_packages", len(goPkgs), "discarded_partial_edges", len(goEdges))
+			packages = append(packages, prevPkgs...)
+			edges = append(edges, prevEdges...)
+		}
+	}
+
+	if err := ac.store.ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges); err != nil {
 		return err
 	}
 	if len(inventory) > 0 {
+		// Round-21 (v0.27.138): with transitive scanning on by default,
+		// packages holds direct + transitive + the Go build list —
+		// log the SPLIT, not a mislabeled total (the house
+		// log-the-effective-value rule).
+		direct := 0
+		for _, p := range packages {
+			if p.Direct {
+				direct++
+			}
+		}
 		ac.logger.Info("lockfile scan complete",
 			"repo_id", repoID,
 			"lockfiles", len(inventory),
-			"direct_resolutions", len(packages))
+			"direct_resolutions", direct,
+			"transitive_resolutions", len(packages)-direct,
+			"edges", len(edges))
 	}
 	result.Lockfiles = len(inventory)
 	result.LockfilePackages = len(packages)

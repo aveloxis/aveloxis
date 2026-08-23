@@ -179,6 +179,14 @@ func runImportFoundations(cfgPath string, opts runOpts) error {
 	for _, p := range projects {
 		t := getTally(p)
 		t.projects++
+		for _, rurl := range p.UnresolvedRepoURLs {
+			// Round-24: the forge probe found NO existing repo under
+			// either naming variant — skipping beats upserting a
+			// phantom row that prelim later 404s and dequeues.
+			logger.Warn("no existing repo for podling under either naming variant — skipped",
+				"project", p.Name, "guessed_url", rurl)
+			t.skipped++
+		}
 		for _, rurl := range p.RepoURLs {
 			t.repos++
 			parsed, perr := platform.ParseRepoURL(rurl)

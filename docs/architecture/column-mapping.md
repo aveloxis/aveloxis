@@ -172,3 +172,75 @@ users and null `closed_by_id` for deleted closers). Analysts joining
 on `meta_label` should treat `''` as "fork deleted"; the branch NAME
 is still available in `meta_ref`, and the paired `pull_request_repo`
 row is likewise absent for deleted forks.
+
+## Known-empty columns (the 2026-08-19 fill-audit contract, v0.27.105)
+
+A fleet-wide fill-rate audit of `aveloxis_large` (every non-empty table,
+type-aware populated predicates, sampled for 100M+-row tables) classified
+every column that was empty or near-empty in production. The classes and
+their canonical lists live in `internal/db/column_writer_tripwire_test.go`
+(`documentedEmpty`) — that test fails the build if a column is added to an
+audited entity table without either a writer or a documented reason, so
+this section and the allowlist cannot drift apart silently.
+
+**Augur schema-parity ballast (write-never, kept on purpose):** the
+`contributors.cntrb_{type,fake,lat,long,country_code,state,city,last_used}`
+geo/classification family, `issues.pull_request`/`pull_request_id` (aveloxis
+stores PRs in their own table), `issues.due_on`, `repos.repo_path`,
+`repo_labor.repo_url`, `pull_request_review_message_ref.pr_url`/
+`pr_review_msg_url`, `pull_requests.pr_augur_contributor_id`,
+`unresolved_commit_emails.name`, `commits.cmt_ght_committed_at`. Full Augur
+schema parity is a project goal; these columns stay declared and stay empty.
+
+**Absent upstream (no forge source exists):** `releases.updated_at`
+(neither forge's release payload carries it), `contributors.gh_gravatar_id`
+(GitHub deprecated the field — returns `""` for everyone),
+`issues.issue_url` on GitLab (no API-URL field in the list payload),
+`repo_info.security_audit_file` (no community-profile source).
+
+**Token-scope / corpus outcomes (writer correct, data legitimately rare):**
+`releases.is_draft` (public tokens never see draft releases),
+`pull_request_repo.pr_repo_private_bool` (private forks are invisible),
+`messages.msg_sender_email` (written only by the mailing-list projection —
+empty on every forge-sourced message), the
+`email_message.linked_pull_request_id`/`linked_pr_review_id`/
+`linked_commit_hash` routing columns (writers exist; matches depend on the
+list corpus), `contributors.gl_*` (wired since v0.20.3; the fleet has one
+GitLab repo).
+
+**Lives on a different table (NO writer on this one — allowlisted):**
+`messages.msg_header` and `messages.rgls_id`. Mailing-list headers and
+list linkage are first-class on `email_message`/`email_message_ref`; the
+shared message upsert never writes these two columns, so they sit in the
+tripwire's `documentedEmpty` map — genuinely writer-less, not merely rare.
+(Corrected v0.27.113: an earlier revision grouped them with the
+writer-backed `msg_sender_email`, drifting from the map this section
+claims to mirror.)
+
+**Platform-parity notes:** `issue_events.action_commit_hash` and
+`pull_request_events.action_commit_hash` are GitHub-only (the GitLab event
+mapping has no commit attribution).
+
+**Documented follow-ups (not yet implemented, deliberately):**
+
+- `commits.cmt_ght_committer_id` — committer-identity resolution (the
+  author twin IS resolved; the committer needs its own resolver pass and
+  API budget).
+- `repo_info.committer_count` — derivable from facade commits data
+  (`COUNT(DISTINCT cmt_committer_email)` per repo); GitHub's
+  `mentionableUsers` is not semantically equivalent.
+- The REST-rail efficiency refactor: both forges' listing responses
+  already carry labels/assignees that the per-item REST calls re-fetch
+  (`ListIssueLabels`, `ListPRAssignees`, `ListPRReviewers`, …). Nearly
+  idle on today's fleet (GitHub runs the GraphQL rails; the GitLab fleet
+  is one repo) — worth doing if GitLab tracking grows or REST mode runs
+  fleet-wide during a GraphQL outage. Needs shadow-diff re-validation.
+
+Everything else the audit flagged was FIXED in v0.27.102–v0.27.105:
+`repos.platform_repo_id` (rename-dedup identity), the org-expansion
+forge-id gap, `repo_archived` on the GraphQL→REST fallback,
+`releases.data_source`, `contributor_identities.node_id`/`user_type` on
+the GraphQL rail, `pull_request_repo.pr_cntrb_id`,
+`pull_requests.meta_head_id`/`meta_base_id`, `repo_info.keywords`
+(topics), `repos.created_at`/`updated_at`, and `commits.cmt_whitespace`
+(Augur-parity measurement + `aveloxis rewalk-whitespace`).

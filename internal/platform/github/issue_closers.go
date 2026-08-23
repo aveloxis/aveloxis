@@ -34,7 +34,7 @@ func (c *Client) FetchIssueClosers(ctx context.Context, owner, repo string, numb
 	b.WriteString("query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) {")
 	for i, n := range numbers {
 		fmt.Fprintf(&b, `
-  i%d: issue(number: %d) { timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { __typename ... on ClosedEvent { actor { __typename login avatarUrl url ... on User { databaseId name email } } } } } }`, i, n)
+  i%d: issue(number: %d) { timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { __typename ... on ClosedEvent { actor { __typename login avatarUrl url ... on User { id databaseId name email } ... on Bot { id databaseId } } } } } }`, i, n)
 	}
 	b.WriteString(" } }")
 
@@ -52,6 +52,8 @@ func (c *Client) FetchIssueClosers(ctx context.Context, owner, repo string, numb
 		TimelineItems struct {
 			Nodes []struct {
 				Actor *struct {
+					Typename   string `json:"__typename"`
+					ID         string `json:"id"`
 					Login      string `json:"login"`
 					AvatarURL  string `json:"avatarUrl"`
 					URL        string `json:"url"`
@@ -78,6 +80,13 @@ func (c *Client) FetchIssueClosers(ctx context.Context, owner, repo string, numb
 		if a == nil || a.Login == "" {
 			continue // deleted closer — stays NULL
 		}
+		// v0.27.103: __typename was selected but never decoded, and id
+		// was never selected — every closer identity landed with empty
+		// user_type/node_id (2026-08-19 fill audit, Workstream A).
+		closerType := a.Typename
+		if closerType == "" {
+			closerType = "User"
+		}
 		out[n] = model.UserRef{
 			PlatformID: a.DatabaseID,
 			Login:      a.Login,
@@ -85,6 +94,8 @@ func (c *Client) FetchIssueClosers(ctx context.Context, owner, repo string, numb
 			Email:      a.Email,
 			AvatarURL:  a.AvatarURL,
 			URL:        a.URL,
+			NodeID:     a.ID,
+			Type:       closerType,
 		}
 	}
 	return out, nil

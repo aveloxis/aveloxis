@@ -70,7 +70,7 @@ var msgRefDataSourceTargets = []struct {
 
 // MsgRefDataSourceWindowSQL is the per-window UPDATE, instantiated per
 // target table ($1 = exclusive lower PK bound, $2 = inclusive upper).
-// The COALESCE(...) = ” filter makes re-runs no-ops.
+// The COALESCE(...) = "" filter makes re-runs no-ops.
 func MsgRefDataSourceWindowSQL(table, pk string) string {
 	return fmt.Sprintf(`
 		UPDATE %s t

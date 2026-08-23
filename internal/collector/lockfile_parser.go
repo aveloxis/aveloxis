@@ -45,12 +45,34 @@ type LockfileEntry struct {
 	Scope string
 }
 
+// LockfileEdge is one parent→child dependency edge from a lockfile
+// (v0.27.133 C2 — parent-chain attribution). ParentVersion may be ""
+// for formats that key parents by name only; Constraint is the raw
+// declared range (informational — child RESOLUTION is derived at read
+// time by joining the package set, which keeps edge extraction
+// format-uniform and honest).
+type LockfileEdge struct {
+	ParentName    string
+	ParentVersion string
+	ChildName     string
+	Constraint    string
+}
+
 // LockfileResult is a parsed lockfile.
 type LockfileResult struct {
 	Kind        string // roster filename, e.g. "package-lock.json"
 	Ecosystem   string // package-manager string matching repo_deps_libyear: npm/pypi/cargo/…
 	Entries     []LockfileEntry
-	DirectKnown bool // whether Direct flags are meaningful for this format
+	Edges       []LockfileEdge // parent→child edges; empty for edge-less formats (documented per format)
+	DirectKnown bool           // whether Direct flags are meaningful for this format
+}
+
+// parsedLockfileData is a parser's raw output before roster metadata is
+// attached (v0.27.133 — the signature carries Edges now).
+type parsedLockfileData struct {
+	Entries     []LockfileEntry
+	Edges       []LockfileEdge
+	DirectKnown bool
 }
 
 type lockfileSpec struct {
@@ -58,7 +80,7 @@ type lockfileSpec struct {
 	// binaryOnly formats (bun.lockb) are DETECTED for the inventory
 	// (kind marker, zero entries) but never parsed.
 	binaryOnly bool
-	parse      func(data []byte) ([]LockfileEntry, bool, error)
+	parse      func(data []byte) (parsedLockfileData, error)
 }
 
 // lockfileKinds is the roster: base filename → parser. The analysis
@@ -66,7 +88,7 @@ type lockfileSpec struct {
 var lockfileKinds = map[string]lockfileSpec{
 	// JavaScript / npm-registry ecosystems.
 	"package-lock.json": {ecosystem: "npm", parse: parsePackageLockJSON},
-	"yarn.lock":         {ecosystem: "npm", parse: parseYarnLockV1},
+	"yarn.lock":         {ecosystem: "npm", parse: parseYarnLock},
 	"pnpm-lock.yaml":    {ecosystem: "npm", parse: parsePnpmLock},
 	"bun.lock":          {ecosystem: "npm", parse: parseBunLock},
 	"bun.lockb":         {ecosystem: "npm", binaryOnly: true},
@@ -100,12 +122,13 @@ func ParseLockfile(kind string, data []byte) (*LockfileResult, error) {
 	if spec.binaryOnly {
 		return res, nil
 	}
-	entries, directKnown, err := spec.parse(data)
+	parsed, err := spec.parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", kind, err)
 	}
-	res.Entries = entries
-	res.DirectKnown = directKnown
+	res.Entries = parsed.Entries
+	res.Edges = parsed.Edges
+	res.DirectKnown = parsed.DirectKnown
 	return res, nil
 }
 
@@ -129,7 +152,7 @@ func lockfileMatchKey(ecosystem, name string) string {
 // "dependencies" objects) and v2/v3 (flat "packages" map keyed by
 // node_modules path). v2/v3 distinguish direct deps via the root ""
 // entry's dependencies/devDependencies; v1 does not.
-func parsePackageLockJSON(data []byte) ([]LockfileEntry, bool, error) {
+func parsePackageLockJSON(data []byte) (parsedLockfileData, error) {
 	var doc struct {
 		LockfileVersion int `json:"lockfileVersion"`
 		Packages        map[string]struct {
@@ -142,7 +165,7 @@ func parsePackageLockJSON(data []byte) ([]LockfileEntry, bool, error) {
 		Dependencies map[string]json.RawMessage `json:"dependencies"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, false, err
+		return parsedLockfileData{}, err
 	}
 
 	if len(doc.Packages) > 0 {
@@ -156,7 +179,7 @@ func parsePackageLockJSON(data []byte) ([]LockfileEntry, bool, error) {
 				direct[name] = true
 			}
 		}
-		var entries []LockfileEntry
+		var out parsedLockfileData
 		for path, pkg := range doc.Packages {
 			if path == "" || pkg.Link || pkg.Version == "" {
 				continue
@@ -174,17 +197,29 @@ func parsePackageLockJSON(data []byte) ([]LockfileEntry, bool, error) {
 			if pkg.Dev {
 				scope = "dev"
 			}
-			entries = append(entries, LockfileEntry{Name: name, Version: pkg.Version, Direct: direct[name], Scope: scope})
+			out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: pkg.Version, Direct: direct[name], Scope: scope})
+			// v0.27.133 C2: the per-entry dependency maps were decoded
+			// and DISCARDED since v0.27.21 — keep them as edges.
+			for child, constraint := range pkg.Dependencies {
+				out.Edges = append(out.Edges, LockfileEdge{ParentName: name, ParentVersion: pkg.Version, ChildName: child, Constraint: constraint})
+			}
+			for child, constraint := range pkg.DevDependencies {
+				out.Edges = append(out.Edges, LockfileEdge{ParentName: name, ParentVersion: pkg.Version, ChildName: child, Constraint: constraint})
+			}
 		}
-		return entries, true, nil
+		out.DirectKnown = true
+		return out, nil
 	}
 
 	// v1: walk the nested dependencies tree; direct not distinguished
 	// (top-level entries are the HOISTED set, not the declared set).
+	// C2: the parent is in scope at each recursion level — record the
+	// edge (constraint unknown in the v1 nested shape; the child value
+	// IS the resolution).
 	seen := map[string]bool{}
-	var entries []LockfileEntry
-	var walk func(deps map[string]json.RawMessage)
-	walk = func(deps map[string]json.RawMessage) {
+	var out parsedLockfileData
+	var walk func(parentName, parentVersion string, deps map[string]json.RawMessage)
+	walk = func(parentName, parentVersion string, deps map[string]json.RawMessage) {
 		for name, raw := range deps {
 			var node struct {
 				Version      string                     `json:"version"`
@@ -195,23 +230,42 @@ func parsePackageLockJSON(data []byte) ([]LockfileEntry, bool, error) {
 			}
 			if node.Version != "" && !seen[name+"@"+node.Version] {
 				seen[name+"@"+node.Version] = true
-				entries = append(entries, LockfileEntry{Name: name, Version: node.Version})
+				out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: node.Version})
+			}
+			if parentName != "" {
+				out.Edges = append(out.Edges, LockfileEdge{ParentName: parentName, ParentVersion: parentVersion, ChildName: name})
 			}
 			if len(node.Dependencies) > 0 {
-				walk(node.Dependencies)
+				walk(name, node.Version, node.Dependencies)
 			}
 		}
 	}
-	walk(doc.Dependencies)
-	return entries, false, nil
+	walk("", "", doc.Dependencies)
+	return out, nil
+}
+
+// parseYarnLock dispatches between yarn's classic v1 text format and
+// the berry (v2+) YAML flavor — same filename, sniffed on the
+// `__metadata:` header berry always writes. Pre-v0.27.133 the v1
+// scanner silently yielded ZERO entries on berry files (berry writes
+// `version: X`, the v1 scanner matched only `version "X"`), so berry
+// repos got an inventory row with entry_count=0 and no packages.
+func parseYarnLock(data []byte) (parsedLockfileData, error) {
+	if strings.Contains(string(data), "__metadata:") {
+		return parseYarnBerry(data)
+	}
+	return parseYarnLockV1(data)
 }
 
 // parseYarnLockV1 handles yarn's classic (v1) text format: blocks
 // keyed by one or more "name@range" selectors, each with an indented
-// `version "X"` line. Direct deps are not distinguished.
-func parseYarnLockV1(data []byte) ([]LockfileEntry, bool, error) {
-	var entries []LockfileEntry
-	currentName := ""
+// `version "X"` line and an optional indented `dependencies:` block
+// (v0.27.133 C2: those blocks — previously unreachable dead lines to
+// the scanner — become edges). Direct deps are not distinguished.
+func parseYarnLockV1(data []byte) (parsedLockfileData, error) {
+	var out parsedLockfileData
+	currentName, currentVersion := "", ""
+	inDeps := false
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "#") || strings.TrimSpace(line) == "" {
 			continue
@@ -227,27 +281,138 @@ func parseYarnLockV1(data []byte) ([]LockfileEntry, bool, error) {
 			} else {
 				currentName = ""
 			}
+			currentVersion = ""
+			inDeps = false
 			continue
 		}
 		trimmed := strings.TrimSpace(line)
-		if currentName != "" && strings.HasPrefix(trimmed, "version ") {
-			version := strings.Trim(strings.TrimPrefix(trimmed, "version "), `" `)
-			if version != "" {
-				entries = append(entries, LockfileEntry{Name: currentName, Version: version})
+		switch {
+		case currentName != "" && strings.HasPrefix(trimmed, "version "):
+			currentVersion = strings.Trim(strings.TrimPrefix(trimmed, "version "), `" `)
+			if currentVersion != "" {
+				out.Entries = append(out.Entries, LockfileEntry{Name: currentName, Version: currentVersion})
 			}
-			currentName = ""
+			inDeps = false
+		case currentName != "" && (trimmed == "dependencies:" || trimmed == "optionalDependencies:"):
+			inDeps = true
+		case inDeps && strings.HasPrefix(line, "    "):
+			// 4-space child line: `name "range"` (name may be quoted).
+			if child, constraint, ok := yarnDepLine(trimmed, " "); ok {
+				out.Edges = append(out.Edges, LockfileEdge{ParentName: currentName, ParentVersion: currentVersion, ChildName: child, Constraint: constraint})
+			}
+		default:
+			inDeps = false
 		}
 	}
-	return entries, false, nil
+	return out, nil
+}
+
+// parseYarnBerry handles yarn v2+ ("berry") lockfiles: YAML documents
+// whose entries are keyed `"name@npm:range"[, ...]:` with `version:`
+// and `dependencies:` fields. The workspace entry
+// (`"proj@workspace:."`) carries the DIRECT dependency set and is not
+// itself a package. v0.27.133 — the 36-file fleet cohort that
+// previously parsed to zero entries.
+func parseYarnBerry(data []byte) (parsedLockfileData, error) {
+	var out parsedLockfileData
+	direct := map[string]bool{}
+	currentName, currentVersion := "", ""
+	isWorkspace := false
+	inDeps := false
+	flushable := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, " ") && strings.HasSuffix(trimmed, ":") {
+			header := strings.TrimSuffix(trimmed, ":")
+			firstKey := strings.Trim(strings.TrimSpace(strings.Split(header, ",")[0]), `"`)
+			isWorkspace = strings.Contains(firstKey, "@workspace:")
+			currentName, currentVersion = "", ""
+			if firstKey == "__metadata" {
+				inDeps, flushable = false, false
+				continue
+			}
+			if at := strings.LastIndex(firstKey, "@"); at > 0 {
+				currentName = firstKey[:at]
+			}
+			inDeps = false
+			flushable = currentName != "" && !isWorkspace
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "version:"):
+			currentVersion = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "version:")), `"`)
+			if flushable && currentVersion != "" {
+				out.Entries = append(out.Entries, LockfileEntry{Name: currentName, Version: currentVersion})
+			}
+		case trimmed == "dependencies:" || trimmed == "optionalDependencies:":
+			inDeps = true
+			continue
+		case inDeps && strings.HasPrefix(line, "    "):
+			if child, constraint, ok := yarnDepLine(trimmed, ":"); ok {
+				if isWorkspace {
+					direct[child] = true
+				} else if currentName != "" {
+					out.Edges = append(out.Edges, LockfileEdge{ParentName: currentName, ParentVersion: currentVersion, ChildName: child, Constraint: constraint})
+				}
+			}
+			continue
+		default:
+			if !strings.HasPrefix(line, "    ") {
+				inDeps = false
+			}
+		}
+	}
+	for i := range out.Entries {
+		out.Entries[i].Direct = direct[out.Entries[i].Name]
+	}
+	out.DirectKnown = len(direct) > 0
+	return out, nil
+}
+
+// yarnDepLine splits one dependency child line. v1 uses `name "range"`
+// (sep " "); berry uses `name: range` / `"@scope/name": range`
+// (sep ":").
+func yarnDepLine(trimmed, sep string) (name, constraint string, ok bool) {
+	if trimmed == "" {
+		return "", "", false
+	}
+	if strings.HasPrefix(trimmed, `"`) {
+		// Quoted name: find the closing quote.
+		if end := strings.Index(trimmed[1:], `"`); end >= 0 {
+			name = trimmed[1 : 1+end]
+			constraint = strings.TrimPrefix(strings.TrimSpace(trimmed[2+end:]), sep)
+		}
+	} else {
+		i := strings.Index(trimmed, sep)
+		if i <= 0 {
+			return "", "", false
+		}
+		name = trimmed[:i]
+		constraint = trimmed[i+len(sep):]
+	}
+	name = strings.TrimSuffix(strings.TrimSpace(name), ":")
+	constraint = strings.Trim(strings.TrimSpace(constraint), `"`)
+	if name == "" {
+		return "", "", false
+	}
+	return name, constraint, true
 }
 
 // parsePnpmLock handles pnpm-lock.yaml (v5 through v9). Resolved
 // packages come from the top-level "packages" map keys; direct deps
 // from the "importers" section (or the legacy top-level
 // dependencies/devDependencies on very old lockfiles).
-func parsePnpmLock(data []byte) ([]LockfileEntry, bool, error) {
+func parsePnpmLock(data []byte) (parsedLockfileData, error) {
+	type pnpmPkg struct {
+		Dependencies         map[string]string `yaml:"dependencies"`
+		OptionalDependencies map[string]string `yaml:"optionalDependencies"`
+	}
 	var doc struct {
-		Packages  map[string]any `yaml:"packages"`
+		Packages  map[string]pnpmPkg `yaml:"packages"`
+		Snapshots map[string]pnpmPkg `yaml:"snapshots"` // v9: edges moved here
 		Importers map[string]struct {
 			Dependencies    map[string]yaml.Node `yaml:"dependencies"`
 			DevDependencies map[string]yaml.Node `yaml:"devDependencies"`
@@ -256,7 +421,7 @@ func parsePnpmLock(data []byte) ([]LockfileEntry, bool, error) {
 		DevDependencies map[string]yaml.Node `yaml:"devDependencies"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, false, err
+		return parsedLockfileData{}, err
 	}
 
 	directNames := map[string]bool{}
@@ -272,15 +437,35 @@ func parsePnpmLock(data []byte) ([]LockfileEntry, bool, error) {
 	collectDirect(doc.Dependencies)
 	collectDirect(doc.DevDependencies)
 
-	var entries []LockfileEntry
+	var out parsedLockfileData
 	for key := range doc.Packages {
 		name, version := splitPnpmPackageKey(key)
 		if name == "" || version == "" {
 			continue
 		}
-		entries = append(entries, LockfileEntry{Name: name, Version: version, Direct: directNames[name]})
+		out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: version, Direct: directNames[name]})
 	}
-	return entries, true, nil
+	// v0.27.133 C2: edges. v5/v6 carry per-package dependencies inside
+	// `packages`; v9 moved them to the parallel `snapshots` section
+	// (values there are RESOLVED versions).
+	collectEdges := func(m map[string]pnpmPkg) {
+		for key, pkg := range m {
+			pName, pVersion := splitPnpmPackageKey(key)
+			if pName == "" {
+				continue
+			}
+			for child, constraint := range pkg.Dependencies {
+				out.Edges = append(out.Edges, LockfileEdge{ParentName: pName, ParentVersion: pVersion, ChildName: child, Constraint: constraint})
+			}
+			for child, constraint := range pkg.OptionalDependencies {
+				out.Edges = append(out.Edges, LockfileEdge{ParentName: pName, ParentVersion: pVersion, ChildName: child, Constraint: constraint})
+			}
+		}
+	}
+	collectEdges(doc.Packages)
+	collectEdges(doc.Snapshots)
+	out.DirectKnown = true
+	return out, nil
 }
 
 // splitPnpmPackageKey handles the three historical pnpm key shapes:
@@ -308,7 +493,7 @@ func splitPnpmPackageKey(key string) (name, version string) {
 // JSON with comments and trailing commas. The binary bun.lockb is
 // detect-only (see the roster). Direct deps come from the root
 // workspace's dependencies/devDependencies.
-func parseBunLock(data []byte) ([]LockfileEntry, bool, error) {
+func parseBunLock(data []byte) (parsedLockfileData, error) {
 	cleaned := stripJSONC(data)
 	var doc struct {
 		Workspaces map[string]struct {
@@ -318,7 +503,7 @@ func parseBunLock(data []byte) ([]LockfileEntry, bool, error) {
 		Packages map[string]json.RawMessage `json:"packages"`
 	}
 	if err := json.Unmarshal(cleaned, &doc); err != nil {
-		return nil, false, err
+		return parsedLockfileData{}, err
 	}
 
 	directNames := map[string]bool{}
@@ -331,10 +516,12 @@ func parseBunLock(data []byte) ([]LockfileEntry, bool, error) {
 		}
 	}
 
-	var entries []LockfileEntry
+	var out parsedLockfileData
 	for installName, raw := range doc.Packages {
 		// Each value is a tuple array whose first element is
-		// "name@version".
+		// "name@version"; tuple[2] (when present) carries the entry's own
+		// dependencies map (v0.27.133 C2 — previously decoded as
+		// RawMessage and discarded).
 		var tuple []json.RawMessage
 		if err := json.Unmarshal(raw, &tuple); err != nil || len(tuple) == 0 {
 			continue
@@ -343,15 +530,33 @@ func parseBunLock(data []byte) ([]LockfileEntry, bool, error) {
 		if err := json.Unmarshal(tuple[0], &spec); err != nil {
 			continue
 		}
-		if at := strings.LastIndex(spec, "@"); at > 0 {
-			entries = append(entries, LockfileEntry{
-				Name:    spec[:at],
-				Version: spec[at+1:],
-				Direct:  directNames[installName],
-			})
+		at := strings.LastIndex(spec, "@")
+		if at <= 0 {
+			continue
+		}
+		name, version := spec[:at], spec[at+1:]
+		out.Entries = append(out.Entries, LockfileEntry{
+			Name:    name,
+			Version: version,
+			Direct:  directNames[installName],
+		})
+		if len(tuple) > 2 {
+			var meta struct {
+				Dependencies         map[string]string `json:"dependencies"`
+				OptionalDependencies map[string]string `json:"optionalDependencies"`
+			}
+			if err := json.Unmarshal(tuple[2], &meta); err == nil {
+				for child, constraint := range meta.Dependencies {
+					out.Edges = append(out.Edges, LockfileEdge{ParentName: name, ParentVersion: version, ChildName: child, Constraint: constraint})
+				}
+				for child, constraint := range meta.OptionalDependencies {
+					out.Edges = append(out.Edges, LockfileEdge{ParentName: name, ParentVersion: version, ChildName: child, Constraint: constraint})
+				}
+			}
 		}
 	}
-	return entries, true, nil
+	out.DirectKnown = true
+	return out, nil
 }
 
 // stripJSONC removes // and /* */ comments plus trailing commas so

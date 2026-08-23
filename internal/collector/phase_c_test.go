@@ -164,12 +164,12 @@ func TestNPMLockV2CarriesDevScope(t *testing.T) {
 			"node_modules/tmpl": {"version": "1.0.5", "dev": true}
 		}
 	}`)
-	entries, directKnown, err := parsePackageLockJSON(data)
-	if err != nil || !directKnown {
-		t.Fatalf("parse: err=%v directKnown=%v", err, directKnown)
+	parsed, err := parsePackageLockJSON(data)
+	if err != nil || !parsed.DirectKnown {
+		t.Fatalf("parse: err=%v directKnown=%v", err, parsed.DirectKnown)
 	}
 	byName := map[string]LockfileEntry{}
-	for _, e := range entries {
+	for _, e := range parsed.Entries {
 		byName[e.Name] = e
 	}
 	if byName["express"].Scope != "" {
@@ -196,12 +196,12 @@ name = "pytest"
 version = "7.4.0"
 category = "dev"
 `)
-	entries, _, err := parsePoetryStyleTOML(data)
+	parsed, err := parsePoetryStyleTOML(data)
 	if err != nil {
 		t.Fatal(err)
 	}
 	byName := map[string]LockfileEntry{}
-	for _, e := range entries {
+	for _, e := range parsed.Entries {
 		byName[e.Name] = e
 	}
 	if byName["flask"].Scope != "" {
@@ -237,7 +237,7 @@ func TestScanLockfilesTransitiveGate(t *testing.T) {
 
 // TestVulnScanTargetsCarryKind pins that every direct-target
 // constructor stamps dependency_kind='direct' — a target without a
-// kind would store ” and read as a pre-C1 row forever.
+// kind would store the empty string and read as a pre-C1 row forever.
 func TestVulnScanTargetsCarryKind(t *testing.T) {
 	src, err := os.ReadFile("vuln_targets.go")
 	if err != nil {

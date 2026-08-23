@@ -110,7 +110,7 @@ func SampleCntrbIDCollisions(ctx context.Context, store *PostgresStore, limit in
 //     operator gets a clear error pointing at the colliding pair.
 //
 //  2. Merge non-empty fields from loser into winner via
-//     COALESCE(NULLIF(winner.field, ”), loser.field). Winner
+//     COALESCE(NULLIF(winner.field, ""), loser.field). Winner
 //     values are preserved when present.
 //
 //  3. Insert a contributors_aliases row mapping loser.cntrb_email

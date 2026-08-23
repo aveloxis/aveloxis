@@ -95,46 +95,123 @@ func TestParsePodlingsAllIncubating(t *testing.T) {
 		}
 	}
 
-	// amoro → github.com/apache/amoro
-	if !reposContain(projects[0].RepoURLs, "https://github.com/apache/amoro") {
-		t.Errorf("amoro RepoURLs = %v, want https://github.com/apache/amoro", projects[0].RepoURLs)
+	// v0.27.132: podling repos carry the incubator- prefix (Apache INFRA
+	// convention) — the old apache/<slug> derivation seeded phantom rows
+	// that later 404'd (the four wedged production PMC groups).
+	if !reposContain(projects[0].RepoURLs, "https://github.com/apache/incubator-amoro") {
+		t.Errorf("amoro RepoURLs = %v, want https://github.com/apache/incubator-amoro", projects[0].RepoURLs)
 	}
-	// burr → github.com/apache/burr
-	if !reposContain(projects[1].RepoURLs, "https://github.com/apache/burr") {
-		t.Errorf("burr RepoURLs = %v, want https://github.com/apache/burr", projects[1].RepoURLs)
+	if !reposContain(projects[1].RepoURLs, "https://github.com/apache/incubator-burr") {
+		t.Errorf("burr RepoURLs = %v, want https://github.com/apache/incubator-burr", projects[1].RepoURLs)
 	}
 }
 
 // TestFetchHitsBothEndpoints — Fetch must combine projects.json + podlings.json
 // results into a single list, using the URLs we pass in so tests can stub the
-// server.
+// server. Round-24: Fetch also PROBES podling repo URLs against the
+// forge (via the podlingProbeBase seam — a bare run would otherwise
+// hit live github.com from a unit test) and resolves the moving-target
+// incubator- prefix: amoro is served as the GRADUATED-rename shape
+// (incubator- 301s, plain 200s — the exact production example) and
+// must come back PLAIN; burr stays incubator-.
 func TestFetchHitsBothEndpoints(t *testing.T) {
 	projectsJSON, _ := os.ReadFile("testdata/projects_mini.json")
 	podlingsJSON, _ := os.ReadFile("testdata/podlings_mini.json")
 
-	var hits int
+	var jsonHits int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.Contains(r.URL.Path, "podlings"):
+		case strings.Contains(r.URL.Path, "podlings.json"):
+			jsonHits++
+			w.Header().Set("Content-Type", "application/json")
 			w.Write(podlingsJSON)
-		default:
+		case strings.Contains(r.URL.Path, "projects.json"):
+			jsonHits++
+			w.Header().Set("Content-Type", "application/json")
 			w.Write(projectsJSON)
+		// Forge probes (HEAD): amoro graduated — the incubator- form
+		// redirects, the plain form exists; burr is still incubating.
+		case r.URL.Path == "/apache/incubator-amoro":
+			w.Header().Set("Location", "/apache/amoro")
+			w.WriteHeader(http.StatusMovedPermanently)
+		case r.URL.Path == "/apache/amoro":
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/apache/incubator-burr":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
+
+	oldBase := podlingProbeBase
+	podlingProbeBase = server.URL
+	t.Cleanup(func() { podlingProbeBase = oldBase })
 
 	projects, err := Fetch(context.Background(), server.URL+"/projects.json", server.URL+"/podlings.json")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if hits != 2 {
-		t.Errorf("server hit %d times, want exactly 2 (projects + podlings)", hits)
+	if jsonHits != 2 {
+		t.Errorf("JSON endpoints hit %d times, want exactly 2 (projects + podlings)", jsonHits)
 	}
 	// 3 TLPs + 2 podlings = 5.
 	if len(projects) != 5 {
 		t.Errorf("got %d projects, want 5 (3 TLPs + 2 podlings)", len(projects))
+	}
+	byName := map[string][]string{}
+	for _, p := range projects {
+		byName[p.Name] = p.RepoURLs
+	}
+	if !reposContain(byName["Apache Amoro (Incubating)"], "https://github.com/apache/amoro") {
+		t.Errorf("graduated-rename podling must resolve to the PLAIN form, got %v", byName["Apache Amoro (Incubating)"])
+	}
+	if !reposContain(byName["Apache Burr (Incubating)"], "https://github.com/apache/incubator-burr") {
+		t.Errorf("in-incubation podling must keep the incubator- form, got %v", byName["Apache Burr (Incubating)"])
+	}
+}
+
+// TestFetchDropsUnresolvablePodlingURLs — a podling neither variant of
+// which exists on the forge must move its URL to UnresolvedRepoURLs
+// (the importer skips it) instead of shipping a phantom catalog row.
+func TestFetchDropsUnresolvablePodlingURLs(t *testing.T) {
+	podlingsJSON := []byte(`{"ghostling": {"name": "Apache Ghostling (Incubating)", "podling": true}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "podlings.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(podlingsJSON)
+		case strings.Contains(r.URL.Path, "projects.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusNotFound) // no variant exists
+		}
+	}))
+	defer server.Close()
+
+	oldBase := podlingProbeBase
+	podlingProbeBase = server.URL
+	t.Cleanup(func() { podlingProbeBase = oldBase })
+
+	projects, err := Fetch(context.Background(), server.URL+"/projects.json", server.URL+"/podlings.json")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	var ghost *Project
+	for i := range projects {
+		if projects[i].Name == "Apache Ghostling (Incubating)" {
+			ghost = &projects[i]
+		}
+	}
+	if ghost == nil {
+		t.Fatal("podling project missing from Fetch result")
+	}
+	if len(ghost.RepoURLs) != 0 {
+		t.Errorf("unresolvable podling must ship ZERO repo URLs (no phantom rows), got %v", ghost.RepoURLs)
+	}
+	if len(ghost.UnresolvedRepoURLs) != 1 {
+		t.Errorf("the guessed URL must be surfaced in UnresolvedRepoURLs, got %v", ghost.UnresolvedRepoURLs)
 	}
 }
 
@@ -152,4 +229,110 @@ func reposContain(urls []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// Round-25 (SR-5 in the resolver itself): only DEFINITIVE probe
+// responses decide. A transient forge failure (5xx, 403/429,
+// transport error) must ABORT the import — never silently demote a
+// valid podling to UnresolvedRepoURLs.
+func TestFetchAbortsOnNonDefinitiveProbeResponse(t *testing.T) {
+	podlingsJSON := []byte(`{"flaky": {"name": "Apache Flaky (Incubating)", "podling": true}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "podlings.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(podlingsJSON)
+		case strings.Contains(r.URL.Path, "projects.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusInternalServerError) // forge outage
+		}
+	}))
+	defer server.Close()
+
+	oldBase := podlingProbeBase
+	podlingProbeBase = server.URL
+	t.Cleanup(func() { podlingProbeBase = oldBase })
+
+	_, err := Fetch(context.Background(), server.URL+"/projects.json", server.URL+"/podlings.json")
+	if err == nil {
+		t.Fatal("a 5xx probe must ABORT Fetch — treating it as 'repo does not exist' drops valid podlings from the import")
+	}
+	if !strings.Contains(err.Error(), "not a definitive answer") {
+		t.Errorf("error must name the non-definitive-response rule, got: %v", err)
+	}
+}
+
+// Round-30 (v0.27.151): a rename redirect can name an ARBITRARY new
+// slug, not just the incubator/plain twin — ignoring Location dropped
+// such podlings as unresolved. The forge's redirect target is the
+// canonical answer and must resolve directly.
+func TestFetchFollowsRenameRedirectToArbitrarySlug(t *testing.T) {
+	podlingsJSON := []byte(`{"phoenixling": {"name": "Apache Phoenixling (Incubating)", "podling": true}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "podlings.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(podlingsJSON)
+		case strings.Contains(r.URL.Path, "projects.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{}`))
+		case r.URL.Path == "/apache/incubator-phoenixling":
+			// Renamed to a slug that is NEITHER twin.
+			w.Header().Set("Location", "/apache/phoenix-reborn")
+			w.WriteHeader(http.StatusMovedPermanently)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	oldBase := podlingProbeBase
+	podlingProbeBase = server.URL
+	t.Cleanup(func() { podlingProbeBase = oldBase })
+
+	projects, err := Fetch(context.Background(), server.URL+"/projects.json", server.URL+"/podlings.json")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	for _, p := range projects {
+		if p.Name != "Apache Phoenixling (Incubating)" {
+			continue
+		}
+		if !reposContain(p.RepoURLs, "https://github.com/apache/phoenix-reborn") {
+			t.Fatalf("the forge's rename redirect names the canonical repo — must resolve to it, got %v (unresolved: %v)", p.RepoURLs, p.UnresolvedRepoURLs)
+		}
+		return
+	}
+	t.Fatal("podling project missing from Fetch result")
+}
+
+// A redirect that leaves the forge (or names a non-/apache/ path) is
+// NOT a definitive answer — it must ERROR and abort the import (the
+// round-25 rule), never decide the podling's identity.
+func TestFetchAbortsOnUnsafeRedirectTarget(t *testing.T) {
+	podlingsJSON := []byte(`{"escapeling": {"name": "Apache Escapeling (Incubating)", "podling": true}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "podlings.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(podlingsJSON)
+		case strings.Contains(r.URL.Path, "projects.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{}`))
+		default:
+			w.Header().Set("Location", "https://evil.example.com/apache/escapeling")
+			w.WriteHeader(http.StatusMovedPermanently)
+		}
+	}))
+	defer server.Close()
+
+	oldBase := podlingProbeBase
+	podlingProbeBase = server.URL
+	t.Cleanup(func() { podlingProbeBase = oldBase })
+
+	if _, err := Fetch(context.Background(), server.URL+"/projects.json", server.URL+"/podlings.json"); err == nil {
+		t.Fatal("a cross-host redirect target must abort Fetch — an unvetted redirect must never decide a podling's identity")
+	}
 }

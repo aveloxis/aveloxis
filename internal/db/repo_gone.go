@@ -104,8 +104,12 @@ type GoneProbeCandidate struct {
 // stranded-row residue — fall out naturally: there is nothing to
 // display for them either way (reconcile-repos territory).
 func (s *PostgresStore) GetGoneProbeCandidates(ctx context.Context, limit int) ([]GoneProbeCandidate, error) {
-	if limit <= 0 {
-		limit = 1000000
+	// v0.28.11 (Copilot round 10): limit 0 = ALL, expressed as a NULL
+	// SQL LIMIT — the old 1,000,000 substitution was a silent cap
+	// that would let a larger fleet report "complete" while leaving
+	// higher-id candidates unprobed.
+	if limit < 0 {
+		limit = 0
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT r.repo_id, r.repo_git,
@@ -118,7 +122,7 @@ func (s *PostgresStore) GetGoneProbeCandidates(ctx context.Context, limit int) (
 		       OR r.repo_gone_at IS NOT NULL
 		       OR EXISTS (SELECT 1 FROM aveloxis_data.commits c2 WHERE c2.repo_id = r.repo_id))
 		ORDER BY r.repo_id
-		LIMIT $1`, limit)
+		LIMIT NULLIF($1, 0)`, limit)
 	if err != nil {
 		return nil, err
 	}

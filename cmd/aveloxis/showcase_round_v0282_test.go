@@ -124,8 +124,15 @@ func TestShowcaseRepoPageReadsMetadataCounts(t *testing.T) {
 	// 0 issues/PRs, and per-count gates dropped those genuine zeros
 	// (conflating "zero" with "no snapshot", diverging from the
 	// authenticated six-tile view).
-	if !strings.Contains(src, "d.HasMetadata = st.MetadataAsOf != nil") {
-		t.Error("buildRepoPage must derive HasMetadata from snapshot presence (MetadataAsOf), not per-count truthiness")
+	// v0.28.11 (round 10): the presence signal is the explicit
+	// HasMetadataSnapshot ROW flag — the snapshot DATE is nullable,
+	// so gating on MetadataAsOf re-conflated a legacy NULL-dated
+	// snapshot (real counts, nil date) with "no snapshot".
+	if !strings.Contains(src, "d.HasMetadata = st.HasMetadataSnapshot") {
+		t.Error("buildRepoPage must derive HasMetadata from the explicit row-presence signal (HasMetadataSnapshot)")
+	}
+	if strings.Contains(src, "st.MetadataAsOf != nil") {
+		t.Error("gating on the nullable snapshot DATE must be gone — NULL-dated legacy snapshots carry real counts")
 	}
 	tpl := srctest.Read(t, "internal/showcase/templates.go")
 	for _, needle := range []string{

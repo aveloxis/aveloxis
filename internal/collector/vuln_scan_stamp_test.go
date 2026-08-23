@@ -125,6 +125,15 @@ func TestStaleResolutionPreservesBlankPurlDeps(t *testing.T) {
 	if !strings.Contains(src, "blankPurlNames = append(blankPurlNames, dep.Name)") {
 		t.Fatal("the construction loop must collect blank-purl dep NAMES for the preserve list")
 	}
+	// v0.28.11 (Copilot round 10): SELF-EXCLUSION FIRST — a purl-less
+	// SELF dep is a deliberate exclusion, not an unscannable
+	// dependency; blank-first misclassified it and blocked the stamp
+	// on a genuinely self-excluded universe. Pin the loop order.
+	selfPos := strings.Index(src, "if isSelfDependency(dep.Name, selfSet) {")
+	blankPos := strings.Index(src, `if dep.Purl == "" {`)
+	if selfPos < 0 || blankPos < 0 || selfPos > blankPos {
+		t.Errorf("the self-dependency check must precede the blank-purl check (self=%d blank=%d)", selfPos, blankPos)
+	}
 	if !strings.Contains(src, "MarkStaleVulnerabilitiesResolved(ctx, repoID, seen, blankPurlNames)") {
 		t.Error("the final-exit resolution must preserve blank-purl deps' findings")
 	}

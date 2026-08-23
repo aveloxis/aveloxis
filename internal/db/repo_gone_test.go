@@ -70,10 +70,17 @@ func TestGoneProbeCandidatesShape(t *testing.T) {
 		"WHERE q.repo_id IS NULL",
 		"COALESCE(r.repo_archived, FALSE)",
 		"r.repo_gone_at IS NOT NULL",
+		// v0.28.11 (Copilot round 10): limit 0 = ALL via a NULL SQL
+		// LIMIT — never a silent numeric ceiling that lets a large
+		// fleet report "complete" with candidates unprobed.
+		"LIMIT NULLIF($1, 0)",
 	} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("GetGoneProbeCandidates must contain %q", needle)
 		}
+	}
+	if strings.Contains(src, "limit = 1000000") {
+		t.Error("the silent 1,000,000 candidate cap must be gone — 0 means ALL")
 	}
 }
 

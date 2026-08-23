@@ -507,7 +507,10 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, logger *slog.Lo
 		// v0.28.6 (Copilot round 2): snapshot PRESENCE gates the
 		// sub-lines — a real snapshot's zero renders "metadata 0"
 		// (matching the authenticated page) instead of vanishing.
-		d.HasMetadata = st.MetadataAsOf != nil
+		// v0.28.11 (round 10): presence is the explicit ROW signal,
+		// not the (nullable) snapshot date — a legacy NULL-dated
+		// snapshot carries real counts with a nil date.
+		d.HasMetadata = st.HasMetadataSnapshot
 	}
 	// v0.28.2 (item 1e): the REDACTED contributors section. Real
 	// counts + classes + cross-repo names; the generator NEVER emits

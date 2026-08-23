@@ -318,6 +318,22 @@ func TestRepoStatsBatchGoneParityPins(t *testing.T) {
 	if i < 0 || j < 0 || j < i {
 		t.Error("the batch live-count fallback must be gated on the queue-missing subset only — the v0.27.85 cached read stays the sole tracked-repo path")
 	}
+	// v0.28.10 (Copilot round 7): the batch is BOUNDED — the fallback
+	// makes per-id cost non-trivial, so the id list gets the v0.27.65
+	// store-clamp backstop (and the API layer 400s above the cap).
+	if !strings.Contains(src, "const RepoStatsBatchMaxIDs = 500") {
+		t.Error("RepoStatsBatchMaxIDs must bound the batch id list")
+	}
+	if !strings.Contains(src, "repoIDs = repoIDs[:RepoStatsBatchMaxIDs]") {
+		t.Error("GetRepoStatsBatch must clamp oversized id lists (store-layer backstop)")
+	}
+	api, err := os.ReadFile("../api/server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(api), "db.RepoStatsBatchMaxIDs") {
+		t.Error("handleRepoStatsBatch must reject oversized id lists explicitly (400) using the shared cap")
+	}
 }
 
 // Behavioral: a queueless gone-stamped repo served through the BATCH

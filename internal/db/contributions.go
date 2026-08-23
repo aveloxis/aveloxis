@@ -451,12 +451,18 @@ WHERE COALESCE(c.cntrb_deleted, 0) = 0`
 	// branch.
 	args := []any{repoID, lower, upper, limit}
 	if excludeBots {
+		// v0.28.10 (Copilot round 7): the login predicates test the
+		// SAME effective-login expression the SELECT returns — a row
+		// with cntrb_login='' whose login lives only in gh_login (the
+		// search-resolve backfill path fills gh_login without touching
+		// cntrb_login, per R2 immutability) must not slip past the
+		// filter while DISPLAYING a "[bot]"-suffixed login.
 		sql += `
   AND NOT (
       COALESCE(c.gh_type, '') IN ('Bot', 'ProgrammaticAccessBot', 'Organization')
-      OR c.cntrb_login ILIKE '%[bot]%'
-      OR c.cntrb_login ~* '[-_](bot|robot)[0-9]*$'
-      OR LOWER(c.cntrb_login) = ANY($5::text[])
+      OR COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '') ILIKE '%[bot]%'
+      OR COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '') ~* '[-_](bot|robot)[0-9]*$'
+      OR LOWER(COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '')) = ANY($5::text[])
   )`
 		args = append(args, githubSystemAccounts)
 	}

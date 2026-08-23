@@ -59,6 +59,13 @@ type RepoStats struct {
 	MetadataAsOf *time.Time `json:"metadata_as_of,omitempty"`
 }
 
+// RepoStatsBatchMaxIDs bounds GetRepoStatsBatch's id list (v0.28.10):
+// the queueless live-count fallback makes per-id cost non-trivial for
+// the gone cohort, so the batch must stay bounded. 500 covers every
+// real caller (monitor 200/page, portal/group pages 100/page) with
+// headroom.
+const RepoStatsBatchMaxIDs = 500
+
 // SearchRepoResult is a minimal repo record for search results.
 type SearchRepoResult struct {
 	ID    int64  `json:"id"`
@@ -275,6 +282,15 @@ func (s *PostgresStore) queuelessLiveCountsBatch(ctx context.Context, repoIDs []
 // Phase 1e; the pre-fix batch counted resolved + self rows and
 // reported systematically higher, ever-growing totals).
 func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) (map[int64]*RepoStats, error) {
+	// v0.28.10 (Copilot round 7): hard backstop on the id-list size —
+	// the queueless fallback below runs live aggregates for the gone
+	// cohort, so an unbounded list from a future caller would be an
+	// unbounded-cost path (the v0.27.65 store-clamp rule: the store
+	// owns the backstop; the API layer 400s as UX). Ids beyond the cap
+	// are dropped from the result map — absent, not fabricated.
+	if len(repoIDs) > RepoStatsBatchMaxIDs {
+		repoIDs = repoIDs[:RepoStatsBatchMaxIDs]
+	}
 	result := make(map[int64]*RepoStats, len(repoIDs))
 	if len(repoIDs) == 0 {
 		return result, nil

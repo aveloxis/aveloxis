@@ -101,14 +101,25 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 			defer safego.Recover(s.logger, "activity-history-worker")
 			defer wg.Done()
 			defer func() { <-sem }()
-			switch s.processHistoryContributor(ctx, fetcher, c, windowDays) {
-			case historyStored:
-				stored.Add(1)
-			case historyMarked:
-				marked.Add(1)
-			default:
-				failed.Add(1)
-			}
+			// v0.28.10 (Copilot round 7): commit the outcome in a
+			// DEFER so a panicking worker still counts — the recover
+			// bypassed the switch, letting the cycle log report fewer
+			// outcomes than claimed and zero failures for a panic.
+			// The default is failed; only a completed call overwrites
+			// it (the contributor stays unstamped and re-claims
+			// either way — this is counter honesty, not recovery).
+			outcome := historyFailed
+			defer func() {
+				switch outcome {
+				case historyStored:
+					stored.Add(1)
+				case historyMarked:
+					marked.Add(1)
+				default:
+					failed.Add(1)
+				}
+			}()
+			outcome = s.processHistoryContributor(ctx, fetcher, c, windowDays)
 		}(c)
 	}
 	wg.Wait()

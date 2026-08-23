@@ -89,9 +89,22 @@ func TestTopContributorsBotFilterCoversNonHumanTypes(t *testing.T) {
 	if strings.Contains(src, `COALESCE(c.gh_type, '') = 'Bot'`) {
 		t.Error("the narrow = 'Bot' form must be gone from TopContributors (superseded by the IN list)")
 	}
+	// v0.28.10 (Copilot round 7): every login predicate tests the SAME
+	// effective-login expression the SELECT returns — a row whose
+	// cntrb_login is '' with the login living only in gh_login (the
+	// search-resolve backfill path, R2 keeps cntrb_login immutable)
+	// must not slip the filter while DISPLAYING a bot-shaped login.
+	effLogin := `COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '')`
 	if !strings.Contains(src, "githubSystemAccounts") ||
-		!strings.Contains(src, `LOWER(c.cntrb_login) = ANY(`) {
-		t.Error("excludeBots must also exclude the curated githubSystemAccounts list by login (machine accounts typed 'User')")
+		!strings.Contains(src, `LOWER(`+effLogin+`) = ANY(`) {
+		t.Error("excludeBots must exclude the curated githubSystemAccounts list against the EFFECTIVE login expression (machine accounts typed 'User')")
+	}
+	if strings.Count(src, effLogin+` ILIKE '%[bot]%'`) != 1 ||
+		strings.Count(src, effLogin+` ~* '[-_](bot|robot)[0-9]*$'`) != 1 {
+		t.Error("the [bot]/-robot pattern predicates must test the effective-login expression, not bare cntrb_login")
+	}
+	if strings.Contains(src, `OR c.cntrb_login ILIKE`) {
+		t.Error("bare-cntrb_login predicates must be gone — the SELECT's fallback chain makes them evadable")
 	}
 	if strings.Contains(src, `'Mannequin'`) {
 		t.Error("Mannequin must NOT appear in the filter — mannequins stand in for unmatched humans")
@@ -243,9 +256,9 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 	// v0.27.69 — the bot filter. Three marker classes, seeded to
 	// mirror the live k8s finding (k8s-ci-robot is gh_type='User' —
 	// only the -robot suffix catches it).
-	_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login LIKE '_avtopc_x%'`)
+	_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login LIKE '_avtopc_x%' OR gh_login LIKE '_avtopc_x%'`)
 	t.Cleanup(func() {
-		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login LIKE '_avtopc_x%'`)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login LIKE '_avtopc_x%' OR gh_login LIKE '_avtopc_x%'`)
 	})
 	seedBot := func(login, id, ghType string) {
 		if _, err := store.pool.Exec(ctx, `
@@ -274,6 +287,23 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 	seedBot("_avtopc_xpab", "0100abcd-0000-0000-0000-0000000000b6", "ProgrammaticAccessBot")
 	seedBot("_avtopc_xmann", "0100abcd-0000-0000-0000-0000000000b7", "Mannequin")
 
+	// v0.28.10 (Copilot round 7): the FALLBACK-LOGIN shape — a row
+	// whose cntrb_login is '' with the bot-suffixed login living only
+	// in gh_login (the search-resolve backfill path; R2 keeps
+	// cntrb_login immutable). The SELECT displays gh_login via the
+	// COALESCE chain, so the filter must catch it there too.
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login, gh_login, gh_type)
+		VALUES ('0100abcd-0000-0000-0000-0000000000b8'::uuid, '', '_avtopc_x-fb-robot', 'User')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_name, cmt_author_email, cmt_author_date, cmt_author_timestamp, cmt_ght_author_id)
+		VALUES ($1, 'h0000b8', 'z.go', 'x', 'x@x', '2026-07-01', $2, '0100abcd-0000-0000-0000-0000000000b8'::uuid)`,
+		repoID, in); err != nil {
+		t.Fatal(err)
+	}
+
 	all, err := store.TopContributors(ctx, repoID, time.Time{}, time.Time{}, 20, false)
 	if err != nil {
 		t.Fatal(err)
@@ -282,12 +312,12 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != len(filtered)+5 {
-		t.Errorf("excludeBots must drop exactly the 5 automation rows: all=%d filtered=%d", len(all), len(filtered))
+	if len(all) != len(filtered)+6 {
+		t.Errorf("excludeBots must drop exactly the 6 automation rows (incl. the fallback-login robot): all=%d filtered=%d", len(all), len(filtered))
 	}
 	for _, r := range filtered {
 		switch r.Login {
-		case "_avtopc_x[bot]", "_avtopc_x-ci-robot", "_avtopc_x-bot", "_avtopc_xorg", "_avtopc_xpab":
+		case "_avtopc_x[bot]", "_avtopc_x-ci-robot", "_avtopc_x-bot", "_avtopc_xorg", "_avtopc_xpab", "_avtopc_x-fb-robot":
 			t.Errorf("automation account %q survived the filter", r.Login)
 		}
 	}

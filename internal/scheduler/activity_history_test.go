@@ -101,7 +101,12 @@ func TestActivityHistoryRunsPooled(t *testing.T) {
 		"sem := make(chan struct{}, concurrency)",
 		"var wg sync.WaitGroup",
 		"safego.Recover(s.logger",
-		"s.processHistoryContributor(ctx, fetcher, c, windowDays)",
+		// v0.28.10 (Copilot round 7): the outcome commits in a DEFER
+		// with failed as the default — a panicking worker previously
+		// bypassed the switch entirely, so the cycle log reported
+		// fewer outcomes than claimed and zero failures for a panic.
+		"outcome := historyFailed",
+		"outcome = s.processHistoryContributor(ctx, fetcher, c, windowDays)",
 		"ActivityHistoryBatchValue()",
 		"ActivityHistoryCooldownValue()",
 		"ActivityHistoryConcurrencyValue()",

@@ -1,6 +1,6 @@
 # Aveloxis
 
-**Open source community health analytics at fleet scale — the Go successor to [Augur](https://github.com/augurlabs/augur), built by CHAOSS co-founders, as a solution to [CHAOSS governance removing protections for software creators](https://www.seangoggins.net/open-source-software-health-and-sustainability/).** CHAOSS metrics, contributor analytics, SBOMs, and vulnerability scanning for GitHub and GitLab. Live at [aveloxis.io](https://aveloxis.io).
+**Open source community health analytics at fleet scale — the Go successor to [Augur](https://github.com/augurlabs/augur), built by CHAOSS co-founders**, as a solution to [CHAOSS governance removing protections for software creators](https://www.seangoggins.net/open-source-software-health-and-sustainability/). CHAOSS metrics, contributor analytics, SBOMs, and vulnerability scanning for GitHub and GitLab. Live at [aveloxis.io](https://aveloxis.io).
 
 [![Tests](https://github.com/aveloxis/aveloxis/actions/workflows/test.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/test.yml)
 [![Lint](https://github.com/aveloxis/aveloxis/actions/workflows/lint.yml/badge.svg)](https://github.com/aveloxis/aveloxis/actions/workflows/lint.yml)

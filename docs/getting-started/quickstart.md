@@ -67,7 +67,7 @@ docker run -d --name aveloxis-db -p 5432:5432 \
 aveloxis migrate
 ```
 
-This creates 108 tables and 19 materialized views across two PostgreSQL schemas (`aveloxis_data` and `aveloxis_ops`). It is safe to run repeatedly -- all DDL uses `CREATE ... IF NOT EXISTS`.
+This creates 143 tables and 20 materialized views across three PostgreSQL schemas (`aveloxis_data`, `aveloxis_ops`, and `aveloxis_scan`), plus the `aveloxis_augur_data` compatibility views for 8Knot. It is safe to run repeatedly -- all DDL uses `CREATE ... IF NOT EXISTS`.
 
 ---
 

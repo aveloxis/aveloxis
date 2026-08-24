@@ -1116,7 +1116,7 @@ aveloxis collect --full https://github.com/owner/repo
 
 **If you still see these errors:**
 
-- Check the affected repo's PR and comment volume. An extreme outlier (tens of thousands of very active PRs) may still overrun the per-query budget; drop `pr_child_mode` to `"rest"` for that specific deployment until the adaptive-shrink fallback is implemented.
+- Check the affected repo's PR and comment volume. An extreme outlier (tens of thousands of very active PRs) may still overrun the per-query budget; the batch fetcher subdivides transient-failing batches in half automatically (down to size 1, then a per-PR REST rescue) — but `pr_child_mode: "rest"` remains the escape hatch for a deployment where that still isn't enough.
 - Inspect `pull_request_reviews`, `pull_request_commits`, `pull_request_files`, and `messages` row counts for the affected repos to confirm completeness. The next successful collection will backfill via the `refresh_open` and `gap_fill` paths.
 
 ---

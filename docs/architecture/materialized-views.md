@@ -389,7 +389,7 @@ The view does not have a unique index. Aveloxis's built-in views all carry one; 
 Some views can take hours at fleet scale (especially `explorer_new_contributors`, `explorer_contributor_recent_actions`, `explorer_cntrb_per_file`, and `explorer_pr_response_times` on a 100K-repo / 474M-commit / 117M-PR-file deployment). When a refresh is taking too long:
 
 - Check `work_mem` and `maintenance_work_mem`. Increase to at least 256 MB and 1 GB respectively.
-- Verify the indexes documented in [the audit](../../summary/matview-audit-2026-05-26.md) are present.
+- Verify the indexes documented in the 2026-05-26 matview audit (internal design archive) are present.
 - A view's underlying tables (especially `commits` and `messages`) growing dramatically since the last rebuild can extend refresh time super-linearly; consider whether the view's defining query has the anti-patterns documented in that audit.
 
 ### Views out of date
@@ -407,7 +407,7 @@ Or wait for the next weekly automatic rebuild.
 
 ## Cross-references
 
-- [Audit findings, 2026-05-26](../../summary/matview-audit-2026-05-26.md) — performance issues + remediation plan for the matviews with scale problems.
+- Audit findings, 2026-05-26 (internal design archive) — performance issues + remediation plan for the matviews with scale problems.
 - [Analysis](analysis.md) — how `repo_labor` (drives `explorer_repo_files` / `explorer_repo_languages`) and `repo_deps_libyear` are populated.
 - [Scaling](../guide/scaling.md) — database tuning for the rebuild window.
 - [Overview](overview.md) — system architecture.

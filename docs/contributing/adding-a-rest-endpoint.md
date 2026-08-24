@@ -22,21 +22,9 @@ internal/api/
 
 The server uses Go 1.22+ ServeMux pattern matching (`{repoID}` path params). It's intentionally plain — no router library, no middleware stack beyond CORS.
 
-## Existing endpoints (as of v0.23.5)
+## Existing endpoints
 
-```
-GET /api/v1/health
-GET /api/v1/repos/{repoID}/stats
-GET /api/v1/repos/stats?ids=1,2,3            (batch)
-GET /api/v1/repos/{repoID}/sbom?format=...
-GET /api/v1/repos/{repoID}/timeseries?since=...
-GET /api/v1/repos/{repoID}/licenses
-GET /api/v1/repos/{repoID}/scancode-licenses
-GET /api/v1/repos/{repoID}/scancode-files
-GET /api/v1/repos/search?q=...
-```
-
-The pattern: path-versioned (`/api/v1/`), resource-noun, optional path params + query params.
+The API has grown to ~95 registered routes — the authoritative, tripwire-enforced reference is [`docs/guide/api.md`](../guide/api.md) (every registered route must appear there AND carry a smoke recipe in `internal/api/endpoint_smoke_test.go`, or the build fails). Skim `internal/api/server.go`'s route registrations for the code-side list.
 
 ## Walkthrough: add `GET /api/v1/repos/{repoID}/contributors`
 

@@ -20,7 +20,7 @@ package foo
 
 A tripwire test (`scripts/spdx_coverage_test.go`) walks the repo and fails CI if any `.go` file is missing these two lines. The script `scripts/add_spdx.sh` backfills headers idempotently.
 
-Build-tag-prefixed files (`//go:build ...`) — none currently in the repo — would need special handling; ask before adding one.
+Build-tag-prefixed files (`//go:build ...`) — currently only the SIGUSR1 dump pair (`cmd/aveloxis/sigusr1_dump*.go`, `!windows`) — would need special handling; ask before adding one.
 
 ## Embedded SPDX license identifier list
 

@@ -48,7 +48,7 @@ psql "postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=prefer" -c "SEL
 ## 2. Install aveloxis + the scancode toolchain
 
 ```bash
-# aveloxis binary (Go 1.22+):
+# aveloxis binary (Go 1.25+):
 go install github.com/aveloxis/aveloxis/cmd/aveloxis@latest
 
 # git is required for the shallow clones; then the analysis tools

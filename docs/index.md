@@ -10,11 +10,14 @@ Aveloxis is a high-performance open source community health data collection plat
 - **Git commit analysis** — bare clones + `git log --numstat` for per-file commit data, parent tracking, and Facade aggregates
 - **Contributor resolution** — resolves git commit emails to GitHub users via noreply parsing, Commits API, and Search API
 - **Dependency & complexity analysis** — scans 14 ecosystems, calculates libyear across 12 package registries, runs scc for code complexity
-- **Vulnerability scanning** — OSV.dev batch API for CVE/GHSA lookup across all dependencies
-- **SBOM generation** — CycloneDX 1.5 + SPDX 2.3 with license capture from 12 registries
+- **Vulnerability scanning** — OSV.dev batch API across direct AND transitive dependencies, with `introduced_by` chains, lifecycle stamps, and honest version-resolution labels
+- **SBOM generation** — CycloneDX 1.5 + SPDX 2.3 with license capture from 12 registries and real dependency graphs from 19 lockfile formats
 - **Interactive visualizations** — weekly time-series charts, cross-project comparison with Z-score normalization, dependency license analysis
 - **REST API** — JSON endpoints for stats, time series, licenses, SBOM download, and repo search
-- **19 materialized views** — 8Knot-compatible analytics views, rebuilt weekly
+- **20 materialized views** — 8Knot-compatible analytics views, rebuilt weekly
+- **Mailing-list ingestion** — Apache Pony Mail + lore public-inbox archives, email as a first-class entity
+- **Distribution tracking** — "where is this repo published?" across deps.dev, ecosyste.ms, release assets, and GitHub Packages
+- **Public showcase** — static, SEO-indexable collection + repo snapshot pages (`aveloxis generate-showcase`)
 - **Dead repo sidelining** — permanently archives 404'd repos while preserving data
 - **Deterministic contributor IDs** — Augur-compatible GithubUUID scheme
 
@@ -36,6 +39,7 @@ guide/commands
 guide/web-gui
 guide/api
 guide/visualizations
+guide/metrics
 guide/collection-pipeline
 guide/monitoring
 guide/running-as-a-service

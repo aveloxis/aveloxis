@@ -104,7 +104,7 @@ Without these cooldowns, every periodic tick would re-process the same "genuinel
 
 Every UserRef observed during staged collection MUST go through `ContributorResolver.Resolve` (defined in `internal/db/contributors.go`), not a direct `UpsertContributor` call. The resolver caches `(platform, user_id) → cntrb_id` for the lifetime of the collection job. Two observations of the same user inside one repo's data hit the cache; across workers (different repos), each worker pays the cache-miss SELECT.
 
-This rule is the input to the planned process-wide cache (Phase C of `summary/04-refactoring-plan.md`), which lifts the cache to fleet scope.
+This rule is the input to the planned process-wide cache (Phase C of the internal refactor plan (not part of the published tree)), which lifts the cache to fleet scope.
 
 ### R8: Bulk operations dedup before flushing
 
@@ -272,7 +272,7 @@ GitHub and GitLab both allow users to rename their account. The numeric `user_id
 
 | Column | Updated on rename? | Purpose |
 |---|---|---|
-| `cntrb_id` (PK) | **Never** | Stable identity. All FK references (16 columns across 15 tables — see [R10](#r10-foreign-key-integrity)) depend on this. |
+| `cntrb_id` (PK) | **Never** | Stable identity. All FK references (19 child FK columns — see `cntrbIDChildFKs` in `internal/db/cntrb_id_cascade.go` and [R10](#r10-foreign-key-integrity)) depend on this. |
 | `cntrb_login` | **Never** (R2 invariant) | Durable audit trail — the login as first observed for this contributor. Subject to `idx_contributors_login` partial unique index. Use this when asking "what was this person originally called?" |
 | `gh_login` / `gl_username` | **Yes** | The "current display name" mirror. Updated by `RenameContributorGhLogin` (v0.22.12, breadth-worker 404 path) and by `UpsertContributorBatch`'s rename-recovery branch (v0.22.13, batch-upsert pkey-collision path). Indexed by `idx_contributors_gh_login` for case-insensitive lookups. Use this when asking "what is this person called RIGHT NOW?" |
 | `gh_user_id` / `gl_id` | Never (write-once via COALESCE) | Stable platform integer ID. Drives the deterministic `cntrb_id`. |
@@ -411,7 +411,7 @@ GROUP BY platform_id, platform_user_id
 HAVING count(DISTINCT cntrb_id) > 1;
 ```
 
-A future release will add a logical merge via `cntrb_deleted = 1` (Phase D of the refactor plan); for now, treat duplicates as a known data-quality limitation and coalesce in queries.
+Duplicates are consolidated by the logical merge shipped in v0.20.2: the loser row is soft-deleted (`cntrb_deleted = 1`), its non-empty fields fold into the winner, and its email becomes an alias — see `internal/db/cntrb_id_merge.go` and the `aveloxis merge-cntrb-collisions` operator command. Read paths filter `COALESCE(cntrb_deleted, 0) = 0`; residual un-merged pairs are a known, bounded data-quality limitation.
 
 ### Why is `cntrb_canonical` empty?
 
@@ -581,7 +581,7 @@ Per [R6](#r6-enrichment-is-best-effort-cooldown-bounded), `cntrb_last_enriched_a
 
 ### The cache is per-job, not fleet-wide (today)
 
-Per [R7](#r7-cached-resolution-on-the-hot-path), the `ContributorResolver` cache is scoped to one repo's collection. Two workers processing different repos that share contributors each pay the cache-miss SELECT. Phase C of the refactor plan lifts the cache to fleet scope — track that work in `summary/04-refactoring-plan.md`.
+Per [R7](#r7-cached-resolution-on-the-hot-path), the `ContributorResolver` cache is scoped to one repo's collection. Two workers processing different repos that share contributors each pay the cache-miss SELECT. Phase C of the refactor plan lifts the cache to fleet scope — track that work in the internal refactor plan (not part of the published tree).
 
 ---
 

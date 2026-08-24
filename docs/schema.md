@@ -87,6 +87,8 @@ Central repository table. Every collected repository has exactly one row here. A
 
 ---
 
+**Operational lifecycle columns on `repos`** (added over the v0.21–v0.28 series, not itemized above): the scancode worker family (`scancode_last_run`, `scancode_version`, `scancode_locked_at/pid/boot_id/host`, `scancode_output_path`, `scancode_failed_attempts`, `scancode_timeout_attempts`, `scancode_skip_reason`), the distribution worker family (`distribution_last_run`, `distribution_scan_complete`, `distribution_failed_attempts`, `distribution_last_failed_at`), `whitespace_head_hash` (incremental whitespace-walk marker), `added_at` (stable fleet-entry stamp), `vuln_scan_last_run` (v0.28.1 — completed-OSV-scan stamp; NULL = never provably scanned), and `repo_gone_at` (v0.28.1 — the distinct "no longer reachable on its forge" state, cleared on resurrection). See `schema.sql` for the authoritative column list.
+
 #### repo_groups_list_serve
 
 Mailing list registry + per-list collection state. Each row is a list the MailingListWorker collects; the `mlls_*` columns (v0.25.7) carry the claim/checkpoint/lock state. See [Mailing-list ingestion](architecture/mailing-list.md).
@@ -1031,15 +1033,17 @@ Aggregated insights at the repo-group level.
 
 #### repo_dependencies
 
+(Written by the analysis phase since v0.14 — as are `repo_deps_libyear`, `repo_deps_scorecard`, and `repo_sbom_scans` below.)
+
 High-level dependency counts per language for a repository.
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `repo_dependencies_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
 | `repo_id` | BIGINT (FK -> repos) | Computed | Repository. |
-| `dep_name` | TEXT | Not yet populated | Dependency name. |
-| `dep_count` | INT | Not yet populated | Number of times this dependency appears. |
-| `dep_language` | TEXT | Not yet populated | Language of the dependency. |
+| `dep_name` | TEXT | Analysis phase | Dependency name. |
+| `dep_count` | INT | Analysis phase | Number of times this dependency appears. |
+| `dep_language` | TEXT | Analysis phase | Language of the dependency. |
 | | | | *Standard metadata columns* |
 
 ---
@@ -1052,15 +1056,15 @@ Libyear analysis results. Measures how out-of-date each dependency is by compari
 |--------|------|--------|-------------|
 | `repo_deps_libyear_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
 | `repo_id` | BIGINT (FK -> repos) | Computed | Repository. |
-| `name` | TEXT | Not yet populated | Dependency name. |
-| `requirement` | TEXT | Not yet populated | Version requirement string. |
-| `type` | TEXT | Not yet populated | Dependency type (e.g., `"runtime"`, `"development"`). |
-| `package_manager` | TEXT | Not yet populated | Package manager (e.g., `"npm"`, `"pip"`). |
-| `current_version` | TEXT | Not yet populated | Currently used version. |
-| `latest_version` | TEXT | Not yet populated | Latest available version. |
-| `current_release_date` | TEXT | Not yet populated | Release date of current version. |
-| `latest_release_date` | TEXT | Not yet populated | Release date of latest version. |
-| `libyear` | FLOAT | Not yet populated | Libyear score (years between current and latest). |
+| `name` | TEXT | Analysis phase | Dependency name. |
+| `requirement` | TEXT | Analysis phase | Version requirement string. |
+| `type` | TEXT | Analysis phase | Dependency type (e.g., `"runtime"`, `"development"`). |
+| `package_manager` | TEXT | Analysis phase | Package manager (e.g., `"npm"`, `"pip"`). |
+| `current_version` | TEXT | Analysis phase | Currently used version. |
+| `latest_version` | TEXT | Analysis phase | Latest available version. |
+| `current_release_date` | TEXT | Analysis phase | Release date of current version. |
+| `latest_release_date` | TEXT | Analysis phase | Release date of latest version. |
+| `libyear` | FLOAT | Analysis phase | Libyear score (years between current and latest). |
 | | | | *Standard metadata columns* |
 
 ---
@@ -1073,9 +1077,9 @@ OpenSSF Scorecard check results for a repository.
 |--------|------|--------|-------------|
 | `repo_deps_scorecard_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
 | `repo_id` | BIGINT (FK -> repos) | Computed | Repository. |
-| `name` | TEXT | Not yet populated | Scorecard check name (e.g., `"Code-Review"`, `"Branch-Protection"`). |
-| `score` | TEXT | Not yet populated | Check score. |
-| `scorecard_check_details` | JSONB | Not yet populated | Detailed check results as JSON. |
+| `name` | TEXT | Analysis phase | Scorecard check name (e.g., `"Code-Review"`, `"Branch-Protection"`). |
+| `score` | TEXT | Analysis phase | Check score. |
+| `scorecard_check_details` | JSONB | Analysis phase | Detailed check results as JSON. |
 | | | | *Standard metadata columns* |
 
 ---
@@ -1088,7 +1092,7 @@ Raw SBOM (Software Bill of Materials) scan results.
 |--------|------|--------|-------------|
 | `rsb_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
 | `repo_id` | BIGINT (FK -> repos) | Computed | Repository. |
-| `sbom_scan` | JSON | Not yet populated | Raw SBOM scan output as JSON. |
+| `sbom_scan` | JSON | Analysis phase | Raw SBOM scan output as JSON. |
 
 ---
 
@@ -1749,7 +1753,7 @@ Tracks the current working commit for facade processing per repository.
 
 #### aveloxis_status
 
-One row per Aveloxis subsystem, recording whether it is healthy. Upserted by **startup preflights** so a *system-level* failure — one where the subsystem will never produce useful output until an operator intervenes — is recorded and surfaced instead of silently degrading. The first (and currently only) subsystem is **scancode**: a corrupt host `libmagic` makes every scan spam gigabytes of warnings and wedge workers (the 2026-06-09 `aveloxis_large` incident), which the scancode preflight now detects on start. See [ScanCode Worker §13](../architecture/scancode.md) and [Troubleshooting](../guide/troubleshooting.md).
+One row per Aveloxis subsystem, recording whether it is healthy. Upserted by **startup preflights** so a *system-level* failure — one where the subsystem will never produce useful output until an operator intervenes — is recorded and surfaced instead of silently degrading. The first (and currently only) subsystem is **scancode**: a corrupt host `libmagic` makes every scan spam gigabytes of warnings and wedge workers (the 2026-06-09 `aveloxis_large` incident), which the scancode preflight now detects on start. See [ScanCode Worker §13](architecture/scancode.md) and [Troubleshooting](guide/troubleshooting.md).
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|

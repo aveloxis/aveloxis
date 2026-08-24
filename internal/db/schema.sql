@@ -72,6 +72,25 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- sorts to the front of the worker's claim queue.
     scancode_last_run       TIMESTAMPTZ,
     scancode_version        TEXT,
+    -- v0.28.1 (A4): wall-clock time of the most recent COMPLETED
+    -- vulnerability scan. Stamped ONLY where OSV was actually
+    -- consulted or the dependency universe was genuinely empty
+    -- (v0.28.5): the full-success exit, and the dep-less exit when
+    -- zero deps were skipped for blank purls. NEVER stamped on scan
+    -- errors, on the all-malformed exit, or when unscannable
+    -- (purl-less) deps were skipped — a date + zero findings must
+    -- genuinely mean "checked and clean", never "nothing was
+    -- queryable". Distinguishes that from "never scanned" —
+    -- per-finding last_seen_at cannot, since a clean scan touches
+    -- zero vuln rows.
+    vuln_scan_last_run      TIMESTAMPTZ,
+    -- v0.28.1 (A6): the repo no longer resolves on its forge —
+    -- prelim's probe got a DEFINITIVE 404/410 (privatized or deleted
+    -- upstream; the department-of-veterans-affairs class). Distinct
+    -- from repo_archived, which also covers "GitHub says archived"
+    -- (still public). Set by MarkRepoGone, cleared by ClearRepoGone
+    -- when the same probe later sees the repo alive again.
+    repo_gone_at            TIMESTAMPTZ,
     -- scancode_locked_at + locked_pid + locked_boot_id form the
     -- in-flight scan state. Cleared on success and on failure.
     -- (locked_boot_id, locked_pid) tuple makes the recovery liveness
@@ -2058,6 +2077,23 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.schema_meta (
 
 -- Seed the single row if it doesn't exist yet.
 INSERT INTO aveloxis_ops.schema_meta (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
+
+-- ============================================================
+-- v0.28.4 — the F13 completed-backfill ledger. One row per completed
+-- one-shot DATA migration step (keyset backfills, rotations, dedups,
+-- timestamp cleanup — the expensive walkers). RunMigrations' runOnce
+-- wrapper skips recorded labels, so a version-bump migrate stops
+-- re-walking every historical backfill (~1.5-2.5h of no-op scans
+-- measured on the 2026-08-23 production migrate). DDL steps are
+-- deliberately NOT ledgered — the explicit `aveloxis migrate` must
+-- keep healing hand-dropped objects. Operator replay: DELETE the
+-- step's row, then run `aveloxis migrate` (see migration_ledger.go).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS aveloxis_ops.migration_ledger (
+    step_label   TEXT PRIMARY KEY,
+    completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    tool_version TEXT NOT NULL DEFAULT ''
+);
 
 -- ============================================================
 -- Subsystem health/status: one row per subsystem (status_name), upserted by

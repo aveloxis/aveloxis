@@ -150,7 +150,7 @@ func TestRealignDueDates_ShiftsDueAtOnConfigChange(t *testing.T) {
 	// Now the operator edits aveloxis.json: days_until_recollect 1 → 7,
 	// restarts aveloxis serve, scheduler.Run calls RealignDueDates.
 	newInterval := 7 * 24 * time.Hour
-	n, err := store.RealignDueDates(ctx, newInterval)
+	n, err := store.RealignDueDates(ctx, newInterval, 1)
 	if err != nil {
 		t.Fatalf("RealignDueDates: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestRealignDueDates_Idempotent(t *testing.T) {
 
 	interval := 3 * 24 * time.Hour
 	// First call — should update this row.
-	if _, err := store.RealignDueDates(ctx, interval); err != nil {
+	if _, err := store.RealignDueDates(ctx, interval, 1); err != nil {
 		t.Fatalf("first RealignDueDates: %v", err)
 	}
 	_, _, _, updatedAfterFirst := readQueueRow(ctx, t, store, repoID)
@@ -194,7 +194,7 @@ func TestRealignDueDates_Idempotent(t *testing.T) {
 
 	// Second call with the same interval — the row's due_at already equals
 	// last_collected + 3d, so the WHERE <> guard should exclude it.
-	if _, err := store.RealignDueDates(ctx, interval); err != nil {
+	if _, err := store.RealignDueDates(ctx, interval, 1); err != nil {
 		t.Fatalf("second RealignDueDates: %v", err)
 	}
 	_, _, _, updatedAfterSecond := readQueueRow(ctx, t, store, repoID)
@@ -221,7 +221,7 @@ func TestRealignDueDates_SkipsCollecting(t *testing.T) {
 	originalDueAt := lastCollected.Add(24 * time.Hour)
 	seedQueueRow(ctx, t, store, repoID, "collecting", &lastCollected, originalDueAt)
 
-	if _, err := store.RealignDueDates(ctx, 7*24*time.Hour); err != nil {
+	if _, err := store.RealignDueDates(ctx, 7*24*time.Hour, 1); err != nil {
 		t.Fatalf("RealignDueDates: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestRealignDueDates_SkipsNullLastCollected(t *testing.T) {
 	initialDueAt := time.Now().UTC()
 	seedQueueRow(ctx, t, store, repoID, "queued", nil, initialDueAt)
 
-	if _, err := store.RealignDueDates(ctx, 7*24*time.Hour); err != nil {
+	if _, err := store.RealignDueDates(ctx, 7*24*time.Hour, 1); err != nil {
 		t.Fatalf("RealignDueDates: %v", err)
 	}
 
@@ -300,7 +300,7 @@ func TestRealignDueDates_VariousDurations(t *testing.T) {
 			seedQueueRow(ctx, t, store, repoID, "queued", &lastCollected,
 				lastCollected.Add(time.Hour))
 
-			if _, err := store.RealignDueDates(ctx, tc.interval); err != nil {
+			if _, err := store.RealignDueDates(ctx, tc.interval, 1); err != nil {
 				t.Fatalf("RealignDueDates(%v): %v — Postgres likely rejected the "+
 					"interval literal produced by Go's time.Duration.String() (%q)",
 					tc.interval, err, tc.interval.String())
@@ -342,7 +342,7 @@ func TestCompleteJob_BakesDueAtFromRecollectAfter(t *testing.T) {
 	recollect := 7 * 24 * time.Hour
 	before := time.Now().UTC()
 	if err := store.CompleteJob(ctx, repoID, true, time.Now(), recollect,
-		0, 0, 0, 0, 0, 0, 0, 0, ""); err != nil {
+		0, 0, 0, 0, 0, 0, 0, 0, "", 1); err != nil {
 		t.Fatalf("CompleteJob: %v", err)
 	}
 	after := time.Now().UTC()
@@ -384,7 +384,7 @@ func TestCompleteJob_ThenRealign_FullConfigChangeScenario(t *testing.T) {
 	// Old setting: 1 day.
 	oldInterval := 24 * time.Hour
 	if err := store.CompleteJob(ctx, repoID, true, time.Now(), oldInterval,
-		0, 0, 0, 0, 0, 0, 0, 0, ""); err != nil {
+		0, 0, 0, 0, 0, 0, 0, 0, "", 1); err != nil {
 		t.Fatalf("CompleteJob(1d): %v", err)
 	}
 	dueAfterComplete, lastCollected, _, _ := readQueueRow(ctx, t, store, repoID)
@@ -400,7 +400,7 @@ func TestCompleteJob_ThenRealign_FullConfigChangeScenario(t *testing.T) {
 	// Operator edits aveloxis.json 1→7, restarts serve. Scheduler.Run
 	// calls RealignDueDates with the new value.
 	newInterval := 7 * 24 * time.Hour
-	n, err := store.RealignDueDates(ctx, newInterval)
+	n, err := store.RealignDueDates(ctx, newInterval, 1)
 	if err != nil {
 		t.Fatalf("RealignDueDates(7d): %v", err)
 	}
@@ -453,7 +453,7 @@ func TestRealignDueDates_OverdueRowGetsNewWindow(t *testing.T) {
 	seedQueueRow(ctx, t, store, repoID, "queued", &lastCollected, oldDueAt)
 
 	newInterval := 30 * 24 * time.Hour
-	if _, err := store.RealignDueDates(ctx, newInterval); err != nil {
+	if _, err := store.RealignDueDates(ctx, newInterval, 1); err != nil {
 		t.Fatalf("RealignDueDates(30d): %v", err)
 	}
 

@@ -87,6 +87,7 @@ func main() {
 		stagingStatsCmd(&cfgPath),
 		healVulnerabilitiesCmd(&cfgPath),
 		healCollectionGapsCmd(&cfgPath),
+		markGoneReposCmd(&cfgPath),
 		runScorecardCmd(&cfgPath),
 		distributionStatsCmd(&cfgPath),
 		versionCmd(),

@@ -438,19 +438,39 @@ FROM totals t
 JOIN aveloxis_data.contributors c ON c.cntrb_id = t.cntrb_id
 WHERE COALESCE(c.cntrb_deleted, 0) = 0`
 
+	// v0.28.1: the type test covers every non-human account TYPE, not
+	// just 'Bot'. Production 2026-08-23: codecov's row is typed
+	// Organization (enrichment-by-login resolved the login-only Bot
+	// actor "codecov" to Codecov's ORG account) — orgs and
+	// fine-grained-PAT bot actors appearing as contributors are
+	// definitionally automation. Mannequin is deliberately NOT in the
+	// list: mannequins are import placeholders standing in for
+	// unmatched HUMANS. Machine accounts GitHub types as plain
+	// 'User' (codecov-io, codecov-commenter) are caught by the shared
+	// githubSystemAccounts curated list, bound as $5 only in this
+	// branch.
+	args := []any{repoID, lower, upper, limit}
 	if excludeBots {
+		// v0.28.10 (Copilot round 7): the login predicates test the
+		// SAME effective-login expression the SELECT returns — a row
+		// with cntrb_login='' whose login lives only in gh_login (the
+		// search-resolve backfill path fills gh_login without touching
+		// cntrb_login, per R2 immutability) must not slip past the
+		// filter while DISPLAYING a "[bot]"-suffixed login.
 		sql += `
   AND NOT (
-      COALESCE(c.gh_type, '') = 'Bot'
-      OR c.cntrb_login ILIKE '%[bot]%'
-      OR c.cntrb_login ~* '[-_](bot|robot)[0-9]*$'
+      COALESCE(c.gh_type, '') IN ('Bot', 'ProgrammaticAccessBot', 'Organization')
+      OR COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '') ILIKE '%[bot]%'
+      OR COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '') ~* '[-_](bot|robot)[0-9]*$'
+      OR LOWER(COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '')) = ANY($5::text[])
   )`
+		args = append(args, githubSystemAccounts)
 	}
 	sql += `
 ORDER BY total DESC, login
 LIMIT $4`
 
-	rows, err := s.pool.Query(ctx, sql, repoID, lower, upper, limit)
+	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("TopContributors query: %w", err)
 	}

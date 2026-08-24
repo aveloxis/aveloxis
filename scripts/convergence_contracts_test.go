@@ -67,6 +67,12 @@ var convergenceContracts = []convergenceContract{
 		// "re-run until 'nothing pending'": MarkMessagesHealed drains the
 		// row from GetMessageHealBatch.
 		DrivingTests: []string{"TestMessageHealWorklistDrainsOnStamp"}},
+	{File: "internal/collector/message_heal.go",
+		// v0.28.8: the cursor walk documents "the worklist IS the resume
+		// state" — failed rows stay pending and a fresh run retries them
+		// from the bottom. Same drain driver as the command: stamping is
+		// what removes a row from GetMessageHealBatch.
+		DrivingTests: []string{"TestMessageHealWorklistDrainsOnStamp"}},
 	{File: "cmd/aveloxis/heal_collection_gaps.go",
 		// "rerun until 0 candidates" — the flagship: candidate → fill →
 		// RefreshQueueGatheredCounts → candidate set empty.

@@ -56,6 +56,7 @@ A full configuration with **every** supported option (current as of v0.20.12):
   },
   "collection": {
     "days_until_recollect": 1,
+    "archived_recollect_multiplier": 6,
     "workers": 12,
     "repo_clone_dir": "/data/aveloxis-repos",
     "force_full": false,
@@ -63,6 +64,11 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "matview_rebuild_on_startup": false,
     "matview_rebuild_skip_dm_aggregates": false,
     "activity_history_window_days": 180,
+    "activity_history_interval_minutes": 1,
+    "activity_history_batch": 150,
+    "activity_history_concurrency": 8,
+    "activity_history_window_concurrency": 4,
+    "activity_history_cooldown_days": 90,
     "pr_child_mode": "graphql",
     "listing_mode": "graphql",
     "threading_mode": "sharded",
@@ -169,6 +175,7 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `collection.days_until_recollect` | integer | `1` | Minimum number of days before a repo is re-collected. After a successful job, `due_at = last_collected + days_until_recollect`. Changing this value takes effect on the next `aveloxis serve` restart (v0.16.6's startup-time `RealignDueDates` rewrites queued rows). |
+| `collection.archived_recollect_multiplier` | integer | `6` | v0.28.1: stretches the recollect interval for ARCHIVED repos (`due_at = last_collected + days_until_recollect × multiplier`). Archived repos still recollect — they can be unarchived or gain issues — just less often; on a large fleet this recovers the ~20% of queue churn otherwise spent on mostly-304 cycles over frozen repos. Set `1` to disable the stretch. Applied inside both due_at writers, so config changes take effect fleet-wide on the next serve restart. |
 | `collection.workers` | integer | `12` | Number of concurrent collection workers when running `aveloxis serve`. Each worker may make many concurrent DB calls; the pgx pool is sized as `max(workers + 15, 20)`. |
 | `collection.repo_clone_dir` | string | `~/aveloxis-repos` (computed at startup) | Directory for bare git clones used by the facade phase. Can grow to terabytes for large instances (400K+ repos). |
 | `collection.force_full` | boolean | `false` | Fleet-wide: when `true`, every collection pass runs `since=zero` regardless of `last_collected`. Use this once after a systemic bug fix that invalidates collected data, then revert to `false`. For per-repo full re-collection, use `aveloxis recollect <url>` instead (sets a queue flag, doesn't touch this setting). |
@@ -180,6 +187,11 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 | `collection.matview_rebuild_day` | string | `"saturday"` | Day of the week the scheduler refreshes the 22 materialized views. Values: `"sunday"`–`"saturday"`, or `"disabled"` / `"none"` / `"off"` to never auto-rebuild. Independent of `aveloxis refresh-views` which always refreshes on demand. |
 | `collection.matview_rebuild_on_startup` | boolean | `false` | When `true`, `aveloxis serve` rebuilds the matviews on every startup. Default `false` because the rebuild can take many minutes on large fleets and `migrate` already refreshes them on schema changes. |
 | `collection.activity_history_window_days` | integer | `180` | Span of each GitHub `contributionsCollection` window the daily contributor-history backfill queries (v0.27.58). Clamped to 365 (GitHub's hard 1-year window limit); non-positive falls back to 180. This is the STARTING span — when a window hits the 100-repositories-per-type cap or a contribution page cap, the worker halves the window recursively and logs the cap hit at INFO so loss rate is trackable. |
+| `collection.activity_history_interval_minutes` | integer | `1` | v0.28.3: the history sweep's tick interval. Ticks arriving while a cycle is still running are dropped (single-flight), so a shorter interval never overlaps cycles. |
+| `collection.activity_history_batch` | integer | `150` | v0.28.3: contributors claimed per sweep cycle. |
+| `collection.activity_history_concurrency` | integer | `8` | v0.28.3: contributors fetched concurrently within a cycle (the worker pool). The pre-v0.28.3 sweep was fully serial — ~1,170 contributors/day against a multi-million pool. |
+| `collection.activity_history_window_concurrency` | integer | `4` | v0.28.3: history windows fetched concurrently per contributor (a 10-year account is ~20 windows; the serial chain was the dominant per-contributor cost). |
+| `collection.activity_history_cooldown_days` | integer | `90` | v0.28.3: the re-audit cooldown — how long a backfilled contributor stays out of the claim pool (jittered like the breadth cooldown). |
 | `collection.matview_rebuild_skip_dm_aggregates` | boolean | `false` | When `true`, the weekly scheduler rebuild refreshes ONLY the materialized views and skips the `dm_` aggregate table pass (a per-repo loop that can run for days on fleet-scale databases — while it runs, new collection claims are paused). With the skip on, `dm_repo_*` / `dm_repo_group_*` tables update only when an operator runs `aveloxis refresh-views` or `aveloxis migrate`. To disable the weekly rebuild entirely (matviews AND aggregates), set `matview_rebuild_day` to `"disabled"`. |
 
 **REST → GraphQL refactor (v0.18.x phases)**

@@ -43,7 +43,7 @@ func GroundTruthCheck(ctx context.Context, store *db.PostgresStore, client platf
 		JOIN aveloxis_data.repos r ON r.repo_id = s.repo_id
 		LEFT JOIN LATERAL (
 			SELECT issues_count, pr_count FROM aveloxis_data.repo_info
-			WHERE repo_id = s.repo_id ORDER BY data_collection_date DESC LIMIT 1
+			WHERE repo_id = s.repo_id ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC LIMIT 1
 		) ri ON TRUE`, n)
 	if err != nil {
 		return []db.VerifyResult{{Check: "ground truth", Severity: "FAIL", Detail: fmt.Sprintf("sample query failed: %v", err)}}

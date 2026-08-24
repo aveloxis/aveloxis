@@ -60,13 +60,18 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 		logger.Warn("prelim: repo no longer exists, sidelining permanently",
 			"url", repo.GitURL, "status", statusCode, "repo_id", repo.ID)
 
-		// Mark as archived so queries can filter it out. v0.27.39:
+		// Mark as archived AND gone in one statement. v0.27.39:
 		// dequeuing WITHOUT the archive succeeding mints a stranded
 		// row (non-archived, queue-less, invisible forever — the
-		// reconcile-repos class). If archiving fails, keep the queue
-		// row; the next cycle retries both.
-		if err := store.ArchiveRepo(ctx, repo.ID); err != nil {
-			logger.Warn("prelim: failed to archive dead repo — keeping queue row so the next cycle retries",
+		// reconcile-repos class). If marking fails, keep the queue
+		// row; the next cycle retries both. v0.28.1 (A6): the gone
+		// stamp is what lets the GUI say "no longer publicly
+		// available on GitHub" instead of misreading the dequeued
+		// state as "queued for first collection" (the
+		// department-of-veterans-affairs incident: 477 privatized
+		// repos, 430 with real data behind a false queued banner).
+		if err := store.MarkRepoGone(ctx, repo.ID); err != nil {
+			logger.Warn("prelim: failed to mark dead repo gone — keeping queue row so the next cycle retries",
 				"repo_id", repo.ID, "error", err)
 			return result, nil
 		}
@@ -76,6 +81,20 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			logger.Warn("prelim: failed to dequeue dead repo", "repo_id", repo.ID, "error", err)
 		}
 		return result, nil
+	}
+
+	// v0.28.1 (A6): a DEFINITIVE 2xx probe means the repo is reachable
+	// — clear a stale gone stamp so resurrection is symmetric (org
+	// re-publicized, repo re-added/re-enqueued). The store's
+	// IS NOT NULL guard makes this a 0-row no-op for the normal
+	// fleet. 2xx ONLY (SR-16, matching mark-gone-repos' probe rule):
+	// indeterminate statuses — 403, 429, 5xx — prove nothing and must
+	// not flip a gone-stamped repo back to the false queued banner
+	// mid-outage.
+	if statusCode >= 200 && statusCode < 300 {
+		if err := store.ClearRepoGone(ctx, repo.ID); err != nil {
+			logger.Warn("prelim: failed to clear repo_gone_at", "repo_id", repo.ID, "error", err)
+		}
 	}
 
 	// Normalize URLs for comparison.

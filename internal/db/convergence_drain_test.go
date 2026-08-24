@@ -130,7 +130,7 @@ func TestMessageHealWorklistDrainsOnStamp(t *testing.T) {
 		t.Helper()
 		// The scratch DB's worklist holds only test residue, so a
 		// generous limit keeps the membership check exact.
-		items, berr := store.GetMessageHealBatch(ctx, 100000)
+		items, berr := store.GetMessageHealBatch(ctx, 0, 100000)
 		if berr != nil {
 			t.Fatal(berr)
 		}

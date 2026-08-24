@@ -37,6 +37,8 @@ var columnWritePolicies = []sqlscan.Registered{
 		Reason: "fleet-entry timestamp — INSERT-only so it can never degrade into last-touched (v0.27.60)"},
 	{Table: "aveloxis_data.repos", Column: "forked_from", Policy: sqlscan.PreferNonemptyIncoming,
 		Reason: "an id-less re-upsert must not wipe captured lineage; empty incoming preserves stored (v0.27.78)"},
+	{Table: "aveloxis_data.repos", Column: "vuln_scan_last_run", Policy: sqlscan.AlwaysRefresh,
+		Reason: "completed-scan stamp — every completed vulnerability scan re-stamps NOW(); never written on error paths (v0.28.1 A4)"},
 	{Table: "aveloxis_data.contributors", Column: "cntrb_login", Policy: sqlscan.PreferNonemptyIncoming,
 		Reason: "refreshed ONLY on cntrb_id-keyed conflicts (same person, deterministic UUID) so renames pick up the current login; never keyed by login itself (v0.18.29 Fix 3, v0.22.0)"},
 	{Table: "aveloxis_data.contributor_identities", Column: "node_id", Policy: sqlscan.PreferNonemptyIncoming,

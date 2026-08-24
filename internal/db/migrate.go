@@ -150,11 +150,22 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// retry rationale applies verbatim.
 	execMigrationStep(ctx, pg, logger, &errs, "base schema DDL", schemaSQL)
 
+	// v0.28.4 — the completed-backfill ledger must exist before any
+	// runOnce-gated step below probes it (belt over the base DDL's own
+	// declaration; see migration_ledger.go for the full contract).
+	ensureMigrationLedgerTable(ctx, pg, logger, &errs)
+
 	// Run data cleanup for any garbage timestamps from prior versions.
-	if err := cleanupBadTimestamps(ctx, pg, logger); err != nil {
-		logger.Error("schema migration error", "step", "cleanupBadTimestamps", "error", err)
-		errs = append(errs, fmt.Errorf("cleanupBadTimestamps: %w", err))
-	}
+	// Ledgered (v0.28.4): the per-column probes walked every large
+	// table for ~1h on the 2026-08-23 production migrate to fix 38
+	// rows; garbage timestamps come from PRIOR-version writers, so
+	// once clean the sweep never needs to re-run.
+	runOnce(ctx, pg, logger, &errs, "cleanup garbage timestamps from prior versions", func(errs *[]error) {
+		if err := cleanupBadTimestamps(ctx, pg, logger); err != nil {
+			logger.Error("schema migration error", "step", "cleanupBadTimestamps", "error", err)
+			*errs = append(*errs, fmt.Errorf("cleanupBadTimestamps: %w", err))
+		}
+	})
 
 	// The migration step sequence, split into ordered stages
 	// (v0.27.42). Every stage takes the shared error collector; order
@@ -451,6 +462,41 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_locked_pid", "INTEGER")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_locked_boot_id", "TEXT")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_output_path", "TEXT")
+
+	// v0.28.1 (A4): completed-vuln-scan stamp (the scancode_last_run
+	// pattern). Stamped ONLY at ScanVulnerabilities' completed-scan
+	// exits — never on error paths — so NULL means "never scanned"
+	// and a date on a zero-finding repo means "scanned, clean".
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "vuln_scan_last_run", "TIMESTAMPTZ")
+
+	// v0.28.7 (Copilot round 3): upgraded fleets get the column as
+	// NULL for every repo, but the API documents NULL as "never
+	// scanned" — a repo with STORED findings would serve active
+	// findings alongside scanned_at:null until its next scan. A
+	// finding's last_seen_at PROVES an OSV scan touched the repo at
+	// that time (resolved findings included — they were seen once
+	// too), so backfill the stamp from the latest finding evidence.
+	// Historically CLEAN scans left no evidence and honestly stay
+	// NULL until the repo's next scan stamps for real. Ledgered: a
+	// one-shot GROUP BY over the fleet's vuln table.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.28.7 backfill vuln_scan_last_run from finding evidence (a scan provably ran)", `
+		UPDATE aveloxis_data.repos r
+		SET vuln_scan_last_run = sub.last_seen
+		FROM (
+		    SELECT repo_id, MAX(last_seen_at) AS last_seen
+		    FROM aveloxis_data.repo_deps_vulnerabilities
+		    WHERE last_seen_at IS NOT NULL
+		    GROUP BY repo_id
+		) sub
+		WHERE r.repo_id = sub.repo_id
+		  AND r.vuln_scan_last_run IS NULL`)
+
+	// v0.28.1 (A6): the distinct "gone" state — prelim's 404/410
+	// sideline stamps it alongside repo_archived so the GUI can say
+	// "no longer publicly available" instead of misreading the
+	// dequeued state as "queued for first collection".
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "repo_gone_at", "TIMESTAMPTZ")
 
 	// v0.21.4: failure tracking + exponential backoff.
 	//
@@ -867,7 +913,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// COUNT(DISTINCT) subquery itself is the cost; on a 100K-repo
 	// fleet with hundreds of millions of commit rows this takes a few
 	// minutes once, then never matters again.
-	execMigrationStep(ctx, pg, logger, errs, "backfill collection_queue.last_commits with distinct counts",
+	runOnceStep(ctx, pg, logger, errs, "backfill collection_queue.last_commits with distinct counts",
 		`UPDATE aveloxis_ops.collection_queue q
 		SET last_commits = sub.cnt
 		FROM (
@@ -898,7 +944,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// snapshot rotated to repo_info_history so the live table may hold
 	// just one row per repo on a steady-state install, but the
 	// DISTINCT ON is correct either way.
-	execMigrationStep(ctx, pg, logger, errs, "v0.20.5 backfill force_full_collect for repos with PR gap",
+	runOnceStep(ctx, pg, logger, errs, "v0.20.5 backfill force_full_collect for repos with PR gap",
 		`UPDATE aveloxis_ops.collection_queue q
 		SET force_full_collect = TRUE
 		FROM (
@@ -946,7 +992,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// tool_version is omitted from the column list — the per-table
 	// DEFAULT set by setToolVersionDefaults fills it in. Same for
 	// the other tool_version-bearing tables.
-	execMigrationStep(ctx, pg, logger, errs, "v0.20.12 backfill placeholder contributors for unresolvable logins",
+	runOnceStep(ctx, pg, logger, errs, "v0.20.12 backfill placeholder contributors for unresolvable logins",
 		`INSERT INTO aveloxis_data.contributors
 			(cntrb_id, cntrb_login, gh_login, gh_state,
 			 tool_source, data_source, data_collection_date)
@@ -983,7 +1029,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// AND any inappropriately-set force_full_collect lets the next
 	// cycle run incrementally, which is the correct cadence for a
 	// healthy small repo with no API activity.
-	execMigrationStep(ctx, pg, logger, errs, "v0.20.7 clear false-positive 'no data collected' errors for repos with real commits",
+	runOnceStep(ctx, pg, logger, errs, "v0.20.7 clear false-positive 'no data collected' errors for repos with real commits",
 		`UPDATE aveloxis_ops.collection_queue
 		SET last_error = NULL,
 		    force_full_collect = FALSE
@@ -1011,7 +1057,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// UPDATE means a second migrate run is a no-op once backfill
 	// completes. Wrapped in execMigrationStep per the v0.19.4
 	// fail-closed contract.
-	execMigrationStep(ctx, pg, logger, errs, "v0.21.0 backfill scancode_last_run from aveloxis_scan.scancode_scans",
+	runOnceStep(ctx, pg, logger, errs, "v0.21.0 backfill scancode_last_run from aveloxis_scan.scancode_scans",
 		`UPDATE aveloxis_data.repos r
 		SET scancode_last_run = sub.last_at,
 		    scancode_version = sub.last_version
@@ -1048,7 +1094,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// outer subquery scans the full collection_queue but joins
 	// each row with a single indexed lookup. On a 40K-repo / 5M-
 	// row issues fleet this is a few seconds.
-	execMigrationStep(ctx, pg, logger, errs, "v0.21.2 backfill collection_queue.last_issues with cumulative counts",
+	runOnceStep(ctx, pg, logger, errs, "v0.21.2 backfill collection_queue.last_issues with cumulative counts",
 		`UPDATE aveloxis_ops.collection_queue q
 		SET last_issues = sub.cnt
 		FROM (
@@ -1062,7 +1108,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// v0.21.2 backfill collection_queue.last_prs with cumulative counts.
 	// See last_issues backfill above for the rationale; same shape
 	// against aveloxis_data.pull_requests via idx_pull_requests_repo_id.
-	execMigrationStep(ctx, pg, logger, errs, "v0.21.2 backfill collection_queue.last_prs with cumulative counts",
+	runOnceStep(ctx, pg, logger, errs, "v0.21.2 backfill collection_queue.last_prs with cumulative counts",
 		`UPDATE aveloxis_ops.collection_queue q
 		SET last_prs = sub.cnt
 		FROM (
@@ -1220,7 +1266,7 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// (1,051,111 of 1,051,111 on production — 2026-08-19 fill audit).
 	// Value derived from the owning repo's platform. Self-disabling via
 	// the empty-data_source predicate; ~1M rows = one pass, no windows.
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.103 backfill releases.data_source from repo platform", `
 		UPDATE aveloxis_data.releases rel
 		SET data_source = CASE r.platform_id
@@ -1233,7 +1279,14 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 
 	// v0.27.104: backfill pull_requests.meta_head_id/meta_base_id from
 	// pull_request_meta (100% derivable locally — see pr_meta_links.go).
-	ensurePRMetaLinks(ctx, pg, logger, errs)
+	// Ledgered (v0.28.4): ~21 keyset windows per side over the 21M-row
+	// pull_requests PK on every re-run; forward writes are
+	// SetPRMetaLinks' job since v0.27.104.
+	runOnce(ctx, pg, logger, errs,
+		"v0.27.104 backfill pull_requests.meta_head_id/meta_base_id",
+		func(errs *[]error) {
+			ensurePRMetaLinks(ctx, pg, logger, errs)
+		})
 
 	// v0.27.105: whitespace-walk marker (fill-audit Workstream C).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "whitespace_head_hash", "TEXT DEFAULT ''")
@@ -1246,7 +1299,7 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// meaningless without a real platform_user_id; nothing reads them
 	// post-v0.27.106. Self-disabling: once deleted, the fixed writer
 	// never recreates them.
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.108 delete poisoned platform_user_id=0 identity rows", `
 		DELETE FROM aveloxis_data.contributor_identities
 		WHERE platform_user_id = 0`)
@@ -1398,7 +1451,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// constant, not user input, so there's no injection vector.
 	// execMigrationStep doesn't take SQL parameters; we inline the
 	// literal directly into the SQL string.
-	execMigrationStep(ctx, pg, logger, errs, "v0.23.0 backfill contributor_login_history from identities",
+	runOnceStep(ctx, pg, logger, errs, "v0.23.0 backfill contributor_login_history from identities",
 		fmt.Sprintf(`INSERT INTO aveloxis_data.contributor_login_history
 			(cntrb_id, platform_id, login, source, tool_version)
 		 SELECT i.cntrb_id, i.platform_id, i.login, 'backfill', '%s'
@@ -1407,7 +1460,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		 WHERE COALESCE(i.login, '') != ''
 		   AND COALESCE(c.cntrb_deleted, 0) = 0
 		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion))
-	execMigrationStep(ctx, pg, logger, errs, "v0.23.0 backfill contributor_login_history from contributors.cntrb_login",
+	runOnceStep(ctx, pg, logger, errs, "v0.23.0 backfill contributor_login_history from contributors.cntrb_login",
 		fmt.Sprintf(`INSERT INTO aveloxis_data.contributor_login_history
 			(cntrb_id, platform_id, login, source, tool_version)
 		 SELECT DISTINCT c.cntrb_id, i.platform_id, c.cntrb_login, 'backfill', '%s'
@@ -1475,7 +1528,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	//      the CTE is gone. Keeping them would cost write
 	//      amplification on every contributors INSERT/UPDATE with
 	//      zero read-side benefit.
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.25.6 backfill cntrb_canonical from contributors_aliases",
 		`UPDATE aveloxis_data.contributors c
 		    SET cntrb_canonical = sub.alias_email
@@ -1489,7 +1542,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		    AND COALESCE(c.cntrb_canonical, '') = ''
 		    AND COALESCE(c.cntrb_deleted, 0) = 0`)
 
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.25.6 backfill cmt_author_platform_username from cmt_ght_author_id",
 		`UPDATE aveloxis_data.commits co
 		    SET cmt_author_platform_username = c.gh_login
@@ -1523,14 +1576,14 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	//
 	// Idempotent: the COALESCE(col, '') = '' predicates stop matching
 	// once filled.
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.26.4 backfill pull_requests.pr_diff_url from pr_html_url",
 		`UPDATE aveloxis_data.pull_requests
 		 SET pr_diff_url = pr_html_url || '.diff'
 		 WHERE COALESCE(pr_diff_url, '') = ''
 		   AND COALESCE(pr_html_url, '') <> ''`)
 
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.26.4 backfill pull_request_meta.meta_label from pull_request_repo",
 		`UPDATE aveloxis_data.pull_request_meta m
 		 SET meta_label = split_part(r.pr_repo_full_name, '/', 1) || ':' || m.meta_ref
@@ -1610,7 +1663,12 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// dead tuples behind — plain VACUUM won't return the space to the
 	// OS; use pg_repack or VACUUM FULL on aveloxis_data.repo_labor in
 	// a maintenance window (docs/architecture/analysis.md).
-	migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, errs)
+	// Ledgered (v0.28.4): 2,829 no-op windows per re-run on kate.
+	runOnce(ctx, pg, logger, errs,
+		"v0.27.7 rotate non-latest repo_labor snapshots to repo_labor_history",
+		func(errs *[]error) {
+			migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, errs)
+		})
 
 	// v0.27.18 — natural-key backstop for repo_labor (the W3/v0.27.7
 	// follow-up). Post-rotation the table holds one snapshot per repo,
@@ -1633,7 +1691,28 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// backfill inline review comments (with full line metadata) from
 	// review_comments. All from in-database data — zero API calls.
 	// See msg_ref_metadata.go.
-	ensureMsgRefMetadata(ctx, pg, logger, errs)
+	// Ledgered (v0.28.4): the dedup's ROW_NUMBER() pass alone scans
+	// the 10.5M-row bridge table every re-run; the data_source +
+	// inline-comment keyset walks measured ~37-45 min on kate.
+	runOnce(ctx, pg, logger, errs,
+		"v0.27.15 msg_ref bridge repairs (dedup + data_source + inline-comment backfills)",
+		func(errs *[]error) {
+			ensureMsgRefMetadata(ctx, pg, logger, errs)
+		})
+	// The uq_pr_review_msg_ref arbiter stays LIVE-healed regardless of
+	// the ledger (the plan's "CIC builds are never ledgered" rule): a
+	// hand-dropped unique must come back on the next explicit migrate.
+	// Redundant with the build inside ensureMsgRefMetadata on the
+	// first run — IF NOT EXISTS makes this a catalog no-op then and on
+	// every healthy later run; execCreateIndexConcurrently's
+	// INVALID-recovery re-checks each time. If duplicates re-enter
+	// while the index is dropped, this build fails LOUDLY into the
+	// collector and the operator replays the ledgered dedup
+	// (DELETE its migration_ledger row, then migrate).
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "uq_pr_review_msg_ref",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_pr_review_msg_ref
+		 ON aveloxis_data.pull_request_review_message_ref (pr_review_id, msg_id)`)
 
 	// v0.27.17 — repo_groups consolidation. The lazy 'Default'-group
 	// creation used a bare ON CONFLICT DO NOTHING with NO unique on
@@ -1886,7 +1965,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// legitimately-dataless rows (deleted users, mark-only) stamped by
 	// the fixed code never match. Broken-era deleted users get exactly
 	// one harmless re-check.
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.79 re-null activity-check stamps from the resource-limits incident",
 		`UPDATE aveloxis_data.contributors
 		 SET gh_activity_checked_at = NULL
@@ -2730,8 +2809,20 @@ func cleanupBadTimestamps(ctx context.Context, pg *PostgresStore, logger *slog.L
 		)
 		tag, err := pg.pool.Exec(ctx, query)
 		if err != nil {
-			// Table or column may not exist yet — skip silently.
-			continue
+			// v0.28.4: only the TYPED definitive absences skip —
+			// 42P01 undefined_table / 42703 undefined_column mean
+			// "nothing to clean here" on older schemas. Every OTHER
+			// error (deadlock victim, lock timeout, permissions,
+			// dead ctx) must propagate: this step is ledgered now,
+			// and the pre-ledger blanket swallow would let runOnce
+			// record "complete" over uncleaned columns — after which
+			// the step never re-runs (the decorative-gate class,
+			// v0.27.107 lesson).
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && (pgErr.Code == "42P01" || pgErr.Code == "42703") {
+				continue
+			}
+			return fmt.Errorf("timestamp cleanup %s.%s: %w", f.table, f.column, err)
 		}
 		n := tag.RowsAffected()
 		if n > 0 {

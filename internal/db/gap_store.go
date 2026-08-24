@@ -63,7 +63,7 @@ func (s *PostgresStore) GetRepoMetaCounts(ctx context.Context, repoID int64) (is
 		SELECT COALESCE(issues_count, 0), COALESCE(pr_count, 0)
 		FROM aveloxis_data.repo_info
 		WHERE repo_id = $1
-		ORDER BY data_collection_date DESC
+		ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC
 		LIMIT 1`, repoID).Scan(&issues, &prs)
 	return
 }

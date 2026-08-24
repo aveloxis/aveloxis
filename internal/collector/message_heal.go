@@ -42,6 +42,12 @@ type MessageHealResult struct {
 	Healed         int   // rows stamped healed this pass
 	ParentsFetched int   // distinct parent refetches performed
 	ParentErrors   int   // parents whose refetch failed (their rows stay pending)
+	// v0.28.8 cursor plumbing: Batch is the number of worklist rows
+	// this pass claimed; MaxMsgID is the highest msg_id among them —
+	// the next pass resumes ABOVE it, so a fully-failing batch can
+	// never starve the rows behind it.
+	Batch    int
+	MaxMsgID int64
 }
 
 type healParentKey struct {
@@ -50,10 +56,82 @@ type healParentKey struct {
 	side   string // "issue-conv" | "pr-conv" | "pr-review-side"
 }
 
-// HealMessages runs one bounded healing pass. limit caps the number of
-// worklist rows considered (0 = all pending). dryRun reports the plan
-// without fetching or mutating.
+// healPassSize bounds one internal pass — the unit that gets fetched,
+// processed, and STAMPED before the next batch starts (v0.28.1 A8).
+// Pre-A8, healed_at stamped once at the very end of the whole run:
+// the 2026-08 full-batch run was killed ~20% done after 6 days having
+// stamped NOTHING, and the operator's recovery was hand-chunked
+// --limit 25000 passes. This constant makes that chunking automatic
+// and load-bearing: an interrupted run loses at most one pass of
+// attribution. 25,000 is the operator-proven chunk from that recovery
+// (~4s batch SELECT on the production worklist post-v0.27.67 index).
+const healPassSize = 25000
+
+// HealMessages CONSIDERS up to limit worklist rows (0 = all pending)
+// — the cap bounds the WORK (rows claimed + parents refetched), not
+// just successes: a failure-heavy canary run must stay a canary
+// (v0.28.8, Copilot round 5 — decrementing by healed-only let a
+// bounded run traverse the whole worklist when failures dominated,
+// exactly the cohort a canary probes). It loops
+// looping in healPassSize internal passes so progress persists
+// incrementally (SR-3: each pass stamps only rows proven processed —
+// and stamps them as soon as they ARE proven, not at run end).
+//
+// v0.28.8 (Copilot round 4): passes walk the worklist by a strictly
+// increasing msg_id CURSOR. The old "zero-progress pass terminates"
+// rule looked safe but starved: failed rows stay pending, each pass
+// reselected the same lowest 25K ids, so once failures filled the
+// first batch the run exited "successfully" without ever visiting a
+// higher-id row. Now a fully-failing batch just advances the cursor
+// — the run ends when no rows remain ABOVE the cursor, failed rows
+// stay pending (the worklist IS the resume state, SR-19), and a
+// fresh run restarts at 0 to retry them. Callers see ParentErrors
+// and must report incomplete work (the CLI exits nonzero).
+// dryRun reports the first pass's plan without mutating.
 func HealMessages(ctx context.Context, store *db.PostgresStore, client platform.Client, logger *slog.Logger, limit int, dryRun bool) (*MessageHealResult, error) {
+	total := &MessageHealResult{}
+	remaining := limit // 0 = unbounded
+	var cursor int64
+	for pass := 1; ; pass++ {
+		passLimit := healPassSize
+		if remaining > 0 && remaining < passLimit {
+			passLimit = remaining
+		}
+		res, err := runMessageHealPass(ctx, store, client, logger, cursor, passLimit, dryRun)
+		if res != nil {
+			if pass == 1 {
+				total.Pending = res.Pending
+			}
+			total.Healed += res.Healed
+			total.ParentsFetched += res.ParentsFetched
+			total.ParentErrors += res.ParentErrors
+			total.Batch += res.Batch
+		}
+		if err != nil {
+			return total, err
+		}
+		if dryRun {
+			return total, nil
+		}
+		if res.Batch == 0 {
+			// Nothing pending above the cursor — the walk is done.
+			// Rows that failed this run stay pending for the next run.
+			return total, nil
+		}
+		cursor = res.MaxMsgID // strictly increases: the loop terminates
+		if remaining > 0 {
+			remaining -= res.Batch // rows CONSIDERED, not just healed
+			if remaining <= 0 {
+				return total, nil
+			}
+		}
+	}
+}
+
+// runMessageHealPass is one bounded healing pass. limit caps the
+// number of worklist rows considered (0 = all pending). The pass
+// stamps its own healed rows before returning.
+func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client platform.Client, logger *slog.Logger, afterMsgID int64, limit int, dryRun bool) (*MessageHealResult, error) {
 	res := &MessageHealResult{}
 	var err error
 	res.Pending, err = store.CountMessageHealPending(ctx)
@@ -68,9 +146,15 @@ func HealMessages(ctx context.Context, store *db.PostgresStore, client platform.
 		limit = int(res.Pending)
 	}
 
-	items, err := store.GetMessageHealBatch(ctx, limit)
+	items, err := store.GetMessageHealBatch(ctx, afterMsgID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("loading heal batch: %w", err)
+	}
+	res.Batch = len(items)
+	for _, it := range items {
+		if it.MsgID > res.MaxMsgID {
+			res.MaxMsgID = it.MsgID
+		}
 	}
 
 	// Parent-dedup: one refetch covers every collision under it.

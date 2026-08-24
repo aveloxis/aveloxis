@@ -98,7 +98,7 @@ func ingestScancodeOutput(ctx context.Context, store *db.PostgresStore, repoID i
 		packageJSON, _ := json.Marshal(f.PackageData)
 		errorsJSON, _ := json.Marshal(f.ScanErrors)
 		dbRows = append(dbRows, &db.ScancodeFileRow{
-			Path:                          f.Path,
+			Path:                          db.StripScancodeRootPrefix(f.Path),
 			FileType:                      f.FileType,
 			ProgrammingLanguage:           f.ProgrammingLanguage,
 			DetectedLicenseExpression:     f.DetectedLicenseExpression,

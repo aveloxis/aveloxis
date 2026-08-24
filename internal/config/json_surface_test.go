@@ -18,6 +18,7 @@ import (
 
 var frozenCollectionKeys = []string{
 	"days_until_recollect",
+	"archived_recollect_multiplier",
 	"workers",
 	"repo_clone_dir",
 	"force_full",
@@ -25,6 +26,11 @@ var frozenCollectionKeys = []string{
 	"matview_rebuild_on_startup",
 	"matview_rebuild_skip_dm_aggregates",
 	"activity_history_window_days",
+	"activity_history_interval_minutes",
+	"activity_history_batch",
+	"activity_history_concurrency",
+	"activity_history_window_concurrency",
+	"activity_history_cooldown_days",
 	"pr_child_mode",
 	"listing_mode",
 	"threading_mode",

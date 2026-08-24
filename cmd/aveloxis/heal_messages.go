@@ -50,7 +50,7 @@ Use --limit for canary passes; re-run until "nothing pending".`,
 			return runHealMessages(*cfgPath, limit, dryRun, useAugurKeys)
 		},
 	}
-	cmd.Flags().IntVar(&limit, "limit", 0, "max worklist rows to heal this pass (0 = all pending)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "max worklist rows to CONSIDER this run — bounds claimed rows + parent refetches, not just successes (0 = all pending)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report the plan (pending rows, distinct parents) without fetching or mutating")
 	cmd.Flags().BoolVar(&useAugurKeys, "augur-keys", false, "also load API keys from augur_operations.worker_oauth")
 	return cmd
@@ -89,8 +89,19 @@ func runHealMessages(cfgPath string, limit int, dryRun, useAugurKeys bool) error
 	}
 	fmt.Printf("heal-messages: healed %d of %d pending (parents fetched: %d, parent errors: %d)\n",
 		res.Healed, res.Pending, res.ParentsFetched, res.ParentErrors)
-	if res.ParentErrors > 0 || int64(res.Healed) < res.Pending {
-		fmt.Println("re-run to continue; failed parents retry on the next pass")
+	if int64(res.Healed) < res.Pending {
+		fmt.Println("re-run to continue; failed parents retry on the next run")
+	}
+	// v0.28.8 (Copilot rounds 4+5): ANY claimed-but-unstamped row means
+	// the run is INCOMPLETE — exit nonzero so cron/scripts notice (the
+	// v0.27.106 rewalk convention). Batch > Healed is the complete
+	// signal: it covers parent-refetch failures AND the paths that
+	// fail without touching ParentErrors (staging flush, ProcessRepo,
+	// stale-link cleanup). Failed rows stay pending; a re-run retries
+	// them from the bottom of the worklist.
+	if res.Batch > res.Healed {
+		return fmt.Errorf("%d of %d claimed rows failed to heal (parent errors: %d) — they remain pending; re-run to retry",
+			res.Batch-res.Healed, res.Batch, res.ParentErrors)
 	}
 	return nil
 }

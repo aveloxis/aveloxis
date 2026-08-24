@@ -108,7 +108,7 @@ func TestVulnLifecycleEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Scan 2 reports only GHSA-aaaa → GHSA-bbbb resolves.
-	n, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, []string{"GHSA-aaaa|pkg:npm/a@1"})
+	n, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, []string{"GHSA-aaaa|pkg:npm/a@1"}, nil)
 	if err != nil || n != 1 {
 		t.Fatalf("expected exactly 1 resolved, got n=%d err=%v", n, err)
 	}
@@ -138,8 +138,30 @@ func TestVulnLifecycleEndToEnd(t *testing.T) {
 			t.Error("a reappearing vulnerability must be un-resolved by the upsert")
 		}
 	}
-	// Empty scan resolves everything.
-	if _, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, nil); err != nil {
+	// v0.28.8 (Copilot round 4): findings for deps the scan could NOT
+	// adjudicate (purl-less — never sent to OSV) are PRESERVED via
+	// preserveNames even though they're absent from the seen-set.
+	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*VulnerabilityRow{
+		{VulnID: "GHSA-cccc", PackageName: "purlless-dep", PackagePurl: "pkg:npm/purlless-dep@1",
+			Severity: "HIGH", CVSSScore: 8.0, Source: "osv.dev"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, nil, []string{"purlless-dep"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = store.GetRepoVulnerabilities(ctx, repoID)
+	for _, v := range rows {
+		if v.VulnID == "GHSA-cccc" && v.ResolvedAt != nil {
+			t.Error("a preserved (never-queried) dep's finding must NOT resolve — \"we didn't ask\" is not \"it's fixed\"")
+		}
+		if v.VulnID == "GHSA-bbbb" && v.ResolvedAt == nil {
+			t.Error("non-preserved findings absent from the seen-set must still resolve")
+		}
+	}
+
+	// Empty scan (no preserves) resolves everything.
+	if _, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	total, _, _ = store.CountRepoVulnerabilities(ctx, repoID)

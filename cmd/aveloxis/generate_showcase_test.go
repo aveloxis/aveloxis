@@ -133,7 +133,11 @@ func TestGenerateShowcaseRepoPages(t *testing.T) {
 	// Detail reads — all repo-level, none user-scoped.
 	for _, needle := range []string{
 		"GetRepoShowcaseMeta(", "GetRepoScorecard(",
-		"CountRepoVulnerabilities(", "HasDependencyData(",
+		// v0.28.5 (Copilot round): the vulnerabilities tile gates on
+		// the OSV scan STAMP, not dependency-row presence — analysis
+		// can run cycles before the first scan, and HasDependencyData
+		// rendered a fabricated clean 0 in that window.
+		"CountRepoVulnerabilities(", "GetVulnScanLastRun(",
 	} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("repo snapshot pages must read %s", needle)
@@ -275,7 +279,7 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 
 	// beta (the top repo) gets the full detail surface: description +
 	// language, a scorecard with headline, one CRITICAL vulnerability,
-	// and a dependency row (so DepsScanned=true).
+	// and a completed-scan stamp (so VulnScanned=true).
 	if _, err := pool.Exec(ctx, `
 		UPDATE aveloxis_data.repos SET repo_description = 'Fast <script>x</script> streaming',
 		       primary_language = 'Go' WHERE repo_id = $1`, betaID); err != nil {
@@ -432,7 +436,7 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, needle := range []string{"not yet scanned", "analysis pending", "No collected activity"} {
+	for _, needle := range []string{"not yet scanned", "scan pending", "No collected activity"} {
 		if !strings.Contains(string(alphaPage), needle) {
 			t.Errorf("unscanned repo page missing honest empty state %q", needle)
 		}

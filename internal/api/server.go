@@ -236,6 +236,15 @@ func (s *Server) handleRepoStatsBatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no valid repo IDs", http.StatusBadRequest)
 		return
 	}
+	// v0.28.10 (Copilot round 7): the batch is bounded — its queueless
+	// fallback runs live aggregates for gone repos, so an uncapped id
+	// list was an unbounded-cost surface. 500 comfortably covers every
+	// real caller (monitor 200/page, group pages 100/page); the store
+	// clamps as backstop (v0.27.65 pattern), this 400 is the honest UX.
+	if len(ids) > db.RepoStatsBatchMaxIDs {
+		http.Error(w, fmt.Sprintf("at most %d ids per request", db.RepoStatsBatchMaxIDs), http.StatusBadRequest)
+		return
+	}
 	stats, err := s.store.GetRepoStatsBatch(r.Context(), ids)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

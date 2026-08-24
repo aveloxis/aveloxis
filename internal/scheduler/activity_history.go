@@ -6,11 +6,15 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/platform/github"
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // activity_history.go — the v0.27.58 daily contributor-history sweep.
@@ -34,29 +38,46 @@ type contributorHistoryFetcher interface {
 	FetchContributorDailyHistory(ctx context.Context, login string, windows []github.HistoryWindow) ([]model.ContributorDayActivity, []model.ContributorDayTotal, error)
 }
 
-// Cadence constants — derived, not magic. The full-fat window query
-// costs 1 rate-limit point (live-verified 2026-07-30), so the budget
-// constraint is query COUNT, not points. Batch 25 contributors per
-// 1-minute tick at an average ~10-30 windows each ≈ 250-750 queries/
-// minute peak ≈ 12% of the 73-token pool's hourly capacity, and the
-// bootstrap covers the active-classified million (claimed first) in
-// roughly two weeks. The re-audit cooldown is quarterly.
+// Cadence is configurable since v0.28.3 (collection.activity_history_*
+// — accessors are the single default layer, SR-10). The original
+// hardcoded serial design assumed a cycle finished inside its 1-minute
+// tick; measured reality was ~30-minute cycles (each contributor is
+// ~21 sequential GraphQL round-trips) under singleFlight → ~1,170
+// contributors/day against a 2.4M pool ≈ 5.6 years. Rate limit was
+// never the constraint (each window query costs 1 point,
+// live-verified 2026-07-30) — RTT serialization was. The pooled
+// defaults land at ~13-18% of a 54-key pool's GraphQL point budget.
+
+// activityHistoryOutcome is one contributor's sweep result.
+type activityHistoryOutcome int
+
 const (
-	activityHistoryInterval = time.Minute
-	activityHistoryBatch    = 25
-	activityHistoryCooldown = 90 * 24 * time.Hour
+	historyStored activityHistoryOutcome = iota
+	historyMarked
+	historyFailed
 )
 
-// runActivityHistory performs one sweep tick. Per-contributor failure
-// contract: a missing account (meta 404 → ErrNotFound class) is
-// mark-only stamped; any OTHER error stamps nothing so the contributor
-// retries on the next claim.
+// runActivityHistory performs one sweep tick: claim a batch, fetch
+// each contributor's history through a bounded worker pool (v0.28.3 —
+// the BreadthWorker pattern), store per contributor. Per-contributor
+// failure contract unchanged: a missing account (meta 404 →
+// ErrNotFound class) is mark-only stamped; any OTHER error stamps
+// nothing so the contributor retries on the next claim.
 func (s *Scheduler) runActivityHistory(ctx context.Context) {
 	fetcher, ok := s.ghClient.(contributorHistoryFetcher)
 	if !ok {
 		return // no GitHub GraphQL client (GitLab-only deployment or test fake)
 	}
-	claimed, err := s.store.GetContributorsForHistoryBackfill(ctx, activityHistoryBatch, activityHistoryCooldown)
+	// v0.28.3: window-level parallelism lives in the CLIENT (the
+	// windows of one contributor fetch concurrently); wire the
+	// configured value each tick — cheap, idempotent, and keeps the
+	// platform package config-free.
+	if wc, ok := s.ghClient.(interface{ SetHistoryWindowConcurrency(int) }); ok {
+		wc.SetHistoryWindowConcurrency(s.cfg.Collection.ActivityHistoryWindowConcurrencyValue())
+	}
+	claimed, err := s.store.GetContributorsForHistoryBackfill(ctx,
+		s.cfg.Collection.ActivityHistoryBatchValue(),
+		s.cfg.Collection.ActivityHistoryCooldownValue())
 	if err != nil {
 		s.logger.Warn("activity history: claim failed", "error", err)
 		return
@@ -65,58 +86,92 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 		return
 	}
 	windowDays := s.cfg.Collection.ActivityHistoryWindowDaysOrDefault()
+	concurrency := s.cfg.Collection.ActivityHistoryConcurrencyValue()
 	start := time.Now()
-	stored, marked, failed := 0, 0, 0
+	var stored, marked, failed atomic.Int64
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
 	for _, c := range claimed {
 		if ctx.Err() != nil {
-			return
+			break
 		}
-		created, years, err := fetcher.FetchContributorHistoryMeta(ctx, c.Login)
-		if err != nil {
-			if errors.Is(err, platform.ErrNotFound) || platform.ClassifyError(err) == platform.ClassSkip {
-				// Deleted/renamed account: stamp so the claim head drains.
-				// A failed stamp leaves the contributor at the claim head
-				// for a pointless re-fetch every tick — log it and count
-				// it as a failure so the operator sees the churn (Copilot
-				// review, PR #171).
-				if merr := s.store.MarkHistoryBackfilled(ctx, c.ID); merr != nil {
-					s.logger.Warn("activity history: mark-only stamp failed — contributor will be re-claimed", "login", c.Login, "error", merr)
-					failed++
-				} else {
-					marked++
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(c db.ActivityCheckContributor) {
+			defer safego.Recover(s.logger, "activity-history-worker")
+			defer wg.Done()
+			defer func() { <-sem }()
+			// v0.28.10 (Copilot round 7): commit the outcome in a
+			// DEFER so a panicking worker still counts — the recover
+			// bypassed the switch, letting the cycle log report fewer
+			// outcomes than claimed and zero failures for a panic.
+			// The default is failed; only a completed call overwrites
+			// it (the contributor stays unstamped and re-claims
+			// either way — this is counter honesty, not recovery).
+			outcome := historyFailed
+			defer func() {
+				switch outcome {
+				case historyStored:
+					stored.Add(1)
+				case historyMarked:
+					marked.Add(1)
+				default:
+					failed.Add(1)
 				}
-				continue
-			}
-			s.logger.Warn("activity history: meta fetch failed — will retry on next claim", "login", c.Login, "error", err)
-			failed++
-			continue
-		}
-		windows := github.HistoryWindows(created, years, time.Now().UTC(), windowDays)
-		if len(windows) == 0 {
-			// Account exists but has zero contribution years: nothing to
-			// fetch, ever — stamp it. Same failure treatment as above.
-			if merr := s.store.MarkHistoryBackfilled(ctx, c.ID); merr != nil {
-				s.logger.Warn("activity history: zero-years stamp failed — contributor will be re-claimed", "login", c.Login, "error", merr)
-				failed++
-			} else {
-				marked++
-			}
-			continue
-		}
-		days, totals, err := fetcher.FetchContributorDailyHistory(ctx, c.Login, windows)
-		if err != nil {
-			s.logger.Warn("activity history: fetch failed — will retry on next claim", "login", c.Login, "windows", len(windows), "error", err)
-			failed++
-			continue
-		}
-		if err := s.store.StoreContributorActivityHistory(ctx, c.ID, days, totals); err != nil {
-			s.logger.Warn("activity history: store failed — will retry on next claim", "login", c.Login, "error", err)
-			failed++
-			continue
-		}
-		stored++
+			}()
+			outcome = s.processHistoryContributor(ctx, fetcher, c, windowDays)
+		}(c)
 	}
+	wg.Wait()
+	// Log the EFFECTIVE knob values with the throughput so operators
+	// can measure config changes directly.
 	s.logger.Info("activity history cycle complete",
-		"claimed", len(claimed), "stored", stored, "marked_no_data", marked, "failed", failed,
-		"window_days", windowDays, "duration", time.Since(start).Truncate(time.Millisecond))
+		"claimed", len(claimed), "stored", stored.Load(), "marked_no_data", marked.Load(), "failed", failed.Load(),
+		"window_days", windowDays, "concurrency", concurrency,
+		"window_concurrency", s.cfg.Collection.ActivityHistoryWindowConcurrencyValue(),
+		"duration", time.Since(start).Truncate(time.Millisecond))
+}
+
+// processHistoryContributor handles ONE contributor's meta fetch →
+// window fetch → store sequence (the pre-v0.28.3 loop body, verbatim
+// semantics — the pool changed WHO runs it, not what it does).
+func (s *Scheduler) processHistoryContributor(ctx context.Context, fetcher contributorHistoryFetcher,
+	c db.ActivityCheckContributor, windowDays int) activityHistoryOutcome {
+	created, years, err := fetcher.FetchContributorHistoryMeta(ctx, c.Login)
+	if err != nil {
+		if errors.Is(err, platform.ErrNotFound) || platform.ClassifyError(err) == platform.ClassSkip {
+			// Deleted/renamed account: stamp so the claim head drains.
+			// A failed stamp leaves the contributor at the claim head
+			// for a pointless re-fetch every tick — log it and count
+			// it as a failure so the operator sees the churn (Copilot
+			// review, PR #171).
+			if merr := s.store.MarkHistoryBackfilled(ctx, c.ID); merr != nil {
+				s.logger.Warn("activity history: mark-only stamp failed — contributor will be re-claimed", "login", c.Login, "error", merr)
+				return historyFailed
+			}
+			return historyMarked
+		}
+		s.logger.Warn("activity history: meta fetch failed — will retry on next claim", "login", c.Login, "error", err)
+		return historyFailed
+	}
+	windows := github.HistoryWindows(created, years, time.Now().UTC(), windowDays)
+	if len(windows) == 0 {
+		// Account exists but has zero contribution years: nothing to
+		// fetch, ever — stamp it. Same failure treatment as above.
+		if merr := s.store.MarkHistoryBackfilled(ctx, c.ID); merr != nil {
+			s.logger.Warn("activity history: zero-years stamp failed — contributor will be re-claimed", "login", c.Login, "error", merr)
+			return historyFailed
+		}
+		return historyMarked
+	}
+	days, totals, err := fetcher.FetchContributorDailyHistory(ctx, c.Login, windows)
+	if err != nil {
+		s.logger.Warn("activity history: fetch failed — will retry on next claim", "login", c.Login, "windows", len(windows), "error", err)
+		return historyFailed
+	}
+	if err := s.store.StoreContributorActivityHistory(ctx, c.ID, days, totals); err != nil {
+		s.logger.Warn("activity history: store failed — will retry on next claim", "login", c.Login, "error", err)
+		return historyFailed
+	}
+	return historyStored
 }

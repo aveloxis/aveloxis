@@ -171,7 +171,7 @@ vim aveloxis.docker.json
 
 **GitHub OAuth app (for web GUI login):** Go to [github.com/settings/developers](https://github.com/settings/developers) → New OAuth App:
 - **Homepage URL:** `http://localhost:8082`
-- **Authorization callback URL:** `http://localhost:/auth/github/callback`
+- **Authorization callback URL:** `http://localhost:8082/auth/github/callback`
 
 Copy the Client ID and Client Secret into `github_client_id` and `github_client_secret`.
 
@@ -343,7 +343,7 @@ aveloxis start serve
 
 Create `aveloxis.json` (or copy from `aveloxis.example.json`).
 
-**The canonical reference for every supported `aveloxis.json` field** lives at [`docs/getting-started/configuration.md`](./docs/getting-started/configuration.md) (also rendered at the ReadTheDocs site). That document has the full table — 6 top-level sections, 34 fields — including all the v0.18.x REST→GraphQL options (`pr_child_mode`, `listing_mode`, `threading_mode`, `shard_size`), the v0.18.29+ periodic-task cadence knobs (`enrich_interval_minutes`, `search_resolve_interval_minutes`, `affiliation_interval_minutes`), v0.20.0's `shutdown_grace_seconds`, v0.21.0's decoupled scancode worker (`scancode_workers`, `scancode_cadence_days`, `scancode_start_interval_s`, `scancode_clone_dir`, `scancode_shutdown_grace_minutes` — see [`docs/architecture/scancode.md`](./docs/architecture/scancode.md) for the design), and the v0.19.0 Gmail-SMTP `mail` block.
+**The canonical reference for every supported `aveloxis.json` field** lives at [`docs/getting-started/configuration.md`](./docs/getting-started/configuration.md) (also rendered at the ReadTheDocs site). That document has the full table — every supported field across every section — including all the v0.18.x REST→GraphQL options (`pr_child_mode`, `listing_mode`, `threading_mode`, `shard_size`), the v0.18.29+ periodic-task cadence knobs (`enrich_interval_minutes`, `search_resolve_interval_minutes`, `affiliation_interval_minutes`), v0.20.0's `shutdown_grace_seconds`, v0.21.0's decoupled scancode worker (`scancode_workers`, `scancode_cadence_days`, `scancode_start_interval_s`, `scancode_clone_dir`, `scancode_shutdown_grace_minutes` — see [`docs/architecture/scancode.md`](./docs/architecture/scancode.md) for the design), and the v0.19.0 Gmail-SMTP `mail` block.
 
 A minimal example to get started; see `aveloxis.example.json` for an all-fields template and the doc above for the full reference:
 
@@ -379,7 +379,7 @@ A minimal example to get started; see `aveloxis.example.json` for an all-fields 
 }
 ```
 
-The settings most operators tune (with v0.20.x defaults shown for reference):
+The settings most operators tune (defaults shown for reference):
 
 | Field | Default | Notes |
 |---|---|---|
@@ -388,8 +388,8 @@ The settings most operators tune (with v0.20.x defaults shown for reference):
 | `collection.workers` | `12` | Concurrent collection goroutines. pgx pool sizes to `max(workers + 15, 20)`. |
 | `collection.days_until_recollect` | `1` | After collection, `due_at = last_collected + days_until_recollect`. |
 | `collection.repo_clone_dir` | `$HOME/aveloxis-repos` | Bare clones. Plan TB-scale for large fleets. |
-| `collection.pr_child_mode` | `"rest"` | Set to `"graphql"` for ~5× faster PR collection (v0.18.1+). |
-| `collection.listing_mode` | `"rest"` | Set to `"graphql"` to skip the repo-wide REST issue/PR scans (v0.18.2+). |
+| `collection.pr_child_mode` | `"graphql"` | GraphQL is the default GitHub path (~5× faster, v0.26.0+); set `"rest"` as the escape hatch. |
+| `collection.listing_mode` | `"graphql"` | Default since v0.26.0; `"rest"` restores the repo-wide REST issue/PR scans. |
 | `collection.threading_mode` | `"single"` | Set to `"sharded"` with `pr_child_mode=graphql` to parallelize large-repo PR batches (v0.18.3+). |
 | `collection.matview_rebuild_day` | `"saturday"` | Or `"disabled"` to turn off scheduled rebuilds. |
 | `web.dev_mode` | `false` | Set `true` for local HTTP development (see Development Mode below). Never enable in production. |
@@ -457,7 +457,7 @@ Requires OAuth app credentials in `aveloxis.json`. Create a GitHub OAuth app at 
 
 ### `aveloxis collect` — One-shot collection (no queue)
 
-For ad-hoc collection of specific repos without the scheduler. Uses the **direct collection pipeline** (bypasses staging, writes directly to relational tables). Best for testing or collecting a handful of repos.
+For ad-hoc collection of specific repos without the scheduler. Since v0.26.2 this delegates to the same **staged collection pipeline** `serve` uses (staging → processing), so one-shot runs and scheduled runs produce identical data. Best for testing or collecting a handful of repos.
 
 ```bash
 # Incremental (only data since last collection window)
@@ -574,11 +574,11 @@ Installs all optional third-party tools used by Aveloxis. Each tool is independe
 |---|---|---|
 | [scc](https://github.com/boyter/scc) | `go install github.com/boyter/scc/v3@latest` | Code complexity analysis — populates `repo_labor` with lines of code, comments, blanks, and complexity per file per language |
 | [scorecard](https://github.com/ossf/scorecard) | `go install github.com/ossf/scorecard/v5/cmd/scorecard@latest` | OpenSSF Scorecard — evaluates security practices (Code-Review, Maintained, Vulnerabilities, etc.) and populates `repo_deps_scorecard` |
-| [scancode](https://github.com/aboutcode-org/scancode-toolkit) | `pip3 install --user scancode-toolkit-mini` | Per-file license and copyright detection — populates `aveloxis_scan.scancode_file_results` with SPDX license expressions, copyrights, holders, and package data. Runs every 30 days per repo. Requires Python 3.10+ and libmagic (`brew install libmagic` on macOS, `apt-get install libmagic1` on Debian/Ubuntu). |
+| [scancode](https://github.com/aboutcode-org/scancode-toolkit) | `pipx install scancode-toolkit-mini` (+ `pipx inject scancode-toolkit-mini typecode-libmagic`) | Per-file license and copyright detection — populates `aveloxis_scan.scancode_file_results` with SPDX license expressions, copyrights, holders, and package data. Runs on its own decoupled worker pool every 180 days per repo (`scancode_cadence_days`). Requires Python 3.10+ and libmagic (`brew install libmagic` on macOS, `apt-get install libmagic1` on Debian/Ubuntu). |
 
 Tools that are already installed are skipped. The command verifies each tool is on PATH after installation.
 
-**Automatic updates:** On scheduler startup, Aveloxis checks if it has been more than 30 days since the last tool update. If so, it re-runs `go install ...@latest` for each installed tool to pull the latest version. Only tools already on PATH are updated — missing tools are not auto-installed. The check timestamp is stored at `~/.aveloxis-tool-check`.
+**Automatic updates:** On scheduler startup, Aveloxis checks if it has been more than 30 days since the last tool update. If so, it updates each installed tool (`go install ...@latest` for scc, the latest release tarball for scorecard, `pipx upgrade` + libmagic re-inject for scancode). Only tools already on PATH are updated — missing tools are not auto-installed. `aveloxis upgrade-tools` runs the same update pass on demand. The check timestamp is stored at `~/.aveloxis-tool-check`.
 
 ### `aveloxis start` — Start background processes
 
@@ -666,7 +666,7 @@ The monitor dashboard is integrated into the web GUI at `/monitor` (requires log
 - **Gathered vs Metadata columns**: Gathered Issues, Meta Issues, Gathered PRs, Meta PRs, Gathered Commits, Meta Commits — so you can see collection completeness at a glance
 - A **Boost** button to push any queued repo to the top
 - Pagination at 200 repos per page
-- Auto-refreshes every 10 seconds
+- Auto-refreshes every 60 seconds by default (configurable via `monitor.refresh_seconds`)
 
 Navigate to the monitor from any page via the "Monitor" link in the top nav bar.
 
@@ -674,12 +674,15 @@ Navigate to the monitor from any page via the "Monitor" link in the top nav bar.
 
 Separate process (default `127.0.0.1:8383`). Start alongside `serve` and `web`.
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/v1/repos/{repoID}/stats` | GET | Gathered vs metadata PR/issue/commit counts for one repo |
-| `/api/v1/repos/stats?ids=1,2,3` | GET | Batch stats for multiple repos |
-| `/api/v1/repos/{repoID}/sbom?format=cyclonedx\|spdx` | GET | Download SBOM as JSON |
-| `/api/v1/health` | GET | Health check with version |
+The API has grown far past this README — the full reference lives at [`docs/guide/api.md`](docs/guide/api.md) (every route is covered there, tripwire-enforced). Families:
+
+| Family | Highlights |
+|---|---|
+| Repo data | `/repos/{id}/stats` (gathered vs metadata, gone state), batch `/repos/stats?ids=` (≤500 ids), `/timeseries`, `/licenses` (+ drill-down via `/deps?license=`), `/scancode-files`, `/scorecard`, `/vulnerabilities` (kind/scope/resolution labels, `introduced_by` chains, `scanned_at`), `/sbom?format=cyclonedx\|spdx` (`?vulns=1` annotation, real dependency graphs) |
+| Contributors | `/repos/{id}/contributors/top`, `/contributors/elsewhere`, `/contributions/{identities,affiliations,coverage}`, `/contributors/{id}/activity` |
+| Analytics | `/metrics` catalog (CHAOSS-derived), `/compare` + `/compare/snapshot` (≤7 entities, orgs included), `/entities/search`, ~30 Augur-swagger-compatible metric routes |
+| Workspace | `/me`, `/groups`, `/home/repos`, `/home/new-repos`, `/collections`, repo + collection stars, `/admin/*` (users, approvals, monitor) |
+| Auth & limits | Bearer session tokens (minted by the web process at `/auth/token`), per-user repo scope, per-IP rate limiting + daily quota, CORS allowlist; `/api/v1/health` and `/api/v1/public/stats` are the only unauthenticated routes |
 
 ## Web GUI
 
@@ -725,7 +728,7 @@ The design follows the [GHData/CHAOSS visualization principles](https://wiki.lin
 Aveloxis can collect data from any git-hosted repository, not just GitHub and GitLab. When a user enters a URL that doesn't match `github.com` or `gitlab.com` (e.g., `https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git`), it is accepted as a **git-only** repository.
 
 **What's collected for git-only repos:**
-- Git commits (bare clone + `git log --all --numstat`) — full commit history with per-file stats
+- Git commits (bare clone + `git log --numstat` on the default branch) — full commit history with per-file stats
 - Commit messages and parent relationships
 - Dependencies (from manifest files in the checkout)
 - Libyear (dependency age from package registries)
@@ -747,7 +750,7 @@ Aveloxis can collect data from any git-hosted repository, not just GitHub and Gi
 
 ### Collection Pipelines
 
-Aveloxis has two collection pipelines. The **staged pipeline** is used by `aveloxis serve` for production workloads. The **direct pipeline** is used by `aveloxis collect` for ad-hoc runs.
+Aveloxis has one collection pipeline — the **staged pipeline** — used by both `aveloxis serve` (scheduled) and `aveloxis collect` (one-shot).
 
 #### Staged Pipeline (`serve`)
 
@@ -781,20 +784,21 @@ For repos with **>10,000 commits** (detected from repo_info metadata), steps 3-5
 
 **Phase 2c — Contributor enrichment:** Thin contributor records (missing company/location from the basic Contributors API or lazy resolution) are enriched by calling `GET /users/{login}` for full profile data (company, location, email, name, created_at). Up to 500 contributors per pass — over multiple collection cycles, all contributors eventually get enriched.
 
-**Phase 3 — Facade (git):** After API data is processed, the repo is cloned as a bare repo (or fetched if a clone already exists). `git log --all --numstat` is run to extract per-file commit data. For each commit:
+**Phase 3 — Facade (git):** After API data is processed, the repo is cloned as a bare repo (or fetched if a clone already exists). `git log --numstat` is run on the **default branch only** (via `git symbolic-ref HEAD`), so the gathered commit count matches the forge's metadata count. For each commit:
 - Per-file rows are inserted into `commits` (one row per file touched per commit, matching Augur's model)
 - Parent-child relationships are inserted into `commit_parents`
 - Commit messages are inserted into `commit_messages`
+- **Whitespace analysis** (Augur-parity): blank-line and reformat-only changes are measured per commit into `cmt_whitespace`, with `cmt_added`/`cmt_removed` adjusted to Augur's semantics
 - **Contributor affiliations** are resolved: email domains are matched against the `contributor_affiliations` table to populate `cmt_author_affiliation` and `cmt_committer_affiliation`
 - After all commits are inserted, **Facade aggregates** are computed: `dm_repo_annual`, `dm_repo_monthly`, `dm_repo_weekly` (and their repo_group counterparts) are refreshed by aggregating commit data by email, affiliation, and time period
 
 **Phase 4 — Analysis (on-demand full clone):** A temporary full checkout is created from the bare clone (local, no network). Five analysis phases run against it, then the checkout is retained for scorecard before deletion:
 
-1. **Dependency scanning** (`repo_dependencies`): walks the checkout for manifest files across 14 ecosystems — JavaScript (package.json), Python (requirements.txt, pyproject.toml, Pipfile), Go (go.mod), Rust (Cargo.toml), Ruby (Gemfile), Java/Kotlin (pom.xml, build.gradle, build.gradle.kts), PHP (composer.json), Elixir (mix.exs), Swift (Package.swift), Dart (pubspec.yaml), Scala (build.sbt), .NET (packages.config), Haskell (package.yaml), C/C++ (Makefile, CMakeLists.txt). Extracts dependency names and counts.
+1. **Dependency scanning** (`repo_dependencies`): walks the checkout for manifest files across 14 ecosystems — JavaScript (package.json), Python (requirements.txt, pyproject.toml, Pipfile), Go (go.mod), Rust (Cargo.toml), Ruby (Gemfile), Java/Kotlin (pom.xml, build.gradle, build.gradle.kts), PHP (composer.json), Elixir (mix.exs), Swift (Package.swift), Dart (pubspec.yaml), Scala (build.sbt), .NET (packages.config), Haskell (package.yaml), C/C++ (Makefile, CMakeLists.txt). Extracts dependency names and counts. Additionally, 19 lockfile formats (package-lock, yarn incl. berry, pnpm, poetry, Cargo.lock, Gemfile.lock, composer.lock, and more) are parsed for locked versions, the **transitive dependency closure**, and parent→child dependency edges (`vuln_scan_transitive`, default on since v0.27.136) — feeding exact-version vulnerability matching, `introduced_by` chains, and real dependency graphs in SBOMs.
 2. **Libyear** (`repo_deps_libyear`): for each versioned dependency, queries its package registry (npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM/GitHub) to compare the current version against the latest. Calculates libyear = (latest_release_date - current_release_date) / 365.
 3. **Code complexity** (`repo_labor`): if `scc` is installed, runs `scc -f json --by-file` to get per-file metrics — programming language, total lines, code lines, comment lines, blank lines, and complexity. Install via `aveloxis install-tools`.
-4. **ScanCode license/copyright detection** (`aveloxis_scan.scancode_file_results`): if `scancode` is installed, runs `scancode -clpi --only-findings --json` to detect per-file licenses (SPDX expressions), copyrights, holders, and packages. **Only runs every 30 days** per repo — license/copyright data changes infrequently. Results stored in dedicated `aveloxis_scan` schema with history rotation. Install via `pipx install scancode-toolkit-mini` (requires Python 3.10+).
-5. **OpenSSF Scorecard** (`repo_deps_scorecard`): if the `scorecard` binary is installed, runs locally against the checkout with `scorecard --local <path>` (much faster than remote mode). Each check (Code-Review, Maintained, Vulnerabilities, etc.) is stored with its score, reason, and details as JSONB. Previous results are rotated to `repo_deps_scorecard_history`. Install via `aveloxis install-tools`.
+4. **ScanCode license/copyright detection** (`aveloxis_scan.scancode_file_results`): runs on its **own decoupled worker pool** (v0.21.0), not inside the per-repo pipeline — each repo is scanned from a fresh shallow clone every 180 days (`scancode_cadence_days`), with crash recovery, adaptive timeouts, and failure backoff. Detects per-file licenses (SPDX expressions), copyrights, holders, and packages; results stored in the dedicated `aveloxis_scan` schema with history rotation. Install via `aveloxis install-tools` (requires Python 3.10+).
+5. **OpenSSF Scorecard** (`repo_deps_scorecard`): if the `scorecard` binary is installed, GitHub repos run **remote-first** (`--repo`, 18 checks, multi-token round-robin) with automatic fallback to `--local` against the checkout; GitLab and generic-git repos run local-only (11 checks). Each check (Code-Review, Maintained, Vulnerabilities, etc.) is stored with its score, reason, and details as JSONB. Previous results are rotated to `repo_deps_scorecard_history`. Install via `aveloxis install-tools`.
 
 **Phase 5 — Commit Author Resolution (GitHub only):** After facade completes, resolves git commit author emails to GitHub user accounts. This is the Go implementation of the [augur-contributor-resolver](https://github.com/aveloxis/augur-contributor-resolver) scripts. Resolution strategy, cheapest first:
 
@@ -823,11 +827,11 @@ For each resolved commit author:
 
 The OSV.dev batch endpoint (`POST /v1/querybatch`) accepts purls natively — no CPE mapping needed. No API key required. NIST NVD is not queried directly because it uses CPE identifiers where the vendor field is unpredictable from package names alone.
 
-**Periodic — Contributor Breadth:** Every 6 hours, the scheduler runs the breadth worker which calls `GET /users/{login}/events` for each contributor to discover their activity in repos outside the tracked set. Each event (PushEvent, PullRequestEvent, IssuesEvent, etc.) is stored in `contributor_repo`, mapping contributors to their cross-repo activity. Contributors are prioritized by those never processed first, then oldest. Up to 100 contributors are processed per cycle.
+**Periodic — Contributor Breadth:** Every 15 minutes (`breadth_interval_minutes`), the scheduler runs the breadth worker which calls `GET /users/{login}/events` for each contributor to discover their activity in repos outside the tracked set. Each event (PushEvent, PullRequestEvent, IssuesEvent, etc.) is stored in `contributor_repo`, mapping contributors to their cross-repo activity. Contributors are prioritized by those never attempted first, then by a 7-day jittered cooldown (`breadth_cooldown_days`); up to 2,000 contributors are processed per cycle (`breadth_batch_size`) through a concurrent fetch pool with a circuit breaker for GitHub 5xx storms.
 
-#### Direct Pipeline (`collect`)
+#### One-shot collection (`collect`)
 
-For ad-hoc single-repo runs. Writes directly to relational tables without staging. Runs the same phases (contributors, issues, PRs, events, messages, metadata, facade, commit resolution) but with inline contributor resolution and direct upserts. Best for testing or collecting a small number of repos.
+`aveloxis collect` runs the SAME staged pipeline as `serve` for the named repos (since v0.26.2 — the legacy direct-write path was removed after it was found to silently drop event rows). One-shot and scheduled collections are byte-equivalent; `--full` forces a since-zero historical pass.
 
 ### Postgres-Backed Queue
 
@@ -904,9 +908,9 @@ All text fields (issue titles/bodies, PR titles/bodies, message text, release de
 When the prelim phase detects a repo that returns 404 or 410 (deleted, made private, or DMCA'd):
 
 - **Data is preserved** — all previously collected issues, PRs, commits, messages, etc. remain in the database
-- **Collection stops permanently** — the repo is marked `repo_archived = TRUE` and removed from the queue
+- **Collection stops permanently** — the repo is marked `repo_archived = TRUE`, stamped with the distinct `repo_gone_at` marker (v0.28.1 — "no longer reachable" is a different fact from "forge says archived"), and removed from the queue
 - **No wasted API calls** — unlike Augur, which keeps retrying dead repos every cycle, Aveloxis permanently sidelines them
-- **Re-adding**: to un-sideline a repo that comes back, manually `UPDATE aveloxis_data.repos SET repo_archived = FALSE WHERE repo_id = N` then `aveloxis add-repo <url>`
+- **Resurrection is automatic**: `aveloxis mark-gone-repos` re-probes the gone cohort — a definitive 200 (org re-publicized) atomically clears the stamp and re-enqueues; prelim's healthy path does the same on its next probe
 
 ### Error Handling
 
@@ -930,14 +934,14 @@ Aveloxis creates 20 materialized views compatible with [8Knot](https://github.co
 | `explorer_commits_and_committers_daily_count` | Daily commit/committer counts |
 | `explorer_contributor_actions` | All contributor actions (commits, issues, PRs, reviews, comments) with ranking |
 | `explorer_new_contributors` | First-time contributor tracking |
-| `augur_new_contributors` | 8Knot compat alias |
+| `augur_new_contributors` | 8Knot compat — a plain VIEW alias of `explorer_contributor_actions` (zero refresh cost, v0.25.6) |
 | `explorer_pr_assignments` | PR assignment/unassignment events |
 | `explorer_pr_response` | PR message response tracking |
 | `explorer_pr_response_times` | Comprehensive PR metrics (time to close, response times, line/file/commit counts) |
 | `explorer_issue_assignments` | Issue assignment events |
 | `explorer_user_repos` | User-to-repo mapping |
 | `explorer_repo_languages` | Language breakdown from repo_labor |
-| `explorer_libyear_all` / `_summary` / `_detail` | Dependency age (libyear) metrics |
+| `explorer_libyear_summary` / `_detail` | Dependency age (libyear) metrics (`explorer_libyear_all` is a plain VIEW alias of `_summary`) |
 | `explorer_contributor_recent_actions` | Same as `explorer_contributor_actions` but limited to last 13 months |
 | `explorer_pr_files` | PR file paths with pull_request_id and repo_id |
 | `explorer_cntrb_per_file` | Contributors and reviewers aggregated per file path |
@@ -1051,19 +1055,21 @@ Both platforms collect the same data types. Most fields have full parity; known 
 | Repo Info (metadata) | GraphQL API (counts, community profile, license, status) | `/projects/{id}?statistics=true` + `/issues_statistics` + MR counts via `X-Total` | `repo_info` (latest) + `repo_info_history` |
 | Contributors | `/repos/{o}/{r}/contributors` | `/projects/{id}/members/all` + `/repository/contributors` | `contributors` + `contributor_identities` |
 | Clone Stats | `/traffic/clones` | Not available via API | `repo_clones` |
-| Commits (git) | `git clone --bare` + `git log --all --numstat` | Same | `commits` + `commit_parents` + `commit_messages` |
+| Commits (git) | `git clone --bare` + `git log --numstat` (default branch) | Same | `commits` + `commit_parents` + `commit_messages` |
 | Facade Aggregates | Computed from commits table | Same | `dm_repo_annual/monthly/weekly` |
 | Commit Author Resolution | Noreply parse + Commits API + Search API (GitHub only) | N/A (GitLab identity from API) | `contributors` + `contributor_aliases` |
 | Dependencies | File scan: 14 ecosystems (package.json, go.mod, pom.xml, Cargo.toml, etc.) | Same | `repo_dependencies` |
 | Libyear | 12 registries (npm, PyPI, Go, Cargo, RubyGems, Maven, Packagist, Hex, NuGet, pub.dev, Hackage, SwiftPM) | Same | `repo_deps_libyear` |
 | Code Complexity | `scc --by-file` (if installed) | Same | `repo_labor` |
-| OpenSSF Scorecard | `scorecard --local` (if installed) | Same (works on any git URL) | `repo_deps_scorecard` (latest) + `repo_deps_scorecard_history` |
-| ScanCode License/Copyright | `scancode -clpi` per file (every 30 days, if installed) | Same | `aveloxis_scan.scancode_scans` + `scancode_file_results` + history |
+| OpenSSF Scorecard | remote-first `--repo` (18 checks), `--local` fallback | local mode (11 checks) | `repo_deps_scorecard` (latest) + `repo_deps_scorecard_history` |
+| ScanCode License/Copyright | `scancode -clpi` per file (decoupled worker, every 180 days) | Same | `aveloxis_scan.scancode_scans` + `scancode_file_results` + history |
 | SBOMs | Generated from libyear data | Same | `repo_sbom_scans` (CycloneDX 1.5 + SPDX 2.3) |
-| Vulnerability Scan | OSV.dev batch API (purls) | Same | `repo_deps_vulnerabilities` (CVE ID, severity, CVSS, fixed version) |
+| Vulnerability Scan | OSV.dev batch API (purls; direct + transitive) | Same | `repo_deps_vulnerabilities` (CVE ID, severity, CVSS, fixed version, kind/scope/resolution labels, lifecycle stamps) |
+| Lockfiles / Transitive Closure | 19 lockfile formats + `go mod graph` | Same | `repo_lockfiles` + `repo_lockfile_packages` + `repo_lockfile_edges` (dependency graph for SBOMs + `introduced_by` chains) |
+| Package Distribution | deps.dev + ecosyste.ms + release assets + GitHub Packages + manifests | ecosyste.ms + manifests | `repo_distribution` (+ manifest + history tables) — "where is this repo published?" |
 | PR/MR Fork Repos | `head.repo` / `base.repo` in PR response | `/projects/{id}` per source/target | `pull_request_repo` |
 | Contributor Affiliations | Auto-populated from email domains + `cntrb_company` | Same | `contributor_affiliations` |
-| Contributor Breadth | `GET /users/{login}/events` (every 6h) | — | `contributor_repo` |
+| Contributor Breadth | `GET /users/{login}/events` (15-min cycles, 7-day cooldown) | — | `contributor_repo` |
 | Canonical Email Enrichment | `GET /users/{login}` for profile email | Same | `contributors.cntrb_canonical` |
 
 ### GitHub vs GitLab — Known Data Gaps
@@ -1111,12 +1117,12 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 | Contributor model | `gh_*`/`gl_*` columns mixed on one table | Separate `contributor_identities` table |
 | DB write pattern | Individual upserts during collection | JSONB staging → bulk batch processing (`pgx.Batch` for deps, libyear, labor, breadth). Significantly lower database contention for the contributors table. |
 | Repo redirect handling | Not proactively handled | Prelim phase detects renames/transfers, deduplicates, updates URLs + bulk-fixes all stored URLs regularly |
-| Dependency scanning | Custom Python parsers for 12 languages | Go parsers for 14 ecosystems, on-demand full clone |
+| Dependency scanning | Custom Python parsers for 12 languages | Go parsers for 14 ecosystems + 19 lockfile formats (transitive closure + dependency edges), on-demand full clone |
 | Libyear | npm + PyPI only | 12 registries: npm, PyPI, Go, Cargo, RubyGems, Maven, Packagist, Hex, NuGet, pub.dev, Hackage, SwiftPM |
 | Code complexity (scc) | Requires manual scc install + separate worker | `aveloxis install-tools` + automatic per-repo analysis |
 | OpenSSF Scorecard | Runs `scorecard` binary against GitHub repos. | Runs `scorecard` binary against GitHub AND GitLab repos. Results in `repo_deps_scorecard` with history. |
 | SBOM generation | Not supported | CycloneDX 1.5 + SPDX 2.3 with license capture from 12 registries. Download via web GUI or REST API. |
-| Review messages | Review body stored in `messages` table with `pull_request_review_message_ref` bridge (same pattern as issue/PR comments).  |  Same. |
+| Review messages | Review bodies live only on the review row — no unified text store | Review body stored in `messages` with the `pull_request_review_message_ref` bridge (same pattern as issue/PR comments) — one table for ALL conversation text |
 | History tracking | Fills repo_info on each run, grows infinitely. | `repo_info_history` and `repo_deps_scorecard_history` preserve all previous snapshots |
 | Scheduling | Celery Beat + collection_status table (opaque) | Priority queue — fills ALL worker slots per tick (not one per tick) |
 | Priority override | Not supported | `aveloxis prioritize` / POST API / dashboard button |
@@ -1125,8 +1131,8 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 | API key source | Keyman service + Redis | Config file and/or Augur's `worker_oauth` table |
 | API efficiency | No conditional requests | ETag caching (304 = free), HTTP/2 multiplexing, 20 idle connections per host |
 | Commit author resolution | Separate Python scripts, long process with contention. | Built-in post-facade phase: noreply parse, DB lookup, Commits API, Search API |
-| Materialized views | 18 views, manual refresh or Celery task | 19 views, configurable auto-rebuild schedule (default Saturday), not refreshed on startup |
-| Contributor breadth | Separate Celery worker, manual scheduling | Built-in, runs every 6 hours automatically |
+| Materialized views | 18 views, manual refresh or Celery task | 20 materialized views + 2 alias views, configurable auto-rebuild schedule (default Saturday), not refreshed on startup |
+| Contributor breadth | Separate Celery worker, manual scheduling | Built-in 15-minute cycles with cooldown + circuit breaker; plus per-day contributor activity history and activity classification |
 | Contributor IDs | Deterministic GithubUUID from gh_user_id | Deterministic GithubUUID from gh_user_id (Augur byte-compatible) |
 | Facade aggregates | Post-processing in Python | SQL-based aggregate refresh per repo after git log |
 | Affiliation resolution | Python domain matching | In-memory cached resolver with parent domain fallback |
@@ -1135,7 +1141,11 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 | Gateway error retry | Basic retry | Exponential backoff with jitter (1s-64s) for 502/503/504 |
 | User interface | CLI only, except for Admin. | Web GUI with OAuth, interactive Chart.js visualizations, cross-project comparison (100%/Z-Score), dependency license analysis, SBOM download |
 | Visualizations | Requires external tool (8Knot/Dash) | Still 8Knot compatible, 100%! And, built-in weekly time-series charts, comparison page for up to 5 repos with Z-score normalization |
-| Vulnerability scanning | Not supported | OSV.dev batch API: scans all dependencies by purl, aggregates NVD+GHSA+PyPI+RustSec+Go vulns |
+| Vulnerability scanning | Not supported | OSV.dev batch API: direct + transitive findings by purl with `introduced_by` chains, lifecycle (first-detected/resolved) stamps, and honest version-resolution labels |
+| SBOM dependency graphs | Not supported | CycloneDX + SPDX carry the REAL parent→child graph from lockfile edges |
+| Distribution tracking | Not supported | "Where is this repo published?" — deps.dev, ecosyste.ms, release assets, GitHub Packages, in-repo manifests |
+| Public showcase | Not supported | Static, SEO-indexable collection + repo snapshot pages with charts, SBOM downloads, and redacted contributor previews (`aveloxis generate-showcase`) |
+| Fuzzing | Not supported | 7 native Go fuzz targets under ClusterFuzzLite |
 | Non-GitHub/GitLab repos | Not supported | Git-only mode: facade, analysis, scorecard, SBOM — email resolution against both platforms |
 | User org tracking | Static — orgs added once, never rescanned | Dynamic — `user_org_requests` tracked, new repos auto-discovered every 4h |
 | Error recovery | Manual restart | Automatic stale lock recovery + deadlock retry |
@@ -1143,100 +1153,38 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 
 ## Project Structure
 
+The tree is organized as one CLI binary plus focused internal packages (file-level layout shifts too fast to catalog here — the package boundaries are the stable map):
+
 ```
 aveloxis/
-  cmd/aveloxis/           # CLI entry point (cobra commands)
-    main.go               # serve, web, api, collect, add-repo, add-key, prioritize, recollect, migrate, version
-  internal/
-    collector/            # Collection orchestration
-      collector.go        # Direct pipeline (used by `collect` command)
-      staged.go           # Staged pipeline (used by `serve` command)
-      facade.go           # Git clone + log parsing for commits
-      commit_resolver.go  # Git email -> GitHub user resolution (port of augur-contributor-resolver)
-      breadth.go          # Contributor breadth worker (cross-repo activity via GitHub Events API)
-      analysis.go         # On-demand repo analysis (dependencies, libyear, scc, scancode)
-      sbom.go             # CycloneDX 1.5 and SPDX 2.3 SBOM generation
-      scorecard.go        # OpenSSF Scorecard integration (local execution)
-      scancode.go         # ScanCode Toolkit integration (license/copyright/package detection)
-      vulnerability.go    # OSV.dev vulnerability scanning (CVE/GHSA lookup by purl)
-      enrich.go           # Contributor profile enrichment (GET /users/{login})
-      gap_fill.go         # Smart gap detection and targeted re-collection
-      refresh_open.go     # Open issue/PR refresh (status, labels, assignees)
-      tools.go            # External tool management (scc, scorecard, scancode install)
-      noreply.go          # GitHub noreply email parser
-      prelim.go           # Redirect detection and duplicate checking
-      state.go            # Collection status/phase constants
-    config/
-      config.go           # JSON config loading with defaults
-    db/
-      postgres.go         # All upsert methods (issues, PRs, events, messages, etc.)
-      store.go            # Store interface definition
-      staging.go          # JSONB staging writer and batch processor
-      migrate.go          # Schema migration (embeds schema.sql)
-      schema.sql          # Full DDL (112+ tables across 3 schemas, 23 indexes)
-      matviews.sql        # 20 materialized views for 8Knot/analytics
-      matviews.go         # View creation and refresh logic
-      sanitize.go         # Text sanitization (null bytes, invalid UTF-8, control chars)
-      contributors.go     # Contributor resolver with in-memory cache and heartbeat
-      affiliations.go     # Email domain -> org affiliation resolver
-      aggregates.go       # Facade aggregate refresh (dm_repo_* tables)
-      github_uuid.go      # Deterministic UUID generation (Augur-compatible)
-      commit_resolver_store.go # DB methods for commit author resolution
-      breadth_store.go    # DB methods for contributor breadth
-      analysis_store.go   # DB methods for dependency/libyear/scc/scorecard analysis
-      scancode_store.go   # DB methods for ScanCode results (aveloxis_scan schema)
-      gap_store.go        # DB methods for gap fill, open item queries, metadata counts
-      repo_stats.go       # Gathered vs metadata counts (RepoStats, GetRepoStatsBatch)
-      timeseries.go       # Time series queries, license aggregation, OSI compliance
-      history.go          # History rotation (libyear, scorecard, scancode, repo_info)
-      vulnerability_store.go # DB methods for CVE/vulnerability storage and queries
-      web_store.go        # DB methods for user/group/org management
-      queue.go            # Postgres-backed priority queue operations
-      keys.go             # API key management and Augur import
-      import.go           # Augur repo import
-      version.go          # Single source of truth for tool version
-    model/                # Platform-agnostic data types
-      repo.go             # Repo, RepoGroup, Platform, Contributor, ContributorIdentity
-      issue.go            # Issue, IssueLabel, IssueAssignee, IssueEvent
-      pullrequest.go      # PullRequest + all sub-entities
-      message.go          # Message, IssueMessageRef, PRMessageRef, ReviewComment
-      commit.go           # Commit, CommitMessage, CommitParent
-      release.go          # Release
-      repoinfo.go         # RepoInfo, RepoClone
-      userref.go          # UserRef (platform user reference for contributor resolution)
-    web/
-      server.go           # Web GUI server with OAuth handlers
-      templates.go        # Embedded HTML templates (dashboard, groups, repos, compare)
-      url_validation.go   # URL parsing, scheme fixing, validation
-    api/
-      server.go           # REST API server (stats, timeseries, licenses, scancode, SBOM, search)
-    monitor/
-      monitor.go          # HTTP dashboard with sortable gathered vs metadata columns; paginated + server-side search (v0.18.6)
-    platform/
-      platform.go         # Client interface (7 sub-interfaces + FetchIssueByNumber, FetchPRByNumber)
-      httpclient.go       # HTTP client with rate limiting, key rotation, ETag caching, retries
-      ratelimit.go        # API key pool with rate limit tracking and MarkDepleted
-      repourl.go          # URL parsing (GitHub/GitLab detection)
-      github/
-        client.go         # Full GitHub REST + GraphQL API implementation
-        types.go          # GitHub API response types
-      gitlab/
-        client.go         # Full GitLab API v4 implementation
-        types.go          # GitLab API response types
-    scheduler/
-      scheduler.go        # Queue polling, job dispatch, heartbeat, stale lock recovery, gap fill
-    aveloxis-story/
-      augur_data.sql          # Reference: Augur's augur_data schema (for comparison)
-      augur_operations.sql    # Reference: Augur's augur_operations schema (for comparison)
-      [pdf|pptx|png|html] # Various artifacts describing the road to Aveloxis
-  Dockerfile              # Multi-stage Docker build
-  docker-compose.yml      # Docker Compose with PostgreSQL
-  .readthedocs.yaml       # ReadTheDocs build configuration
-  go.mod                  # Go module definition
-  go.sum                  # Go dependency checksums
-  aveloxis.example.json   # Example configuration file
-  aveloxis.docker.json    # Docker-specific configuration (uses docker service names)
+  cmd/aveloxis/       # CLI entry point — ~35 cobra commands (serve, web, api, collect,
+                      # migrate, add-repo/-key, data-test, heal-*, rewalk-whitespace,
+                      # mark-gone-repos, generate-showcase, load-* importers, ...)
+  internal/           # All implementation packages (see table)
+  scripts/            # Repo-wide tripwire tests + standing-rules registry + operator SQL
+  aveloxis-story/     # Reference: Augur's schemas + artifacts from the road to Aveloxis
+  docs/               # Sphinx/ReadTheDocs sources (getting-started, guide, architecture,
+                      # contributing)
+  Dockerfile, docker-compose.yml, .readthedocs.yaml
+  aveloxis.example.json / aveloxis.docker.example.json
 ```
+
+| Package | Purpose |
+|---|---|
+| `internal/collector` | Collection orchestration: staged pipeline, facade (git), analysis (deps/libyear/scc), lockfile + `go mod graph` transitive closure, SBOM generation, scorecard, vulnerability scanning, scancode + distribution + mailing-list worker pools, commit resolution, gap fill, prelim redirect/dead detection, whitespace walker, tools management |
+| `internal/db` | PostgreSQL store: schema DDL (`schema.sql`), migrations + the completed-backfill ledger, all upserts (idempotent by contract), staging writer/processor, matviews, sanitization + the UTF-8 boundary tracer, history rotation, queue, stats/timeseries/metrics readers, repo dedup |
+| `internal/platform` | HTTP client (rate limiting, key rotation, ETag caching, retries, error taxonomy) + `github/` (REST + GraphQL) and `gitlab/` (REST) implementations of the shared `platform.Client` interface |
+| `internal/scheduler` | Queue polling, worker slots, heartbeats, stale-lock recovery, periodic tickers (enrichment, breadth, activity classification + history, affiliations, org scans, matview rebuilds), long-jobs watchdog |
+| `internal/api` | REST API on :8383 — auth middleware, per-IP rate limiting, analytics/compare, portal + admin endpoints |
+| `internal/web` | Server-rendered web GUI on :8082 — OAuth login, groups, visualizations, monitor page, admin approvals |
+| `internal/model` | Platform-agnostic data types shared by every layer |
+| `internal/config` | `aveloxis.json` loading — every knob's single default layer |
+| `internal/showcase` | Static public showcase generator (collection + repo snapshot pages, SVG charts, sitemap) |
+| `internal/mailinglist` | Apache Pony Mail + lore public-inbox archive backends, mbox parsing, message classification |
+| `internal/monitor` | Standalone monitor dashboard on :5555 |
+| `internal/mailer` | Gmail-SMTP transactional mail (welcome, approvals, operator vulnerability digest) |
+| `internal/importers` | Curated foundation catalogs (NumFocus, Apache, ...) |
+| `internal/safego` / `internal/pidfile` / `internal/srctest` | Panic-safe goroutine helpers; PID-file liveness; the shared source-contract test engine (test-only) |
 
 ## Testing
 
@@ -1255,22 +1203,13 @@ go test ./internal/platform/...
 AVELOXIS_TEST_DB="postgres://user:pass@localhost:5432/aveloxis_test" go test ./internal/db/...
 ```
 
-The test suite has **561 tests** across **75 test files** in 12 packages (all pass, no database required). Coverage by area:
+The suite currently stands at **~2,960 test functions across ~670 test files** (plus 7 native Go fuzz targets), organized in tiers:
 
-| Package | Tests | Coverage |
-|---|---|---|
-| `internal/collector` | 344 | Dependency parsers (14 ecosystems), libyear, SBOM generation (CycloneDX + SPDX), vulnerability scanning (CVSS, OSV), facade git log parsing, git URL security validation, commit resolution, prelim URL handling, noreply/bot email detection, breadth worker, SCC complexity, scorecard |
-| `internal/db` | 61 | Queue jobs, staging, GithubUUID (incl. overflow detection), text sanitization, affiliations, batch operations, repo stats, vulnerability store, SBOM store, timeseries, licenses |
-| `internal/api` | 40 | All REST endpoints (health, stats, SBOM, timeseries, licenses, search) + all Augur-compatible metric endpoints (issues, PRs, commits, contributors, stars, forks, watchers, deps, releases, complexity), parameter validation, route registration |
-| `internal/platform` | 39 | Key pool (round-robin, exhaustion, reset wait, empty pool, invalidated keys), HTTP client (pagination, query params, retry-after), URL parsing (GitHub, GitLab, nested subgroups, self-hosted) |
-| `internal/web` | 22 | Web GUI handlers, OAuth flow, URL validation, cookie security (Secure/HttpOnly/dev_mode) |
-| `internal/scheduler` | 17 | Job lifecycle, phase orchestration, worker management |
-| `internal/platform/gitlab` | 17 | Community file detection, contributor enrichment, user reference conversion, diff line counting, discussion notes |
-| `internal/config` | 9 | Default values, connection string generation, JSON loading, merge behavior |
-| `internal/platform/github` | 7 | User reference conversion, GraphQL query building |
-| `internal/monitor` | 4 | API endpoint validation, request parsing |
-| `internal/model` | 1 | UserRef zero-value detection |
-
+- **Unit + source-contract tier** — runs on plain `go test ./...` with no database. Includes behavioral tests (parsers for 14 manifest ecosystems + 19 lockfile formats, SBOM generation, OSV response handling, GraphQL batch subdivision, git-log/whitespace walkers) and the repo's signature *source-contract tripwires*: tests that pin load-bearing code shapes so regressions fail the build before review — every INSERT has a real ON CONFLICT arbiter, every schema column has a writer or a documented reason, docs counts match the schema, every registered command is documented, every config key is in the docs and example config, every API route has a smoke recipe, and the standing-rules registry (`scripts/standing_rules.go`) keeps each hard-won rule attached to the tests that enforce it.
+- **Integration tier** — gated on `AVELOXIS_TEST_DB`; runs migrations end-to-end against a real PostgreSQL (fresh AND populated), then exercises store methods, the staged processor, queue lifecycle, and end-to-end flows (gap healing to convergence, vulnerability lifecycle, rename dedup, group approvals). CI provisions a Postgres service container for this tier on every push.
+- **Network canaries** — gated on `AVELOXIS_TEST_NETWORK`; a weekly CI job hits the real deps.dev, OSV.dev, crates.io, GitHub search, and Pony Mail APIs to catch contract drift that mocks structurally cannot see.
+- **Fuzzing** — ClusterFuzzLite builds 7 native `func Fuzz*` targets (mbox parsing, lockfile/manifest parsers, purl helpers, repo-URL parsers); their seed corpora also run under ordinary `go test`.
+- **Lint gates** — `staticcheck`, `golangci-lint` (the CI version), `gofmt`, and CodeQL all block merges.
 
 # Build docs
 ```bash

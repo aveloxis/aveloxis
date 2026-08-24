@@ -6,7 +6,7 @@ Aveloxis uses cleaner column names internally but exposes Augur-compatible names
 
 Augur's schema uses prefixes like `pr_src_*`, `gh_*`, and `pr_review_*` that embed the data source into the column name. Aveloxis replaces these with descriptive names (`platform_pr_id`, `review_state`, `submitted_at`) since the data source is tracked separately via the `data_source` metadata column.
 
-However, 8Knot and other downstream tools reference Augur's column names directly. To maintain backward compatibility, all 19 materialized views alias their output columns to match Augur's naming convention exactly.
+However, 8Knot and other downstream tools reference Augur's column names directly. To maintain backward compatibility, all 20 materialized views alias their output columns to match Augur's naming convention exactly.
 
 **The rule:** Internal table columns use Aveloxis names. Materialized view output uses Augur names.
 

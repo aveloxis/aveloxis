@@ -68,6 +68,10 @@ Manages multiple API tokens with round-robin rotation for maximum throughput.
 
 ---
 
+## GraphQL transport (the GitHub default)
+
+The sub-interface tables above describe the REST methods — which remain first-class (GitLab composes them; they are also the `"rest"` escape hatch). But since v0.26.0 the DEFAULT GitHub transport is GraphQL: `ListIssuesAndPRs` enumerates issues + PRs in cursor-paginated GraphQL queries, and `FetchPRBatch` fetches 10–25 PRs with ALL their children (labels, assignees, reviewers, reviews, commits, files, comments) in one aliased query, with automatic batch subdivision on transient failures and a per-PR REST rescue at size 1. Both are `platform.Client` methods; GitLab implements them as REST composition.
+
 ## Pagination
 
 Both GitHub and GitLab use 100-item pages. The pagination engine is shared, with platform-specific next-page resolution:

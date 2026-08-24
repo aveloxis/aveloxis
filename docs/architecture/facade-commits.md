@@ -49,7 +49,7 @@ The facade phase runs `git log` with a custom format string to extract commit da
 The format uses custom field and record separators to reliably parse multi-line output:
 
 ```
-git log --all --numstat --pretty=format:'<COMMIT>%H<SEP>%an<SEP>%ae<SEP>%ad<SEP>%cn<SEP>%ce<SEP>%cd<SEP>%P<SEP>%s'
+git log --numstat --pretty=format:'<COMMIT>%H<SEP>%an<SEP>%ae<SEP>%ad<SEP>%cn<SEP>%ce<SEP>%cd<SEP>%P<SEP>%s'
 ```
 
 Where:
@@ -110,7 +110,7 @@ Following Augur's data model, the `commits` table stores **one row per file per 
 | `cmt_committer_timestamp` | Parsed from `%cd` | Parsed timestamp |
 | `cmt_added` | numstat | Lines added in this file |
 | `cmt_removed` | numstat | Lines removed in this file |
-| `cmt_whitespace` | Computed | Always 0 (reserved) |
+| `cmt_whitespace` | Computed | Augur-parity whitespace/reformat count (v0.27.105); `cmt_added`/`cmt_removed` are adjusted to Augur's semantics on walked rows |
 | `cmt_filename` | numstat | File path |
 
 ### Upsert behavior
@@ -246,7 +246,7 @@ GROUP BY repo_id, cmt_author_email, cmt_author_affiliation,
          EXTRACT(YEAR FROM cmt_author_timestamp);
 ```
 
-Aggregates are refreshed per-repo after each facade run, not globally. This keeps the cost proportional to the repo's commit count.
+Aggregates are refreshed in one bulk pass on the configured matview-rebuild day (v0.16.5) — NOT per-repo after each facade run. The per-repo helpers remain in `internal/db/aggregates.go` for manual recalculation only.
 
 ---
 

@@ -43,8 +43,8 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
   │                                                     │
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
-  │  │ 84 tables         │  │ 24 tables              │ │
-  │  │ 19 matviews       │  │ - collection_queue     │ │
+  │  │ 100 tables        │  │ 39 tables              │ │
+  │  │ 20 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
   │  │ - pull_requests   │  │ - worker_oauth         │ │
@@ -69,9 +69,9 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
 
 ## Three schemas
 
-Aveloxis uses three PostgreSQL schemas to separate collected data, operational state, and Augur compatibility.
+Aveloxis uses four PostgreSQL schemas to separate collected data, ScanCode results, operational state, and Augur compatibility.
 
-### `aveloxis_data` (84 tables + 22 materialized views)
+### `aveloxis_data` (100 tables + 20 materialized views)
 
 All collected open source community health data:
 
@@ -91,9 +91,13 @@ All collected open source community health data:
 | Analysis/ML | 8 | `message_analysis`, `message_analysis_summary`, `message_sentiment`, `message_sentiment_summary`, `discourse_insights`, `lstm_anomaly_models`, `lstm_anomaly_results`, `pull_request_analysis` |
 | CHAOSS | 4 | `chaoss_metric_status`, `chaoss_user`, `repo_group_insights`, `commit_comment_ref` |
 
-Plus 22 materialized views for 8Knot compatibility.
+Plus 20 materialized views for 8Knot compatibility.
 
-### `aveloxis_ops` (24 tables)
+### `aveloxis_scan` (4 tables)
+
+ScanCode per-file license and copyright detections: `scancode_scans` + `scancode_file_results`, each with a `_history` twin. Written by the decoupled scancode worker pool (180-day cadence per repo).
+
+### `aveloxis_ops` (39 tables)
 
 Operational and orchestration tables:
 
@@ -151,7 +155,7 @@ Staging -> Processing (phase 2)
 ├──────────────────┬───────────────────┤
 │ Facade (phase 3) │ Analysis (phase 4)│
 │  git clone/fetch │  Dependency scan  │
-│  git log parse   │  Libyear (5 reg.) │
+│  git log parse   │  Libyear (12 reg.) │
 │  Commit parents  │  Code complexity  │
 │  Affiliations    │  (scc)            │
 │  Aggregates      │                   │
@@ -234,8 +238,8 @@ aveloxis/
       postgres.go         # All upsert methods
       staging.go          # JSONB staging writer and processor
       migrate.go          # Schema migration
-      schema.sql          # Full DDL (108 tables)
-      matviews.sql        # 22 materialized views
+      schema.sql          # Full DDL (143 tables)
+      matviews.sql        # 20 materialized views
       contributors.go     # Contributor resolver with cache
       affiliations.go     # Email domain -> org resolver
       aggregates.go       # Facade aggregate refresh
@@ -246,6 +250,14 @@ aveloxis/
     platform/             # Platform abstraction
       github/             # GitHub REST API client
       gitlab/             # GitLab API v4 client
+    api/                  # REST API server (:8383)
+    web/                  # Web GUI (:8082) — OAuth, groups, monitor page
+    showcase/             # Static public showcase generator
+    mailinglist/          # Apache Pony Mail + public-inbox archive backends
+    mailer/               # Gmail-SMTP transactional mail
+    importers/            # Curated foundation catalogs (NumFocus, Apache, ...)
+    monitor/              # Standalone monitor dashboard (:5555)
+    safego/ pidfile/ srctest/  # Goroutine safety, PID liveness, test engine
     scheduler/            # Queue polling, job dispatch
 ```
 
@@ -270,8 +282,8 @@ Each job runs six phases. After the sequential API collection and processing pha
 | Stale lock recovery | 5 min | Reclaims jobs from crashed workers via `StaleLockTimeout` |
 | Org refresh | Configurable (default 4h) | Scans GitHub orgs and GitLab groups for new/renamed repos |
 | User org refresh | Same as org refresh | Scans user-requested org additions |
-| Contributor breadth | 6h | Discovers cross-repo activity via GitHub Events API |
-| Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 22 materialized views, resumes |
+| Contributor breadth | 15 min | Discovers cross-repo activity via GitHub Events API (7-day per-contributor cooldown) |
+| Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 20 materialized views, resumes |
 
 ### Graceful shutdown
 

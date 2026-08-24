@@ -364,7 +364,7 @@ These settings are **explicitly ephemeral**, scheduled for removal as v0.24.x su
 | Stage | Aveloxis version | Behavior |
 |---|---|---|
 | **Current (v0.25.3+)** | Knobs default to `true` (preserve v0.25.0 behavior). Migrations run idempotently. Documented as transitional. |
-| **Mainstream v0.24.x EOL** | v0.26.x or v0.27.x | Both knobs emit a startup WARN if present in `aveloxis.json`. Defaults unchanged. Operators on fresh installs see no warning. |
+| **Mainstream v0.24.x EOL** | a future release (the original v0.26.x/v0.27.x milestone passed without the WARN being added — the knobs remain functional and default-on) | Both knobs emit a startup WARN if present in `aveloxis.json`. Defaults unchanged. Operators on fresh installs see no warning. |
 | **Full removal** | Two minor versions after EOL warn | JSON fields removed from `CollectionConfig`. Operators with the keys still in their `aveloxis.json` get a fatal "unknown config key" startup error. Migrations stay (they're cheap idempotent no-ops on healthy data) but their docs get pruned. |
 
 Target year for "v0.24.x support officially ends": **2027**. By then, no operator should still be running a fleet whose first collection was under v0.24.0–v0.25.0, and the only purpose the knobs and migrations served — managing the v0.25.x transition — will be historical.

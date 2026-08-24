@@ -230,7 +230,7 @@ func TestLanguagesBackfillIsIdempotent(t *testing.T) {
 
 ## Adding a foreign key
 
-If the FK is on a column referencing `aveloxis_data.contributors(cntrb_id)`, it needs to participate in the v0.22.1 cascade contract. See the existing `cntrb_id_cascade.go` and `cntrb_id_fk_indexes.go` — the test `TestSchemaDeclaresDeferredOnCntrbIDFKs` enforces the count (currently 17). Add your new FK to `cntrbIDChildFKs` AND bump the expected count in the test.
+If the FK is on a column referencing `aveloxis_data.contributors(cntrb_id)`, it needs to participate in the v0.22.1 cascade contract. See the existing `cntrb_id_cascade.go` and `cntrb_id_fk_indexes.go` — the test `TestSchemaDeclaresDeferredOnCntrbIDFKs` enforces membership via its own local fixture. Add your new FK to `cntrbIDChildFKs` AND to the test's fixture (the count is derived from the fixture, not hardcoded).
 
 For other FK additions:
 
@@ -249,7 +249,7 @@ The convention: order steps roughly by version (oldest at top, newest at bottom)
 
 ## Materialized views
 
-Materialized views are `dm_repo_annual`, `dm_repo_monthly`, `dm_repo_weekly`, plus group variants and Augur compatibility views. They're declared in `schema.sql` AND have helper functions for refresh:
+The 20 real materialized views (`explorer_*`, `api_get_*`) are declared in `matviews.sql` and created/refreshed via `internal/db/matviews.go`. Do NOT confuse them with `dm_repo_annual/monthly/weekly` (+ group variants) — those are ordinary aggregate TABLES rebuilt by SQL in `internal/db/aggregates.go` on the matview-rebuild day, not matviews. Refresh helpers:
 
 ```go
 // Bulk refresh — used by the scheduler's weekly rebuild (default Saturday).
@@ -318,3 +318,7 @@ Don't migrate when the change is purely in-process behavior:
 - Adding a new config knob (those land in `aveloxis.json`, not the DB).
 
 But bump the version anyway — the version is the only way operators tell two binaries apart. See [`code-conventions.md`](code-conventions.md).
+
+## The migration ledger (v0.28.4)
+
+One-shot DATA backfills (keyset walks, bulk UPDATE/DELETE passes) should be wrapped in `runOnce` / `runOnceStep` (`internal/db/migration_ledger.go`) with a stable label — completed steps record into `aveloxis_ops.migration_ledger` and are skipped on every later version-bump migrate, which is what keeps `aveloxis migrate` fast after the seeding walk. A step records ONLY when it contributed zero errors (failed steps re-run until they succeed). NEVER ledger DDL, views.sql, `setToolVersionDefaults`, dedup-gated unique creation, or CONCURRENTLY index builds — those must re-evaluate every migrate. Register the new label in the fixture in `migration_ledger_test.go`; operator replay is `DELETE FROM aveloxis_ops.migration_ledger WHERE step_label = '<label>'` + `aveloxis migrate --skip-views`.

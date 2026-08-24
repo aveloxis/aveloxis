@@ -184,7 +184,7 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `collection.matview_rebuild_day` | string | `"saturday"` | Day of the week the scheduler refreshes the 22 materialized views. Values: `"sunday"`–`"saturday"`, or `"disabled"` / `"none"` / `"off"` to never auto-rebuild. Independent of `aveloxis refresh-views` which always refreshes on demand. |
+| `collection.matview_rebuild_day` | string | `"saturday"` | Day of the week the scheduler refreshes the 20 materialized views. Values: `"sunday"`–`"saturday"`, or `"disabled"` / `"none"` / `"off"` to never auto-rebuild. Independent of `aveloxis refresh-views` which always refreshes on demand. |
 | `collection.matview_rebuild_on_startup` | boolean | `false` | When `true`, `aveloxis serve` rebuilds the matviews on every startup. Default `false` because the rebuild can take many minutes on large fleets and `migrate` already refreshes them on schema changes. |
 | `collection.activity_history_window_days` | integer | `180` | Span of each GitHub `contributionsCollection` window the daily contributor-history backfill queries (v0.27.58). Clamped to 365 (GitHub's hard 1-year window limit); non-positive falls back to 180. This is the STARTING span — when a window hits the 100-repositories-per-type cap or a contribution page cap, the worker halves the window recursively and logs the cap hit at INFO so loss rate is trackable. |
 | `collection.activity_history_interval_minutes` | integer | `1` | v0.28.3: the history sweep's tick interval. Ticks arriving while a cycle is still running are dropped (single-flight), so a shorter interval never overlaps cycles. |
@@ -196,7 +196,7 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 
 **REST → GraphQL refactor (v0.18.x phases)**
 
-These four settings control the staged collector's request shape. The default for all four matches the pre-v0.18.x REST behavior so existing deployments don't shift transport on upgrade. Operators running medium-to-large fleets should opt into the GraphQL path for the ~5× wall-clock speedup observed in benchmarks (augurlabs/augur, 73 keys: 125 min REST → 24 min GraphQL).
+These four settings control the staged collector's request shape. **GraphQL is the default** for `pr_child_mode`, `listing_mode`, and `issue_child_mode` (flipped in v0.26.0 after shadow-diff validation) — the ~5× wall-clock speedup observed in benchmarks (augurlabs/augur, 73 keys: 125 min REST → 24 min GraphQL) is what a fresh deployment gets out of the box. Set any of them to "rest" as the escape hatch for a systemic GraphQL outage; the REST path remains first-class.
 
 | Field | Type | Default | Description |
 |---|---|---|---|

@@ -17,7 +17,7 @@ Run against pure code, no database, no network. Live in `*_test.go` next to the 
 go test ./...
 ```
 
-This is what CI runs and what every contributor runs constantly. Should always be green. Should always be fast (the full suite finishes in well under a minute, except for `internal/platform` which has ~40 s of network mock tests).
+This is what CI runs and what every contributor runs constantly. Should always be green. Should always be fast (the full unit suite finishes in a few minutes, except for `internal/platform` which has ~40 s of network mock tests).
 
 ### Tier 2 — Integration tests
 
@@ -427,7 +427,7 @@ Patterns to follow:
 - **Negative repo IDs** for fixture rows so they can't collide with operator-imported data.
 - **`t.Cleanup`** to delete fixtures even if the test fails mid-run.
 - **Pre-cleanup** at the top of tests that share fixture row IDs across runs (the test DB persists between invocations; without pre-cleanup a previous failure leaves rows that break the next run).
-- **Use `store.SetMatviewSkip(true)`** unless you specifically test matview behavior. Building 22+ matviews on every test run is several seconds wasted.
+- **Use `store.SetMatviewSkip(true)`** unless you specifically test matview behavior. Building 20 matviews on every test run is several seconds wasted.
 
 ## What to test
 
@@ -551,7 +551,11 @@ See `internal/platform/httpclient_test.go` for patterns. Tests like `TestHTTPCli
 
 GitHub Actions runs:
 
-- `test.yml`: `go test ./...` on every push.
+- `test.yml`: `go test ./...` (with `-race`) on every push.
 - `integration.yml`: PostgreSQL service container + `AVELOXIS_TEST_DB` integration tests.
+- `lint.yml`: `go vet` → `staticcheck` → `golangci-lint` (pinned version), all blocking.
+- `codeql.yml`: security scanning.
+- `cifuzz.yml`: ClusterFuzzLite over the 7 native Go fuzz targets.
+- `network-canary.yml`: weekly live-API contract checks (`AVELOXIS_TEST_NETWORK=1`).
 
-Both must pass for a PR to merge. The maintainers can override but rarely do.
+The first four must pass for a PR to merge. The maintainers can override but rarely do.

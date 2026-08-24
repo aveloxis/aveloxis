@@ -9,7 +9,7 @@ This chapter gets you from an empty machine to a working aveloxis dev environmen
 
 ## Prerequisites
 
-- **Go 1.23 or later.** Aveloxis uses Go 1.23 iterator syntax (`iter.Seq2`) in the platform layer.
+- **Go 1.25 or later.** Aveloxis uses Go 1.25 iterator syntax (`iter.Seq2`) in the platform layer.
 - **PostgreSQL 14 or later.** 18.x is what the maintainers use; anything 14+ should work (the schema uses `gen_random_uuid()` and `pg_trgm`).
 - **git** (obviously).
 - **scc** and **scorecard** — installed automatically via `aveloxis install-tools`, see below.
@@ -97,7 +97,7 @@ The other blocks (`github`, `gitlab`, `web`, `collection`, `log_level`) can stay
 go run ./cmd/aveloxis migrate
 ```
 
-Expect a short stream of `migration step ok` log lines. The full schema (108+ tables, 22+ materialized views, 50+ indexes) lands in two passes — DDL then matview creation.
+Expect a short stream of `migration step ok` log lines. The full schema (143 tables, 20 materialized views, 50+ indexes) lands in two passes — DDL then matview creation.
 
 If you want to skip the matview build for faster iteration (you typically do during development):
 
@@ -171,7 +171,7 @@ See [`testing.md`](testing.md) for the testing philosophy and patterns.
 The codebase is plain Go — any Go editor works. Recommended extras:
 
 - **gopls** language server (default).
-- **golangci-lint** for vet/staticcheck/etc. Aveloxis doesn't enforce it in CI yet but the maintainers run it locally.
+- **golangci-lint** for vet/staticcheck/etc. CI enforces it as a blocking gate (`lint.yml`, pinned version) — run the same version locally before pushing.
 - **EditorConfig** support. Aveloxis uses tabs in Go files, two-space indent in Markdown / JSON / YAML.
 
 ## Common problems

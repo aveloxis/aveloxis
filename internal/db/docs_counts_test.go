@@ -14,12 +14,47 @@ package db
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+// allDocsMarkdown returns every .md file under docs/ (excluding build
+// artifacts) plus the top-level operator surfaces. v0.28.12: the
+// 2026-08-23 docs audit found that every count a tripwire guarded was
+// correct and every count in an UNGUARDED file was stale (overview.md
+// said 84/24/19, quickstart said 108/19/two-schemas, ...) — so the
+// guard now covers the whole published docs tree, not a hand list.
+func allDocsMarkdown(t *testing.T) []string {
+	t.Helper()
+	paths := []string{"../../README.md", "../../docs/guide/commands.md"}
+	err := filepath.WalkDir("../../docs", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "_build" || d.Name() == "__pycache__" || d.Name() == "logos" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(path, ".md") {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) < 30 {
+		t.Fatalf("docs walk found only %d files — the corpus scan broke", len(paths))
+	}
+	return paths
+}
 
 func schemaCounts(t *testing.T) (data, ops, scan, matviews int) {
 	t.Helper()
@@ -46,11 +81,9 @@ var matviewPhraseRe = regexp.MustCompile(`(\d+) materialized views`)
 func TestDocsMatviewCountsMatchSchema(t *testing.T) {
 	_, _, _, matviews := schemaCounts(t)
 
-	for _, path := range []string{
-		"../../docs/guide/commands.md",
-		"../../README.md",
+	for _, path := range append(allDocsMarkdown(t),
 		"../../cmd/aveloxis/main.go", // refresh-views / migrate help text
-	} {
+	) {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -73,7 +106,7 @@ func TestDocsTableCountsMatchSchema(t *testing.T) {
 	total := data + ops + scan
 	valid := map[int]bool{data: true, ops: true, scan: true, total: true}
 
-	for _, path := range []string{"../../docs/guide/commands.md", "../../README.md"} {
+	for _, path := range allDocsMarkdown(t) {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -85,10 +118,13 @@ func TestDocsTableCountsMatchSchema(t *testing.T) {
 					"scan=%d total=%d) — stale table count.", path, m[0], data, ops, scan, total)
 			}
 		}
-		// The docs must also acknowledge all three schemas.
-		if !strings.Contains(string(src), "aveloxis_scan") {
-			t.Errorf("%s never mentions the aveloxis_scan schema — table counts that "+
-				"omit it undercount by %d.", path, scan)
+		// The primary operator surfaces must also acknowledge all
+		// three schemas (not required of every docs page).
+		if path == "../../README.md" || path == "../../docs/guide/commands.md" {
+			if !strings.Contains(string(src), "aveloxis_scan") {
+				t.Errorf("%s never mentions the aveloxis_scan schema — table counts that "+
+					"omit it undercount by %d.", path, scan)
+			}
 		}
 	}
 

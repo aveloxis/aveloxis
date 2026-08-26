@@ -125,6 +125,11 @@ Every release candidate passes, in order (v0.27.43, summary/18 Phase
    fixture-tested" as necessary but NOT sufficient for a
    volume-knob flip.
 
+10. **Docs build** — docs.yml: `sphinx-build -W --keep-going` over
+    `docs/`; every Sphinx/MyST warning (unknown fence language, a block
+    that does not lex in its declared language, a dead cross-reference)
+    is an error, matching Read the Docs' `fail_on_warning`.
+
 ## TDD discipline
 
 The contract:
@@ -557,5 +562,6 @@ GitHub Actions runs:
 - `codeql.yml`: security scanning.
 - `cifuzz.yml`: ClusterFuzzLite over the 7 native Go fuzz targets.
 - `network-canary.yml`: weekly live-API contract checks (`AVELOXIS_TEST_NETWORK=1`).
+- `docs.yml`: `sphinx-build -W --keep-going` over `docs/` — every Sphinx/MyST warning (unknown fence language, block that does not lex, dead cross-reference) is an error.
 
 The first four must pass for a PR to merge. The maintainers can override but rarely do.

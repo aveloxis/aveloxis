@@ -106,12 +106,14 @@ const repoDetailTemplate = `
 
 ### Step 3 — add the canvas + the fetch
 
-```go
-// Add to the chart-row divs:
+```html
+<!-- Add to the chart-row divs: -->
 <div class="chart-row">
   <canvas id="chart-contributors"></canvas>
 </div>
+```
 
+```js
 // Add to COLORS:
 const COLORS = {
   commits: '#1f77b4',

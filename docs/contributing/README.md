@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Contributing to Aveloxis
 
-This is the contributor handbook. The root [`CONTRIBUTING.md`](../../CONTRIBUTING.md) is a short orientation pointer; the chapters here are where the real material lives.
+This is the contributor handbook. The root [`CONTRIBUTING.md`](https://github.com/aveloxis/aveloxis/blob/main/CONTRIBUTING.md) is a short orientation pointer; the chapters here are where the real material lives.
 
 ## What Aveloxis is
 
@@ -16,7 +16,7 @@ If you're new to the codebase, read these in order before touching code:
 1. [`docs/architecture/overview.md`](../architecture/overview.md) — the architecture in one page
 2. [`docs/architecture/staged-pipeline.md`](../architecture/staged-pipeline.md) — how a single repo's data flows from API to database
 3. [`docs/architecture/platform-layer.md`](../architecture/platform-layer.md) — the GitHub/GitLab abstraction
-4. [`CLAUDE.md`](../../CLAUDE.md) — every architectural decision, ordered newest-first. Dense, but it's the project's canonical memory.
+4. [`review-lenses.md`](review-lenses.md) — the ten review lenses distilled from past incidents; with [`code-conventions.md`](code-conventions.md) they carry the "why" behind most rules you'll meet.
 
 ## How the codebase is laid out
 
@@ -70,7 +70,7 @@ Every Go file carries an SPDX header (enforced by a tripwire test in `scripts/`)
 | Add a column to a table | [`schema-migrations.md`](schema-migrations.md) |
 | Add a new endpoint or chart | The relevant chapter above |
 | Add a whole new data source | [`adding-a-platform.md`](adding-a-platform.md) |
-| Understand why something was done a certain way | [`CLAUDE.md`](../../CLAUDE.md) (search for the relevant version) |
+| Understand why something was done a certain way | The relevant [architecture chapter](../architecture/overview.md), then [`review-lenses.md`](review-lenses.md); `git log -S'<term>'` finds the change that introduced it |
 | Run aveloxis locally | [`development-setup.md`](development-setup.md) |
 
 ## The single-most-important rule

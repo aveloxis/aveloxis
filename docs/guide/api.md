@@ -115,7 +115,7 @@ Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues
 |---|---|---|---|
 | `since` | date (YYYY-MM-DD) | 2 years ago | Start date for time series |
 
-```json
+```jsonc
 {
   "repo_id": 42,
   "repo_name": "augur",
@@ -124,9 +124,9 @@ Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues
     {"week_start": "2024-01-01T00:00:00Z", "count": 15},
     {"week_start": "2024-01-08T00:00:00Z", "count": 22}
   ],
-  "prs_opened": [...],
-  "prs_merged": [...],
-  "issues": [...]
+  "prs_opened": [ /* ... */ ],
+  "prs_merged": [ /* ... */ ],
+  "issues": [ /* ... */ ]
 }
 ```
 
@@ -209,7 +209,7 @@ Malformed dates fall back to the defaults rather than returning 400, matching th
 
 Response shape:
 
-```json
+```jsonc
 [
   {
     "cntrb_id": "01000001-0000-4000-8000-000000000000",
@@ -222,8 +222,8 @@ Response shape:
     "public_contribs_year": 0,
     "restricted_contribs_year": 812,
     "last_contribution_year": 2026
-  },
-  ...
+  }
+  // ...more rows
 ]
 ```
 

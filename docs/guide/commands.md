@@ -369,6 +369,8 @@ Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970
 
 Safe to run repeatedly. All DDL uses `CREATE ... IF NOT EXISTS` and inserts use `ON CONFLICT DO NOTHING`. Does not touch Augur schemas if sharing a database.
 
+Upgrading an existing deployment across many releases? `migrate` covers every schema change and one-shot SQL backfill, but a separate set of operator-run heal commands (API-calling or long-running repairs) is deliberately not a migration — see [Upgrading](../getting-started/upgrading.md) for the ordered list with the release that introduced each.
+
 ### The completed-backfill ledger (v0.28.4)
 
 Expensive **one-shot data steps** — keyset backfills, history rotations, dedups, the timestamp cleanup — record their completion in `aveloxis_ops.migration_ledger` and are skipped on every later migrate. Before the ledger, every version bump re-walked all of them as no-ops (~1.5–2.5 hours on a fleet-scale database). DDL steps (tables, columns, indexes, views) are deliberately **not** ledgered: an explicit `aveloxis migrate` still heals hand-dropped objects on every run.

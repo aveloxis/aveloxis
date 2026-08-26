@@ -29,6 +29,7 @@ getting-started/installation
 getting-started/configuration
 getting-started/quickstart
 getting-started/augur-migration
+getting-started/upgrading
 ```
 
 ```{toctree}

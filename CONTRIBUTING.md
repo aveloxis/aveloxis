@@ -22,7 +22,7 @@ That's enough to verify your environment. To run the binary or write code agains
 
 ## Where to start reading
 
-- **New to the codebase?** Read [`docs/architecture/overview.md`](docs/architecture/overview.md) and [`CLAUDE.md`](CLAUDE.md) (the latter is dense but it's the canonical record of every architectural decision).
+- **New to the codebase?** Read [`docs/architecture/overview.md`](docs/architecture/overview.md) and [`docs/contributing/README.md`](docs/contributing/README.md) (the handbook's reading order).
 - **Want to fix a bug?** Pick one from [GitHub issues](https://github.com/aveloxis/aveloxis/issues). Open a discussion if you're unsure about the approach.
 - **Want to add a feature?** Open an issue first to discuss scope. Then follow the relevant chapter in [`docs/contributing/`](docs/contributing/).
 - **Want to add a new data source (e.g. Bugzilla, Gitea, Forgejo)?** Read [`docs/contributing/adding-a-platform.md`](docs/contributing/adding-a-platform.md) — that's the worked example.

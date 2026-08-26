@@ -26,6 +26,7 @@ func TestCIWorkflowsExist(t *testing.T) {
 		"docker-publish.yml":  "Docker image publish on main push",
 		"codeql.yml":          "CodeQL security analysis on PRs",
 		"lint.yml":            "Linting checks on PRs",
+		"docs.yml":            "Sphinx docs build with warnings-as-errors on PRs",
 	}
 
 	for filename, purpose := range required {

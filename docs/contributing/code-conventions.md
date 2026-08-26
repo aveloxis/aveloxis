@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Code conventions
 
-How aveloxis code is organized, what idioms to follow, and what to avoid. Most of these are durable patterns from production incidents — if a rule seems arbitrary, search [`CLAUDE.md`](../../CLAUDE.md) for the context.
+How aveloxis code is organized, what idioms to follow, and what to avoid. Most of these are durable patterns from production incidents — if a rule seems arbitrary, the rationale is usually in [`review-lenses.md`](review-lenses.md) or the architecture chapter it points to.
 
 ## SPDX headers (mandatory)
 

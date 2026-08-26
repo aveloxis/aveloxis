@@ -236,16 +236,16 @@ Never leak SQL errors or stack traces to the client.
 
 JSON. Wrap collections in a named field:
 
-```json
-{"contributors": [...], "repo_id": 123}
+```jsonc
+{"contributors": [ /* ... */ ], "repo_id": 123}
 ```
 
 Not just `[...]` — that locks you in if you ever need to add pagination metadata.
 
 For paginated endpoints, follow the existing `ListQueuePage` shape:
 
-```json
-{"items": [...], "total": 1234, "page": 1, "page_size": 100}
+```jsonc
+{"items": [ /* ... */ ], "total": 1234, "page": 1, "page_size": 100}
 ```
 
 ### CORS

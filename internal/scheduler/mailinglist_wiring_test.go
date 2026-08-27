@@ -119,9 +119,8 @@ func readFile(t *testing.T, name string) string {
 }
 
 // v0.28.18: the mailing-list lock's boot_id is the kernel boot id from
-// the shared reader, so the migrate-time liveness rule (dead PID on this
-// host → ghost) has something real to compare. The pre-.18 pid-nanos
-// synthetic made that branch dead.
+// the shared reader — what the column name promises (informational; the
+// pre-.18 pid-nanos synthetic was neither).
 func TestMailingListWorkerStampsTheKernelBootID(t *testing.T) {
 	raw, err := os.ReadFile("mailinglist_wiring.go")
 	if err != nil {

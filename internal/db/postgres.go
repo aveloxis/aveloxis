@@ -4,6 +4,7 @@
 package db
 
 import (
+	"sync"
 	"context"
 	"errors"
 	"fmt"
@@ -30,6 +31,40 @@ type PostgresStore struct {
 	matviewSkip      bool // whether to skip the matview block entirely (--skip-views on migrate)
 	migrateNoWait    bool // whether to fail fast on advisory-lock contention (--no-wait on migrate)
 	migrateFastPath  bool // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
+
+	// backendPIDs are the server-side PIDs of THIS process's pool
+	// connections (v0.28.18), maintained by the pool's AfterConnect /
+	// BeforeClose hooks. The mailing-list lock liveness probe excludes them
+	// from pg_stat_activity exactly — no pool counters, no client_addr —
+	// so `aveloxis serve`'s own startup migrate never counts itself as a
+	// running worker host. Under a transaction pooler the reported PIDs
+	// are the pooler's, so exclusion silently fails toward "live" (safe).
+	backendMu   sync.Mutex
+	backendPIDs map[uint32]struct{}
+}
+
+func (s *PostgresStore) trackBackend(pid uint32, alive bool) {
+	s.backendMu.Lock()
+	defer s.backendMu.Unlock()
+	if s.backendPIDs == nil {
+		s.backendPIDs = map[uint32]struct{}{}
+	}
+	if alive {
+		s.backendPIDs[pid] = struct{}{}
+	} else {
+		delete(s.backendPIDs, pid)
+	}
+}
+
+// ownBackendPIDs snapshots this process's pool backend PIDs.
+func (s *PostgresStore) ownBackendPIDs() []int32 {
+	s.backendMu.Lock()
+	defer s.backendMu.Unlock()
+	out := make([]int32, 0, len(s.backendPIDs))
+	for pid := range s.backendPIDs {
+		out = append(out, int32(pid))
+	}
+	return out
 }
 
 // NewPostgresStore connects to PostgreSQL and returns a Store.
@@ -126,6 +161,14 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	// incident history.
 	cfg.ConnConfig.Tracer = utf8ScrubTracer{}
 
+	store := &PostgresStore{logger: logger}
+	cfg.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
+		store.trackBackend(conn.PgConn().PID(), true)
+		return nil
+	}
+	cfg.BeforeClose = func(conn *pgx.Conn) {
+		store.trackBackend(conn.PgConn().PID(), false)
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to database: %w", err)
@@ -136,7 +179,8 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 		return nil, fmt.Errorf("pinging database: %w", err)
 	}
 
-	return &PostgresStore{pool: pool, logger: logger}, nil
+	store.pool = pool
+	return store, nil
 }
 
 func (s *PostgresStore) Close() {

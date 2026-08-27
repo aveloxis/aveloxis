@@ -11,8 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/aveloxis/aveloxis/internal/hostid"
-	"github.com/aveloxis/aveloxis/internal/pidfile"
 )
 
 // email_message FK-child indexes (v0.28.18, a fresh-context L11 sweep of
@@ -54,15 +52,12 @@ func ensureEmailMessageFKIndexes(ctx context.Context, pg *PostgresStore, logger 
 // defect). One row per list row with its partition's winner (lowest
 // rgls_id), the partition size, and the row's own lock: age_live is the
 // MailingListStaleLock window (parity with ClaimNextList's reclaim
-// boundary); pid/boot_id are what the worker stamped. $1 = the stale
-// interval.
+// boundary). $1 = the stale interval.
 const dupListPartitionsSQL = `
 	SELECT l.rgls_id,
 	       MIN(l.rgls_id) OVER w AS winner,
 	       count(*) OVER w AS copies,
-	       (l.mlls_locked_at IS NOT NULL AND l.mlls_locked_at >= NOW() - $1::interval) AS age_live,
-	       COALESCE(l.mlls_locked_pid, 0) AS pid,
-	       COALESCE(l.mlls_locked_boot_id, '') AS boot_id
+	       (l.mlls_locked_at IS NOT NULL AND l.mlls_locked_at >= NOW() - $1::interval) AS age_live
 	FROM aveloxis_data.repo_groups_list_serve l
 	JOIN (
 		SELECT repo_group_id,
@@ -100,7 +95,7 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	touched, err := dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownPoolIsServe())
+	touched, err := dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownBackendPIDs())
 	if err != nil {
 		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
 		logger.Error("migration step failed", "label", label, "error", err)
@@ -122,62 +117,41 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 		"list_rows_deleted", touched["list_rows_deleted"])
 }
 
-// ownPoolIsServe reports whether THIS process's pool is `aveloxis serve`'s
-// — serve runs its startup migrate on its own tagged pool before any
-// worker exists and must not count itself as a running worker host (the
-// seventh pass's finding).
-func (s *PostgresStore) ownPoolIsServe() bool {
-	return s.pool.Config().ConnConfig.RuntimeParams["application_name"] == serveApplicationName
-}
-
 // serveApplicationName is the application_name `aveloxis serve` tags its
 // pool with (v0.20.0; cmd/aveloxis/main.go runServe). The mailing-list
 // worker pool lives only inside serve.
 const serveApplicationName = "aveloxis-serve"
 
 // serveBackendsBeyondOwnPool reports whether any `aveloxis serve` backend
-// OTHER than this process's own is connected to THIS database — the
-// cross-host liveness signal for a worker lock whose boot_id is not
-// ours. When this process IS serve, its own backends are excluded by
-// client_addr against the probing session's own row (pg_backend_pid()):
-// the pidfile allows one serve per host, so a same-address serve
-// backend is ours (unix-socket sessions carry NULL on both sides and
-// compare equal). Exact — no pool counters (the ninth pass: TotalConns
-// includes constructing connections, and an over-count of our own
-// backends failed toward "ghost"). The one residual: two serve hosts
-// behind one NAT address, an unsupported topology. pg_stat_activity is
-// cluster-wide (the datname filter is load-bearing) and SNAPSHOTTED per
-// transaction (the first read fixes the view; a same-statement
-// pg_stat_clear_snapshot() runs AFTER the read — proven with EXPLAIN on
-// PG 18), so the clear is its own statement first.
-func serveBackendsBeyondOwnPool(ctx context.Context, q lockQuerier, ownIsServe bool) (bool, error) {
-	if _, err := q.Exec(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
+// OTHER than this process's own pool connections is connected to THIS
+// database — the liveness signal for a young mailing-list worker lock.
+// Own connections are excluded by server PID (PostgresStore.backendPIDs,
+// fed by the pool's AfterConnect/BeforeClose hooks): exact under every
+// topology — containers (PIDs and boot ids are namespaced/global in ways
+// a same-host PID rule gets wrong; the tenth pass), NAT, dual-stack
+// localhost — and under a transaction pooler the pooler's fake PIDs
+// simply fail to match, which counts our own backends as live (the safe
+// direction). pg_stat_activity is cluster-wide (the datname filter is
+// load-bearing) and SNAPSHOTTED per transaction (the first read fixes
+// the view; a same-statement pg_stat_clear_snapshot() runs AFTER the
+// read — proven with EXPLAIN on PG 18), so the clear is its own
+// statement first — on the SAME session, hence the pgx.Tx parameter.
+func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs []int32) (bool, error) {
+	if _, err := tx.Exec(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
 		return false, fmt.Errorf("clearing the activity snapshot: %w", err)
 	}
+	if ownPIDs == nil {
+		ownPIDs = []int32{}
+	}
 	var n int
-	if err := q.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		SELECT count(*) FROM pg_stat_activity a
 		WHERE a.datname = current_database() AND a.application_name = $1
-		  AND (NOT $2::boolean
-		       OR a.client_addr IS DISTINCT FROM
-		          (SELECT s.client_addr FROM pg_stat_activity s WHERE s.pid = pg_backend_pid()))`,
-		serveApplicationName, ownIsServe).Scan(&n); err != nil {
+		  AND a.pid <> ALL($2::int4[])`,
+		serveApplicationName, ownPIDs).Scan(&n); err != nil {
 		return false, fmt.Errorf("probing for a connected aveloxis-serve: %w", err)
 	}
 	return n > 0, nil
-}
-
-// workerLockLive adjudicates ONE age-live worker lock. Same host (the
-// stamped boot_id equals ours): the PID decides — the scancode worker's
-// recoverOrphans rule (v0.21.0); a dead PID is a ghost of a stopped
-// serve however young the lock is, and a live one is a worker whatever
-// the backends say. Other/unknown host: the database-side signal decides
-// (a serve backend beyond our own pool), which fails safe toward "live".
-func workerLockLive(pid int, bootID string, serveElsewhere bool) bool {
-	if bootID != "" && bootID == hostid.BootID() {
-		return pid > 0 && pidfile.IsRunning(pid)
-	}
-	return serveElsewhere
 }
 
 // dedupRepoGroupsListServeTx is the pass itself, inside the caller's tx.
@@ -192,11 +166,19 @@ func workerLockLive(pid int, bootID string, serveElsewhere bool) bool {
 // distinct), so the predicate is `rgls_email IS NOT NULL`. Only
 // multi-row partitions are candidates.
 //
+// A young lock is LIVE only while an `aveloxis serve` other than this
+// process is connected to the database (serveBackendsBeyondOwnPool) —
+// the worker pool lives only inside serve, and `stop serve` → `migrate`
+// (the upgrade ladder) or serve's own startup migrate must not read
+// mid-scan ghost locks as running workers. No PID rule: PIDs are
+// namespaced and boot ids host-global under the documented container
+// deployment, so a same-host PID check gets both directions wrong.
+//
 // Membership is computed ONCE and frozen (the fifth pass's finding: a
 // per-statement re-evaluation let a partition whose worker lock was
 // released mid-pass join late — its losers deleted by the last step
 // without the staging steps ever running for it): candidates are read,
-// partitions with a LIVE worker lock (workerLockLive) are set aside
+// partitions with a LIVE worker lock are set aside
 // (WARN; rerun after the drain), the rest are locked FOR UPDATE
 // (ClaimNextList uses SKIP LOCKED, so no worker can claim a member
 // mid-pass), the lock state is re-checked on the locked rows, and every
@@ -211,14 +193,12 @@ func workerLockLive(pid int, bootID string, serveElsewhere bool) bool {
 // resume point and last run; the scan stays incomplete if any copy
 // was); (5) delete the losers. Returns nil counts when nothing needed
 // doing.
-func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Logger, stale string, ownIsServe bool) (map[string]int64, error) {
+func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Logger, stale string, ownPIDs []int32) (map[string]int64, error) {
 	type candidate struct {
 		id, winner int64
 		ageLive    bool
-		pid        int
-		bootID     string
 	}
-	rows, err := tx.Query(ctx, `SELECT rgls_id, winner, age_live, pid, boot_id FROM (`+dupListPartitionsSQL+`) p
+	rows, err := tx.Query(ctx, `SELECT rgls_id, winner, age_live FROM (`+dupListPartitionsSQL+`) p
 		WHERE copies > 1 ORDER BY winner, rgls_id`, stale)
 	if err != nil {
 		return nil, fmt.Errorf("duplicate candidates: %w", err)
@@ -227,7 +207,7 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 	anyAgeLive := false
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.id, &c.winner, &c.ageLive, &c.pid, &c.bootID); err != nil {
+		if err := rows.Scan(&c.id, &c.winner, &c.ageLive); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("duplicate candidates: %w", err)
 		}
@@ -243,13 +223,13 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 	}
 	serveElsewhere := false
 	if anyAgeLive {
-		if serveElsewhere, err = serveBackendsBeyondOwnPool(ctx, tx, ownIsServe); err != nil {
+		if serveElsewhere, err = serveBackendsBeyondOwnPool(ctx, tx, ownPIDs); err != nil {
 			return nil, err
 		}
 	}
 	livePartition := map[int64]bool{}
 	for _, c := range cands {
-		if c.ageLive && workerLockLive(c.pid, c.bootID, serveElsewhere) {
+		if c.ageLive && serveElsewhere {
 			livePartition[c.winner] = true
 		}
 	}
@@ -262,10 +242,10 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 		winners = append(winners, c.winner)
 	}
 	if len(livePartition) > 0 {
-		logger.Warn("repo_groups_list_serve duplicate partitions held by a LIVE mailing-list worker are skipped this migrate — the UNIQUE index and the repo_groups consolidation wait for them; rerun `aveloxis migrate --skip-views` after the drain (a lock whose worker process is dead, or whose host has no aveloxis-serve connected, is a ghost and is consolidated)",
+		logger.Warn("repo_groups_list_serve duplicate partitions held by a LIVE mailing-list worker are skipped this migrate — the UNIQUE index and the repo_groups consolidation wait for them; rerun `aveloxis migrate --skip-views` after the drain, or with serve stopped (a young lock is a ghost only when no aveloxis-serve other than the migrating process is connected to the database)",
 			"partitions_skipped", len(livePartition))
 	} else if anyAgeLive {
-		logger.Info("mailing-list worker locks younger than the stale window belong to no running worker (dead PID on this host, or no aveloxis-serve backend beyond this process) — ghosts of a stopped serve; consolidating their partitions")
+		logger.Info("mailing-list worker locks younger than the stale window belong to no running worker (no aveloxis-serve other than this process is connected) — ghosts of a stopped serve; consolidating their partitions")
 	}
 	if len(ids) == 0 {
 		return nil, nil
@@ -279,22 +259,17 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 		return nil, fmt.Errorf("locking duplicate list rows: %w", err)
 	}
 	lateRows, err := tx.Query(ctx, `
-		SELECT rgls_id, COALESCE(mlls_locked_pid, 0), COALESCE(mlls_locked_boot_id, '')
+		SELECT rgls_id
 		FROM aveloxis_data.repo_groups_list_serve
 		WHERE rgls_id = ANY($1::bigint[])
 		  AND mlls_locked_at IS NOT NULL AND mlls_locked_at >= NOW() - $2::interval`, ids, stale)
 	if err != nil {
 		return nil, fmt.Errorf("re-checking worker locks: %w", err)
 	}
-	type late struct {
-		id     int64
-		pid    int
-		bootID string
-	}
-	var lates []late
+	var lates []int64
 	for lateRows.Next() {
-		var l late
-		if err := lateRows.Scan(&l.id, &l.pid, &l.bootID); err != nil {
+		var l int64
+		if err := lateRows.Scan(&l); err != nil {
 			lateRows.Close()
 			return nil, fmt.Errorf("re-checking worker locks: %w", err)
 		}
@@ -305,7 +280,7 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 		return nil, fmt.Errorf("re-checking worker locks: %w", err)
 	}
 	if len(lates) > 0 {
-		if serveElsewhere, err = serveBackendsBeyondOwnPool(ctx, tx, ownIsServe); err != nil {
+		if serveElsewhere, err = serveBackendsBeyondOwnPool(ctx, tx, ownPIDs); err != nil {
 			return nil, err
 		}
 		winnerOf := map[int64]int64{}
@@ -313,9 +288,9 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 			winnerOf[id] = winners[i]
 		}
 		lateWinners := map[int64]bool{}
-		for _, l := range lates {
-			if workerLockLive(l.pid, l.bootID, serveElsewhere) {
-				lateWinners[winnerOf[l.id]] = true
+		if serveElsewhere {
+			for _, l := range lates {
+				lateWinners[winnerOf[l]] = true
 			}
 		}
 		if len(lateWinners) > 0 {

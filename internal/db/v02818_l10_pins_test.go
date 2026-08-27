@@ -125,13 +125,13 @@ func TestRefreshAllRepoAggregatesHoldsAnAdvisoryLock(t *testing.T) {
 func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	src := readSourceFile(t, "email_message_fk_indexes.go")
 	outer := srctest.FuncBody(t, src, "func dedupRepoGroupsListServe(")
-	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownPoolIsServe())"} {
+	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownBackendPIDs())"} {
 		if !strings.Contains(outer, needle) {
 			t.Errorf("dedupRepoGroupsListServe must contain %s", needle)
 		}
 	}
 	body := srctest.FuncBody(t, src, "func dedupRepoGroupsListServeTx(")
-	for _, needle := range []string{"FOR UPDATE", "dupListPartitionsSQL", "WHERE copies > 1", "workerLockLive(c.pid, c.bootID, serveElsewhere)", "unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)", "repo_group_id = (SELECT repo_group_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = w.winner)", "PARTITION BY w.winner, st.message_id_header", "ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id", "GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month)"} {
+	for _, needle := range []string{"FOR UPDATE", "dupListPartitionsSQL", "WHERE copies > 1", "c.ageLive && serveElsewhere", "unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)", "repo_group_id = (SELECT repo_group_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = w.winner)", "PARTITION BY w.winner, st.message_id_header", "ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id", "GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month)"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("dedupRepoGroupsListServeTx must contain %s", needle)
 		}
@@ -149,17 +149,16 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	if lock < 0 || recheck < 0 || del < 0 || rep < 0 || lock > recheck || recheck > del || del > rep {
 		t.Error("order must be: lock the frozen members FOR UPDATE, re-check worker locks, delete duplicate staging across the partition, then repoint")
 	}
-	// A young lock is live only if its worker is: same host → the PID
-	// decides (the scancode recoverOrphans rule); other host → a serve
-	// backend beyond this process's own pool (`aveloxis serve` runs its
-	// startup migrate on its own tagged pool before any worker exists,
-	// and `stop serve` → `migrate` must not read mid-scan ghosts as
-	// running workers).
-	live := srctest.FuncBody(t, src, "func workerLockLive(")
-	for _, needle := range []string{"hostid.BootID()", "pidfile.IsRunning(pid)", "return serveElsewhere"} {
-		if !strings.Contains(live, needle) {
-			t.Errorf("workerLockLive must contain %s", needle)
-		}
+	// A young lock is live only while an aveloxis-serve OTHER than this
+	// process is connected (`aveloxis serve` runs its startup migrate on
+	// its own tagged pool before any worker exists; `stop serve` →
+	// `migrate` must not read mid-scan ghosts as running workers). No PID
+	// rule: PIDs are namespaced and boot ids host-global in containers.
+	if strings.Contains(src, "pidfile.IsRunning") || strings.Contains(src, "hostid.BootID") {
+		t.Error("no same-host PID/boot-id liveness rule — it is wrong in both directions under the container deployment (tenth pass)")
+	}
+	if !strings.Contains(src, "func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs []int32)") {
+		t.Error("the probe must take pgx.Tx — its two statements (snapshot clear, then read) must run on ONE session")
 	}
 	probe := srctest.FuncBody(t, src, "func serveBackendsBeyondOwnPool(")
 	if !strings.Contains(probe, "a.datname = current_database() AND a.application_name = $1") {
@@ -173,17 +172,22 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	if strings.Contains(probe, "pg_stat_activity, pg_stat_clear_snapshot()") {
 		t.Error("the same-statement clear form is decorative")
 	}
-	// serve's own backends are excluded exactly, by client_addr against
-	// the probing session's row — never by pool counters (TotalConns
-	// includes constructing connections; an own over-count failed toward
-	// "ghost", the unsafe direction).
-	for _, needle := range []string{"NOT $2::boolean", "a.client_addr IS DISTINCT FROM", "WHERE s.pid = pg_backend_pid()"} {
-		if !strings.Contains(probe, needle) {
-			t.Errorf("serveBackendsBeyondOwnPool must contain %s", needle)
-		}
+	// serve's own backends are excluded exactly, by server PID from the
+	// pool's AfterConnect/BeforeClose hooks — never by pool counters
+	// (TotalConns includes constructing connections; an own over-count
+	// failed toward "ghost") and never by client_addr (a pooler or NAT
+	// collapses it, excluding OTHER serves — the unsafe direction).
+	if !strings.Contains(probe, "a.pid <> ALL($2::int4[])") {
+		t.Error("serveBackendsBeyondOwnPool must exclude this process's own backend PIDs")
 	}
-	if strings.Contains(probe, "TotalConns()") || strings.Contains(src, "ownServeConns") {
-		t.Error("own-backend exclusion must not count pool connections")
+	if strings.Contains(probe, "client_addr") || strings.Contains(probe, "TotalConns()") {
+		t.Error("own-backend exclusion must be by server PID only")
+	}
+	pool := readSourceFile(t, "postgres.go")
+	for _, needle := range []string{"cfg.AfterConnect = func(", "cfg.BeforeClose = func(", "store.trackBackend(conn.PgConn().PID(), true)", "store.trackBackend(conn.PgConn().PID(), false)"} {
+		if !strings.Contains(pool, needle) {
+			t.Errorf("NewPostgresStore must maintain the own-backend PID set via the pool hooks: missing %s", needle)
+		}
 	}
 	// Membership must be frozen: the partition window is spelled once, in
 	// dupListPartitionsSQL, and no statement re-derives the set.

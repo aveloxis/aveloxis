@@ -85,7 +85,7 @@ running worker, not for you:
 
 | Log line | Since | What it means | Action |
 |---|---|---|---|
-| `repo_groups_list_serve duplicate partitions held by a LIVE mailing-list worker are skipped this migrate` | v0.28.18 | a duplicate list registration is mid-scan by a running worker; the list UNIQUE index and the `repo_groups` consolidation wait for it. A young lock whose worker process is dead on this host, or whose host has no `aveloxis serve` connected (the migrating process itself never counts), is a ghost and is consolidated | let the worker finish and re-run migrate, or run it with `serve` stopped |
+| `repo_groups_list_serve duplicate partitions held by a LIVE mailing-list worker are skipped this migrate` | v0.28.18 | a duplicate list registration is mid-scan by a running worker; the list UNIQUE index and the `repo_groups` consolidation wait for it. A young lock is a ghost — and is consolidated — only when no `aveloxis serve` other than the migrating process is connected to the database | let the worker finish and re-run migrate, or run it with `serve` stopped |
 
 The first migrate across a large gap can take a while. The long poles
 ("ledgered" = recorded in `migration_ledger` after it completes and never

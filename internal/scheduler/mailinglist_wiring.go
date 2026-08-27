@@ -71,9 +71,10 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 	}
 	pid := os.Getpid()
 	// v0.28.18: the REAL kernel boot id (one shared reader with the
-	// scancode worker), so a migrate on this host can adjudicate a young
-	// lock by PID liveness. Pre-.18 this was a per-process synthetic
-	// (pid-nanos) that nothing ever compared.
+	// scancode worker) — what the column name promises. Pre-.18 this was
+	// a per-process synthetic (pid-nanos). Informational: nothing
+	// compares it (PIDs are namespaced and boot ids host-global under the
+	// container deployment, so no same-host PID rule can be built on it).
 	bootID := hostid.BootID()
 
 	// Spawn a worker pool per system definition that has a supported backend

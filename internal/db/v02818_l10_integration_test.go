@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/aveloxis/aveloxis/internal/hostid"
 )
 
 // TestListDedupHandlesStagingCollisions (AVELOXIS_TEST_DB) — the L10
@@ -27,14 +27,11 @@ import (
 // group) with staging H1 under B AND C (two losers colliding with each
 // other), H2 under A and B (the winner's copy survives), H3 under C, H4
 // under X (repointed incl. repo_group_id); email_message under B;
-// checkpoints merged into A. P2 = D/E with E locked by an UNKNOWN host
-// (pid 0, no boot_id) — live only while an aveloxis-serve backend is
-// connected. P3 = F/G with G locked on THIS host by a dead PID — a ghost
-// however young, serve connected or not. P4 = H/I with I locked on THIS
-// host by this test's own live PID — a worker, skipped always. A fake
-// aveloxis-serve session makes the unknown-host lock live; closing it
-// makes it a ghost. On hosts with no readable boot_id (macOS) P3/P4 fall
-// back to the unknown-host rule.
+// checkpoints merged into A. P2 = D/E with E carrying a young worker
+// lock — live only while an aveloxis-serve backend OTHER than this
+// process is connected. A fake aveloxis-serve session makes it live;
+// handing that session's own PID to the probe (this process's pool) or
+// closing it makes the same lock a ghost.
 func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.Close)
@@ -97,34 +94,25 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	}
 	groupID := newGroup("_avdedup-list-" + t.Name())
 	sameName := newGroup("_avdedup-list-" + t.Name()) // the pre-v0.27.17 duplicate-group shape
-	unknownHostGroup := newGroup("_avdedup-unknown-" + t.Name())
-	deadPIDGroup := newGroup("_avdedup-deadpid-" + t.Name())
-	livePIDGroup := newGroup("_avdedup-livepid-" + t.Name())
-	seedList := func(group int64, lastMonth string, lastRun, lockedAt string, complete bool, pid int, bootID string) int64 {
+	lockedGroup := newGroup("_avdedup-locked-" + t.Name())
+	seedList := func(group int64, lastMonth string, lastRun, lockedAt string, complete bool) int64 {
 		t.Helper()
 		var id int64
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO aveloxis_data.repo_groups_list_serve
-				(repo_group_id, rgls_email, rgls_name, mlls_system, mlls_last_month, mlls_last_run, mlls_locked_at, mlls_scan_complete, mlls_locked_pid, mlls_locked_boot_id)
-			VALUES ($1, 'dev@_avdedup.example', 'dev', 'apache_ponymail', $2, NULLIF($3, '')::timestamptz, NULLIF($4, '')::timestamptz, $5, NULLIF($6, 0), $7)
-			RETURNING rgls_id`, group, lastMonth, lastRun, lockedAt, complete, pid, bootID).Scan(&id); err != nil {
+				(repo_group_id, rgls_email, rgls_name, mlls_system, mlls_last_month, mlls_last_run, mlls_locked_at, mlls_scan_complete)
+			VALUES ($1, 'dev@_avdedup.example', 'dev', 'apache_ponymail', $2, NULLIF($3, '')::timestamptz, NULLIF($4, '')::timestamptz, $5)
+			RETURNING rgls_id`, group, lastMonth, lastRun, lockedAt, complete).Scan(&id); err != nil {
 			t.Fatalf("seed list row: %v", err)
 		}
 		return id
 	}
-	thisHost := hostid.BootID()
-	sameHostRules := thisHost != ""
-	const deadPID = 2147483646 // pid_max on every platform is far below this
-	a := seedList(groupID, "", "", "", true, 0, "")
-	b := seedList(groupID, "2026-05", "2026-05-01T00:00:00Z", "", false, 0, "")
-	c := seedList(groupID, "2026-03", "", "", true, 0, "")
-	x := seedList(sameName, "2026-07", "", "", true, 0, "")
-	d := seedList(unknownHostGroup, "", "", "", false, 0, "")
-	e := seedList(unknownHostGroup, "2026-06", "", "now", false, 0, "")
-	f := seedList(deadPIDGroup, "", "", "", false, 0, "")
-	g := seedList(deadPIDGroup, "2026-02", "", "now", false, deadPID, thisHost)
-	h := seedList(livePIDGroup, "", "", "", false, 0, "")
-	i := seedList(livePIDGroup, "2026-01", "", "now", false, os.Getpid(), thisHost)
+	a := seedList(groupID, "", "", "", true)
+	b := seedList(groupID, "2026-05", "2026-05-01T00:00:00Z", "", false)
+	c := seedList(groupID, "2026-03", "", "", true)
+	x := seedList(sameName, "2026-07", "", "", true)
+	d := seedList(lockedGroup, "", "", "", false)
+	e := seedList(lockedGroup, "2026-06", "", "now", false) // young worker lock
 	stage := func(rgls, group int64, header string) int64 {
 		t.Helper()
 		var id int64
@@ -142,7 +130,7 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	stage(c, groupID, "<h3@_avdedup>")
 	stage(x, sameName, "<h1@_avdedup>") // a third copy of h1, stamped with the same-named group
 	stage(x, sameName, "<h4@_avdedup>") // repointed: rgls AND repo_group_id must follow the winner
-	stage(e, unknownHostGroup, "<unknown@_avdedup>")
+	stage(e, lockedGroup, "<locked@_avdedup>")
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO aveloxis_data.email_message (repo_group_id, rgls_id, platform_id, message_id_header, list_address, msg_class)
 		VALUES ($1, $2, 6, '<em-loser@_avdedup>', 'dev@_avdedup.example', 'mailing_list_only')`, groupID, b); err != nil {
@@ -170,7 +158,7 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	}
 
 	// Pass 1: serve "running" (the fake session), no worker owns any lock.
-	touched, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), false)
+	touched, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), nil)
 	if err != nil || touched == nil {
 		t.Fatalf("pass 1: touched=%v err=%v, want P1 consolidated", touched, err)
 	}
@@ -204,24 +192,10 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 		t.Errorf("P1 checkpoints = month %q run-set %v complete %v, want 2026-07 / true / false", lastMonth, lastRunSet, complete)
 	}
 	if n := survivors(d, e); n != 2 {
-		t.Errorf("P2 (unknown host, serve connected) must be skipped: %d rows, want 2", n)
+		t.Errorf("P2 (young lock, another serve connected) must be skipped: %d rows, want 2", n)
 	}
-	if n := survivors(h, i); n != 2 {
-		t.Errorf("P4 (this host, live PID) must be skipped: %d rows, want 2", n)
-	}
-	wantP3 := 1 // dead PID on this host: a ghost, consolidated even with serve connected
-	if !sameHostRules {
-		wantP3 = 2 // no boot_id on this platform: falls back to the unknown-host rule
-	}
-	if n := survivors(f, g); n != wantP3 {
-		t.Errorf("P3 (this host, dead PID) after pass 1: %d rows, want %d (boot_id readable: %v)", n, wantP3, sameHostRules)
-	}
-	wantPending := 2
-	if !sameHostRules {
-		wantPending = 3
-	}
-	if n := pending(); n != wantPending {
-		t.Errorf("pending partitions after pass 1 = %d, want %d", n, wantPending)
+	if n := pending(); n != 1 {
+		t.Errorf("pending partitions after pass 1 = %d, want 1", n)
 	}
 
 	// Pass 2: `stop serve` → `migrate`. Backend teardown is asynchronous —
@@ -231,7 +205,7 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	}
 	fakeServeOpen = false
 	for i := 0; ; i++ {
-		still, err := serveBackendsBeyondOwnPool(ctx, tx, false)
+		still, err := serveBackendsBeyondOwnPool(ctx, tx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -243,14 +217,14 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	second, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), false)
+	second, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), nil)
 	if err != nil || second == nil {
-		t.Fatalf("pass 2 with serve stopped: touched=%v err=%v, want the ghost-locked partitions consolidated", second, err)
+		t.Fatalf("pass 2 with serve stopped: touched=%v err=%v, want the ghost-locked partition consolidated", second, err)
 	}
 	if n := survivors(d, e); n != 1 {
 		t.Errorf("P2 after serve stopped: %d rows, want 1", n)
 	}
-	if n := count(`SELECT count(*) FROM aveloxis_ops.mailing_list_staging WHERE rgls_id = $1 AND repo_group_id = $2`, d, unknownHostGroup); n != 1 {
+	if n := count(`SELECT count(*) FROM aveloxis_ops.mailing_list_staging WHERE rgls_id = $1 AND repo_group_id = $2`, d, lockedGroup); n != 1 {
 		t.Errorf("P2's loser staging must be repointed to the winner: %d rows", n)
 	}
 	var dMonth string
@@ -260,21 +234,11 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	if dMonth != "2026-06" {
 		t.Errorf("P2's loser checkpoint must merge into the winner: got %q, want 2026-06", dMonth)
 	}
-	if n := survivors(f, g); n != 1 {
-		t.Errorf("P3 after pass 2: %d rows, want 1", n)
-	}
-	wantP4, wantPendingAfter := 2, 1 // a live PID on this host is a worker regardless of serve backends
-	if !sameHostRules {
-		wantP4, wantPendingAfter = 1, 0
-	}
-	if n := survivors(h, i); n != wantP4 {
-		t.Errorf("P4 after pass 2: %d rows, want %d (boot_id readable: %v)", n, wantP4, sameHostRules)
-	}
-	if n := pending(); n != wantPendingAfter {
-		t.Errorf("pending partitions after pass 2 = %d, want %d", n, wantPendingAfter)
+	if n := pending(); n != 0 {
+		t.Errorf("pending partitions after pass 2 = %d, want 0", n)
 	}
 	// Idempotent: nothing unlocked remains.
-	third, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), false)
+	third, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), nil)
 	if err != nil || third != nil {
 		t.Fatalf("third pass: touched=%v err=%v, want nothing to do", third, err)
 	}

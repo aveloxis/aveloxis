@@ -472,9 +472,21 @@ Per pair, winner = the **oldest** `repo_id`, in one transaction:
    itself. Nothing is lost: both sides collected the same repository.
 4. Enqueues the winner if it has never been collected.
 
-Pairs with either side `status='collecting'` are **skipped and
-reported** — re-run once those jobs finish. The command is idempotent;
-merged pairs drop out of the candidate set.
+Pairs with either side `status='collecting'` are **left out of each
+batch's window** so they cannot stall the run (a mid-collection pair at
+the head of the alphabetical order used to occupy a slot every round);
+the end-of-run summary reports how many groups remain — re-run once
+those jobs finish. The command is idempotent; merged pairs drop out of
+the candidate set.
+
+### Precondition
+
+The merge refuses to start until the v0.28.18 migrate has built the
+`email_message` FK indexes (`idx_email_message_repo_id` /
+`idx_email_message_signaled_repo_id`) — without them every pair would
+sequential-scan that table on the repoints and again at commit. Run
+`aveloxis migrate --skip-views` on the new binary first; the refusal
+names the missing index.
 
 ### After the run
 
@@ -818,6 +830,12 @@ aveloxis reconcile-repos             # everything
 The scheduler also logs a startup gauge (`non-archived repos with no
 collection_queue row`) pointing here whenever the count is non-zero.
 Re-run until stranded = 0; healed repos drop out of the set.
+
+Both consolidation arms (the dataless heal and the per-pair merge)
+share `dedup-repos`' precondition: the v0.28.18 migrate must have built
+the `email_message` FK indexes, or each such repo is skipped with a
+warning naming the migrate to run first (the other classifications —
+dead, re-enqueue — proceed).
 
 ## `aveloxis generate-showcase`
 

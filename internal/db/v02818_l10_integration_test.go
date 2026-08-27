@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -249,10 +250,14 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	}
 	// The deferred FK email_message.rgls_id → repo_groups_list_serve is
 	// checked at COMMIT, which this rolled-back fixture never reaches —
-	// fire the queued checks now so a repoint/delete reordering fails
-	// HERE, not in production's migrate.
+	// fire the queued checks now. This proves every loser's email_message
+	// rows landed on a surviving winner (a missing or mis-joined repoint
+	// fails here); it does NOT prove statement order — a deferred NO
+	// ACTION check re-reads current state, so delete-then-repoint would
+	// also pass (verified on PG 18). The five-step order pin is a
+	// convention, not an FK guarantee.
 	if _, err := tx.Exec(ctx, `SET CONSTRAINTS ALL IMMEDIATE`); err != nil {
-		t.Fatalf("deferred FK checks after the dedup: %v (the loser delete must come AFTER the email_message repoint)", err)
+		t.Fatalf("deferred FK checks after the dedup: %v (every loser's email_message rows must be repointed to a surviving winner)", err)
 	}
 	if n := count(`SELECT count(*) FROM aveloxis_ops.mailing_list_staging WHERE rgls_id = $1 AND repo_group_id = $2`, d, lockedGroup); n != 1 {
 		t.Errorf("P2's loser staging must be repointed to the winner: %d rows", n)
@@ -333,5 +338,165 @@ func TestRunOnceSeedRecordsWhenStampProvesApplied(t *testing.T) {
 	mustQueryRowRetry(ctx, t, store, `SELECT count(*) FROM aveloxis_ops.migration_ledger WHERE step_label = $1`, &n, other)
 	if n != 0 {
 		t.Fatalf("a stamp below the step's introducing version must not seed, got %d rows", n)
+	}
+}
+
+// TestEmailMessageIndexGateRefusesWithoutIndex (AVELOXIS_TEST_DB) — the
+// refusal arm, red-first (v0.27.145): a transactional DROP INDEX of one
+// repos-side email_message index makes the gate refuse, naming that
+// index and the migrate command, while the list-side parent still reads
+// ready in the same transaction; the rollback restores the index and
+// the pool reads ready again. The DROP holds email_message's ACCESS
+// EXCLUSIVE lock for the few statements until the rollback (a
+// concurrent writer waits), acquired the bounded 40P01/55P03 way.
+func TestEmailMessageIndexGateRefusesWithoutIndex(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	for _, parent := range []string{"repos", "repo_groups_list_serve"} {
+		if err := emailMessageFKIndexesReadyFor(ctx, store.pool, parent); err != nil {
+			t.Fatalf("after Migrate the gate must read ready for %s: %v", parent, err)
+		}
+	}
+	for attempt := 1; ; attempt++ {
+		tx, err := store.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.Exec(ctx, `SET LOCAL lock_timeout = '5s'; DROP INDEX aveloxis_data.idx_email_message_signaled_repo_id`)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || (pgErr.Code != "40P01" && pgErr.Code != "55P03") || attempt >= 5 {
+				t.Fatalf("transactional DROP INDEX (attempt %d): %v", attempt, err)
+			}
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+			continue
+		}
+		err = emailMessageFKIndexesReadyFor(ctx, tx, "repos")
+		if err == nil || !strings.Contains(err.Error(), "idx_email_message_signaled_repo_id") || !strings.Contains(err.Error(), "aveloxis migrate --skip-views") {
+			t.Errorf("gate with the signaled_repo_id index dropped = %v; want a refusal naming the index and the migrate", err)
+		}
+		if !errors.Is(err, ErrEmailMessageIndexesNotReady) {
+			t.Errorf("the not-ready refusal must wrap ErrEmailMessageIndexesNotReady (callers report it as an unmet precondition), got %v", err)
+		}
+		if err := emailMessageFKIndexesReadyFor(ctx, tx, "repo_groups_list_serve"); err != nil {
+			t.Errorf("the list-side parent must still read ready (only a repos-side index is gone): %v", err)
+		}
+		_ = tx.Rollback(ctx)
+		break
+	}
+	if err := emailMessageFKIndexesReadyFor(ctx, store.pool, "repos"); err != nil {
+		t.Fatalf("after the rollback the pool must read ready again: %v", err)
+	}
+}
+
+// TestDedupBatchPagesPastCollectingHead (AVELOXIS_TEST_DB) — the SR-19
+// stall, red-first: pair A sorts first in lower_git order and has a side
+// mid-collection; pair B is mergeable. Pre-fix a batch window of the
+// first N groups was filled by A's skip every round and merged == 0
+// read as "done" with B never reached. Now the batch's window excludes
+// collecting pairs (B merges, A is untouched) while the dry-run read
+// still lists A, flagged, for the operator.
+func TestDedupBatchPagesPastCollectingHead(t *testing.T) {
+	ctx, store := caseConnect(t)
+	const slugA, slugB = "_avdedup_pga", "_avdedup_pgb"
+	cleanupDedupRepos(ctx, t, store, slugA)
+	cleanupDedupRepos(ctx, t, store, slugB)
+	t.Cleanup(func() {
+		cleanupDedupRepos(ctx, t, store, slugA)
+		cleanupDedupRepos(ctx, t, store, slugB)
+	})
+	dropCaseUniqueIndex(ctx, t, store, func() {
+		cleanupDedupRepos(ctx, t, store, slugA)
+		cleanupDedupRepos(ctx, t, store, slugB)
+	})
+	gid := defaultRepoGroup(ctx, t, store)
+	seedPair := func(slug string) (winnerID, loserID int64) {
+		t.Helper()
+		winnerURL := "https://github.com/" + slug + "_Org/Repo"
+		for i, url := range []string{winnerURL, strings.ToLower(winnerURL)} {
+			var id int64
+			if err := store.pool.QueryRow(ctx, `
+				INSERT INTO aveloxis_data.repos (repo_group_id, platform_id, repo_git, repo_name, repo_owner)
+				VALUES ($1, 1, $2, 'Repo', $3) RETURNING repo_id`, gid, url, slug+"_Org").Scan(&id); err != nil {
+				t.Fatalf("seed %s: %v", url, err)
+			}
+			if _, err := store.pool.Exec(ctx, `
+				INSERT INTO aveloxis_ops.collection_queue (repo_id, status, due_at, last_collected)
+				VALUES ($1, 'queued', NOW(), NOW()) ON CONFLICT (repo_id) DO NOTHING`, id); err != nil {
+				t.Fatal(err)
+			}
+			if i == 0 {
+				winnerID = id
+			} else {
+				loserID = id
+			}
+		}
+		return winnerID, loserID
+	}
+	aWinner, aLoser := seedPair(slugA)
+	bWinner, bLoser := seedPair(slugB)
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_ops.collection_queue SET status = 'collecting' WHERE repo_id = $1`, aLoser); err != nil {
+		t.Fatal(err)
+	}
+	lowerA := strings.ToLower("https://github.com/" + slugA + "_Org/Repo")
+	lowerB := strings.ToLower("https://github.com/" + slugB + "_Org/Repo")
+
+	// The dry-run read keeps A in view, flagged, ahead of B.
+	shown, err := sampleCaseVariantRepoDups(ctx, store, 10000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawA, sawB bool
+	for _, p := range shown {
+		switch p.LowerGit {
+		case lowerA:
+			sawA = true
+			if !p.Collecting {
+				t.Error("dry-run read must flag pair A as collecting")
+			}
+		case lowerB:
+			sawB = true
+		}
+	}
+	if !sawA || !sawB {
+		t.Fatalf("dry-run read must list both pairs: A=%v B=%v", sawA, sawB)
+	}
+	// The batch window drops A entirely.
+	window, err := sampleCaseVariantRepoDups(ctx, store, 10000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range window {
+		if p.LowerGit == lowerA {
+			t.Fatal("the batch window must not contain the collecting pair")
+		}
+	}
+	// A window sized to every mergeable pair merges B and never touches
+	// A (the fixture shares the scratch DB, so residue pairs may ride
+	// along — they are other fixtures' leftovers and merge harmlessly).
+	merged, skipped, err := DedupCaseVariantReposBatch(ctx, store, max(len(window), 1))
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if merged < 1 {
+		t.Fatalf("merged=%d skipped=%d — pair B beyond the collecting head must merge", merged, skipped)
+	}
+	var n int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repos WHERE repo_id IN ($1, $2)`, bWinner, bLoser).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("pair B must be consolidated to its winner, found %d of 2 rows", n)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repos WHERE repo_id IN ($1, $2)`, aWinner, aLoser).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("the collecting pair A must be left intact, found %d of 2 rows", n)
+	}
+	// It is still there for the rerun, flagged.
+	if p := findPairByLowerGit(ctx, t, store, lowerA); p == nil || !p.Collecting {
+		t.Errorf("pair A must remain a flagged candidate for the rerun, got %+v", p)
 	}
 }

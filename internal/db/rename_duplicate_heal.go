@@ -56,6 +56,16 @@ func (s *PostgresStore) HealRenamedDuplicate(ctx context.Context, dupRepoID, win
 		return false, nil
 	}
 
+	// v0.28.18: the loser repos delete fires the deferred
+	// email_message.repo_id / signaled_repo_id checks at COMMIT — two
+	// sequential scans of the 12 GB table per dataless duplicate without
+	// the v0.28.18 indexes. The store gate that dedup-repos passes
+	// applies here too; callers (prelim, reconcile-repos) already treat
+	// an error as "heal unavailable" and fall back to the legacy skip.
+	if err := emailMessageFKIndexesReadyFor(ctx, s.pool, "repos"); err != nil {
+		return false, err
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err

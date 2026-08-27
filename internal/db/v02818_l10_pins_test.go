@@ -4,6 +4,7 @@
 package db
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"testing"
@@ -148,13 +149,63 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	emailRep := strings.Index(body, `"email_messages_repointed"`)
 	listDel := strings.Index(body, `"list_rows_deleted"`)
 	if lock < 0 || del < 0 || rep < 0 || emailRep < 0 || listDel < 0 || lock > del || del > rep || rep > emailRep || emailRep > listDel {
-		t.Error("order must be: lock the frozen members FOR UPDATE, delete duplicate staging across the partition, repoint staging, repoint email_message, and only then delete the loser list rows (the deferred FK fires at COMMIT)")
+		t.Error("order must be: lock the frozen members FOR UPDATE, delete duplicate staging across the partition, repoint staging, repoint email_message, then delete the loser list rows (a reading convention — the deferred FK re-reads current state at COMMIT, so the e2e proves the repoint, not the order)")
 	}
-	// The dedup itself is gated on a VALID idx_email_message_rgls_id (a
-	// failed CONCURRENTLY build is only recorded — the decorative-gate class).
+	// Every consolidation that deletes a repos row passes THE shared
+	// gate (SR-18) before any write — dedup-repos per batch,
+	// reconcile-repos' pair consolidation per pair, prelim's rename heal
+	// — and the gate derives its columns and index names from
+	// emailMessageFKIndexes (SR-17), never a hand list.
+	for _, site := range []struct{ file, fn, needle string }{
+		{"repo_dedup.go", "func DedupCaseVariantReposBatch(", `emailMessageFKIndexesReadyFor(ctx, store.pool, "repos")`},
+		{"stranded_repos.go", "func DedupRenamedRepoPair(", `emailMessageFKIndexesReadyFor(ctx, store.pool, "repos")`},
+		{"rename_duplicate_heal.go", "func (s *PostgresStore) HealRenamedDuplicate(", `emailMessageFKIndexesReadyFor(ctx, s.pool, "repos")`},
+		{"email_message_fk_indexes.go", "func dedupRepoGroupsListServe(", `emailMessageFKIndexesReadyFor(ctx, pg.pool, "repo_groups_list_serve")`},
+	} {
+		fnBody := srctest.FuncBody(t, readSourceFile(t, site.file), site.fn)
+		gate := strings.Index(fnBody, site.needle)
+		write := strings.Index(fnBody, "Begin(ctx)")
+		if write < 0 {
+			write = strings.Index(fnBody, "dedupOnePair(")
+		}
+		if gate < 0 || write < 0 || gate > write {
+			t.Errorf("%s must pass %s BEFORE it opens a transaction or hands off to dedupOnePair", site.fn, site.needle)
+		}
+	}
+	gateBody := srctest.FuncBody(t, src, "func emailMessageFKIndexesReadyFor(")
+	if !strings.Contains(gateBody, "range emailMessageFKIndexes") || !strings.Contains(gateBody, "idx.indexName") || strings.Contains(gateBody, `"idx_email_message_`) {
+		t.Error("the gate must derive its columns and index names from emailMessageFKIndexes — no hand-spelled index names (SR-17)")
+	}
+	if !strings.Contains(gateBody, "probed == 0") {
+		t.Error("an unknown parent must never read as ready")
+	}
+	if !strings.Contains(gateBody, "%w") || !strings.Contains(gateBody, "ErrEmailMessageIndexesNotReady") {
+		t.Error("the not-ready refusal must wrap ErrEmailMessageIndexesNotReady so callers can tell it from a probe error")
+	}
+	// The batch window EXCLUDES mid-collection pairs (a batchSize-long
+	// collecting head stalled the rerun-until-0 contract); the dry-run
+	// sample keeps them in view, flagged.
+	dedupSrc := readSourceFile(t, "repo_dedup.go")
+	if !strings.Contains(srctest.FuncBody(t, dedupSrc, "func DedupCaseVariantReposBatch("), "sampleCaseVariantRepoDups(ctx, store, batchSize, true)") {
+		t.Error("DedupCaseVariantReposBatch must read its window with excludeCollecting = true")
+	}
+	if !strings.Contains(srctest.FuncBody(t, dedupSrc, "func SampleCaseVariantRepoDups("), "sampleCaseVariantRepoDups(ctx, store, limit, false)") {
+		t.Error("SampleCaseVariantRepoDups (the dry-run read) must keep collecting pairs in view")
+	}
+	if !strings.Contains(dedupSrc, "WHERE NOT ($2::boolean AND collecting)") {
+		t.Error("repoDupCandidatesSQL must filter collecting pairs on $2")
+	}
+	// The list dedup is gated on a VALID idx_email_message_rgls_id (a
+	// failed CONCURRENTLY build is only recorded — the decorative-gate
+	// class) through THE shared gate — no inline probe, no hand-spelled
+	// index name — and a not-ready refusal is a WARN skip, a probe error
+	// a failed step.
 	outerBody := srctest.FuncBody(t, src, "func dedupRepoGroupsListServe(")
-	if !strings.Contains(outerBody, `leadingColumnIndexValid(ctx, pg.pool, "email_message", "rgls_id")`) || strings.Index(outerBody, "leadingColumnIndexValid(") > strings.Index(outerBody, "pg.pool.Begin(ctx)") {
-		t.Error("dedupRepoGroupsListServe must probe idx_email_message_rgls_id's validity BEFORE opening its transaction")
+	if strings.Contains(outerBody, "leadingColumnIndexValid(") || strings.Contains(outerBody, "idx_email_message_rgls_id") {
+		t.Error("dedupRepoGroupsListServe must use emailMessageFKIndexesReadyFor, not an inline probe or a hand-spelled index name")
+	}
+	if !strings.Contains(outerBody, "errors.Is(err, ErrEmailMessageIndexesNotReady)") {
+		t.Error("dedupRepoGroupsListServe must distinguish the not-ready skip from a probe error")
 	}
 	// THE rule: another aveloxis-serve connected → consolidate NOTHING
 	// (the drain holds no lock, so no lock-age rule can call a row idle);
@@ -236,5 +287,26 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	unique := strings.Index(migrate, `"idx_rgls_group_email"`)
 	if dedup < 0 || unique < 0 || dedup > unique {
 		t.Errorf("dedupRepoGroupsListServe (%d) must run before the idx_rgls_group_email build (%d) — SR-1", dedup, unique)
+	}
+}
+
+// The gate never reads "ready" for a parent it has no index registered
+// for — a wrong caller must not pass by accident (the loop would be a
+// no-op otherwise). No database: the loop never queries.
+func TestEmailMessageIndexGateRejectsUnknownParent(t *testing.T) {
+	err := emailMessageFKIndexesReadyFor(context.Background(), nil, "not_a_parent")
+	if err == nil || !strings.Contains(err.Error(), `"not_a_parent"`) {
+		t.Fatalf("unknown parent must error naming it, got %v", err)
+	}
+	for _, parent := range []string{"repos", "repo_groups_list_serve"} {
+		n := 0
+		for _, idx := range emailMessageFKIndexes {
+			if idx.parent == parent {
+				n++
+			}
+		}
+		if n == 0 {
+			t.Errorf("emailMessageFKIndexes must register at least one index for parent %q", parent)
+		}
 	}
 }

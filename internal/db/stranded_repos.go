@@ -71,6 +71,12 @@ func (s *PostgresStore) ListStrandedRepos(ctx context.Context, limit int) ([]Str
 // mid-collection re-check. Only pair DISCOVERY differs (redirect-
 // resolved rather than LOWER(repo_git)-grouped).
 func DedupRenamedRepoPair(ctx context.Context, store *PostgresStore, winnerID, loserID int64, winnerGit, loserGit string) error {
+	// v0.28.18: the same index gate dedup-repos passes — reconcile-repos
+	// never migrates (v0.21.5), so the store refuses per pair rather than
+	// sequential-scan email_message on each repoint and again at COMMIT.
+	if err := emailMessageFKIndexesReadyFor(ctx, store.pool, "repos"); err != nil {
+		return err
+	}
 	return dedupOnePair(ctx, store, RepoDupPair{
 		LowerGit:  loserGit + " -> " + winnerGit, // label for error/log text
 		WinnerID:  winnerID,

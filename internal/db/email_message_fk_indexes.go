@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -26,12 +27,16 @@ import (
 type emailMessageFKIndex struct {
 	column    string
 	indexName string
+	// parent is the referenced table — the readiness probe below is
+	// keyed by it, so every consolidation that deletes a parent row
+	// asks for exactly the indexes its deferred FK checks will probe.
+	parent string
 }
 
 var emailMessageFKIndexes = []emailMessageFKIndex{
-	{"repo_id", "idx_email_message_repo_id"},
-	{"signaled_repo_id", "idx_email_message_signaled_repo_id"},
-	{"rgls_id", "idx_email_message_rgls_id"},
+	{"repo_id", "idx_email_message_repo_id", "repos"},
+	{"signaled_repo_id", "idx_email_message_signaled_repo_id", "repos"},
+	{"rgls_id", "idx_email_message_rgls_id", "repo_groups_list_serve"},
 }
 
 func ensureEmailMessageFKIndexes(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
@@ -87,6 +92,45 @@ func leadingColumnIndexValid(ctx context.Context, q lockQuerier, table, column s
 	return ok, nil
 }
 
+// ErrEmailMessageIndexesNotReady wraps the gate's not-ready refusal so
+// callers can tell "precondition unmet — a migrate to run" from a probe
+// ERROR (both refuse; SR-5 says neither reads as ready, but the operator
+// message and the log level differ).
+var ErrEmailMessageIndexesNotReady = errors.New("email_message FK indexes not ready")
+
+// emailMessageFKIndexesReadyFor is THE gate every consolidation that
+// deletes a `parent` row passes before touching data (SR-18: the store
+// enforces it, so neither `dedup-repos`, `reconcile-repos`, prelim's
+// rename heal nor the list dedup inside the migrate can grind without
+// it). Deleting a repos row fires the
+// deferred email_message.repo_id / signaled_repo_id checks at COMMIT and
+// the case-variant merge repoints both columns first — without VALID
+// indexes each is a sequential scan of the 12 GB table per row (the
+// v0.25.34 hung-commit shape). The column set and the index names come
+// from emailMessageFKIndexes (SR-17: one list; a rename there renames
+// the refusal too). A probe ERROR is not "ready" (SR-5); an unknown
+// parent is a caller bug and never reads as ready.
+func emailMessageFKIndexesReadyFor(ctx context.Context, q lockQuerier, parent string) error {
+	probed := 0
+	for _, idx := range emailMessageFKIndexes {
+		if idx.parent != parent {
+			continue
+		}
+		probed++
+		ready, err := leadingColumnIndexValid(ctx, q, "email_message", idx.column)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			return fmt.Errorf("%w: email_message(%s) has no valid index — run `aveloxis migrate --skip-views` first (v0.28.18 builds %s CONCURRENTLY); without it every %s consolidation sequential-scans email_message", ErrEmailMessageIndexesNotReady, idx.column, idx.indexName, parent)
+		}
+	}
+	if probed == 0 {
+		return fmt.Errorf("no email_message FK index is registered for parent %q", parent)
+	}
+	return nil
+}
+
 // dedupRepoGroupsListServe — SR-1 for idx_rgls_group_email (v0.28.18).
 // The UNIQUE (repo_group_id, rgls_email) index is the arbiter of
 // RegisterMailingList's ON CONFLICT and was built CONCURRENTLY since
@@ -101,17 +145,20 @@ func leadingColumnIndexValid(ctx context.Context, q lockQuerier, table, column s
 func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
 	const label = "v0.28.18 consolidate duplicate repo_groups_list_serve rows (lowest rgls_id wins)"
 	// The loser DELETE's deferred FK checks probe email_message.rgls_id at
-	// COMMIT — without a valid idx_email_message_rgls_id that is one
-	// sequential scan of the 12 GB table per loser (the v0.28.16
-	// decorative-gate class: ensureEmailMessageFKIndexes only RECORDS a
-	// failed CONCURRENTLY build). A probe ERROR is not "ready" (SR-5).
-	if ready, err := leadingColumnIndexValid(ctx, pg.pool, "email_message", "rgls_id"); err != nil {
+	// COMMIT — without a valid index that is one sequential scan of the
+	// 12 GB table per loser (the v0.28.16 decorative-gate class:
+	// ensureEmailMessageFKIndexes only RECORDS a failed CONCURRENTLY
+	// build). THE shared gate decides; a not-ready refusal is a skip the
+	// next migrate retries (the CONCURRENTLY build above is re-attempted
+	// every run), a probe ERROR is a failed step (SR-5).
+	if err := emailMessageFKIndexesReadyFor(ctx, pg.pool, "repo_groups_list_serve"); err != nil {
+		if errors.Is(err, ErrEmailMessageIndexesNotReady) {
+			*errs = append(*errs, fmt.Errorf("%s skipped (its CONCURRENTLY index build failed above; rerun the migrate once it builds): %w", label, err))
+			logger.Warn("list dedup skipped — email_message(rgls_id) index not valid", "label", label, "error", err)
+			return
+		}
 		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
 		logger.Error("migration step failed", "label", label, "error", err)
-		return
-	} else if !ready {
-		*errs = append(*errs, fmt.Errorf("%s skipped: idx_email_message_rgls_id is missing or INVALID (its CONCURRENTLY build failed above) — the loser delete would sequential-scan email_message per row; rerun the migrate once the index builds", label))
-		logger.Warn("list dedup skipped — idx_email_message_rgls_id not valid", "label", label)
 		return
 	}
 	tx, err := pg.pool.Begin(ctx)

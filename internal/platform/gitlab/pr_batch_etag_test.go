@@ -66,8 +66,23 @@ func etagHonoringMRRouter(mrBodyHits *int32) http.Handler {
 			_, _ = w.Write([]byte(`{"id":901,"iid":1,"title":"Bug","state":"opened","web_url":"https://gitlab.com/owner/repo/-/issues/1","author":{"id":7,"username":"alice"},"labels":["bug"],"assignees":[{"id":8,"username":"bob"}],"created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-02T03:04:05Z"}`))
 		case strings.HasSuffix(path, "/approvals"):
 			_, _ = w.Write([]byte(`{"approved_by":[]}`))
-		case strings.HasSuffix(path, "/commits"), strings.HasSuffix(path, "/diffs"):
-			_, _ = w.Write([]byte(`[]`))
+		// v0.28.18: the paginated child endpoints honor ETags too — they
+		// are the batch's only bare conditional reads (the paginator's
+		// legitimate 304 contract), so a warm cache would empty them.
+		case strings.HasSuffix(path, "/commits"):
+			w.Header().Set("ETag", `W/"mr1-commits-v1"`)
+			if r.Header.Get("If-None-Match") == `W/"mr1-commits-v1"` {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			_, _ = w.Write([]byte(`[{"id":"abc123","short_id":"abc123","title":"Fix","message":"Fix the thing","author_name":"Alice","author_email":"alice@example.com","authored_date":"2026-01-02T03:04:05Z","committer_name":"Alice","committer_email":"alice@example.com","committed_date":"2026-01-02T03:04:05Z","web_url":"https://gitlab.com/owner/repo/-/commit/abc123"}]`))
+		case strings.HasSuffix(path, "/diffs"):
+			w.Header().Set("ETag", `W/"mr1-diffs-v1"`)
+			if r.Header.Get("If-None-Match") == `W/"mr1-diffs-v1"` {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			_, _ = w.Write([]byte(`[{"old_path":"a.go","new_path":"a.go","diff":"@@ -1 +1 @@","new_file":false,"renamed_file":false,"deleted_file":false}]`))
 		case projectRe.MatchString(path):
 			// Echo the requested project id so source (11) and target (12)
 			// resolve to distinct projects.
@@ -90,9 +105,29 @@ func TestFetchPRBatchSurvivesWarmETagCache(t *testing.T) {
 	client, _ := newTestClientWithCapture(t, etagHonoringMRRouter(&hits))
 	ctx := context.Background()
 
-	// Warm the client's ETag cache the way routine collection does.
-	if _, err := client.FetchPRByNumber(ctx, "owner", "repo", 1); err != nil {
+	// Warm the client's ETag cache the way routine collection does. The
+	// paginated child readers (commits, diffs) are bare conditional Gets —
+	// the paginator's legitimate 304 contract — so a prior ListPRCommits /
+	// ListPRFiles on the same MR leaves ETags behind for the batch's own
+	// child reads. (v0.28.18: FetchPRByNumber warms NOTHING any more —
+	// GetJSON is ETag-free since v0.28.17 — so the pre-.18 warm-up had
+	// become decorative; it stays only for the body-hit arithmetic.)
+	for _, err := range client.ListPRCommits(ctx, "owner", "repo", 1) {
+		if err != nil {
+			t.Fatalf("warm-up ListPRCommits: %v", err)
+		}
+	}
+	for _, err := range client.ListPRFiles(ctx, "owner", "repo", 1) {
+		if err != nil {
+			t.Fatalf("warm-up ListPRFiles: %v", err)
+		}
+	}
+	single, err := client.FetchPRByNumber(ctx, "owner", "repo", 1)
+	if err != nil {
 		t.Fatalf("warm-up FetchPRByNumber: %v", err)
+	}
+	if single.Origin.DataSource != prDataSourceGapFill {
+		t.Errorf("FetchPRByNumber data_source = %q, want %q (the per-item gap-fill reader)", single.Origin.DataSource, prDataSourceGapFill)
 	}
 
 	batch, err := client.FetchPRBatch(ctx, "owner", "repo", []int{1})
@@ -105,6 +140,15 @@ func TestFetchPRBatchSurvivesWarmETagCache(t *testing.T) {
 	got := batch[0]
 	if got.PR.Number != 1 || got.PR.Title != "Fix the thing" {
 		t.Errorf("PR = %+v, want number 1 / title from the payload", got.PR)
+	}
+	if got.PR.Origin.DataSource != prDataSourceBatch {
+		t.Errorf("batch data_source = %q, want %q (v0.28.18: routine collection is the batch, not gap fill)", got.PR.Origin.DataSource, prDataSourceBatch)
+	}
+	// The children whose endpoints honor ETags must arrive with bodies:
+	// a batch that ran with the warm cache would get 304s here and
+	// silently stage the MR with NO commits and NO files (v0.26.3 class).
+	if len(got.Commits) != 1 || len(got.Files) != 1 {
+		t.Errorf("children emptied by a 304 — commits=%d files=%d, want 1/1 (the batch must read its children ETag-free)", len(got.Commits), len(got.Files))
 	}
 	if len(got.Labels) != 2 || got.Labels[0].Name != "bug" || got.Labels[1].Name != "help wanted" {
 		t.Errorf("labels = %+v, want [bug, help wanted]", got.Labels)
@@ -169,7 +213,7 @@ func TestPRBatchDoesNotReGetTheMergeRequest(t *testing.T) {
 			t.Errorf("pr_batch.go calls %s — that re-GETs the merge request URL the batch already fetched; derive from the payload via mr_map.go instead", banned)
 		}
 	}
-	for _, required := range []string{"mrToPullRequest(raw)", "mrLabels(raw)", "mrAssignees(raw)", "mrReviewers(raw)", "mrMeta(raw)", "c.mrRepos(ctx, raw)"} {
+	for _, required := range []string{"mrToPullRequest(raw, ", "mrLabels(raw)", "mrAssignees(raw)", "mrReviewers(raw)", "mrMeta(raw)", "c.mrRepos(ctx, raw)"} {
 		if !strings.Contains(src, required) {
 			t.Errorf("pr_batch.go must derive children via %s", required)
 		}

@@ -5,6 +5,7 @@ package gitlab
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -1084,16 +1085,39 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		} `json:"statistics"`
 	}
 	issueStatsPath := fmt.Sprintf("/projects/%s/issues_statistics", pp)
+	issuesUnknown := false
 	if err := c.http.GetJSON(ctx, issueStatsPath, &issueStats); err != nil {
-		c.logger.Warn("failed to fetch issue statistics, counts will be zero", "owner", owner, "repo", repo, "error", err)
+		// v0.28.18: mark unknown — the store carries the prior snapshot's
+		// counts forward; a fabricated 0 would rotate the accurate snapshot
+		// away and hide the repo from the gap healer's pr_count/issues_count
+		// predicates.
+		issuesUnknown = true
+		c.logger.Warn("issue statistics unavailable — issue counts marked unknown, prior snapshot's counts carry forward",
+			"owner", owner, "repo", repo, "error", err)
 	}
 
 	// GitLab merge_requests count by state.
 	// The /merge_requests endpoint returns X-Total header with per_page=1 for cheap counts.
-	mrOpen := c.countGitLabResource(ctx, pp, "merge_requests", "opened")
-	mrClosed := c.countGitLabResource(ctx, pp, "merge_requests", "closed")
-	mrMerged := c.countGitLabResource(ctx, pp, "merge_requests", "merged")
+	// v0.28.18: each probe carries an error arm (SR-16). A transport/HTTP
+	// failure OR GitLab's documented X-Total omission above 10,000 records
+	// marks the PR counts unknown instead of storing 0.
+	prUnknown := false
+	mrCounts := map[string]int{}
+	for _, state := range []string{"opened", "closed", "merged"} {
+		n, err := c.countGitLabResource(ctx, pp, "merge_requests", state)
+		if err != nil {
+			prUnknown = true
+			c.logger.Warn("merge request count unavailable — PR counts marked unknown, prior snapshot's counts carry forward",
+				"owner", owner, "repo", repo, "state", state, "error", err)
+			break
+		}
+		mrCounts[state] = n
+	}
+	mrOpen, mrClosed, mrMerged := mrCounts["opened"], mrCounts["closed"], mrCounts["merged"]
 	mrTotal := mrOpen + mrClosed + mrMerged
+	if prUnknown {
+		mrOpen, mrClosed, mrMerged, mrTotal = 0, 0, 0, 0
+	}
 
 	status := "Active"
 	if raw.Archived {
@@ -1141,38 +1165,40 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	}
 
 	return &model.RepoInfo{
-		FullName:          raw.PathWithNamespace,
-		PlatformRepoID:    model.ForgeIDString(raw.ID), // v0.27.102 — rename-proof numeric identity
-		CreatedAt:         raw.CreatedAt,               // v0.27.104
-		Keywords:          strings.Join(raw.Topics, ","),
-		LastUpdated:       raw.LastActivityAt,
-		IssuesEnabled:     raw.IssuesEnabled,
-		PRsEnabled:        raw.MergeRequestsEnabled,
-		WikiEnabled:       raw.WikiEnabled,
-		PagesEnabled:      raw.PagesAccessLevel != "disabled",
-		IsFork:            isFork,
-		ForkParent:        forkParent,
-		ForkCount:         raw.ForksCount,
-		StarCount:         raw.StarCount,
-		OpenIssues:        raw.OpenIssuesCount,
-		DefaultBranch:     raw.DefaultBranch,
-		License:           license,
-		LicenseFile:       license,
-		CommitCount:       commitCount,
-		IssuesCount:       issueStats.Statistics.Counts.All,
-		IssuesClosed:      issueStats.Statistics.Counts.Closed,
-		PRCount:           mrTotal,
-		PRsOpen:           mrOpen,
-		PRsClosed:         mrClosed,
-		PRsMerged:         mrMerged,
-		Description:       raw.Description,
-		PrimaryLanguage:   primaryLang,
-		Languages:         languages,
-		ChangelogFile:     community.Changelog,
-		ContributingFile:  community.Contributing,
-		CodeOfConductFile: community.CodeOfConduct,
-		SecurityIssueFile: community.Security,
-		Status:            status,
+		FullName:           raw.PathWithNamespace,
+		PlatformRepoID:     model.ForgeIDString(raw.ID), // v0.27.102 — rename-proof numeric identity
+		CreatedAt:          raw.CreatedAt,               // v0.27.104
+		Keywords:           strings.Join(raw.Topics, ","),
+		LastUpdated:        raw.LastActivityAt,
+		IssuesEnabled:      raw.IssuesEnabled,
+		PRsEnabled:         raw.MergeRequestsEnabled,
+		WikiEnabled:        raw.WikiEnabled,
+		PagesEnabled:       raw.PagesAccessLevel != "disabled",
+		IsFork:             isFork,
+		ForkParent:         forkParent,
+		ForkCount:          raw.ForksCount,
+		StarCount:          raw.StarCount,
+		OpenIssues:         raw.OpenIssuesCount,
+		DefaultBranch:      raw.DefaultBranch,
+		License:            license,
+		LicenseFile:        license,
+		CommitCount:        commitCount,
+		IssuesCount:        issueStats.Statistics.Counts.All,
+		IssuesClosed:       issueStats.Statistics.Counts.Closed,
+		PRCount:            mrTotal,
+		PRsOpen:            mrOpen,
+		PRsClosed:          mrClosed,
+		PRsMerged:          mrMerged,
+		PRCountUnknown:     prUnknown,
+		IssuesCountUnknown: issuesUnknown,
+		Description:        raw.Description,
+		PrimaryLanguage:    primaryLang,
+		Languages:          languages,
+		ChangelogFile:      community.Changelog,
+		ContributingFile:   community.Contributing,
+		CodeOfConductFile:  community.CodeOfConduct,
+		SecurityIssueFile:  community.Security,
+		Status:             status,
 		Origin: model.DataOrigin{
 			ToolSource: "aveloxis",
 			DataSource: "GitLab API",
@@ -1228,22 +1254,33 @@ func (c *Client) fetchCommunityFiles(ctx context.Context, projectPath string) co
 // countGitLabResource returns the total count for a filtered resource using
 // per_page=1 and reading the X-Total response header. This is the cheapest way
 // to get counts from GitLab without paginating through all results.
-func (c *Client) countGitLabResource(ctx context.Context, projectPath, resource, state string) int {
+func (c *Client) countGitLabResource(ctx context.Context, projectPath, resource, state string) (int, error) {
 	path := fmt.Sprintf("/projects/%s/%s?state=%s&per_page=1", projectPath, resource, state)
-	// v0.28.17: ETag-free — this reader returns 0 on ANY error, so a 304
-	// on a repeat cycle would silently zero the repo's metadata counts.
+	// v0.28.17: ETag-free — a header reader cannot use a 304.
+	// v0.28.18: the error arm is the caller's (SR-16). Pre-.18 this
+	// returned 0 on ANY failure — a transient 5xx on one probe stored
+	// pr_count = 0 and rotated the accurate prior snapshot to history.
 	resp, err := c.http.Get(platform.WithoutETag(ctx), path)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("%s?state=%s: %w", resource, state, err)
 	}
 	resp.Body.Close()
 	total := resp.Header.Get("X-Total")
 	if total == "" {
-		return 0
+		return 0, fmt.Errorf("%s?state=%s: %w", resource, state, errCountUnavailable)
 	}
-	n, _ := strconv.Atoi(total)
-	return n
+	n, err := strconv.Atoi(total)
+	if err != nil {
+		return 0, fmt.Errorf("%s?state=%s: X-Total %q: %w", resource, state, total, err)
+	}
+	return n, nil
 }
+
+// errCountUnavailable: GitLab omits X-Total (and X-Total-Pages) on any
+// listing whose result exceeds 10,000 records, for performance. A missing
+// header on a 200 is therefore "more than we can count this way", never
+// "zero". Callers mark the count unknown so the prior snapshot carries.
+var errCountUnavailable = errors.New("X-Total header absent (GitLab omits it above 10,000 records)")
 
 func (c *Client) FetchCloneStats(ctx context.Context, owner, repo string) ([]model.RepoClone, error) {
 	// GitLab doesn't expose clone statistics via the API for non-admins.
@@ -1314,5 +1351,5 @@ func (c *Client) FetchPRByNumber(ctx context.Context, owner, repo string, number
 	if err := c.http.GetJSON(ctx, path, &raw); err != nil {
 		return nil, err
 	}
-	return mrToPullRequest(raw), nil
+	return mrToPullRequest(raw, prDataSourceGapFill), nil
 }

@@ -104,9 +104,12 @@ func TestEveryRepoGroupsFKChildIsIndexed(t *testing.T) {
 				t.Errorf("%s.%s REFERENCES repo_groups but is not in repoGroupFKIndexes (or repoGroupFKCoveredElsewhere) — deleting a group would seq-scan %s per row", table, col, table)
 				continue
 			}
-			lead := regexp.MustCompile(`(?s)` + regexp.QuoteMeta(covering) + `\s+ON\s+aveloxis_data\.` + table + `\s*\(\s*` + col + `\s*[,)]`)
+			if covering.column != col {
+				t.Errorf("%s: repoGroupFKCoveredElsewhere names column %s but the FK column is %s", table, covering.column, col)
+			}
+			lead := regexp.MustCompile(`(?s)` + regexp.QuoteMeta(covering.indexName) + `\s+ON\s+aveloxis_data\.` + table + `\s*\(\s*` + col + `\s*[,)]`)
 			if !lead.MatchString(schema) && !lead.MatchString(migrate) {
-				t.Errorf("%s.%s claims coverage by %s, but no CREATE INDEX with %s in LEADING position was found", table, col, covering, col)
+				t.Errorf("%s.%s claims coverage by %s, but no CREATE INDEX with %s in LEADING position was found", table, col, covering.indexName, col)
 			}
 		}
 	}
@@ -156,7 +159,17 @@ func TestReadinessProbeCoversEveryRepoGroupsFKChild(t *testing.T) {
 	if !strings.Contains(body, "repoGroupFKCoveredElsewhere") {
 		t.Error("repoGroupFKIndexesReady must include repoGroupFKCoveredElsewhere in its validity probe")
 	}
-	if !strings.Contains(body, "valid == len(tables)") {
+	if !strings.Contains(body, "valid == pairs") {
 		t.Error("readiness must compare against the FULL probed set (own list + covered), not len(repoGroupFKIndexes)")
+	}
+	// v0.28.18: by LEADING COLUMN, never by index name — a UNIQUE that
+	// cannot build on a duplicate-bearing fleet must not keep the gate
+	// shut when the column is indexed under another name, and the probe
+	// must not be satisfiable by an index whose column is not leading.
+	if !strings.Contains(body, "x.indkey[0]") || !strings.Contains(body, "a.attname = want.col") {
+		t.Error("readiness must probe pg_index for a VALID index whose LEADING column (indkey[0]) is the FK column")
+	}
+	if strings.Contains(body, "i.relname = want.idx") {
+		t.Error("readiness must not match by index NAME (the pre-v0.28.18 shape)")
 	}
 }

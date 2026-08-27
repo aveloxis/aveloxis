@@ -1100,10 +1100,13 @@ running migrations.`,
 }
 
 func refreshViewsCmd(cfgPath *string) *cobra.Command {
-	return &cobra.Command{
+	var aggregates bool
+	cmd := &cobra.Command{
 		Use:   "refresh-views",
 		Short: "Refresh all materialized views (for 8Knot/analytics)",
-		Long:  `Refreshes all 20 materialized views used by 8Knot and other analytics tools. Views are also rebuilt automatically by aveloxis serve on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json).`,
+		Long: `Refreshes all 20 materialized views used by 8Knot and other analytics tools. Views are also rebuilt automatically by aveloxis serve on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json).
+
+--aggregates additionally rebuilds the dm_repo_* / dm_repo_group_* aggregate tables after the views — the per-repo pass the weekly rebuild runs unless collection.matview_rebuild_skip_dm_aggregates is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the ONLY way the dm_ tables update (v0.28.18).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)
@@ -1114,9 +1117,18 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 				return err
 			}
 			defer store.Close()
-			return db.RefreshMaterializedViews(ctx, store, logger)
+			if err := db.RefreshMaterializedViews(ctx, store, logger); err != nil {
+				return err
+			}
+			if !aggregates {
+				return nil
+			}
+			logger.Info("refresh-views --aggregates: rebuilding dm_ aggregate tables (per-repo pass; hours at fleet scale)")
+			return store.RefreshAllRepoAggregates(ctx, logger)
 		},
 	}
+	cmd.Flags().BoolVar(&aggregates, "aggregates", false, "also rebuild the dm_repo_* / dm_repo_group_* aggregate tables after the views (slow at fleet scale)")
+	return cmd
 }
 
 func sbomCmd(cfgPath *string) *cobra.Command {

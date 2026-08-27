@@ -115,6 +115,38 @@ and check it against the standing-rules registry
 (`scripts/standing_rules.go`) before shipping — several findings were
 the repo's own rules violated by fresh fixes.
 
+## L11 — Class sweep
+
+This fix targets a mechanism, not a symptom: **name the primitive**
+(an ETag-cached `Get`, a clamp, a default, an FK column, a lookup by
+login) **and grep for every sibling site that shares it.** Each sibling
+is fixed or explicitly exempted at the site — "fixed one call site of a
+class" is the finding an external reviewer will make next. History:
+PR #191 — the GitLab MR batch fix (v0.28.15) left the REST waterfall,
+then `GetJSON` itself, then three bare `Get` readers with the identical
+304 hole (v0.28.17); the house config-clamp rule (SR-10) is the same
+lens for defaults.
+
+## L12 — Stale prose
+
+Every comment and doc sentence inside a touched function or section:
+**is it still true after this diff?** Refactors move behaviour and
+leave the old description behind; take the words of the diff's REMOVED
+lines and grep the surviving prose for them. History: PR #191 — a
+"returns nil, nil when inaccessible" contract that described a branch
+deleted in the same change; an upgrade guide claiming "each ledgered"
+for steps that were not.
+
+## L13 — Probe/tripwire parity
+
+When a runtime probe (readiness, coverage, "is every X indexed") and a
+build-time tripwire guard the same invariant: **do they iterate ONE
+shared list?** Two hand-maintained lists drift the day one gains an
+entry (SR-17 applied to test/runtime pairs). History: PR #191 —
+`repoGroupFKIndexesReady` checked its own list while the tripwire
+also covered `repoGroupFKCoveredElsewhere`; the gate could pass with an
+unindexed child.
+
 ## Running the pass
 
 - Scope: the full diff of the push batch (not per-micro-release), so

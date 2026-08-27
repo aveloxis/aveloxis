@@ -27,7 +27,16 @@ import (
 
 // mrToPullRequest maps the fetched MR to the model (FetchPRByNumber's
 // mapping, byte-for-byte).
-func mrToPullRequest(raw glMergeRequest) *model.PullRequest {
+// Provenance labels for pull_requests.data_source. v0.28.18: pre-.18 the
+// single mapper stamped "(gap fill)" on every MR — including routine
+// collection, which runs through FetchPRBatch — so the whole GitLab PR
+// corpus read as gap-filled while GitHub's batch says "(pr batch)".
+const (
+	prDataSourceBatch   = "GitLab API (mr batch)"
+	prDataSourceGapFill = "GitLab API (gap fill)"
+)
+
+func mrToPullRequest(raw glMergeRequest, dataSource string) *model.PullRequest {
 	state := raw.State
 	if state == "opened" {
 		state = "open"
@@ -53,7 +62,7 @@ func mrToPullRequest(raw glMergeRequest) *model.PullRequest {
 		AuthorRef:      glUserToRef(raw.Author),
 		Origin: model.DataOrigin{
 			ToolSource: "aveloxis",
-			DataSource: "GitLab API (gap fill)",
+			DataSource: dataSource,
 		},
 	}
 	return pr

@@ -356,7 +356,8 @@ type ghCommitAuthor struct {
 func (r *CommitResolver) githubCommitLookup(ctx context.Context, owner, repo, sha string) (*ghCommitAuthor, error) {
 	path := fmt.Sprintf("/repos/%s/%s/commits/%s", owner, repo, sha)
 
-	resp, err := r.http.Get(ctx, path)
+	// v0.28.18: ETag-free — a body-decoding reader cannot use a 304.
+	resp, err := r.http.Get(platform.WithoutETag(ctx), path)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, nil // 404 — commit not on GitHub
@@ -521,7 +522,8 @@ func (r *CommitResolver) ResolveEmailsToCanonical(ctx context.Context) (int, err
 		}
 
 		path := fmt.Sprintf("/users/%s", c.Login)
-		resp, err := r.http.Get(ctx, path)
+		// v0.28.18: ETag-free — a body-decoding reader cannot use a 304.
+		resp, err := r.http.Get(platform.WithoutETag(ctx), path)
 		if err != nil {
 			// Mark as enriched even on failure to avoid retrying on
 			// deleted/suspended users every pass. Marking itself

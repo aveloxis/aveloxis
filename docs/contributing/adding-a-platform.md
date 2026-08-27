@@ -82,7 +82,7 @@ This is the complete list of files a new platform needs. Some are mandatory; som
 6. **`internal/db/keys.go`** — already supports arbitrary platform strings via `loadKeysFromTable(table, platform)`. Pass `"bugzilla"` as the platform string. No code change needed unless you want explicit constants.
 7. **`internal/config/config.go`** — add a `BugzillaConfig` block to `Config` (base URL, optionally a list of self-hosted Bugzilla hosts).
 8. **`internal/db/version.go`** — bump.
-9. **`CLAUDE.md`** — `### Changes in vX.Y.0` section documenting the new platform.
+9. **Release-note entry** (PR description) — documenting the new platform.
 
 ### Likely
 
@@ -812,14 +812,14 @@ func TestBugzillaListIssues(t *testing.T) {
 }
 ```
 
-### Step 13 — version bump, CLAUDE.md entry
+### Step 13 — version bump, release-note entry
 
 ```go
 // internal/db/version.go
 var ToolVersion = "0.24.0"  // minor bump for new platform
 ```
 
-Add a `### Changes in v0.24.0 — Bugzilla platform support` section to `CLAUDE.md` documenting:
+Write the `v0.24.0 — Bugzilla platform support` release-note entry into the PR description, covering:
 
 - What's collected (bugs, comments, users, events, keywords as labels).
 - What's NOT collected (PRs, releases, files, commits, SBOMs, vulnerabilities — Bugzilla has none of these).
@@ -859,7 +859,7 @@ Some things the walkthrough doesn't cover that you'll bump into:
 5. Implement contributors + comments + events (step 7). 1 day.
 6. Wire into scheduler + main.go + config (steps 9–11). Half day.
 7. End-to-end test against a real (or local-Docker'd) Bugzilla. 1 day.
-8. Write CLAUDE.md entry + bump version + open PR.
+8. Write the release-note entry + bump version + open PR.
 
 Total: ~1 week for someone familiar with Go and Aveloxis. Longer if you're new to either.
 

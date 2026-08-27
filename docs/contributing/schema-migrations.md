@@ -290,7 +290,7 @@ This was added in v0.19.5 specifically for the "iterate on a v0.19.4 schema-erro
 3. Write source-contract tests for both files.
 4. Write an integration test that runs RunMigrations + asserts the post-state.
 5. Bump `internal/db/version.go`.
-6. Add a `### Changes in vX.Y.Z` section to `CLAUDE.md` documenting:
+6. Write the release-note entry (in the PR description) documenting:
    - What was added and why.
    - What the migration does on existing deployments.
    - The operator command sequence to deploy (`aveloxis stop all; aveloxis migrate --skip-views; aveloxis start all`).

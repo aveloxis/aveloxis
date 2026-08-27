@@ -212,7 +212,7 @@ Iterate until green.
 
 ### Step 6 — bump version, document
 
-Bump `internal/db/version.go`. Add a changelog entry in `CLAUDE.md`. Update `docs/guide/api.md` with the new endpoint signature and response shape.
+Bump `internal/db/version.go`. Put the release-note entry in your PR description. Update `docs/guide/api.md` with the new endpoint signature and response shape.
 
 ## Patterns to follow
 
@@ -271,4 +271,4 @@ If the underlying query is expensive (full table scan, complex aggregate), consi
 
 If your endpoint feeds a chart or panel, that's a separate task — see [`adding-a-visualization.md`](adding-a-visualization.md).
 
-The web GUI consumes the REST API via `fetch()` in the templates. The base URL is hardcoded to `http://localhost:8383` in the templates currently (one of the known-issues items in the CLAUDE.md status section). When you add an endpoint, you'll likely also update a template under `internal/web/templates.go` to call it.
+The web GUI consumes the REST API via `fetch()` in the templates. The base URL is hardcoded to `http://localhost:8383` in the templates currently (a known limitation). When you add an endpoint, you'll likely also update a template under `internal/web/templates.go` to call it.

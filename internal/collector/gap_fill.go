@@ -41,17 +41,20 @@ const GapThreshold = 0.05
 // to re-fetch, ensuring their associated data (comments, events, etc.) is complete.
 const GapEdgeCount = 2
 
-// Gap represents a run of consecutive missing issue/PR numbers.
+// Gap represents a run of missing issue/PR numbers in the EXPECTED
+// sequence — not a run of consecutive integers.
 //
-// Start/End bound the run; Numbers holds the EXACT expected numbers
-// that are missing inside it. v0.28.15: only Numbers are fetched.
+// Start/End bound the run; Numbers holds the exact expected numbers
+// that are missing inside it, and they need not be consecutive: on
+// GitHub the issue and PR number spaces are shared, so a PR gap
+// [3, 7] whose expected set is {3, 7} lists just those two (4..6 are
+// issues, not missing PRs). v0.28.15: only Numbers are fetched.
 // ExpandGapsWithEdges used to fetch every integer in [Start, End], and
 // on GitHub — whose issue and PR number spaces are shared — a PR gap
 // spanning issue numbers fetched those issues as PRs: 22,837 NOT_FOUND
 // per-path GraphQL errors on one aveloxis_large heal run, all wasted
-// aliases. Since v0.27.140 the expected set comes from a full listing,
-// so the exact missing numbers are known; the range was a leftover of
-// the pre-listing heuristic.
+// aliases. The expected set has always come from a full listing (the
+// range walk was simply a bug, never a heuristic).
 type Gap struct {
 	Start   int   // first missing number (inclusive)
 	End     int   // last missing number (inclusive)

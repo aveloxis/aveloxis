@@ -84,7 +84,7 @@ func (c *Client) fetchOnePRWithChildren(ctx context.Context, owner, repo string,
 		return nil, err
 	}
 
-	staged := platform.StagedPR{PR: *mrToPullRequest(raw)}
+	staged := platform.StagedPR{PR: *mrToPullRequest(raw, prDataSourceBatch)}
 	staged.Labels = mrLabels(raw)
 	staged.Assignees = mrAssignees(raw)
 	staged.Reviewers = mrReviewers(raw)

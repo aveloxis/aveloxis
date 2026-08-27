@@ -518,7 +518,9 @@ func (bw *BreadthWorker) fetchContributor(ctx context.Context, c db.BreadthContr
 // breadth worker's 404 rename-detection fallback.
 func (bw *BreadthWorker) lookupLoginByID(ctx context.Context, ghUserID int64) (string, error) {
 	path := fmt.Sprintf("/user/%d", ghUserID)
-	resp, err := bw.http.Get(ctx, path)
+	// v0.28.18: ETag-free — a single-object reader cannot use a 304, and
+	// the breadth worker's client lives for the whole process (v0.27.18).
+	resp, err := bw.http.Get(platform.WithoutETag(ctx), path)
 	if err != nil {
 		return "", err
 	}
@@ -551,7 +553,15 @@ func (bw *BreadthWorker) fetchEventsForLogin(ctx context.Context, cntrbID, login
 
 	for page <= 10 { // GitHub events API max 10 pages (300 events)
 		path := fmt.Sprintf("/users/%s/events?per_page=30&page=%d", login, page)
-		resp, err := bw.http.Get(ctx, path)
+		// v0.28.18: ETag-free. This is a manual page loop, not the
+		// paginator, so a 304 on a repeat read surfaced as ErrNotModified —
+		// a WARN + result.Errors for a normal "nothing new" outcome. And
+		// treating 304 as "no events" would be wrong here: the v0.27.8
+		// ordering contract retries a contributor whose event INSERT
+		// failed, and that retry must see the body again (the previous
+		// fetch's rows never landed). The cooldown is the pacer, not the
+		// ETag cache.
+		resp, err := bw.http.Get(platform.WithoutETag(ctx), path)
 		if err != nil {
 			return rows, err
 		}

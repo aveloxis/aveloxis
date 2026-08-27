@@ -115,6 +115,11 @@ var ledgeredStepLabels = []string{
 	"v0.27.103 backfill releases.data_source from repo platform",
 	"v0.27.108 delete poisoned platform_user_id=0 identity rows",
 	"v0.28.7 backfill vuln_scan_last_run from finding evidence (a scan provably ran)",
+	// v0.28.18: the v0.27.37 GitLab force-full flag re-matched every
+	// collected GitLab repo as soon as CompleteJob cleared the flag, so
+	// an unledgered step forced a full recollect of every GitLab repo on
+	// EVERY migrate (each version bump).
+	"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)",
 }
 
 // TestLedgeredStepRegistry verifies every registered label is present

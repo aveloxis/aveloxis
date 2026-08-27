@@ -343,7 +343,7 @@ Tooling that queries these matviews — most prominently [8Knot](https://github.
 
 ### The contract
 
-For each matview the **output column list** (names, types, order) is treated as a stable contract within a Aveloxis minor-version line. Breaking changes (renames, removals, type changes, semantic redefinition of a column) trigger a major version bump and are called out explicitly in the CLAUDE.md changelog.
+For each matview the **output column list** (names, types, order) is treated as a stable contract within a Aveloxis minor-version line. Breaking changes (renames, removals, type changes, semantic redefinition of a column) trigger a major version bump and are called out explicitly in the release notes.
 
 Internal-only details — how a column gets *computed*, which underlying table is joined to derive it, what join key links contributors to events — are NOT part of the contract. They change as data quality improves. Operators querying the matviews don't depend on these details and shouldn't notice the changes except via better coverage.
 

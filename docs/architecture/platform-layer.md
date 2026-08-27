@@ -23,8 +23,7 @@ platform.Client
   |     |-- ListPRReviews, ListPRCommits, ListPRFiles
   |     |-- FetchPRMeta
   |-- EventCollector
-  |     |-- ListIssueEvents
-  |     |-- ListPREvents
+  |     |-- ListRepoEvents
   |-- MessageCollector
   |     |-- ListIssueComments
   |     |-- ListPRComments
@@ -114,7 +113,7 @@ The `HTTPClient`, `KeyPool`, and pagination engine are reusable across all platf
 ## Design notes
 
 - **GitLab API differences**: GitLab lacks bulk endpoints for notes (comments) and requires iterating parent entities. The GitLab client iterates issues/MRs and fetches their notes individually. This is slower but unavoidable given the API design.
-- **GitHub events endpoint**: GitHub's `/repos/{owner}/{repo}/issues/events` returns events for both issues and PRs. The GitHub client fetches this once via a shared helper and filters by type for `ListIssueEvents` and `ListPREvents`.
+- **GitHub events endpoint**: GitHub's `/repos/{owner}/{repo}/issues/events` returns events for both issues and PRs. `ListRepoEvents` walks it ONCE and yields a tagged union (`RepoEvent.Issue` or `RepoEvent.PR`). The pre-v0.26.3 design walked the endpoint twice (issues, then PRs) and the second pass got a 304 from the first pass's ETag on any quiet repo — silently dropping the entire PR-event history; the single pass makes that impossible.
 - **GitLab review comments**: GitLab uses "discussions" with positioned notes instead of GitHub's explicit review comments. The `ListReviewComments` method maps positioned discussion notes to the `ReviewComment` model.
 
 ## GitHub vs GitLab data gaps

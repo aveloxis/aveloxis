@@ -216,7 +216,7 @@ Add `.chart-empty` CSS for the styling.
 
 - **Don't add a frontend framework.** No React, no Vue, no Svelte, no Alpine. The current setup builds in milliseconds and has zero deploy complexity. Resist.
 - **Don't move chart code to a separate JS file.** The inline `<script>` blocks are easy to find, easy to debug. Go templates can include the script as a separate `{{define}}` if it grows, but not as an external file (that'd require a static file server, which is more deploy complexity).
-- **Don't hardcode the API base URL** in new code. The existing templates have `http://localhost:8383` hardcoded — that's a known limitation tracked in `CLAUDE.md`. Pass the base URL via the template data context if you can, OR follow the existing pattern and accept the limitation (and add a comment noting it for future cleanup).
+- **Don't hardcode the API base URL** in new code. The existing templates have `http://localhost:8383` hardcoded — a known limitation. Pass the base URL via the template data context if you can, OR follow the existing pattern and accept the limitation (and add a comment noting it for future cleanup).
 - **Don't skip the "no data" empty state.** A blank canvas is a worse UX than an explicit message.
 - **Don't load Chart.js per chart.** It's already loaded once at the top of each template; just reuse.
 - **Don't use third-party plugins for Chart.js** without explicit maintainer approval. Each plugin is another CDN dependency, another security surface, another version-pin to maintain.
@@ -252,7 +252,7 @@ But you CANNOT meaningfully unit-test JS chart rendering. For that:
 2. Console errors check (`console.error('chart load failed', ...)`) — keep these in production code; they surface in browser DevTools.
 3. If the chart breaks, browser DevTools' Network tab shows the failed fetch.
 
-Per CLAUDE.md: **for UI/frontend changes, use the feature in a browser before reporting the task as complete.** Type checking and test suites verify code correctness, not feature correctness.
+House rule: **for UI/frontend changes, use the feature in a browser before reporting the task as complete.** Type checking and test suites verify code correctness, not feature correctness.
 
 ## Updating the comparison page
 

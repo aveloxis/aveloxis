@@ -49,7 +49,7 @@ These are the non-negotiables. The handbook chapters go deep on the rationale.
 
 1. **Test-driven development.** Write a failing test first, then implement, then verify. No exceptions for "trivial" changes — they're the ones that bite. See [`testing.md`](docs/contributing/testing.md).
 2. **Bump the version on every change.** `internal/db/version.go` is the single source of truth. The version appears in `tool_version` columns across all tables and in SBOMs. See [`code-conventions.md`](docs/contributing/code-conventions.md).
-3. **CLAUDE.md is the canonical record.** Add a changelog entry under `## Current Status` for any user-visible behavior change. Future contributors (and the AI agents that help maintain the project) read this to understand why decisions were made.
+3. **The release notes are the public record.** Describe any user-visible behavior change in your PR description — what changed, why, and what operators must do (migrate, run a heal, restart) — in the shape the release notes use; the maintainers carry it into the notes for the version that ships it. Future contributors read those notes and the architecture chapters to understand why decisions were made.
 4. **No emojis in code or commit messages** unless explicitly requested by the user/operator. Markdown docs follow the same convention.
 5. **Everything that errors should be logged.** Silent failures cost us hours of operator triage time. See `level=ERROR` patterns in existing code.
 6. **GitHub and GitLab parity where possible.** Every feature targeting one platform should at least be considered for the other; if it isn't possible, document the gap in the README and the relevant docs page. See [`docs/architecture/platform-layer.md`](docs/architecture/platform-layer.md).

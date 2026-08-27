@@ -80,7 +80,7 @@ func TestExpandGapsWithEdges(t *testing.T) {
 		gaps      []Gap
 		collected []int
 		edgeCount int
-		wantLen   int // total numbers to fetch (at minimum)
+		wantLen   int // exact number of numbers to fetch (union of gaps + edges)
 	}{
 		{
 			name:      "single gap with edges",
@@ -101,15 +101,15 @@ func TestExpandGapsWithEdges(t *testing.T) {
 			gaps:      []Gap{{Start: 3, End: 4, Numbers: []int{3, 4}}, {Start: 8, End: 9, Numbers: []int{8, 9}}},
 			collected: []int{1, 2, 5, 6, 7, 10, 11},
 			edgeCount: 2,
-			wantLen:   8, // (1,2,3,4,5,6) + (6,7,8,9,10,11) with dedup
+			wantLen:   11, // (1,2,3,4,5,6) ∪ (6,7,8,9,10,11)
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ExpandGapsWithEdges(tt.gaps, tt.collected, tt.edgeCount)
-			if len(got) < tt.wantLen {
-				t.Errorf("ExpandGapsWithEdges() returned %d numbers, want at least %d: %v", len(got), tt.wantLen, got)
+			if len(got) != tt.wantLen {
+				t.Errorf("ExpandGapsWithEdges() returned %d numbers, want exactly %d: %v", len(got), tt.wantLen, got)
 			}
 			// Verify all gap numbers are included.
 			gotSet := make(map[int]bool)

@@ -740,7 +740,7 @@ Join table linking pull requests to their **conversation** comments in the messa
 
 Inline code review comments with full diff positioning. One row per diff-anchored review comment. Each row links to both a `pull_request_reviews` row (the parent review) and a `messages` row (the comment body text).
 
-**Always populated via REST `/repos/{o}/{r}/pulls/comments` regardless of `pr_child_mode` / `listing_mode` configuration.** GitHub's GraphQL `PullRequestReviewComment` type does not expose the `side` / `startSide` fields aveloxis requires for diff-side fidelity, so the v0.18.5 Phase 4 GraphQL-inline-comments work explicitly carved this endpoint out and kept the REST iterator running. See CLAUDE.md's "Inline REVIEW comments NOT fetched via GraphQL — deliberate" subsection for the schema-validation history.
+**Always populated via REST `/repos/{o}/{r}/pulls/comments` regardless of `pr_child_mode` / `listing_mode` configuration.** GitHub's GraphQL `PullRequestReviewComment` type does not expose the `side` / `startSide` fields aveloxis requires for diff-side fidelity, so the v0.18.5 Phase 4 GraphQL-inline-comments work explicitly carved this endpoint out and kept the REST iterator running. The v0.18.5 release notes carry the schema-validation history.
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|

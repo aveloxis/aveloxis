@@ -581,10 +581,13 @@ this command, then `aveloxis refresh-views` once the heal settles.
 Manually refreshes all 20 materialized views.
 
 ```bash
-aveloxis refresh-views
+aveloxis refresh-views                # the materialized views
+aveloxis refresh-views --aggregates   # + the dm_repo_* / dm_repo_group_* aggregate tables
 ```
 
 Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. Views are also rebuilt automatically every Saturday by `aveloxis serve`.
+
+`--aggregates` (v0.28.18) additionally runs the `dm_` aggregate pass after the views — the same per-repo loop the weekly rebuild runs unless `collection.matview_rebuild_skip_dm_aggregates` is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the only way the `dm_` tables update.
 
 ---
 
@@ -942,8 +945,9 @@ extrapolate from the first hour. Safe alongside a running serve —
 repos mid-collection are skipped this pass, and overlapping updates
 are same-value idempotent. Resumable by construction: the marker IS
 the resume state, so a re-run skips every already-walked repo. After
-the fleet run, `aveloxis refresh-views` (or the next scheduled
-aggregate rebuild) picks the corrected sums into the `dm_` tables.
+the fleet run, `aveloxis refresh-views --aggregates` (or the next
+scheduled aggregate rebuild) picks the corrected sums into the `dm_`
+tables.
 Does not run migrations (v0.21.5 policy) — run `aveloxis migrate`
 first so the marker column exists.
 

@@ -301,17 +301,19 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// lines earlier — TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded
 	// caught it on the day the analyzer landed). Same class as the v0.28.7
 	// last_seen_at relocation.
-	// Set tool_version column defaults to the current version so new inserts
-	// automatically get the right value without every INSERT needing to specify it.
 	// v0.27.37 (summary/18 Phase 1b): GitLab conversation comments
 	// were silently dropped on the main collection path since
 	// inception (client refs carried no parent number). The forward
 	// fix makes new cycles collect them, but incremental cycles are
 	// since-filtered — only a FULL pass re-walks comment history.
 	// One-shot: flag every collected GitLab repo for force-full.
-	// Self-disabling: once flagged (or after the full pass clears the
-	// flag on success), the filter matches nothing.
-	execMigrationStep(ctx, pg, logger, errs,
+	// v0.28.18: LEDGERED. The old comment called this "self-disabling",
+	// but the predicate re-matches every collected GitLab repo the moment
+	// CompleteJob clears the flag on a successful pass — so as a plain
+	// step it re-flagged the whole GitLab fleet on EVERY migrate (each
+	// version bump forced a full recollect of every GitLab repo). The
+	// ledger runs it exactly once per database.
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
 		UPDATE aveloxis_ops.collection_queue q
 		SET force_full_collect = TRUE
@@ -401,6 +403,12 @@ func migrateStage2MailingList(ctx context.Context, pg *PostgresStore, logger *sl
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_issues_external_key",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_external_key
 		 ON aveloxis_data.issues (repo_id, external_key) WHERE external_key <> ''`)
+	// v0.28.18: email_message's three v0.25.7 FK columns get their indexes
+	// (dedup-repos and the list dedup below repoint by them; the repos
+	// delete's deferred FK checks probe them), then the list table is
+	// deduplicated BEFORE the UNIQUE below can be attempted (SR-1).
+	ensureEmailMessageFKIndexes(ctx, pg, logger, errs)
+	dedupRepoGroupsListServe(ctx, pg, logger, errs)
 	// Idempotent list registration: one row per (repo_group, list address).
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_rgls_group_email",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_rgls_group_email

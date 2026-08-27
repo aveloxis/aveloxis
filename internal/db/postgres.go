@@ -2105,6 +2105,47 @@ func (s *PostgresStore) UpsertCommitMessage(ctx context.Context, msg *model.Comm
 // ============================================================
 
 func (s *PostgresStore) InsertRepoInfo(ctx context.Context, info *model.RepoInfo) error {
+	// v0.28.18: counts the fetcher could not determine carry forward from
+	// the latest prior snapshot instead of being stored as a fabricated 0.
+	// The processor rotates the current row to repo_info_history BEFORE
+	// this insert, so the prior snapshot may live in either table. A
+	// lookup ERROR is not "no prior snapshot" (SR-5): it fails the insert
+	// rather than storing zeros on bad information.
+	if info.PRCountUnknown || info.IssuesCountUnknown {
+		var prPRs, prOpen, prClosed, prMerged, prIssues, prIssuesClosed int
+		err := s.pool.QueryRow(ctx, `
+			SELECT COALESCE(pr_count, 0), COALESCE(prs_open, 0), COALESCE(prs_closed, 0), COALESCE(prs_merged, 0),
+			       COALESCE(issues_count, 0), COALESCE(issues_closed, 0)
+			FROM (
+				SELECT pr_count, prs_open, prs_closed, prs_merged, issues_count, issues_closed,
+				       data_collection_date, repo_info_id
+				FROM aveloxis_data.repo_info WHERE repo_id = $1
+				UNION ALL
+				SELECT pr_count, prs_open, prs_closed, prs_merged, issues_count, issues_closed,
+				       data_collection_date, repo_info_id
+				FROM aveloxis_data.repo_info_history WHERE repo_id = $1
+			) prior
+			ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC
+			LIMIT 1`, info.RepoID,
+		).Scan(&prPRs, &prOpen, &prClosed, &prMerged, &prIssues, &prIssuesClosed)
+		switch {
+		case err == nil:
+			if info.PRCountUnknown {
+				info.PRCount, info.PRsOpen, info.PRsClosed, info.PRsMerged = prPRs, prOpen, prClosed, prMerged
+			}
+			if info.IssuesCountUnknown {
+				info.IssuesCount, info.IssuesClosed = prIssues, prIssuesClosed
+			}
+			s.logger.Warn("repo_info counts unavailable from the forge — prior snapshot's counts carried forward",
+				"repo_id", info.RepoID, "pr_count_unknown", info.PRCountUnknown, "issues_count_unknown", info.IssuesCountUnknown,
+				"pr_count", info.PRCount, "issues_count", info.IssuesCount)
+		case errors.Is(err, pgx.ErrNoRows):
+			s.logger.Warn("repo_info counts unavailable from the forge and no prior snapshot exists — counts stored as 0 until a fetch succeeds",
+				"repo_id", info.RepoID, "pr_count_unknown", info.PRCountUnknown, "issues_count_unknown", info.IssuesCountUnknown)
+		default:
+			return fmt.Errorf("repo_info prior-snapshot counts for repo %d: %w", info.RepoID, err)
+		}
+	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		// Schema uses TEXT for boolean fields (matching Augur's varchar), so convert.
 		boolStr := func(b bool) string {

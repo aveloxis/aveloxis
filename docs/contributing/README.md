@@ -16,7 +16,7 @@ If you're new to the codebase, read these in order before touching code:
 1. [`docs/architecture/overview.md`](../architecture/overview.md) — the architecture in one page
 2. [`docs/architecture/staged-pipeline.md`](../architecture/staged-pipeline.md) — how a single repo's data flows from API to database
 3. [`docs/architecture/platform-layer.md`](../architecture/platform-layer.md) — the GitHub/GitLab abstraction
-4. [`review-lenses.md`](review-lenses.md) — the ten review lenses distilled from past incidents; with [`code-conventions.md`](code-conventions.md) they carry the "why" behind most rules you'll meet.
+4. [`review-lenses.md`](review-lenses.md) — the review lenses (L1–L13) distilled from past incidents; with [`code-conventions.md`](code-conventions.md) they carry the "why" behind most rules you'll meet.
 
 ## How the codebase is laid out
 
@@ -52,7 +52,7 @@ Every Go file carries an SPDX header (enforced by a tripwire test in `scripts/`)
 - [`development-setup.md`](development-setup.md) — get a local PostgreSQL, build the binary, run the test suite, set up `aveloxis.runlocal.json`
 - [`code-conventions.md`](code-conventions.md) — SPDX headers, file/package layout, error handling, slog, version bumping, commit style
 - [`testing.md`](testing.md) — TDD discipline, source-contract pattern, integration tier via `AVELOXIS_TEST_DB`, the `data-test` harness for cross-version verification
-- [`review-lenses.md`](review-lenses.md) — the adversarial pre-push pass: ten lenses distilled from ~70 verified external-review findings; every diff gets this pass BEFORE it ships
+- [`review-lenses.md`](review-lenses.md) — the adversarial pre-push pass: thirteen lenses distilled from ~70 verified external-review findings (L11–L13 from PR #191); every diff gets this pass BEFORE it ships
 
 ### Extending Aveloxis
 
@@ -75,6 +75,6 @@ Every Go file carries an SPDX header (enforced by a tripwire test in `scripts/`)
 
 ## The single-most-important rule
 
-**Bump `internal/db/version.go` on every code change.** Feature, bugfix, refactor — every change. The version is the only way operators (and the `data-test` harness) can tell two versions of aveloxis apart. CHANGELOG entries (in `CLAUDE.md`'s `## Current Status` section) reference the version, schemas tag rows with `tool_version = db.ToolVersion`, SBOMs embed it. Forgetting this breaks everything downstream.
+**Bump `internal/db/version.go` on every code change.** Feature, bugfix, refactor — every change. The version is the only way operators (and the `data-test` harness) can tell two versions of aveloxis apart. The release notes reference the version, schemas tag rows with `tool_version = db.ToolVersion`, SBOMs embed it. Forgetting this breaks everything downstream.
 
 See [`code-conventions.md`](code-conventions.md) for the version-bump checklist.

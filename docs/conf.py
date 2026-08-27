@@ -6,7 +6,7 @@ copyright = '2026, Sean Goggins, University of Missouri, Derek Howard'
 author = 'Sean P. Goggins'
 
 # Version is read from internal/db/version.go — the single source of
-# truth (CLAUDE.md rule) — so the docs can never drift from the binary
+# truth (house rule) — so the docs can never drift from the binary
 # again (this field sat at a stale hand-written 0.10.7 for months).
 import os
 import re

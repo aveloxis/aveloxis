@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// ErrNotModified is returned by GetConditional when the server returns 304.
+// ErrNotModified is returned by Get when the server returns 304.
 // Callers should use their cached copy of the data.
 var ErrNotModified = errors.New("not modified (304)")
 
@@ -663,7 +663,6 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 	}
 }
 
-// GetJSON performs a GET and decodes the response JSON into dest.
 // GetJSON fetches one JSON document and decodes it into dest.
 //
 // v0.28.17: ALWAYS ETag-free. A body-decoding reader can never use a

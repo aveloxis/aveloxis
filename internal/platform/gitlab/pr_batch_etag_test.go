@@ -57,6 +57,13 @@ func etagHonoringMRRouter(mrBodyHits *int32) http.Handler {
 			}
 			atomic.AddInt32(mrBodyHits, 1)
 			_, _ = w.Write([]byte(mr1JSON))
+		case strings.HasSuffix(path, "/issues/1"):
+			w.Header().Set("ETag", `W/"issue1-v1"`)
+			if r.Header.Get("If-None-Match") == `W/"issue1-v1"` {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":901,"iid":1,"title":"Bug","state":"opened","web_url":"https://gitlab.com/owner/repo/-/issues/1","author":{"id":7,"username":"alice"},"labels":["bug"],"assignees":[{"id":8,"username":"bob"}],"created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-02T03:04:05Z"}`))
 		case strings.HasSuffix(path, "/approvals"):
 			_, _ = w.Write([]byte(`{"approved_by":[]}`))
 		case strings.HasSuffix(path, "/commits"), strings.HasSuffix(path, "/diffs"):
@@ -166,5 +173,80 @@ func TestPRBatchDoesNotReGetTheMergeRequest(t *testing.T) {
 		if !strings.Contains(src, required) {
 			t.Errorf("pr_batch.go must derive children via %s", required)
 		}
+	}
+}
+
+// TestGitLabRESTWaterfallSurvivesETag — Copilot round 2 on PR #191: the
+// pr_child_mode=rest waterfall (and gap fill's REST branch) calls the
+// public readers back-to-back on the same MR URL — ListPRLabels caches
+// the ETag, and pre-v0.28.17 every following reader got a 304 and
+// returned an error or empty children. GetJSON is ETag-free now, so
+// the whole sequence must succeed with data.
+func TestGitLabRESTWaterfallSurvivesETag(t *testing.T) {
+	var hits int32
+	client, _ := newTestClientWithCapture(t, etagHonoringMRRouter(&hits))
+	ctx := context.Background()
+
+	var labels []string
+	for l, err := range client.ListPRLabels(ctx, "owner", "repo", 1) {
+		if err != nil {
+			t.Fatalf("ListPRLabels: %v", err)
+		}
+		labels = append(labels, l.Name)
+	}
+	var assignees, reviewers int
+	for _, err := range client.ListPRAssignees(ctx, "owner", "repo", 1) {
+		if err != nil {
+			t.Fatalf("ListPRAssignees after ListPRLabels: %v (the 304 class)", err)
+		}
+		assignees++
+	}
+	for _, err := range client.ListPRReviewers(ctx, "owner", "repo", 1) {
+		if err != nil {
+			t.Fatalf("ListPRReviewers after two same-URL GETs: %v", err)
+		}
+		reviewers++
+	}
+	head, base, err := client.FetchPRMeta(ctx, "owner", "repo", 1)
+	if err != nil {
+		t.Fatalf("FetchPRMeta: %v", err)
+	}
+	headRepo, baseRepo, err := client.FetchPRRepos(ctx, "owner", "repo", 1)
+	if err != nil {
+		t.Fatalf("FetchPRRepos: %v", err)
+	}
+	if strings.Join(labels, ",") != "bug,help wanted" || assignees != 1 || reviewers != 1 {
+		t.Errorf("labels=%v assignees=%d reviewers=%d — want [bug help wanted]/1/1", labels, assignees, reviewers)
+	}
+	if head == nil || head.Ref != "feature" || base == nil || base.Ref != "main" {
+		t.Errorf("meta = %+v / %+v, want feature / main", head, base)
+	}
+	if headRepo == nil || headRepo.SrcRepoID != 11 || baseRepo == nil || baseRepo.SrcRepoID != 12 {
+		t.Errorf("repos = %+v / %+v, want project ids 11 / 12", headRepo, baseRepo)
+	}
+	if h := atomic.LoadInt32(&hits); h != 5 {
+		t.Errorf("MR body served %d times, want 5 (one per reader, none a 304)", h)
+	}
+
+	// Issue side has the same shape: FetchIssueByNumber then the two
+	// child readers all GET /issues/N.
+	if _, err := client.FetchIssueByNumber(ctx, "owner", "repo", 1); err != nil {
+		t.Fatalf("FetchIssueByNumber: %v", err)
+	}
+	var issueLabels, issueAssignees int
+	for _, err := range client.ListIssueLabels(ctx, "owner", "repo", 1) {
+		if err != nil {
+			t.Fatalf("ListIssueLabels after FetchIssueByNumber: %v", err)
+		}
+		issueLabels++
+	}
+	for _, err := range client.ListIssueAssignees(ctx, "owner", "repo", 1) {
+		if err != nil {
+			t.Fatalf("ListIssueAssignees: %v", err)
+		}
+		issueAssignees++
+	}
+	if issueLabels != 1 || issueAssignees != 1 {
+		t.Errorf("issue labels=%d assignees=%d, want 1/1", issueLabels, issueAssignees)
 	}
 }

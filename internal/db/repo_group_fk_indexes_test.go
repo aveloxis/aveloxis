@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // Enforces SR-2 (migration-only introducing indexes on fleet-scale
@@ -142,5 +144,19 @@ func TestRepoGroupFKIndexesEndToEnd(t *testing.T) {
 	}
 	if !ready {
 		t.Error("repoGroupFKIndexesReady must report true after Migrate built every index")
+	}
+}
+
+// The readiness probe must cover the covered-elsewhere children too
+// (Copilot round 2 on PR #191): a probe that only checks this file's
+// own list would run the consolidation against an unindexed
+// repo_groups_list_serve if idx_rgls_group_email failed to build.
+func TestReadinessProbeCoversEveryRepoGroupsFKChild(t *testing.T) {
+	body := srctest.FuncBody(t, readSourceFile(t, "repo_group_fk_indexes.go"), "func repoGroupFKIndexesReady(")
+	if !strings.Contains(body, "repoGroupFKCoveredElsewhere") {
+		t.Error("repoGroupFKIndexesReady must include repoGroupFKCoveredElsewhere in its validity probe")
+	}
+	if !strings.Contains(body, "valid == len(tables)") {
+		t.Error("readiness must compare against the FULL probed set (own list + covered), not len(repoGroupFKIndexes)")
 	}
 }

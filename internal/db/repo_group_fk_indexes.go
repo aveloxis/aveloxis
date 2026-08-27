@@ -72,11 +72,19 @@ func ensureRepoGroupFKIndexes(ctx context.Context, pg *PostgresStore, logger *sl
 // fires a deferred FK check per child table per deleted row, and an
 // unindexed child turns each check into a sequential scan.
 func repoGroupFKIndexesReady(ctx context.Context, pg *PostgresStore) (bool, error) {
-	tables := make([]string, len(repoGroupFKIndexes))
-	names := make([]string, len(repoGroupFKIndexes))
-	for i, idx := range repoGroupFKIndexes {
-		tables[i] = idx.table
-		names[i] = idx.indexName
+	// v0.28.16 (Copilot round 2 on PR #191): the covered-elsewhere
+	// children count too — idx_rgls_group_email is built by an earlier
+	// CONCURRENTLY step that can fail or be left INVALID just like ours,
+	// and the consolidation deletes against repo_groups_list_serve as
+	// well. Readiness means EVERY repo_groups FK child is indexed.
+	var tables, names []string
+	for _, idx := range repoGroupFKIndexes {
+		tables = append(tables, idx.table)
+		names = append(names, idx.indexName)
+	}
+	for tbl, idx := range repoGroupFKCoveredElsewhere {
+		tables = append(tables, tbl)
+		names = append(names, idx)
 	}
 	var valid int
 	err := pg.pool.QueryRow(ctx, `
@@ -90,5 +98,5 @@ func repoGroupFKIndexesReady(ctx context.Context, pg *PostgresStore) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	return valid == len(repoGroupFKIndexes), nil
+	return valid == len(tables), nil
 }

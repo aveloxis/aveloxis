@@ -1230,7 +1230,9 @@ func (c *Client) fetchCommunityFiles(ctx context.Context, projectPath string) co
 // to get counts from GitLab without paginating through all results.
 func (c *Client) countGitLabResource(ctx context.Context, projectPath, resource, state string) int {
 	path := fmt.Sprintf("/projects/%s/%s?state=%s&per_page=1", projectPath, resource, state)
-	resp, err := c.http.Get(ctx, path)
+	// v0.28.17: ETag-free — this reader returns 0 on ANY error, so a 304
+	// on a repeat cycle would silently zero the repo's metadata counts.
+	resp, err := c.http.Get(platform.WithoutETag(ctx), path)
 	if err != nil {
 		return 0
 	}

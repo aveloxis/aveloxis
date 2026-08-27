@@ -245,8 +245,9 @@ const maxETagEntries = 500_000
 type ctxKeyBypassETag struct{}
 
 // WithoutETag returns a derived context that suppresses both the
-// If-None-Match send and the ETag cache write for any Get/GetJSON
-// call made with it. Use this for endpoints where 304 responses
+// If-None-Match send and the ETag cache write for any Get call made
+// with it (GetJSON applies it unconditionally since v0.28.17 — see its
+// doc; callers only need WithoutETag for bare Get / paginate paths). Use this for endpoints where 304 responses
 // would silently destroy data via snapshot-replace semantics — the
 // v0.24.0 DistributionWorker is the canonical case: on 304 the
 // scanner gets back empty data, MarkDistributionComplete rotates
@@ -663,8 +664,24 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 }
 
 // GetJSON performs a GET and decodes the response JSON into dest.
+// GetJSON fetches one JSON document and decodes it into dest.
+//
+// v0.28.17: ALWAYS ETag-free. A body-decoding reader can never use a
+// 304 (there is no body to decode), and no GetJSON caller handles
+// ErrNotModified — so every repeat single-object read in one process
+// (GitHub's FetchPRMeta/FetchPRRepos after FetchPRByNumber on the same
+// /pulls/N; GitLab's labels/assignees/reviewers/meta/repos readers on
+// the same /merge_requests/N; both forges' issue readers) either
+// errored ("not modified (304)" — petsc/petsc's 0 of 9,450 MRs) or
+// silently returned empty children (the v0.20.20 huge-body REST
+// fallback tolerated ClassNotModified as a skip and dropped meta/repos).
+// The v0.28.15 GitLab batch fix covered one call site; Copilot round 2
+// on PR #191 pointed out the REST waterfall still had it — this is the
+// class-kill. Conditional requests keep their legitimate meaning in
+// paginate(), which fetches via Get: on a listing, 304 = "nothing new
+// since last time" and ends pagination cleanly.
 func (c *HTTPClient) GetJSON(ctx context.Context, path string, dest any) error {
-	resp, err := c.Get(ctx, path)
+	resp, err := c.Get(WithoutETag(ctx), path)
 	if err != nil {
 		return err
 	}

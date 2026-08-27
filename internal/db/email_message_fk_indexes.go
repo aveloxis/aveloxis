@@ -89,7 +89,7 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	touched, err := dedupRepoGroupsListServeTx(ctx, tx, logger, pg.ownBackendPIDs())
+	touched, err := dedupRepoGroupsListServeTx(ctx, tx, logger, pg.ownBackendPIDs)
 	if err != nil {
 		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
 		logger.Error("migration step failed", "label", label, "error", err)
@@ -130,19 +130,27 @@ const ServeApplicationName = "aveloxis-serve"
 // read fixes the view; a same-statement pg_stat_clear_snapshot() runs
 // AFTER the read — proven with EXPLAIN on PG 18), so the clear is its
 // own statement first — on the SAME session, hence the pgx.Tx parameter.
-func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs []int32) (bool, error) {
+// ownPIDs is a FUNC, snapshotted immediately before the read: the pool
+// creates backends on demand (watchBlockers' 60 s poll, a MinConns
+// refill), and a snapshot taken earlier would read such a backend as
+// another serve (the twelfth pass; safe direction, but a false skip).
+func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs func() []int32) (bool, error) {
 	if _, err := tx.Exec(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
 		return false, fmt.Errorf("clearing the activity snapshot: %w", err)
 	}
-	if ownPIDs == nil {
-		ownPIDs = []int32{} // pgx encodes a nil slice as SQL NULL, and <> ALL(NULL) is NULL
+	var own []int32
+	if ownPIDs != nil {
+		own = ownPIDs()
+	}
+	if own == nil {
+		own = []int32{} // pgx encodes a nil slice as SQL NULL, and <> ALL(NULL) is NULL
 	}
 	var n int
 	if err := tx.QueryRow(ctx, `
 		SELECT count(*) FROM pg_stat_activity a
 		WHERE a.datname = current_database() AND a.application_name = $1
 		  AND a.pid <> ALL($2::int4[])`,
-		ServeApplicationName, ownPIDs).Scan(&n); err != nil {
+		ServeApplicationName, own).Scan(&n); err != nil {
 		return false, fmt.Errorf("probing for a connected aveloxis-serve: %w", err)
 	}
 	return n > 0, nil
@@ -183,7 +191,7 @@ func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs []int32)
 // winner (GREATEST of the yyyy-mm resume point and last run; the scan
 // stays incomplete if any copy was); (5) delete the losers. Returns nil
 // counts when nothing was done (clean fleet, or skipped for a serve).
-func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Logger, ownPIDs []int32) (map[string]int64, error) {
+func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Logger, ownPIDs func() []int32) (map[string]int64, error) {
 	rows, err := tx.Query(ctx, `SELECT rgls_id, winner FROM (`+dupListPartitionsSQL+`) p
 		WHERE copies > 1 ORDER BY winner, rgls_id`)
 	if err != nil {

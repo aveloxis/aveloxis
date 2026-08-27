@@ -125,7 +125,7 @@ func TestRefreshAllRepoAggregatesHoldsAnAdvisoryLock(t *testing.T) {
 func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	src := readSourceFile(t, "email_message_fk_indexes.go")
 	outer := srctest.FuncBody(t, src, "func dedupRepoGroupsListServe(")
-	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, pg.ownBackendPIDs())"} {
+	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, pg.ownBackendPIDs)"} {
 		if !strings.Contains(outer, needle) {
 			t.Errorf("dedupRepoGroupsListServe must contain %s", needle)
 		}
@@ -165,7 +165,7 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	if strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), `ConnectionStringWithAppName("aveloxis-serve")`) || !strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), "ConnectionStringWithAppName(db.ServeApplicationName)") {
 		t.Error("runServe must tag its pool with db.ServeApplicationName (one shared spelling — the probe counts 0 forever if the literals drift)")
 	}
-	if !strings.Contains(src, "func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs []int32)") {
+	if !strings.Contains(src, "func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs func() []int32)") {
 		t.Error("the probe must take pgx.Tx — its two statements (snapshot clear, then read) must run on ONE session")
 	}
 	probe := srctest.FuncBody(t, src, "func serveBackendsBeyondOwnPool(")

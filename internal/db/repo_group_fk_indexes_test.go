@@ -54,9 +54,10 @@ func TestRepoGroupFKIndexesRunBeforeConsolidation(t *testing.T) {
 	if !strings.Contains(between, "repoGroupFKIndexesReady(ctx, pg)") {
 		t.Errorf("the consolidation call must be gated on repoGroupFKIndexesReady between the index build and the call — found no readiness probe in between")
 	}
-	// v0.28.18 (sixth pass): a duplicate (group, list) partition a live
-	// worker lock kept the stage-2 dedup from consolidating collides on
-	// the UNIQUE the moment the consolidation repoints it.
+	// v0.28.18: a duplicate (group, list) partition the stage-2 dedup
+	// skipped (another aveloxis-serve connected) or a failed step left
+	// behind collides on the UNIQUE the moment the consolidation repoints
+	// it.
 	if !strings.Contains(between, "listDedupPending(ctx, pg.pool)") {
 		t.Errorf("the consolidation call must also be gated on listDedupPending (pending duplicate list partitions collide on idx_rgls_group_email)")
 	}

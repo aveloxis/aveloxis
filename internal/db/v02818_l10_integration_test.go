@@ -72,7 +72,7 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	}
 	// Own-backend exclusion is by server PID: the fake session counted as
 	// OURS must not read as a running serve.
-	if seen, err := serveBackendsBeyondOwnPool(ctx, tx, []int32{int32(fakeServe.PgConn().PID())}); err != nil || seen {
+	if seen, err := serveBackendsBeyondOwnPool(ctx, tx, func() []int32 { return []int32{int32(fakeServe.PgConn().PID())} }); err != nil || seen {
 		t.Fatalf("probe with the serve session's PID excluded as our own: seen=%v err=%v, want false", seen, err)
 	}
 

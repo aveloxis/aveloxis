@@ -1315,11 +1315,16 @@ func (c *Client) mrCountsViaGraphQL(ctx context.Context, owner, repo string) (ma
 			merged: mergeRequests(state: merged) { count }
 		}
 	}`
+	// Every alias is a POINTER: parseGraphQLResponse tolerates per-path
+	// errors (a resolver timeout on one count nulls that alias and still
+	// returns data), and a null alias decoded as a plain struct would read
+	// as count 0 — the fabricated zero this whole path exists to avoid.
+	type count struct{ Count int }
 	var out struct {
 		Project *struct {
-			Opened struct{ Count int } `json:"opened"`
-			Closed struct{ Count int } `json:"closed"`
-			Merged struct{ Count int } `json:"merged"`
+			Opened *count `json:"opened"`
+			Closed *count `json:"closed"`
+			Merged *count `json:"merged"`
 		} `json:"project"`
 	}
 	if err := c.http.GraphQLAt(platform.WithGraphQLFastFail(ctx), endpoint, query,
@@ -1328,6 +1333,9 @@ func (c *Client) mrCountsViaGraphQL(ctx context.Context, owner, repo string) (ma
 	}
 	if out.Project == nil {
 		return nil, fmt.Errorf("graphql project %s/%s is null (not visible to this token)", owner, repo)
+	}
+	if out.Project.Opened == nil || out.Project.Closed == nil || out.Project.Merged == nil {
+		return nil, fmt.Errorf("graphql project %s/%s returned a null count (per-path error) — counts unknown", owner, repo)
 	}
 	return map[string]int{"opened": out.Project.Opened.Count, "closed": out.Project.Closed.Count, "merged": out.Project.Merged.Count}, nil
 }

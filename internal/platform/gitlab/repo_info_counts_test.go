@@ -44,6 +44,12 @@ func (st *countsRouterState) handler() http.Handler {
 				_, _ = w.Write([]byte(`{"data":{"project":{"opened":{"count":232},"closed":{"count":834},"merged":{"count":8400}}}}`))
 				return
 			}
+			if st.mode == "no-x-total-graphql-partial" {
+				// A per-path resolver error nulls ONE alias; the envelope
+				// still carries data (parseGraphQLResponse tolerates it).
+				_, _ = w.Write([]byte(`{"data":{"project":{"opened":null,"closed":{"count":834},"merged":{"count":8400}}},"errors":[{"message":"timeout","path":["project","opened"]}]}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"data":{"project":null}}`))
 		case strings.HasSuffix(path, "/issues_statistics"):
 			atomic.AddInt32(&st.probeHits, 1)
@@ -200,6 +206,20 @@ func TestFetchRepoInfoResolvesCountsAboveXTotalLimitViaGraphQL(t *testing.T) {
 	}
 	if capture.has(slog.LevelWarn, "unavailable") {
 		t.Error("the documented >10,000 case resolved via GraphQL must not WARN")
+	}
+}
+
+// A per-path GraphQL error nulls one alias while the envelope still
+// carries data: the fallback must NOT read the null as 0.
+func TestFetchRepoInfoGraphQLNullAliasIsUnknownNotZero(t *testing.T) {
+	st := &countsRouterState{mode: "no-x-total-graphql-partial"}
+	client, _ := newTestClientWithCapture(t, st.handler())
+	info, err := client.FetchRepoInfo(context.Background(), "owner", "repo")
+	if err != nil {
+		t.Fatalf("FetchRepoInfo: %v", err)
+	}
+	if !info.PRCountUnknown || info.PRsClosed != 0 || info.PRCount != 0 {
+		t.Errorf("a null GraphQL count alias must mark PR counts unknown with no partial sums: unknown=%v closed=%d total=%d", info.PRCountUnknown, info.PRsClosed, info.PRCount)
 	}
 }
 

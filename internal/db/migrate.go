@@ -1766,7 +1766,18 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// the consolidation is idempotent and runs on the next migrate once the
 	// index builds — and the skip is itself an error so the migrate still
 	// fails closed (v0.19.4). A probe ERROR is not "ready" (SR-5).
-	if ready, perr := repoGroupFKIndexesReady(ctx, pg); perr != nil {
+	if pending, perr := listDedupPending(ctx, pg); perr != nil {
+		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: %w", perr))
+		logger.Warn("repo_groups consolidation skipped — duplicate list partition probe failed", "error", perr)
+	} else if pending > 0 {
+		// v0.28.18 (sixth pass): a duplicate (group, list) partition a live
+		// worker lock kept the stage-2 dedup from consolidating is exactly
+		// the row the plain repo_groups_list_serve repoint below would
+		// collide on (23505 on idx_rgls_group_email) — and the loser
+		// group's DELETE then fails its deferred FK. Wait for the drain.
+		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: %d duplicate (group, list) partitions still pending (held by live mailing-list worker locks) — rerun `aveloxis migrate --skip-views` after the drain or with serve stopped", pending))
+		logger.Warn("repo_groups consolidation skipped — duplicate list partitions pending", "partitions", pending)
+	} else if ready, perr := repoGroupFKIndexesReady(ctx, pg); perr != nil {
 		*errs = append(*errs, fmt.Errorf("repo_groups FK-child index readiness probe: %w", perr))
 		logger.Warn("skipping v0.27.17 repo_groups consolidation — could not verify the FK-child indexes", "error", perr)
 	} else if !ready {
@@ -2909,6 +2920,11 @@ func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.
 		"aveloxis_data.email_message",
 		"aveloxis_data.email_message_ref",
 		"aveloxis_data.repo_group_insights",
+		// v0.28.18: no FK, but DrainList reads the first staged row's
+		// repo_group_id as the LIST's identity (GetPrimaryRepoForGroup) —
+		// a row still stamped with a deleted loser group wedges the drain
+		// of the whole list ("no repo for group, leaving staged").
+		"aveloxis_ops.mailing_list_staging",
 	} {
 		execMigrationStep(ctx, pg, logger, errs,
 			"v0.27.17 repoint "+tbl+".repo_group_id to canonical group",

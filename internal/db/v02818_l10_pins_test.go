@@ -114,27 +114,60 @@ func TestRefreshAllRepoAggregatesHoldsAnAdvisoryLock(t *testing.T) {
 	}
 }
 
-// The list dedup runs as ONE transaction, deletes loser staging rows the
-// winner already holds BEFORE repointing (mailing_list_staging is UNIQUE
-// (rgls_id, message_id_header)), and partitions on rgls_email IS NOT NULL
-// — empty-string addresses collide on the UNIQUE like real ones.
+// The list dedup runs as ONE transaction on rows locked FOR UPDATE,
+// keeps ONE staging row per (winner, header) across the WHOLE partition
+// before repointing (mailing_list_staging is UNIQUE (rgls_id,
+// message_id_header): two losers sharing a header collide with each
+// other, not just with the winner), partitions by the CANONICAL group
+// (the v0.27.17 consolidation repoints same-named groups' list rows) on
+// rgls_email IS NOT NULL — empty-string addresses collide on the UNIQUE
+// like real ones — and merges the losers' checkpoints into the winner.
 func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
-	body := srctest.FuncBody(t, readSourceFile(t, "email_message_fk_indexes.go"), "func dedupRepoGroupsListServe(")
-	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "WHERE rgls_email IS NOT NULL", "PARTITION BY w.winner, st.message_id_header", "ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id", "GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month)", "NOT live_locked"} {
-		if !strings.Contains(body, needle) {
+	src := readSourceFile(t, "email_message_fk_indexes.go")
+	outer := srctest.FuncBody(t, src, "func dedupRepoGroupsListServe(")
+	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String())"} {
+		if !strings.Contains(outer, needle) {
 			t.Errorf("dedupRepoGroupsListServe must contain %s", needle)
 		}
 	}
-	if strings.Contains(body, "execMigrationStep(") {
-		t.Error("the four statements must run inside the ONE transaction, not as independent execMigrationStep calls (a partial failure orphans staging rows)")
+	body := srctest.FuncBody(t, src, "func dedupRepoGroupsListServeTx(")
+	for _, needle := range []string{"FOR UPDATE", "WHERE l.rgls_email IS NOT NULL", "PARTITION BY g.canonical_group, l.rgls_email", "WHERE copies > 1", "unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)", "repo_group_id = (SELECT repo_group_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = w.winner)", "PARTITION BY w.winner, st.message_id_header", "ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id", "GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month)"} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("dedupRepoGroupsListServeTx must contain %s", needle)
+		}
+	}
+	if strings.Contains(body, "execMigrationStep(") || strings.Contains(body, "pg.pool.") {
+		t.Error("every statement must run on the caller's tx (a partial failure must roll the whole pass back)")
 	}
 	if strings.Contains(body, "COALESCE(rgls_email, '') <> ''") {
 		t.Error("empty-string addresses must be deduplicated too — only NULLs are distinct under the UNIQUE")
 	}
-	del := strings.Index(body, "delete duplicate staging rows across each partition")
-	rep := strings.Index(body, "repoint remaining loser staging rows")
-	if del < 0 || rep < 0 || del > rep {
-		t.Error("the staging collision delete must precede the staging repoint")
+	lock := strings.Index(body, "FOR UPDATE")
+	recheck := strings.Index(body, "re-checking worker locks")
+	del := strings.Index(body, `"staging_duplicates_deleted"`)
+	rep := strings.Index(body, `"staging_repointed"`)
+	if lock < 0 || recheck < 0 || del < 0 || rep < 0 || lock > recheck || recheck > del || del > rep {
+		t.Error("order must be: lock the frozen members FOR UPDATE, re-check worker locks, delete duplicate staging across the partition, then repoint")
+	}
+	// A lock is live only while an aveloxis-serve backend is connected —
+	// `stop serve` → `migrate` (the upgrade ladder) must not read every
+	// mid-scan ghost lock as a running worker.
+	for _, needle := range []string{"serveBackendConnected(ctx, tx)", "c.live && serveConnected"} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("dedupRepoGroupsListServeTx must contain %s", needle)
+		}
+	}
+	if !strings.Contains(srctest.FuncBody(t, src, "func serveBackendConnected("), "datname = current_database() AND application_name = 'aveloxis-serve'") {
+		t.Error("serveBackendConnected must filter pg_stat_activity by THIS database and the serve application_name (pg_stat_activity is cluster-wide)")
+	}
+	// Membership must be frozen: no statement may re-derive the set with a window.
+	if strings.Count(body, "WINDOW w AS") != 1 {
+		t.Errorf("the partition window must be computed exactly once (frozen membership), found %d", strings.Count(body, "WINDOW w AS"))
+	}
+	// The consolidation repoints the staging table's repo_group_id too
+	// (list identity for DrainList); the dedup's step 2 does the same.
+	if !strings.Contains(readSourceFile(t, "migrate.go"), `"aveloxis_ops.mailing_list_staging",`) {
+		t.Error("consolidateRepoGroups must repoint aveloxis_ops.mailing_list_staging.repo_group_id to the canonical group")
 	}
 	// The analyzer must still see the CONCURRENTLY build this dedup guards.
 	migrate := readSourceFile(t, "migrate.go")

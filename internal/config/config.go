@@ -225,8 +225,9 @@ type CollectionConfig struct {
 	// added after the 2026-07-27→30 incident where the dm_ step (a
 	// 93K-repo × two-pass per-repo loop) ran 3+ days holding
 	// MatviewRebuildActive, silently pausing all collection claims.
-	// Deliberately does NOT affect `aveloxis refresh-views` or
-	// `aveloxis migrate` — those are explicit operator commands.
+	// With the skip on, the dm_ tables update ONLY via the explicit
+	// operator command `aveloxis refresh-views --aggregates` (v0.28.18;
+	// plain refresh-views and migrate refresh the materialized views only).
 	// The FULL weekly-rebuild off-switch is matview_rebuild_day:
 	// "disabled".
 	MatviewRebuildSkipDMAggregates bool `json:"matview_rebuild_skip_dm_aggregates"`

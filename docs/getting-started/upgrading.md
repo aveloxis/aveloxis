@@ -89,6 +89,7 @@ no-op once their work is done):
 |---|---|---|---|
 | `commits.cmt_author_platform_username` backfill from resolved author ids | v0.25.6 | yes | scales with the commits table (about an hour at ~470M rows) |
 | `repo_labor` history rotation (latest snapshot only) | v0.27.7 | yes | keyset windows over `repo_labor_id`; minutes to tens of minutes |
+| GitLab force-full flag (main-path comment-drop heal) | v0.27.37 | yes (v0.28.18) — seeded on upgrade from ≥ v0.27.37, so it does not re-run | instant; on a database last migrated BELOW v0.27.37 it flags every collected GitLab repo for one full pass on its next cycle |
 | message-bridge `data_source` backfills + review-ref dedup | v0.27.15 | yes | 45–75 min on a fleet-scale `messages` table |
 | `repo_groups` "Default" consolidation | v0.27.17 | no — runs every migrate, a no-op once consolidated | seconds to minutes once the FK-child indexes exist (v0.28.15); the first pass deletes one row per duplicate group with a deferred FK check per child table |
 | `messages.msg_kind` backfill + `message_heal_worklist` capture | v0.27.38 | no — but fast-skips once its final step has run | keyset windows over `msg_id` (1h42m over 62M message ids, measured on the 2026-08-26 `aveloxis` DB migrate); populates the worklist that `heal-messages` consumes |

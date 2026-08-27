@@ -2136,7 +2136,7 @@ func (s *PostgresStore) InsertRepoInfo(ctx context.Context, info *model.RepoInfo
 			if info.IssuesCountUnknown {
 				info.IssuesCount, info.IssuesClosed = prIssues, prIssuesClosed
 			}
-			s.logger.Warn("repo_info counts unavailable from the forge — prior snapshot's counts carried forward",
+			s.logger.Info("repo_info counts unavailable from the forge — prior snapshot's counts carried forward",
 				"repo_id", info.RepoID, "pr_count_unknown", info.PRCountUnknown, "issues_count_unknown", info.IssuesCountUnknown,
 				"pr_count", info.PRCount, "issues_count", info.IssuesCount)
 		case errors.Is(err, pgx.ErrNoRows):

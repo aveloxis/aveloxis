@@ -1086,7 +1086,13 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	}
 	issueStatsPath := fmt.Sprintf("/projects/%s/issues_statistics", pp)
 	issuesUnknown := false
-	if err := c.http.GetJSON(ctx, issueStatsPath, &issueStats); err != nil {
+	if raw.IssuesAccessLevel == "disabled" {
+		// Definitive zero, not unknown: the feature is DISABLED, so there
+		// is nothing to count and the probe would only 404 (and log) every
+		// cycle. Not raw.IssuesEnabled — that is feature_available?(user)
+		// and reads false for a members-only feature this token cannot
+		// see, where the honest answer is "unknown". issueStats stays zero.
+	} else if err := c.http.GetJSON(ctx, issueStatsPath, &issueStats); err != nil {
 		// v0.28.18: mark unknown — the store carries the prior snapshot's
 		// counts forward; a fabricated 0 would rotate the accurate snapshot
 		// away and hide the repo from the gap healer's pr_count/issues_count
@@ -1103,16 +1109,33 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	// marks the PR counts unknown instead of storing 0.
 	prUnknown := false
 	mrCounts := map[string]int{}
-	for _, state := range []string{"opened", "closed", "merged"} {
-		n, err := c.countGitLabResource(ctx, pp, "merge_requests", state)
-		if err != nil {
+	if raw.MergeRequestsAccessLevel != "disabled" { // see IssuesAccessLevel above
+		for _, state := range []string{"opened", "closed", "merged"} {
+			n, err := c.countGitLabResource(ctx, pp, "merge_requests", state)
+			if err == nil {
+				mrCounts[state] = n
+				continue
+			}
+			if errors.Is(err, errCountUnavailable) {
+				// GitLab's documented >10,000-record header omission: ask
+				// GraphQL, which counts every state in one query.
+				if gql, gerr := c.mrCountsViaGraphQL(ctx, owner, repo); gerr == nil {
+					mrCounts = gql
+					c.logger.Info("merge request counts above GitLab's X-Total limit — resolved via GraphQL",
+						"owner", owner, "repo", repo, "opened", gql["opened"], "closed", gql["closed"], "merged", gql["merged"])
+				} else {
+					prUnknown = true
+					c.logger.Info("merge request counts unavailable (above GitLab's 10,000-record X-Total limit and GraphQL count failed) — PR counts marked unknown, prior snapshot's counts carry forward",
+						"owner", owner, "repo", repo, "state", state, "error", err, "graphql_error", gerr)
+				}
+				break
+			}
 			prUnknown = true
 			c.logger.Warn("merge request count unavailable — PR counts marked unknown, prior snapshot's counts carry forward",
 				"owner", owner, "repo", repo, "state", state, "error", err)
 			break
 		}
-		mrCounts[state] = n
-	}
+	} // merge requests disabled: definitive zero, no probes, no log.
 	mrOpen, mrClosed, mrMerged := mrCounts["opened"], mrCounts["closed"], mrCounts["merged"]
 	mrTotal := mrOpen + mrClosed + mrMerged
 	if prUnknown {
@@ -1274,6 +1297,39 @@ func (c *Client) countGitLabResource(ctx context.Context, projectPath, resource,
 		return 0, fmt.Errorf("%s?state=%s: X-Total %q: %w", resource, state, total, err)
 	}
 	return n, nil
+}
+
+// mrCountsViaGraphQL counts merge requests per state through GitLab's
+// GraphQL API (v0.28.18) — the only count that works above the REST
+// X-Total limit. One query, three aliased connections; a nil project
+// (private / vanished) is an error, never a zero. Live-verified
+// 2026-08-27 against the public petsc/petsc: opened 232 / merged 8400 /
+// closed 834 alongside the REST X-Totals. Fast-fail retry budget: this
+// is a fallback, not a place to spend a 10-retry chain.
+func (c *Client) mrCountsViaGraphQL(ctx context.Context, owner, repo string) (map[string]int, error) {
+	endpoint := strings.TrimSuffix(c.http.BaseURL(), "/api/v4") + "/api/graphql"
+	const query = `query($fullPath: ID!) {
+		project(fullPath: $fullPath) {
+			opened: mergeRequests(state: opened) { count }
+			closed: mergeRequests(state: closed) { count }
+			merged: mergeRequests(state: merged) { count }
+		}
+	}`
+	var out struct {
+		Project *struct {
+			Opened struct{ Count int } `json:"opened"`
+			Closed struct{ Count int } `json:"closed"`
+			Merged struct{ Count int } `json:"merged"`
+		} `json:"project"`
+	}
+	if err := c.http.GraphQLAt(platform.WithGraphQLFastFail(ctx), endpoint, query,
+		map[string]any{"fullPath": owner + "/" + repo}, &out); err != nil {
+		return nil, err
+	}
+	if out.Project == nil {
+		return nil, fmt.Errorf("graphql project %s/%s is null (not visible to this token)", owner, repo)
+	}
+	return map[string]int{"opened": out.Project.Opened.Count, "closed": out.Project.Closed.Count, "merged": out.Project.Merged.Count}, nil
 }
 
 // errCountUnavailable: GitLab omits X-Total (and X-Total-Pages) on any

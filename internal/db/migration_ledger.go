@@ -40,6 +40,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -107,4 +109,65 @@ func runOnceStep(ctx context.Context, pg *PostgresStore, logger *slog.Logger, er
 	runOnce(ctx, pg, logger, errs, label, func(errs *[]error) {
 		execMigrationStep(ctx, pg, logger, errs, label, sql)
 	})
+}
+
+// runOnceSeedIfApplied records label in the ledger WITHOUT running the
+// step when the database's schema stamp proves a migrate at or above
+// appliedSince already completed (v0.28.18). The stamp is written only
+// after every step of that binary succeeded, and a step that existed as
+// a plain execMigrationStep ran on every one of those migrates — so the
+// work is provably done. Any stamp below appliedSince, an absent stamp
+// (fresh or pre-v0.14.5 database) or an unparseable one leaves the step
+// to run: running an idempotent step once more is the safe direction.
+func runOnceSeedIfApplied(ctx context.Context, pg *PostgresStore, logger *slog.Logger, label, appliedSince string) {
+	prior := pg.GetSchemaVersion(ctx)
+	if prior == "" || !schemaVersionAtLeast(prior, appliedSince) {
+		return
+	}
+	tag, err := pg.pool.Exec(ctx, `
+		INSERT INTO aveloxis_ops.migration_ledger (step_label, tool_version)
+		VALUES ($1, $2)
+		ON CONFLICT (step_label) DO NOTHING`, label, ToolVersion)
+	if err != nil {
+		logger.Warn("migration ledger seed failed — the step will run once more instead", "label", label, "error", err)
+		return
+	}
+	if tag.RowsAffected() > 0 {
+		logger.Info("migration ledger seeded — step already applied by every migrate since the stamp proves", "label", label, "prior_schema_version", prior, "applied_since", appliedSince)
+	}
+}
+
+// schemaVersionAtLeast compares dotted numeric versions ("0.27.37").
+// Malformed input compares false (the caller then runs the step).
+func schemaVersionAtLeast(have, want string) bool {
+	parse := func(v string) ([]int, bool) {
+		parts := strings.Split(strings.TrimSpace(v), ".")
+		out := make([]int, 0, len(parts))
+		for _, p := range parts {
+			n, err := strconv.Atoi(p)
+			if err != nil || n < 0 {
+				return nil, false
+			}
+			out = append(out, n)
+		}
+		return out, len(out) > 0
+	}
+	h, ok1 := parse(have)
+	w, ok2 := parse(want)
+	if !ok1 || !ok2 {
+		return false
+	}
+	for i := 0; i < len(h) || i < len(w); i++ {
+		var a, b int
+		if i < len(h) {
+			a = h[i]
+		}
+		if i < len(w) {
+			b = w[i]
+		}
+		if a != b {
+			return a > b
+		}
+	}
+	return true
 }

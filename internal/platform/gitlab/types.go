@@ -154,9 +154,17 @@ type glProject struct {
 	Visibility           string    `json:"visibility"`
 	IssuesEnabled        bool      `json:"issues_enabled"`
 	MergeRequestsEnabled bool      `json:"merge_requests_enabled"`
-	WikiEnabled          bool      `json:"wiki_enabled"`
-	PagesAccessLevel     string    `json:"pages_access_level"`
-	ForkedFromProject    *struct {
+	// v0.28.18: the *_enabled booleans are GitLab's
+	// feature_available?(current_user) — FALSE for a members-only
+	// ("private") feature the token cannot see, not just for a disabled
+	// one. Gate count probes on the access level: only "disabled" is a
+	// definitive zero; "private" must still probe (and mark unknown on
+	// 403) so a narrowed token never stores a fabricated 0.
+	IssuesAccessLevel        string `json:"issues_access_level"`
+	MergeRequestsAccessLevel string `json:"merge_requests_access_level"`
+	WikiEnabled              bool   `json:"wiki_enabled"`
+	PagesAccessLevel         string `json:"pages_access_level"`
+	ForkedFromProject        *struct {
 		PathWithNamespace string `json:"path_with_namespace"`
 	} `json:"forked_from_project"`
 	License *struct {

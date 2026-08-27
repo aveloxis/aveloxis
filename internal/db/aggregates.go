@@ -5,7 +5,9 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 )
 
 // RefreshRepoAggregates recomputes the dm_repo_annual, dm_repo_monthly, and
@@ -240,14 +242,56 @@ func (s *PostgresStore) RefreshRepoGroupAggregates(ctx context.Context, repoID i
 	return nil
 }
 
+// DMAggregatesAdvisoryLockID serializes dm_ aggregate rebuilds across
+// processes ("AVLXDAGG" packed into 64 bits). The dm_* tables have no
+// PK/UNIQUE and each repo is a DELETE then INSERT, so two concurrent
+// passes (the weekly scheduler rebuild and `aveloxis refresh-views
+// --aggregates`) would interleave and duplicate aggregate rows.
+const DMAggregatesAdvisoryLockID int64 = 0x41564C5844414747
+
+// ErrAggregateRebuildRunning is returned when another process holds the
+// dm_ aggregate advisory lock.
+var ErrAggregateRebuildRunning = errors.New("another dm_ aggregate rebuild is already running (advisory lock held)")
+
 // RefreshAllRepoAggregates recomputes dm_repo_annual/monthly/weekly and
-// dm_repo_group_annual/monthly/weekly for ALL repos. Called during the weekly
-// matview rebuild when collection workers are paused, to avoid conflicts.
+// dm_repo_group_annual/monthly/weekly for ALL repos. Two callers: the
+// weekly matview rebuild (collection claims paused under
+// MatviewRebuildActive) and `aveloxis refresh-views --aggregates`
+// (v0.28.18). The pass holds DMAggregatesAdvisoryLockID for its whole
+// duration and returns ErrAggregateRebuildRunning if another holder
+// exists — the layer enforces the "one pass at a time" invariant (SR-18)
+// so neither caller has to know about the other.
 //
 // This is more efficient than per-repo refresh because it can use bulk SQL
 // without per-repo DELETE+INSERT cycles. For the repo_group tables, it
 // refreshes each distinct group once.
 func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger interface{ Info(string, ...any) }) error {
+	lockConn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquiring connection for the dm_ aggregate lock: %w", err)
+	}
+	var locked bool
+	if err := lockConn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, DMAggregatesAdvisoryLockID).Scan(&locked); err != nil {
+		lockConn.Release()
+		return fmt.Errorf("dm_ aggregate advisory lock: %w", err)
+	}
+	if !locked {
+		lockConn.Release()
+		return ErrAggregateRebuildRunning
+	}
+	defer func() {
+		// Unlock on a fresh bounded context — the caller's ctx may be the
+		// one that just got canceled (the v0.27.130 lesson); an unconfirmed
+		// unlock destroys the session so the lock cannot leak.
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var unlocked bool
+		if err := lockConn.QueryRow(unlockCtx, `SELECT pg_advisory_unlock($1)`, DMAggregatesAdvisoryLockID).Scan(&unlocked); err != nil || !unlocked {
+			_ = lockConn.Conn().Close(unlockCtx)
+		}
+		lockConn.Release()
+	}()
+
 	// Get all repo IDs that have commits.
 	rows, err := s.pool.Query(ctx,
 		`SELECT DISTINCT repo_id FROM aveloxis_data.commits WHERE cmt_author_timestamp IS NOT NULL`)

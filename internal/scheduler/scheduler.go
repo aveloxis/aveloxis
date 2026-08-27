@@ -15,6 +15,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -1939,12 +1940,16 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 	// the per-repo loop ran 3+ days on the production fleet
 	// (2026-07-27→30) while MatviewRebuildActive held all collection
 	// claims paused; operators can now keep the weekly matview step
-	// and refresh dm_ tables only via `aveloxis refresh-views`.
+	// and refresh dm_ tables only via `aveloxis refresh-views --aggregates`.
 	if s.cfg.Collection.MatviewRebuildSkipDMAggregates {
-		s.logger.Info("dm_ aggregate refresh skipped by config (matview_rebuild_skip_dm_aggregates=true) — dm_ tables update only via refresh-views/migrate")
+		s.logger.Info("dm_ aggregate refresh skipped by config (matview_rebuild_skip_dm_aggregates=true) — dm_ tables update only via `aveloxis refresh-views --aggregates`")
 	} else {
 		aggStart := time.Now()
-		if err := s.store.RefreshAllRepoAggregates(ctx, s.logger); err != nil {
+		if err := s.store.RefreshAllRepoAggregates(ctx, s.logger); errors.Is(err, db.ErrAggregateRebuildRunning) {
+			// An operator `refresh-views --aggregates` overlapping the
+			// weekly tick is expected, not a failure; the next tick retries.
+			s.logger.Warn("dm_ aggregate refresh skipped — another pass holds the aggregate lock; the next weekly tick retries", "error", err)
+		} else if err != nil {
 			s.logger.Error("dm_ aggregate refresh failed", "error", err)
 		} else {
 			s.logger.Info("dm_ aggregate refresh complete", "duration", time.Since(aggStart).Truncate(time.Second))

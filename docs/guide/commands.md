@@ -587,7 +587,7 @@ aveloxis refresh-views --aggregates   # + the dm_repo_* / dm_repo_group_* aggreg
 
 Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. Views are also rebuilt automatically every Saturday by `aveloxis serve`.
 
-`--aggregates` (v0.28.18) additionally runs the `dm_` aggregate pass after the views — the same per-repo loop the weekly rebuild runs unless `collection.matview_rebuild_skip_dm_aggregates` is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the only way the `dm_` tables update.
+`--aggregates` (v0.28.18) additionally runs the `dm_` aggregate pass after the views — the same per-repo loop the weekly rebuild runs unless `collection.matview_rebuild_skip_dm_aggregates` is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the only way the `dm_` tables update. The pass holds a database advisory lock for its whole duration — if the weekly scheduler rebuild (or another `--aggregates` run) is already in it, the command exits nonzero with `another dm_ aggregate rebuild is already running` instead of interleaving two DELETE+INSERT passes over tables that have no unique key.
 
 ---
 

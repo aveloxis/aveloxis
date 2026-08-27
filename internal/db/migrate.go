@@ -312,7 +312,12 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// CompleteJob clears the flag on a successful pass — so as a plain
 	// step it re-flagged the whole GitLab fleet on EVERY migrate (each
 	// version bump forced a full recollect of every GitLab repo). The
-	// ledger runs it exactly once per database.
+	// ledger runs it exactly once per database — and a fleet whose stamp
+	// already proves a ≥ v0.27.37 migrate completed has ALREADY run it
+	// (every migrate did), so the ledger row is seeded instead of
+	// forcing one more fleet-wide GitLab full pass on upgrade.
+	runOnceSeedIfApplied(ctx, pg, logger,
+		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", "0.27.37")
 	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
 		UPDATE aveloxis_ops.collection_queue q
@@ -408,6 +413,15 @@ func migrateStage2MailingList(ctx context.Context, pg *PostgresStore, logger *sl
 	// delete's deferred FK checks probe them), then the list table is
 	// deduplicated BEFORE the UNIQUE below can be attempted (SR-1).
 	ensureEmailMessageFKIndexes(ctx, pg, logger, errs)
+	// v0.28.18: repo_info_history was created with LIKE … INCLUDING ALL
+	// BEFORE idx_repo_info_repo_id existed, so it never inherited a
+	// repo_id index — and InsertRepoInfo's unknown-count carry-forward
+	// reads the prior snapshot from it (rotation precedes the insert).
+	// Migration-owned CONCURRENTLY (SR-2): the history table is
+	// fleet-scale (one row per repo per cycle).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_info_history_repo_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_info_history_repo_id
+		 ON aveloxis_data.repo_info_history (repo_id)`)
 	dedupRepoGroupsListServe(ctx, pg, logger, errs)
 	// Idempotent list registration: one row per (repo_group, list address).
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_rgls_group_email",

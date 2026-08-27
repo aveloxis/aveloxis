@@ -322,6 +322,15 @@ func TestAddRepoToGroupSharesRepoAcrossGroups(t *testing.T) {
 // RunMigrations recreates it once the test's cleanup removes the pairs.
 func dropCaseUniqueIndex(ctx context.Context, t *testing.T, store *PostgresStore) {
 	t.Helper()
+	// v0.28.18: nothing else rebuilds the index — every connect helper
+	// fast-paths on the schema stamp — so the fixture restores it itself.
+	// Registered here (before the caller's row cleanups) so it runs after
+	// them; best-effort, since residue from another package's fixtures can
+	// legitimately leave a case-variant pair behind.
+	t.Cleanup(func() {
+		cleanupExecRetry(ctx, store, `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repos_repo_git_ci
+			ON aveloxis_data.repos (LOWER(repo_git)) WHERE platform_id IN (1, 2)`)
+	})
 	if _, err := store.pool.Exec(ctx, `DROP INDEX IF EXISTS aveloxis_data.uq_repos_repo_git_ci`); err != nil {
 		t.Fatalf("drop uq_repos_repo_git_ci: %v", err)
 	}

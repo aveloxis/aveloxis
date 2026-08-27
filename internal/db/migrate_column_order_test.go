@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded — the
@@ -48,9 +50,14 @@ func TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		files[f] = string(b)
+		// Comment-stripped (raw strings preserved): a doc-comment mention
+		// of helper( must not become the helper's call site.
+		files[f] = srctest.StripGoComments(string(b))
 	}
 	res := migrationColumnOrderViolations(files)
+	if len(res.unresolvedFuncs) > 0 {
+		t.Errorf("steps/adds inside functions with no resolvable call site back to RunMigrations (dead code, or a function value the resolver cannot follow — add an explicit call-site or an allowlist entry with a reason): %v", res.unresolvedFuncs)
+	}
 	if res.err != nil {
 		t.Fatal(res.err)
 	}

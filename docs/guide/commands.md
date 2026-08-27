@@ -564,6 +564,13 @@ every collected repo — the completeness mode for repos whose
 stored-but-deleted rows numerically hide the gap; not recommended for
 routine use). Exits nonzero when any repo's heal failed.
 
+Sizing, measured on a ~140K-repo fleet (2026-08-23): 6,809 candidates /
+279,100 items took ~65 hours at `--workers 4` (the largest single repo
+filled 24,845 items); reruns then converged in minutes. Expect a small
+residual candidate set that heals with `filled=0` on every rerun — repos
+whose forge metadata count exceeds what the forge's own listing returns
+(transferred or hidden items); that is the floor, not unfinished work.
+
 Run it on a binary at v0.27.139 or later — earlier binaries re-open
 the blind window on the next routine cycle. Typical ordering after an
 upgrade across the v0.27.13x train: `aveloxis migrate` first, then

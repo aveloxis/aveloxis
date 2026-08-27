@@ -255,26 +255,6 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 // Split from the former 1,570-line RunMigrations (v0.27.42, summary/18
 // Phase 4); step ORDER across stages is load-bearing and unchanged.
 func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	// Set tool_version column defaults to the current version so new inserts
-	// automatically get the right value without every INSERT needing to specify it.
-	// v0.27.37 (summary/18 Phase 1b): GitLab conversation comments
-	// were silently dropped on the main collection path since
-	// inception (client refs carried no parent number). The forward
-	// fix makes new cycles collect them, but incremental cycles are
-	// since-filtered — only a FULL pass re-walks comment history.
-	// One-shot: flag every collected GitLab repo for force-full.
-	// Self-disabling: once flagged (or after the full pass clears the
-	// flag on success), the filter matches nothing.
-	execMigrationStep(ctx, pg, logger, errs,
-		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
-		UPDATE aveloxis_ops.collection_queue q
-		SET force_full_collect = TRUE
-		FROM aveloxis_data.repos r
-		WHERE r.repo_id = q.repo_id
-		  AND r.platform_id = 2
-		  AND q.last_collected IS NOT NULL
-		  AND q.force_full_collect = FALSE`)
-
 	// v0.27.38 (summary/18 Phase 1a): messages msg_kind — see
 	// msg_kind_migration.go for the full sequence + rationale.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_kind", "SMALLINT NOT NULL DEFAULT 0")
@@ -315,6 +295,31 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// class that leaves PR child data incomplete; set manually via
 	// `aveloxis recollect <url>`. CompleteJob clears it on success.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.collection_queue", "force_full_collect", "BOOLEAN NOT NULL DEFAULT FALSE")
+
+	// v0.28.15: the v0.27.37 force-full step below WRITES force_full_collect,
+	// so it must run after the column add above (it previously sat ~50
+	// lines earlier — TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded
+	// caught it on the day the analyzer landed). Same class as the v0.28.7
+	// last_seen_at relocation.
+	// Set tool_version column defaults to the current version so new inserts
+	// automatically get the right value without every INSERT needing to specify it.
+	// v0.27.37 (summary/18 Phase 1b): GitLab conversation comments
+	// were silently dropped on the main collection path since
+	// inception (client refs carried no parent number). The forward
+	// fix makes new cycles collect them, but incremental cycles are
+	// since-filtered — only a FULL pass re-walks comment history.
+	// One-shot: flag every collected GitLab repo for force-full.
+	// Self-disabling: once flagged (or after the full pass clears the
+	// flag on success), the filter matches nothing.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
+		UPDATE aveloxis_ops.collection_queue q
+		SET force_full_collect = TRUE
+		FROM aveloxis_data.repos r
+		WHERE r.repo_id = q.repo_id
+		  AND r.platform_id = 2
+		  AND q.last_collected IS NOT NULL
+		  AND q.force_full_collect = FALSE`)
 
 	// SBOM storage: format and timestamp columns (added in v0.5.4).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_sbom_scans", "sbom_format", "TEXT DEFAULT ''")
@@ -468,29 +473,6 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// exits — never on error paths — so NULL means "never scanned"
 	// and a date on a zero-finding repo means "scanned, clean".
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "vuln_scan_last_run", "TIMESTAMPTZ")
-
-	// v0.28.7 (Copilot round 3): upgraded fleets get the column as
-	// NULL for every repo, but the API documents NULL as "never
-	// scanned" — a repo with STORED findings would serve active
-	// findings alongside scanned_at:null until its next scan. A
-	// finding's last_seen_at PROVES an OSV scan touched the repo at
-	// that time (resolved findings included — they were seen once
-	// too), so backfill the stamp from the latest finding evidence.
-	// Historically CLEAN scans left no evidence and honestly stay
-	// NULL until the repo's next scan stamps for real. Ledgered: a
-	// one-shot GROUP BY over the fleet's vuln table.
-	runOnceStep(ctx, pg, logger, errs,
-		"v0.28.7 backfill vuln_scan_last_run from finding evidence (a scan provably ran)", `
-		UPDATE aveloxis_data.repos r
-		SET vuln_scan_last_run = sub.last_seen
-		FROM (
-		    SELECT repo_id, MAX(last_seen_at) AS last_seen
-		    FROM aveloxis_data.repo_deps_vulnerabilities
-		    WHERE last_seen_at IS NOT NULL
-		    GROUP BY repo_id
-		) sub
-		WHERE r.repo_id = sub.repo_id
-		  AND r.vuln_scan_last_run IS NULL`)
 
 	// v0.28.1 (A6): the distinct "gone" state — prelim's 404/410
 	// sideline stamps it alongside repo_archived so the GUI can say
@@ -1351,6 +1333,37 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "first_detected_at", "TIMESTAMPTZ DEFAULT NOW()")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "last_seen_at", "TIMESTAMPTZ DEFAULT NOW()")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "resolved_at", "TIMESTAMPTZ")
+
+	// v0.28.15: the v0.28.7 stamp backfill below READS last_seen_at, so it
+	// must run AFTER the column add above. It originally sat ~870 lines
+	// earlier next to the vuln_scan_last_run column add and failed with
+	// SQLSTATE 42703 on every fleet upgrading from before v0.27.4 (the
+	// 2026-08-26 `aveloxis` DB, 0.25.26 → 0.28.x) — "fails on the first
+	// migrate, passes on the retry" because the retry ran after this add.
+	// TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded now bans the
+	// class. Ledgered; label unchanged (the ledger registry pins it).
+	// v0.28.7 (Copilot round 3): upgraded fleets get the column as
+	// NULL for every repo, but the API documents NULL as "never
+	// scanned" — a repo with STORED findings would serve active
+	// findings alongside scanned_at:null until its next scan. A
+	// finding's last_seen_at PROVES an OSV scan touched the repo at
+	// that time (resolved findings included — they were seen once
+	// too), so backfill the stamp from the latest finding evidence.
+	// Historically CLEAN scans left no evidence and honestly stay
+	// NULL until the repo's next scan stamps for real. Ledgered: a
+	// one-shot GROUP BY over the fleet's vuln table.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.28.7 backfill vuln_scan_last_run from finding evidence (a scan provably ran)", `
+		UPDATE aveloxis_data.repos r
+		SET vuln_scan_last_run = sub.last_seen
+		FROM (
+		    SELECT repo_id, MAX(last_seen_at) AS last_seen
+		    FROM aveloxis_data.repo_deps_vulnerabilities
+		    WHERE last_seen_at IS NOT NULL
+		    GROUP BY repo_id
+		) sub
+		WHERE r.repo_id = sub.repo_id
+		  AND r.vuln_scan_last_run IS NULL`)
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.4 create user_repo_stars",
 		`CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
@@ -1713,6 +1726,14 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"aveloxis_data", "uq_pr_review_msg_ref",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_pr_review_msg_ref
 		 ON aveloxis_data.pull_request_review_message_ref (pr_review_id, msg_id)`)
+
+	// v0.28.15 — index every repo_groups FK child BEFORE the v0.27.17
+	// consolidation deletes loser groups: each deleted group fires a
+	// deferred FK check per child, and an unindexed 12 GB email_message
+	// made that a 5.3 s seq scan × 873 losers on the 2026-08-26 `aveloxis`
+	// DB upgrade. Migration-owned CONCURRENTLY (SR-2); see
+	// repo_group_fk_indexes.go.
+	ensureRepoGroupFKIndexes(ctx, pg, logger, errs)
 
 	// v0.27.17 — repo_groups consolidation. The lazy 'Default'-group
 	// creation used a bare ON CONFLICT DO NOTHING with NO unique on

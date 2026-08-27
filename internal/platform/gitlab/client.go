@@ -239,10 +239,8 @@ func (c *Client) ListPRLabels(ctx context.Context, owner, repo string, prNumber 
 			yield(model.PullRequestLabel{}, err)
 			return
 		}
-		for _, name := range raw.Labels {
-			if !yield(model.PullRequestLabel{
-				Name: name,
-			}, nil) {
+		for _, l := range mrLabels(raw) {
+			if !yield(l, nil) {
 				return
 			}
 		}
@@ -259,11 +257,8 @@ func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumb
 			yield(model.PullRequestAssignee{}, err)
 			return
 		}
-		for _, a := range raw.Assignees {
-			if !yield(model.PullRequestAssignee{
-				PlatformSrcID: a.ID,
-				UserRef:       glUserToRef(a),
-			}, nil) {
+		for _, a := range mrAssignees(raw) {
+			if !yield(a, nil) {
 				return
 			}
 		}
@@ -280,11 +275,8 @@ func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumb
 			yield(model.PullRequestReviewer{}, err)
 			return
 		}
-		for _, r := range raw.Reviewers {
-			if !yield(model.PullRequestReviewer{
-				PlatformSrcID: r.ID,
-				UserRef:       glUserToRef(r),
-			}, nil) {
+		for _, r := range mrReviewers(raw) {
+			if !yield(r, nil) {
 				return
 			}
 		}
@@ -376,15 +368,7 @@ func (c *Client) FetchPRMeta(ctx context.Context, owner, repo string, prNumber i
 		return nil, nil, err
 	}
 
-	head = &model.PullRequestMeta{
-		HeadOrBase: "head",
-		Ref:        raw.SourceBranch,
-		SHA:        raw.SHA,
-	}
-	base = &model.PullRequestMeta{
-		HeadOrBase: "base",
-		Ref:        raw.TargetBranch,
-	}
+	head, base = mrMeta(raw)
 	return head, base, nil
 }
 
@@ -397,14 +381,7 @@ func (c *Client) FetchPRRepos(ctx context.Context, owner, repo string, prNumber 
 		return nil, nil, err
 	}
 
-	// Source project (head/fork).
-	if raw.SourceProjectID != 0 {
-		headRepo = c.fetchGLProjectAsRepo(ctx, raw.SourceProjectID, "head")
-	}
-	// Target project (base/upstream).
-	if raw.TargetProjectID != 0 {
-		baseRepo = c.fetchGLProjectAsRepo(ctx, raw.TargetProjectID, "base")
-	}
+	headRepo, baseRepo = c.mrRepos(ctx, raw)
 	return headRepo, baseRepo, nil
 }
 
@@ -1335,33 +1312,5 @@ func (c *Client) FetchPRByNumber(ctx context.Context, owner, repo string, number
 	if err := c.http.GetJSON(ctx, path, &raw); err != nil {
 		return nil, err
 	}
-	state := raw.State
-	if state == "opened" {
-		state = "open"
-	}
-	mergeCommit := raw.MergeCommitSHA
-	if mergeCommit == "" {
-		mergeCommit = raw.SquashCommitSHA
-	}
-	pr := &model.PullRequest{
-		PlatformSrcID:  raw.ID,
-		Number:         raw.IID,
-		HTMLURL:        raw.WebURL,
-		DiffURL:        raw.WebURL + ".diff",
-		Title:          raw.Title,
-		Body:           raw.Description,
-		State:          state,
-		Locked:         state == "locked",
-		CreatedAt:      raw.CreatedAt,
-		UpdatedAt:      raw.UpdatedAt,
-		ClosedAt:       raw.ClosedAt,
-		MergedAt:       raw.MergedAt,
-		MergeCommitSHA: mergeCommit,
-		AuthorRef:      glUserToRef(raw.Author),
-		Origin: model.DataOrigin{
-			ToolSource: "aveloxis",
-			DataSource: "GitLab API (gap fill)",
-		},
-	}
-	return pr, nil
+	return mrToPullRequest(raw), nil
 }

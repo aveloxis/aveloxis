@@ -41,10 +41,21 @@ const GapThreshold = 0.05
 // to re-fetch, ensuring their associated data (comments, events, etc.) is complete.
 const GapEdgeCount = 2
 
-// Gap represents a contiguous range of missing issue/PR numbers.
+// Gap represents a run of consecutive missing issue/PR numbers.
+//
+// Start/End bound the run; Numbers holds the EXACT expected numbers
+// that are missing inside it. v0.28.15: only Numbers are fetched.
+// ExpandGapsWithEdges used to fetch every integer in [Start, End], and
+// on GitHub — whose issue and PR number spaces are shared — a PR gap
+// spanning issue numbers fetched those issues as PRs: 22,837 NOT_FOUND
+// per-path GraphQL errors on one aveloxis_large heal run, all wasted
+// aliases. Since v0.27.140 the expected set comes from a full listing,
+// so the exact missing numbers are known; the range was a leftover of
+// the pre-listing heuristic.
 type Gap struct {
-	Start int // first missing number (inclusive)
-	End   int // last missing number (inclusive)
+	Start   int   // first missing number (inclusive)
+	End     int   // last missing number (inclusive)
+	Numbers []int // the expected numbers missing in [Start, End], ascending
 }
 
 // GapFiller detects and fills collection gaps for a repo.
@@ -514,9 +525,10 @@ func ComputeGaps(collected, expected []int) []Gap {
 		} else {
 			// Missing — extend or start a gap.
 			if current == nil {
-				current = &Gap{Start: n, End: n}
+				current = &Gap{Start: n, End: n, Numbers: []int{n}}
 			} else {
 				current.End = n
+				current.Numbers = append(current.Numbers, n)
 			}
 		}
 	}
@@ -544,7 +556,8 @@ func ExpandGapsWithEdges(gaps []Gap, collected []int, edgeCount int) []int {
 
 	for _, g := range gaps {
 		// Add all gap numbers.
-		for n := g.Start; n <= g.End; n++ {
+		// Only the listed missing numbers — never the integer range (see Gap).
+		for _, n := range g.Numbers {
 			fetchSet[n] = true
 		}
 

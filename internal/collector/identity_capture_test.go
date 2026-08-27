@@ -94,6 +94,9 @@ func TestMappingsPopulateAssignmentUserRefs(t *testing.T) {
 	ghListing := mustRead(t, "../platform/github/graphql_listing.go")
 	ghBatch := mustRead(t, "../platform/github/graphql_pr_batch.go")
 	glClient := mustRead(t, "../platform/gitlab/client.go")
+	// v0.28.15: the GitLab PR assignee/reviewer mappings moved to mr_map.go
+	// (one fetched MR feeds ListPRAssignees/ListPRReviewers AND FetchPRBatch).
+	glMap := mustRead(t, "../platform/gitlab/mr_map.go")
 
 	type pin struct{ src, name, needle string }
 	for _, p := range []pin{
@@ -101,8 +104,8 @@ func TestMappingsPopulateAssignmentUserRefs(t *testing.T) {
 		{ghClient, "github REST ListPRAssignees", "func (c *Client) ListPRAssignees("},
 		{ghClient, "github REST ListPRReviewers", "func (c *Client) ListPRReviewers("},
 		{glClient, "gitlab ListIssueAssignees", "func (c *Client) ListIssueAssignees("},
-		{glClient, "gitlab ListPRAssignees", "func (c *Client) ListPRAssignees("},
-		{glClient, "gitlab ListPRReviewers", "func (c *Client) ListPRReviewers("},
+		{glMap, "gitlab mrAssignees (ListPRAssignees + FetchPRBatch)", "func mrAssignees("},
+		{glMap, "gitlab mrReviewers (ListPRReviewers + FetchPRBatch)", "func mrReviewers("},
 	} {
 		idx := strings.Index(p.src, p.needle)
 		if idx < 0 {

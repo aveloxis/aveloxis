@@ -78,7 +78,8 @@ fail, but need nothing from you and simply re-run on the next migrate):
 |---|---|---|---|
 | `case-variant duplicate repos present; skipping unique index uq_repos_repo_git_ci` | v0.25.32 | `Azure/x` and `azure/x` both exist as separate rows; the backstop unique index cannot be built over them | `aveloxis dedup-repos` until it reports 0 pairs, then `aveloxis migrate --skip-views` again |
 | `repo_labor has duplicate natural-key groups — skipping uq_repo_labor_natural_key` | v0.27.18 | a writer bypassed the snapshot-replace path | investigate the duplicates, then re-run migrate |
-| `pg_trgm operator class gin_trgm_ops not found; skipping idx_repos_owner_name_trgm` | v0.25.30 (the index itself is v0.18.30; it was fatal from v0.19.4 until the v0.25.30 skip) | the extension needs superuser to create | performance only (monitor search falls back to sequential scans); `CREATE EXTENSION pg_trgm;` as a superuser and re-run migrate |
+| `pg_trgm operator class gin_trgm_ops not found; skipping idx_repos_owner_name_trgm` | v0.25.30 (the index itself is v0.18.30; it was fatal from v0.19.4 until the v0.25.30 skip) |
+| `repo_groups_list_serve duplicate partitions held by a LIVE mailing-list worker are skipped this migrate` (fail-closed, not warn-only: the list UNIQUE and the `repo_groups` consolidation wait for them) | v0.28.18 | a duplicate list registration is mid-scan by a running worker — a young lock whose worker process is dead on this host, or whose host has no `aveloxis serve` connected, is treated as a ghost and consolidated | let the worker finish and re-run migrate, or run it with `serve` stopped | the extension needs superuser to create | performance only (monitor search falls back to sequential scans); `CREATE EXTENSION pg_trgm;` as a superuser and re-run migrate |
 
 The first migrate across a large gap can take a while. The long poles
 ("ledgered" = recorded in `migration_ledger` after it completes and never

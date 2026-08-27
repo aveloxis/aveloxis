@@ -1766,7 +1766,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// the consolidation is idempotent and runs on the next migrate once the
 	// index builds — and the skip is itself an error so the migrate still
 	// fails closed (v0.19.4). A probe ERROR is not "ready" (SR-5).
-	if pending, perr := listDedupPending(ctx, pg); perr != nil {
+	if pending, perr := listDedupPending(ctx, pg.pool, MailingListStaleLock.String()); perr != nil {
 		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: %w", perr))
 		logger.Warn("repo_groups consolidation skipped — duplicate list partition probe failed", "error", perr)
 	} else if pending > 0 {
@@ -1775,7 +1775,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		// the row the plain repo_groups_list_serve repoint below would
 		// collide on (23505 on idx_rgls_group_email) — and the loser
 		// group's DELETE then fails its deferred FK. Wait for the drain.
-		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: %d duplicate (group, list) partitions still pending (held by live mailing-list worker locks) — rerun `aveloxis migrate --skip-views` after the drain or with serve stopped", pending))
+		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: %d duplicate (group, list) partitions still present — either skipped for a live mailing-list worker lock (see the WARN above; rerun `aveloxis migrate --skip-views` after the drain or with serve stopped) or left by a failed list-dedup step (its error is above)", pending))
 		logger.Warn("repo_groups consolidation skipped — duplicate list partitions pending", "partitions", pending)
 	} else if ready, perr := repoGroupFKIndexesReady(ctx, pg); perr != nil {
 		*errs = append(*errs, fmt.Errorf("repo_groups FK-child index readiness probe: %w", perr))
@@ -2246,7 +2246,8 @@ func checkBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		       LEFT(a.query, 200)                  AS waiter_query,
 		       pg_blocking_pids(a.pid)              AS blockers
 		FROM pg_stat_activity a
-		WHERE a.application_name LIKE 'aveloxis-%'
+		WHERE a.datname = current_database()
+		  AND a.application_name LIKE 'aveloxis-%'
 		  AND a.wait_event_type = 'Lock'
 		  AND a.state = 'active'`)
 	if err != nil {

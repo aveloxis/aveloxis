@@ -125,13 +125,13 @@ func TestRefreshAllRepoAggregatesHoldsAnAdvisoryLock(t *testing.T) {
 func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	src := readSourceFile(t, "email_message_fk_indexes.go")
 	outer := srctest.FuncBody(t, src, "func dedupRepoGroupsListServe(")
-	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String())"} {
+	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownServeConns())"} {
 		if !strings.Contains(outer, needle) {
 			t.Errorf("dedupRepoGroupsListServe must contain %s", needle)
 		}
 	}
 	body := srctest.FuncBody(t, src, "func dedupRepoGroupsListServeTx(")
-	for _, needle := range []string{"FOR UPDATE", "WHERE l.rgls_email IS NOT NULL", "PARTITION BY g.canonical_group, l.rgls_email", "WHERE copies > 1", "unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)", "repo_group_id = (SELECT repo_group_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = w.winner)", "PARTITION BY w.winner, st.message_id_header", "ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id", "GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month)"} {
+	for _, needle := range []string{"FOR UPDATE", "dupListPartitionsSQL", "WHERE copies > 1", "workerLockLive(c.pid, c.bootID, serveElsewhere)", "unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)", "repo_group_id = (SELECT repo_group_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = w.winner)", "PARTITION BY w.winner, st.message_id_header", "ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id", "GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month)"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("dedupRepoGroupsListServeTx must contain %s", needle)
 		}
@@ -149,20 +149,52 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	if lock < 0 || recheck < 0 || del < 0 || rep < 0 || lock > recheck || recheck > del || del > rep {
 		t.Error("order must be: lock the frozen members FOR UPDATE, re-check worker locks, delete duplicate staging across the partition, then repoint")
 	}
-	// A lock is live only while an aveloxis-serve backend is connected —
-	// `stop serve` → `migrate` (the upgrade ladder) must not read every
-	// mid-scan ghost lock as a running worker.
-	for _, needle := range []string{"serveBackendConnected(ctx, tx)", "c.live && serveConnected"} {
-		if !strings.Contains(body, needle) {
-			t.Errorf("dedupRepoGroupsListServeTx must contain %s", needle)
+	// A young lock is live only if its worker is: same host → the PID
+	// decides (the scancode recoverOrphans rule); other host → a serve
+	// backend beyond this process's own pool (`aveloxis serve` runs its
+	// startup migrate on its own tagged pool before any worker exists,
+	// and `stop serve` → `migrate` must not read mid-scan ghosts as
+	// running workers).
+	live := srctest.FuncBody(t, src, "func workerLockLive(")
+	for _, needle := range []string{"hostid.BootID()", "pidfile.IsRunning(pid)", "return serveElsewhere"} {
+		if !strings.Contains(live, needle) {
+			t.Errorf("workerLockLive must contain %s", needle)
 		}
 	}
-	if !strings.Contains(srctest.FuncBody(t, src, "func serveBackendConnected("), "datname = current_database() AND application_name = 'aveloxis-serve'") {
-		t.Error("serveBackendConnected must filter pg_stat_activity by THIS database and the serve application_name (pg_stat_activity is cluster-wide)")
+	probe := srctest.FuncBody(t, src, "func serveBackendsBeyondOwnPool(")
+	if !strings.Contains(probe, "datname = current_database() AND application_name = $1") {
+		t.Error("serveBackendsBeyondOwnPool must filter pg_stat_activity by THIS database and the serve application_name (pg_stat_activity is cluster-wide)")
 	}
-	// Membership must be frozen: no statement may re-derive the set with a window.
-	if strings.Count(body, "WINDOW w AS") != 1 {
-		t.Errorf("the partition window must be computed exactly once (frozen membership), found %d", strings.Count(body, "WINDOW w AS"))
+	clear := strings.Index(probe, "SELECT pg_stat_clear_snapshot()")
+	read := strings.Index(probe, "FROM pg_stat_activity")
+	if clear < 0 || read < 0 || clear > read {
+		t.Error("the activity snapshot must be cleared in its OWN statement before the pg_stat_activity read — a same-statement clear runs after the read (proven on PG 18)")
+	}
+	if strings.Contains(probe, "pg_stat_activity, pg_stat_clear_snapshot()") {
+		t.Error("the same-statement clear form is decorative")
+	}
+	if !strings.Contains(probe, "return n > ownServeConns") {
+		t.Error("serve's own pool connections must not count as a running worker host")
+	}
+	// Membership must be frozen: the partition window is spelled once, in
+	// dupListPartitionsSQL, and no statement re-derives the set.
+	if strings.Count(src, "WINDOW w AS") != 1 {
+		t.Errorf("the partition window must be spelled exactly once (dupListPartitionsSQL), found %d", strings.Count(src, "WINDOW w AS"))
+	}
+	if strings.Contains(srctest.FuncBody(t, src, "func listDedupPending("), "WINDOW") {
+		t.Error("listDedupPending must reuse dupListPartitionsSQL, not spell the partition itself")
+	}
+	// pg_stat_activity readers filter by database: the cluster hosts two
+	// aveloxis databases (the sixth-pass L11 sweep).
+	for _, site := range []struct{ file, fn string }{{"postgres.go", "func (s *PostgresStore) PidsByAppName("}, {"migrate.go", "func checkBlockers("}} {
+		fsrc := readSourceFile(t, site.file)
+		if !strings.Contains(fsrc, site.fn) {
+			t.Errorf("%s no longer defines %s — re-anchor the datname pin", site.file, site.fn)
+			continue
+		}
+		if !strings.Contains(srctest.FuncBody(t, fsrc, site.fn), "datname = current_database()") {
+			t.Errorf("%s %s reads pg_stat_activity without a datname filter — pg_stat_activity is cluster-wide", site.file, site.fn)
+		}
 	}
 	// The consolidation repoints the staging table's repo_group_id too
 	// (list identity for DrainList); the dedup's step 2 does the same.

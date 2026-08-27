@@ -50,6 +50,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/hostid"
 	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
@@ -108,7 +109,6 @@ const (
 // now happens to hold that PID. Linux-only; on macOS dev machines
 // the file is absent and we fall back to a process-stable
 // substitute that still detects "this is a new process".
-const bootIDPath = "/proc/sys/kernel/random/boot_id"
 
 // ScancodeWorkerOptions configures a ScancodeWorker. v0.27.6 replaces
 // NewScancodeWorker's 10-positional-parameter signature — the second
@@ -1320,33 +1320,11 @@ func (w *ScancodeWorker) monitorOrphan(ctx context.Context, row db.ScancodeLocke
 	}
 }
 
-// readBootID returns the kernel boot UUID from /proc on Linux. On
-// other systems (macOS dev machines), returns an empty string —
-// the recovery logic treats empty boot_ids as "unknown, can't make
-// a reboot decision" and falls through to the PID-liveness check.
+// readBootID returns the kernel boot UUID on Linux and "" elsewhere;
+// v0.28.18: one shared reader in internal/hostid (the migrate-time
+// mailing-list lock liveness decision reads the same value).
 func readBootID() string {
-	data, err := os.ReadFile(bootIDPath)
-	if err != nil {
-		return ""
-	}
-	return string(bytesTrimSpace(data))
-}
-
-// bytesTrimSpace is a small allocation-free wrapper around the
-// common os.ReadFile + strings.TrimSpace pattern.
-func bytesTrimSpace(b []byte) []byte {
-	start, end := 0, len(b)
-	for start < end && isSpace(b[start]) {
-		start++
-	}
-	for end > start && isSpace(b[end-1]) {
-		end--
-	}
-	return b[start:end]
-}
-
-func isSpace(b byte) bool {
-	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+	return hostid.BootID()
 }
 
 // pidAlive returns true if the given PID is a process we could

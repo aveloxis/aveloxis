@@ -149,7 +149,7 @@ func (s *PostgresStore) Close() {
 // returning. v0.20.0.
 func (s *PostgresStore) PidsByAppName(ctx context.Context, appName string) ([]int, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT pid FROM pg_stat_activity WHERE application_name = $1`, appName)
+		`SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND application_name = $1`, appName)
 	if err != nil {
 		return nil, err
 	}

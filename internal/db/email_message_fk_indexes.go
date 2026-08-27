@@ -9,6 +9,10 @@ import (
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/aveloxis/aveloxis/internal/hostid"
+	"github.com/aveloxis/aveloxis/internal/pidfile"
 )
 
 // email_message FK-child indexes (v0.28.18, a fresh-context L11 sweep of
@@ -44,6 +48,38 @@ func ensureEmailMessageFKIndexes(ctx context.Context, pg *PostgresStore, logger 
 	}
 }
 
+// dupListPartitionsSQL is THE spelling of a duplicate (canonical group,
+// list) partition — the dedup's membership, the stage-10 gate's pending
+// probe and the tests all read it (SR-17: a second inline spelling is a
+// defect). One row per list row with its partition's winner (lowest
+// rgls_id), the partition size, and the row's own lock: age_live is the
+// MailingListStaleLock window (parity with ClaimNextList's reclaim
+// boundary); pid/boot_id are what the worker stamped. $1 = the stale
+// interval.
+const dupListPartitionsSQL = `
+	SELECT l.rgls_id,
+	       MIN(l.rgls_id) OVER w AS winner,
+	       count(*) OVER w AS copies,
+	       (l.mlls_locked_at IS NOT NULL AND l.mlls_locked_at >= NOW() - $1::interval) AS age_live,
+	       COALESCE(l.mlls_locked_pid, 0) AS pid,
+	       COALESCE(l.mlls_locked_boot_id, '') AS boot_id
+	FROM aveloxis_data.repo_groups_list_serve l
+	JOIN (
+		SELECT repo_group_id,
+		       CASE WHEN rg_name IS NULL THEN repo_group_id
+		            ELSE MIN(repo_group_id) OVER (PARTITION BY rg_name) END AS canonical_group
+		FROM aveloxis_data.repo_groups
+	) g ON g.repo_group_id = l.repo_group_id
+	WHERE l.rgls_email IS NOT NULL
+	WINDOW w AS (PARTITION BY g.canonical_group, l.rgls_email)`
+
+// lockQuerier is what the liveness probes and the dedup need from either
+// a transaction or the pool.
+type lockQuerier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // dedupRepoGroupsListServe — SR-1 for idx_rgls_group_email (v0.28.18).
 // The UNIQUE (repo_group_id, rgls_email) index is the arbiter of
 // RegisterMailingList's ON CONFLICT and was built CONCURRENTLY since
@@ -64,7 +100,7 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	touched, err := dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String())
+	touched, err := dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownServeConns())
 	if err != nil {
 		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
 		logger.Error("migration step failed", "label", label, "error", err)
@@ -86,6 +122,57 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 		"list_rows_deleted", touched["list_rows_deleted"])
 }
 
+// ownServeConns is how many of this process's OWN pool connections carry
+// application_name 'aveloxis-serve' — `aveloxis serve` runs its startup
+// migrate on its own tagged pool before any worker exists, and must not
+// count itself as a running worker host (the seventh pass's finding).
+func (s *PostgresStore) ownServeConns() int {
+	if s.pool.Config().ConnConfig.RuntimeParams["application_name"] != serveApplicationName {
+		return 0
+	}
+	return int(s.pool.Stat().TotalConns())
+}
+
+// serveApplicationName is the application_name `aveloxis serve` tags its
+// pool with (v0.20.0; cmd/aveloxis/main.go runServe). The mailing-list
+// worker pool lives only inside serve.
+const serveApplicationName = "aveloxis-serve"
+
+// serveBackendsBeyondOwnPool reports whether any `aveloxis serve` backend
+// OTHER than this process's own pool is connected to THIS database —
+// the cross-host liveness signal for a worker lock whose boot_id is not
+// ours. pg_stat_activity is cluster-wide (the datname filter is
+// load-bearing) and SNAPSHOTTED per transaction (the first read fixes
+// the view; a same-statement pg_stat_clear_snapshot() runs AFTER the
+// read — proven with EXPLAIN on PG 18), so the clear is its own
+// statement first. An over-count (an orphaned serve backend, a pool that
+// grew between the two reads) fails safe toward "live".
+func serveBackendsBeyondOwnPool(ctx context.Context, q lockQuerier, ownServeConns int) (bool, error) {
+	if _, err := q.Exec(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
+		return false, fmt.Errorf("clearing the activity snapshot: %w", err)
+	}
+	var n int
+	if err := q.QueryRow(ctx, `
+		SELECT count(*) FROM pg_stat_activity
+		WHERE datname = current_database() AND application_name = $1`, serveApplicationName).Scan(&n); err != nil {
+		return false, fmt.Errorf("probing for a connected aveloxis-serve: %w", err)
+	}
+	return n > ownServeConns, nil
+}
+
+// workerLockLive adjudicates ONE age-live worker lock. Same host (the
+// stamped boot_id equals ours): the PID decides — the scancode worker's
+// recoverOrphans rule (v0.21.0); a dead PID is a ghost of a stopped
+// serve however young the lock is, and a live one is a worker whatever
+// the backends say. Other/unknown host: the database-side signal decides
+// (a serve backend beyond our own pool), which fails safe toward "live".
+func workerLockLive(pid int, bootID string, serveElsewhere bool) bool {
+	if bootID != "" && bootID == hostid.BootID() {
+		return pid > 0 && pidfile.IsRunning(pid)
+	}
+	return serveElsewhere
+}
+
 // dedupRepoGroupsListServeTx is the pass itself, inside the caller's tx.
 //
 // Partition = (CANONICAL group, rgls_email): the v0.27.17 consolidation
@@ -102,64 +189,42 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 // per-statement re-evaluation let a partition whose worker lock was
 // released mid-pass join late — its losers deleted by the last step
 // without the staging steps ever running for it): candidates are read,
-// partitions with a LIVE worker lock are set aside (WARN; rerun after
-// the drain), the rest are locked FOR UPDATE (ClaimNextList uses SKIP
-// LOCKED, so no worker can claim a member mid-pass), the lock state is
-// re-checked on the locked rows, and every statement joins the frozen
-// (rgls_id, winner) pairs.
-//
-// "Live" means more than "younger than MailingListStaleLock" (the sixth
-// pass): the documented upgrade ladder is `stop serve` → `migrate`, and
-// ProcessList leaves mlls_locked_at set when serve stops mid-scan, so an
-// age rule alone reads every such ghost as a running worker, skips the
-// partition, and the UNIQUE build then fails while the WARN tells the
-// operator to wait for a drain that is not running. The worker pool
-// lives inside `aveloxis serve`, whose connections carry
-// application_name 'aveloxis-serve' (v0.20.0): when NO such backend is
-// connected to this database, every lock is a ghost and nothing is
-// skipped. That signal works across hosts, which a (pid, boot_id) probe
-// cannot. Steps: (1) keep ONE staging row per (winner,
-// header) across the whole partition — the winner's own copy if it has
-// one, else the earliest (mailing_list_staging is UNIQUE (rgls_id,
-// message_id_header); two losers sharing a header collide with EACH
-// OTHER, not just with the winner); (2) repoint the surviving loser
-// staging — rgls_id AND repo_group_id, which DrainList reads as list
-// identity; (3) repoint email_message.rgls_id; (4) merge the losers'
-// checkpoints into the winner (GREATEST of the yyyy-mm resume point and
-// last run; the scan stays incomplete if any copy was); (5) delete the
-// losers. Returns nil counts when nothing needed doing.
-func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Logger, stale string) (map[string]int64, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT rgls_id, winner, live_locked FROM (
-			SELECT l.rgls_id,
-			       MIN(l.rgls_id) OVER w AS winner,
-			       count(*) OVER w AS copies,
-			       bool_or(l.mlls_locked_at IS NOT NULL AND l.mlls_locked_at >= NOW() - $1::interval) OVER w AS live_locked
-			FROM aveloxis_data.repo_groups_list_serve l
-			JOIN (
-				SELECT repo_group_id,
-				       CASE WHEN rg_name IS NULL THEN repo_group_id
-				            ELSE MIN(repo_group_id) OVER (PARTITION BY rg_name) END AS canonical_group
-				FROM aveloxis_data.repo_groups
-			) g ON g.repo_group_id = l.repo_group_id
-			WHERE l.rgls_email IS NOT NULL
-			WINDOW w AS (PARTITION BY g.canonical_group, l.rgls_email)
-		) p WHERE copies > 1
-		ORDER BY winner, rgls_id`, stale)
+// partitions with a LIVE worker lock (workerLockLive) are set aside
+// (WARN; rerun after the drain), the rest are locked FOR UPDATE
+// (ClaimNextList uses SKIP LOCKED, so no worker can claim a member
+// mid-pass), the lock state is re-checked on the locked rows, and every
+// statement joins the frozen (rgls_id, winner) pairs. Steps: (1) keep
+// ONE staging row per (winner, header) across the whole partition — the
+// winner's own copy if it has one, else the earliest (mailing_list_staging
+// is UNIQUE (rgls_id, message_id_header); two losers sharing a header
+// collide with EACH OTHER, not just with the winner); (2) repoint the
+// surviving loser staging — rgls_id AND repo_group_id, which DrainList
+// reads as list identity; (3) repoint email_message.rgls_id; (4) merge
+// the losers' checkpoints into the winner (GREATEST of the yyyy-mm
+// resume point and last run; the scan stays incomplete if any copy
+// was); (5) delete the losers. Returns nil counts when nothing needed
+// doing.
+func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Logger, stale string, ownServeConns int) (map[string]int64, error) {
+	type candidate struct {
+		id, winner int64
+		ageLive    bool
+		pid        int
+		bootID     string
+	}
+	rows, err := tx.Query(ctx, `SELECT rgls_id, winner, age_live, pid, boot_id FROM (`+dupListPartitionsSQL+`) p
+		WHERE copies > 1 ORDER BY winner, rgls_id`, stale)
 	if err != nil {
 		return nil, fmt.Errorf("duplicate candidates: %w", err)
 	}
-	type candidate struct {
-		id, winner int64
-		live       bool
-	}
 	var cands []candidate
+	anyAgeLive := false
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.id, &c.winner, &c.live); err != nil {
+		if err := rows.Scan(&c.id, &c.winner, &c.ageLive, &c.pid, &c.bootID); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("duplicate candidates: %w", err)
 		}
+		anyAgeLive = anyAgeLive || c.ageLive
 		cands = append(cands, c)
 	}
 	rows.Close()
@@ -169,30 +234,31 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 	if len(cands) == 0 {
 		return nil, nil
 	}
-	serveConnected, err := serveBackendConnected(ctx, tx)
-	if err != nil {
-		return nil, err
+	serveElsewhere := false
+	if anyAgeLive {
+		if serveElsewhere, err = serveBackendsBeyondOwnPool(ctx, tx, ownServeConns); err != nil {
+			return nil, err
+		}
+	}
+	livePartition := map[int64]bool{}
+	for _, c := range cands {
+		if c.ageLive && workerLockLive(c.pid, c.bootID, serveElsewhere) {
+			livePartition[c.winner] = true
+		}
 	}
 	var ids, winners []int64
-	skipped := map[int64]bool{}
 	for _, c := range cands {
-		if c.live && serveConnected {
-			skipped[c.winner] = true
+		if livePartition[c.winner] {
 			continue
 		}
 		ids = append(ids, c.id)
 		winners = append(winners, c.winner)
 	}
-	if len(skipped) > 0 {
-		logger.Warn("repo_groups_list_serve duplicate partitions held by a LIVE mailing-list worker are skipped this migrate — the UNIQUE index and the repo_groups consolidation wait for them; rerun `aveloxis migrate --skip-views` after the drain, or with serve stopped (a lock with no aveloxis-serve connected is a ghost and is consolidated)",
-			"partitions_skipped", len(skipped))
-	} else if !serveConnected {
-		for _, c := range cands {
-			if c.live {
-				logger.Info("no aveloxis-serve backend is connected to this database — mailing-list worker locks are ghosts of a stopped serve; consolidating their partitions")
-				break
-			}
-		}
+	if len(livePartition) > 0 {
+		logger.Warn("repo_groups_list_serve duplicate partitions held by a LIVE mailing-list worker are skipped this migrate — the UNIQUE index and the repo_groups consolidation wait for them; rerun `aveloxis migrate --skip-views` after the drain (a lock whose worker process is dead, or whose host has no aveloxis-serve connected, is a ghost and is consolidated)",
+			"partitions_skipped", len(livePartition))
+	} else if anyAgeLive {
+		logger.Info("mailing-list worker locks younger than the stale window belong to no running worker (dead PID on this host, or no aveloxis-serve backend beyond this process) — ghosts of a stopped serve; consolidating their partitions")
 	}
 	if len(ids) == 0 {
 		return nil, nil
@@ -205,51 +271,67 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 		WHERE rgls_id = ANY($1::bigint[]) FOR UPDATE`, ids); err != nil {
 		return nil, fmt.Errorf("locking duplicate list rows: %w", err)
 	}
-	lateLocked := map[int64]bool{}
-	if serveConnected {
-		lateRows, err := tx.Query(ctx, `
-			SELECT rgls_id FROM aveloxis_data.repo_groups_list_serve
-			WHERE rgls_id = ANY($1::bigint[])
-			  AND mlls_locked_at IS NOT NULL AND mlls_locked_at >= NOW() - $2::interval`, ids, stale)
-		if err != nil {
+	lateRows, err := tx.Query(ctx, `
+		SELECT rgls_id, COALESCE(mlls_locked_pid, 0), COALESCE(mlls_locked_boot_id, '')
+		FROM aveloxis_data.repo_groups_list_serve
+		WHERE rgls_id = ANY($1::bigint[])
+		  AND mlls_locked_at IS NOT NULL AND mlls_locked_at >= NOW() - $2::interval`, ids, stale)
+	if err != nil {
+		return nil, fmt.Errorf("re-checking worker locks: %w", err)
+	}
+	type late struct {
+		id     int64
+		pid    int
+		bootID string
+	}
+	var lates []late
+	for lateRows.Next() {
+		var l late
+		if err := lateRows.Scan(&l.id, &l.pid, &l.bootID); err != nil {
+			lateRows.Close()
 			return nil, fmt.Errorf("re-checking worker locks: %w", err)
 		}
-		for lateRows.Next() {
-			var id int64
-			if err := lateRows.Scan(&id); err != nil {
-				lateRows.Close()
-				return nil, fmt.Errorf("re-checking worker locks: %w", err)
+		lates = append(lates, l)
+	}
+	lateRows.Close()
+	if err := lateRows.Err(); err != nil {
+		return nil, fmt.Errorf("re-checking worker locks: %w", err)
+	}
+	if len(lates) > 0 {
+		if serveElsewhere, err = serveBackendsBeyondOwnPool(ctx, tx, ownServeConns); err != nil {
+			return nil, err
+		}
+		winnerOf := map[int64]int64{}
+		for i, id := range ids {
+			winnerOf[id] = winners[i]
+		}
+		lateWinners := map[int64]bool{}
+		for _, l := range lates {
+			if workerLockLive(l.pid, l.bootID, serveElsewhere) {
+				lateWinners[winnerOf[l.id]] = true
 			}
-			lateLocked[id] = true
 		}
-		lateRows.Close()
-		if err := lateRows.Err(); err != nil {
-			return nil, fmt.Errorf("re-checking worker locks: %w", err)
+		if len(lateWinners) > 0 {
+			var keptIDs, keptWinners []int64
+			for i, id := range ids {
+				if !lateWinners[winners[i]] {
+					keptIDs, keptWinners = append(keptIDs, id), append(keptWinners, winners[i])
+				}
+			}
+			logger.Warn("repo_groups_list_serve duplicate partitions claimed by a worker while the pass locked them are skipped — rerun `aveloxis migrate --skip-views` after the drain",
+				"partitions_skipped", len(lateWinners))
+			ids, winners = keptIDs, keptWinners
+			if len(ids) == 0 {
+				return nil, nil
+			}
 		}
 	}
-	if len(lateLocked) > 0 {
-		// Drop every partition that gained a live lock since the read.
-		lateWinners := map[int64]bool{}
-		for i, id := range ids {
-			if lateLocked[id] {
-				lateWinners[winners[i]] = true
-			}
-		}
-		var keptIDs, keptWinners []int64
-		for i, id := range ids {
-			if !lateWinners[winners[i]] {
-				keptIDs, keptWinners = append(keptIDs, id), append(keptWinners, winners[i])
-			}
-		}
-		logger.Warn("repo_groups_list_serve duplicate partitions claimed by a worker while the pass locked them are skipped — rerun `aveloxis migrate --skip-views` after the drain",
-			"partitions_skipped", len(lateWinners))
-		ids, winners = keptIDs, keptWinners
-		if len(ids) == 0 {
-			return nil, nil
-		}
+	partitions := map[int64]bool{}
+	for _, w := range winners {
+		partitions[w] = true
 	}
 	logger.Warn("repo_groups_list_serve carries duplicate (group, list) rows — consolidating to the lowest rgls_id before the UNIQUE index builds",
-		"rows_consolidated", len(ids), "partitions_skipped", len(skipped))
+		"partitions", len(partitions), "losers", len(ids)-len(partitions), "member_rows_locked", len(ids), "partitions_skipped", len(livePartition))
 	// Every statement joins the SAME frozen pairs.
 	const members = `unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)`
 	steps := []struct{ key, sql string }{
@@ -305,45 +387,15 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 	return touched, nil
 }
 
-// serveBackendConnected reports whether any `aveloxis serve` backend is
-// connected to THIS database (its connections carry application_name
-// 'aveloxis-serve', v0.20.0). The mailing-list worker pool lives inside
-// serve, so with no such backend every worker lock is a ghost.
-// pg_stat_activity is cluster-wide — the datname filter is load-bearing.
-func serveBackendConnected(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}) (bool, error) {
-	var n int
-	if err := q.QueryRow(ctx, `
-		SELECT count(*) FROM pg_stat_activity
-		WHERE datname = current_database() AND application_name = 'aveloxis-serve'`).Scan(&n); err != nil {
-		return false, fmt.Errorf("probing for a connected aveloxis-serve: %w", err)
-	}
-	return n > 0, nil
-}
-
 // listDedupPending counts duplicate (canonical group, list) partitions
-// still present — the ones a live worker lock made dedupRepoGroupsListServe
-// skip. The v0.27.17 consolidation's plain repoint of
-// repo_groups_list_serve.repo_group_id would collide on the UNIQUE for
-// exactly those, so the stage-10 gate consults this (SR-5: an ERROR is
-// not "none pending").
-func listDedupPending(ctx context.Context, pg *PostgresStore) (int, error) {
+// still present — the ones a live worker lock made the dedup skip, or a
+// dedup step that failed left behind. The v0.27.17 consolidation's plain
+// repoint of repo_groups_list_serve.repo_group_id would collide on the
+// UNIQUE for exactly those, so the stage-10 gate consults this (SR-5: an
+// ERROR is not "none pending"). Same spelling as the dedup's membership.
+func listDedupPending(ctx context.Context, q lockQuerier, stale string) (int, error) {
 	var n int
-	err := pg.pool.QueryRow(ctx, `
-		SELECT count(*) FROM (
-			SELECT 1
-			FROM aveloxis_data.repo_groups_list_serve l
-			JOIN (
-				SELECT repo_group_id,
-				       CASE WHEN rg_name IS NULL THEN repo_group_id
-				            ELSE MIN(repo_group_id) OVER (PARTITION BY rg_name) END AS canonical_group
-				FROM aveloxis_data.repo_groups
-			) g ON g.repo_group_id = l.repo_group_id
-			WHERE l.rgls_email IS NOT NULL
-			GROUP BY g.canonical_group, l.rgls_email
-			HAVING count(*) > 1) p`).Scan(&n)
-	if err != nil {
+	if err := q.QueryRow(ctx, `SELECT count(DISTINCT winner) FROM (`+dupListPartitionsSQL+`) p WHERE copies > 1`, stale).Scan(&n); err != nil {
 		return 0, fmt.Errorf("duplicate list partition probe: %w", err)
 	}
 	return n, nil

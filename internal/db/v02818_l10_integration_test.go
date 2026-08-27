@@ -13,7 +13,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 )
 
 // TestListDedupHandlesStagingCollisions (AVELOXIS_TEST_DB) — the L10
@@ -67,16 +66,39 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 			_ = fakeServe.Close(context.Background())
 		}
 	})
-	if seen, err := serveBackendsBeyondOwnPool(ctx, tx, false); err != nil || !seen {
+	if seen, err := serveBackendsBeyondOwnPool(ctx, tx, nil); err != nil || !seen {
 		t.Fatalf("probe after a serve connected mid-transaction: seen=%v err=%v — the activity snapshot must be cleared BEFORE the read", seen, err)
 	}
+	// Own-backend exclusion is by server PID: the fake session counted as
+	// OURS must not read as a running serve.
+	if seen, err := serveBackendsBeyondOwnPool(ctx, tx, []int32{int32(fakeServe.PgConn().PID())}); err != nil || seen {
+		t.Fatalf("probe with the serve session's PID excluded as our own: seen=%v err=%v, want false", seen, err)
+	}
 
-	// Lock parent before child in ONE statement — the order every other
-	// test takes implicitly (insert a group, then its list rows) — so a
-	// concurrent package waits on these DDL locks instead of deadlocking
-	// against them (the v0.27.114 40P01 class).
+	// Lock parent before child in ONE statement (the order an explicit
+	// "insert a group, then its list rows" transaction takes), then the
+	// transactional DROPs. Neither order is deadlock-free against every
+	// concurrent shape — an autocommit RegisterMailingList INSERT takes
+	// its deferred-FK share lock on repo_groups at commit, after its rgls
+	// row lock — so the acquisition retries the bounded 40P01 way
+	// (v0.27.120); the window is one INSERT's commit interval.
+	lockSQL := `LOCK TABLE aveloxis_data.repo_groups, aveloxis_data.repo_groups_list_serve IN ACCESS EXCLUSIVE MODE`
+	for attempt := 1; ; attempt++ {
+		_, err := tx.Exec(ctx, lockSQL)
+		if err == nil {
+			break
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "40P01" || attempt >= 5 {
+			t.Fatalf("%s (attempt %d): %v", lockSQL, attempt, err)
+		}
+		_ = tx.Rollback(ctx)
+		time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		if tx, err = store.pool.Begin(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, sql := range []string{
-		`LOCK TABLE aveloxis_data.repo_groups, aveloxis_data.repo_groups_list_serve IN ACCESS EXCLUSIVE MODE`,
 		`DROP INDEX IF EXISTS aveloxis_data.uq_repo_groups_rg_name`,
 		`DROP INDEX IF EXISTS aveloxis_data.idx_rgls_group_email`,
 	} {

@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 )
 
 // email_message FK-child indexes (v0.28.18, a fresh-context L11 sweep of

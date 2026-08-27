@@ -58,9 +58,11 @@ func (c *Client) FetchPRBatch(ctx context.Context, owner, repo string, numbers [
 }
 
 // fetchOnePRWithChildren composes the per-MR data for a single merge
-// request number. Returns nil, nil when the MR is inaccessible
-// (ClassSkip-classifiable error from the MR GET); the caller appends
-// only non-nil results.
+// request number. Any error from the MR GET is returned verbatim;
+// FetchPRBatch classifies it — a ClassSkip error (deleted/private MR)
+// skips that MR, anything else aborts the batch. There is no nil, nil
+// path (the old comment claiming one described a branch that was dead
+// even then — Copilot round on PR #191).
 //
 // v0.28.15: ONE GET of the merge request. Labels, assignees, reviewers,
 // branch/SHA meta, and the source/target project ids all live in that

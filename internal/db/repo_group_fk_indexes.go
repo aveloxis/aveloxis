@@ -64,3 +64,31 @@ func ensureRepoGroupFKIndexes(ctx context.Context, pg *PostgresStore, logger *sl
 			"aveloxis_data", idx.indexName, sql)
 	}
 }
+
+// repoGroupFKIndexesReady reports whether EVERY index in
+// repoGroupFKIndexes exists on its table and is valid (a CONCURRENTLY
+// build that failed or was interrupted leaves indisvalid = false). The
+// v0.27.17 consolidation is gated on this (v0.28.16): its loser DELETE
+// fires a deferred FK check per child table per deleted row, and an
+// unindexed child turns each check into a sequential scan.
+func repoGroupFKIndexesReady(ctx context.Context, pg *PostgresStore) (bool, error) {
+	tables := make([]string, len(repoGroupFKIndexes))
+	names := make([]string, len(repoGroupFKIndexes))
+	for i, idx := range repoGroupFKIndexes {
+		tables[i] = idx.table
+		names[i] = idx.indexName
+	}
+	var valid int
+	err := pg.pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM unnest($1::text[], $2::text[]) AS want(tbl, idx)
+		JOIN pg_namespace n ON n.nspname = 'aveloxis_data'
+		JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = want.tbl
+		JOIN pg_index x ON x.indrelid = c.oid
+		JOIN pg_class i ON i.oid = x.indexrelid AND i.relname = want.idx
+		WHERE x.indisvalid`, tables, names).Scan(&valid)
+	if err != nil {
+		return false, err
+	}
+	return valid == len(repoGroupFKIndexes), nil
+}

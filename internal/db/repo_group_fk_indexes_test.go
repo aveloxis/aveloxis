@@ -31,13 +31,32 @@ func TestRepoGroupFKIndexesRunBeforeConsolidation(t *testing.T) {
 		}
 	}
 
+	// v0.28.16: the consolidation lives in consolidateRepoGroups; the
+	// ensure call must precede the consolidation CALL (same function,
+	// so file order is execution order), and that call must sit inside
+	// the readiness gate — an index step that only records its failure
+	// would otherwise let the loser DELETE run unindexed anyway (the
+	// decorative-gate class; Copilot round on PR #191).
 	call := strings.Index(migrate, "ensureRepoGroupFKIndexes(ctx, pg, logger, errs)")
-	consolidation := strings.Index(migrate, `"v0.27.17 repoint repos.repo_group_id to canonical group per rg_name"`)
+	consolidation := strings.Index(migrate, "consolidateRepoGroups(ctx, pg, logger, errs)")
 	if call < 0 || consolidation < 0 {
-		t.Fatalf("expected both the ensureRepoGroupFKIndexes call (%d) and the v0.27.17 repoint label (%d) in migrate.go", call, consolidation)
+		t.Fatalf("expected both the ensureRepoGroupFKIndexes call (%d) and the consolidateRepoGroups call (%d) in migrate.go", call, consolidation)
 	}
 	if call > consolidation {
-		t.Errorf("ensureRepoGroupFKIndexes (pos %d) must run BEFORE the v0.27.17 consolidation (pos %d): the loser DELETE's deferred FK checks are the whole reason the indexes exist", call, consolidation)
+		t.Errorf("ensureRepoGroupFKIndexes (pos %d) must run BEFORE consolidateRepoGroups (pos %d): the loser DELETE's deferred FK checks are the whole reason the indexes exist", call, consolidation)
+	}
+	if strings.Count(migrate, "consolidateRepoGroups(ctx, pg, logger, errs)") != 1 {
+		t.Errorf("consolidateRepoGroups must be called from exactly one site (the gated one)")
+	}
+	between := migrate[call:consolidation]
+	if !strings.Contains(between, "repoGroupFKIndexesReady(ctx, pg)") {
+		t.Errorf("the consolidation call must be gated on repoGroupFKIndexesReady between the index build and the call — found no readiness probe in between")
+	}
+	if !strings.Contains(between, "*errs = append(*errs") {
+		t.Errorf("a not-ready / probe-error skip must still record an error so the migrate fails closed (v0.19.4)")
+	}
+	if !strings.Contains(migrate, `"v0.27.17 repoint repos.repo_group_id to canonical group per rg_name"`) {
+		t.Errorf("the v0.27.17 repoint label vanished from migrate.go — consolidateRepoGroups must keep the block verbatim")
 	}
 }
 
@@ -116,5 +135,12 @@ func TestRepoGroupFKIndexesEndToEnd(t *testing.T) {
 		if !valid {
 			t.Errorf("%s on %s exists but is INVALID", idx.indexName, idx.table)
 		}
+	}
+	ready, err := repoGroupFKIndexesReady(ctx, store)
+	if err != nil {
+		t.Fatalf("repoGroupFKIndexesReady: %v", err)
+	}
+	if !ready {
+		t.Error("repoGroupFKIndexesReady must report true after Migrate built every index")
 	}
 }

@@ -62,17 +62,19 @@ wait for operator action instead:
 | `repo_labor has duplicate natural-key groups — skipping uq_repo_labor_natural_key` | v0.27.18 | a writer bypassed the snapshot-replace path | investigate the duplicates, then re-run migrate |
 | `pg_trgm operator class gin_trgm_ops not found; skipping idx_repos_owner_name_trgm` | v0.18.30 | the extension needs superuser to create | performance only (monitor search falls back to sequential scans); `CREATE EXTENSION pg_trgm;` as a superuser and re-run migrate |
 
-The first migrate across a large gap can take a while. The long poles,
-each ledgered so it is paid exactly once:
+The first migrate across a large gap can take a while. The long poles
+("ledgered" = recorded in `migration_ledger` after it completes and never
+walked again; the others re-run on every migrate but converge to a cheap
+no-op once their work is done):
 
-| Step | Since | Cost |
-|---|---|---|
-| `commits.cmt_author_platform_username` backfill from resolved author ids | v0.25.6 | scales with the commits table (about an hour at ~470M rows) |
-| `repo_labor` history rotation (latest snapshot only) | v0.27.7 | keyset windows over `repo_labor_id`; minutes to tens of minutes |
-| message-bridge `data_source` backfills + review-ref dedup | v0.27.15 | 45–75 min on a fleet-scale `messages` table |
-| `repo_groups` "Default" consolidation | v0.27.17 | seconds to minutes (set-based) |
-| `message_heal_worklist` capture | v0.27.38 | populates the worklist that `heal-messages` consumes |
-| PR meta-link backfill (`meta_head_id` / `meta_base_id`) | v0.27.104 | tens of minutes over tens of millions of PR ids |
+| Step | Since | Ledgered? | Cost |
+|---|---|---|---|
+| `commits.cmt_author_platform_username` backfill from resolved author ids | v0.25.6 | yes | scales with the commits table (about an hour at ~470M rows) |
+| `repo_labor` history rotation (latest snapshot only) | v0.27.7 | yes | keyset windows over `repo_labor_id`; minutes to tens of minutes |
+| message-bridge `data_source` backfills + review-ref dedup | v0.27.15 | yes | 45–75 min on a fleet-scale `messages` table |
+| `repo_groups` "Default" consolidation | v0.27.17 | no — runs every migrate, a no-op once consolidated | seconds to minutes once the FK-child indexes exist (v0.28.15); the first pass deletes one row per duplicate group with a deferred FK check per child table |
+| `messages.msg_kind` backfill + `message_heal_worklist` capture | v0.27.38 | no — but fast-skips once its final step has run | keyset windows over `msg_id` (1h40m over 62M messages); populates the worklist that `heal-messages` consumes |
+| PR meta-link backfill (`meta_head_id` / `meta_base_id`) | v0.27.104 | yes | tens of minutes over tens of millions of PR ids |
 
 ## Configuration compatibility
 

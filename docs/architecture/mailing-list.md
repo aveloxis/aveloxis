@@ -142,7 +142,7 @@ Per-column documentation is in [`docs/schema.md`](../schema.md). See [`docs/cont
                               ArchiveSource (Pony Mail | public-inbox)
 ```
 
-- **Claim**: `ClaimNextList(system, cadence, staleLock, pid, bootID)` acquires a list with `FOR UPDATE SKIP LOCKED`, gated on cadence and on stale-lock recovery (`MailingListStaleLock = 2h` — a lock older than that is presumed dead, the v0.21.0 `(pid, boot_id)` recovery shape). `RecoverStaleListLocks` runs at startup.
+- **Claim**: `ClaimNextList(system, cadence, pid, bootID)` acquires a list with `FOR UPDATE SKIP LOCKED`, gated on cadence and on stale-lock recovery (`MailingListStaleLock = 2h` — a lock older than that is presumed dead, the v0.21.0 `(pid, boot_id)` recovery shape). `RecoverStaleListLocks` runs at startup.
 - **Checkpoint**: each completed month stamps `mlls_last_month` via `CheckpointListMonth`, so an interrupted scan resumes from where it stopped rather than re-fetching.
 - **Months to scan**: from `mlls_last_month` forward to the current month; for a never-scanned list, from `FirstMonth` (full history) when `mailing_list_backfill_months <= 0`, else the recent N-month window.
 - **Failure backoff** (v0.21.4 quadratic, base 120s): `RecordListFailure` schedules 2m → 8m → 18m → … and sidelines the list after `MailingListMaxFailures = 10` consecutive failures.

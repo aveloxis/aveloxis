@@ -69,6 +69,24 @@ type lockQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// leadingColumnIndexValid reports whether a VALID index led by column
+// exists on aveloxis_data.table (pg_index.indkey[0]; the
+// repoGroupFKIndexesReady shape for one pair).
+func leadingColumnIndexValid(ctx context.Context, q lockQuerier, table, column string) (bool, error) {
+	var ok bool
+	if err := q.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_namespace n
+			JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = $1
+			JOIN pg_index x ON x.indrelid = c.oid
+			JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = x.indkey[0]
+			WHERE n.nspname = 'aveloxis_data' AND a.attname = $2 AND x.indisvalid)`, table, column).Scan(&ok); err != nil {
+		return false, fmt.Errorf("probing for an index on %s(%s): %w", table, column, err)
+	}
+	return ok, nil
+}
+
 // dedupRepoGroupsListServe — SR-1 for idx_rgls_group_email (v0.28.18).
 // The UNIQUE (repo_group_id, rgls_email) index is the arbiter of
 // RegisterMailingList's ON CONFLICT and was built CONCURRENTLY since
@@ -82,6 +100,20 @@ type lockQuerier interface {
 // it inside a transaction of its own and rolls back).
 func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
 	const label = "v0.28.18 consolidate duplicate repo_groups_list_serve rows (lowest rgls_id wins)"
+	// The loser DELETE's deferred FK checks probe email_message.rgls_id at
+	// COMMIT — without a valid idx_email_message_rgls_id that is one
+	// sequential scan of the 12 GB table per loser (the v0.28.16
+	// decorative-gate class: ensureEmailMessageFKIndexes only RECORDS a
+	// failed CONCURRENTLY build). A probe ERROR is not "ready" (SR-5).
+	if ready, err := leadingColumnIndexValid(ctx, pg.pool, "email_message", "rgls_id"); err != nil {
+		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+		logger.Error("migration step failed", "label", label, "error", err)
+		return
+	} else if !ready {
+		*errs = append(*errs, fmt.Errorf("%s skipped: idx_email_message_rgls_id is missing or INVALID (its CONCURRENTLY build failed above) — the loser delete would sequential-scan email_message per row; rerun the migrate once the index builds", label))
+		logger.Warn("list dedup skipped — idx_email_message_rgls_id not valid", "label", label)
+		return
+	}
 	tx, err := pg.pool.Begin(ctx)
 	if err != nil {
 		*errs = append(*errs, fmt.Errorf("%s: begin: %w", label, err))

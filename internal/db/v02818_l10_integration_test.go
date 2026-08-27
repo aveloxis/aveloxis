@@ -247,6 +247,13 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	if n := survivors(d, e); n != 1 {
 		t.Errorf("P2 (ghost lock) after serve stopped: %d rows, want 1", n)
 	}
+	// The deferred FK email_message.rgls_id → repo_groups_list_serve is
+	// checked at COMMIT, which this rolled-back fixture never reaches —
+	// fire the queued checks now so a repoint/delete reordering fails
+	// HERE, not in production's migrate.
+	if _, err := tx.Exec(ctx, `SET CONSTRAINTS ALL IMMEDIATE`); err != nil {
+		t.Fatalf("deferred FK checks after the dedup: %v (the loser delete must come AFTER the email_message repoint)", err)
+	}
 	if n := count(`SELECT count(*) FROM aveloxis_ops.mailing_list_staging WHERE rgls_id = $1 AND repo_group_id = $2`, d, lockedGroup); n != 1 {
 		t.Errorf("P2's loser staging must be repointed to the winner: %d rows", n)
 	}

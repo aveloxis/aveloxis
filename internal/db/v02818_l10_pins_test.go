@@ -145,8 +145,16 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	lock := strings.Index(body, "FOR UPDATE")
 	del := strings.Index(body, `"staging_duplicates_deleted"`)
 	rep := strings.Index(body, `"staging_repointed"`)
-	if lock < 0 || del < 0 || rep < 0 || lock > del || del > rep {
-		t.Error("order must be: lock the frozen members FOR UPDATE, delete duplicate staging across the partition, then repoint")
+	emailRep := strings.Index(body, `"email_messages_repointed"`)
+	listDel := strings.Index(body, `"list_rows_deleted"`)
+	if lock < 0 || del < 0 || rep < 0 || emailRep < 0 || listDel < 0 || lock > del || del > rep || rep > emailRep || emailRep > listDel {
+		t.Error("order must be: lock the frozen members FOR UPDATE, delete duplicate staging across the partition, repoint staging, repoint email_message, and only then delete the loser list rows (the deferred FK fires at COMMIT)")
+	}
+	// The dedup itself is gated on a VALID idx_email_message_rgls_id (a
+	// failed CONCURRENTLY build is only recorded — the decorative-gate class).
+	outerBody := srctest.FuncBody(t, src, "func dedupRepoGroupsListServe(")
+	if !strings.Contains(outerBody, `leadingColumnIndexValid(ctx, pg.pool, "email_message", "rgls_id")`) || strings.Index(outerBody, "leadingColumnIndexValid(") > strings.Index(outerBody, "pg.pool.Begin(ctx)") {
+		t.Error("dedupRepoGroupsListServe must probe idx_email_message_rgls_id's validity BEFORE opening its transaction")
 	}
 	// THE rule: another aveloxis-serve connected → consolidate NOTHING
 	// (the drain holds no lock, so no lock-age rule can call a row idle);

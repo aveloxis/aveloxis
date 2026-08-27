@@ -101,15 +101,6 @@ const (
 	scancodeHealthRecheckInterval = 15 * time.Minute
 )
 
-// bootIDPath is the kernel-generated UUID that changes on every
-// boot. Reading this file at lock-record time (paired with the
-// scancode subprocess PID) makes the recovery liveness check
-// unambiguous across kernel reboots — without it a stored PID of
-// 12345 from before a reboot could match an unrelated process that
-// now happens to hold that PID. Linux-only; on macOS dev machines
-// the file is absent and we fall back to a process-stable
-// substitute that still detects "this is a new process".
-
 // ScancodeWorkerOptions configures a ScancodeWorker. v0.27.6 replaces
 // NewScancodeWorker's 10-positional-parameter signature — the second
 // spawn site (`aveloxis scancode-worker`) made the positional form an

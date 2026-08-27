@@ -117,3 +117,21 @@ func readFile(t *testing.T, name string) string {
 	}
 	return string(data)
 }
+
+// v0.28.18: the mailing-list lock's boot_id is the kernel boot id from
+// the shared reader, so the migrate-time liveness rule (dead PID on this
+// host → ghost) has something real to compare. The pre-.18 pid-nanos
+// synthetic made that branch dead.
+func TestMailingListWorkerStampsTheKernelBootID(t *testing.T) {
+	raw, err := os.ReadFile("mailinglist_wiring.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	if !strings.Contains(src, "bootID := hostid.BootID()") {
+		t.Error("the wiring must stamp hostid.BootID() as the worker's boot_id")
+	}
+	if strings.Contains(src, "UnixNano") {
+		t.Error("the per-process synthetic boot_id (pid-nanos) is banned — nothing compares it and it defeats the same-host liveness rule")
+	}
+}

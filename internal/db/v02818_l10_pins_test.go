@@ -125,7 +125,7 @@ func TestRefreshAllRepoAggregatesHoldsAnAdvisoryLock(t *testing.T) {
 func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	src := readSourceFile(t, "email_message_fk_indexes.go")
 	outer := srctest.FuncBody(t, src, "func dedupRepoGroupsListServe(")
-	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownServeConns())"} {
+	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownPoolIsServe())"} {
 		if !strings.Contains(outer, needle) {
 			t.Errorf("dedupRepoGroupsListServe must contain %s", needle)
 		}
@@ -162,7 +162,7 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 		}
 	}
 	probe := srctest.FuncBody(t, src, "func serveBackendsBeyondOwnPool(")
-	if !strings.Contains(probe, "datname = current_database() AND application_name = $1") {
+	if !strings.Contains(probe, "a.datname = current_database() AND a.application_name = $1") {
 		t.Error("serveBackendsBeyondOwnPool must filter pg_stat_activity by THIS database and the serve application_name (pg_stat_activity is cluster-wide)")
 	}
 	clear := strings.Index(probe, "SELECT pg_stat_clear_snapshot()")
@@ -173,8 +173,17 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	if strings.Contains(probe, "pg_stat_activity, pg_stat_clear_snapshot()") {
 		t.Error("the same-statement clear form is decorative")
 	}
-	if !strings.Contains(probe, "return n > ownServeConns") {
-		t.Error("serve's own pool connections must not count as a running worker host")
+	// serve's own backends are excluded exactly, by client_addr against
+	// the probing session's row — never by pool counters (TotalConns
+	// includes constructing connections; an own over-count failed toward
+	// "ghost", the unsafe direction).
+	for _, needle := range []string{"NOT $2::boolean", "a.client_addr IS DISTINCT FROM", "WHERE s.pid = pg_backend_pid()"} {
+		if !strings.Contains(probe, needle) {
+			t.Errorf("serveBackendsBeyondOwnPool must contain %s", needle)
+		}
+	}
+	if strings.Contains(probe, "TotalConns()") || strings.Contains(src, "ownServeConns") {
+		t.Error("own-backend exclusion must not count pool connections")
 	}
 	// Membership must be frozen: the partition window is spelled once, in
 	// dupListPartitionsSQL, and no statement re-derives the set.

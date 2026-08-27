@@ -16,6 +16,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/hostid"
 	"github.com/aveloxis/aveloxis/internal/mailinglist"
 	"github.com/aveloxis/aveloxis/internal/safego"
 )
@@ -69,7 +70,11 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 		cadence = db.DefaultMailingListCadence
 	}
 	pid := os.Getpid()
-	bootID := fmt.Sprintf("%d-%d", pid, time.Now().UnixNano())
+	// v0.28.18: the REAL kernel boot id (one shared reader with the
+	// scancode worker), so a migrate on this host can adjudicate a young
+	// lock by PID liveness. Pre-.18 this was a per-process synthetic
+	// (pid-nanos) that nothing ever compared.
+	bootID := hostid.BootID()
 
 	// Spawn a worker pool per system definition that has a supported backend
 	// (Phase 3: Apache Pony Mail + lore public-inbox). Each pool shares one

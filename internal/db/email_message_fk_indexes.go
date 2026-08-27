@@ -100,7 +100,7 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	touched, err := dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownServeConns())
+	touched, err := dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownPoolIsServe())
 	if err != nil {
 		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
 		logger.Error("migration step failed", "label", label, "error", err)
@@ -122,15 +122,12 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 		"list_rows_deleted", touched["list_rows_deleted"])
 }
 
-// ownServeConns is how many of this process's OWN pool connections carry
-// application_name 'aveloxis-serve' — `aveloxis serve` runs its startup
-// migrate on its own tagged pool before any worker exists, and must not
-// count itself as a running worker host (the seventh pass's finding).
-func (s *PostgresStore) ownServeConns() int {
-	if s.pool.Config().ConnConfig.RuntimeParams["application_name"] != serveApplicationName {
-		return 0
-	}
-	return int(s.pool.Stat().TotalConns())
+// ownPoolIsServe reports whether THIS process's pool is `aveloxis serve`'s
+// — serve runs its startup migrate on its own tagged pool before any
+// worker exists and must not count itself as a running worker host (the
+// seventh pass's finding).
+func (s *PostgresStore) ownPoolIsServe() bool {
+	return s.pool.Config().ConnConfig.RuntimeParams["application_name"] == serveApplicationName
 }
 
 // serveApplicationName is the application_name `aveloxis serve` tags its
@@ -139,25 +136,35 @@ func (s *PostgresStore) ownServeConns() int {
 const serveApplicationName = "aveloxis-serve"
 
 // serveBackendsBeyondOwnPool reports whether any `aveloxis serve` backend
-// OTHER than this process's own pool is connected to THIS database —
-// the cross-host liveness signal for a worker lock whose boot_id is not
-// ours. pg_stat_activity is cluster-wide (the datname filter is
-// load-bearing) and SNAPSHOTTED per transaction (the first read fixes
-// the view; a same-statement pg_stat_clear_snapshot() runs AFTER the
-// read — proven with EXPLAIN on PG 18), so the clear is its own
-// statement first. An over-count (an orphaned serve backend, a pool that
-// grew between the two reads) fails safe toward "live".
-func serveBackendsBeyondOwnPool(ctx context.Context, q lockQuerier, ownServeConns int) (bool, error) {
+// OTHER than this process's own is connected to THIS database — the
+// cross-host liveness signal for a worker lock whose boot_id is not
+// ours. When this process IS serve, its own backends are excluded by
+// client_addr against the probing session's own row (pg_backend_pid()):
+// the pidfile allows one serve per host, so a same-address serve
+// backend is ours (unix-socket sessions carry NULL on both sides and
+// compare equal). Exact — no pool counters (the ninth pass: TotalConns
+// includes constructing connections, and an over-count of our own
+// backends failed toward "ghost"). The one residual: two serve hosts
+// behind one NAT address, an unsupported topology. pg_stat_activity is
+// cluster-wide (the datname filter is load-bearing) and SNAPSHOTTED per
+// transaction (the first read fixes the view; a same-statement
+// pg_stat_clear_snapshot() runs AFTER the read — proven with EXPLAIN on
+// PG 18), so the clear is its own statement first.
+func serveBackendsBeyondOwnPool(ctx context.Context, q lockQuerier, ownIsServe bool) (bool, error) {
 	if _, err := q.Exec(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
 		return false, fmt.Errorf("clearing the activity snapshot: %w", err)
 	}
 	var n int
 	if err := q.QueryRow(ctx, `
-		SELECT count(*) FROM pg_stat_activity
-		WHERE datname = current_database() AND application_name = $1`, serveApplicationName).Scan(&n); err != nil {
+		SELECT count(*) FROM pg_stat_activity a
+		WHERE a.datname = current_database() AND a.application_name = $1
+		  AND (NOT $2::boolean
+		       OR a.client_addr IS DISTINCT FROM
+		          (SELECT s.client_addr FROM pg_stat_activity s WHERE s.pid = pg_backend_pid()))`,
+		serveApplicationName, ownIsServe).Scan(&n); err != nil {
 		return false, fmt.Errorf("probing for a connected aveloxis-serve: %w", err)
 	}
-	return n > ownServeConns, nil
+	return n > 0, nil
 }
 
 // workerLockLive adjudicates ONE age-live worker lock. Same host (the
@@ -204,7 +211,7 @@ func workerLockLive(pid int, bootID string, serveElsewhere bool) bool {
 // resume point and last run; the scan stays incomplete if any copy
 // was); (5) delete the losers. Returns nil counts when nothing needed
 // doing.
-func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Logger, stale string, ownServeConns int) (map[string]int64, error) {
+func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Logger, stale string, ownIsServe bool) (map[string]int64, error) {
 	type candidate struct {
 		id, winner int64
 		ageLive    bool
@@ -236,7 +243,7 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 	}
 	serveElsewhere := false
 	if anyAgeLive {
-		if serveElsewhere, err = serveBackendsBeyondOwnPool(ctx, tx, ownServeConns); err != nil {
+		if serveElsewhere, err = serveBackendsBeyondOwnPool(ctx, tx, ownIsServe); err != nil {
 			return nil, err
 		}
 	}
@@ -298,7 +305,7 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 		return nil, fmt.Errorf("re-checking worker locks: %w", err)
 	}
 	if len(lates) > 0 {
-		if serveElsewhere, err = serveBackendsBeyondOwnPool(ctx, tx, ownServeConns); err != nil {
+		if serveElsewhere, err = serveBackendsBeyondOwnPool(ctx, tx, ownIsServe); err != nil {
 			return nil, err
 		}
 		winnerOf := map[int64]int64{}

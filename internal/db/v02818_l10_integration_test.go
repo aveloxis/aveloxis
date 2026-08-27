@@ -70,13 +70,18 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 			_ = fakeServe.Close(context.Background())
 		}
 	})
-	if seen, err := serveBackendsBeyondOwnPool(ctx, tx, 0); err != nil || !seen {
+	if seen, err := serveBackendsBeyondOwnPool(ctx, tx, false); err != nil || !seen {
 		t.Fatalf("probe after a serve connected mid-transaction: seen=%v err=%v — the activity snapshot must be cleared BEFORE the read", seen, err)
 	}
 
+	// Lock parent before child in ONE statement — the order every other
+	// test takes implicitly (insert a group, then its list rows) — so a
+	// concurrent package waits on these DDL locks instead of deadlocking
+	// against them (the v0.27.114 40P01 class).
 	for _, sql := range []string{
-		`DROP INDEX IF EXISTS aveloxis_data.idx_rgls_group_email`,
+		`LOCK TABLE aveloxis_data.repo_groups, aveloxis_data.repo_groups_list_serve IN ACCESS EXCLUSIVE MODE`,
 		`DROP INDEX IF EXISTS aveloxis_data.uq_repo_groups_rg_name`,
+		`DROP INDEX IF EXISTS aveloxis_data.idx_rgls_group_email`,
 	} {
 		if _, err := tx.Exec(ctx, sql); err != nil {
 			t.Fatalf("%s: %v", sql, err)
@@ -165,7 +170,7 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	}
 
 	// Pass 1: serve "running" (the fake session), no worker owns any lock.
-	touched, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), 0)
+	touched, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), false)
 	if err != nil || touched == nil {
 		t.Fatalf("pass 1: touched=%v err=%v, want P1 consolidated", touched, err)
 	}
@@ -226,7 +231,7 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	}
 	fakeServeOpen = false
 	for i := 0; ; i++ {
-		still, err := serveBackendsBeyondOwnPool(ctx, tx, 0)
+		still, err := serveBackendsBeyondOwnPool(ctx, tx, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -238,7 +243,7 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	second, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), 0)
+	second, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), false)
 	if err != nil || second == nil {
 		t.Fatalf("pass 2 with serve stopped: touched=%v err=%v, want the ghost-locked partitions consolidated", second, err)
 	}
@@ -269,7 +274,7 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 		t.Errorf("pending partitions after pass 2 = %d, want %d", n, wantPendingAfter)
 	}
 	// Idempotent: nothing unlocked remains.
-	third, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), 0)
+	third, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), false)
 	if err != nil || third != nil {
 		t.Fatalf("third pass: touched=%v err=%v, want nothing to do", third, err)
 	}

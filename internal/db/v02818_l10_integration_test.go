@@ -27,10 +27,11 @@ import (
 // other), H2 under A and B (the winner's copy survives), H3 under C, H4
 // under X (repointed incl. repo_group_id); email_message under B;
 // checkpoints merged into A. P2 = D/E with E carrying a young worker
-// lock — live only while an aveloxis-serve backend OTHER than this
-// process is connected. A fake aveloxis-serve session makes it live;
-// handing that session's own PID to the probe (this process's pool) or
-// closing it makes the same lock a ghost.
+// lock (a ghost once no serve runs). THE rule: while a fake
+// aveloxis-serve session is connected NOTHING is consolidated (the drain
+// holds no lock, so no row is provably idle); handing that session's
+// own PID to the probe (this process's pool) hides it; closing it lets
+// every partition consolidate, ghost lock included.
 func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.Close)
@@ -170,19 +171,49 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 		t.Helper()
 		return count(`SELECT count(*) FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = ANY($1::bigint[])`, ids)
 	}
+
 	pending := func() int {
 		t.Helper()
-		n, err := listDedupPending(ctx, tx, MailingListStaleLock.String())
+		n, err := listDedupPending(ctx, tx)
 		if err != nil {
 			t.Fatalf("listDedupPending: %v", err)
 		}
 		return n
 	}
+	// Pass 1: another serve is "running" (the fake session) → nothing.
+	touched, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), nil)
+	if err != nil || touched != nil {
+		t.Fatalf("pass 1 with a serve connected: touched=%v err=%v, want nothing consolidated", touched, err)
+	}
+	if n := survivors(a, b, c, x, d, e); n != 6 {
+		t.Errorf("with a serve connected every list row must survive: %d, want 6", n)
+	}
+	if n := pending(); n != 2 {
+		t.Errorf("pending partitions after pass 1 = %d, want 2", n)
+	}
 
-	// Pass 1: serve "running" (the fake session), no worker owns any lock.
-	touched, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), nil)
-	if err != nil || touched == nil {
-		t.Fatalf("pass 1: touched=%v err=%v, want P1 consolidated", touched, err)
+	// Pass 2: `stop serve` → `migrate`. Backend teardown is asynchronous —
+	// wait until the probe no longer sees the closed session.
+	if err := fakeServe.Close(ctx); err != nil {
+		t.Fatalf("closing fake serve: %v", err)
+	}
+	fakeServeOpen = false
+	for i := 0; ; i++ {
+		still, err := serveBackendsBeyondOwnPool(ctx, tx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !still {
+			break
+		}
+		if i > 100 {
+			t.Fatalf("fake serve backend still listed in pg_stat_activity after 10s")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	second, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), nil)
+	if err != nil || second == nil {
+		t.Fatalf("pass 2 with serve stopped: touched=%v err=%v, want every partition consolidated", second, err)
 	}
 	if n := survivors(a, b, c, x); n != 1 || survivors(a) != 1 {
 		t.Errorf("P1: %d list rows survived, want 1 (the lowest rgls_id)", n)
@@ -213,38 +244,8 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	if lastMonth != "2026-07" || !lastRunSet || complete {
 		t.Errorf("P1 checkpoints = month %q run-set %v complete %v, want 2026-07 / true / false", lastMonth, lastRunSet, complete)
 	}
-	if n := survivors(d, e); n != 2 {
-		t.Errorf("P2 (young lock, another serve connected) must be skipped: %d rows, want 2", n)
-	}
-	if n := pending(); n != 1 {
-		t.Errorf("pending partitions after pass 1 = %d, want 1", n)
-	}
-
-	// Pass 2: `stop serve` → `migrate`. Backend teardown is asynchronous —
-	// wait until the probe no longer sees the closed session.
-	if err := fakeServe.Close(ctx); err != nil {
-		t.Fatalf("closing fake serve: %v", err)
-	}
-	fakeServeOpen = false
-	for i := 0; ; i++ {
-		still, err := serveBackendsBeyondOwnPool(ctx, tx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !still {
-			break
-		}
-		if i > 100 {
-			t.Fatalf("fake serve backend still listed in pg_stat_activity after 10s")
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	second, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), nil)
-	if err != nil || second == nil {
-		t.Fatalf("pass 2 with serve stopped: touched=%v err=%v, want the ghost-locked partition consolidated", second, err)
-	}
 	if n := survivors(d, e); n != 1 {
-		t.Errorf("P2 after serve stopped: %d rows, want 1", n)
+		t.Errorf("P2 (ghost lock) after serve stopped: %d rows, want 1", n)
 	}
 	if n := count(`SELECT count(*) FROM aveloxis_ops.mailing_list_staging WHERE rgls_id = $1 AND repo_group_id = $2`, d, lockedGroup); n != 1 {
 		t.Errorf("P2's loser staging must be repointed to the winner: %d rows", n)
@@ -260,7 +261,7 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 		t.Errorf("pending partitions after pass 2 = %d, want 0", n)
 	}
 	// Idempotent: nothing unlocked remains.
-	third, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), MailingListStaleLock.String(), nil)
+	third, err := dedupRepoGroupsListServeTx(ctx, tx, slog.Default(), nil)
 	if err != nil || third != nil {
 		t.Fatalf("third pass: touched=%v err=%v, want nothing to do", third, err)
 	}

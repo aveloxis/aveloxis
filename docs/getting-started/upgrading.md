@@ -80,12 +80,12 @@ fail, but need nothing from you and simply re-run on the next migrate):
 | `repo_labor has duplicate natural-key groups — skipping uq_repo_labor_natural_key` | v0.27.18 | a writer bypassed the snapshot-replace path | investigate the duplicates, then re-run migrate |
 | `pg_trgm operator class gin_trgm_ops not found; skipping idx_repos_owner_name_trgm` | v0.25.30 (the index itself is v0.18.30; it was fatal from v0.19.4 until the v0.25.30 skip) | the extension needs superuser to create | performance only (monitor search falls back to sequential scans); `CREATE EXTENSION pg_trgm;` as a superuser and re-run migrate |
 
-One more gate is fail-closed rather than warn-only — it waits for a
-running worker, not for you:
+One more gate is fail-closed rather than warn-only — it waits for
+`serve` to be stopped:
 
 | Log line | Since | What it means | Action |
 |---|---|---|---|
-| `repo_groups_list_serve duplicate partitions held by a LIVE mailing-list worker are skipped this migrate` | v0.28.18 | a duplicate list registration is mid-scan by a running worker; the list UNIQUE index and the `repo_groups` consolidation wait for it. A young lock is a ghost — and is consolidated — only when no `aveloxis serve` other than the migrating process is connected to the database | let the worker finish and re-run migrate, or run it with `serve` stopped |
+| `repo_groups_list_serve carries duplicate (group, list) rows but another aveloxis-serve is connected to this database — consolidating nothing` | v0.28.18 | duplicate list registrations exist and a running `aveloxis serve` (any one connected to this database other than the migrating process) could be draining one of them — the drain holds no lock, so no row is provably idle; the list UNIQUE index and the `repo_groups` consolidation wait | stop `serve`, re-run `aveloxis migrate --skip-views`, start `serve` |
 
 The first migrate across a large gap can take a while. The long poles
 ("ledgered" = recorded in `migration_ledger` after it completes and never

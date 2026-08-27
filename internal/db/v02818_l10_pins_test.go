@@ -125,13 +125,13 @@ func TestRefreshAllRepoAggregatesHoldsAnAdvisoryLock(t *testing.T) {
 func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	src := readSourceFile(t, "email_message_fk_indexes.go")
 	outer := srctest.FuncBody(t, src, "func dedupRepoGroupsListServe(")
-	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, MailingListStaleLock.String(), pg.ownBackendPIDs())"} {
+	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, pg.ownBackendPIDs())"} {
 		if !strings.Contains(outer, needle) {
 			t.Errorf("dedupRepoGroupsListServe must contain %s", needle)
 		}
 	}
 	body := srctest.FuncBody(t, src, "func dedupRepoGroupsListServeTx(")
-	for _, needle := range []string{"FOR UPDATE", "dupListPartitionsSQL", "WHERE copies > 1", "c.ageLive && serveElsewhere", "unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)", "repo_group_id = (SELECT repo_group_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = w.winner)", "PARTITION BY w.winner, st.message_id_header", "ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id", "GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month)"} {
+	for _, needle := range []string{"FOR UPDATE", "dupListPartitionsSQL", "WHERE copies > 1", "unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)", "repo_group_id = (SELECT repo_group_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = w.winner)", "PARTITION BY w.winner, st.message_id_header", "ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id", "GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month)"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("dedupRepoGroupsListServeTx must contain %s", needle)
 		}
@@ -143,19 +143,27 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 		t.Error("empty-string addresses must be deduplicated too — only NULLs are distinct under the UNIQUE")
 	}
 	lock := strings.Index(body, "FOR UPDATE")
-	recheck := strings.Index(body, "re-checking worker locks")
 	del := strings.Index(body, `"staging_duplicates_deleted"`)
 	rep := strings.Index(body, `"staging_repointed"`)
-	if lock < 0 || recheck < 0 || del < 0 || rep < 0 || lock > recheck || recheck > del || del > rep {
-		t.Error("order must be: lock the frozen members FOR UPDATE, re-check worker locks, delete duplicate staging across the partition, then repoint")
+	if lock < 0 || del < 0 || rep < 0 || lock > del || del > rep {
+		t.Error("order must be: lock the frozen members FOR UPDATE, delete duplicate staging across the partition, then repoint")
 	}
-	// A young lock is live only while an aveloxis-serve OTHER than this
-	// process is connected (`aveloxis serve` runs its startup migrate on
-	// its own tagged pool before any worker exists; `stop serve` →
-	// `migrate` must not read mid-scan ghosts as running workers). No PID
-	// rule: PIDs are namespaced and boot ids host-global in containers.
+	// THE rule: another aveloxis-serve connected → consolidate NOTHING
+	// (the drain holds no lock, so no lock-age rule can call a row idle);
+	// probed before and again after the FOR UPDATE. No PID/boot-id rule:
+	// PIDs are namespaced and boot ids host-global in containers; no
+	// lock-age rule: mlls_locked_at is stamped by the scan only.
 	if strings.Contains(src, "pidfile.IsRunning") || strings.Contains(src, "hostid.BootID") {
 		t.Error("no same-host PID/boot-id liveness rule — it is wrong in both directions under the container deployment (tenth pass)")
+	}
+	if code := srctest.StripGoComments(src); strings.Contains(code, "mlls_locked_at") || strings.Contains(code, "MailingListStaleLock") {
+		t.Error("no lock-age rule — the drain never stamps a lock, so 'no young lock' never meant 'idle' (eleventh pass)")
+	}
+	if strings.Count(body, "serveBackendsBeyondOwnPool(ctx, tx, ownPIDs)") != 2 {
+		t.Error("the serve probe must run before the FOR UPDATE and again on the locked set")
+	}
+	if strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), `ConnectionStringWithAppName("aveloxis-serve")`) || !strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), "ConnectionStringWithAppName(db.ServeApplicationName)") {
+		t.Error("runServe must tag its pool with db.ServeApplicationName (one shared spelling — the probe counts 0 forever if the literals drift)")
 	}
 	if !strings.Contains(src, "func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs []int32)") {
 		t.Error("the probe must take pgx.Tx — its two statements (snapshot clear, then read) must run on ONE session")

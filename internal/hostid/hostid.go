@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
 // SPDX-License-Identifier: MIT
 
-// Package hostid identifies the machine a process runs on for the
-// (pid, boot_id) crash-recovery locks the scancode and mailing-list
-// workers stamp (v0.21.0, v0.25.7) and the migrate-time liveness
-// decisions that read them (v0.28.18). One reader (SR-17): a lock whose
-// boot_id equals this host's is adjudicated by PID liveness; any other
-// boot_id is another host (or unknown) and needs a database-side signal.
+// Package hostid reads the kernel boot id for the (pid, boot_id) locks
+// the scancode worker (v0.21.0 — its orphan recovery compares it) and
+// the mailing-list worker (v0.25.7 — informational; nothing compares it,
+// and no migrate-time rule may be built on it: PIDs are namespaced and
+// the boot id host-global under the container deployment) stamp. One
+// reader (SR-17).
 package hostid
 
 import (

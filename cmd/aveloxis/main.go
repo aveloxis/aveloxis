@@ -171,7 +171,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	poolSize := max(int32(workers+15), 20)
 	// application_name = "aveloxis-serve" so post-stop verification
 	// (and operators reading pg_stat_activity) can filter per-process.
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-serve"), logger, poolSize)
+	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(db.ServeApplicationName), logger, poolSize)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
 	}

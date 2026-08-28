@@ -258,7 +258,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	select {
 	case <-schedDone:
 	case <-time.After(shutdownBudget(cfg) + 30*time.Second):
-		logger.Warn("scheduler did not finish shutdown within grace + margin — exiting anyway")
+		logger.Warn("scheduler did not finish shutdown within the shutdown budget + margin — exiting anyway")
 	}
 	return nil
 }
@@ -1431,10 +1431,10 @@ func startComponent(component, cfgPath string) error {
 
 // verifyBackendsDisconnected polls pg_stat_activity for backends with
 // the given application_name (e.g., "aveloxis-serve") and waits up to
-// 30 seconds for the count to drop to zero. If any persist, prints
-// the persistent PIDs paired with a pg_terminate_backend recipe so
-// the operator can act in seconds rather than wait the full TCP
-// keepalive timeout (tens of minutes).
+// the serve shutdown budget + margin for the count to drop to zero.
+// If any persist, prints the persistent PIDs paired with a
+// pg_terminate_backend recipe so the operator can act in seconds
+// rather than wait the full TCP keepalive timeout (tens of minutes).
 //
 // v0.20.0 introduced this to close the gap that produced the
 // 2026-05-08 26-minute orphan: SIGTERM was sent successfully, but the
@@ -1449,9 +1449,12 @@ func verifyBackendsDisconnected(cfgPath, appName string) {
 		// degrade gracefully.
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-	defer cancel()
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), bootLog)
+	// The dial gets its own bound so a slow connect can never eat into
+	// the poll window (pass 41 — the pass-40 shared ctx let a >5s dial
+	// reintroduce the mid-poll expiry it was fixing).
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer dialCancel()
+	store, err := db.NewPostgresStore(dialCtx, cfg.Database.ConnectionString(), bootLog)
 	if err != nil {
 		fmt.Printf("(could not verify %s backends disconnected: %v)\n", appName, err)
 		return
@@ -1460,13 +1463,30 @@ func verifyBackendsDisconnected(cfgPath, appName string) {
 
 	// Poll once a second for the serve's full shutdown budget plus a
 	// margin (pass 39: a serve legitimately inside its bookkeeping wait
-	// used to be reported as orphaned backends at 30s).
+	// used to be reported as orphaned backends at 30s). The poll ctx is
+	// sized FROM the budget — pass 40: a fixed 35s ctx expired mid-poll,
+	// the query error's silent return skipped the WARNING below, and a
+	// genuine orphan was never reported.
 	budget := shutdownBudget(cfg) + 30*time.Second
-	deadline := time.Now().Add(budget)
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), budget+5*time.Second)
+	defer cancel()
+	deadline := start.Add(budget)
 	var lastPids []int
 	for time.Now().Before(deadline) {
 		pids, err := store.PidsByAppName(ctx, appName)
 		if err != nil {
+			// A failed poll is not "all clear" — but it is not the
+			// orphan verdict either: the pids from the last successful
+			// check may be a serve mid-graceful-shutdown, and printing
+			// the terminate recipes here would invite the operator to
+			// kill live backends mid-bookkeeping (pass 41). Hedge.
+			fmt.Printf("(backend verification aborted %s into the %s budget: %v)\n",
+				time.Since(start).Truncate(time.Second), budget.Truncate(time.Second), err)
+			if len(lastPids) > 0 {
+				fmt.Printf("%s backends still connected as of the last successful check: %v — re-check pg_stat_activity before terminating anything.\n",
+					appName, lastPids)
+			}
 			return
 		}
 		if len(pids) == 0 {
@@ -1475,7 +1495,8 @@ func verifyBackendsDisconnected(cfgPath, appName string) {
 		lastPids = pids
 		time.Sleep(1 * time.Second)
 	}
-	// Persistent backends past the budget — surface PIDs and the actionable fix.
+	// Persistent backends past the FULL budget — surface PIDs and the
+	// actionable fix.
 	if len(lastPids) > 0 {
 		fmt.Printf("WARNING: %d %s backend(s) did not disconnect within %s after SIGTERM.\n",
 			len(lastPids), appName, budget.Truncate(time.Second))
@@ -1526,8 +1547,9 @@ PID files are cleaned up automatically.`,
 					stopped++
 					// v0.20.0: poll pg_stat_activity for the matching
 					// application_name and warn if backends linger past
-					// 30 seconds. Surfaces orphans-after-stop without
-					// requiring the operator to know about pg_locks.
+					// the shutdown budget + margin (pass 39). Surfaces
+					// orphans-after-stop without requiring the operator
+					// to know about pg_locks.
 					verifyBackendsDisconnected(*cfgPath, "aveloxis-"+comp)
 				}
 			}

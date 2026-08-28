@@ -399,12 +399,12 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	safego.Go(w.logger, "scancode-lock-check", func() { w.checkOwnLocks(ctx) })
 
 	jobs := make(chan db.ScancodeJob)
-	var wg sync.WaitGroup
 
-	// Runner pool — each runner consumes one job at a time.
+	// Runner pool — each runner consumes one job at a time. The
+	// runners' RETURN is deliberately unwaited (pass 40 removed the
+	// dead WaitGroup): only their DB bookkeeping gates the shutdown.
 	for i := 0; i < w.workerCount; i++ {
-		wg.Add(1)
-		safego.Go(w.logger, "scancode-runner", func() { w.runner(ctx, jobs, &wg) })
+		safego.Go(w.logger, "scancode-runner", func() { w.runner(ctx, jobs) })
 	}
 
 	// Dispatcher claims jobs and feeds the channel. When ctx is
@@ -420,18 +420,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 
 	<-dispatcherDone
 
-	// Graceful shutdown: wait up to shutdownGrace for runners to
-	// finish. If they don't, the runners' ctx-derived cmd.Start
-	// will have its subprocess killed via syscall.Kill in the
-	// graceful-shutdown defer chain on each runOne.
-	runnersDone := make(chan struct{})
-	go func() {
-		defer safego.Recover(w.logger, "scancode-runners-wait")
-		wg.Wait()
-		close(runnersDone)
-	}()
-
-	// The scans themselves die at cancel (cmd.Cancel on the derived
+	// Graceful shutdown. The scans themselves die at cancel (cmd.Cancel
 	// ctx); what the runners still need is their DB BOOKKEEPING — the
 	// post-kill Wait and the lock clear / stamp retry on a Background
 	// ctx. Wait for THAT (not for the runners' clone-dir removal, which
@@ -450,7 +439,6 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 		w.logger.Warn("scancode worker shutdown grace expired — runners still inside their bookkeeping; their locks are recovered on the next start",
 			"grace", w.shutdownGrace.String(), "bookkeeping_allowance", ScancodeShutdownBookkeepingGrace.String())
 	}
-	_ = runnersDone // the runners' clone-dir removal is not waited for; the startup sweep covers what a process exit cuts
 
 	// v0.27.6 shutdown sweep: remove ALL repo_* clone dirs and
 	// preflight temp dirs. A clone can't outlive the worker usefully
@@ -589,10 +577,11 @@ func (w *ScancodeWorker) dispatcher(ctx context.Context, jobs chan<- db.Scancode
 }
 
 // runner consumes jobs and runs them serially. When jobs is closed
-// (dispatcher exit), the loop falls through and the goroutine
-// returns, decrementing the WaitGroup.
-func (w *ScancodeWorker) runner(ctx context.Context, jobs <-chan db.ScancodeJob, wg *sync.WaitGroup) {
-	defer wg.Done()
+// (dispatcher exit), the loop falls through and the goroutine returns
+// — unwaited: each job's DB bookkeeping is what Run tracks
+// (w.bookkeeping), and the trailing clone-dir removal is covered by
+// the startup sweep when a process exit cuts it.
+func (w *ScancodeWorker) runner(ctx context.Context, jobs <-chan db.ScancodeJob) {
 	for job := range jobs {
 		w.runOne(ctx, job)
 	}
@@ -624,6 +613,15 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
 			"skip_reason", scancodeSkipReasonGeneratedContent)
 		if err := w.store.MarkScancodeSkipped(ctx, job.RepoID, scancodeSkipReasonGeneratedContent); err != nil {
+			if ctx.Err() != nil {
+				// Shutdown cut the skip stamp off: clear the lock so the
+				// row re-claims instead of waiting out the stale window
+				// (pass 40 — the one DB write in runOne the sweep missed).
+				w.logger.Info("scancode runOne: skip stamp interrupted by shutdown — lock cleared",
+					"repo_id", job.RepoID)
+				w.clearLockBestEffort(ctx, job.RepoID)
+				return
+			}
 			w.logger.Warn("scancode runOne: MarkScancodeSkipped failed",
 				"repo_id", job.RepoID, "error", err)
 		}
@@ -1170,17 +1168,6 @@ func (w *ScancodeWorker) sweepCloneDirAtShutdown() {
 	}
 }
 
-// clearLockBestEffort attempts to clear the lock and logs if it
-// fails. Uses a background context so a canceled ctx (graceful
-// shutdown) doesn't prevent the cleanup write.
-//
-// As of v0.21.4 this is used ONLY by the dispatcher's
-// ctx-canceled-after-claim cleanup — that's a clean release of a
-// row we claimed but never dispatched to a runner, not a failure
-// event — and by the recovery paths. All repo-specific failure paths
-// in the runOne pipeline use recordFailureBestEffort instead so the
-// failure-counter + last_failed_at columns get updated and the
-// backoff gate applies.
 // scancodeWaitDelay bounds how long cmd.Wait blocks after the process
 // group is SIGKILLed (pipes held by stragglers); scancodeBestEffortDBTimeout
 // bounds each Background-ctx bookkeeping write a runner issues after its
@@ -1202,6 +1189,15 @@ const (
 	ScancodeShutdownBookkeepingGrace = scancodeWaitDelay + 2*scancodeBestEffortDBTimeout
 )
 
+// clearLockBestEffort attempts to clear the lock and logs if it
+// fails. Used by the recovery paths and (v0.28.18) every runOne
+// SHUTDOWN branch — a scan cut off by `stop serve` is a clean release,
+// pinned by the enclosing-branch test in
+// scancode_failure_backoff_test.go. FAILURE paths still route through
+// recordFailureBestEffort so the failure-counter + last_failed_at
+// columns update and the backoff gate applies (v0.21.4). The
+// dispatcher's claimed-but-undispatched release inlines its own
+// bounded ClearScancodeLock.
 func (w *ScancodeWorker) clearLockBestEffort(ctx context.Context, repoID int64) {
 	// Try the live ctx first; fall back to a BOUNDED background ctx if
 	// canceled (v0.27.40: a hung DB at shutdown must not block forever).

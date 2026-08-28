@@ -1037,7 +1037,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// Look up the repo to get URL, owner, name, platform.
 	repo, err := s.store.GetRepoByID(ctx, job.RepoID)
 	if errors.Is(err, context.Canceled) {
-		return // shutdown before the job started: nothing recorded, the row re-queues on restart
+		return // shutdown before the job started: nothing recorded, the row re-queues via the shutdown lock release
 	}
 	if err != nil {
 		s.logger.Error("failed to look up repo", "repo_id", job.RepoID, "error", err)
@@ -1170,7 +1170,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	}
 	// Shutdown is not a failure (pass 34): a job cut short records
 	// NOTHING — no failed outcome, no last_error, no force-full flag —
-	// and its row re-queues on restart when the scheduler releases its
+	// and its row re-queues when the scheduler's shutdown arm releases its
 	// locks. Every phase below classifies its own cancellation; these
 	// guards end the job between phases.
 	if ctx.Err() != nil {
@@ -1246,9 +1246,9 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		s.cfg.Collection.ArchivedRecollectMultiplierValue())
 	if errors.Is(err, context.Canceled) {
 		// The work is stored (idempotent upserts); only the completion
-		// stamp is lost — the row re-queues on restart and the next
+		// stamp is lost — the row re-queues via the shutdown lock release and the next
 		// cycle re-walks its since window.
-		s.logger.Info("job interrupted by shutdown after its work was stored — only the completion stamp is lost; the row re-queues on restart",
+		s.logger.Info("job interrupted by shutdown after its work was stored — only the completion stamp is lost; the row re-queues via the shutdown lock release",
 			"repo_id", job.RepoID)
 		return
 	}
@@ -1295,7 +1295,7 @@ func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
 		0, 0, 0, 0, 0, 0, 0, 0, errMsg,
 		s.cfg.Collection.ArchivedRecollectMultiplierValue())
 	if errors.Is(err, context.Canceled) {
-		return // shutdown, not a failure: the row re-queues on restart
+		return // shutdown, not a failure: the row re-queues via the shutdown lock release
 	}
 	if err != nil {
 		s.logger.Warn("failed to record job failure", "repo_id", repoID, "error", err)
@@ -1319,7 +1319,7 @@ func (s *Scheduler) goTracked(name string, fn func()) {
 // delegates were swept by hand (passes 35–36) but carry no analyzer, so
 // "only line" is the scheduler's promise, not a proof.
 func (s *Scheduler) jobInterrupted(repoID int64, phase string) {
-	s.logger.Info("job interrupted by shutdown — nothing recorded; the row re-queues on restart",
+	s.logger.Info("job interrupted by shutdown — nothing recorded; the row re-queues via the shutdown lock release",
 		"repo_id", repoID, "phase", phase)
 }
 
@@ -1334,7 +1334,7 @@ func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
 		0, 0, 0, 0, 0, 0, 0, 0, reason,
 		s.cfg.Collection.ArchivedRecollectMultiplierValue())
 	if errors.Is(err, context.Canceled) {
-		return // shutdown, not a failure: the row re-queues on restart
+		return // shutdown, not a failure: the row re-queues via the shutdown lock release
 	}
 	if err != nil {
 		s.logger.Warn("failed to record job skip", "repo_id", repoID, "error", err)

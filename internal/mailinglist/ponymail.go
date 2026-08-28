@@ -127,12 +127,19 @@ func (p *PonyMail) get(ctx context.Context, u string) ([]byte, error) {
 	req.Header.Set("User-Agent", p.userAgent)
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", u, ErrTransient)
+		return nil, fmt.Errorf("%s: %w: %w", u, ErrTransient, err)
 	}
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusOK:
-		return io.ReadAll(resp.Body)
+		body, rerr := io.ReadAll(resp.Body)
+		if rerr != nil {
+			// A mid-body reset is the same transport class as a failed
+			// Do — the breaker must count it and the cause must stay
+			// visible (pass 41; FetchMonth's read arm already did this).
+			return nil, fmt.Errorf("%s: %w: %w", u, ErrTransient, rerr)
+		}
+		return body, nil
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return nil, fmt.Errorf("%s: %w", u, ErrRateLimited)
 	case resp.StatusCode >= 500:

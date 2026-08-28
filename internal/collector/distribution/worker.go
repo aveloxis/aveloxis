@@ -291,16 +291,20 @@ func (w *Worker) runner(ctx context.Context, jobs <-chan *db.DistributionJob, do
 	}
 }
 
-// processJob runs the scanner against one claimed job and routes
-// the outcome to the store. Uses a separate context for the
-// completion call so we still persist results even if the parent
-// ctx was canceled mid-scan.
+// processJob runs the scanner against one claimed job and routes the
+// outcome to the store. A shutdown during the scan RELEASES the claim
+// — never a strike, never a partial snapshot stamped as this cycle's
+// (pass 39); the bounded background window exists for the release and
+// for a completion/failure write the parent ctx dies under mid-way.
 func (w *Worker) processJob(ctx context.Context, job *db.DistributionJob) {
 	distributions, manifests, scanComplete, scanErr := w.scanner.Scan(ctx, job.RepoID, job.RepoOwner, job.RepoName, job.RepoGit)
 
-	// completionCtx: short window for the DB write to finish even
-	// if the parent ctx is canceling. Without this, a shutdown
-	// during the scan would lose the result entirely.
+	// completionCtx: a bounded background window for the bookkeeping
+	// writes when the parent ctx dies AFTER the shutdown guard below —
+	// the release itself, or a completion/failure write cut off
+	// mid-statement. A shutdown DURING the scan releases by design
+	// (pass 39): a partial snapshot must never rotate good current rows
+	// to history.
 	completionCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

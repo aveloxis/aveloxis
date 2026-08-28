@@ -68,7 +68,12 @@ func TestCollectorShutdownBranchesPresent(t *testing.T) {
 		"internal/collector/staged.go":                {"return result, ctx.Err() // shutdown: never"},
 		"internal/collector/mailinglist_processor.go": {"return processed, ctx.Err() // shutdown mid-batch", "return perr // shutdown: DrainList reports it once"},
 		"internal/collector/mailinglist_worker.go":    {"w.store.ReleaseListLock(rctx, job.RglsID, job.LockedAt)"},
+		"internal/collector/distribution/worker.go": {
+			`"distribution scan interrupted by shutdown — claim released, no strike recorded"`,
+			"w.store.ReleaseDistributionClaim(completionCtx, job)",
+		},
 		"internal/collector/scancode_worker.go": {
+			`"scancode runOne: skip stamp interrupted by shutdown — lock cleared"`,
 			`"scancode runOne: clone interrupted by shutdown — lock cleared, no strike recorded"`,
 			`"scancode runOne: scan not started — shutdown; lock cleared, no strike recorded"`,
 			`"scancode runOne: scan interrupted by shutdown before its lock state was recorded — lock cleared, no strike recorded"`,

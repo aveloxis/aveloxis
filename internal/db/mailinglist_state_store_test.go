@@ -85,6 +85,27 @@ func TestClaimNextListLifecycle(t *testing.T) {
 		t.Errorf("locked list must not be re-claimable, got %+v", job2)
 	}
 
+	// Pass 40 (v0.28.18): the shutdown release is keyed on the claim's
+	// own lock stamp. The claim must carry it, a WRONG stamp must
+	// release nothing (another holder's lock survives), and the right
+	// stamp must make the list claimable again.
+	if job.LockedAt.IsZero() {
+		t.Fatalf("ClaimNextList must return the claim's own mlls_locked_at stamp")
+	}
+	if err := store.ReleaseListLock(ctx, rglsID, job.LockedAt.Add(time.Second)); err != nil {
+		t.Fatalf("release (wrong stamp): %v", err)
+	}
+	if j, err := store.ClaimNextList(ctx, system, time.Hour, 1234, "boot-x"); err != nil || j != nil {
+		t.Fatalf("a wrong-stamp release must not clear the lock (claim=%+v err=%v)", j, err)
+	}
+	if err := store.ReleaseListLock(ctx, rglsID, job.LockedAt); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	job, err = store.ClaimNextList(ctx, system, time.Hour, 1234, "boot-x")
+	if err != nil || job == nil || job.RglsID != rglsID {
+		t.Fatalf("after the owner's release the list must be claimable again (claim=%+v err=%v)", job, err)
+	}
+
 	// Checkpoint a month, then complete the scan.
 	if err := store.CheckpointListMonth(ctx, rglsID, "2026-01"); err != nil {
 		t.Fatalf("checkpoint: %v", err)

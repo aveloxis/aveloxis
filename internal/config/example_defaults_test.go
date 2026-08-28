@@ -375,18 +375,21 @@ func jsonTagsOf(t reflect.Type) []string {
 	return out
 }
 
-// snippetValueBlocks are the configuration.md blocks whose values are
-// COMPILED DEFAULTS, so the snippet can be held to them the same way
-// the collection block is. database/github/gitlab/web are excluded on
-// purpose: they carry site-specific placeholders (hosts, tokens,
-// secrets) with no default to match.
+// snippetValueBlocks are the configuration.md blocks whose values the
+// snippet is held to, the same way the collection block is. That is
+// EVERY block: pass 47 excluded database/github/gitlab/web on the
+// claim that "every field there is site-specific", which is false —
+// Database.Host/Port/SSLMode, both BaseURLs and Web.Addr/
+// GitLabBaseURL/APIInternalURL are all compiled defaults, and
+// `api_internal_url` could be taught wrong while contradicting its own
+// reference table 190 lines below (pass 48). The genuinely
+// site-specific fields are named in snippetValueAllowlist with a
+// reason, under a staleness reverse-check.
 //
-// Pass 47 added this. Pass 46 documented `api` and `monitor` in the
-// snippet and checked only that the KEYS were present, which
-// re-created the exact rot the collection value check exists to
-// prevent — proven by changing two compiled defaults with every test
-// still green.
-var snippetValueBlocks = []string{"api", "monitor", "mail"}
+// Pass 46 documented `api` and `monitor` with a PRESENCE check only,
+// re-creating the exact rot the value check exists to prevent —
+// proven by changing two compiled defaults with every test green.
+var snippetValueBlocks = []string{"api", "monitor", "mail", "database", "github", "gitlab", "web"}
 
 // snippetValueAccessors mirrors effectiveAccessors for the blocks
 // above: a field whose meaning comes from an accessor is compared
@@ -405,10 +408,22 @@ var snippetValueAccessors = map[string]func(*Config) any{
 // otherwise default-valued block, with the reason, under the same
 // staleness reverse-check the collection allowlist uses.
 var snippetValueAllowlist = map[string]string{
-	"mail.GmailUser":        "a placeholder address; there is no compiled default sender",
-	"mail.GmailAppPassword": "a placeholder secret; there is no compiled default",
-	"mail.FromName":         "a placeholder display name; the compiled default is empty, and an empty From name is worse guidance than a concrete one",
-	"mail.SiteURL":          "a placeholder host; there is no compiled default",
+	"database.User":          "a placeholder DB role; the compiled default is the Augur-era \"augur\", which is worse guidance for a fresh install",
+	"database.Password":      "a placeholder secret; there is no compiled default",
+	"database.DBName":        "a placeholder database name; the compiled default is the Augur-era \"augur\"",
+	"github.APIKeys":         "placeholder tokens; there is no compiled default",
+	"gitlab.APIKeys":         "placeholder tokens; there is no compiled default",
+	"gitlab.GitLabHosts":     "an illustrative self-hosted host list; the compiled default is empty",
+	"web.SessionSecret":      "a placeholder secret; there is no compiled default",
+	"web.BaseURL":            "a placeholder public URL; there is no compiled default",
+	"web.GitHubClientID":     "a placeholder OAuth app id; there is no compiled default",
+	"web.GitHubClientSecret": "a placeholder OAuth secret; there is no compiled default",
+	"web.GitLabClientID":     "a placeholder OAuth app id; there is no compiled default",
+	"web.GitLabClientSecret": "a placeholder OAuth secret; there is no compiled default",
+	"mail.GmailUser":         "a placeholder address; there is no compiled default sender",
+	"mail.GmailAppPassword":  "a placeholder secret; there is no compiled default",
+	"mail.FromName":          "a placeholder display name; the compiled default is empty, and an empty From name is worse guidance than a concrete one",
+	"mail.SiteURL":           "a placeholder host; there is no compiled default",
 }
 
 // assertSnippetBlockValues holds the snippet's default-valued blocks
@@ -458,6 +473,23 @@ func assertSnippetBlockValues(t *testing.T, block string) {
 					"snippet-effective=%v compiled-default=%v. Operators read this snippet as the "+
 					"defaults document; either fix the value, or add %q to snippetValueAllowlist "+
 					"with a reason.", key, got, want, key)
+				continue
+			}
+			// An accessor maps the zero value back to the default, so
+			// comparing only through it cannot tell `"rate_limit_daily": 0`
+			// from the real number — the snippet would teach an
+			// unlimited API and no exempt networks while passing (pass
+			// 48). Where an accessor exists the snippet must STATE the
+			// value.
+			if _, coerced := snippetValueAccessors[key]; coerced {
+				raw := reflect.ValueOf(applied).Elem().FieldByName(field.Name).Field(i)
+				if isEmptyValue(raw) {
+					t.Errorf("the configuration.md snippet leaves %s at its zero value. That field has an "+
+						"accessor which maps zero back to the default, so the comparison above cannot see it "+
+						"— and the snippet would be teaching operators the zero (unlimited, never, none) "+
+						"while the reference table below states the real default. Write the effective "+
+						"default explicitly.", key)
+				}
 			}
 		}
 	}
@@ -486,6 +518,20 @@ func fieldByJSONTag(t reflect.Type, tag string) (reflect.StructField, bool) {
 		}
 	}
 	return reflect.StructField{}, false
+}
+
+// isEmptyValue reports whether a config field carries nothing an
+// accessor would not overwrite with its default. Deliberately not
+// reflect.Value.IsZero: an empty-but-non-nil slice is not "zero", and
+// `"exempt_cidrs": []` would otherwise pass while teaching operators
+// that no network is exempt from rate limiting or auth (pass 48).
+func isEmptyValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Slice, reflect.Map, reflect.String, reflect.Array:
+		return v.Len() == 0
+	default:
+		return v.IsZero()
+	}
 }
 
 // equalConfigValue compares two config values, treating an empty

@@ -476,7 +476,7 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 
 	// The bound's operands, matched as identifiers so extracting them
 	// into a local stays legal.
-	src := srctest.StripGoComments(srctest.FuncBody(t, readDeclSource(t, fset, run), "func (w *ScancodeWorker) Run("))
+	src := srctest.StripGoComments(srctest.FuncBody(t, declSource(t, fset, run), "func (w *ScancodeWorker) Run("))
 	for _, operand := range []string{"w.shutdownGrace", "ScancodeShutdownBookkeepingGrace"} {
 		if !strings.Contains(src, operand) {
 			t.Errorf("Run's shutdown bound must be built from %s — without the operator's grace `aveloxis stop` ignores their setting; without the allowance the default grace of 0 returns before the runners' lock clears land (pass 38).", operand)
@@ -607,16 +607,18 @@ func declFile(fset *token.FileSet, files []*ast.File, fn *ast.FuncDecl) *ast.Fil
 	return nil
 }
 
-// readDeclSource reads the source file that declares fn. Derived from
-// the AST rather than hardcoded, so the textual operand check below
-// follows Run if it ever moves to a sibling file (pass 47).
-func readDeclSource(t *testing.T, fset *token.FileSet, fn *ast.FuncDecl) string {
+// declSource reads the source that declares fn, through srctest so
+// this file adds no read helper of its own (SR-12). The path is
+// derived from the AST rather than hardcoded, so the textual operand
+// check follows Run if it ever moves to a sibling file (pass 47).
+func declSource(t *testing.T, fset *token.FileSet, fn *ast.FuncDecl) string {
 	t.Helper()
-	data, err := os.ReadFile(fset.Position(fn.Pos()).Filename)
+	abs := fset.Position(fn.Pos()).Filename
+	rel, err := filepath.Rel(srctest.Root(t), abs)
 	if err != nil {
-		t.Fatalf("read %s: %v", fset.Position(fn.Pos()).Filename, err)
+		t.Fatalf("locate %s under the repo root: %v", abs, err)
 	}
-	return string(data)
+	return srctest.Read(t, rel)
 }
 
 // safegoAlias returns the name internal/safego is imported under in

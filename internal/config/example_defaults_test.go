@@ -253,7 +253,7 @@ func TestConfigurationDocSnippetMatchesEffectiveDefaults(t *testing.T) {
 			continue
 		}
 		blockType := field.Type
-		for blockType.Kind() == reflect.Ptr {
+		for blockType.Kind() == reflect.Pointer {
 			blockType = blockType.Elem()
 		}
 		if blockType.Kind() != reflect.Struct {
@@ -353,7 +353,7 @@ func TestExampleConfigsCarryNoEnvVarSyntax(t *testing.T) {
 // nothing, so a field added that way could never be missed by the
 // presence check that exists to catch exactly that.
 func jsonTagsOf(t reflect.Type) []string {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {

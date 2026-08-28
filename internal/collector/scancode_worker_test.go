@@ -321,7 +321,7 @@ func TestRecoverOrphansSkipsCrossHostLocks(t *testing.T) {
 	}
 }
 
-// The shutdown contract, restated for passes 38–45: Run waits for the
+// The shutdown contract, restated for passes 38–46: Run waits for the
 // claimed jobs' DB BOOKKEEPING (w.bookkeeping, signalled through
 // bookkeepingDone) — not for the runner goroutines, whose WaitGroup was
 // dead plumbing and is gone — and the wait is bounded by the operator's
@@ -330,7 +330,8 @@ func TestRecoverOrphansSkipsCrossHostLocks(t *testing.T) {
 // never lands under a runner's lock clear.
 //
 // Pinned on the AST, and on STRUCTURE rather than counts. Counting
-// pins have now been escaped three times by one-line refactors:
+// pins have now been escaped five times by one-line refactors, each
+// found by a reviewer APPLYING the mutation:
 //
 //   - pass 43: "Run contains exactly one .Wait()" survived extracting
 //     the runner wait into a helper and blocking Run on a channel that
@@ -346,34 +347,51 @@ func TestRecoverOrphansSkipsCrossHostLocks(t *testing.T) {
 //     receives and waits are unchanged, and Run once again blocks on
 //     the runners' clone-dir removal — minutes on a spinning disk,
 //     needing no pool (passes 39/40).
+//   - pass 46a: "the wait must sit inside a *ast.FuncLit" survived
+//     deleting the two characters `go `. The literal is then invoked
+//     immediately: still inside a FuncLit, and synchronous again —
+//     45a's hang, reachable by DELETING a keyword.
+//   - pass 46b: "reject .Wait() on a w.<field> receiver" survived
+//     passing a *sync.WaitGroup PARAMETER to a helper
+//     (joinRunners(&runners) { wg.Wait() }). The receiver is `wg`, so
+//     the spelling-scoped predicate never looked at it.
 //
-// So four things are asserted: the drain runs in a goroutine; the
-// signal and the bound are two arms of ONE select; Run's blocking
-// receives are its own join channels plus those two; and nothing Run
-// reaches in this file waits on a w.<field> other than w.bookkeeping.
-// Channel and timer locals are DERIVED, so renaming one or swapping
-// time.After for a time.NewTimer stays legal — pass 45 (finding 7)
-// caught the old pin misdiagnosing both as a re-added runner wait.
+// So the predicates below are scoped by SEMANTICS, not spelling:
+//
+//  1. The drain is launched as a GOROUTINE — a `go func(){…}()` or a
+//     literal handed to safego.Go, whose contract is to run it in a
+//     goroutine with a recover. Being inside "some function literal"
+//     is not the property that matters (46a).
+//  2. The signal and the bound are two arms of ONE select, and that
+//     select BLOCKS: a `default:` arm makes both arms decorative
+//     (46c).
+//  3. Run's blocking receives are its own join channels plus those
+//     two. Channel, timer and deadline locals are DERIVED — renaming
+//     one, swapping time.After for a time.NewTimer, hoisting the
+//     deadline into a local, or declaring any of them with `var`
+//     stays legal (pass 45 finding 7, pass 46f).
+//  4. Nothing Run reaches ANYWHERE IN THE PACKAGE waits on anything
+//     but w.bookkeeping. (*ScancodeWorker)'s methods already span
+//     scancode_worker.go and scancode_preflight.go, and Run calls
+//     into both, so a same-file walk was a scope hole (46d). The one
+//     legal exception is derived, not named: a local bound to
+//     exec.Command/exec.CommandContext — the runners' own cmd.Wait().
 func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
-	file := scancodeWorkerAST(t)
-	run := scancodeFuncNamed(t, file, "Run")
+	fset, files := scancodePackageFiles(t)
+	run := scancodeMethodDecl(t, files, "Run")
 
 	joins := runJoinChannels(run) // channels Run both makes and closes
-	timers := runTimerLocals(run) // time.NewTimer locals, for <-t.C
+	timers := runLocalsFrom(run, "time.NewTimer")
+	deadlines := runLocalsFrom(run, "time.After")
 	if len(joins) == 0 {
 		t.Fatal("Run declares no channel that it also closes — the dispatcher join is how Run learns the claim loop stopped, and deriving it is what lets the receive allowlist below tell a legitimate join from a re-added wait")
 	}
 
-	// 1. The drain must sit in a goroutine. Inline, the select below is
-	//    dead and the bound is decorative (pass 45a).
-	var lits []*ast.FuncLit
-	ast.Inspect(run, func(n ast.Node) bool {
-		if l, ok := n.(*ast.FuncLit); ok {
-			lits = append(lits, l)
-		}
-		return true
-	})
-	insideFuncLit := func(p token.Pos) bool {
+	// 1. The drain must sit in a GOROUTINE. Inline — including as an
+	//    immediately-invoked literal — the select below is dead and the
+	//    bound is decorative (passes 45a, 46a).
+	lits := goroutineFuncLits(run)
+	inGoroutine := func(p token.Pos) bool {
 		for _, l := range lits {
 			if p > l.Pos() && p < l.End() {
 				return true
@@ -390,23 +408,27 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 			t.Errorf("Run calls %s.Wait() — the only wait Run may perform is w.bookkeeping.Wait(). Waiting on the RUNNERS covers minutes of clone-dir removal that needs no pool (passes 39/40).", wc.recv)
 			continue
 		}
-		if !insideFuncLit(wc.pos) {
-			t.Error("w.bookkeeping.Wait() must run inside a goroutine literal, not inline ahead of the select — synchronously, bookkeepingDone is already closed when the select runs, the deadline arm can never fire, and a wedged bookkeeping write blocks `aveloxis stop` indefinitely (pass 45).")
+		if !inGoroutine(wc.pos) {
+			t.Error("w.bookkeeping.Wait() must be launched as a goroutine — `go func(){…}()` or a literal handed to safego.Go — not run inline ahead of the select. Synchronously (an immediately-invoked literal included), bookkeepingDone is already closed when the select runs, the deadline arm can never fire, and a wedged bookkeeping write blocks `aveloxis stop` indefinitely (passes 45a, 46a).")
 		}
 	}
 
-	// 2. The signal and the bound must be two arms of the SAME select.
-	//    A deadline in some other select bounds nothing.
-	signalSelects, boundedSelects := 0, 0
+	// 2. The signal and the bound must be two arms of the SAME select,
+	//    and that select must BLOCK.
+	signalSelects, boundedSelects, defaulted := 0, 0, 0
 	ast.Inspect(run, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectStmt)
 		if !ok {
 			return true
 		}
-		hasSignal, hasBound := false, false
+		hasSignal, hasBound, hasDefault := false, false, false
 		for _, stmt := range sel.Body.List {
 			cc, ok := stmt.(*ast.CommClause)
 			if !ok {
+				continue
+			}
+			if cc.Comm == nil { // `default:` — the select cannot block
+				hasDefault = true
 				continue
 			}
 			operand, ok := commReceiveOperand(cc)
@@ -416,7 +438,7 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 			if operand == "w.bookkeepingDone" {
 				hasSignal = true
 			}
-			if isBoundReceive(operand, timers) {
+			if isBoundReceive(operand, timers, deadlines) {
 				hasBound = true
 			}
 		}
@@ -425,13 +447,19 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 			if hasBound {
 				boundedSelects++
 			}
+			if hasDefault {
+				defaulted++
+			}
 		}
 		return true
 	})
 	if signalSelects == 0 {
 		t.Error("Run must select on w.bookkeepingDone — the claimed jobs' DB bookkeeping is what the scheduler's pool close must not race (passes 38/39).")
 	} else if boundedSelects == 0 {
-		t.Error("the select that waits on w.bookkeepingDone must carry its deadline arm in the SAME select — time.After(...) or a time.NewTimer local's .C. Bounded in a different select, or not at all, a wedged bookkeeping write blocks `aveloxis stop` indefinitely.")
+		t.Error("the select that waits on w.bookkeepingDone must carry its deadline arm in the SAME select — time.After(...), a local bound to it, or a time.NewTimer local's .C. Bounded in a different select, or not at all, a wedged bookkeeping write blocks `aveloxis stop` indefinitely.")
+	}
+	if defaulted > 0 {
+		t.Error("the select that waits on w.bookkeepingDone carries a `default:` arm, so it never blocks: Run falls straight through, both arms are decorative, and the scheduler's pool close lands under the runners' in-flight lock clears — the race passes 38/39 exist to prevent (pass 46).")
 	}
 
 	// The bound's operands, matched as identifiers so extracting them
@@ -456,49 +484,89 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 	got := strings.Join(receives, ", ")
 	for _, r := range receives {
 		switch {
-		case joins[r], r == "w.bookkeepingDone", isBoundReceive(r, timers):
+		case joins[r], r == "w.bookkeepingDone", isBoundReceive(r, timers, deadlines):
 		default:
 			t.Errorf("Run blocks on an unexpected receive %q — Run may wait on the channels it closes itself, on the bookkeeping signal, and on the deadline; nothing else. Pass 40 removed the runner WaitGroup as dead plumbing and pass 39 established that the runners' clone-dir removal (minutes on a spinning disk) must not gate shutdown; a channel some OTHER function closes after waiting re-adds exactly that (pass 44). Receives found: %s", r, got)
 		}
 	}
 
-	// 4. Nothing Run reaches may wait on another w.<field> (pass 45b).
-	//    Scoped to w.<field> receivers so the runners' own cmd.Wait()
-	//    deep inside runOne stays legal.
-	for name, fn := range scancodeReachable(file, run) {
+	// 4. Nothing Run reaches, anywhere in the package, may wait on
+	//    anything but w.bookkeeping (passes 45b, 46b, 46d). The one
+	//    exception is DERIVED rather than named: the runners' own
+	//    cmd.Wait() on a local bound to exec.Command/CommandContext.
+	reachable := scancodeReachable(files, run)
+	// The walk itself must not go decorative (lens L4): if a future
+	// change to the key format silently resolves nothing, check 4
+	// scans an empty set and passes forever. Run calls into the
+	// sibling file (w.preflight, w.recordScancodeStatus), so a walk
+	// that works spans more than one file — asserted structurally
+	// rather than by naming a method the walk is supposed to find.
+	walked := map[string]bool{}
+	for _, fn := range reachable {
+		walked[filepath.Base(fset.Position(fn.Pos()).Filename)] = true
+	}
+	if len(reachable) < 5 || len(walked) < 2 {
+		t.Errorf("the reachability walk from Run resolved %d function(s) across %d file(s) (%v) — it is meant to span the package, and Run calls into scancode_preflight.go as well as scancode_worker.go. A walk this small resolves nothing and check 4 below passes vacuously.", len(reachable), len(walked), walked)
+	}
+	for name, fn := range reachable {
+		cmds := runLocalsFrom(fn, "exec.Command", "exec.CommandContext")
 		for _, wc := range waitCalls(fn) {
-			if strings.HasPrefix(wc.recv, "w.") && wc.recv != "w.bookkeeping" {
-				t.Errorf("%s is reachable from Run and calls %s.Wait() — Run must not block on the runners, directly or through a helper. That wait covers the clone-dir removal, which takes minutes on a spinning disk and needs no pool (passes 39/40).", name, wc.recv)
+			if wc.recv == "w.bookkeeping" || cmds[wc.recv] {
+				continue
 			}
+			t.Errorf("%s is reachable from Run and calls %s.Wait() — Run must not block on the runners, directly or through a helper, whatever the receiver is spelled (a *sync.WaitGroup parameter is the pass-46 escape). That wait covers the clone-dir removal, which takes minutes on a spinning disk and needs no pool (passes 39/40). Only w.bookkeeping.Wait() and a subprocess handle bound to exec.Command/exec.CommandContext in the same function are legal.", name, wc.recv)
 		}
 	}
 }
 
-// scancodeWorkerAST parses internal/collector/scancode_worker.go.
-func scancodeWorkerAST(t *testing.T) *ast.File {
+// scancodePackageFiles parses every non-test source of package
+// collector. Package-wide because (*ScancodeWorker)'s methods span
+// scancode_worker.go and scancode_preflight.go, and Run calls into
+// both — a same-file walk let a sibling-file helper hold a runner
+// wait invisibly (pass 46).
+func scancodePackageFiles(t *testing.T) (*token.FileSet, []*ast.File) {
 	t.Helper()
-	path := filepath.Join(srctest.Root(t), "internal", "collector", "scancode_worker.go")
-	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	dir := filepath.Join(srctest.Root(t), "internal", "collector")
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("parse scancode_worker.go: %v", err)
+		t.Fatalf("read internal/collector: %v", err)
 	}
-	return file
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		files = append(files, f)
+	}
+	if len(files) < 10 {
+		t.Fatalf("parsed only %d non-test sources in internal/collector — the walk below would be scoped to almost nothing; fix the file discovery", len(files))
+	}
+	return fset, files
 }
 
-// scancodeFuncNamed returns the *ScancodeWorker method named name.
-// The receiver type is checked so a same-named method on another type
-// in this file can never be pinned by mistake.
-func scancodeFuncNamed(t *testing.T, file *ast.File, name string) *ast.FuncDecl {
+// scancodeMethodDecl returns the (*ScancodeWorker) method named name,
+// from whichever file of the package declares it. The receiver type is
+// checked so a same-named method on another type can never be pinned
+// by mistake.
+func scancodeMethodDecl(t *testing.T, files []*ast.File, name string) *ast.FuncDecl {
 	t.Helper()
-	for _, d := range file.Decls {
-		fn, ok := d.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != name || fn.Body == nil || fn.Recv == nil || len(fn.Recv.List) != 1 {
-			continue
+	for _, file := range files {
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != name || fn.Body == nil || fn.Recv == nil || len(fn.Recv.List) != 1 {
+				continue
+			}
+			if types.ExprString(fn.Recv.List[0].Type) != "*ScancodeWorker" {
+				continue
+			}
+			return fn
 		}
-		if types.ExprString(fn.Recv.List[0].Type) != "*ScancodeWorker" {
-			continue
-		}
-		return fn
 	}
 	t.Fatalf("cannot find (*ScancodeWorker).%s", name)
 	return nil
@@ -535,33 +603,93 @@ func waitReceiverNames(calls []waitCall) []string {
 	return out
 }
 
+// goroutineFuncLits returns the literals fn launches as goroutines:
+// `go func(){…}()` and literals handed to safego.Go, whose whole
+// contract is to run one in a goroutine with a recover. "Inside some
+// FuncLit" is NOT the property that matters — deleting `go ` leaves an
+// immediately-invoked literal that is still a FuncLit and once again
+// synchronous (pass 46).
+func goroutineFuncLits(fn ast.Node) []*ast.FuncLit {
+	var out []*ast.FuncLit
+	ast.Inspect(fn, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.GoStmt:
+			if lit, ok := s.Call.Fun.(*ast.FuncLit); ok {
+				out = append(out, lit)
+			}
+		case *ast.CallExpr:
+			if types.ExprString(s.Fun) != "safego.Go" {
+				return true
+			}
+			for _, arg := range s.Args {
+				if lit, ok := arg.(*ast.FuncLit); ok {
+					out = append(out, lit)
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// identsBoundTo returns the identifiers fn binds — with :=, = or a
+// `var` spec — to a call the predicate accepts. Covering ValueSpec as
+// well as AssignStmt is what keeps `var x = make(chan struct{})` a
+// legal refactor (pass 46).
+func identsBoundTo(fn ast.Node, accept func(*ast.CallExpr) bool) map[string]bool {
+	out := map[string]bool{}
+	record := func(lhs []ast.Expr, rhs []ast.Expr) {
+		for i, r := range rhs {
+			call, ok := r.(*ast.CallExpr)
+			if !ok || !accept(call) || i >= len(lhs) {
+				continue
+			}
+			if id, ok := lhs[i].(*ast.Ident); ok {
+				out[id.Name] = true
+			}
+		}
+	}
+	ast.Inspect(fn, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			record(s.Lhs, s.Rhs)
+		case *ast.ValueSpec:
+			lhs := make([]ast.Expr, 0, len(s.Names))
+			for _, name := range s.Names {
+				lhs = append(lhs, name)
+			}
+			record(lhs, s.Values)
+		}
+		return true
+	})
+	return out
+}
+
+// runLocalsFrom returns fn's locals bound to a call to any of callees.
+func runLocalsFrom(fn ast.Node, callees ...string) map[string]bool {
+	return identsBoundTo(fn, func(call *ast.CallExpr) bool {
+		name := types.ExprString(call.Fun)
+		for _, c := range callees {
+			if name == c {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 // runJoinChannels returns the channel locals fn both make()s and
 // close()s — its own goroutine-join handles. Derived rather than
 // hard-coded so renaming the local stays a legal refactor. A channel
 // closed by some OTHER function is deliberately excluded: that is the
 // pass-44 escape shape (a helper waits on the runners, then closes).
 func runJoinChannels(fn *ast.FuncDecl) map[string]bool {
-	made := map[string]bool{}
-	ast.Inspect(fn, func(n ast.Node) bool {
-		as, ok := n.(*ast.AssignStmt)
-		if !ok {
-			return true
+	made := identsBoundTo(fn, func(call *ast.CallExpr) bool {
+		if types.ExprString(call.Fun) != "make" || len(call.Args) == 0 {
+			return false
 		}
-		for i, rhs := range as.Rhs {
-			call, ok := rhs.(*ast.CallExpr)
-			if !ok || types.ExprString(call.Fun) != "make" || len(call.Args) == 0 {
-				continue
-			}
-			if _, isChan := call.Args[0].(*ast.ChanType); !isChan {
-				continue
-			}
-			if i < len(as.Lhs) {
-				if id, ok := as.Lhs[i].(*ast.Ident); ok {
-					made[id.Name] = true
-				}
-			}
-		}
-		return true
+		_, isChan := call.Args[0].(*ast.ChanType)
+		return isChan
 	})
 	joins := map[string]bool{}
 	ast.Inspect(fn, func(n ast.Node) bool {
@@ -577,35 +705,11 @@ func runJoinChannels(fn *ast.FuncDecl) map[string]bool {
 	return joins
 }
 
-// runTimerLocals returns fn's time.NewTimer locals so `<-t.C` reads as
-// a deadline arm rather than an unexpected receive (pass 45).
-func runTimerLocals(fn *ast.FuncDecl) map[string]bool {
-	timers := map[string]bool{}
-	ast.Inspect(fn, func(n ast.Node) bool {
-		as, ok := n.(*ast.AssignStmt)
-		if !ok {
-			return true
-		}
-		for i, rhs := range as.Rhs {
-			call, ok := rhs.(*ast.CallExpr)
-			if !ok || types.ExprString(call.Fun) != "time.NewTimer" {
-				continue
-			}
-			if i < len(as.Lhs) {
-				if id, ok := as.Lhs[i].(*ast.Ident); ok {
-					timers[id.Name] = true
-				}
-			}
-		}
-		return true
-	})
-	return timers
-}
-
 // isBoundReceive reports whether a receive operand is a shutdown
-// deadline: time.After(...) or a time.NewTimer local's .C.
-func isBoundReceive(operand string, timers map[string]bool) bool {
-	if strings.HasPrefix(operand, "time.After(") {
+// deadline: time.After(...) inline, a local bound to it, or a
+// time.NewTimer local's .C.
+func isBoundReceive(operand string, timers, deadlines map[string]bool) bool {
+	if strings.HasPrefix(operand, "time.After(") || deadlines[operand] {
 		return true
 	}
 	name, ok := strings.CutSuffix(operand, ".C")
@@ -613,7 +717,9 @@ func isBoundReceive(operand string, timers map[string]bool) bool {
 }
 
 // commReceiveOperand returns the operand of `case <-X:` or
-// `case v := <-X:`, and whether the clause is a receive at all.
+// `case v := <-X:`, and whether the clause is a receive at all. A
+// `default:` clause has a nil Comm; callers must reject those
+// separately rather than skipping them (pass 46).
 func commReceiveOperand(cc *ast.CommClause) (string, bool) {
 	var expr ast.Expr
 	switch s := cc.Comm.(type) {
@@ -631,14 +737,23 @@ func commReceiveOperand(cc *ast.CommClause) (string, bool) {
 	return types.ExprString(u.X), true
 }
 
-// scancodeReachable walks the same-file call graph from start to a
-// fixpoint (the pass-34 pattern) and returns what Run can reach, keyed
-// by function name. Used to catch a runner wait re-added one hop away.
-func scancodeReachable(file *ast.File, start *ast.FuncDecl) map[string]*ast.FuncDecl {
+// scancodeReachable walks the PACKAGE-WIDE call graph from start to a
+// fixpoint (the pass-34 pattern) and returns what Run can reach.
+// Methods are keyed by receiver type so a method and a same-named
+// package function cannot collide.
+func scancodeReachable(files []*ast.File, start *ast.FuncDecl) map[string]*ast.FuncDecl {
 	byName := map[string]*ast.FuncDecl{}
-	for _, d := range file.Decls {
-		if fn, ok := d.(*ast.FuncDecl); ok && fn.Body != nil {
-			byName[fn.Name.Name] = fn
+	for _, file := range files {
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			key := fn.Name.Name
+			if fn.Recv != nil && len(fn.Recv.List) == 1 {
+				key = types.ExprString(fn.Recv.List[0].Type) + "." + key
+			}
+			byName[key] = fn
 		}
 	}
 	seen := map[string]*ast.FuncDecl{}
@@ -651,26 +766,26 @@ func scancodeReachable(file *ast.File, start *ast.FuncDecl) map[string]*ast.Func
 			if !ok {
 				return true
 			}
-			var name string
+			var key string
 			switch f := call.Fun.(type) {
 			case *ast.Ident:
-				name = f.Name
+				key = f.Name
 			case *ast.SelectorExpr:
 				if id, ok := f.X.(*ast.Ident); ok && id.Name == "w" {
-					name = f.Sel.Name
+					key = "*ScancodeWorker." + f.Sel.Name
 				}
 			}
-			if name == "" {
+			if key == "" {
 				return true
 			}
-			if _, done := seen[name]; done {
+			if _, done := seen[key]; done {
 				return true
 			}
-			target, ok := byName[name]
+			target, ok := byName[key]
 			if !ok || target == start {
 				return true
 			}
-			seen[name] = target
+			seen[key] = target
 			queue = append(queue, target)
 			return true
 		})

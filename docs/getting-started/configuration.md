@@ -28,13 +28,26 @@ A minimal configuration only needs the `database` section:
 ```
 
 A full configuration with **every** supported option.
-`TestConfigurationDocSnippetMatchesEffectiveDefaults` holds the
-snippet to both halves of that claim: every `collection` value must
-match the compiled default, and every `collection` key must be
-present. It had taught `scancode_shutdown_grace_minutes: 30` for three
-months after the default flipped to `0`, and `threading_mode:
-"sharded"` for three and a half against its own reference table
-below:
+`TestConfigurationDocSnippetMatchesEffectiveDefaults` enforces that
+claim on two axes, and they have different reach:
+
+- **Presence — every block, every key.** Each section of the snippet
+  must carry every field of its Go config struct. An omitted key is
+  invisible to any value check (absent simply means "use the
+  default"), so presence is asserted separately. The one reasoned
+  exemption is `github.gitlab_hosts`: the two forge blocks share one
+  struct and that field is GitLab-only.
+- **Values — the `collection` block.** Every value there must equal
+  the compiled default, compared through the same effective accessors
+  the running code uses. The remaining blocks carry site-specific
+  placeholders (tokens, hostnames, secrets) that have no compiled
+  default to match; their defaults are documented in the reference
+  tables below.
+
+The value check exists because the snippet taught
+`scancode_shutdown_grace_minutes: 30` for three months after the
+default flipped to `0`, and `threading_mode: "sharded"` for three and
+a half against its own reference table below:
 
 ```json
 {
@@ -59,7 +72,12 @@ below:
     "gmail_user": "aveloxis-ops@yourdomain.com",
     "gmail_app_password": "xxxx xxxx xxxx xxxx",
     "from_name": "Aveloxis",
-    "site_url": "https://your-host.example"
+    "site_url": "https://your-host.example",
+    "operator_email": "",
+    "vuln_digest_min_severity": "HIGH",
+    "vuln_digest_interval_hours": 24,
+    "vuln_digest_include_transitive": false,
+    "vuln_digest_include_dev": false
   },
   "collection": {
     "days_until_recollect": 1,
@@ -136,6 +154,18 @@ below:
     "api_internal_url": "http://127.0.0.1:8383",
     "spa_url": "",
     "auto_approve_add_limit": 0
+  },
+  "monitor": {
+    "refresh_seconds": 60
+  },
+  "api": {
+    "rate_limit_rps": 1,
+    "rate_limit_burst": 10,
+    "rate_limit_daily": 1000,
+    "exempt_cidrs": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+    "cors_origins": [],
+    "trusted_proxy": "",
+    "require_auth": false
   },
   "log_level": "info"
 }

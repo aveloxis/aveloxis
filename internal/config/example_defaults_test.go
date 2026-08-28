@@ -216,16 +216,75 @@ func TestConfigurationDocSnippetMatchesEffectiveDefaults(t *testing.T) {
 	// below the snippet mentions every tag). Pass 45 proved the gap by
 	// deleting staging_retention_hours from the snippet with both
 	// tests still green. So assert presence explicitly.
-	typ := reflect.TypeOf(CollectionConfig{})
-	for i := 0; i < typ.NumField(); i++ {
-		tag := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
+	//
+	// Pass 46: over EVERY block, not just collection. The claim is
+	// about the whole document, and scoping the check to one block
+	// let the snippet omit the entire `monitor` and `api` sections
+	// and five of the nine `mail` fields while reading as complete.
+	// Parsed rather than substring-matched so a key that exists in
+	// one block cannot satisfy another block's requirement.
+	var snippet map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(block), &snippet); err != nil {
+		t.Fatalf("the configuration.md full-configuration snippet is not valid JSON: %v", err)
+	}
+	// One reasoned exemption, in the shape the value allowlist above
+	// uses: the github and gitlab blocks share PlatformConfig, and
+	// GitLabHosts is documented "Only relevant for GitLab config".
+	// Requiring it under github would teach operators a setting that
+	// does nothing there. The gitlab block does carry it.
+	snippetPresenceExemptions := map[string]string{
+		"github.gitlab_hosts": "PlatformConfig is shared by both forge blocks; GitLabHosts is GitLab-only, and the gitlab block carries it",
+	}
+	exemptionUsed := map[string]bool{}
+
+	cfgType := reflect.TypeOf(Config{})
+	for i := 0; i < cfgType.NumField(); i++ {
+		field := cfgType.Field(i)
+		tag := strings.Split(field.Tag.Get("json"), ",")[0]
 		if tag == "" || tag == "-" {
 			continue
 		}
-		if !strings.Contains(block, `"`+tag+`"`) {
-			t.Errorf("the configuration.md full-configuration snippet omits %q — it claims to carry "+
-				"EVERY supported option, and an omitted key is invisible to the value check above "+
+		raw, ok := snippet[tag]
+		if !ok {
+			t.Errorf("the configuration.md full-configuration snippet omits the %q block — it claims to "+
+				"carry EVERY supported option, and an omitted key is invisible to the value check above "+
 				"(absent means default). Add it to the snippet, or soften the claim.", tag)
+			continue
+		}
+		if field.Type.Kind() != reflect.Struct {
+			continue
+		}
+		var sub map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &sub); err != nil {
+			t.Errorf("the %q block of the configuration.md snippet does not parse as an object: %v", tag, err)
+			continue
+		}
+		for j := 0; j < field.Type.NumField(); j++ {
+			sTag := strings.Split(field.Type.Field(j).Tag.Get("json"), ",")[0]
+			if sTag == "" || sTag == "-" {
+				continue
+			}
+			if _, ok := sub[sTag]; ok {
+				continue
+			}
+			if reason, exempt := snippetPresenceExemptions[tag+"."+sTag]; exempt {
+				exemptionUsed[tag+"."+sTag] = true
+				_ = reason
+				continue
+			}
+			t.Errorf("the configuration.md full-configuration snippet omits %q from its %q block — it "+
+				"claims to carry EVERY supported option, and an omitted key is invisible to a value "+
+				"check (absent means default). Add it to the snippet, or soften the claim.", sTag, tag)
+		}
+	}
+
+	// Staleness reverse-check, matching exampleValueAllowlist's: an
+	// exemption that no longer suppresses anything is standing
+	// permission for a future omission nobody reviewed.
+	for key, reason := range snippetPresenceExemptions {
+		if !exemptionUsed[key] {
+			t.Errorf("snippetPresenceExemptions[%q] suppresses nothing — the snippet now carries that key. "+
+				"Delete the entry (its reason was: %s).", key, reason)
 		}
 	}
 }

@@ -18,7 +18,9 @@ import (
 // (→ repos ×2, → repo_groups_list_serve) added in v0.25.7, AFTER the
 // v0.22.6/v0.22.7 FK-index audits, and shipped unindexed — the v0.25.34
 // class. `dedup-repos` repoints them by loser repo_id (a sequential scan
-// of the 12 GB table per pair) and then deletes the loser repos row,
+// of the table per pair — 12 GB / 10.6M rows on the mailing-list
+// deployment, the `aveloxis` DB; ~300 MB on aveloxis_large) and then
+// deletes the loser repos row,
 // whose DEFERRED FK checks seq-scan the table twice more at COMMIT; the
 // v0.28.18 repo_groups_list_serve dedup repoints rgls_id the same way.
 // Partial on IS NOT NULL: the RI check and every repoint probe by
@@ -105,8 +107,8 @@ var ErrEmailMessageIndexesNotReady = errors.New("email_message FK indexes not re
 // it). Deleting a repos row fires the
 // deferred email_message.repo_id / signaled_repo_id checks at COMMIT and
 // the case-variant merge repoints both columns first — without VALID
-// indexes each is a sequential scan of the 12 GB table per row (the
-// v0.25.34 hung-commit shape). The column set and the index names come
+// indexes each is a sequential scan of the table per row — 12 GB on the
+// mailing-list deployment (the v0.25.34 hung-commit shape). The column set and the index names come
 // from emailMessageFKIndexes (SR-17: one list; a rename there renames
 // the refusal too). A probe ERROR is not "ready" (SR-5); an unknown
 // parent is a caller bug and never reads as ready.
@@ -146,7 +148,8 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 	const label = "v0.28.18 consolidate duplicate repo_groups_list_serve rows (lowest rgls_id wins)"
 	// The loser DELETE's deferred FK checks probe email_message.rgls_id at
 	// COMMIT — without a valid index that is one sequential scan of the
-	// 12 GB table per loser (the v0.28.16 decorative-gate class:
+	// table per loser, 12 GB on the mailing-list deployment (the v0.28.16
+	// decorative-gate class:
 	// ensureEmailMessageFKIndexes only RECORDS a failed CONCURRENTLY
 	// build). THE shared gate decides; a not-ready refusal is a skip the
 	// next migrate retries (the CONCURRENTLY build above is re-attempted

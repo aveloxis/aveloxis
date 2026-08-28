@@ -17,7 +17,8 @@
 // Precondition (v0.28.18): the migrate on this binary must have built
 // the email_message FK indexes (idx_email_message_repo_id /
 // _signaled_repo_id) — the store refuses to merge without them, since
-// every pair would otherwise sequential-scan the 12 GB table.
+// every pair would otherwise sequential-scan that table (12 GB on the
+// mailing-list deployment).
 //
 // Operator workflow:
 //
@@ -187,7 +188,7 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 		}
 		logger.Info("batch complete",
 			"batch_merged", batchMerged,
-			"skipped_collecting", batchSkipped,
+			"skipped_collecting_races", batchSkipped,
 			"total_merged", merged,
 			"elapsed", time.Since(startedAt).Round(time.Second))
 
@@ -198,7 +199,7 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 
 	logger.Info("v0.25.32 case-variant repo dedup complete",
 		"merged", merged,
-		"skipped_collecting", skipped,
+		"skipped_collecting_races", skipped,
 		"duration", time.Since(startedAt).Round(time.Second))
 	// v0.28.18: mid-collection pairs sit outside the batch window, so
 	// "merged == 0" no longer means "nothing left" — report what remains
@@ -207,7 +208,11 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 	remaining, rerr := db.CountCaseVariantRepoDups(ctx, store)
 	switch {
 	case rerr != nil:
-		logger.Warn("could not count remaining duplicate groups", "error", rerr)
+		// The remaining count IS the rerun-until-0 signal; losing it must
+		// not read as success to a script (v0.27.106: nonzero on
+		// incomplete work). Every merge is already committed.
+		logger.Error("could not count remaining duplicate groups — re-run to verify", "error", rerr)
+		return fmt.Errorf("count remaining duplicate groups: %w", rerr)
 	case remaining == 0:
 		logger.Info("no duplicate groups remain")
 	case capped:

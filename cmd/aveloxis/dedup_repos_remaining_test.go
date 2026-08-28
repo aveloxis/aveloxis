@@ -28,10 +28,15 @@ func TestDedupReposReportsRemainingGroups(t *testing.T) {
 	// A --limit exit leaves groups for a reason that is NOT "mid-collection";
 	// the race count is a run total, not the last round's snapshot; the
 	// precondition refusal is reported as such, never as a mid-way error.
-	for _, needle := range []string{"capped = true", "case capped:", "skipped += batchSkipped", "errors.Is(err, db.ErrEmailMessageIndexesNotReady)"} {
+	for _, needle := range []string{"capped = true", "case capped:", "skipped += batchSkipped", "errors.Is(err, db.ErrEmailMessageIndexesNotReady)",
+		// a lost remaining count is a nonzero exit, never a WARN + success
+		`return fmt.Errorf("count remaining duplicate groups: %w", rerr)`} {
 		if !strings.Contains(s, needle) {
 			t.Errorf("runDedupRepos must contain %q", needle)
 		}
+	}
+	if strings.Contains(s, `"skipped_collecting",`) {
+		t.Error("one key for the race total: skipped_collecting_races")
 	}
 	for _, stale := range []string{"contributor_repo) repoint", "commit_comment_ref, contributor_repo, foundation_membership"} {
 		if strings.Contains(s, stale) {

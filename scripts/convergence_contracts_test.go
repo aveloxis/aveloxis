@@ -64,7 +64,10 @@ var convergenceContracts = []convergenceContract{
 		// "rerun until 0 pairs" contract and names the stall that broke
 		// it (a collecting head filling every batch window). The paging
 		// test drives a batch PAST a collecting pair to the mergeable one
-		// beyond it; the e2e is the drop-out-of-candidate-set half.
+		// beyond it, then finishes that pair's job and reruns until it
+		// too has left the candidate set (scoped to the fixture's pairs —
+		// the shared scratch DB may carry residue); the e2e is the
+		// drop-out-of-candidate-set half.
 		DrivingTests: []string{"TestDedupBatchPagesPastCollectingHead", "TestDedupOnePairEndToEnd"}},
 	{File: "cmd/aveloxis/rewalk_whitespace.go",
 		// "the marker IS the resume state": stamping whitespace_head_hash

@@ -67,9 +67,9 @@ func (s *PostgresStore) ListStrandedRepos(ctx context.Context, limit int) ([]Str
 // DedupRenamedRepoPair consolidates a DATA-BEARING rename duplicate
 // (stranded loser whose URL 301-redirects to the tracked winner) via
 // the SAME per-pair machinery dedup-repos uses for case variants —
-// repoints for shared-copy tables, leaves-first deletes, FOR UPDATE
-// mid-collection re-check. Only pair DISCOVERY differs (redirect-
-// resolved rather than LOWER(repo_git)-grouped).
+// repoints for shared-copy tables, leaves-first deletes, the loser's
+// FOR UPDATE mid-collection re-check. Only pair DISCOVERY differs
+// (redirect-resolved rather than LOWER(repo_git)-grouped).
 func DedupRenamedRepoPair(ctx context.Context, store *PostgresStore, winnerID, loserID int64, winnerGit, loserGit string) error {
 	// v0.28.18: the same index gate dedup-repos passes — reconcile-repos
 	// never migrates (v0.21.5), so the store refuses per pair rather than

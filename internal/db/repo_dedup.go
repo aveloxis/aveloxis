@@ -33,9 +33,11 @@
 // One transaction per pair; idempotent across runs (resolved pairs drop
 // out of the candidate set). Pairs with either side mid-collection
 // (status='collecting') are left out of the batch window (the dry-run
-// sample and the end-of-run remaining count report them) and re-checked
-// FOR UPDATE inside each pair transaction — never deleted out from under
-// a worker.
+// sample and the end-of-run remaining count report them), and the
+// LOSER's queue row is re-checked FOR UPDATE inside each pair
+// transaction — a loser is never deleted out from under a worker (the
+// winner is only ever repointed onto, so a winner claimed mid-pair is
+// harmless).
 
 package db
 

@@ -499,4 +499,27 @@ func TestDedupBatchPagesPastCollectingHead(t *testing.T) {
 	if p := findPairByLowerGit(ctx, t, store, lowerA); p == nil || !p.Collecting {
 		t.Errorf("pair A must remain a flagged candidate for the rerun, got %+v", p)
 	}
+
+	// Convergence (SR-19): once A's job finishes, the documented rerun
+	// merges it and A leaves the candidate set — asserted for A alone,
+	// since the shared scratch DB may carry other fixtures' residue.
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_ops.collection_queue SET status = 'queued' WHERE repo_id = $1`, aLoser); err != nil {
+		t.Fatal(err)
+	}
+	window, err = sampleCaseVariantRepoDups(ctx, store, 10000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged, _, err := DedupCaseVariantReposBatch(ctx, store, max(len(window), 1)); err != nil || merged < 1 {
+		t.Fatalf("rerun after A's job finished: merged=%d err=%v — the rerun must merge A", merged, err)
+	}
+	if p := findPairByLowerGit(ctx, t, store, lowerA); p != nil {
+		t.Errorf("after the rerun pair A must have left the candidate set, got %+v", p)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repos WHERE repo_id IN ($1, $2)`, aWinner, aLoser).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("pair A must be consolidated to its winner on the rerun, found %d of 2 rows", n)
+	}
 }

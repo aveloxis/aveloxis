@@ -1417,7 +1417,9 @@ func urlPathHasSegment(rawURL, segment string) bool {
 // ForgetRepoETags drops every cached ETag under /repos/{owner}/{repo}/ —
 // the scheduler's hook for a FAILED job, so the retry re-reads the
 // listing pages instead of being answered 304 from a walk whose results
-// were never stored (pass 30, v0.28.18).
+// were never stored (pass 30, v0.28.18). Every page of a walk lives in
+// that namespace: the platform paginator rebases GitHub's
+// /repositories/{id}/ Link-header continuations onto it (pass 34).
 func (c *Client) ForgetRepoETags(owner, repo string) int {
 	return c.http.ForgetETagsWithPrefix(fmt.Sprintf("/repos/%s/%s/", owner, repo))
 }

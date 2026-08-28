@@ -46,6 +46,12 @@ import (
 // because all writes target rows keyed by repoID with appropriate
 // per-row history rotation.
 func ingestScancodeOutput(ctx context.Context, store *db.PostgresStore, repoID int64, outputPath string, logger *slog.Logger) (string, error) {
+	if ctx.Err() != nil {
+		// Never start the rotate-then-insert pair under a done ctx: a
+		// rotate that commits before the insert fails leaves the repo
+		// with no current scan rows until the full re-scan (pass 39).
+		return "", ctx.Err()
+	}
 	data, err := os.ReadFile(outputPath)
 	if err != nil {
 		return "", fmt.Errorf("reading scancode output: %w", err)
@@ -67,6 +73,9 @@ func ingestScancodeOutput(ctx context.Context, store *db.PostgresStore, repoID i
 	}
 
 	if err := store.RotateScancodeToHistory(ctx, repoID); err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err() // shutdown, not a failure — and no insert on a half-rotated repo
+		}
 		logger.Warn("failed to rotate scancode history", "repo_id", repoID, "error", err)
 	}
 

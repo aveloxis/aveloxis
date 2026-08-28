@@ -31,13 +31,23 @@ func TestSafegoAdoptionAtAuditedSites(t *testing.T) {
 		"../web/server.go":                    1, // org-repo-scan
 		"../web/admin.go":                     1, // group-approved-email
 	}
+	if sched, err := os.ReadFile("../scheduler/scheduler.go"); err == nil {
+		body := string(sched)
+		i := strings.Index(body, "func (s *Scheduler) goTracked(")
+		if i < 0 || !strings.Contains(body[i:min(i+400, len(body))], "safego.Go(") {
+			t.Errorf("scheduler.goTracked must delegate to safego.Go — every s.goTracked launch is counted here as a recovered site")
+		}
+	}
 	for path, min := range expectations {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			t.Errorf("read %s: %v", path, err)
 			continue
 		}
-		got := strings.Count(string(src), "safego.Go(") + strings.Count(string(src), "safego.Recover(")
+		// s.goTracked (pass 38) delegates to safego.Go — the scheduler's
+		// tracked-pool launcher counts as a recovered site; its own
+		// delegation is pinned below so the count cannot rot.
+		got := strings.Count(string(src), "safego.Go(") + strings.Count(string(src), "safego.Recover(") + strings.Count(string(src), "s.goTracked(")
 		if got < min {
 			t.Errorf("%s has %d safego call sites, expected >= %d — a goroutine "+
 				"launch lost its panic recovery. Wrap degrade-not-die goroutines "+

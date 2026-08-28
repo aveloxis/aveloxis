@@ -4,8 +4,9 @@
 // Package hostid reads the kernel boot id for the (pid, boot_id) locks
 // the scancode worker (v0.21.0 — its orphan recovery compares it) and
 // the mailing-list worker (v0.25.7 — informational; nothing compares it,
-// and no migrate-time rule may be built on it: PIDs are namespaced and
-// the boot id host-global under the container deployment) stamp. One
+// the shutdown release is keyed on the claim's own lock stamp, and no
+// migrate-time rule may be built on it: PIDs are namespaced and the
+// boot id host-global under the container deployment) stamp. One
 // reader (SR-17).
 package hostid
 

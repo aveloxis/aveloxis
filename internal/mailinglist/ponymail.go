@@ -162,7 +162,9 @@ func (p *PonyMail) FetchMonth(ctx context.Context, listAddress, yyyymm string) (
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("mbox.lua %s: %w", listAddress, ErrTransient) // transport error
+		// Both the class (ErrTransient) and the cause: a canceled ctx
+		// must stay visible to errors.Is (pass 39).
+		return nil, 0, fmt.Errorf("mbox.lua %s: %w: %w", listAddress, ErrTransient, err) // transport error
 	}
 	defer resp.Body.Close()
 
@@ -170,7 +172,7 @@ func (p *PonyMail) FetchMonth(ctx context.Context, listAddress, yyyymm string) (
 	case resp.StatusCode == http.StatusOK:
 		body, rerr := io.ReadAll(resp.Body)
 		if rerr != nil {
-			return nil, 0, fmt.Errorf("read mbox %s: %w", listAddress, ErrTransient)
+			return nil, 0, fmt.Errorf("read mbox %s: %w: %w", listAddress, ErrTransient, rerr)
 		}
 		return parseMbox(body, listAddress), 0, nil
 	case resp.StatusCode == http.StatusTooManyRequests:

@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	_ "embed" // spdx_license_ids.txt (v0.27.23)
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -898,7 +899,11 @@ func GenerateAndStoreSBOMs(ctx context.Context, store *db.PostgresStore, repoID 
 			logger.Debug("SBOM generation skipped", "repo_id", repoID, "format", spec.name, "error", err)
 			continue
 		}
-		if err := store.InsertSBOMWithFormat(ctx, repoID, data, spec.name, spec.version); err != nil {
+		err = store.InsertSBOMWithFormat(ctx, repoID, data, spec.name, spec.version)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure (pass 35)
+		}
+		if err != nil {
 			logger.Warn("failed to store SBOM", "repo_id", repoID, "format", spec.name, "error", err)
 		}
 	}

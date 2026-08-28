@@ -320,3 +320,5 @@ func TestWorkerHandlesEmptyQueueGracefully(t *testing.T) {
 		t.Errorf("scanner called %d times on empty queue, want 0", scanner.calls)
 	}
 }
+
+func (f *fakeStore) ReleaseDistributionClaim(context.Context, *db.DistributionJob) error { return nil }

@@ -22,7 +22,9 @@ func TestSenderResolveTickerWiredAndUsesSharedChain(t *testing.T) {
 	}
 	src := string(data)
 
-	if !strings.Contains(src, `safego.Go(s.logger, "mailing-list-sender-resolve", func() { s.runMailingListSenderResolve(ctx) })`) {
+	// pass 38: launched through the tracked-pool helper (safego.Go inside)
+	// so the shutdown arm waits for it before the pool closes.
+	if !strings.Contains(src, `s.goTracked("mailing-list-sender-resolve", func() { s.runMailingListSenderResolve(ctx) })`) {
 		t.Error("spawnMailingListWorker must spawn the runMailingListSenderResolve ticker goroutine")
 	}
 

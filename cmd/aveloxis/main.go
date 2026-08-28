@@ -247,15 +247,30 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	}
 	// Wait for the scheduler's graceful shutdown (worker drain, lock
 	// release, its own pool close) before the deferred store.Close()
-	// runs. Bounded: the scheduler's drain is already capped by
-	// shutdown_grace_seconds; the margin here is a backstop against a
-	// wedged DB call in the drain path itself.
+	// runs. Bounded: the scheduler's drain is capped by
+	// shutdown_grace_seconds and its wait for the background pools'
+	// bookkeeping by the scancode grace + allowance (shutdownBudget);
+	// the margin here is a backstop against a wedged DB call in the
+	// drain path itself. Expiring here skips releaseOurLocks (the next
+	// start's RecoverOtherWorkerLocks covers) and closes the pool under
+	// any bookkeeping still in flight — so this bound must exceed the
+	// scheduler's (pass 39).
 	select {
 	case <-schedDone:
-	case <-time.After(cfg.Collection.ShutdownGraceDuration() + 30*time.Second):
+	case <-time.After(shutdownBudget(cfg) + 30*time.Second):
 		logger.Warn("scheduler did not finish shutdown within grace + margin — exiting anyway")
 	}
 	return nil
+}
+
+// shutdownBudget is the longest a graceful serve shutdown takes before
+// its pool close: the collection drain grace, plus the operator's
+// scancode grace and the runners' bookkeeping allowance the scheduler
+// waits for. Every outer bound (the runServe join, `aveloxis stop`'s
+// backend poll, the documented systemd TimeoutStopSec) derives from it
+// (pass 39).
+func shutdownBudget(cfg *config.Config) time.Duration {
+	return cfg.Collection.ShutdownGraceDuration() + cfg.Collection.ScancodeShutdownGrace() + collector.ScancodeShutdownBookkeepingGrace
 }
 
 // --- api: REST API server ---
@@ -1443,8 +1458,11 @@ func verifyBackendsDisconnected(cfgPath, appName string) {
 	}
 	defer store.Close()
 
-	// Poll once a second for up to 30 seconds.
-	deadline := time.Now().Add(30 * time.Second)
+	// Poll once a second for the serve's full shutdown budget plus a
+	// margin (pass 39: a serve legitimately inside its bookkeeping wait
+	// used to be reported as orphaned backends at 30s).
+	budget := shutdownBudget(cfg) + 30*time.Second
+	deadline := time.Now().Add(budget)
 	var lastPids []int
 	for time.Now().Before(deadline) {
 		pids, err := store.PidsByAppName(ctx, appName)
@@ -1457,10 +1475,10 @@ func verifyBackendsDisconnected(cfgPath, appName string) {
 		lastPids = pids
 		time.Sleep(1 * time.Second)
 	}
-	// Persistent backends after 30s — surface PIDs and the actionable fix.
+	// Persistent backends past the budget — surface PIDs and the actionable fix.
 	if len(lastPids) > 0 {
-		fmt.Printf("WARNING: %d %s backend(s) did not disconnect within 30s after SIGTERM.\n",
-			len(lastPids), appName)
+		fmt.Printf("WARNING: %d %s backend(s) did not disconnect within %s after SIGTERM.\n",
+			len(lastPids), appName, budget.Truncate(time.Second))
 		fmt.Printf("Persistent PIDs: %v\n", lastPids)
 		fmt.Println("If you don't see a matching aveloxis process in `ps`, these are orphans.")
 		fmt.Println("Terminate them with:")

@@ -352,7 +352,8 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 		if len(pendingMarks) == 0 {
 			return
 		}
-		if markErr := bw.store.MarkBreadthAttemptedBatch(ctx, pendingMarks); markErr != nil {
+		markErr := bw.store.MarkBreadthAttemptedBatch(ctx, pendingMarks)
+		if markErr != nil && !errors.Is(markErr, context.Canceled) { // shutdown is not a failure (pass 34)
 			bw.logger.Warn("breadth: failed to mark contributors attempted",
 				"count", len(pendingMarks), "error", markErr)
 		}
@@ -401,7 +402,11 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 		// inserted page-by-page, so a mid-pagination failure still
 		// kept the earlier pages' events.
 		if len(oc.rows) > 0 {
-			if insErr := bw.store.InsertContributorRepoBatch(ctx, oc.rows); insErr != nil {
+			insErr := bw.store.InsertContributorRepoBatch(ctx, oc.rows)
+			if errors.Is(insErr, context.Canceled) {
+				continue // shutdown, not a failure: unmarked, retried next cycle
+			}
+			if insErr != nil {
 				bw.logger.Warn("breadth: failed to insert contributor events — leaving unmarked for retry",
 					"login", oc.contributor.Login, "events", len(oc.rows), "error", insErr)
 				result.Errors++
@@ -415,8 +420,10 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 				"login", oc.contributor.Login, "error", oc.err)
 			result.Errors++
 			// v0.20.17 invariant: a per-user fetch error still counts
-			// as attempted (only a circuit trip or an insert failure
-			// leaves a contributor unmarked).
+			// as attempted (only a circuit trip, an insert failure, or
+			// a shutdown mid-insert leaves a contributor unmarked). A
+			// canceled fetch never reaches here: the loop-top ctx check
+			// aborts the drain first.
 			pendingMarks = append(pendingMarks, oc.contributor.ID)
 			if len(pendingMarks) >= breadthMarkFlushSize {
 				flushMarks()

@@ -4,8 +4,11 @@
 package collector
 
 import (
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.21.4 — pin that the runOne failure paths route through
@@ -39,21 +42,104 @@ func TestRunOneRoutesFailuresThroughRecordFailure(t *testing.T) {
 		}
 	}
 
-	// The runOne pipeline must NOT call clearLockBestEffort on its
-	// failure paths (it's allowed in `dispatcher` — the
-	// ctx-canceled-after-claim cleanup — and the recovery paths).
-	// Pin the actual call-site shape `w.clearLockBestEffort(`.
+	// The runOne pipeline may call clearLockBestEffort ONLY inside a
+	// shutdown branch (`ctx.Err() != nil` — passes 36/37: a scan, clone
+	// or start killed by `stop serve` is a clean release like the
+	// dispatcher's, not a failure and not a timeout); on a failure path
+	// it is the pre-v0.21.4 silent-clear shape. Comment-stripped so a
+	// commented-out call or a `return` in prose cannot satisfy the pin.
+	// ENCLOSING-block semantics (pass 38): the call must be inside the
+	// braces of an `if … ctx.Err() != nil {` — a proximity window let a
+	// failure-path call placed after a shutdown branch pass (the
+	// pass-37 pin was decorative for the three sites nearest their
+	// shutdown branches, mutation-proved). And every shutdown branch
+	// must contain a clear: a branch that returns without clearing
+	// strands the lock until the next start.
 	for _, decl := range []string{
 		"func (w *ScancodeWorker) runOne(",
 		"func (w *ScancodeWorker) prepareClone(",
 		"func (w *ScancodeWorker) executeScan(",
 		"func (w *ScancodeWorker) finishScan(",
 	} {
-		body := scancodeMethodBody(t, src, decl)
-		if strings.Contains(body, "w.clearLockBestEffort(") {
-			t.Errorf("%s must not call w.clearLockBestEffort(...) — failure paths must route through w.recordFailureBestEffort(...) so the failure is tracked and backed off, not just silently cleared. (clearLockBestEffort is still allowed in dispatcher's ctx-canceled-after-claim cleanup, which is a clean release rather than a failure.)", decl)
+		body := srctest.StripGoComments(scancodeMethodBody(t, src, decl))
+		for _, loc := range regexp.MustCompile(`w\.clearLockBestEffort\(`).FindAllStringIndex(body, -1) {
+			at := loc[0]
+			if !insideShutdownBranch(body, at) {
+				t.Errorf("%s: w.clearLockBestEffort at offset %d is not inside the braces of a `ctx.Err() != nil` shutdown branch — failure paths route through w.recordFailureBestEffort so the failure is tracked and backed off", decl, at)
+			}
+			rest := body[loc[1]:]
+			following := ""
+			if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+				following = strings.TrimSpace(rest[nl+1:])
+			}
+			if !strings.HasPrefix(following, "return") {
+				t.Errorf("%s: the statement after w.clearLockBestEffort at offset %d must be a return", decl, at)
+			}
+		}
+		for _, m := range shutdownGuardRe.FindAllStringIndex(body, -1) {
+			block := blockAfter(body, m[1]-1)
+			if !strings.Contains(block, "w.clearLockBestEffort(") {
+				t.Errorf("%s: the shutdown branch at offset %d returns without w.clearLockBestEffort — the lock would stay set until the next start's recovery", decl, m[0])
+			}
 		}
 	}
+	// finishScan's shutdown branch must precede the artifact write and
+	// the outcome classification (which reads the SIGKILL text as a
+	// timeout).
+	finish := srctest.StripGoComments(scancodeMethodBody(t, src, "func (w *ScancodeWorker) finishScan("))
+	branch := strings.Index(finish, "if ex.waitErr != nil && ctx.Err() != nil {")
+	artifacts := strings.Index(finish, "writeFailureArtifacts")
+	if branch < 0 || artifacts < 0 || artifacts < branch {
+		t.Errorf("finishScan must check `ex.waitErr != nil && ctx.Err() != nil` BEFORE writeFailureArtifacts / classifyScanOutcome")
+	}
+}
+
+// shutdownGuardRe is THE shutdown-branch shape: an `if` whose condition
+// ends in `ctx.Err() != nil {` (pass 39: the "inside" check and the
+// per-branch check share it, so a disjunction such as
+// `ctx.Err() != nil || retries > 3` is neither an inside-anchor nor an
+// unchecked branch).
+var shutdownGuardRe = regexp.MustCompile(`if [^\n{]*ctx\.Err\(\) != nil \{`)
+
+// insideShutdownBranch reports whether offset at lies inside the braces
+// of a preceding shutdown guard (brace depth between the guard's `{`
+// and at stays above zero).
+func insideShutdownBranch(body string, at int) bool {
+	guards := shutdownGuardRe.FindAllStringIndex(body[:at], -1)
+	if len(guards) == 0 {
+		return false
+	}
+	open := guards[len(guards)-1][1] - 1 // the guard's `{`
+	depth := 0
+	for i := open; i < at; i++ {
+		switch body[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return false
+			}
+		}
+	}
+	return depth > 0
+}
+
+// blockAfter returns the text of the brace block opening at open.
+func blockAfter(body string, open int) string {
+	depth := 0
+	for i := open; i < len(body); i++ {
+		switch body[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return body[open : i+1]
+			}
+		}
+	}
+	return body[open:]
 }
 
 func TestRecordFailureBestEffortHelperExists(t *testing.T) {

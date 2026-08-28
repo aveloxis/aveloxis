@@ -172,6 +172,16 @@ type ScancodeWorker struct {
 	cadence       time.Duration
 	cloneDir      string
 	shutdownGrace time.Duration
+
+	// bookkeeping counts claimed jobs whose DB bookkeeping is not over
+	// (Add at the dispatcher handoff, Done from runOne before the
+	// clone-dir removal); bookkeepingDone closes when Run observes it
+	// drained after the dispatcher exits — or on any Run return
+	// (bookkeepingClose) so a waiter never hangs on a worker that
+	// bailed early. See ScancodeShutdownBookkeepingGrace.
+	bookkeeping      sync.WaitGroup
+	bookkeepingDone  chan struct{}
+	bookkeepingClose sync.Once
 	// v0.23.8: per-job wall-clock timeout. The runner computes
 	// `min(runTimeoutBase * 2^job.TimeoutAttempts, runTimeoutCap)`
 	// per job. Pre-v0.23.8 this was a package-level constant
@@ -281,6 +291,7 @@ func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger, opts Scanco
 		cadence:           opts.Cadence,
 		cloneDir:          opts.CloneDir,
 		shutdownGrace:     opts.ShutdownGrace,
+		bookkeepingDone:   make(chan struct{}),
 		runTimeoutBase:    opts.RunTimeoutBase,
 		runTimeoutCap:     opts.RunTimeoutCap,
 		maxInMemory:       opts.MaxInMemory,
@@ -314,7 +325,13 @@ func (w *ScancodeWorker) staleLockWindow() time.Duration {
 // Probes for the scancode binary at startup; if not installed, logs
 // once and returns without spawning goroutines (matches the pre-
 // v0.21.0 silent-skip behavior of the inline analysis-phase scan).
+// BookkeepingDone closes when every claimed job's DB bookkeeping is
+// over after shutdown (or when Run returns for any other reason) — the
+// scheduler waits for it before closing the pool (pass 39).
+func (w *ScancodeWorker) BookkeepingDone() <-chan struct{} { return w.bookkeepingDone }
+
 func (w *ScancodeWorker) Run(ctx context.Context) {
+	defer w.bookkeepingClose.Do(func() { close(w.bookkeepingDone) })
 	if _, err := exec.LookPath("scancode"); err != nil {
 		w.logger.Info("scancode binary not installed; ScancodeWorker disabled",
 			"install_hint", "pipx install scancode-toolkit")
@@ -414,13 +431,26 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 		close(runnersDone)
 	}()
 
+	// The scans themselves die at cancel (cmd.Cancel on the derived
+	// ctx); what the runners still need is their DB BOOKKEEPING — the
+	// post-kill Wait and the lock clear / stamp retry on a Background
+	// ctx. Wait for THAT (not for the runners' clone-dir removal, which
+	// needs no pool and can take minutes on a spinning disk) on top of
+	// the operator's scan grace, and signal it so the scheduler's pool
+	// close never lands under it (passes 38/39).
+	go func() {
+		defer safego.Recover(w.logger, "scancode-bookkeeping-wait")
+		w.bookkeeping.Wait()
+		w.bookkeepingClose.Do(func() { close(w.bookkeepingDone) })
+	}()
 	select {
-	case <-runnersDone:
-		w.logger.Info("scancode worker stopped cleanly — all runners completed within grace window")
-	case <-time.After(w.shutdownGrace):
-		w.logger.Warn("scancode worker shutdown grace expired — outstanding scancode subprocesses will be killed on next syscall",
-			"grace", w.shutdownGrace.String())
+	case <-w.bookkeepingDone:
+		w.logger.Info("scancode worker stopped cleanly — every runner finished its shutdown bookkeeping")
+	case <-time.After(w.shutdownGrace + ScancodeShutdownBookkeepingGrace):
+		w.logger.Warn("scancode worker shutdown grace expired — runners still inside their bookkeeping; their locks are recovered on the next start",
+			"grace", w.shutdownGrace.String(), "bookkeeping_allowance", ScancodeShutdownBookkeepingGrace.String())
 	}
+	_ = runnersDone // the runners' clone-dir removal is not waited for; the startup sweep covers what a process exit cuts
 
 	// v0.27.6 shutdown sweep: remove ALL repo_* clone dirs and
 	// preflight temp dirs. A clone can't outlive the worker usefully
@@ -534,6 +564,10 @@ func (w *ScancodeWorker) dispatcher(ctx context.Context, jobs chan<- db.Scancode
 		// until a runner is ready to receive. When all N
 		// workers are busy, the dispatcher pauses here
 		// naturally; no over-claiming.
+		// The bookkeeping count is taken HERE, before the handoff, so
+		// Run's post-dispatcher Wait can never observe a runner between
+		// receiving a job and registering it (pass 39).
+		w.bookkeeping.Add(1)
 		select {
 		case jobs <- *job:
 			// Successful start. Stamp the next-start window so
@@ -545,9 +579,10 @@ func (w *ScancodeWorker) dispatcher(ctx context.Context, jobs chan<- db.Scancode
 			// could accept. Best-effort release of the lock so
 			// the next aveloxis startup's recoverOrphans pass
 			// doesn't have to deal with a phantom claim.
-			relCtx, relCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			relCtx, relCancel := context.WithTimeout(context.Background(), scancodeBestEffortDBTimeout)
 			_ = w.store.ClearScancodeLock(relCtx, job.RepoID)
 			relCancel()
+			w.bookkeeping.Done() // the claim was never handed off (pass 39)
 			return
 		}
 	}
@@ -575,6 +610,11 @@ func (w *ScancodeWorker) runner(ctx context.Context, jobs <-chan db.ScancodeJob,
 // recording path. We never crash the runner on a single repo's
 // failure — the worker stays up.
 func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
+	// The dispatcher counted this job on w.bookkeeping before the
+	// handoff; signal once when the DB bookkeeping is over — before the
+	// clone-dir removal, which needs no pool (pass 39).
+	bookkeepingDone := sync.OnceFunc(w.bookkeeping.Done)
+	defer bookkeepingDone()
 	// v0.27.6 generated-content skip policy — decided from the
 	// claimed row's repos.languages breakdown BEFORE any clone I/O.
 	// pytorch/docs (~6 GB, 100% HTML) burned a 24h worker slot 27×;
@@ -593,6 +633,7 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	tempDir := filepath.Join(w.cloneDir,
 		fmt.Sprintf("repo_%d_%d", job.RepoID, time.Now().UnixNano()))
 	defer func() {
+		bookkeepingDone() // every DB write is behind us; the removal is filesystem only
 		if err := os.RemoveAll(tempDir); err != nil {
 			w.logger.Warn("scancode worker failed to remove temp clone",
 				"repo_id", job.RepoID, "temp_dir", tempDir, "error", err)
@@ -662,8 +703,17 @@ func (w *ScancodeWorker) prepareClone(ctx context.Context, job db.ScancodeJob, t
 		}
 		return nil
 	}
-	cloneCmd.WaitDelay = 10 * time.Second
+	cloneCmd.WaitDelay = scancodeWaitDelay
 	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			// Shutdown killed the clone: a clean release, not a strike
+			// (pass 37 — the strike fed the quadratic claim backoff and,
+			// at ten, the 180-day sideline, for a `stop serve`).
+			w.logger.Info("scancode runOne: clone interrupted by shutdown — lock cleared, no strike recorded",
+				"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName)
+			w.clearLockBestEffort(ctx, job.RepoID)
+			return false
+		}
 		w.logger.Warn("scancode runOne git clone failed",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
 			"error", err, "git_output", string(out))
@@ -792,7 +842,7 @@ func (w *ScancodeWorker) executeScan(ctx context.Context, job db.ScancodeJob, te
 		}
 		return nil
 	}
-	cmd.WaitDelay = 10 * time.Second
+	cmd.WaitDelay = scancodeWaitDelay
 
 	// cmd.Start() is the key change from the legacy synchronous
 	// invocation: we need the OS PID BEFORE the subprocess
@@ -801,6 +851,12 @@ func (w *ScancodeWorker) executeScan(ctx context.Context, job db.ScancodeJob, te
 	// the PID after the subprocess had already exited — useful
 	// for post-mortem reaping but no help to the recovery pass.
 	if err := cmd.Start(); err != nil {
+		if ctx.Err() != nil {
+			w.logger.Info("scancode runOne: scan not started — shutdown; lock cleared, no strike recorded",
+				"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName)
+			w.clearLockBestEffort(ctx, job.RepoID)
+			return nil
+		}
 		w.logger.Warn("scancode runOne: cmd.Start() failed",
 			"repo_id", job.RepoID, "error", err)
 		w.recordFailureBestEffort(ctx, job.RepoID)
@@ -840,6 +896,16 @@ func (w *ScancodeWorker) executeScan(ctx context.Context, job db.ScancodeJob, te
 		// this state (ropensci/neotoma), holding a worker slot
 		// indefinitely. Better to kill the subprocess and surface
 		// the DB-write error than to leave an unrecoverable lock.
+		if ctx.Err() != nil {
+			// Shutdown, not a lock-state failure: kill the child, clear
+			// the lock, no strike (pass 37).
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = cmd.Wait()
+			w.logger.Info("scancode runOne: scan interrupted by shutdown before its lock state was recorded — lock cleared, no strike recorded",
+				"repo_id", job.RepoID, "pid", pid)
+			w.clearLockBestEffort(ctx, job.RepoID)
+			return nil
+		}
 		w.logger.Warn("scancode runOne: failed to record lock state — killing subprocess and aborting",
 			"repo_id", job.RepoID, "pid", pid, "error", err)
 		// Signal the process group so the scancode subprocess and
@@ -922,11 +988,26 @@ func (w *ScancodeWorker) writeFailureArtifacts(job db.ScancodeJob, ex *scanExecu
 // pre-v0.27.6 bookkeeping:
 //
 //   - success / salvaged (v0.23.4) → ingest + MarkScancodeComplete
+//   - shutdown (ctx done — the same "signal: killed" text) → lock
+//     cleared, nothing recorded (pass 36)
 //   - timeout (v0.23.8 "signal: killed") → RecordScancodeTimeout,
 //     never the 10-strike counter; the v0.27.6 at-cap strike
 //     sideline is the one addition
 //   - anything else → recordFailureBestEffort
 func (w *ScancodeWorker) finishScan(ctx context.Context, job db.ScancodeJob, ex *scanExecution) {
+	if ex.waitErr != nil && ctx.Err() != nil {
+		// Shutdown killed the scan (scanCtx derives from ctx). The
+		// SIGKILL text reads as a wall-clock timeout to the classifier,
+		// so this used to record a timeout strike, print a false
+		// "stretched timeout" line (and a false sideline at the cap),
+		// and write failure artifacts — three misleading lines per
+		// in-flight scan on every stop (pass 36). It is neither: clear
+		// the lock and let the repo re-claim.
+		w.logger.Info("scancode runOne: scan interrupted by shutdown — lock cleared, no strike recorded",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName, "pid", ex.pid)
+		w.clearLockBestEffort(ctx, job.RepoID)
+		return
+	}
 	if ex.waitErr != nil {
 		w.writeFailureArtifacts(job, ex)
 	}
@@ -990,6 +1071,15 @@ func (w *ScancodeWorker) finishScan(ctx context.Context, job db.ScancodeJob, ex 
 	// localPath and re-invokes the binary; here we already have
 	// the output file, so we parse it directly via the helper.
 	version, err := ingestScancodeOutput(ctx, w.store, job.RepoID, ex.outputPath, w.logger)
+	if err != nil && ctx.Err() != nil {
+		// Shutdown landed inside the ingest: the output file is intact
+		// and the ingest is idempotent — clear the lock, no strike, the
+		// repo re-claims (pass 38).
+		w.logger.Info("scancode runOne: ingest interrupted by shutdown — lock cleared, no strike recorded",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName)
+		w.clearLockBestEffort(ctx, job.RepoID)
+		return
+	}
 	if err != nil {
 		w.logger.Warn("scancode runOne: ingest failed",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
@@ -998,7 +1088,24 @@ func (w *ScancodeWorker) finishScan(ctx context.Context, job db.ScancodeJob, ex 
 		return
 	}
 
-	if err := w.store.MarkScancodeComplete(ctx, job.RepoID, version); err != nil {
+	err = w.store.MarkScancodeComplete(ctx, job.RepoID, version)
+	if err != nil && ctx.Err() != nil {
+		// The scan is ingested; only the stamp was cut off by shutdown.
+		// Retry it once on a bounded Background ctx (cheap, idempotent);
+		// if that fails too, clear the lock so the next claim re-runs.
+		stampCtx, cancel := context.WithTimeout(context.Background(), scancodeBestEffortDBTimeout)
+		defer cancel()
+		if serr := w.store.MarkScancodeComplete(stampCtx, job.RepoID, version); serr != nil {
+			w.logger.Info("scancode runOne: completion stamp cut off by shutdown — lock cleared, the ingested scan is re-run next claim",
+				"repo_id", job.RepoID, "error", serr)
+			w.clearLockBestEffort(ctx, job.RepoID)
+			return
+		}
+		w.logger.Info("scancode worker complete (completion stamp retried after shutdown)",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName, "version", version)
+		return
+	}
+	if err != nil {
 		w.logger.Warn("scancode runOne: MarkScancodeComplete failed",
 			"repo_id", job.RepoID, "error", err)
 		// The scan succeeded and was ingested; only the
@@ -1074,13 +1181,34 @@ func (w *ScancodeWorker) sweepCloneDirAtShutdown() {
 // in the runOne pipeline use recordFailureBestEffort instead so the
 // failure-counter + last_failed_at columns get updated and the
 // backoff gate applies.
+// scancodeWaitDelay bounds how long cmd.Wait blocks after the process
+// group is SIGKILLed (pipes held by stragglers); scancodeBestEffortDBTimeout
+// bounds each Background-ctx bookkeeping write a runner issues after its
+// ctx is dead. ScancodeShutdownBookkeepingGrace is the worst case of
+// one runner's DB bookkeeping once the scan is killed: the post-kill
+// Wait plus up to TWO best-effort writes (the completion-stamp retry
+// and then the lock clear). Run signals BookkeepingDone when every
+// runner's DB work is over — the clone-dir removal that follows needs
+// no pool and is not waited for — and the scheduler waits for that
+// signal (bounded by the operator's scan grace + this allowance)
+// before it closes the pool (passes 38/39: with the default grace of 0
+// the worker returned immediately and the scheduler closed the pool
+// under the runners' lock clears, so every "lock cleared" on stop was a
+// WARN and a next-start recovery instead).
+const (
+	scancodeWaitDelay           = 10 * time.Second
+	scancodeBestEffortDBTimeout = 30 * time.Second
+
+	ScancodeShutdownBookkeepingGrace = scancodeWaitDelay + 2*scancodeBestEffortDBTimeout
+)
+
 func (w *ScancodeWorker) clearLockBestEffort(ctx context.Context, repoID int64) {
 	// Try the live ctx first; fall back to a BOUNDED background ctx if
 	// canceled (v0.27.40: a hung DB at shutdown must not block forever).
 	useCtx := ctx
 	if ctx.Err() != nil {
 		var cancel context.CancelFunc
-		useCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		useCtx, cancel = context.WithTimeout(context.Background(), scancodeBestEffortDBTimeout)
 		defer cancel()
 	}
 	if err := w.store.ClearScancodeLock(useCtx, repoID); err != nil {
@@ -1103,7 +1231,7 @@ func (w *ScancodeWorker) recordFailureBestEffort(ctx context.Context, repoID int
 	if ctx.Err() != nil {
 		// v0.27.40: bounded fallback — see clearLockBestEffort.
 		var cancel context.CancelFunc
-		useCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		useCtx, cancel = context.WithTimeout(context.Background(), scancodeBestEffortDBTimeout)
 		defer cancel()
 	}
 	if err := w.store.RecordScancodeFailure(useCtx, repoID); err != nil {

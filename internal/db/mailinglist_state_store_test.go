@@ -24,6 +24,7 @@ func TestMailingListStateStoreMethodsExist(t *testing.T) {
 		"func (s *PostgresStore) CheckpointListMonth(",
 		"func (s *PostgresStore) CompleteListScan(",
 		"func (s *PostgresStore) RecordListFailure(",
+		"func (s *PostgresStore) ReleaseListLock(",
 	} {
 		if !strings.Contains(src, sig) {
 			t.Errorf("mailinglist_state_store.go must declare %s", sig)

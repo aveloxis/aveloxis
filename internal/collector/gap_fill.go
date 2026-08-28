@@ -129,6 +129,9 @@ func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID 
 			// healer reported "healed" and exited zero having checked
 			// nothing, and routine gap fill's v0.20.5 recovery never
 			// armed.
+			if errors.Is(err, context.Canceled) {
+				return totalFilled, err // shutdown, not a failure (pass 35)
+			}
 			gf.logger.Warn("failed to list API issue numbers for gap fill", "error", err)
 			fillErrs = append(fillErrs, fmt.Errorf("issue number listing: %w", err))
 		} else {
@@ -140,6 +143,9 @@ func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID 
 					"gaps", len(gaps),
 					"items_to_fetch", len(toFetch))
 				filled, err := gf.fillIssueGaps(ctx, repoID, owner, repo, toFetch)
+				if errors.Is(err, context.Canceled) {
+					return totalFilled, err
+				}
 				if err != nil {
 					gf.logger.Warn("issue gap fill error", "error", err)
 					fillErrs = append(fillErrs, fmt.Errorf("issue gap fill: %w", err))
@@ -164,6 +170,9 @@ func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID 
 
 		apiPRNumbers, err := gf.listAPIPRNumbers(ctx, owner, repo)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return totalFilled, err
+			}
 			gf.logger.Warn("failed to list API PR numbers for gap fill", "error", err)
 			fillErrs = append(fillErrs, fmt.Errorf("PR number listing: %w", err))
 		} else {
@@ -175,6 +184,9 @@ func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID 
 					"gaps", len(gaps),
 					"items_to_fetch", len(toFetch))
 				filled, err := gf.fillPRGaps(ctx, repoID, owner, repo, toFetch)
+				if errors.Is(err, context.Canceled) {
+					return totalFilled, err
+				}
 				if err != nil {
 					gf.logger.Warn("PR gap fill error", "error", err)
 					fillErrs = append(fillErrs, fmt.Errorf("PR gap fill: %w", err))
@@ -229,6 +241,9 @@ func (gf *GapFiller) fillIssueGaps(ctx context.Context, repoID int64, owner, rep
 			if isOptionalEndpointSkip(err) {
 				gf.logger.Debug("issue not found or inaccessible (skip)", "number", num, "error", err)
 				continue
+			}
+			if errors.Is(err, context.Canceled) {
+				return filled, err // shutdown: no partial flush on the dead ctx, no WARN (pass 36)
 			}
 			// Non-skippable: rate limit, network failure, etc. Bubble up so
 			// the scheduler can retry on the next cycle instead of silently
@@ -437,6 +452,9 @@ func (gf *GapFiller) fetchPRsForGap(ctx context.Context, repoID int64, owner, re
 				gf.logger.Debug("PR gap fill graphql batch skipped", "error", err)
 				return out, nil
 			}
+			if errors.Is(err, context.Canceled) {
+				return out, err // shutdown, not a failure
+			}
 			if len(batch) > 0 {
 				gf.logger.Info("gap fill partial batch — staging recovered envelopes before bubbling error",
 					"repo_id", repoID, "partial_count", len(batch), "total_requested", len(numbers), "error", err)
@@ -456,6 +474,9 @@ func (gf *GapFiller) fetchPRsForGap(ctx context.Context, repoID int64, owner, re
 			if isOptionalEndpointSkip(err) {
 				gf.logger.Debug("PR not found or inaccessible (skip)", "number", num, "error", err)
 				continue
+			}
+			if errors.Is(err, context.Canceled) {
+				return out, err
 			}
 			gf.logger.Warn("gap fill aborting on non-skippable PR fetch error",
 				"repo_id", repoID, "number", num, "error", err)

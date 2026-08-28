@@ -51,6 +51,12 @@ func TestWeeklyRebuildTreatsShutdownAsCanceledNotFailed(t *testing.T) {
 
 // The same rule at every ticker task fed Run's ctx: a canceled error is
 // shutdown, never a WARN "… failed" (pass 29 class sweep).
+// The seven sites below are the per-message pins from pass 24; the set
+// itself is enforced structurally by TestEveryTickerTaskClassifiesCancellation
+// (ticker_cancel_structural_test.go — Copilot round 7 / pass 34), which
+// derives every ticker task from Run, follows the scheduler-side
+// helpers they call to a fixpoint, and checks every ctx-bound failure
+// log in that set. Delegates in other packages are outside it.
 func TestTickerTasksTreatShutdownAsCanceledNotFailed(t *testing.T) {
 	src := srctest.StripGoComments(srctest.Read(t, "internal/scheduler/scheduler.go"))
 	for _, msg := range []string{

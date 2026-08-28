@@ -26,6 +26,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -150,6 +151,9 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		}
 
 		login, ghUserID, err := r.resolveOne(ctx, repoID, owner, repo, cmt, result)
+		if errors.Is(err, context.Canceled) {
+			return result, err // shutdown, not a failure (pass 35)
+		}
 		if err != nil {
 			// Distinguish key exhaustion from other errors — key exhaustion means
 			// we should stop trying (all subsequent calls will fail too).

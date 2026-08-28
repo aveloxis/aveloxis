@@ -232,6 +232,9 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		RepoID:     repoID,
 		CoreStatus: string(StatusCollecting),
 	}); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, err // shutdown before the first phase (pass 35)
+		}
 		sc.logger.Warn("failed to update collection status", "repo_id", repoID, "error", err)
 	}
 
@@ -364,6 +367,9 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		result.Errors = append(result.Errors, fmt.Errorf("staging flush: %w", err))
 	}
 
+	if ctx.Err() != nil {
+		return result, ctx.Err() // shutdown: never "complete" with zeros (pass 37)
+	}
 	sc.logger.Info("staged collection complete",
 		"repoID", repoID, "staged_issues", result.Issues,
 		"staged_prs", result.PullRequests, "staged_messages", result.Messages,
@@ -414,6 +420,12 @@ func (sc *StagedCollector) preEnumerateIfGraphQL(ctx context.Context, owner, rep
 		return preEnumerateBatch{}
 	}
 	batch, err := sc.client.ListIssuesAndPRs(ctx, owner, repo, since)
+	if errors.Is(err, context.Canceled) {
+		// Shutdown mid-listing (the common shape on a big repo): no
+		// partial staging on the dead ctx, no fallback WARN — the REST
+		// fallback fails fast and the job ends unrecorded (pass 36).
+		return preEnumerateBatch{}
+	}
 	if err != nil {
 		// Surface partial results even on error: ListIssuesAndPRs (phase 5)
 		// returns the batch with whatever issues/labels/assignees made it
@@ -1257,6 +1269,9 @@ func (p *Processor) processBatch(ctx context.Context, repoID int64, platID int16
 		}
 		if len(contribs) > 0 {
 			if err := p.store.UpsertContributorBatch(ctx, contribs); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err // shutdown: ProcessRepo reports it once
+				}
 				p.logger.Warn("failed to upsert contributor batch", "count", len(contribs), "error", err)
 				p.errors += len(contribs)
 			}
@@ -1267,7 +1282,13 @@ func (p *Processor) processBatch(ctx context.Context, repoID int64, platID int16
 	// All other entity types: process one at a time.
 	var errCount int
 	for _, row := range rows {
+		if ctx.Err() != nil {
+			return ctx.Err() // shutdown mid-batch: one exit, not one WARN per remaining row (pass 36)
+		}
 		if err := p.processOne(ctx, repoID, platID, entityType, row.Payload); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to process staged row",
 				"type", entityType, "staging_id", row.ID, "error", err)
 			errCount++
@@ -1285,6 +1306,9 @@ func (p *Processor) resolveUser(ctx context.Context, platID int16, ref model.Use
 	cid, err := p.resolver.Resolve(ctx, platID, ref.PlatformID,
 		ref.Login, ref.Name, ref.Email,
 		ref.AvatarURL, ref.URL, ref.NodeID, ref.Type)
+	if errors.Is(err, context.Canceled) {
+		return nil // shutdown: the row's processing fails right after and ProcessRepo reports it once
+	}
 	if err != nil {
 		// Log the error — the original silent nil return hid a SQL syntax bug
 		// that caused 131K+ messages to lose contributor attribution.

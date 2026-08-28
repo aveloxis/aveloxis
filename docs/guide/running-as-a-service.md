@@ -65,11 +65,13 @@ Environment=PATH=/home/aveloxis/go/bin:/home/aveloxis/.local/bin:/usr/local/bin:
 
 # No ExecStop: systemd's SIGTERM IS the stop mechanism (v0.27.25+).
 # serve's graceful shutdown completes within
-# collection.shutdown_grace_seconds (default 10) plus a few seconds of
-# lock release and pool close. When TimeoutStopSec expires systemd
-# escalates to SIGKILL, which recreates the orphaned-backend class —
-# keep this comfortably above the configured grace.
-TimeoutStopSec=60
+# collection.shutdown_grace_seconds (default 10) + the scancode grace
+# (collection.scancode_shutdown_grace_minutes, default 0) + the runners'
+# bookkeeping allowance (70 s, v0.28.18) + a 30 s margin — ~110 s at the
+# defaults. When TimeoutStopSec expires systemd escalates to SIGKILL,
+# which recreates the orphaned-backend class — keep this comfortably
+# above that sum (and above any scancode grace you configure).
+TimeoutStopSec=180
 
 [Install]
 WantedBy=aveloxis.target

@@ -43,6 +43,7 @@ type Store interface {
 	MarkDistributionComplete(ctx context.Context, job *db.DistributionJob,
 		distributions []model.PackageDistribution, manifests []model.DistributionManifest, scanComplete bool) error
 	RecordDistributionFailure(ctx context.Context, job *db.DistributionJob) error
+	ReleaseDistributionClaim(ctx context.Context, job *db.DistributionJob) error
 }
 
 // Scanner produces the distribution evidence for one claimed repo.
@@ -265,7 +266,7 @@ func (w *Worker) dispatcher(ctx context.Context, jobs chan<- *db.DistributionJob
 			// ctx canceled while waiting for a runner: release the
 			// claim so the row becomes immediately re-claimable.
 			relCtx, relCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = w.store.RecordDistributionFailure(relCtx, job)
+			_ = w.store.ReleaseDistributionClaim(relCtx, job) // a release, not a strike (pass 39)
 			relCancel()
 			return
 		case jobs <- job:
@@ -302,6 +303,20 @@ func (w *Worker) processJob(ctx context.Context, job *db.DistributionJob) {
 	// during the scan would lose the result entirely.
 	completionCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	if ctx.Err() != nil {
+		// Shutdown cut the scan short: neither a failure (a strike toward
+		// the 10-strike sideline) nor a completion (a partial snapshot
+		// stamped as this cycle's) — release the claim, the repo
+		// re-claims next dispatch (pass 39).
+		w.logger.Info("distribution scan interrupted by shutdown — claim released, no strike recorded",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName)
+		if err := w.store.ReleaseDistributionClaim(completionCtx, job); err != nil {
+			w.logger.Warn("distribution: claim release on shutdown failed — the row re-claims once its transaction is gone",
+				"repo_id", job.RepoID, "error", err)
+		}
+		return
+	}
 
 	if scanErr != nil {
 		w.logger.Warn("distribution scan failed",

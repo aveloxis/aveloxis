@@ -5,6 +5,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -62,6 +63,9 @@ func (s *Scheduler) runActivityClassification(ctx context.Context) {
 	}
 	cooldown := s.cfg.Collection.BreadthCooldownDuration()
 	claimed, err := s.store.GetContributorsForActivityCheck(ctx, activityCheckBatch, cooldown)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
 	if err != nil {
 		s.logger.Warn("activity classification: claim failed", "error", err)
 		return
@@ -75,6 +79,9 @@ func (s *Scheduler) runActivityClassification(ctx context.Context) {
 	}
 	start := time.Now()
 	activities, err := fetcher.FetchContributorActivity(ctx, logins)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure: nothing is stamped, the batch is re-claimed next tick
+	}
 	if err != nil {
 		s.logger.Warn("activity classification: fetch failed — batch will retry next tick", "claimed", len(claimed), "error", err)
 		return
@@ -100,13 +107,21 @@ func (s *Scheduler) runActivityClassification(ctx context.Context) {
 		})
 	}
 	if len(updates) > 0 {
-		if err := s.store.UpdateContributorActivityBatch(ctx, updates); err != nil {
+		err := s.store.UpdateContributorActivityBatch(ctx, updates)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
+		if err != nil {
 			s.logger.Warn("activity classification: update failed", "count", len(updates), "error", err)
 			return
 		}
 	}
 	if len(absent) > 0 {
-		if err := s.store.MarkActivityCheckedBatch(ctx, absent); err != nil {
+		err := s.store.MarkActivityCheckedBatch(ctx, absent)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
+		if err != nil {
 			s.logger.Warn("activity classification: mark-absent failed", "count", len(absent), "error", err)
 		}
 	}

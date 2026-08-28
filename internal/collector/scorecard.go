@@ -216,6 +216,9 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		return nil, remoteErr
 	}
 
+	if errors.Is(remoteErr, context.Canceled) {
+		return nil, remoteErr // shutdown mid-remote: no fallback on a dead ctx (pass 35)
+	}
 	// Local backstop: 11 checks beat none. Fresh per-attempt timeout.
 	logger.Warn("scorecard remote attempt failed — falling back to local mode",
 		"repo_id", repoID, "url", safeRepoURL, "error", remoteErr)
@@ -270,6 +273,9 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 		// and the mode decision belongs to the CALLER (v0.27.5) — the
 		// invoke half never silently switches modes.
 		if err := setRemoteOrigin(attemptCtx, localPath, repoURL); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil, err // shutdown, not a failure (pass 36)
+			}
 			logger.Warn("failed to set remote origin for local scorecard — proceeding with local checks only",
 				"repo_id", repoID, "error", err)
 		}
@@ -335,7 +341,7 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 			return nil, fmt.Errorf("scorecard timed out after %v (wall-clock cap): %w", timeout, attemptCtx.Err())
 		}
 		if runErr != nil {
-			return nil, fmt.Errorf("scorecard failed: %w: %s", runErr, stderr.String())
+			return nil, fmt.Errorf("scorecard failed: %w: %s", execErr(attemptCtx, runErr), stderr.String())
 		}
 		return nil, fmt.Errorf("parsing scorecard output: %w", err)
 	}
@@ -397,7 +403,7 @@ func setRemoteOrigin(ctx context.Context, repoPath, remoteURL string) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git remote set-url failed: %w: %s", err, stderr.String())
+		return fmt.Errorf("git remote set-url failed: %w: %s", execErr(ctx, err), stderr.String())
 	}
 	return nil
 }

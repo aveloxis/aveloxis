@@ -21,6 +21,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -58,6 +59,9 @@ func (r *OpenItemRefresher) RefreshOpenItems(ctx context.Context, repoID int64, 
 
 	// Refresh open issues.
 	openIssues, err := r.store.GetOpenIssueNumbers(ctx, repoID)
+	if errors.Is(err, context.Canceled) {
+		return 0 // shutdown, not a failure (pass 36)
+	}
 	if err != nil {
 		r.logger.Warn("failed to query open issues", "repo_id", repoID, "error", err)
 	} else if len(openIssues) > 0 {
@@ -69,6 +73,9 @@ func (r *OpenItemRefresher) RefreshOpenItems(ctx context.Context, repoID int64, 
 
 	// Refresh open PRs (includes re-fetching reviews, commits, files, etc.).
 	openPRs, err := r.store.GetOpenPRNumbers(ctx, repoID)
+	if errors.Is(err, context.Canceled) {
+		return totalRefreshed
+	}
 	if err != nil {
 		r.logger.Warn("failed to query open PRs", "repo_id", repoID, "error", err)
 	} else if len(openPRs) > 0 {
@@ -141,12 +148,18 @@ func (r *OpenItemRefresher) refreshIssues(ctx context.Context, repoID int64, own
 		// open-item status refresh would become a silent no-op for any repo
 		// with fewer than stagingFlushSize (500) open items.
 		if err := sw.Flush(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return refreshed
+			}
 			r.logger.Warn("failed to flush refreshed issue staging batch",
 				"repo_id", repoID, "refreshed", refreshed, "error", err)
 			return refreshed
 		}
 		proc := NewProcessor(r.store, r.logger)
 		if err := proc.ProcessRepo(ctx, repoID, int16(r.client.Platform())); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return refreshed
+			}
 			r.logger.Warn("failed to process refreshed issues", "error", err)
 		}
 	}
@@ -212,12 +225,18 @@ func (r *OpenItemRefresher) refreshPRs(ctx context.Context, repoID int64, owner,
 		// staging (see refreshIssues above for the full rationale — same
 		// buffering bug).
 		if err := sw.Flush(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return refreshed
+			}
 			r.logger.Warn("failed to flush refreshed PR staging batch",
 				"repo_id", repoID, "refreshed", refreshed, "error", err)
 			return refreshed
 		}
 		proc := NewProcessor(r.store, r.logger)
 		if err := proc.ProcessRepo(ctx, repoID, int16(r.client.Platform())); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return refreshed
+			}
 			r.logger.Warn("failed to process refreshed PRs", "error", err)
 		}
 	}

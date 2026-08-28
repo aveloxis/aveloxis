@@ -126,7 +126,7 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	cmd.Env = gitCloneEnv()
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return result, fmt.Errorf("local clone failed: %w: %s", err, stderr.String())
+		return result, fmt.Errorf("local clone failed: %w: %s", execErr(ctx, err), stderr.String())
 	}
 
 	// Phase 1: Dependency scanning.
@@ -2295,7 +2295,7 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	cmd := exec.CommandContext(ctx, sccPath, "-f", "json", "--by-file", workDir)
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("scc failed: %w", err)
+		return fmt.Errorf("scc failed: %w", execErr(ctx, err))
 	}
 
 	var languages []sccLanguage
@@ -3510,7 +3510,7 @@ func ListRepoFiles(ctx context.Context, barePath string) ([]string, error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return nil, err
+		return nil, execErr(ctx, err)
 	}
 	var files []string
 	scanner := bufio.NewScanner(&out)

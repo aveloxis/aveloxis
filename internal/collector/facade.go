@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -56,8 +57,11 @@ type FacadeResult struct {
 	// were swallowed (warn-and-continue) — the batch path's per-row
 	// fallback failures and its ctx-cancel bail. v0.27.107 (ultrareview
 	// round 2, bug_005): the v0.27.106 whitespace-phase gate checked
-	// result.Errors, but insertCommitBatch NEVER returns non-nil for DB
-	// failures, so the gate was decorative. The whitespace phase gates
+	// result.Errors, but insertCommitBatch never returned non-nil for a
+	// DB failure, so the gate was decorative (since pass 37 the ONE
+	// exception is a batch write cut off by shutdown, which returns
+	// ctx.Err() — and CollectRepo exits before the gate on that path).
+	// The whitespace phase gates
 	// on this counter instead — stamping the marker over missing commit
 	// rows would exclude them from every future incremental walk.
 	// Message/parent write failures deliberately don't count: they
@@ -94,6 +98,9 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 	// incremental walk once a later cycle inserts them — their
 	// whitespace would stay zero forever. Skipping keeps the marker
 	// empty so the next clean cycle does the full walk.
+	if ctx.Err() != nil {
+		return result, ctx.Err() // shutdown after the numstat pass: no gate WARN, no "complete" (pass 37)
+	}
 	if len(result.Errors) == 0 && result.CommitWriteFailures == 0 {
 		f.runWhitespacePhase(ctx, repoID, clonePath)
 	} else {
@@ -143,6 +150,14 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 			"fetch", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "--prune")
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
+			if ctx.Err() != nil {
+				// Shutdown killed the fetch — the bare clone is intact.
+				// Reading the kill as "fetch failed" deleted the clone
+				// and re-cloned on the dead ctx: a kernel-class repo paid
+				// a from-scratch clone on the next cycle for every stop
+				// that landed here (pass 35, v0.28.18).
+				return ctx.Err()
+			}
 			f.logger.Warn("fetch failed, re-cloning",
 				"path", path, "error", err, "stderr", stderr.String())
 			_ = os.RemoveAll(path)
@@ -177,6 +192,9 @@ func (f *FacadeCollector) syncDefaultBranch(ctx context.Context, clonePath strin
 		"ls-remote", "--symref", "origin", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return // shutdown killed ls-remote: not a HEAD-sync failure (pass 37)
+		}
 		f.logger.Warn("failed to query remote HEAD", "error", err)
 		return
 	}
@@ -251,7 +269,7 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) e
 	cmd.Env = gitCloneEnv()
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%w: %s", err, stderr.String())
+		return fmt.Errorf("%w: %s", execErr(ctx, err), stderr.String())
 	}
 	return nil
 }
@@ -368,6 +386,14 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 				batch = append(batch, currentCommit)
 				if len(batch) >= batchSize {
 					if err := f.insertCommitBatch(ctx, repoID, batch, result); err != nil {
+						if errors.Is(err, context.Canceled) {
+							// Shutdown mid-stream: kill git so Wait cannot
+							// deadlock on the undrained pipe, then surface
+							// the cancel (pass 37).
+							cancelLog()
+							_ = cmd.Wait()
+							return err
+						}
 						result.Errors = append(result.Errors, err)
 					}
 					batch = batch[:0]
@@ -400,6 +426,14 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 				batch = append(batch, currentCommit)
 				if len(batch) >= batchSize {
 					if err := f.insertCommitBatch(ctx, repoID, batch, result); err != nil {
+						if errors.Is(err, context.Canceled) {
+							// Shutdown mid-stream: kill git so Wait cannot
+							// deadlock on the undrained pipe, then surface
+							// the cancel (pass 37).
+							cancelLog()
+							_ = cmd.Wait()
+							return err
+						}
 						result.Errors = append(result.Errors, err)
 					}
 					batch = batch[:0]
@@ -421,6 +455,10 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 	}
 	if len(batch) > 0 {
 		if err := f.insertCommitBatch(ctx, repoID, batch, result); err != nil {
+			if errors.Is(err, context.Canceled) {
+				_ = cmd.Wait()
+				return err
+			}
 			result.Errors = append(result.Errors, err)
 		}
 	}
@@ -434,7 +472,7 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("git log exited with error: %w", err)
+		return fmt.Errorf("git log exited with error: %w", execErr(ctx, err))
 	}
 
 	return nil
@@ -531,7 +569,7 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 		// unchanged and the data outcome is byte-identical (nothing can
 		// be written post-cancel).
 		if ctx.Err() != nil {
-			f.logger.Warn("commit batch aborted — context canceled, skipping remaining commits",
+			f.logger.Info("commit batch interrupted by shutdown — skipping remaining commits",
 				"repo_id", repoID, "remaining", len(batch)-i, "cause", ctx.Err())
 			return nil
 		}
@@ -593,6 +631,12 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 	// can't lose the other 499 (collect what we can; the fallback keeps
 	// the old per-row WARN + counting semantics exactly).
 	if err := f.store.UpsertCommitBatch(ctx, rows); err != nil {
+		if ctx.Err() != nil {
+			// Shutdown mid-write: no fallback on the dead ctx, no WARN;
+			// the rows are re-walked next cycle (pass 37).
+			result.CommitWriteFailures += len(rows)
+			return ctx.Err()
+		}
 		f.logger.Warn("commit batch write failed — falling back to per-row upserts",
 			"repo_id", repoID, "rows", len(rows), "error", err)
 		f.upsertCommitRowsFallback(ctx, repoID, rows, result)
@@ -616,7 +660,7 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 		// otherwise grind through every remaining parent with a WARN per
 		// row (the v0.27.91 flood class).
 		if ctx.Err() != nil {
-			f.logger.Warn("commit parents aborted — context canceled, skipping remaining commits",
+			f.logger.Info("commit parents interrupted by shutdown — skipping remaining commits",
 				"repo_id", repoID, "remaining", len(built)-i, "cause", ctx.Err())
 			return nil
 		}
@@ -631,6 +675,9 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 	// Phase 4 — commit messages, batched with the same fallback contract.
 	if len(msgs) > 0 {
 		if err := f.store.UpsertCommitMessageBatch(ctx, msgs); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err() // shutdown, not a failure (pass 37)
+			}
 			f.logger.Warn("commit message batch write failed — falling back to per-row upserts",
 				"repo_id", repoID, "messages", len(msgs), "error", err)
 			for _, msg := range msgs {
@@ -659,7 +706,7 @@ func (f *FacadeCollector) upsertCommitRowsFallback(ctx context.Context, repoID i
 	insertedByHash := make(map[string]bool)
 	for i, commit := range rows {
 		if ctx.Err() != nil {
-			f.logger.Warn("commit fallback aborted — context canceled, skipping remaining rows",
+			f.logger.Info("commit fallback interrupted by shutdown — skipping remaining rows",
 				"repo_id", repoID, "remaining", len(rows)-i, "cause", ctx.Err())
 			result.CommitWriteFailures += len(rows) - i
 			break

@@ -75,6 +75,14 @@ type digestMailer interface {
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
 type Scheduler struct {
+	// background tracks the long-lived pools Run spawns (scancode worker,
+	// mailing-list loops) so the shutdown arm can wait for their
+	// post-cancel bookkeeping — lock releases on Background contexts —
+	// before it closes the pgx pool (pass 38: the releases raced the
+	// close and lost, turning every "lock cleared" into a WARN + a
+	// stale-gate wait).
+	background sync.WaitGroup
+
 	store    *db.PostgresStore
 	ghClient platform.Client
 	glClient platform.Client
@@ -275,7 +283,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// cannot have any legitimate in-flight work, so all locks from other
 	// worker IDs are definitively stale — no need to wait for the 1-hour
 	// timeout. This fixes repos stuck in 'collecting' after a restart.
-	if recovered, err := s.store.RecoverOtherWorkerLocks(ctx, s.workerID); err != nil {
+	recovered, err := s.store.RecoverOtherWorkerLocks(ctx, s.workerID)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown during startup
+	}
+	if err != nil {
 		s.logger.Error("failed to recover other workers' locks", "error", err)
 	} else if recovered > 0 {
 		s.logger.Warn("recovered stale locks from previous process on startup",
@@ -302,8 +314,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// within seconds of restart. The fillWorkerSlots invariant (no new
 	// claims until staging is drained) is still enforced by the explicit
 	// call order below.
-	if realigned, err := s.store.RealignDueDates(ctx, s.cfg.Collection.RecollectAfterDuration(),
-		s.cfg.Collection.ArchivedRecollectMultiplierValue()); err != nil {
+	realigned, err := s.store.RealignDueDates(ctx, s.cfg.Collection.RecollectAfterDuration(),
+		s.cfg.Collection.ArchivedRecollectMultiplierValue())
+	if errors.Is(err, context.Canceled) {
+		return // shutdown during startup
+	}
+	if err != nil {
 		s.logger.Error("failed to realign queue due_at from config", "error", err)
 	} else if realigned > 0 {
 		// v0.28.1 (A7): log the EFFECTIVE multiplier alongside — the
@@ -319,7 +335,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// lost enqueues). Observation only — consolidating a data-bearing
 	// duplicate is a deliberate operator action (reconcile-repos), and
 	// auto-enqueueing a rename duplicate would re-collect a duplicate.
-	if stranded, serr := s.store.CountStrandedRepos(ctx); serr != nil {
+	stranded, serr := s.store.CountStrandedRepos(ctx)
+	if errors.Is(serr, context.Canceled) {
+		return // shutdown during startup
+	}
+	if serr != nil {
 		s.logger.Warn("stranded-repo gauge failed", "error", serr)
 	} else if stranded > 0 {
 		s.logger.Warn("non-archived repos with no collection_queue row — invisible to the scheduler",
@@ -340,10 +360,16 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// it to a goroutine unblocks worker scheduling immediately while
 	// keeping data-integrity intact via the lock-park.
 	drainSet, lockErr := s.identifyLeftoverDrainSet(ctx)
+	if errors.Is(lockErr, context.Canceled) {
+		return // shutdown during startup
+	}
 	if lockErr != nil {
 		s.logger.Warn("failed to identify leftover drain set; skipping drain this cycle", "error", lockErr)
 	} else if len(drainSet) > 0 {
 		locked, lockErr := s.store.LockReposForDrain(ctx, drainSet, s.workerID)
+		if errors.Is(lockErr, context.Canceled) {
+			return // shutdown during startup
+		}
 		if lockErr != nil {
 			s.logger.Error("failed to lock-park leftover drain set; falling back to synchronous drain to preserve data integrity", "error", lockErr)
 			s.processLeftoverStaging(ctx)
@@ -424,6 +450,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 			collector.ScancodeOptionsFromConfig(s.cfg.Collection),
 		)
 		safego.Go(s.logger, "scancode-worker", func() { scancodeWorker.Run(ctx) })
+		// Track the worker's DB bookkeeping, not its return: Run also
+		// removes clone dirs (minutes on a spinning disk) which need no
+		// pool (pass 39).
+		s.background.Add(1)
+		safego.Go(s.logger, "scancode-bookkeeping-wait", func() {
+			defer s.background.Done()
+			<-scancodeWorker.BookkeepingDone()
+		})
 	}
 
 	// v0.24.0 — DistributionWorker goroutine. Off by default; only
@@ -554,6 +588,23 @@ func (s *Scheduler) Run(ctx context.Context) {
 						"workers_drained", drained, "workers_total", s.cfg.Workers)
 					break drain
 				}
+			}
+			// Wait for the tracked background pools' shutdown bookkeeping
+			// (bounded by the operator's scancode grace + the bookkeeping
+			// allowance, the longest of them) BEFORE the pool closes under
+			// their lock releases (passes 38/39).
+			bgDone := make(chan struct{})
+			go func() {
+				defer safego.Recover(s.logger, "background-pools-wait")
+				s.background.Wait()
+				close(bgDone)
+			}()
+			bgBound := s.cfg.Collection.ScancodeShutdownGrace() + collector.ScancodeShutdownBookkeepingGrace
+			select {
+			case <-bgDone:
+			case <-time.After(bgBound):
+				s.logger.Warn("background pools did not finish their shutdown bookkeeping in time — their locks are recovered on the next start",
+					"bound", bgBound.String())
 			}
 			// Release queue locks so repos return to 'queued' immediately
 			// instead of waiting for stale-lock timeout.
@@ -733,7 +784,11 @@ func (s *Scheduler) runSearchResolve(ctx context.Context) {
 			_ = s.store.MarkContributorSearchAttempted(ctx, c.CntrbID)
 			continue
 		}
-		if err := s.store.LinkContributorToGitHubUser(ctx, c.CntrbID, login, ghUserID); err != nil {
+		err = s.store.LinkContributorToGitHubUser(ctx, c.CntrbID, login, ghUserID)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
+		if err != nil {
 			s.logger.Warn("search resolve: failed to link contributor",
 				"cntrb_id", c.CntrbID, "login", login, "error", err)
 			continue
@@ -828,6 +883,9 @@ func (s *Scheduler) largeRepoExclusions(ctx context.Context) []int64 {
 		return s.largeSkipIDs
 	}
 	ids, commitTh, prTh, err := s.store.LargestRepoIDs(ctx, fraction)
+	if errors.Is(err, context.Canceled) {
+		return s.largeSkipIDs // shutdown, not a failure: keep the previous set
+	}
 	if err != nil {
 		s.logger.Warn("large-repo skip: refresh failed — keeping previous set",
 			"error", err, "previous_count", len(s.largeSkipIDs))
@@ -896,6 +954,10 @@ func (s *Scheduler) fillWorkerSlots(ctx context.Context, sem chan struct{}) {
 		case sem <- struct{}{}:
 			// Got a worker slot — try to claim a job.
 			job, err := s.store.DequeueNext(ctx, s.workerID, excludeLargest)
+			if errors.Is(err, context.Canceled) {
+				<-sem
+				return // shutdown, not a failure
+			}
 			if err != nil {
 				s.logger.Error("failed to dequeue", "error", err)
 				<-sem
@@ -961,7 +1023,11 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 			case <-heartbeatCtx.Done():
 				return
 			case <-ticker.C:
-				if err := s.store.HeartbeatJob(heartbeatCtx, job.RepoID, s.workerID); err != nil {
+				err := s.store.HeartbeatJob(heartbeatCtx, job.RepoID, s.workerID)
+				if errors.Is(err, context.Canceled) {
+					return // the job ended (or shutdown) while a beat was in flight
+				}
+				if err != nil {
 					s.logger.Warn("heartbeat failed", "repo_id", job.RepoID, "error", err)
 				}
 			}
@@ -970,6 +1036,9 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 
 	// Look up the repo to get URL, owner, name, platform.
 	repo, err := s.store.GetRepoByID(ctx, job.RepoID)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown before the job started: nothing recorded, the row re-queues on restart
+	}
 	if err != nil {
 		s.logger.Error("failed to look up repo", "repo_id", job.RepoID, "error", err)
 		s.failJob(ctx, job.RepoID, err.Error())
@@ -1001,6 +1070,9 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 
 	// Prelim phase: check for redirects and duplicates.
 	prelim, err := collector.RunPrelim(ctx, s.store, repo, s.logger)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
 	if err != nil {
 		s.logger.Error("prelim failed", "repo_id", job.RepoID, "error", err)
 	}
@@ -1070,6 +1142,10 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 			if metaErr == nil && (metaIssues > 0 || metaPRs > 0) {
 				gf := collector.NewGapFillerWithMode(s.store, client, s.logger, s.cfg.Collection.PRChildMode)
 				filled, gfErr := gf.AssessAndFillGaps(ctx, job.RepoID, repo.Owner, repo.Name, metaIssues, metaPRs)
+				if errors.Is(gfErr, context.Canceled) {
+					s.jobInterrupted(job.RepoID, "gap fill")
+					return
+				}
 				if gfErr != nil {
 					s.logger.Warn("gap fill error", "repo_id", job.RepoID, "error", gfErr)
 					// v0.20.5: hoist into runJob scope so buildOutcome
@@ -1092,14 +1168,31 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	} else {
 		s.logger.Info("git-only repo, skipping API collection", "repo_id", job.RepoID)
 	}
+	// Shutdown is not a failure (pass 34): a job cut short records
+	// NOTHING — no failed outcome, no last_error, no force-full flag —
+	// and its row re-queues on restart when the scheduler releases its
+	// locks. Every phase below classifies its own cancellation; these
+	// guards end the job between phases.
+	if ctx.Err() != nil {
+		s.jobInterrupted(job.RepoID, "api collection")
+		return
+	}
 
 	// Phase 3+4: facade then analysis (sequential — analysis needs bare clone).
 	facadeResult, analysisResult := s.runFacadeAndAnalysis(ctx, job.RepoID, repo)
+	if ctx.Err() != nil {
+		s.jobInterrupted(job.RepoID, "facade/analysis")
+		return
+	}
 
 	// Phase 5: commit resolution.
 	// For generic git repos, attempt resolution on both GitHub and GitLab
 	// since we don't know where the contributor identities live.
 	s.runCommitResolution(ctx, job.RepoID, repo)
+	if ctx.Err() != nil {
+		s.jobInterrupted(job.RepoID, "commit resolution")
+		return
+	}
 
 	// v0.19.7: PopulateAffiliations moved out of runJob into a
 	// periodic singleton ticker (Run's affiliationsTicker →
@@ -1109,11 +1202,19 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 
 	// Phase 6: SBOM generation.
 	s.generateSBOMs(ctx, job.RepoID)
+	if ctx.Err() != nil {
+		s.jobInterrupted(job.RepoID, "sbom")
+		return
+	}
 
 	// Phase 7: Vulnerability scanning via OSV.dev.
 	// Uses purls from libyear data to query for known CVEs.
 	vulnResult, vulnErr := collector.ScanVulnerabilities(ctx, s.store, job.RepoID, s.logger,
 		s.osvCache, s.cfg.Collection.VulnScanTransitiveValue())
+	if errors.Is(vulnErr, context.Canceled) {
+		s.jobInterrupted(job.RepoID, "vulnerability scan")
+		return
+	}
 	if vulnErr != nil {
 		s.logger.Warn("vulnerability scan failed", "repo_id", job.RepoID, "error", vulnErr)
 	} else if vulnResult != nil && vulnResult.VulnsFound > 0 {
@@ -1138,11 +1239,20 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	if !outcome.success && forgetRepoETags != nil {
 		forgetRepoETags()
 	}
-	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, startAnchor, s.cfg.Collection.RecollectAfterDuration(),
+	err = s.store.CompleteJob(ctx, job.RepoID, outcome.success, startAnchor, s.cfg.Collection.RecollectAfterDuration(),
 		outcome.issues, outcome.prs, outcome.messages, outcome.events,
 		outcome.releases, outcome.contributors, outcome.commits,
 		duration.Milliseconds(), outcome.errMsg,
-		s.cfg.Collection.ArchivedRecollectMultiplierValue()); err != nil {
+		s.cfg.Collection.ArchivedRecollectMultiplierValue())
+	if errors.Is(err, context.Canceled) {
+		// The work is stored (idempotent upserts); only the completion
+		// stamp is lost — the row re-queues on restart and the next
+		// cycle re-walks its since window.
+		s.logger.Info("job interrupted by shutdown after its work was stored — only the completion stamp is lost; the row re-queues on restart",
+			"repo_id", job.RepoID)
+		return
+	}
+	if err != nil {
 		s.logger.Warn("failed to complete job", "repo_id", job.RepoID, "error", err)
 	}
 
@@ -1153,7 +1263,11 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// next DequeueNext and causes determineSince to return zero for a
 	// full re-collection. See v0.18.24 troubleshooting docs.
 	if !outcome.success && shouldForceFullRecollect(outcome.errMsg) {
-		if err := s.store.SetForceFullCollect(ctx, job.RepoID, true); err != nil {
+		err = s.store.SetForceFullCollect(ctx, job.RepoID, true)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown: the flag is re-derived from last_error on the next failure
+		}
+		if err != nil {
 			s.logger.Warn("failed to set force_full_collect flag", "repo_id", job.RepoID, "error", err)
 		} else {
 			s.logger.Warn("force_full_recollect set — GraphQL PR batch error class, next cycle will re-collect from since=zero",
@@ -1177,11 +1291,36 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
 	// v0.27.139: zero startedAt — a failed pass never advances
 	// last_collected (due_at still advances for retry pacing).
-	if err := s.store.CompleteJob(ctx, repoID, false, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
+	err := s.store.CompleteJob(ctx, repoID, false, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
 		0, 0, 0, 0, 0, 0, 0, 0, errMsg,
-		s.cfg.Collection.ArchivedRecollectMultiplierValue()); err != nil {
+		s.cfg.Collection.ArchivedRecollectMultiplierValue())
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure: the row re-queues on restart
+	}
+	if err != nil {
 		s.logger.Warn("failed to record job failure", "repo_id", repoID, "error", err)
 	}
+}
+
+// goTracked runs fn like safego.Go and registers it on s.background so
+// the shutdown arm can wait for it (pass 38).
+func (s *Scheduler) goTracked(name string, fn func()) {
+	s.background.Add(1)
+	safego.Go(s.logger, name, func() {
+		defer s.background.Done()
+		fn()
+	})
+}
+
+// jobInterrupted is the ONE scheduler-side line a job cut short by
+// shutdown emits (pass 34): INFO, never a failure, naming the phase it
+// stopped in. The phases classify their own cancellation (the
+// exec-backed ones through collector.execErr, pass 35) — the collector
+// delegates were swept by hand (passes 35–36) but carry no analyzer, so
+// "only line" is the scheduler's promise, not a proof.
+func (s *Scheduler) jobInterrupted(repoID int64, phase string) {
+	s.logger.Info("job interrupted by shutdown — nothing recorded; the row re-queues on restart",
+		"repo_id", repoID, "phase", phase)
 }
 
 // skipJob marks a job as successfully completed with zero counts and a reason.
@@ -1191,9 +1330,13 @@ func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
 	// not stamp "successfully collected at T" (the cohort-A class:
 	// stamped-but-empty passes convert the next round to incremental
 	// over history that was never gathered).
-	if err := s.store.CompleteJob(ctx, repoID, true, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
+	err := s.store.CompleteJob(ctx, repoID, true, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
 		0, 0, 0, 0, 0, 0, 0, 0, reason,
-		s.cfg.Collection.ArchivedRecollectMultiplierValue()); err != nil {
+		s.cfg.Collection.ArchivedRecollectMultiplierValue())
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure: the row re-queues on restart
+	}
+	if err != nil {
 		s.logger.Warn("failed to record job skip", "repo_id", repoID, "error", err)
 	}
 }
@@ -1309,6 +1452,9 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 			platformHostForModel(repo.Platform), repo.Owner, repo.Name)
 	}
 	result, err := fc.CollectRepo(ctx, repoID, gitURL)
+	if errors.Is(err, context.Canceled) {
+		return nil, nil // shutdown mid-facade: runJob's guard ends the job unrecorded
+	}
 	if err != nil {
 		s.logger.Warn("facade collection failed", "repo_id", repoID, "error", err)
 		// nil facadeResult is the "facade errored" signal buildOutcome
@@ -1330,7 +1476,11 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	// repo_info row so the monitor/web "metadata commits" column reflects
 	// reality instead of the API-reported zero. GitHub path is unaffected.
 	if err == nil && repo.Platform == model.PlatformGitLab {
-		if updated, bfErr := s.store.BackfillGitLabCommitCount(ctx, repoID); bfErr != nil {
+		updated, bfErr := s.store.BackfillGitLabCommitCount(ctx, repoID)
+		if errors.Is(bfErr, context.Canceled) {
+			return facadeResult, nil
+		}
+		if bfErr != nil {
 			s.logger.Warn("gitlab commit_count backfill failed",
 				"repo_id", repoID, "error", bfErr)
 		} else if updated {
@@ -1350,6 +1500,9 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	ac.DevBuildDeps = s.cfg.Collection.DevBuildDeps
 	ac.GitHubActionsDeps = s.cfg.Collection.GitHubActionsDeps
 	aResult, aErr := ac.AnalyzeRepo(ctx, repoID)
+	if errors.Is(aErr, context.Canceled) {
+		return facadeResult, nil
+	}
 	if aErr != nil {
 		s.logger.Warn("analysis failed", "repo_id", repoID, "error", aErr)
 	} else if aResult != nil {
@@ -1400,6 +1553,19 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 	token, instrumentToken := collector.ScorecardTokens(
 		s.ghKeys, s.cfg.Collection.ScorecardTokenCountOrDefault())
 
+	// Clean up the retained temp clone once scorecard is done — on
+	// every exit, the shutdown one included.
+	defer func() {
+		if analysisClonePath == "" {
+			return
+		}
+		if err := os.RemoveAll(analysisClonePath); err != nil {
+			s.logger.Warn("failed to remove retained analysis clone", "path", analysisClonePath, "error", err)
+		} else {
+			s.logger.Info("removed retained analysis clone after scorecard", "path", analysisClonePath)
+		}
+	}()
+
 	_, scErr := collector.RunScorecard(ctx, s.store, repoID, collector.ScorecardOptions{
 		RepoURL:         repoURL,
 		LocalPath:       analysisClonePath,
@@ -1408,17 +1574,11 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 		GithubToken:     token,
 		InstrumentToken: instrumentToken,
 	}, s.logger)
+	if errors.Is(scErr, context.Canceled) {
+		return // shutdown, not a failure
+	}
 	if scErr != nil {
 		s.logger.Warn("scorecard failed", "repo_id", repoID, "error", scErr)
-	}
-
-	// Clean up the retained temp clone now that scorecard is done.
-	if analysisClonePath != "" {
-		if err := os.RemoveAll(analysisClonePath); err != nil {
-			s.logger.Warn("failed to remove retained analysis clone", "path", analysisClonePath, "error", err)
-		} else {
-			s.logger.Info("removed retained analysis clone after scorecard", "path", analysisClonePath)
-		}
 	}
 }
 
@@ -1431,6 +1591,9 @@ func (s *Scheduler) runCommitResolution(ctx context.Context, repoID int64, repo 
 
 	resolver := collector.NewCommitResolver(s.store, s.ghKeys, s.logger)
 	resolveResult, resolveErr := resolver.ResolveCommits(ctx, repoID, repo.Owner, repo.Name)
+	if errors.Is(resolveErr, context.Canceled) {
+		return // shutdown, not a failure
+	}
 	if resolveErr != nil {
 		s.logger.Warn("commit resolution failed", "repo_id", repoID, "error", resolveErr)
 	} else if resolveResult != nil {
@@ -1580,6 +1743,9 @@ func (s *Scheduler) identifyLeftoverDrainSet(ctx context.Context) ([]int64, erro
 // is processLeftoverStagingBackground, called as a goroutine from Run().
 func (s *Scheduler) processLeftoverStaging(ctx context.Context) {
 	repoIDs, err := s.identifyLeftoverDrainSet(ctx)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
 	if err != nil {
 		s.logger.Warn("failed to check for leftover staging rows", "error", err)
 		return
@@ -1624,7 +1790,11 @@ func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainS
 			return
 		}
 		s.drainOneRepo(ctx, repoID)
-		if err := s.store.ReleaseDrainLock(ctx, repoID, s.workerID); err != nil {
+		err := s.store.ReleaseDrainLock(ctx, repoID, s.workerID)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown: the drain locks are recovered by the next start's RecoverOtherWorkerLocks
+		}
+		if err != nil {
 			s.logger.Warn("failed to release drain lock; repo stays locked until next restart's RecoverOtherWorkerLocks", "repo_id", repoID, "error", err)
 		}
 	}
@@ -1636,12 +1806,19 @@ func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainS
 // (processLeftoverStagingBackground).
 func (s *Scheduler) drainOneRepo(ctx context.Context, repoID int64) {
 	repo, err := s.store.GetRepoByID(ctx, repoID)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
 	if err != nil {
 		s.logger.Warn("failed to look up repo for leftover processing", "repo_id", repoID, "error", err)
 		return
 	}
 	proc := collector.NewProcessor(s.store, s.logger)
-	if err := proc.ProcessRepo(ctx, repoID, int16(repo.Platform)); err != nil {
+	err = proc.ProcessRepo(ctx, repoID, int16(repo.Platform))
+	if errors.Is(err, context.Canceled) {
+		return // shutdown mid-drain: the staging rows stay unprocessed and drain on the next start
+	}
+	if err != nil {
 		s.logger.Warn("failed to process leftover staging", "repo_id", repoID, "error", err)
 		return
 	}
@@ -1656,6 +1833,9 @@ func (s *Scheduler) releaseOurLocks(ctx context.Context) {
 		UPDATE aveloxis_ops.collection_queue
 		SET status = 'queued', locked_by = NULL, locked_at = NULL, due_at = NOW()
 		WHERE locked_by = $1 AND status = 'collecting'`, s.workerID)
+	if errors.Is(err, context.Canceled) {
+		return // the startup call under a ctx canceled before it ran; the shutdown call uses Background
+	}
 	if err != nil {
 		s.logger.Warn("failed to release locks on shutdown", "error", err)
 		return
@@ -1669,6 +1849,9 @@ func (s *Scheduler) releaseOurLocks(ctx context.Context) {
 // checks existing repos for renames. Runs periodically (default every 4h).
 func (s *Scheduler) refreshOrgs(ctx context.Context) {
 	groups, err := s.store.GetOrgRepoGroups(ctx)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
 	if err != nil {
 		s.logger.Warn("failed to load org repo groups", "error", err)
 		return
@@ -1712,6 +1895,9 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	// into aveloxis_ops.user_repos. Hoisted out of the page loop so we
 	// pay the lookup once per scan.
 	userGroupIDs, ugErr := s.store.GetUserGroupIDsForOrgURL(ctx, g.Website)
+	if errors.Is(ugErr, context.Canceled) {
+		return 0 // shutdown, not a failure
+	}
 	if ugErr != nil {
 		s.logger.Warn("failed to look up user_groups for org", "org_url", g.Website, "error", ugErr)
 	}
@@ -1721,6 +1907,9 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	for {
 		path := fmt.Sprintf("/orgs/%s/repos?per_page=100&type=all&page=%d", g.Name, page)
 		resp, err := http.Get(platform.WithoutETag(ctx), path)
+		if errors.Is(err, context.Canceled) {
+			return newCount // shutdown mid-listing, not a failure
+		}
 		if err != nil {
 			s.logger.Warn("org refresh API error", "org", g.Name, "error", err)
 			break
@@ -1749,6 +1938,9 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 			// refresh ticks.
 			var repoID int64
 			existing, findErr := s.store.FindRepoByURL(ctx, item.HTMLURL)
+			if errors.Is(findErr, context.Canceled) {
+				return newCount // shutdown, not a failure
+			}
 			if findErr != nil {
 				s.logger.Warn("failed to check for existing repo", "url", item.HTMLURL, "error", findErr)
 			}
@@ -1756,7 +1948,11 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				repoID = existing
 				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
 				// only) — see refreshUserOrgs for the rationale.
-				if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID)); idErr != nil {
+				idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID))
+				if errors.Is(idErr, context.Canceled) {
+					return newCount // shutdown, not a failure
+				}
+				if idErr != nil {
 					s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
 				}
 			} else {
@@ -1785,7 +1981,11 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				}
 			}
 			for _, gid := range userGroupIDs {
-				if _, err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
+				_, err := s.store.AddRepoToGroupByID(ctx, gid, repoID)
+				if errors.Is(err, context.Canceled) {
+					return newCount // shutdown, not a failure
+				}
+				if err != nil {
 					s.logger.Warn("failed to link discovered repo into user_repos",
 						"group_id", gid, "repo_id", repoID, "error", err)
 				}
@@ -1809,6 +2009,9 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 
 	// Same legacy → user_groups bridge as the GitHub path.
 	userGroupIDs, ugErr := s.store.GetUserGroupIDsForOrgURL(ctx, g.Website)
+	if errors.Is(ugErr, context.Canceled) {
+		return 0 // shutdown, not a failure
+	}
 	if ugErr != nil {
 		s.logger.Warn("failed to look up user_groups for group", "org_url", g.Website, "error", ugErr)
 	}
@@ -1819,6 +2022,9 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	for {
 		path := fmt.Sprintf("/groups/%s/projects?per_page=100&include_subgroups=true&page=%d", encodedGroup, page)
 		resp, err := http.Get(platform.WithoutETag(ctx), path)
+		if errors.Is(err, context.Canceled) {
+			return newCount // shutdown mid-listing, not a failure
+		}
 		if err != nil {
 			s.logger.Warn("group refresh API error", "group", g.Name, "error", err)
 			break
@@ -1843,6 +2049,9 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 		for _, item := range items {
 			var repoID int64
 			existing, findErr := s.store.FindRepoByURL(ctx, item.WebURL)
+			if errors.Is(findErr, context.Canceled) {
+				return newCount // shutdown, not a failure
+			}
 			if findErr != nil {
 				s.logger.Warn("failed to check for existing repo", "url", item.WebURL, "error", findErr)
 			}
@@ -1850,7 +2059,11 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				repoID = existing
 				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
 				// only) — see refreshUserOrgs for the rationale.
-				if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID)); idErr != nil {
+				idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID))
+				if errors.Is(idErr, context.Canceled) {
+					return newCount // shutdown, not a failure
+				}
+				if idErr != nil {
 					s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
 				}
 			} else {
@@ -1876,7 +2089,11 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				}
 			}
 			for _, gid := range userGroupIDs {
-				if _, err := s.store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
+				_, err := s.store.AddRepoToGroupByID(ctx, gid, repoID)
+				if errors.Is(err, context.Canceled) {
+					return newCount // shutdown, not a failure
+				}
+				if err != nil {
 					s.logger.Warn("failed to link discovered repo into user_repos",
 						"group_id", gid, "repo_id", repoID, "error", err)
 				}
@@ -1892,6 +2109,9 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 // to have gone stale.
 func (s *Scheduler) checkForRenames(ctx context.Context) {
 	repos, err := s.store.GetReposForRenameCheck(ctx, 50)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
 	if err != nil {
 		s.logger.Warn("failed to load repos for rename check", "error", err)
 		return
@@ -2125,6 +2345,9 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 	s.logger.Info("scanning user org requests",
 		"count", len(orgs), "distinct_orgs", len(order), "only_never_scanned", onlyNeverScanned)
 	for _, key := range order {
+		if ctx.Err() != nil {
+			return // shutdown between orgs
+		}
 		g := grouped[key]
 
 		// ForgeID (v0.27.102) is the forge's numeric repo ID from the
@@ -2158,10 +2381,14 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 							Login string `json:"login"`
 						} `json:"owner"`
 					}
-					if decErr := json.NewDecoder(resp.Body).Decode(&items); decErr != nil {
+					decErr := json.NewDecoder(resp.Body).Decode(&items)
+					resp.Body.Close()
+					if errors.Is(decErr, context.Canceled) {
+						return // shutdown mid-listing: stamp nothing, the next pass re-enumerates
+					}
+					if decErr != nil {
 						s.logger.Warn("failed to decode org repos response", "path", path, "error", decErr)
 					}
-					resp.Body.Close()
 					if len(items) == 0 {
 						break
 					}
@@ -2190,9 +2417,15 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 
 		newCounts := map[int64]int{}
 		for _, repo := range repos {
+			if ctx.Err() != nil {
+				return // shutdown between repos: stamp nothing, the next pass re-enumerates
+			}
 			// Ensure repo exists — ONCE per repo, regardless of how many
 			// groups track the org.
 			repoID, findErr := s.store.FindRepoByURL(ctx, repo.URL)
+			if errors.Is(findErr, context.Canceled) {
+				return // shutdown, not a failure
+			}
 			if findErr != nil {
 				s.logger.Warn("failed to find repo by URL", "url", repo.URL, "error", findErr)
 			}
@@ -2208,7 +2441,11 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 				if err != nil {
 					continue
 				}
-				if enqErr := s.store.EnqueueRepo(ctx, repoID, 100); enqErr != nil {
+				enqErr := s.store.EnqueueRepo(ctx, repoID, 100)
+				if errors.Is(enqErr, context.Canceled) {
+					return // shutdown, not a failure
+				}
+				if enqErr != nil {
 					s.logger.Warn("failed to enqueue repo", "repo_id", repoID, "error", enqErr)
 				}
 			} else if repo.ForgeID != "" {
@@ -2218,7 +2455,11 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 				// its IDs on every scan pass closes the protection gap
 				// now instead of waiting for each repo's Phase 0 cycle.
 				// Fill-empty-only; best-effort.
-				if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, repo.ForgeID); idErr != nil {
+				idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, repo.ForgeID)
+				if errors.Is(idErr, context.Canceled) {
+					return // shutdown, not a failure
+				}
+				if idErr != nil {
 					s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
 				}
 			}
@@ -2230,6 +2471,9 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 			// (9.3M bogus new repos in the Aug 7–16 2026 run).
 			for _, gid := range groupIDs {
 				inserted, err := s.store.AddRepoToGroupByID(ctx, gid, repoID)
+				if errors.Is(err, context.Canceled) {
+					return // shutdown, not a failure
+				}
 				if err != nil {
 					// Same message as refreshGitHubOrg/refreshGitLabGroup so
 					// one grep covers all three link paths (v0.27.92).
@@ -2246,7 +2490,11 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 		// Stamp EVERY registration row for this org — they all shared
 		// the one enumeration.
 		for _, e := range g.entries {
-			if err := s.store.MarkOrgRequestScanned(ctx, e.requestID); err != nil {
+			err := s.store.MarkOrgRequestScanned(ctx, e.requestID)
+			if errors.Is(err, context.Canceled) {
+				return // shutdown, not a failure
+			}
+			if err != nil {
 				s.logger.Warn("failed to mark org request scanned", "org_request_id", e.requestID, "error", err)
 			}
 		}
@@ -2305,6 +2553,9 @@ func (s *Scheduler) runBreadth(ctx context.Context) {
 
 func (s *Scheduler) recoverStale(ctx context.Context) {
 	recovered, err := s.store.RecoverStaleLocks(ctx, s.cfg.StaleLockTimeout)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
 	if err != nil {
 		s.logger.Error("failed to recover stale locks", "error", err)
 		return

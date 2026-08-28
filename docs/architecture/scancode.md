@@ -145,11 +145,11 @@ When the scheduler's context is cancelled (`aveloxis stop serve`):
 1. The dispatcher exits immediately on its `<-ctx.Done()` arm. No new claims happen.
 2. The dispatcher closes the jobs channel.
 3. Runners that were idle return immediately (their `range jobs` loop terminates).
-4. Runners that were mid-scan keep going. The runner's `cmd.Wait()` is blocking on the scancode subprocess, which is NOT killed by the ctx cancel (Go's `exec.CommandContext` only kills the subprocess when the cmd object is garbage collected OR explicitly killed via `cmd.Process.Kill()`).
-5. `Run()` waits up to `collection.scancode_shutdown_grace_minutes` (default 30 min) for all runners to finish.
-6. If the grace expires with runners still active, `Run()` returns. The outstanding subprocesses become orphans — but they're tracked in the DB via the `(pid, boot_id, output_path)` triple recorded in step 4 of §3.2, so the next aveloxis startup's `recoverOrphans` pass will adopt them as live orphans (case 2 of §5).
+4. Runners that were mid-scan see their subprocess killed: since v0.23.3 the scan runs in its own process group and `cmd.Cancel` SIGKILLs the whole group on ctx cancel (v0.23.7 also kills stragglers on function exit). The runner then classifies the kill as a **shutdown**, not a failure or a wall-clock timeout (v0.28.18): the lock is cleared, no strike or timeout attempt is recorded, no failure artifacts are written, and one INFO line (`scan interrupted by shutdown`) is logged. The same applies to a shutdown that lands during the clone or before the lock state is recorded. The repo re-claims on the next dispatch.
+5. `Run()` waits for the runners' DB bookkeeping — the post-kill `cmd.Wait`, then the lock clear or the completion-stamp retry on a background context — for up to `collection.scancode_shutdown_grace_minutes` (default 0 since v0.23.7) plus a fixed allowance (`ScancodeShutdownBookkeepingGrace`, 70 s), and signals `BookkeepingDone`. The scheduler waits for that signal with the same bound before it closes the database pool, so the lock clear is never raced by the close; the clone-directory removal that follows needs no pool and is not waited for (the startup sweep covers what a process exit cuts). Note that the grace knob cannot let a scan FINISH — every scan dies at cancel (step 4); it only lengthens the bookkeeping wait, and the layers above (the `serve` process join, `aveloxis stop`'s backend poll, systemd's `TimeoutStopSec`) size their budgets from it.
+6. Only if the process exits before a runner finishes that bookkeeping (a SIGKILL of aveloxis itself, or the allowance expiring under a stuck `cmd.Wait` — logged as `shutdown grace expired`) does a lock survive; it is tracked via the `(pid, boot_id, output_path)` triple recorded in step 4 of §3.2, and the next aveloxis startup's `recoverOrphans` pass adopts it (§5). A shutdown that lands in the ingest or the completion stamp is handled the same way (the stamp is retried once on a background context).
 
-The grace bound exists because Linux-kernel-sized scans can legitimately run for hours; without a bound, `aveloxis stop` would wait indefinitely on the slowest scancode. The trade-off is clear: lose the in-flight scan data on grace expiry vs. wait hours on stop. Operators who want a different balance can dial the grace.
+The grace knob is a leftover of the pre-v0.23.3 design in which the subprocess survived the cancel; since the kill on cancel it only stretches the bookkeeping wait. The default is 0 because a subprocess that outlives aveloxis cannot deliver its output back (v0.23.7).
 
 ## 7. Force-rerun cookbook
 
@@ -210,8 +210,9 @@ The data flows from `aveloxis_data.repos.scancode_last_run` (written by `MarkSca
 | `scancode recover: ingested orphaned scancode result` | Startup or monitor | Case 3 of §5 — orphaned data recovered. |
 | `running ScanCode repo_id=... owner=... pid=...` | Per scan | Scan started; PID is the subprocess we're tracking. |
 | `scancode worker complete repo_id=... version=...` | Per scan | Scan succeeded and was ingested. |
-| `scancode runOne: scancode subprocess failed ... pid=...` | Per scan failure | Lock will be cleared. |
-| `scancode worker shutdown grace expired ...` | On stop | Outstanding scans become live-orphans on next startup. |
+| `scancode runOne: scancode subprocess failed ... pid=...` | Per scan failure | Failure recorded (strike + backoff); lock cleared. |
+| `scancode runOne: scan interrupted by shutdown — lock cleared, no strike recorded` | On stop, per in-flight scan | The kill was the shutdown's; nothing recorded, the repo re-claims next dispatch. |
+| `scancode worker shutdown grace expired ...` | On stop | Runners still inside their post-kill bookkeeping past the grace + allowance; their locks are recovered on next startup. |
 
 ## 11. Code map
 

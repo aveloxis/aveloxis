@@ -37,6 +37,9 @@ func (f *fakeStageStore) CompleteListScan(context.Context, int64, bool) error {
 	return nil
 }
 func (f *fakeStageStore) RecordListFailure(context.Context, int64) error { return nil }
+func (f *fakeStageStore) ReleaseListLock(context.Context, int64, time.Time) error {
+	return nil
+}
 func (f *fakeStageStore) StageMailingListMessage(_ context.Context, _ int64, _, _ *int64, msg model.MailingListStagedMessage) error {
 	f.staged = append(f.staged, msg)
 	return nil

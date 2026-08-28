@@ -24,6 +24,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,11 +110,16 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string,
 	rctx, cancel := context.WithTimeout(ctx, goModGraphTimeout)
 	defer cancel()
 	complete = true
+	budgetWarned := false
 	for i, dir := range modDirs {
+		if errors.Is(rctx.Err(), context.Canceled) {
+			return packages, edges, false // shutdown: incomplete, the prior closure is preserved
+		}
 		if rctx.Err() != nil {
 			// No silent caps: say exactly what the budget dropped.
 			ac.logger.Warn("go mod graph repo budget exhausted — skipping remaining modules",
 				"budget", goModGraphTimeout, "modules_processed", i, "modules_skipped", len(modDirs)-i)
+			budgetWarned = true
 			complete = false
 			break
 		}
@@ -122,6 +128,12 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string,
 		if !modOK {
 			complete = false
 		}
+	}
+	if !budgetWarned && errors.Is(rctx.Err(), context.DeadlineExceeded) {
+		// The budget ran out INSIDE the last module — the loop-top
+		// check never saw it; say so (pass 36).
+		ac.logger.Warn("go mod graph repo budget exhausted during the last module — its expansion was cut short",
+			"budget", goModGraphTimeout, "modules_processed", len(modDirs))
 	}
 	return packages, edges, complete
 }
@@ -138,6 +150,9 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, goBin, workDir, 
 		cmd.Dir = dir
 		cmd.Env = env
 		out, rerr := cmd.Output()
+		if rerr != nil && errors.Is(ctx.Err(), context.Canceled) {
+			return "", false // shutdown killed the toolchain: not a module failure (pass 35); a budget DEADLINE still warns below
+		}
 		if rerr != nil {
 			ac.logger.Warn("go toolchain invocation failed — skipping this module's transitive expansion",
 				"module_dir", rel, "args", strings.Join(args, " "), "error", rerr)

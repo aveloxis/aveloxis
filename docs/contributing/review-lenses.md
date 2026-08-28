@@ -188,6 +188,48 @@ full-snapshot listings answered from the ETag cache (Copilot round 5),
 `*_enabled` booleans persisted as "disabled" for members-only features
 and `pages` read as enabled when its level was absent (rounds 4 and 26).
 
+## L16 — Widening a tripwire is a contract change
+
+When a pin false-fires on code you believe is correct, the reflex is to
+widen it: add the spelling, accept the shape, move on. That reflex is
+how a pin starts recommending a defect.
+
+The scancode shutdown pin rejected `context.WithTimeout` as a deadline
+arm. It looked like a category error — a timeout is a timeout — so the
+spelling was added, and the failure message began offering it as legal
+guidance. But that code path is reached *because* the worker context
+was canceled, so a child of it is born expired: following the pin's own
+advice reduced a 70-second shutdown wait to 1.1µs. The widening was
+never checked against the contract, only against the category.
+
+Ask, before accepting a new shape: **does this shape satisfy the
+contract HERE, in this code path, with these preconditions?** Not "is
+it the same kind of thing".
+
+Two structural answers, in order of preference:
+
+1. **Make the question executable.** If the contract is about
+   behaviour — bounded, terminates, does not deadlock, converges —
+   a runtime test settles "does this actually do it" with no
+   judgment call. A source pin can only ever approximate behaviour
+   by naming shapes, and every accepted shape is a standing bet
+   that the naming was right.
+2. **Narrow the widening to the precondition that makes it true.**
+   `context.WithTimeout` is a real bound when its parent is
+   `Background()`/`TODO()`; the accepted shape should say so.
+
+Corollary: when a pin has been escaped repeatedly and each fix adds
+surface, that is evidence the property is being asserted at the wrong
+level, not that the next predicate will be the one that holds. Passes
+43–48 escaped the same shutdown pin eleven times; the runtime test that
+replaced its semantic half catches all eight bound-class escapes
+without naming any of them, and let ~330 lines of pin go.
+
+Incidents: the `context.WithTimeout` recommendation (pass 48); the
+deadline arm that checked only the function name while both operands
+appeared in the log line inside it (pass 48); the four legitimate
+refactors rejected with misdiagnosing messages (passes 47–48).
+
 ## Running the pass
 
 The brief, the verification protocol and the pre-launch checklist are

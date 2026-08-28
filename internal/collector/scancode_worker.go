@@ -189,6 +189,13 @@ type ScancodeWorker struct {
 	bookkeeping      sync.WaitGroup
 	bookkeepingDone  chan struct{}
 	bookkeepingClose sync.Once
+	// bookkeepingAllowance is ScancodeShutdownBookkeepingGrace, held
+	// as a field so a test can shrink it: the real allowance is 70s,
+	// and the shutdown bound is only provable by WAITING for it.
+	// Zero means the production allowance — a bare-struct worker must
+	// not silently get a deadline of zero, which is the very failure
+	// the bound exists to prevent (pass 49).
+	bookkeepingAllowance time.Duration
 	// v0.23.8: per-job wall-clock timeout. The runner computes
 	// `min(runTimeoutBase * 2^job.TimeoutAttempts, runTimeoutCap)`
 	// per job. Pre-v0.23.8 this was a package-level constant
@@ -291,21 +298,22 @@ func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger, opts Scanco
 	}
 	hostname, _ := os.Hostname()
 	w := &ScancodeWorker{
-		store:             store,
-		logger:            logger,
-		workerCount:       opts.Workers,
-		startInterval:     opts.StartInterval,
-		cadence:           opts.Cadence,
-		cloneDir:          opts.CloneDir,
-		shutdownGrace:     opts.ShutdownGrace,
-		bookkeepingDone:   make(chan struct{}),
-		runTimeoutBase:    opts.RunTimeoutBase,
-		runTimeoutCap:     opts.RunTimeoutCap,
-		maxInMemory:       opts.MaxInMemory,
-		timeoutCapStrikes: opts.TimeoutCapStrikes,
-		ignoreGlobs:       opts.IgnoreGlobs,
-		hostname:          hostname,
-		healthRecheck:     scancodeHealthRecheckInterval,
+		store:                store,
+		logger:               logger,
+		workerCount:          opts.Workers,
+		startInterval:        opts.StartInterval,
+		cadence:              opts.Cadence,
+		cloneDir:             opts.CloneDir,
+		shutdownGrace:        opts.ShutdownGrace,
+		bookkeepingAllowance: time.Millisecond,
+		bookkeepingDone:      make(chan struct{}),
+		runTimeoutBase:       opts.RunTimeoutBase,
+		runTimeoutCap:        opts.RunTimeoutCap,
+		maxInMemory:          opts.MaxInMemory,
+		timeoutCapStrikes:    opts.TimeoutCapStrikes,
+		ignoreGlobs:          opts.IgnoreGlobs,
+		hostname:             hostname,
+		healthRecheck:        scancodeHealthRecheckInterval,
 	}
 	w.healthy.Store(true)
 	return w
@@ -439,18 +447,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	// needs no pool and can take minutes on a spinning disk) on top of
 	// the operator's scan grace, and signal it so the scheduler's pool
 	// close never lands under it (passes 38/39).
-	go func() {
-		defer safego.Recover(w.logger, "scancode-bookkeeping-wait")
-		w.bookkeeping.Wait()
-		w.bookkeepingClose.Do(func() { close(w.bookkeepingDone) })
-	}()
-	select {
-	case <-w.bookkeepingDone:
-		w.logger.Info("scancode worker stopped cleanly — every runner finished its shutdown bookkeeping")
-	case <-time.After(w.shutdownGrace + ScancodeShutdownBookkeepingGrace):
-		w.logger.Warn("scancode worker shutdown grace expired — runners still inside their bookkeeping; their locks are recovered on the next start",
-			"grace", w.shutdownGrace.String(), "bookkeeping_allowance", ScancodeShutdownBookkeepingGrace.String())
-	}
+	w.awaitBookkeeping()
 
 	// v0.27.6 shutdown sweep: remove ALL repo_* clone dirs and
 	// preflight temp dirs. A clone can't outlive the worker usefully
@@ -1200,6 +1197,48 @@ const (
 
 	ScancodeShutdownBookkeepingGrace = scancodeWaitDelay + 2*scancodeBestEffortDBTimeout
 )
+
+// shutdownDeadline is how long Run waits for the claimed jobs' DB
+// bookkeeping once the dispatcher has stopped: the operator's scan
+// grace PLUS the fixed allowance for one runner's post-kill Wait and
+// its two best-effort writes. ONE definition, because the sum is the
+// whole contract — dropping the allowance reduces the wait to zero at
+// the shipped default grace of 0, and a source pin could not tell the
+// difference (pass 48).
+func (w *ScancodeWorker) shutdownDeadline() time.Duration {
+	allowance := w.bookkeepingAllowance
+	if allowance <= 0 {
+		allowance = ScancodeShutdownBookkeepingGrace
+	}
+	return w.shutdownGrace + allowance
+}
+
+// awaitBookkeeping blocks until every claimed job's DB bookkeeping is
+// over, or shutdownDeadline elapses — whichever comes first — and
+// signals the former through bookkeepingDone so the scheduler's pool
+// close never lands under a runner's lock clear (passes 38/39).
+//
+// The drain MUST run in a goroutine. Waited inline, bookkeepingDone is
+// already closed by the time the select runs, the deadline arm can
+// never fire, and a wedged bookkeeping write hangs `aveloxis stop`
+// forever. That failure has been re-introduced by five different
+// one-line refactors across passes 43–48, every one of which a source
+// pin accepted; TestAwaitBookkeepingIsBoundedWhenWedged is what
+// actually holds the line, because it WAITS and observes.
+func (w *ScancodeWorker) awaitBookkeeping() {
+	go func() {
+		defer safego.Recover(w.logger, "scancode-bookkeeping-wait")
+		w.bookkeeping.Wait()
+		w.bookkeepingClose.Do(func() { close(w.bookkeepingDone) })
+	}()
+	select {
+	case <-w.bookkeepingDone:
+		w.logger.Info("scancode worker stopped cleanly — every runner finished its shutdown bookkeeping")
+	case <-time.After(w.shutdownDeadline()):
+		w.logger.Warn("scancode worker shutdown grace expired — runners still inside their bookkeeping; their locks are recovered on the next start",
+			"grace", w.shutdownGrace.String(), "bookkeeping_allowance", ScancodeShutdownBookkeepingGrace.String())
+	}
+}
 
 // clearLockBestEffort attempts to clear the lock and logs if it
 // fails. Used by the recovery paths and (v0.28.18) every runOne

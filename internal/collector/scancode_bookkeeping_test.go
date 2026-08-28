@@ -58,11 +58,20 @@ func TestScancodeBookkeepingContract(t *testing.T) {
 		t.Errorf("the RemoveAll defer must signal bookkeepingDone() BEFORE the removal — the shutdown wait must not cover minutes of filesystem work")
 	}
 
-	// 3. Run closes the signal channel when the WaitGroup drains and on
-	//    any return, both through the sync.Once.
+	// 3. The signal channel is closed when the WaitGroup drains AND on
+	//    any Run return, both through the sync.Once — the two closes
+	//    are what stop a waiter hanging on a worker that bailed early.
+	//    Since pass 49 the drain half lives in awaitBookkeeping, where
+	//    the runtime tests in scancode_shutdown_runtime_test.go can
+	//    wedge the bookkeeping and observe whether the wait is
+	//    actually bounded; Run keeps the deferred close.
 	run := srctest.StripGoComments(srctest.FuncBody(t, src, "func (w *ScancodeWorker) Run("))
-	if strings.Count(run, "w.bookkeepingClose.Do(") < 2 || !strings.Contains(run, "w.bookkeeping.Wait()") {
-		t.Errorf("Run must close bookkeepingDone via bookkeepingClose.Do both when the WaitGroup drains and on any return")
+	if !strings.Contains(run, "w.bookkeepingClose.Do(") {
+		t.Errorf("Run must close bookkeepingDone via bookkeepingClose.Do on any return — a worker that bails before the drain would otherwise leave the scheduler waiting out its own bound (passes 38/39)")
+	}
+	await := srctest.StripGoComments(srctest.FuncBody(t, src, "func (w *ScancodeWorker) awaitBookkeeping("))
+	if !strings.Contains(await, "w.bookkeepingClose.Do(") || !strings.Contains(await, "w.bookkeeping.Wait()") {
+		t.Errorf("awaitBookkeeping must wait on the bookkeeping WaitGroup and close bookkeepingDone through the sync.Once — it is the function the runtime shutdown tests drive, so the wait moving out of it takes the real coverage with it (pass 49)")
 	}
 }
 

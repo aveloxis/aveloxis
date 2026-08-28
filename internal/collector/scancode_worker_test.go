@@ -322,83 +322,52 @@ func TestRecoverOrphansSkipsCrossHostLocks(t *testing.T) {
 	}
 }
 
-// The shutdown contract, restated for passes 38–48: ScancodeWorker.Run,
-// on shutdown, waits for the claimed jobs' DB BOOKKEEPING
-// (w.bookkeeping, signalled through w.bookkeepingDone) — not for the
-// runner goroutines, whose clone-dir removal takes minutes on a
-// spinning disk and needs no pool — and that wait is BOUNDED by
-// w.shutdownGrace + ScancodeShutdownBookkeepingGrace so `aveloxis stop`
-// can never hang.
+// What is left for a SOURCE pin, after pass 49 moved the contract to
+// a runtime test.
 //
-// Seventeen reviewer escapes across passes 43–48 taught this pin its
-// shape. Each preserved whatever the pin was counting, naming or
-// spelling; each was found by APPLYING the mutation, never by reading:
+// The shutdown contract — Run waits for the claimed jobs' DB
+// BOOKKEEPING, not for the runner goroutines, and that wait is bounded
+// so `aveloxis stop` can never hang — was pinned at the source level
+// through passes 38–48. A reviewer escaped it in EVERY one of passes
+// 43–48: eleven one-line refactors, five of which re-introduced the
+// exact hang the bound exists to prevent, and three of the last four
+// fixes were themselves defective. Pass 48 found the pin RECOMMENDING
+// a refactor (a context.WithTimeout child of the already-canceled
+// worker ctx) that silently reduced the wait to zero.
 //
-//	43   extract the wait into a helper, block Run on a channel that
-//	     helper closes
-//	45a  make the drain SYNCHRONOUS (counts unchanged; the signal is
-//	     already closed when the select runs, so the bound is dead)
-//	45b  a one-hop helper w.awaitRunners()
-//	46a  delete the two characters `go ` — still "inside a FuncLit",
-//	     synchronous again
-//	46b  a *sync.WaitGroup PARAMETER (receiver spelled `wg`)
-//	46c  a `default:` arm
-//	46d  the helper in a SIBLING FILE
-//	47a  `<-w.bookkeepingDone` ahead of the select — the allowlist
-//	     named the signal, so blocking on it anywhere was legal
-//	47b  `<-drained`, a channel Run makes and closes, closed by the
-//	     DRAIN goroutine: a perfectly derived join that IS the wait
-//	47c  a third select arm on a pre-closed channel — no `default:`
-//	47d  rename ONE receiver `w`→`s`: the walk dead-ends below it
-//	47e  name a WaitGroup `cmd` beside any exec.Command
-//	48a  `time.After(w.shutdownGrace)` — the allowance dropped. The
-//	     operand check scanned Run's whole BODY, and both operands
-//	     already appear in the WARN log line inside the very same
-//	     arm, so it could never fail. With the shipped default grace
-//	     of 0 that arm is time.After(0): the select falls through and
-//	     the pool close lands under the runners' lock clears.
-//	48b  `for range w.bookkeepingDone {}` — 47a respelled. A range is
-//	     not an *ast.UnaryExpr, so the receive sweep never saw it.
-//	48c  `joinRunners := w.awaitRunnerDrain; joinRunners()` — a method
-//	     VALUE is not a call the walk could resolve, so the runner
-//	     join pass 40 deleted came straight back.
-//	48d  one unrelated `go w.watchdog()` that merely MENTIONS the
-//	     drain laundered a synchronous `w.drainBookkeeping()` call:
-//	     async-ness was a property of the DECLARATION, never of the
-//	     call site Run actually used.
-//	48e  the pin RECOMMENDED context.WithTimeout(ctx, …) as a legal
-//	     bound — but ctx being canceled is WHY Run is here, so that
-//	     child is born expired (measured: the arm fired after 1.1µs
-//	     instead of the grace). Following the test's own advice
-//	     reduced the wait to zero.
+// The cause was structural, not carelessness: "the wait is bounded" is
+// a property of what the program DOES, and a source pin can only
+// approximate it by naming shapes. So the semantics now live in
+// scancode_shutdown_runtime_test.go, which wedges a claimed job's
+// bookkeeping and measures whether awaitBookkeeping returns. All eight
+// bound-class escapes fail there without anyone naming a shape.
 //
-// The rules below are therefore stated at the level the contract
-// actually lives at — expressions and call sites, not text and
-// declarations:
+// This pin keeps exactly what runtime cannot reach:
 //
-//  1. No SYNCHRONOUS path from Run to the drain. Not "the drain's
-//     declaration appears somewhere async" (48d) — every path Run can
-//     take to reach it must cross a `go`/safego.Go edge.
-//  2. The deadline arm's ARGUMENT is w.shutdownGrace +
-//     ScancodeShutdownBookkeepingGrace, compared as an expression
-//     (48a). A context bound must be built from Background/TODO, never
-//     from the canceled worker ctx (48e).
-//  3. Between launching the drain and entering the select, Run
-//     performs no operation that can block — receive, send, range or
-//     lock (47a, 47b, 48b) — and the select has exactly two arms, the
-//     signal and that deadline (47c, 46c).
-//  4. No `.Wait()` on any receiver anywhere Run reaches, except
-//     w.bookkeeping and a local bound to exec.Command/CommandContext
-//     and never rebound or shadowed (46b, 47e, 48f). The walk spans
-//     the package, resolves a method call whatever its receiver is
-//     spelled (46d, 47d), and follows method and func VALUES (48c).
+//  1. The wait stays in awaitBookkeeping — the function those tests
+//     drive. Inlined back into Run, the runtime coverage would
+//     silently evaporate, so this is the wiring that keeps the real
+//     test honest.
+//  2. Run delegates to it rather than doing the wait itself.
+//  3. Run blocks on nothing but the channels it makes and closes
+//     (its dispatcher join). A wait ahead of the delegation still
+//     delays `aveloxis stop`, and Run itself is not runtime-tested:
+//     its store is a concrete *db.PostgresStore, so standing it up
+//     would need a store interface this pin is not worth.
+//  4. Nothing Run reaches waits on the RUNNERS. Runtime cannot test
+//     this at all — pass 40 deleted the runner WaitGroup, so there is
+//     nothing left to wedge. Escapes 46b/46d/47d/47e/48c/48f all
+//     re-added such a wait, so the walk stays package-wide, resolves a
+//     method call whatever its receiver is spelled, follows method and
+//     func VALUES, and derives its one exemption (a local bound to
+//     exec.Command/CommandContext and never rebound or shadowed)
+//     rather than naming it.
 func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 	fset, files := scancodePackageFiles(t)
 	run := scancodeMethodDecl(t, files, "Run")
 	byName := scancodeDecls(files)
-	safego := safegoAlias(declFile(fset, files, run))
-
 	reachable := scancodeReachable(byName, run)
+
 	// The walk must not go decorative (lens L4). It resolves ~47
 	// functions across 6 files today; the floor sits just under that
 	// because the 47d escape broke resolution in the way that mattered
@@ -412,7 +381,8 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 		t.Errorf("the reachability walk from Run resolved %d function(s) across %d file(s) (%v) — it resolved ~47 across 6 when this floor was set, so a number this low means call resolution is broken and the wait checks below are scanning almost nothing.", len(reachable), len(walkedFiles), walkedFiles)
 	}
 
-	// 1. Exactly one bookkeeping wait, and no synchronous path to it.
+	// 1. Exactly one bookkeeping wait, and it lives where the runtime
+	//    tests can drive it.
 	var drainSites []waitCall
 	for _, fn := range append([]*ast.FuncDecl{run}, sortedDecls(reachable)...) {
 		for _, wc := range waitCalls(fn) {
@@ -424,73 +394,22 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 	if len(drainSites) != 1 {
 		t.Fatalf("expected exactly one w.bookkeeping.Wait() reachable from Run, found %d — that wait is what closes w.bookkeepingDone, and the scheduler's pool close waits on it so a runner's lock clear is never cut short (passes 38/39).", len(drainSites))
 	}
-	drain := drainSites[0]
-	goSpans := goroutineSpans(run, safego)
-	if syncPathToDrain(run, drain, byName, safego, goSpans) {
-		t.Error("Run can reach w.bookkeeping.Wait() SYNCHRONOUSLY — inline, as an immediately-invoked literal, or through a plain call. It must only be reachable across a `go`/safego.Go edge: run synchronously, w.bookkeepingDone is already closed by the time the select runs, its deadline arm can never fire, and a wedged bookkeeping write blocks `aveloxis stop` indefinitely (passes 45a, 46a, 48d).")
-	}
-	launchPos, launched := drainLaunchPos(run, drain, byName, safego, goSpans)
-	if !launched {
-		t.Error("no `go`/safego.Go statement in Run reaches w.bookkeeping.Wait() — the drain must be launched by Run itself, so the select below bounds it (passes 38/39).")
+	if owner := declKey(drainSites[0].owner); owner != drainHome {
+		t.Errorf("w.bookkeeping.Wait() now lives in %s, not %s — the shutdown bound is proven by the runtime tests in scancode_shutdown_runtime_test.go, which call %s directly and measure whether it returns while the bookkeeping is wedged. Moving the wait out of it (inlining it back into Run, say) leaves those tests driving dead code, and every escape they catch — a synchronous drain, a dropped allowance, an expired bound, an extra blocking wait — becomes invisible again.", owner, drainHome, drainHome)
 	}
 
-	// 2. The bookkeeping select: exactly two arms, the signal and a
-	//    deadline built from the two grace operands.
-	bookSelect := selectReceiving(run, "w.bookkeepingDone")
-	if bookSelect == nil {
-		t.Fatal("Run must select on w.bookkeepingDone — the claimed jobs' DB bookkeeping is what the scheduler's pool close must not race (passes 38/39).")
-	}
-	bound := boundSpec{
-		timers:       runLocalsBoundTo(run, "time.NewTimer"),
-		deadlines:    runLocalsBoundTo(run, "time.After"),
-		ctxDeadlines: backgroundTimeoutLocals(run),
-	}
-	hasBound, hasDefault, arms := false, false, 0
-	for _, stmt := range bookSelect.Body.List {
-		cc, ok := stmt.(*ast.CommClause)
-		if !ok {
-			continue
-		}
-		arms++
-		if cc.Comm == nil {
-			hasDefault = true
-			continue
-		}
-		operand, isRecv := commReceiveOperand(cc)
-		if !isRecv {
-			continue
-		}
-		switch {
-		case operand == "w.bookkeepingDone":
-		case bound.is(operand):
-			hasBound = true
-		}
-	}
-	if hasDefault {
-		t.Error("the select that waits on w.bookkeepingDone carries a `default:` arm, so it never blocks: Run falls straight through and the scheduler's pool close lands under the runners' in-flight lock clears (pass 46).")
-	}
-	if !hasBound {
-		t.Error("the select that waits on w.bookkeepingDone must carry a deadline arm built from w.shutdownGrace + ScancodeShutdownBookkeepingGrace — time.After(that sum) inline or in a local, or a time.NewTimer local's .C. NOTE that a context.WithTimeout child of the WORKER ctx is not a bound at all: ctx being canceled is why Run is here, so the child is born expired and the arm fires immediately (pass 48). Without a real bound a wedged bookkeeping write blocks `aveloxis stop` indefinitely.")
-	}
-	if arms != 2 {
-		t.Errorf("the bookkeeping select must have exactly two arms — the signal and the deadline — but has %d. A third arm on an already-closed channel makes the select fall through without waiting for bookkeeping at all, and needs no `default:` keyword to do it (pass 47).", arms)
+	// 2. Run must delegate to it.
+	if !callsMethod(run, "awaitBookkeeping") {
+		t.Errorf("Run does not call w.awaitBookkeeping() — that is the one place the shutdown wait may happen, because it is the one place the runtime tests can observe (pass 49).")
 	}
 
-	// 3. The shutdown sequence: nothing that can block between the
-	//    drain launch and the select, and the signal nowhere else.
-	joins := runJoinChannels(run, drain)
-	for _, op := range runBlockingOps(run, goSpans) {
-		inSelect := op.pos > bookSelect.Pos() && op.pos < bookSelect.End()
-		switch {
-		case inSelect:
-			// Arm shapes are policed above.
-		case op.kind == blockRecv && op.operand == "w.bookkeepingDone":
-			t.Errorf("Run receives w.bookkeepingDone outside the bounded select (line %d) — blocking on the signal anywhere else makes the deadline arm decorative: only the drain closes it, so a wedged bookkeeping write hangs `aveloxis stop` forever, which is the failure the bound exists to prevent (pass 47).", fset.Position(op.pos).Line)
-		case launched && op.pos > launchPos && op.pos < bookSelect.Pos():
-			t.Errorf("Run %s at line %d — after launching the bookkeeping drain and before the bounded select, which makes it an UNBOUNDED wait ahead of the bound, whatever it is spelled (a receive, a range over the signal channel, a send or a lock all block the same way: passes 47, 48). Do it before the drain is launched, or make it an arm of the bounded select.", op.desc, fset.Position(op.pos).Line)
-		case op.kind == blockRecv && !joins[op.operand]:
-			t.Errorf("Run blocks on an unexpected receive %q (line %d) — before the drain launch Run may wait only on channels it both makes and closes itself, and not on one the DRAIN closes. Pass 40 removed the runner WaitGroup as dead plumbing and pass 39 established that the runners' clone-dir removal must not gate shutdown; a channel some OTHER function closes after waiting re-adds exactly that (passes 44, 47).", op.operand, fset.Position(op.pos).Line)
+	// 3. Run blocks on nothing but its own join channels.
+	joins := runJoinChannels(run)
+	for _, op := range runBlockingOps(run, goroutineSpans(run, safegoAlias(declFile(fset, files, run)))) {
+		if op.kind == blockRecv && joins[op.operand] {
+			continue
 		}
+		t.Errorf("Run %s at line %d — the only thing Run may block on is a channel it both makes and closes itself (its dispatcher join); the shutdown wait belongs in awaitBookkeeping, where it is bounded and runtime-tested. A receive on the bookkeeping signal, a range over it, a send or a lock all hold `aveloxis stop` open just the same (passes 44, 47, 48).", op.desc, fset.Position(op.pos).Line)
 	}
 
 	// 4. Nothing Run reaches may wait on anything but w.bookkeeping.
@@ -505,22 +424,26 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 	}
 }
 
-// selectReceiving returns the first select in fn carrying a receive on
-// operand.
-func selectReceiving(fn ast.Node, operand string) *ast.SelectStmt {
-	var found *ast.SelectStmt
+// drainHome is the function the runtime shutdown tests drive. Named
+// once so the pin above and those tests cannot drift apart.
+const drainHome = "*ScancodeWorker.awaitBookkeeping"
+
+// callsMethod reports whether fn calls a method of its own receiver by
+// that name, at any depth including inside literals.
+func callsMethod(fn *ast.FuncDecl, name string) bool {
+	recv := receiverName(fn)
+	found := false
 	ast.Inspect(fn, func(n ast.Node) bool {
-		sel, ok := n.(*ast.SelectStmt)
-		if !ok || found != nil {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
 			return true
 		}
-		for _, stmt := range sel.Body.List {
-			if cc, ok := stmt.(*ast.CommClause); ok {
-				if got, isRecv := commReceiveOperand(cc); isRecv && got == operand {
-					found = sel
-					return false
-				}
-			}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != name {
+			return true
+		}
+		if id, ok := sel.X.(*ast.Ident); ok && id.Name == recv {
+			found = true
 		}
 		return true
 	})
@@ -532,13 +455,14 @@ type span struct{ from, to, launch token.Pos }
 
 func (s span) holds(p token.Pos) bool { return p > s.from && p < s.to }
 
-// goroutineSpans returns the literals Run launches as goroutines: `go
+// goroutineSpans returns the literals fn launches as goroutines: `go
 // func(){…}()` and literals handed to safego.Go, plus literals held in
-// a local and launched by name. A literal that is merely INVOKED is
+// a local and launched by name. Receives inside them belong to the
+// goroutine, not to fn. A literal that is merely INVOKED is
 // deliberately excluded — deleting `go ` was the pass-46 escape.
-func goroutineSpans(run *ast.FuncDecl, safego string) []span {
+func goroutineSpans(fn *ast.FuncDecl, safego string) []span {
 	lits := map[string]*ast.FuncLit{}
-	ast.Inspect(run, func(n ast.Node) bool {
+	ast.Inspect(fn, func(n ast.Node) bool {
 		as, ok := n.(*ast.AssignStmt)
 		if !ok {
 			return true
@@ -563,7 +487,7 @@ func goroutineSpans(run *ast.FuncDecl, safego string) []span {
 			}
 		}
 	}
-	ast.Inspect(run, func(n ast.Node) bool {
+	ast.Inspect(fn, func(n ast.Node) bool {
 		switch s := n.(type) {
 		case *ast.GoStmt:
 			add(s.Call.Fun, s.Pos())
@@ -579,11 +503,22 @@ func goroutineSpans(run *ast.FuncDecl, safego string) []span {
 	return out
 }
 
-// callTargets returns the declarations a call expression can resolve
-// to, following method values and func values bound in fn. A method
-// call resolves whatever its receiver is spelled, because renaming one
-// receiver `w`→`s` made the walk a dead end below it (pass 47), and a
-// method VALUE assigned to a local is still a call edge (pass 48).
+// receiverName returns the name fn binds its receiver to, or "".
+func receiverName(fn *ast.FuncDecl) string {
+	if fn == nil || fn.Recv == nil || len(fn.Recv.List) != 1 || len(fn.Recv.List[0].Names) != 1 {
+		return ""
+	}
+	return fn.Recv.List[0].Names[0].Name
+}
+
+// callTargets returns the declarations a call can resolve to,
+// following method values and func values bound in the enclosing
+// function. A method call resolves whatever its receiver is spelled,
+// because renaming one receiver `w`→`s` made the walk a dead end below
+// it (pass 47), and a method VALUE assigned to a local is still a call
+// edge (pass 48). Deliberately NOT any ident: `cmd.Run()` would
+// resolve to (*ScancodeWorker).Run and make everything reach
+// everything.
 func callTargets(call *ast.CallExpr, recv string, aliases map[string]string, byName map[string]*ast.FuncDecl) []*ast.FuncDecl {
 	var keys []string
 	switch f := call.Fun.(type) {
@@ -593,11 +528,6 @@ func callTargets(call *ast.CallExpr, recv string, aliases map[string]string, byN
 			keys = append(keys, target)
 		}
 	case *ast.SelectorExpr:
-		// A method call on the enclosing function's OWN receiver,
-		// whatever that receiver is spelled — renaming one `w`→`s`
-		// made the walk a dead end below it (pass 47). Deliberately
-		// NOT any ident: `cmd.Run()` would resolve to
-		// (*ScancodeWorker).Run and make everything reach everything.
 		if id, isIdent := f.X.(*ast.Ident); isIdent && recv != "" && id.Name == recv {
 			keys = append(keys, "*ScancodeWorker."+f.Sel.Name)
 		}
@@ -609,14 +539,6 @@ func callTargets(call *ast.CallExpr, recv string, aliases map[string]string, byN
 		}
 	}
 	return out
-}
-
-// receiverName returns the name fn binds its receiver to, or "".
-func receiverName(fn *ast.FuncDecl) string {
-	if fn == nil || fn.Recv == nil || len(fn.Recv.List) != 1 || len(fn.Recv.List[0].Names) != 1 {
-		return ""
-	}
-	return fn.Recv.List[0].Names[0].Name
 }
 
 // funcValueAliases maps locals in fn that hold a method or func VALUE
@@ -660,155 +582,8 @@ func funcValueAliases(fn *ast.FuncDecl) map[string]string {
 	return out
 }
 
-// syncCallees returns the declarations fn calls SYNCHRONOUSLY: not the
-// target of a `go`/safego.Go, and not sitting inside a literal fn
-// launches as a goroutine.
-func syncCallees(fn *ast.FuncDecl, byName map[string]*ast.FuncDecl, safego string, spans []span) []*ast.FuncDecl {
-	aliases := funcValueAliases(fn)
-	launched := map[*ast.CallExpr]bool{}
-	ast.Inspect(fn, func(n ast.Node) bool {
-		switch s := n.(type) {
-		case *ast.GoStmt:
-			launched[s.Call] = true
-		case *ast.CallExpr:
-			if types.ExprString(s.Fun) == safego+".Go" {
-				launched[s] = true
-			}
-		}
-		return true
-	})
-	var out []*ast.FuncDecl
-	ast.Inspect(fn, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok || launched[call] {
-			return true
-		}
-		for _, sp := range spans {
-			if sp.holds(call.Pos()) {
-				return true
-			}
-		}
-		out = append(out, callTargets(call, receiverName(fn), aliases, byName)...)
-		return true
-	})
-	return out
-}
-
-// syncPathToDrain reports whether Run can reach the drain without
-// crossing a goroutine boundary — the property that decides whether
-// the bound below is live or decorative. Asked of the CALL SITES Run
-// actually uses, because one unrelated `go w.watchdog()` that merely
-// mentions the drain used to launder every synchronous call to it
-// (pass 48).
-func syncPathToDrain(run *ast.FuncDecl, drain waitCall, byName map[string]*ast.FuncDecl, safego string, spans []span) bool {
-	if drain.owner == run {
-		for _, sp := range spans {
-			if sp.holds(drain.pos) {
-				return false
-			}
-		}
-		return true
-	}
-	seen := map[*ast.FuncDecl]bool{run: true}
-	queue := []*ast.FuncDecl{run}
-	for len(queue) > 0 {
-		fn := queue[0]
-		queue = queue[1:]
-		useSpans := spans
-		if fn != run {
-			useSpans = goroutineSpans(fn, safego)
-		}
-		for _, callee := range syncCallees(fn, byName, safego, useSpans) {
-			if seen[callee] {
-				continue
-			}
-			if callee == drain.owner {
-				return true
-			}
-			seen[callee] = true
-			queue = append(queue, callee)
-		}
-	}
-	return false
-}
-
-// drainLaunchPos returns the position of the earliest `go`/safego.Go
-// statement in Run that reaches the drain.
-func drainLaunchPos(run *ast.FuncDecl, drain waitCall, byName map[string]*ast.FuncDecl, safego string, spans []span) (token.Pos, bool) {
-	best, found := token.Pos(0), false
-	consider := func(p token.Pos) {
-		if !found || p < best {
-			best, found = p, true
-		}
-	}
-	aliases := funcValueAliases(run)
-	runRecv := receiverName(run)
-	// When the drain sits lexically inside Run, the launch can only be
-	// the goroutine literal that holds it — resolving further would
-	// ask whether some other goroutine "reaches Run", which is both
-	// meaningless and true (a runner's cmd.Run() resolves to
-	// *ScancodeWorker.Run under receiver-blind matching).
-	reaches := func(fn *ast.FuncDecl) bool {
-		if drain.owner == run {
-			return false
-		}
-		if fn == drain.owner {
-			return true
-		}
-		_, ok := scancodeReachable(byName, fn)[declKey(drain.owner)]
-		return ok
-	}
-	for _, sp := range spans {
-		if sp.holds(drain.pos) {
-			consider(sp.launch)
-			continue
-		}
-		// The drain may sit one hop below the launched literal —
-		// `go func(){ defer safego.Recover(…); w.drain() }()` is the
-		// house idiom, and it kept panic recovery that the bare
-		// `go w.drain()` form loses (pass 48).
-		ast.Inspect(run, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok || !sp.holds(call.Pos()) {
-				return true
-			}
-			for _, fn := range callTargets(call, runRecv, aliases, byName) {
-				if reaches(fn) {
-					consider(sp.launch)
-				}
-			}
-			return true
-		})
-	}
-	ast.Inspect(run, func(n ast.Node) bool {
-		var targets []ast.Expr
-		var pos token.Pos
-		switch s := n.(type) {
-		case *ast.GoStmt:
-			targets, pos = []ast.Expr{s.Call.Fun}, s.Pos()
-		case *ast.CallExpr:
-			if types.ExprString(s.Fun) != safego+".Go" {
-				return true
-			}
-			targets, pos = s.Args, s.Pos()
-		default:
-			return true
-		}
-		for _, target := range targets {
-			call := &ast.CallExpr{Fun: target}
-			for _, fn := range callTargets(call, runRecv, aliases, byName) {
-				if reaches(fn) {
-					consider(pos)
-				}
-			}
-		}
-		return true
-	})
-	return best, found
-}
-
-// blocking operation kinds Run may not perform between launching the
-// drain and entering the bounded select.
+// blocking operation kinds Run may perform only on its own join
+// channels.
 const (
 	blockRecv = iota
 	blockSend
@@ -823,13 +598,13 @@ type blockingOp struct {
 	pos     token.Pos
 }
 
-// runBlockingOps returns everything Run itself can block on —
+// runBlockingOps returns everything fn itself can block on —
 // receives, sends, ranges and lock acquisitions — excluding whatever
 // sits inside the goroutines it launches, which belongs to those
 // goroutines. A receive expression was not enough: `for range
 // w.bookkeepingDone {}` blocks identically and is an *ast.RangeStmt
 // (pass 48).
-func runBlockingOps(run *ast.FuncDecl, spans []span) []blockingOp {
+func runBlockingOps(fn *ast.FuncDecl, spans []span) []blockingOp {
 	var out []blockingOp
 	inGoroutine := func(p token.Pos) bool {
 		for _, sp := range spans {
@@ -839,7 +614,7 @@ func runBlockingOps(run *ast.FuncDecl, spans []span) []blockingOp {
 		}
 		return false
 	}
-	ast.Inspect(run, func(n ast.Node) bool {
+	ast.Inspect(fn, func(n ast.Node) bool {
 		var op blockingOp
 		switch s := n.(type) {
 		case *ast.UnaryExpr:
@@ -957,44 +732,6 @@ func assignedTargets(fn ast.Node, accept func(*ast.CallExpr) bool) (matched, oth
 	return matched, other
 }
 
-// runLocalsBoundTo returns fn's locals bound to a call to any of callees.
-func runLocalsBoundTo(fn ast.Node, callees ...string) map[string]bool {
-	matched, _ := assignedTargets(fn, func(call *ast.CallExpr) bool {
-		name := types.ExprString(call.Fun)
-		for _, c := range callees {
-			if name == c {
-				return true
-			}
-		}
-		return false
-	})
-	return matched
-}
-
-// backgroundTimeoutLocals returns locals bound to a context timeout
-// built from context.Background()/TODO(). A child of the WORKER ctx is
-// excluded on purpose: that ctx being canceled is why Run is in its
-// shutdown path at all, so the child is already expired and its
-// .Done() fires immediately — a bound that bounds nothing (pass 48).
-func backgroundTimeoutLocals(fn ast.Node) map[string]bool {
-	return runLocalsBoundToFiltered(fn, func(call *ast.CallExpr) bool {
-		name := types.ExprString(call.Fun)
-		if name != "context.WithTimeout" && name != "context.WithDeadline" {
-			return false
-		}
-		if len(call.Args) == 0 {
-			return false
-		}
-		parent := types.ExprString(call.Args[0])
-		return parent == "context.Background()" || parent == "context.TODO()"
-	})
-}
-
-func runLocalsBoundToFiltered(fn ast.Node, accept func(*ast.CallExpr) bool) map[string]bool {
-	matched, _ := assignedTargets(fn, accept)
-	return matched
-}
-
 // subprocessHandles returns the locals fn binds to exec.Command or
 // exec.CommandContext and never rebinds — the only receivers besides
 // w.bookkeeping whose .Wait() is legal.
@@ -1013,10 +750,10 @@ func subprocessHandles(fn ast.Node) map[string]bool {
 }
 
 // runJoinChannels returns the channel handles fn both make()s and
-// close()s, EXCLUDING any the drain goroutine closes: waiting on one
-// of those is the unbounded wait wearing a derivation the pin used to
-// bless (pass 47).
-func runJoinChannels(fn *ast.FuncDecl, drain waitCall) map[string]bool {
+// close()s — its own goroutine-join handles. Derived rather than
+// hard-coded so renaming one, or hoisting it to a struct field, stays
+// a legal refactor.
+func runJoinChannels(fn *ast.FuncDecl) map[string]bool {
 	made, _ := assignedTargets(fn, func(call *ast.CallExpr) bool {
 		if types.ExprString(call.Fun) != "make" || len(call.Args) == 0 {
 			return false
@@ -1024,22 +761,10 @@ func runJoinChannels(fn *ast.FuncDecl, drain waitCall) map[string]bool {
 		_, isChan := call.Args[0].(*ast.ChanType)
 		return isChan
 	})
-	var drainLit *ast.FuncLit
-	ast.Inspect(fn, func(n ast.Node) bool {
-		if lit, ok := n.(*ast.FuncLit); ok && drain.pos > lit.Pos() && drain.pos < lit.End() {
-			if drainLit == nil || lit.Pos() > drainLit.Pos() {
-				drainLit = lit
-			}
-		}
-		return true
-	})
 	joins := map[string]bool{}
 	ast.Inspect(fn, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok || types.ExprString(call.Fun) != "close" || len(call.Args) != 1 {
-			return true
-		}
-		if drainLit != nil && call.Pos() > drainLit.Pos() && call.Pos() < drainLit.End() {
 			return true
 		}
 		if name := types.ExprString(call.Args[0]); made[name] {
@@ -1048,64 +773,6 @@ func runJoinChannels(fn *ast.FuncDecl, drain waitCall) map[string]bool {
 		return true
 	})
 	return joins
-}
-
-// boundSpec knows the shutdown deadline's legal spellings, all derived
-// from Run rather than hardcoded.
-type boundSpec struct {
-	timers, deadlines, ctxDeadlines map[string]bool
-}
-
-// is reports whether a receive operand is the shutdown deadline built
-// from the two grace operands. The ARGUMENT is checked, not just the
-// function name: `time.After(w.shutdownGrace)` drops the allowance,
-// and with the shipped default grace of 0 that is `time.After(0)` —
-// a select that falls straight through (pass 48).
-func (b boundSpec) is(operand string) bool {
-	if inner, ok := strings.CutPrefix(operand, "time.After("); ok {
-		return isGraceSum(strings.TrimSuffix(inner, ")"))
-	}
-	if name, ok := strings.CutSuffix(operand, ".C"); ok && b.timers[name] {
-		return true
-	}
-	if b.deadlines[operand] {
-		return true
-	}
-	name, ok := strings.CutSuffix(operand, ".Done()")
-	return ok && b.ctxDeadlines[name]
-}
-
-// isGraceSum reports whether an expression adds the operator's grace
-// to the fixed bookkeeping allowance, in either order.
-func isGraceSum(expr string) bool {
-	parts := strings.Split(expr, "+")
-	if len(parts) != 2 {
-		return false
-	}
-	a, b := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-	return (a == "w.shutdownGrace" && b == "ScancodeShutdownBookkeepingGrace") ||
-		(b == "w.shutdownGrace" && a == "ScancodeShutdownBookkeepingGrace")
-}
-
-// commReceiveOperand returns the operand of `case <-X:` or
-// `case v := <-X:`, and whether the clause is a receive at all. A
-// `default:` clause has a nil Comm; callers must reject those
-// separately rather than skipping them (pass 46).
-func commReceiveOperand(cc *ast.CommClause) (string, bool) {
-	var expr ast.Expr
-	switch s := cc.Comm.(type) {
-	case *ast.ExprStmt:
-		expr = s.X
-	case *ast.AssignStmt:
-		if len(s.Rhs) == 1 {
-			expr = s.Rhs[0]
-		}
-	}
-	u, ok := expr.(*ast.UnaryExpr)
-	if !ok || u.Op != token.ARROW {
-		return "", false
-	}
-	return types.ExprString(u.X), true
 }
 
 // scancodeReachable walks the PACKAGE-WIDE call graph from start to a
@@ -1136,28 +803,6 @@ func scancodeReachable(byName map[string]*ast.FuncDecl, start *ast.FuncDecl) map
 		})
 	}
 	return seen
-}
-
-// scancodeMethodDecl returns the (*ScancodeWorker) method named name,
-// from whichever file of the package declares it. The receiver type is
-// checked so a same-named method on another type can never be pinned
-// by mistake.
-func scancodeMethodDecl(t *testing.T, files []*ast.File, name string) *ast.FuncDecl {
-	t.Helper()
-	for _, file := range files {
-		for _, d := range file.Decls {
-			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Name.Name != name || fn.Body == nil || fn.Recv == nil || len(fn.Recv.List) != 1 {
-				continue
-			}
-			if types.ExprString(fn.Recv.List[0].Type) != "*ScancodeWorker" {
-				continue
-			}
-			return fn
-		}
-	}
-	t.Fatalf("cannot find (*ScancodeWorker).%s", name)
-	return nil
 }
 
 // scancodePackageFiles parses every non-test source of package
@@ -1282,4 +927,26 @@ func waitCalls(n ast.Node) []waitCall {
 		return true
 	})
 	return out
+}
+
+// scancodeMethodDecl returns the (*ScancodeWorker) method named name,
+// from whichever file of the package declares it. The receiver type is
+// checked so a same-named method on another type can never be pinned
+// by mistake.
+func scancodeMethodDecl(t *testing.T, files []*ast.File, name string) *ast.FuncDecl {
+	t.Helper()
+	for _, file := range files {
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != name || fn.Body == nil || fn.Recv == nil || len(fn.Recv.List) != 1 {
+				continue
+			}
+			if types.ExprString(fn.Recv.List[0].Type) != "*ScancodeWorker" {
+				continue
+			}
+			return fn
+		}
+	}
+	t.Fatalf("cannot find (*ScancodeWorker).%s", name)
+	return nil
 }

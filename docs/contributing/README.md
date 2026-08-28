@@ -16,7 +16,7 @@ If you're new to the codebase, read these in order before touching code:
 1. [`docs/architecture/overview.md`](../architecture/overview.md) — the architecture in one page
 2. [`docs/architecture/staged-pipeline.md`](../architecture/staged-pipeline.md) — how a single repo's data flows from API to database
 3. [`docs/architecture/platform-layer.md`](../architecture/platform-layer.md) — the GitHub/GitLab abstraction
-4. [`review-lenses.md`](review-lenses.md) — the review lenses (L1–L15) distilled from past incidents; with [`code-conventions.md`](code-conventions.md) they carry the "why" behind most rules you'll meet.
+4. [`review-lenses.md`](review-lenses.md) — the review lenses (L1–L16) distilled from past incidents; with [`code-conventions.md`](code-conventions.md) they carry the "why" behind most rules you'll meet.
 
 ## How the codebase is laid out
 
@@ -52,7 +52,7 @@ Every Go file carries an SPDX header (enforced by a tripwire test in `scripts/`)
 - [`development-setup.md`](development-setup.md) — get a local PostgreSQL, build the binary, run the test suite, set up `aveloxis.runlocal.json`
 - [`code-conventions.md`](code-conventions.md) — SPDX headers, file/package layout, error handling, slog, version bumping, commit style
 - [`testing.md`](testing.md) — TDD discipline, source-contract pattern, integration tier via `AVELOXIS_TEST_DB`, the `data-test` harness for cross-version verification
-- [`review-lenses.md`](review-lenses.md) — the adversarial pre-push pass: fifteen lenses distilled from ~200 verified external-review and fresh-context findings (L11–L15 from PR #191); every diff gets this pass BEFORE it ships
+- [`review-lenses.md`](review-lenses.md) — the adversarial pre-push pass: sixteen lenses distilled from ~275 verified external-review and fresh-context findings (L11–L16 from PR #191); every diff gets this pass BEFORE it ships
 - [`review-pass-brief.md`](review-pass-brief.md) — how the pass is run: the reviewer brief, the verification protocol on findings, and the pre-launch checklist for the author's own fixes
 
 ### Extending Aveloxis

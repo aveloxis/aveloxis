@@ -31,7 +31,7 @@ Give a reviewer that has NOT seen the session this, with the blanks filled:
 > Scope: `<git diff HEAD | main...HEAD>` plus untracked `<files>`. This
 > is round `<n>` of fixes; the previous round's findings, now applied:
 > `<one line each>`. Checklist: `docs/contributing/review-lenses.md`
-> L1–L15, weight on L10 (the fixes are new code) and L11 (class sweep).
+> L1–L16, weight on L10 (the fixes are new code) and L11 (class sweep).
 >
 > Verify specifically: `<numbered list of the things the author is least
 > sure of — each phrased as a question with the expected answer>`.

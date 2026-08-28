@@ -166,6 +166,7 @@ a half against its own reference table below:
     "refresh_seconds": 60
   },
   "api": {
+    "addr": "127.0.0.1:8383",
     "rate_limit_rps": 1,
     "rate_limit_burst": 10,
     "rate_limit_daily": 1000,
@@ -461,6 +462,7 @@ same-box and same-LAN traffic is never limited.
 
 | Field | Default | Meaning |
 |---|---|---|
+| `addr` | `"127.0.0.1:8383"` | Listen address for `aveloxis api`, as `host:port`. v0.28.19 — before it, the address could only be set by running `aveloxis api --addr …` by hand, because `aveloxis start api` spawns the process with only `--config`; two instances on one host therefore collided on 8383. `--addr` still wins when given. Read "Reaching the API from another host" below before binding anything routable. |
 | `rate_limit_rps` | `1` | Sustained per-IP requests/second (token bucket). |
 | `rate_limit_burst` | `10` | Per-IP burst capacity. |
 | `rate_limit_daily` | `1000` | Per-IP daily request quota — the anti-bulk-crawl control. Exceeding returns 429 with `Retry-After: 86400`. |
@@ -469,12 +471,53 @@ same-box and same-LAN traffic is never limited.
 | `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set this to your nginx host when proxying — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). |
 | `require_auth` | `false` | Gate every data endpoint (all but `/health`) behind Bearer session tokens minted by the web process's `/auth/token`. Flip on once the aveloxis-gui token flow is deployed. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
 
+### Reaching the API from another host
+
+The default `127.0.0.1:8383` is loopback-only, and deliberately so:
+the API serves the whole catalog, `require_auth` is `false` by
+default, and `exempt_cidrs` waives rate limiting **and** auth for
+loopback and RFC1918. Those three defaults are safe together only
+because nothing outside the machine can connect.
+
+Changing `addr` alone changes all three. There are two ways to expose
+the API, and only one of them is a one-line change:
+
+**Proxy it (recommended).** Leave `addr` on loopback and terminate TLS
+in nginx on the same host, forwarding to `127.0.0.1:8383`. Set
+`trusted_proxy` to the proxy's peer IP, or every request will appear
+to come from the proxy and the limits and exemptions will misapply to
+all of them at once. Nothing else changes.
+
+**Bind it directly.** Set `addr` to a routable address — `0.0.0.0:8383`
+for every interface, or a specific one such as `10.0.0.5:8383`. Then,
+before starting it:
+
+- Set `require_auth: true`. Without it every endpoint is open to
+  anyone who can reach the port.
+- Review `exempt_cidrs`. Its entries bypass rate limiting *and* auth,
+  so the RFC1918 defaults hand unauthenticated access to everything
+  else on the private network. On a shared network, narrow it.
+- Put a firewall in front of the port regardless.
+
+**Running two instances on one host** (a test and a production
+deployment, say) is what `addr` is mainly for: give each its own port
+and its own `aveloxis.json`, and remember each also needs a distinct
+`web.addr`.
+
+**Whichever you choose, `web.api_internal_url` must follow.** The web
+GUI proxies `/api/*` to that URL; if the API moves and the URL does
+not, every chart returns 502 while both processes report healthy. The
+web process warns at startup when the URL names a loopback port the
+API is not listening on — but it cannot detect the case where the URL
+names a different host, so check that one yourself.
+
 For the full public-GUI deployment runbook (nginx layout, OAuth
 callbacks, when to flip `require_auth`), see the aveloxis-gui
 repository's README "Production deployment" section.
 
 ```jsonc
 "api": {
+  "addr": "127.0.0.1:8383",
   "rate_limit_rps": 1,
   "rate_limit_burst": 10,
   "rate_limit_daily": 1000,

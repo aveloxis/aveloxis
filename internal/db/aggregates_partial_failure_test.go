@@ -21,13 +21,18 @@ func TestRefreshAllRepoAggregatesReturnsPartialFailures(t *testing.T) {
 	body := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, "aggregates.go"), "func (s *PostgresStore) RefreshAllRepoAggregates("))
 	for _, needle := range []string{
 		`failed = append(failed, fmt.Errorf("repo %d: %w", repoID, err))`,
-		`failed = append(failed, fmt.Errorf("group of repo %d: %w", repoID, err))`,
+		// v0.28.19: the group phase is driven per GROUP, not per repo
+		// (a group of N repos was rebuilding its whole aggregate N
+		// times). The accumulate-and-return contract is unchanged; only
+		// what identifies the failing unit is.
+		`failed = append(failed, fmt.Errorf("group %d: %w", groupID, err))`,
+		`failed = append(failed, fmt.Errorf("enumerating repo groups: %w", err))`,
 		"if len(failed) > 0 {",
 		"return boundedJoin(",
 		`"failed_repos", failedRepos, "failed_groups", failedGroups`,
 	} {
 		if !strings.Contains(body, needle) {
-			t.Errorf("RefreshAllRepoAggregates must accumulate and return per-repo failures: missing %q", needle)
+			t.Errorf("RefreshAllRepoAggregates must accumulate and return its per-repo and per-group failures: missing %q", needle)
 		}
 	}
 	if strings.Contains(body, `logger.Info("aggregate refresh failed"`) || strings.Contains(body, `logger.Info("group aggregate refresh failed"`) {
@@ -37,7 +42,7 @@ func TestRefreshAllRepoAggregatesReturnsPartialFailures(t *testing.T) {
 	// AND once after the loops (one exit, not one WARN per remaining repo;
 	// a cancel inside the last item never reaches a loop-top guard).
 	if strings.Count(body, "if ctx.Err() != nil {") < 3 {
-		t.Error("both per-repo loops must check ctx.Err() before each iteration AND once after the loops (a cancel inside the last item never reaches a loop-top guard)")
+		t.Error("the per-repo loop and the per-group loop must each check ctx.Err() before every iteration, AND once after the loops (a cancel inside the last item never reaches a loop-top guard)")
 	}
 	if strings.Contains(body, "SELECT DISTINCT repo_group_id") || strings.Contains(body, "groupRows") {
 		t.Error("the dead DISTINCT repo_group_id connectivity query must stay gone (pass 28: it pinned a connection and its error arm buried its own cause)")

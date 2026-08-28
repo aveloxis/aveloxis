@@ -5,7 +5,6 @@ package collector
 
 import (
 	"context"
-	"encoding/json"
 	"reflect"
 	"time"
 
@@ -49,10 +48,11 @@ type ScancodeStore interface {
 	// Toolchain health, surfaced to operators in aveloxis_ops.aveloxis_status.
 	SetAveloxisStatus(ctx context.Context, statusName, status, detail, dataSource string) error
 
-	// Ingest of a completed scan's JSON output.
-	RotateScancodeToHistory(ctx context.Context, repoID int64) error
-	InsertScancodeScan(ctx context.Context, repoID int64, scancodeVersion string, filesScanned, filesWithFindings int, durationSecs float64, scanErrors json.RawMessage) (int64, error)
-	InsertScancodeFileResultBatch(ctx context.Context, repoID int64, rows []*db.ScancodeFileRow) error
+	// Ingest of a completed scan's JSON output. ONE fused operation:
+	// the rotation and both inserts must commit together, or a
+	// cancellation between them leaves the repo with its previous
+	// snapshot deleted and nothing current (v0.28.19).
+	ReplaceScancodeSnapshot(ctx context.Context, repoID int64, meta db.ScancodeScanMeta, rows []*db.ScancodeFileRow) (int64, error)
 }
 
 // The production implementation, checked at compile time so a

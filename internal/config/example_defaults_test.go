@@ -404,6 +404,7 @@ type snippetAccessor struct {
 }
 
 var snippetValueAccessors = map[string]snippetAccessor{
+	"api.Addr":                     {"AddrOrDefault", func(c *Config) any { return c.API.AddrOrDefault() }},
 	"api.RateLimitRPS":             {"RateLimitRPSOrDefault", func(c *Config) any { return c.API.RateLimitRPSOrDefault() }},
 	"api.RateLimitBurst":           {"RateLimitBurstOrDefault", func(c *Config) any { return c.API.RateLimitBurstOrDefault() }},
 	"api.RateLimitDaily":           {"RateLimitDailyOrDefault", func(c *Config) any { return c.API.RateLimitDailyOrDefault() }},

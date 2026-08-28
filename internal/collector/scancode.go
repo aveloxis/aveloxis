@@ -72,13 +72,6 @@ func ingestScancodeOutput(ctx context.Context, store ScancodeStore, repoID int64
 		}
 	}
 
-	if err := store.RotateScancodeToHistory(ctx, repoID); err != nil {
-		if ctx.Err() != nil {
-			return "", ctx.Err() // shutdown, not a failure — and no insert on a half-rotated repo
-		}
-		logger.Warn("failed to rotate scancode history", "repo_id", repoID, "error", err)
-	}
-
 	var filesWithFindings int
 	for _, f := range raw.Files {
 		if f.Type != "file" {
@@ -88,13 +81,6 @@ func ingestScancodeOutput(ctx context.Context, store ScancodeStore, repoID int64
 			filesWithFindings++
 		}
 	}
-
-	scanID, err := store.InsertScancodeScan(ctx, repoID, version,
-		filesScanned, filesWithFindings, duration, nil)
-	if err != nil {
-		return version, fmt.Errorf("inserting scancode scan: %w", err)
-	}
-	logger.Debug("scancode scan recorded", "repo_id", repoID, "scan_id", scanID)
 
 	var dbRows []*db.ScancodeFileRow
 	for _, f := range raw.Files {
@@ -121,9 +107,23 @@ func ingestScancodeOutput(ctx context.Context, store ScancodeStore, repoID int64
 		})
 	}
 
-	if err := store.InsertScancodeFileResultBatch(ctx, repoID, dbRows); err != nil {
-		return version, fmt.Errorf("inserting scancode file results: %w", err)
+	// Rotation and both inserts in ONE transaction. Three independent
+	// transactions left a window — widest across the per-finding file
+	// inserts — where a cancellation or failure after the rotation
+	// committed left the repo with its previous snapshot deleted and
+	// nothing current, until a full re-scan 180 days later. The ctx
+	// check at the top of this function only prevents STARTING the
+	// sequence; it never covered the middle (Copilot, v0.28.19).
+	scanID, err := store.ReplaceScancodeSnapshot(ctx, repoID, db.ScancodeScanMeta{
+		Version:           version,
+		FilesScanned:      filesScanned,
+		FilesWithFindings: filesWithFindings,
+		DurationSecs:      duration,
+	}, dbRows)
+	if err != nil {
+		return version, fmt.Errorf("replacing scancode snapshot: %w", err)
 	}
+	logger.Debug("scancode scan recorded", "repo_id", repoID, "scan_id", scanID)
 	return version, nil
 }
 

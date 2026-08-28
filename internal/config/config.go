@@ -1495,12 +1495,36 @@ type APIConfig struct {
 	// believed when resolving the client address (the nginx-on-
 	// same-box layout). Empty = XFF ignored.
 	TrustedProxy string `json:"trusted_proxy,omitempty"`
+	// Addr is the listen address for `aveloxis api`. Default
+	// 127.0.0.1:8383 — loopback only, because the API serves the
+	// whole catalog and its rate limiter exempts loopback and RFC1918
+	// by default. Set a routable address ONLY together with
+	// require_auth and a reviewed exempt_cidrs; see the "Reaching the
+	// API from another host" section of
+	// docs/getting-started/configuration.md.
+	//
+	// v0.28.19: `aveloxis start api` spawns the process with only
+	// --config, so before this existed the address could be changed
+	// only by launching `aveloxis api --addr …` by hand, and two
+	// instances on one host collided on 8383.
+	Addr string `json:"addr,omitempty"`
+
 	// RequireAuth gates every data endpoint (all but /health) behind
 	// Bearer session tokens. Default FALSE: flip it on once the
 	// aveloxis-gui token flow is deployed — enabling it earlier
 	// breaks the server-rendered GUI's browser-side chart fetches.
 	// Exempt-CIDR clients bypass auth even when enabled.
 	RequireAuth bool `json:"require_auth,omitempty"`
+}
+
+// AddrOrDefault returns the configured listen address, or the
+// loopback default. Empty means unset: an address is a host:port
+// string with no meaningful zero value.
+func (a APIConfig) AddrOrDefault() string {
+	if strings.TrimSpace(a.Addr) == "" {
+		return "127.0.0.1:8383"
+	}
+	return a.Addr
 }
 
 // RateLimitRPSOrDefault returns the configured sustained rate, or 1.

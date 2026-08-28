@@ -108,6 +108,7 @@
   },
   "log_level": "info",
   "api": {
+    "addr": "127.0.0.1:8383",
     "rate_limit_rps": 1,
     "rate_limit_burst": 10,
     "rate_limit_daily": 1000,

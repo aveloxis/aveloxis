@@ -5,7 +5,6 @@ package collector
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"time"
 
@@ -31,6 +30,7 @@ type fakeScancodeStore struct {
 	sidelines   int
 	statuses    []string
 	staleClears int
+	snapshots   []int64
 }
 
 var _ ScancodeStore = (*fakeScancodeStore)(nil)
@@ -113,14 +113,11 @@ func (f *fakeScancodeStore) SetAveloxisStatus(_ context.Context, _, status, _, _
 	return nil
 }
 
-func (f *fakeScancodeStore) RotateScancodeToHistory(context.Context, int64) error { return nil }
-
-func (f *fakeScancodeStore) InsertScancodeScan(context.Context, int64, string, int, int, float64, json.RawMessage) (int64, error) {
+func (f *fakeScancodeStore) ReplaceScancodeSnapshot(_ context.Context, repoID int64, _ db.ScancodeScanMeta, _ []*db.ScancodeFileRow) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshots = append(f.snapshots, repoID)
 	return 1, nil
-}
-
-func (f *fakeScancodeStore) InsertScancodeFileResultBatch(context.Context, int64, []*db.ScancodeFileRow) error {
-	return nil
 }
 
 // snapshot copies the observable counters under the lock.

@@ -113,18 +113,38 @@ func TestListRepoEventsSecondCycle304IsCleanZero(t *testing.T) {
 
 	client := New(srv.URL, platform.NewKeyPool([]string{"t"}, logger), logger)
 
-	// Cycle 1 populates and primes the ETag.
-	for _, err := range client.ListRepoEvents(t.Context(), "o", "r", time.Time{}) {
+	// Cycles 1 and 2 share ONE fixed, non-zero since, and it predates
+	// the fixture events. Both halves matter:
+	//
+	//   - non-zero, because a zero since runs under WithoutETag, which
+	//     suppresses the cache WRITE — cycle 1 would prime nothing and
+	//     cycle 2 could never send If-None-Match;
+	//   - identical, because the since is part of the URL and the ETag
+	//     cache is keyed by URL;
+	//   - predating the events, because the client also filters by
+	//     since. Until pass 52 this test used a zero since for cycle 1
+	//     and `now-1h` for cycle 2, and its "0 items on 304" assertion
+	//     was satisfied by that FILTER dropping two 2026-dated events —
+	//     it passed with the server's 304 branch deleted entirely.
+	since := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	var primed int
+	for _, err := range client.ListRepoEvents(t.Context(), "o", "r", since) {
 		if err != nil {
 			t.Fatalf("cycle 1: %v", err)
 		}
+		primed++
 	}
-	// Cycle 2 (INCREMENTAL — a real since): nothing changed upstream →
+	if primed == 0 {
+		t.Fatal("cycle 1 yielded nothing, so it cannot have primed an ETag and cycle 2 proves nothing — the fixture events must post-date the since")
+	}
+
+	// Cycle 2 (INCREMENTAL, same since): nothing changed upstream →
 	// 304 → clean zero items, no error. That's the CORRECT incremental
 	// semantic — the ETag layer is only pathological when two passes
 	// alias within one cycle.
 	var items int
-	for _, err := range client.ListRepoEvents(t.Context(), "o", "r", time.Now().Add(-time.Hour)) {
+	for _, err := range client.ListRepoEvents(t.Context(), "o", "r", since) {
 		if err != nil {
 			t.Fatalf("cycle 2 must be a clean zero, got error: %v", err)
 		}
@@ -132,6 +152,9 @@ func TestListRepoEventsSecondCycle304IsCleanZero(t *testing.T) {
 	}
 	if items != 0 {
 		t.Errorf("cycle 2 should yield 0 items on 304, got %d", items)
+	}
+	if got := hits.Load(); got != 2 {
+		t.Errorf("expected exactly 2 requests after two incremental cycles (a fetch then a revalidation), got %d — if cycle 2 did not reach the server at all, the zero above is not a 304", got)
 	}
 	// Cycle 3 (FULL SNAPSHOT — a zero since, the force-full / gap-filler
 	// shape): the listing is a truth set and bypasses the cache — it

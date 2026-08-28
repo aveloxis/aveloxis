@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -288,8 +289,41 @@ Run alongside 'aveloxis serve' and 'aveloxis web'.`,
 			return runAPI(*cfgPath, addr)
 		},
 	}
-	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8383", "listen address for the API server")
+	cmd.Flags().StringVar(&addr, "addr", "", "listen address for the API server (overrides api.addr in aveloxis.json; default 127.0.0.1:8383)")
 	return cmd
+}
+
+// warnAPIPortMismatch surfaces the one mistake api.addr makes easy:
+// move the API to another port and the web GUI keeps proxying /api/*
+// to the old one, so every chart silently 502s while both processes
+// look healthy.
+//
+// Deliberately narrow. api_internal_url pointing at a DIFFERENT HOST
+// is a legitimate split deployment (or an nginx hop) and says nothing
+// about this machine's api.addr, so only a LOOPBACK target with a
+// mismatched port is reported — that combination cannot be right.
+// A warning, not an error: the operator may be mid-migration, and web
+// serves the GUI fine without the proxy.
+func warnAPIPortMismatch(cfg *config.Config, logger *slog.Logger) {
+	target, err := url.Parse(strings.TrimSpace(cfg.Web.APIInternalURL))
+	if err != nil || target.Host == "" {
+		return // web.New already warns about an unparseable value
+	}
+	host, port, err := net.SplitHostPort(target.Host)
+	if err != nil {
+		return // no explicit port; nothing to compare
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return
+	}
+	_, apiPort, err := net.SplitHostPort(cfg.API.AddrOrDefault())
+	if err != nil || apiPort == port {
+		return
+	}
+	logger.Warn("web.api_internal_url points at a loopback port the API is not listening on — /api/* will 502 and every chart in the GUI will be empty",
+		"api_internal_url", cfg.Web.APIInternalURL,
+		"api_addr", cfg.API.AddrOrDefault(),
+		"fix", "set web.api_internal_url to http://127.0.0.1:"+apiPort)
 }
 
 func runAPI(cfgPath, addr string) error {
@@ -305,6 +339,13 @@ func runAPI(cfgPath, addr string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// Flag beats config beats default. `aveloxis start api` passes only
+	// --config, so the config value is the one that governs a
+	// backgrounded API process (v0.28.19).
+	if addr == "" {
+		addr = cfg.API.AddrOrDefault()
+	}
 
 	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-api"), logger)
 	if err != nil {
@@ -1318,6 +1359,8 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			// Load GitHub keys for immediate org scanning (non-fatal for web — it
 			// can still serve the GUI without keys, just can't scan orgs).
 			ghKeys, _, _ := loadKeys(ctx, cfg, store, false, logger)
+
+			warnAPIPortMismatch(cfg, logger)
 
 			webServer := web.New(store, cfg.Web, ghKeys, logger).
 				WithMailer(mailer.New(mailerConfigFrom(cfg), logger))

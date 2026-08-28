@@ -122,18 +122,29 @@ See the [Web GUI guide](web-gui.md) for detailed setup instructions.
 
 ## `aveloxis api`
 
-Starts the REST API server (default `:8383`). Serves repo statistics, weekly
-time series, dependency licenses, scancode results, SBOM downloads, repo
-search, and the Augur-compatible metric endpoints. The web GUI's charts and
-the comparison page load their data from this process.
+Starts the REST API server on `127.0.0.1:8383` unless configured
+otherwise. Serves repo statistics, weekly time series, dependency
+licenses, scancode results, SBOM downloads, repo search, and the
+Augur-compatible metric endpoints. The web GUI's charts and the
+comparison page load their data from this process.
 
 ```bash
-aveloxis api --addr :8383
+aveloxis api                        # 127.0.0.1:8383, or api.addr from the config
+aveloxis api --addr 0.0.0.0:9383    # override for this invocation
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--addr` | string | `":8383"` | Listen address for the API server. |
+| `--addr` | string | *(from config)* | Listen address for the API server. Overrides `api.addr`; when neither is set the default is `127.0.0.1:8383`. |
+
+The listen address is normally set with `api.addr` in `aveloxis.json`
+(v0.28.19), because `aveloxis start api` spawns the process with only
+`--config` — a flag-only setting could not reach a backgrounded API,
+and two instances on one host collided on 8383. The default is
+loopback on purpose; see
+[Reaching the API from another host](../getting-started/configuration.md#reaching-the-api-from-another-host)
+before binding a routable address, and remember that
+`web.api_internal_url` has to follow the API when it moves.
 
 Run alongside `aveloxis serve` and `aveloxis web` — `aveloxis start all`
 starts all three. See the [REST API guide](api.md) for the endpoint

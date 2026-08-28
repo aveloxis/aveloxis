@@ -138,6 +138,16 @@ func (s *PostgresStore) RefreshRepoGroupAggregates(ctx context.Context, repoID i
 	if rgID == nil {
 		return nil // no group, nothing to aggregate
 	}
+	return s.RefreshGroupAggregates(ctx, *rgID)
+}
+
+// RefreshGroupAggregates rebuilds the dm_repo_group_* tables for ONE
+// group. Every statement below is scoped `WHERE r.repo_group_id = $1`,
+// so the work is proportional to the whole GROUP, not to any one repo
+// in it — which is why RefreshAllRepoAggregates drives this per group
+// and not per repo (v0.28.19).
+func (s *PostgresStore) RefreshGroupAggregates(ctx context.Context, groupID int64) error {
+	rgID := &groupID
 
 	type aggQuery struct {
 		name   string
@@ -348,20 +358,38 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 		}
 	}
 
-	// Group tables: per repo — RefreshRepoGroupAggregates derives the
-	// group from the repo. The v0.25.36-era `SELECT DISTINCT repo_group_id`
-	// "connectivity check" that used to sit here is gone (pass 28): it
-	// iterated nothing, pinned a pool connection for the whole loop, and
-	// its error arm buried its own cause behind ten repo failures.
-	for _, repoID := range repoIDs {
+	// Group tables: once per GROUP, not once per repo.
+	//
+	// Each dm_repo_group_* statement is scoped `WHERE r.repo_group_id
+	// = $1`, so driving it from repos rebuilt the entire group for
+	// every member: after the v0.27.17 consolidation collapsed 93,912
+	// per-repo `Default` groups into one canonical group, a group
+	// holding N repos did N identical DELETE + full-group-aggregate +
+	// INSERT passes across three tables (measured locally: one group
+	// with 8,766 repos). All of it under MatviewRebuildActive, which
+	// pauses collection claims — the v0.16.5 per-repo-aggregate class,
+	// reintroduced by consolidation (Copilot, v0.28.19).
+	//
+	// The group ids are read into a slice BEFORE the loop: the
+	// v0.25.36-era `SELECT DISTINCT repo_group_id` that used to sit
+	// here held its Rows open across the whole loop, pinning a pool
+	// connection, and buried its own error behind ten repo failures
+	// (pass 28). Both of those are the consumption pattern, not the
+	// query.
+	groupIDs, err := s.distinctRepoGroupIDs(ctx)
+	if err != nil {
+		logger.Warn("could not enumerate repo groups; dm_repo_group_* not refreshed", "error", err)
+		failedGroups++
+		failed = append(failed, fmt.Errorf("enumerating repo groups: %w", err))
+	}
+	for _, groupID := range groupIDs {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		// RefreshRepoGroupAggregates looks up the group from the repo.
-		if err := s.RefreshRepoGroupAggregates(ctx, repoID); err != nil {
-			logger.Warn("group aggregate refresh failed", "repo_id", repoID, "error", err)
+		if err := s.RefreshGroupAggregates(ctx, groupID); err != nil {
+			logger.Warn("group aggregate refresh failed", "repo_group_id", groupID, "error", err)
 			failedGroups++
-			failed = append(failed, fmt.Errorf("group of repo %d: %w", repoID, err))
+			failed = append(failed, fmt.Errorf("group %d: %w", groupID, err))
 		}
 	}
 
@@ -371,7 +399,7 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 		// behind a truncated join.
 		return ctx.Err()
 	}
-	logger.Info("dm_ aggregate tables refreshed", "repos", len(repoIDs), "failed_repos", failedRepos, "failed_groups", failedGroups)
+	logger.Info("dm_ aggregate tables refreshed", "repos", len(repoIDs), "groups", len(groupIDs), "failed_repos", failedRepos, "failed_groups", failedGroups)
 	if len(failed) > 0 {
 		return boundedJoin(fmt.Sprintf("dm_ aggregate refresh left stale rows: %d repo and %d group refreshes failed across %d repos", failedRepos, failedGroups, len(repoIDs)), failed, partialFailureSample)
 	}
@@ -395,4 +423,26 @@ func boundedJoin(prefix string, errs []error, keep int) error {
 		n = keep
 	}
 	return fmt.Errorf("%s (first %d of %d): %w", prefix, n, len(errs), errors.Join(errs[:n]...))
+}
+
+// distinctRepoGroupIDs returns every group that has at least one repo.
+// Fully consumed into a slice before returning: holding the Rows open
+// across the refresh loop pinned a pool connection for its whole
+// duration (pass 28).
+func (s *PostgresStore) distinctRepoGroupIDs(ctx context.Context) ([]int64, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT repo_group_id FROM aveloxis_data.repos WHERE repo_group_id IS NOT NULL ORDER BY repo_group_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

@@ -396,3 +396,77 @@ func truncateCopyright(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
+
+// ScancodeScanMeta is the scancode_scans row for one completed scan.
+type ScancodeScanMeta struct {
+	Version           string
+	FilesScanned      int
+	FilesWithFindings int
+	DurationSecs      float64
+	ScanErrors        json.RawMessage
+}
+
+// ReplaceScancodeSnapshot rotates the repo's current scancode rows to
+// history and writes the new snapshot — rotation and BOTH inserts in
+// ONE transaction.
+//
+// v0.28.19. The ingest used to call RotateScancodeToHistory,
+// InsertScancodeScan and InsertScancodeFileResultBatch as three
+// independent transactions, guarded only by a ctx check BEFORE the
+// first. That guard prevents STARTING the sequence under a done ctx;
+// it does nothing about a cancellation (or any failure) landing
+// between them, which is a wide window — the file batch is one Exec
+// per finding. The repo was then left with its previous snapshot
+// deleted and no current rows, or with scan metadata and no file
+// rows, until a full re-scan 180 days later. Fusing them is the same
+// fix ReplaceRepoLaborSnapshot got in v0.27.7: the rotation can
+// neither be skipped nor half-applied, and a mid-insert failure rolls
+// the rotation back so the PREVIOUS snapshot stays current.
+func (s *PostgresStore) ReplaceScancodeSnapshot(ctx context.Context, repoID int64, meta ScancodeScanMeta, rows []*ScancodeFileRow) (int64, error) {
+	var scanID int64
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+
+		if err := rotateScancodeRows(ctx, tx, repoID); err != nil {
+			return fmt.Errorf("rotating scancode history: %w", err)
+		}
+
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO aveloxis_scan.scancode_scans
+				(repo_id, scancode_version, files_scanned, files_with_findings,
+				 scan_duration_secs, scan_errors,
+				 tool_source, data_source, data_collection_date)
+			VALUES ($1, $2, $3, $4, $5, $6,
+				'aveloxis-scancode', 'scancode-toolkit', NOW())
+			RETURNING scan_id`,
+			repoID, meta.Version, meta.FilesScanned, meta.FilesWithFindings,
+			meta.DurationSecs, meta.ScanErrors).Scan(&scanID); err != nil {
+			return fmt.Errorf("inserting scancode scan: %w", err)
+		}
+
+		for _, row := range rows {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO aveloxis_scan.scancode_file_results
+					(repo_id, path, file_type, programming_language,
+					 detected_license_expression, detected_license_expression_spdx,
+					 percentage_of_license_text,
+					 copyrights, holders, license_detections, package_data, scan_errors,
+					 tool_source, data_source, data_collection_date)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+					'aveloxis-scancode', 'scancode-toolkit', NOW())`,
+				repoID, row.Path, row.FileType, row.ProgrammingLanguage,
+				row.DetectedLicenseExpression, row.DetectedLicenseExpressionSPDX,
+				row.PercentageOfLicenseText,
+				row.Copyrights, row.Holders, row.LicenseDetections, row.PackageData,
+				row.ScanErrors); err != nil {
+				return fmt.Errorf("inserting scancode file results: %w", err)
+			}
+		}
+		return tx.Commit(ctx)
+	})
+	return scanID, err
+}

@@ -75,8 +75,10 @@ func TestTickerTasksTreatShutdownAsCanceledNotFailed(t *testing.T) {
 		// (`if errors.Is(...) { return }` then `if err != nil {`), or as the
 		// arm's FIRST statement (`if err != nil { if errors.Is(...) { return }`).
 		// Either way it lies between shortly before the arm and the message.
-		if !strings.Contains(src[max(0, arm-160):i], "errors.Is(err, context.Canceled)") {
-			t.Errorf("%s: the failure arm must classify errors.Is(err, context.Canceled) and return before it logs (shutdown is not a failure)", msg)
+		span := src[max(0, arm-160):i]
+		cls := strings.Index(span, "errors.Is(err, context.Canceled)")
+		if cls < 0 || !strings.Contains(span[cls:], "return") {
+			t.Errorf("%s: the failure arm must classify errors.Is(err, context.Canceled) AND return before it logs (shutdown is not a failure); a classification that falls through is decorative", msg)
 		}
 	}
 }

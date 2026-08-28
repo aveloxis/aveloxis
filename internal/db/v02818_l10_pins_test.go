@@ -221,6 +221,21 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	if !strings.Contains(gateBody, "probed == 0") {
 		t.Error("an unknown parent must never read as ready")
 	}
+	// Copilot round 6: both readiness probes accept only a FULL index or a
+	// partial on exactly (col IS NOT NULL), through the ONE shared
+	// predicate rule (SR-17).
+	for _, site := range []struct{ file, fn string }{
+		{"email_message_fk_indexes.go", "func leadingColumnIndexValid("},
+		{"repo_group_fk_indexes.go", "func repoGroupFKIndexesReady("},
+	} {
+		fb := srctest.FuncBody(t, readSourceFile(t, site.file), site.fn)
+		if !strings.Contains(fb, "usableFKIndexPredicateSQL") {
+			t.Errorf("%s must join usableFKIndexPredicateSQL (a partial index on an unrelated predicate is not a usable FK index)", site.fn)
+		}
+	}
+	if !strings.Contains(src, `pg_get_expr(x.indpred, x.indrelid) = format('(%I IS NOT NULL)', a.attname)`) || !strings.Contains(src, "x.indpred IS NULL") {
+		t.Error("usableFKIndexPredicateSQL must accept a full index or a partial on exactly (col IS NOT NULL)")
+	}
 	if !strings.Contains(gateBody, "%w") || !strings.Contains(gateBody, "ErrEmailMessageIndexesNotReady") {
 		t.Error("the not-ready refusal must wrap ErrEmailMessageIndexesNotReady so callers can tell it from a probe error")
 	}

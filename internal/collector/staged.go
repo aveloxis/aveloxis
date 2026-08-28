@@ -1080,6 +1080,29 @@ func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWr
 			}
 			result.Messages++
 		}
+		if sc.platID == int16(model.PlatformGitLab) {
+			// GitLab keeps MR conversation notes on a per-MR endpoint
+			// (GitHub's repo-wide /issues/comments covers PRs too, so its
+			// ListPRComments delegates and would duplicate here). Pass 31
+			// (v0.28.18): this walk had NO production caller — merged and
+			// closed MRs' conversation threads were never collected on the
+			// main path; only the open-item refresher and gap fill read them.
+			for msg, err := range sc.client.ListPRComments(ctx, owner, repo, since) {
+				if err != nil {
+					if isOptionalEndpointSkip(err) {
+						sc.logger.Info("skipping MR comments endpoint",
+							"owner", owner, "repo", repo, "reason", err)
+						break
+					}
+					result.Errors = append(result.Errors, fmt.Errorf("mr comments: %w", err))
+					break
+				}
+				if err := sw.Stage(ctx, EntityMessage, msg); err != nil {
+					result.Errors = append(result.Errors, fmt.Errorf("stage message: %w", err))
+				}
+				result.Messages++
+			}
+		}
 	}
 	reviewCount := 0
 	for rc, err := range sc.client.ListReviewComments(ctx, owner, repo, since) {

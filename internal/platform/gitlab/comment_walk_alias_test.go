@@ -5,6 +5,7 @@ package gitlab
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -32,7 +33,7 @@ func TestCommentWalksReachItemsAfterTheListingCachedTheETag(t *testing.T) {
 		case strings.HasSuffix(path, "/merge_requests/3/notes"):
 			mrNotesHits.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"id":601,"body":"an mr note","system":false,"created_at":"2026-08-01T00:00:00Z","author":{"id":9,"username":"u"}}]`))
+			_, _ = w.Write([]byte(`[{"id":601,"body":"an mr note","system":false,"created_at":"2026-08-01T00:00:00Z","author":{"id":9,"username":"u"}},{"id":602,"body":"a diff note","system":false,"created_at":"2026-08-01T00:00:00Z","author":{"id":9,"username":"u"},"position":{"new_path":"a.go","new_line":3}}]`))
 			return
 		case strings.HasSuffix(path, "/merge_requests/3/discussions"):
 			discussionHits.Add(1)
@@ -79,13 +80,23 @@ func TestCommentWalksReachItemsAfterTheListingCachedTheETag(t *testing.T) {
 	if notes != 1 || issueNotesHits.Load() == 0 {
 		t.Errorf("issue notes after the listing cached the ETag: yielded %d, notes endpoint hits %d — the driver listing was answered 304 (the two-pass alias)", notes, issueNotesHits.Load())
 	}
-	for _, err := range client.ListPRComments(t.Context(), "owner", "repo", since) {
+	mrNotes := 0
+	for msg, err := range client.ListPRComments(t.Context(), "owner", "repo", since) {
 		if err != nil {
 			t.Fatalf("ListPRComments: %v", err)
+		}
+		mrNotes++
+		if msg.PRRef == nil || msg.PRRef.PlatformPRNumber != 3 {
+			t.Errorf("MR conversation note must carry its MR number, got %+v", msg.PRRef)
 		}
 	}
 	if mrNotesHits.Load() == 0 {
 		t.Error("MR notes walk never reached /merge_requests/3/notes — its driver listing was answered 304")
+	}
+	// The diff-positioned note belongs to ListReviewComments — the two
+	// kinds stay disjoint.
+	if mrNotes != 1 {
+		t.Errorf("ListPRComments yielded %d notes, want exactly the 1 conversation note (the positioned one is a review comment)", mrNotes)
 	}
 	for _, err := range client.ListReviewComments(t.Context(), "owner", "repo", since) {
 		if err != nil {
@@ -96,3 +107,80 @@ func TestCommentWalksReachItemsAfterTheListingCachedTheETag(t *testing.T) {
 		t.Error("review-comment walk never reached /merge_requests/3/discussions — its driver listing was answered 304")
 	}
 }
+
+// Pass 31: a per-item notes read is ascending with no since, so a NEW
+// note lands on the LAST page while page 1 stays byte-stable — a cached
+// page-1 ETag would 304 and end the walk before page 2. Cycle 1 sees 100
+// + 1 notes; a note is added; cycle 2 (same since, page 1 unchanged)
+// must see 102, never 0.
+func TestCommentWalkReadsEveryNotesPageAcrossCycles(t *testing.T) {
+	var page2Notes atomic.Int64
+	page2Notes.Store(1)
+	page1 := strings.Builder{}
+	page1.WriteString("[")
+	for i := 1; i <= 100; i++ {
+		if i > 1 {
+			page1.WriteString(",")
+		}
+		page1.WriteString(`{"id":` + itoa(i) + `,"body":"n","system":false,"created_at":"2026-08-01T00:00:00Z","author":{"id":9,"username":"u"}}`)
+	}
+	page1.WriteString("]")
+	client, _ := newTestClientWithCapture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/issues/7/notes"):
+			if r.URL.Query().Get("page") == "2" {
+				w.Header().Set("X-Next-Page", "")
+				b := strings.Builder{}
+				b.WriteString("[")
+				for i := int64(1); i <= page2Notes.Load(); i++ {
+					if i > 1 {
+						b.WriteString(",")
+					}
+					b.WriteString(`{"id":` + itoa(int(100+i)) + `,"body":"late","system":false,"created_at":"2026-08-02T00:00:00Z","author":{"id":9,"username":"u"}}`)
+				}
+				b.WriteString("]")
+				_, _ = w.Write([]byte(b.String()))
+				return
+			}
+			// Page 1 is byte-stable across cycles and honors If-None-Match.
+			if r.Header.Get("If-None-Match") == `"p1"` {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			w.Header().Set("ETag", `"p1"`)
+			w.Header().Set("X-Next-Page", "2")
+			w.Header().Set("X-Per-Page", "100")
+			_, _ = w.Write([]byte(page1.String()))
+			return
+		}
+		// The driver listing (also honors If-None-Match like gitlab.com).
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = w.Write([]byte(`[{"id":71,"iid":7,"title":"issue","state":"opened","user_notes_count":101,"updated_at":"2026-08-02T00:00:00Z","created_at":"2026-08-01T00:00:00Z"}]`))
+	}))
+	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	count := func() int {
+		t.Helper()
+		n := 0
+		for _, err := range client.ListIssueComments(t.Context(), "owner", "repo", since) {
+			if err != nil {
+				t.Fatalf("ListIssueComments: %v", err)
+			}
+			n++
+		}
+		return n
+	}
+	if n := count(); n != 101 {
+		t.Fatalf("cycle 1 collected %d notes, want 101 (two pages)", n)
+	}
+	page2Notes.Store(2)
+	if n := count(); n != 102 {
+		t.Errorf("cycle 2 collected %d notes, want 102 — page 1's cached ETag must not end the walk before the page the new note is on", n)
+	}
+}
+
+func itoa(i int) string { return strconv.Itoa(i) }

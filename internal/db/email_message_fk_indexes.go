@@ -76,9 +76,23 @@ type lockQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// leadingColumnIndexValid reports whether a VALID index led by column
-// exists on aveloxis_data.table (pg_index.indkey[0]; the
-// repoGroupFKIndexesReady shape for one pair).
+// usableFKIndexPredicateSQL is THE rule for "an index that serves every
+// FK check and repoint on its leading column" (SR-17 — both readiness
+// probes join it verbatim): the index is VALID, its leading key is the
+// column (`a` = that attribute), and it is either full or partial on
+// exactly `(col IS NOT NULL)` — the predicate the RI check and every
+// equality repoint imply. A partial index on any OTHER predicate
+// (Copilot round 6: `WHERE col > 5`, `WHERE other_col = …`) read as ready
+// before, while the planner could not use it for the values outside its
+// predicate — the multi-hour sequential-scan path the gates exist to
+// prevent.
+const usableFKIndexPredicateSQL = `x.indisvalid
+			  AND (x.indpred IS NULL
+			       OR pg_get_expr(x.indpred, x.indrelid) = format('(%I IS NOT NULL)', a.attname))`
+
+// leadingColumnIndexValid reports whether a USABLE index led by column
+// exists on aveloxis_data.table (pg_index.indkey[0] + the predicate
+// rule; the repoGroupFKIndexesReady shape for one pair).
 func leadingColumnIndexValid(ctx context.Context, q lockQuerier, table, column string) (bool, error) {
 	var ok bool
 	if err := q.QueryRow(ctx, `
@@ -88,7 +102,7 @@ func leadingColumnIndexValid(ctx context.Context, q lockQuerier, table, column s
 			JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = $1
 			JOIN pg_index x ON x.indrelid = c.oid
 			JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = x.indkey[0]
-			WHERE n.nspname = 'aveloxis_data' AND a.attname = $2 AND x.indisvalid)`, table, column).Scan(&ok); err != nil {
+			WHERE n.nspname = 'aveloxis_data' AND a.attname = $2 AND `+usableFKIndexPredicateSQL+`)`, table, column).Scan(&ok); err != nil {
 		return false, fmt.Errorf("probing for an index on %s(%s): %w", table, column, err)
 	}
 	return ok, nil

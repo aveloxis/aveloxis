@@ -376,6 +376,22 @@ func TestEmailMessageIndexGateRefusesWithoutIndex(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "idx_email_message_signaled_repo_id") || !strings.Contains(err.Error(), "aveloxis migrate --skip-views") {
 			t.Errorf("gate with the signaled_repo_id index dropped = %v; want a refusal naming the index and the migrate", err)
 		}
+		// Copilot round 6: a VALID index led by the column but partial on an
+		// UNRELATED predicate must not read as ready — the FK check and the
+		// repoint cannot use it for values outside its predicate.
+		if _, err := tx.Exec(ctx, `CREATE INDEX idx_email_message_decoy_signaled ON aveloxis_data.email_message (signaled_repo_id) WHERE signaled_repo_id > 5`); err != nil {
+			t.Fatalf("decoy partial index: %v", err)
+		}
+		if err := emailMessageFKIndexesReadyFor(ctx, tx, "repos"); err == nil || !strings.Contains(err.Error(), "idx_email_message_signaled_repo_id") {
+			t.Errorf("a partial index on an unrelated predicate must not satisfy the gate, got %v", err)
+		}
+		// …while the real shape — partial on exactly (col IS NOT NULL) — does.
+		if _, err := tx.Exec(ctx, `CREATE INDEX idx_email_message_decoy_notnull ON aveloxis_data.email_message (signaled_repo_id) WHERE signaled_repo_id IS NOT NULL`); err != nil {
+			t.Fatalf("IS NOT NULL partial index: %v", err)
+		}
+		if err := emailMessageFKIndexesReadyFor(ctx, tx, "repos"); err != nil {
+			t.Errorf("a partial index on exactly (col IS NOT NULL) must satisfy the gate: %v", err)
+		}
 		if !errors.Is(err, ErrEmailMessageIndexesNotReady) {
 			t.Errorf("the not-ready refusal must wrap ErrEmailMessageIndexesNotReady (callers report it as an unmet precondition), got %v", err)
 		}

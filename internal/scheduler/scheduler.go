@@ -1133,6 +1133,11 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	if !outcome.success {
 		startAnchor = time.Time{}
 	}
+	// Pass 31: forget BEFORE CompleteJob — the row flips back to 'queued'
+	// there, and a Boost claim in the window would walk the cached pages.
+	if !outcome.success && forgetRepoETags != nil {
+		forgetRepoETags()
+	}
 	if err := s.store.CompleteJob(ctx, job.RepoID, outcome.success, startAnchor, s.cfg.Collection.RecollectAfterDuration(),
 		outcome.issues, outcome.prs, outcome.messages, outcome.events,
 		outcome.releases, outcome.contributors, outcome.commits,
@@ -1147,9 +1152,6 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// but keep ordering explicit). The flag is picked up on the repo's
 	// next DequeueNext and causes determineSince to return zero for a
 	// full re-collection. See v0.18.24 troubleshooting docs.
-	if !outcome.success && forgetRepoETags != nil {
-		forgetRepoETags()
-	}
 	if !outcome.success && shouldForceFullRecollect(outcome.errMsg) {
 		if err := s.store.SetForceFullCollect(ctx, job.RepoID, true); err != nil {
 			s.logger.Warn("failed to set force_full_collect flag", "repo_id", job.RepoID, "error", err)

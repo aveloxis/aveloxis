@@ -87,7 +87,7 @@ func repoGroupFKIndexesReady(ctx context.Context, pg *PostgresStore) (bool, erro
 			JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = x.indkey[0]
 			WHERE n.nspname = 'aveloxis_data'
 			  AND a.attname = want.col
-			  AND x.indisvalid
+			  AND `+usableFKIndexPredicateSQL+`
 		)`, tables, columns).Scan(&valid)
 	if err != nil {
 		return false, err

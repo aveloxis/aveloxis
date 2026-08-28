@@ -82,6 +82,9 @@ type glNote struct {
 	System       bool      `json:"system"`        // true for events masquerading as notes
 	NoteableType string    `json:"noteable_type"` // "Issue", "MergeRequest"
 	NoteableIID  int       `json:"noteable_iid"`
+	// Position is set on diff-positioned notes (review comments); the
+	// conversation walk skips them so the two kinds stay disjoint.
+	Position *glNotePosition `json:"position"`
 }
 
 // glResourceEvent represents a label, state, or milestone event from

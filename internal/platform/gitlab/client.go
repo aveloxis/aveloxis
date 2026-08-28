@@ -141,6 +141,13 @@ func (c *Client) ListIssues(ctx context.Context, owner, repo string, since time.
 }
 
 func (c *Client) ListIssueLabels(ctx context.Context, owner, repo string, issueNumber int) iter.Seq2[model.IssueLabel, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	// GitLab embeds label names in the issue response but not full label objects.
 	// Fetch the issue to get label names, then look up full details.
 	pp := projectPath(owner, repo)
@@ -163,6 +170,13 @@ func (c *Client) ListIssueLabels(ctx context.Context, owner, repo string, issueN
 }
 
 func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, issueNumber int) iter.Seq2[model.IssueAssignee, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/issues/%d", pp, issueNumber)
 
@@ -243,6 +257,13 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, since
 }
 
 func (c *Client) ListPRLabels(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestLabel, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d", pp, prNumber)
 
@@ -261,6 +282,13 @@ func (c *Client) ListPRLabels(ctx context.Context, owner, repo string, prNumber 
 }
 
 func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestAssignee, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d", pp, prNumber)
 
@@ -279,6 +307,13 @@ func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumb
 }
 
 func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestReviewer, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d", pp, prNumber)
 
@@ -297,6 +332,13 @@ func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumb
 }
 
 func (c *Client) ListPRReviews(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestReview, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	// GitLab doesn't have a direct "reviews" concept like GitHub.
 	// The closest equivalent is the approvals API.
 	pp := projectPath(owner, repo)
@@ -324,6 +366,13 @@ func (c *Client) ListPRReviews(ctx context.Context, owner, repo string, prNumber
 }
 
 func (c *Client) ListPRCommits(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestCommit, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/commits", pp, prNumber)
 
@@ -346,6 +395,13 @@ func (c *Client) ListPRCommits(ctx context.Context, owner, repo string, prNumber
 }
 
 func (c *Client) ListPRFiles(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestFile, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/diffs", pp, prNumber)
 
@@ -658,16 +714,19 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 		issuesPath += "&updated_after=" + since.Format(time.RFC3339)
 	}
 
-	// The issue/MR listing here is a DRIVER, not a "what changed" question:
-	// it is byte-identical to the URL the listing phase walked minutes
-	// earlier in the same cycle, so a conditional read is answered 304
-	// from that walk's ETag and this iterator yields NOTHING — no notes on
-	// any incremental cycle (pass 30, the v0.26.3 two-pass alias on the
-	// GitLab side). The per-item notes/discussions reads keep their own
-	// ETags: a 304 there is "this item's notes are unchanged".
-	driverCtx := platform.WithoutETag(ctx)
+	// The whole walk bypasses the ETag cache. The issue/MR listing is a
+	// DRIVER, byte-identical to the URL the listing phase walked minutes
+	// earlier in this cycle — a conditional read is answered 304 from that
+	// walk's ETag and yields NOTHING (pass 30, the v0.26.3 two-pass alias
+	// on the GitLab side). The per-item notes/discussions pages are
+	// created-ascending with no since: a new note lands on the LAST page
+	// while page 1 stays byte-stable, so its cached ETag would 304 and end
+	// the walk before page 2 (pass 31 — any item past 100 notes never
+	// gained a note again). The driver's updated_after already proved the
+	// item changed; the conditional read saved nothing.
+	ctx = platform.WithoutETag(ctx)
 	return func(yield func(platform.MessageWithRef, error) bool) {
-		for issue, err := range platform.PaginateGitLab[glIssue](driverCtx, c.http, issuesPath) {
+		for issue, err := range platform.PaginateGitLab[glIssue](ctx, c.http, issuesPath) {
 			if err != nil {
 				yield(platform.MessageWithRef{}, err)
 				return
@@ -723,16 +782,19 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 		mrsPath += "&updated_after=" + since.Format(time.RFC3339)
 	}
 
-	// The issue/MR listing here is a DRIVER, not a "what changed" question:
-	// it is byte-identical to the URL the listing phase walked minutes
-	// earlier in the same cycle, so a conditional read is answered 304
-	// from that walk's ETag and this iterator yields NOTHING — no notes on
-	// any incremental cycle (pass 30, the v0.26.3 two-pass alias on the
-	// GitLab side). The per-item notes/discussions reads keep their own
-	// ETags: a 304 there is "this item's notes are unchanged".
-	driverCtx := platform.WithoutETag(ctx)
+	// The whole walk bypasses the ETag cache. The issue/MR listing is a
+	// DRIVER, byte-identical to the URL the listing phase walked minutes
+	// earlier in this cycle — a conditional read is answered 304 from that
+	// walk's ETag and yields NOTHING (pass 30, the v0.26.3 two-pass alias
+	// on the GitLab side). The per-item notes/discussions pages are
+	// created-ascending with no since: a new note lands on the LAST page
+	// while page 1 stays byte-stable, so its cached ETag would 304 and end
+	// the walk before page 2 (pass 31 — any item past 100 notes never
+	// gained a note again). The driver's updated_after already proved the
+	// item changed; the conditional read saved nothing.
+	ctx = platform.WithoutETag(ctx)
 	return func(yield func(platform.MessageWithRef, error) bool) {
-		for mr, err := range platform.PaginateGitLab[glMergeRequest](driverCtx, c.http, mrsPath) {
+		for mr, err := range platform.PaginateGitLab[glMergeRequest](ctx, c.http, mrsPath) {
 			if err != nil {
 				yield(platform.MessageWithRef{}, err)
 				return
@@ -746,7 +808,11 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 					yield(platform.MessageWithRef{}, err)
 					return
 				}
-				if note.System {
+				if note.System || note.Position != nil {
+					// System notes are events; diff-positioned notes are
+					// review comments (ListReviewComments) — the two kinds
+					// stay disjoint, as GitHub's /issues/comments vs
+					// /pulls/comments are.
 					continue
 				}
 				msg := model.Message{
@@ -785,16 +851,19 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 		mrsPath += "&updated_after=" + since.Format(time.RFC3339)
 	}
 
-	// The issue/MR listing here is a DRIVER, not a "what changed" question:
-	// it is byte-identical to the URL the listing phase walked minutes
-	// earlier in the same cycle, so a conditional read is answered 304
-	// from that walk's ETag and this iterator yields NOTHING — no notes on
-	// any incremental cycle (pass 30, the v0.26.3 two-pass alias on the
-	// GitLab side). The per-item notes/discussions reads keep their own
-	// ETags: a 304 there is "this item's notes are unchanged".
-	driverCtx := platform.WithoutETag(ctx)
+	// The whole walk bypasses the ETag cache. The issue/MR listing is a
+	// DRIVER, byte-identical to the URL the listing phase walked minutes
+	// earlier in this cycle — a conditional read is answered 304 from that
+	// walk's ETag and yields NOTHING (pass 30, the v0.26.3 two-pass alias
+	// on the GitLab side). The per-item notes/discussions pages are
+	// created-ascending with no since: a new note lands on the LAST page
+	// while page 1 stays byte-stable, so its cached ETag would 304 and end
+	// the walk before page 2 (pass 31 — any item past 100 notes never
+	// gained a note again). The driver's updated_after already proved the
+	// item changed; the conditional read saved nothing.
+	ctx = platform.WithoutETag(ctx)
 	return func(yield func(platform.ReviewCommentWithRef, error) bool) {
-		for mr, err := range platform.PaginateGitLab[glMergeRequest](driverCtx, c.http, mrsPath) {
+		for mr, err := range platform.PaginateGitLab[glMergeRequest](ctx, c.http, mrsPath) {
 			if err != nil {
 				yield(platform.ReviewCommentWithRef{}, err)
 				return
@@ -855,6 +924,13 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 // "assigned to bob") are filtered out — those are captured through the
 // separate events pipeline, and including them here would double-count.
 func (c *Client) ListCommentsForIssue(ctx context.Context, owner, repo string, issueIID int) iter.Seq2[platform.MessageWithRef, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/issues/%d/notes?sort=asc", pp, issueIID)
 	return func(yield func(platform.MessageWithRef, error) bool) {
@@ -891,6 +967,13 @@ func (c *Client) ListCommentsForIssue(ctx context.Context, owner, repo string, i
 // GET /projects/:id/merge_requests/:iid/notes. System notes are skipped (see
 // ListCommentsForIssue for rationale).
 func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, mrIID int) iter.Seq2[platform.MessageWithRef, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/notes?sort=asc", pp, mrIID)
 	return func(yield func(platform.MessageWithRef, error) bool) {
@@ -928,6 +1011,13 @@ func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, mrII
 // filtered to notes that carry a `position` (those are diff-anchored; notes
 // without a position are conversation comments that belong in ListCommentsForPR).
 func (c *Client) ListReviewCommentsForPR(ctx context.Context, owner, repo string, mrIID int) iter.Seq2[platform.ReviewCommentWithRef, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", pp, mrIID)
 	return func(yield func(platform.ReviewCommentWithRef, error) bool) {

@@ -18,10 +18,11 @@ func TestFailedJobForgetsTheRepoETags(t *testing.T) {
 	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/scheduler.go"), "func (s *Scheduler) runJob("))
 	call := strings.Index(body, "forgetRepoETags()")
 	complete := strings.Index(body, "s.store.CompleteJob(")
-	if call < 0 || complete < 0 || call < complete {
-		t.Fatalf("runJob must call forgetRepoETags() after CompleteJob on the failure path (call=%d complete=%d)", call, complete)
+	outcome := strings.Index(body, "outcome := s.buildOutcome(")
+	if call < 0 || complete < 0 || outcome < 0 || call > complete || call < outcome {
+		t.Fatalf("runJob must call forgetRepoETags() after the outcome is known and BEFORE CompleteJob (the row flips to queued there; a Boost claim in the window would walk the cached pages): outcome=%d call=%d complete=%d", outcome, call, complete)
 	}
-	if !strings.Contains(srctest.NormalizeWS(body[complete:]), "if !outcome.success && forgetRepoETags != nil { forgetRepoETags() }") {
+	if !strings.Contains(srctest.NormalizeWS(body[outcome:complete]), "if !outcome.success && forgetRepoETags != nil { forgetRepoETags() }") {
 		t.Error("the hook must be gated on !outcome.success")
 	}
 	if !strings.Contains(body, "ForgetRepoETags(owner, repo string) int") {

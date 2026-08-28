@@ -990,6 +990,8 @@ func (c *Client) ListCommentsForIssue(ctx context.Context, owner, repo string, i
 // ListCommentsForPR returns conversation notes on a single merge request via
 // GET /projects/:id/merge_requests/:iid/notes. System notes are skipped (see
 // ListCommentsForIssue for rationale).
+// System notes and diff-positioned notes (review comments — see
+// ListReviewCommentsForPR) are skipped, so the two kinds stay disjoint.
 func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, mrIID int) iter.Seq2[platform.MessageWithRef, error] {
 	// A per-item child listing (labels, assignees, reviews, commits,
 	// files, comments of ONE issue/PR) is read as a truth set on refresh

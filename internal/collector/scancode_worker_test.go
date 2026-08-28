@@ -367,6 +367,7 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 	run := scancodeMethodDecl(t, files, "Run")
 	byName := scancodeDecls(files)
 	safego := safegoAlias(declFile(fset, files, run))
+	chanFields := chanFieldNames(files)
 	reachable := scancodeReachable(byName, run)
 
 	// The walk must not go decorative (lens L4). It resolves ~47
@@ -409,7 +410,7 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 	//    so it closes the pool under the runners' lock clears.
 	awaitIdx, ok := topLevelCallIndex(run, "awaitBookkeeping")
 	if !ok {
-		t.Error("Run must call w.awaitBookkeeping() as a plain statement in its own body — not with `go`, not with `defer`, not inside a literal. Launched in a goroutine it does not delay Run at all: the shutdown wait simply does not happen, and the scheduler's pool close lands on the runners' in-flight lock clears (passes 38/39, pass 50).")
+		t.Error("Run must call w.awaitBookkeeping() as a plain statement in its own body — not with `go`, not with `defer`, not inside a literal, and not nested in an `if`/`for`/block (the wait must be unconditional). Launched in a goroutine it does not delay Run at all: the shutdown wait simply does not happen, and the scheduler's pool close lands on the runners' in-flight lock clears (passes 38/39, pass 50).")
 	}
 	sweepIdx, sweepOK := topLevelCallIndex(run, "sweepCloneDirAtShutdown")
 	if ok && sweepOK && awaitIdx > sweepIdx {
@@ -438,7 +439,7 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 		if declKey(fn) == drainHome {
 			continue
 		}
-		for _, op := range channelBlockingOps(fn, goroutineSpans(fn, safego)) {
+		for _, op := range channelBlockingOps(fn, goroutineSpans(fn, safego), chanFields) {
 			t.Errorf("%s is called synchronously from Run and %s at line %d — that blocks Run just as if it were written inline, so it is another way to re-add the runner join `.Wait()` matching was meant to stop (passes 39/40, pass 50). The only blocking Run may delegate is awaitBookkeeping, which is bounded and runtime-tested.", declKey(fn), op.desc, fset.Position(op.pos).Line)
 		}
 	}
@@ -560,11 +561,11 @@ func syncReachable(start *ast.FuncDecl, byName map[string]*ast.FuncDecl, safego 
 // := range someSlice` is indistinguishable from a channel range, and
 // the synchronously-reachable set is full of the former (measured: 8
 // slice ranges, 0 channel ranges).
-func channelBlockingOps(fn *ast.FuncDecl, spans []span) []blockingOp {
+func channelBlockingOps(fn *ast.FuncDecl, spans []span, chanFields map[string]bool) []blockingOp {
 	chans := channelIdents(fn)
 	var out []blockingOp
 	for _, op := range runBlockingOps(fn, spans) {
-		if op.kind == blockRange && !chans[op.operand] {
+		if op.kind == blockRange && !chans[op.operand] && !isChanField(op.operand, chanFields) {
 			continue
 		}
 		out = append(out, op)
@@ -572,8 +573,46 @@ func channelBlockingOps(fn *ast.FuncDecl, spans []span) []blockingOp {
 	return out
 }
 
+// isChanField reports whether a receive/range operand names a
+// channel-typed STRUCT FIELD, e.g. `w.runnerJoin`. Pass 51 re-added
+// the runner join as exactly that — `for range w.runnerJoin {}` in a
+// helper Run calls — and a locals-and-parameters-only view could not
+// see it, so Run blocked on the runners' clone-dir removal again with
+// the whole suite green.
+func isChanField(operand string, chanFields map[string]bool) bool {
+	dot := strings.LastIndex(operand, ".")
+	return dot >= 0 && chanFields[operand[dot+1:]]
+}
+
+// chanFieldNames returns the name of every struct field in the package
+// declared with a channel type, so an operand like `w.runnerJoin` can
+// be recognised as a channel whatever the receiver is spelled.
+func chanFieldNames(files []*ast.File) map[string]bool {
+	out := map[string]bool{}
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			st, ok := n.(*ast.StructType)
+			if !ok || st.Fields == nil {
+				return true
+			}
+			for _, f := range st.Fields.List {
+				if _, isChan := f.Type.(*ast.ChanType); !isChan {
+					continue
+				}
+				for _, nm := range f.Names {
+					out[nm.Name] = true
+				}
+			}
+			return true
+		})
+	}
+	return out
+}
+
 // channelIdents returns the identifiers fn holds channels in: its
-// channel-typed parameters and its own make(chan …) locals.
+// channel-typed parameters, its own make(chan …) locals, and its
+// `var ch chan T` declarations — which carry no value for
+// assignedTargets to inspect (pass 51).
 func channelIdents(fn *ast.FuncDecl) map[string]bool {
 	out := map[string]bool{}
 	if fn.Type.Params != nil {
@@ -586,6 +625,19 @@ func channelIdents(fn *ast.FuncDecl) map[string]bool {
 			}
 		}
 	}
+	ast.Inspect(fn, func(n ast.Node) bool {
+		spec, ok := n.(*ast.ValueSpec)
+		if !ok || spec.Type == nil {
+			return true
+		}
+		if _, isChan := spec.Type.(*ast.ChanType); !isChan {
+			return true
+		}
+		for _, nm := range spec.Names {
+			out[nm.Name] = true
+		}
+		return true
+	})
 	made, _ := assignedTargets(fn, func(call *ast.CallExpr) bool {
 		if types.ExprString(call.Fun) != "make" || len(call.Args) == 0 {
 			return false

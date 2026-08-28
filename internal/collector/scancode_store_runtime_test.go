@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -27,11 +28,16 @@ func storeTestWorker(t *testing.T, store ScancodeStore) *ScancodeWorker {
 }
 
 // failedExecution mirrors what executeScan returns on a non-zero exit:
-// every capture buffer populated, as its single non-nil return path
-// always does.
-func failedExecution(err error) *scanExecution {
+// every capture buffer populated and an outputPath set, as its single
+// non-nil return path always does. outputPath matters because
+// classifyScanOutcome consults it first — the v0.23.4 salvage — so
+// leaving it empty would make outcomeSalvaged unreachable from these
+// tests and the mirror claim untrue (pass 51).
+func failedExecution(t *testing.T, err error) *scanExecution {
+	t.Helper()
 	return &scanExecution{
 		pid:              1234,
+		outputPath:       filepath.Join(t.TempDir(), "scan.json"),
 		waitErr:          err,
 		effectiveTimeout: 2 * time.Hour,
 		stderrTail:       &tailBuffer{cap: scancodeStderrTailBytes},
@@ -54,7 +60,7 @@ func TestFinishScanOnShutdownClearsLockWithoutStrike(t *testing.T) {
 	cancel() // the shutdown that killed the scan
 
 	w.finishScan(ctx, db.ScancodeJob{RepoID: 42, RepoOwner: "o", RepoName: "r"},
-		failedExecution(errors.New("signal: killed")))
+		failedExecution(t, errors.New("signal: killed")))
 
 	got := store.snapshot()
 	if len(got.cleared) != 1 || got.cleared[0] != 42 {
@@ -79,7 +85,7 @@ func TestFinishScanOnRealFailureRecordsStrike(t *testing.T) {
 	w := storeTestWorker(t, store)
 
 	w.finishScan(context.Background(), db.ScancodeJob{RepoID: 7, RepoOwner: "o", RepoName: "r"},
-		failedExecution(errors.New("exit status 2")))
+		failedExecution(t, errors.New("exit status 2")))
 
 	got := store.snapshot()
 	if len(got.failures) != 1 || got.failures[0] != 7 {
@@ -138,5 +144,33 @@ func TestDispatcherClaimsWhenToolchainHealthy(t *testing.T) {
 
 	if got := store.snapshot(); got.claims == 0 {
 		t.Error("a healthy dispatcher claimed nothing — then TestDispatcherClaimsNothingWhileToolchainBroken proves nothing either, because a dispatcher that never claims passes it trivially (lens L4).")
+	}
+}
+
+// storeAvailable exists to survive the trap the ScancodeStore
+// interface introduced: an interface holding a TYPED nil pointer is
+// itself non-nil, so the `w.store == nil` guard that was correct while
+// the field was a concrete *db.PostgresStore would now pass and the
+// first call would panic. The helper was written for that and had no
+// test (pass 51) — reverting it to `w.store != nil` left the whole
+// suite green.
+func TestStoreAvailableSurvivesTheTypedNilTrap(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	if w := NewScancodeWorker(nil, logger, ScancodeWorkerOptions{}); w.storeAvailable() {
+		t.Error("a worker built with an untyped nil store reports a usable store")
+	}
+
+	var typed *fakeScancodeStore // nil POINTER in a non-nil interface
+	w := NewScancodeWorker(typed, logger, ScancodeWorkerOptions{})
+	if w.store == nil {
+		t.Fatal("this test no longer exercises the typed-nil trap: the interface compared equal to nil, so storeAvailable's reflect check is not what is keeping the worker safe. Re-derive the case before trusting the assertion below.")
+	}
+	if w.storeAvailable() {
+		t.Error("a worker holding a TYPED nil store reports a usable store — every store call then panics on the first dereference. This is the trap the interface introduced and the whole reason storeAvailable is not just `w.store == nil` (v0.28.19).")
+	}
+
+	if w := NewScancodeWorker(&fakeScancodeStore{}, logger, ScancodeWorkerOptions{}); !w.storeAvailable() {
+		t.Error("a worker holding a real store reports it unusable — the guard would silently skip every status write (scancode_preflight.go's recordScancodeStatus)")
 	}
 }

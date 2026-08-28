@@ -221,12 +221,17 @@ Two structural answers, in order of preference:
 Corollary: when a pin has been escaped repeatedly and each fix adds
 surface, that is evidence the property is being asserted at the wrong
 level, not that the next predicate will be the one that holds. Passes
-43–48 escaped the same shutdown pin fifteen times (by the labels the
-code carries); the runtime test that replaced its semantic half
+43–48 escaped the same shutdown pin fifteen times (`grep -ohE
+'\b4[3-9][a-f]\b' internal/collector/*.go | sort -u`); the runtime test that replaced its semantic half
 catches all nine bound-class escapes without naming any of them.
 
 Note what that did NOT buy: the total surface for this one contract
-went from ~356 lines to ~1000. Moving a property to a runtime test is
+grew, from 356 lines to about 1000. (Measured as the pin's doc comment
+through end of file — `git show 49f25b2:internal/collector/scancode_worker_test.go
+| awk '/^\/\/ The shutdown contract/,0' | wc -l` — plus the runtime
+test file. State the boundary when quoting a figure like this: a
+round-closing reviewer read a different one and reported the number as
+inverted.) Moving a property to a runtime test is
 not a code-size win, and claiming one here was itself an unchecked
 claim — pass 50 measured it. What changes is which failures are
 *reachable*: the escape-prone half (deadline spellings, goroutine-launch

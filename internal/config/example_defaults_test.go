@@ -209,6 +209,7 @@ func TestConfigurationDocSnippetMatchesEffectiveDefaults(t *testing.T) {
 	block := configurationDocSnippet(t, string(doc))
 	assertCollectionMatchesEffectiveDefaults(t, docsSnippetLabel, []byte(block))
 	assertSnippetBlockValues(t, block)
+	assertSnippetAccessorsAreComplete(t)
 
 	// Values alone cannot police the snippet's "every supported
 	// option" claim: an OMITTED key silently keeps the default, so the
@@ -394,14 +395,87 @@ func jsonTagsOf(t reflect.Type) []string {
 // snippetValueAccessors mirrors effectiveAccessors for the blocks
 // above: a field whose meaning comes from an accessor is compared
 // through it, not through its zero value.
-var snippetValueAccessors = map[string]func(*Config) any{
-	"api.RateLimitRPS":             func(c *Config) any { return c.API.RateLimitRPSOrDefault() },
-	"api.RateLimitBurst":           func(c *Config) any { return c.API.RateLimitBurstOrDefault() },
-	"api.RateLimitDaily":           func(c *Config) any { return c.API.RateLimitDailyOrDefault() },
-	"api.ExemptCIDRs":              func(c *Config) any { return c.API.ExemptCIDRsOrDefault() },
-	"monitor.RefreshSeconds":       func(c *Config) any { return c.Monitor.MonitorRefreshSecondsOrDefault() },
-	"mail.VulnDigestMinSeverity":   func(c *Config) any { return c.Mail.VulnDigestMinSeverityOrDefault() },
-	"mail.VulnDigestIntervalHours": func(c *Config) any { return c.Mail.VulnDigestInterval() },
+// snippetAccessor pairs the getter with the NAME of the accessor it
+// calls, so the completeness check below can tell a registered
+// accessor from an unregistered one.
+type snippetAccessor struct {
+	method string
+	get    func(*Config) any
+}
+
+var snippetValueAccessors = map[string]snippetAccessor{
+	"api.RateLimitRPS":             {"RateLimitRPSOrDefault", func(c *Config) any { return c.API.RateLimitRPSOrDefault() }},
+	"api.RateLimitBurst":           {"RateLimitBurstOrDefault", func(c *Config) any { return c.API.RateLimitBurstOrDefault() }},
+	"api.RateLimitDaily":           {"RateLimitDailyOrDefault", func(c *Config) any { return c.API.RateLimitDailyOrDefault() }},
+	"api.ExemptCIDRs":              {"ExemptCIDRsOrDefault", func(c *Config) any { return c.API.ExemptCIDRsOrDefault() }},
+	"monitor.RefreshSeconds":       {"MonitorRefreshSecondsOrDefault", func(c *Config) any { return c.Monitor.MonitorRefreshSecondsOrDefault() }},
+	"mail.VulnDigestMinSeverity":   {"VulnDigestMinSeverityOrDefault", func(c *Config) any { return c.Mail.VulnDigestMinSeverityOrDefault() }},
+	"mail.VulnDigestIntervalHours": {"VulnDigestInterval", func(c *Config) any { return c.Mail.VulnDigestInterval() }},
+}
+
+// snippetAccessorExemptions are accessor methods that deliberately
+// need no registration, with the reason — under a staleness check,
+// like every other exemption in this file.
+var snippetAccessorExemptions = map[string]string{
+	"database.ConnectionString":    "derives a DSN from the whole block; it is not any one field's default, and every field it reads is compared directly",
+	"web.AutoApproveAddLimitValue": "identity for every value the snippet can carry — it only clamps negatives to 0, and the default IS 0, so a raw comparison is exact",
+}
+
+// assertSnippetAccessorsAreComplete fails when a config block grows an
+// accessor the snippet value check does not route through.
+//
+// Pass 50 derived WHICH FIELDS are compared from the Config type, and
+// the prose then promised "a block or option added later is covered
+// the day it is declared". True of the field set; false of the
+// accessor routing, which is this hand-written map — a new
+// accessor-backed field written as its zero compared zero-to-zero and
+// passed, teaching (in the probed case) a 0-byte request cap against a
+// 1 MiB default. Fifth consecutive over-claim in that one paragraph,
+// so the claim is now enforced rather than reworded (pass 51).
+func assertSnippetAccessorsAreComplete(t *testing.T) {
+	t.Helper()
+	registered := map[string]bool{}
+	for key, acc := range snippetValueAccessors {
+		registered[strings.SplitN(key, ".", 2)[0]+"."+acc.method] = true
+	}
+	usedExemption := map[string]bool{}
+
+	cfgType := reflect.TypeOf(Config{})
+	for i := 0; i < cfgType.NumField(); i++ {
+		field := cfgType.Field(i)
+		block := strings.Split(field.Tag.Get("json"), ",")[0]
+		if block == "" || block == "-" || block == "collection" {
+			continue // collection has its own accessor map and comparison
+		}
+		blockType := field.Type
+		for blockType.Kind() == reflect.Pointer {
+			blockType = blockType.Elem()
+		}
+		if blockType.Kind() != reflect.Struct {
+			continue
+		}
+		for m := 0; m < blockType.NumMethod(); m++ {
+			method := blockType.Method(m)
+			// An accessor: nothing but the receiver in, one value out.
+			if method.Type.NumIn() != 1 || method.Type.NumOut() != 1 {
+				continue
+			}
+			key := block + "." + method.Name
+			if registered[key] {
+				continue
+			}
+			if _, exempt := snippetAccessorExemptions[key]; exempt {
+				usedExemption[key] = true
+				continue
+			}
+			t.Errorf("%s is an accessor the snippet value check does not route through. A field whose meaning comes from an accessor compares zero-to-zero without one, so the snippet could carry 0 and pass while the reference table below states the real default. Register it in snippetValueAccessors, or add %q to snippetAccessorExemptions with a reason.", key, key)
+		}
+	}
+	for key, reason := range snippetAccessorExemptions {
+		if !usedExemption[key] {
+			t.Errorf("snippetAccessorExemptions[%q] suppresses nothing — that accessor is registered or gone. Delete the entry (its reason was: %s).", key, reason)
+		}
+	}
 }
 
 // snippetValueAllowlist exempts the placeholder fields inside an
@@ -463,8 +537,9 @@ func assertSnippetBlockValues(t *testing.T, block string) {
 		}
 		blockType := field.Type
 		for blockType.Kind() == reflect.Pointer {
-			// The presence walkalready derefs; this one must too, or a
-			// pointer block panics in NumField below (pass 50).
+			// The presence walk already derefs; this one must too.
+			// Pass 50 derefed only the TYPE, leaving a pointer block
+			// to panic in snippetFieldValue (pass 51).
 			blockType = blockType.Elem()
 		}
 		if blockType.Kind() != reflect.Struct {
@@ -507,7 +582,7 @@ func assertSnippetBlockValues(t *testing.T, block string) {
 			// 48). Where an accessor exists the snippet must STATE the
 			// value.
 			if _, coerced := snippetValueAccessors[key]; coerced {
-				raw := reflect.ValueOf(applied).Elem().FieldByName(field.Name).Field(i)
+				raw := blockFieldValue(applied, field.Name, blockType.Field(i).Name)
 				if isEmptyValue(raw) {
 					t.Errorf("the configuration.md snippet leaves %s at its zero value. That field has an "+
 						"accessor which maps zero back to the default, so the comparison above cannot see it "+
@@ -529,10 +604,26 @@ func assertSnippetBlockValues(t *testing.T, block string) {
 // snippetFieldValue reads one block field, through its accessor when
 // one is registered.
 func snippetFieldValue(cfg *Config, blockField, fieldName, key string) any {
-	if getter, ok := snippetValueAccessors[key]; ok {
-		return getter(cfg)
+	if acc, ok := snippetValueAccessors[key]; ok {
+		return acc.get(cfg)
 	}
-	return reflect.ValueOf(cfg).Elem().FieldByName(blockField).FieldByName(fieldName).Interface()
+	return blockFieldValue(cfg, blockField, fieldName).Interface()
+}
+
+// blockFieldValue reads one field of a config block, dereferencing a
+// pointer block on the way. Pass 50 derefed the block's TYPE and left
+// the VALUE alone, so a pointer-to-struct block panicked with
+// "FieldByName on ptr Value" inside the very check added to handle it
+// (pass 51).
+func blockFieldValue(cfg *Config, blockField, fieldName string) reflect.Value {
+	block := reflect.ValueOf(cfg).Elem().FieldByName(blockField)
+	for block.Kind() == reflect.Pointer {
+		if block.IsNil() {
+			block = reflect.New(block.Type().Elem())
+		}
+		block = block.Elem()
+	}
+	return block.FieldByName(fieldName)
 }
 
 // isEmptyValue reports whether a config field carries nothing an

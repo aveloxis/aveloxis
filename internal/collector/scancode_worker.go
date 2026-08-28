@@ -1206,9 +1206,15 @@ const (
 // the shipped default grace of 0, and a source pin could not tell the
 // difference (pass 48).
 func (w *ScancodeWorker) shutdownDeadline() time.Duration {
-	if w.bookkeepingAllowance > 0 {
-		// The test seam: a 70-second bound is only provable by
-		// waiting for it. Production always takes the branch below.
+	if w.bookkeepingAllowance > 0 && w.bookkeepingAllowance != ScancodeShutdownBookkeepingGrace {
+		// The test seam, taken ONLY when a test has shrunk the
+		// allowance: a 70-second bound is provable only by waiting for
+		// it. Production carries the real allowance and so takes the
+		// line below — which keeps the worker's own deadline derived
+		// from the same definition the scheduler and `aveloxis stop`
+		// use (pass 51; before that, production took the seam branch
+		// and ScancodeShutdownBound was "the one definition" for only
+		// two of its three callers).
 		return w.shutdownGrace + w.bookkeepingAllowance
 	}
 	return ScancodeShutdownBound(w.shutdownGrace)

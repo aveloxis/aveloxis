@@ -184,3 +184,55 @@ func TestCommentWalkReadsEveryNotesPageAcrossCycles(t *testing.T) {
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }
+
+// Pass 32: the per-item MR-notes twin (the refresher's and gap fill's
+// reader) must skip diff-positioned notes exactly as the repo-wide walk
+// does — the refresher reads ListReviewCommentsForPR for the same MR a
+// few lines later, so a positioned note yielded here was staged TWICE
+// (message + review comment; a silent duplicate under the msg_kind
+// arbiter). And a walk must continue past ONE item's 404: MR #2's notes
+// are gone, MR #3's must still be yielded.
+func TestPerItemMRNotesSkipDiffNotesAndWalksContinuePastOneItemsSkip(t *testing.T) {
+	client, _ := newTestClientWithCapture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/merge_requests/2/notes"):
+			http.NotFound(w, r) // deleted between the driver page and this read
+		case strings.HasSuffix(path, "/merge_requests/3/notes"):
+			_, _ = w.Write([]byte(`[{"id":701,"body":"conversation","system":false,"created_at":"2026-08-01T00:00:00Z","author":{"id":9,"username":"u"}},{"id":702,"body":"diff note","system":false,"created_at":"2026-08-01T00:00:00Z","author":{"id":9,"username":"u"},"position":{"new_path":"a.go","new_line":3}}]`))
+		case strings.Contains(path, "/merge_requests"):
+			_, _ = w.Write([]byte(`[{"id":32,"iid":2,"title":"gone","state":"opened","user_notes_count":1,"updated_at":"2026-08-01T00:00:00Z","created_at":"2026-08-01T00:00:00Z"},{"id":33,"iid":3,"title":"mr","state":"opened","user_notes_count":2,"updated_at":"2026-08-01T00:00:00Z","created_at":"2026-08-01T00:00:00Z"}]`))
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	// The per-item twin skips the positioned note.
+	n := 0
+	for msg, err := range client.ListCommentsForPR(t.Context(), "owner", "repo", 3) {
+		if err != nil {
+			t.Fatalf("ListCommentsForPR: %v", err)
+		}
+		n++
+		if msg.Message.PlatformMsgID != 701 {
+			t.Errorf("per-item MR notes yielded note %d — diff-positioned notes belong to ListReviewCommentsForPR", msg.Message.PlatformMsgID)
+		}
+	}
+	if n != 1 {
+		t.Errorf("ListCommentsForPR yielded %d notes, want 1", n)
+	}
+	// The repo-wide walk continues past MR #2's 404 to MR #3.
+	got := 0
+	for msg, err := range client.ListPRComments(t.Context(), "owner", "repo", time.Time{}) {
+		if err != nil {
+			t.Fatalf("ListPRComments must not end on one item's 404: %v", err)
+		}
+		got++
+		if msg.PRRef == nil || msg.PRRef.PlatformPRNumber != 3 {
+			t.Errorf("expected MR #3's conversation note, got %+v", msg.PRRef)
+		}
+	}
+	if got != 1 {
+		t.Errorf("walk yielded %d notes after MR #2's 404, want MR #3's 1", got)
+	}
+}

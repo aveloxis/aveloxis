@@ -737,6 +737,14 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 			noteP := fmt.Sprintf("/projects/%s/issues/%d/notes?sort=asc", pp, issue.IID)
 			for note, err := range platform.PaginateGitLab[glNote](ctx, c.http, noteP) {
 				if err != nil {
+					// One item's pages can 404/403 on their own (deleted or
+					// hidden between the driver page and this read); ending the
+					// whole walk here would drop every LATER item's notes this
+					// cycle, and updated_after never lists them again (pass 32).
+					if platform.ClassifyError(err) == platform.ClassSkip {
+						c.logger.Info("skipping one item's notes — gone or forbidden", "owner", owner, "repo", repo, "error", err)
+						break
+					}
 					yield(platform.MessageWithRef{}, err)
 					return
 				}
@@ -805,6 +813,14 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 			noteP := fmt.Sprintf("/projects/%s/merge_requests/%d/notes?sort=asc", pp, mr.IID)
 			for note, err := range platform.PaginateGitLab[glNote](ctx, c.http, noteP) {
 				if err != nil {
+					// One item's pages can 404/403 on their own (deleted or
+					// hidden between the driver page and this read); ending the
+					// whole walk here would drop every LATER item's notes this
+					// cycle, and updated_after never lists them again (pass 32).
+					if platform.ClassifyError(err) == platform.ClassSkip {
+						c.logger.Info("skipping one item's notes — gone or forbidden", "owner", owner, "repo", repo, "error", err)
+						break
+					}
 					yield(platform.MessageWithRef{}, err)
 					return
 				}
@@ -871,6 +887,14 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 			discPath := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", pp, mr.IID)
 			for disc, err := range platform.PaginateGitLab[glDiscussion](ctx, c.http, discPath) {
 				if err != nil {
+					// One item's pages can 404/403 on their own (deleted or
+					// hidden between the driver page and this read); ending the
+					// whole walk here would drop every LATER item's notes this
+					// cycle, and updated_after never lists them again (pass 32).
+					if platform.ClassifyError(err) == platform.ClassSkip {
+						c.logger.Info("skipping one item's notes — gone or forbidden", "owner", owner, "repo", repo, "error", err)
+						break
+					}
 					yield(platform.ReviewCommentWithRef{}, err)
 					return
 				}
@@ -982,7 +1006,7 @@ func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, mrII
 				yield(platform.MessageWithRef{}, err)
 				return
 			}
-			if note.System {
+			if note.System || note.Position != nil { // diff notes are review comments (ListReviewCommentsForPR)
 				continue
 			}
 			msg := model.Message{

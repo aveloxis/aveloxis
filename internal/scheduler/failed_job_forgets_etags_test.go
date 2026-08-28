@@ -12,7 +12,8 @@ import (
 
 // Pass 30 (v0.28.18): a FAILED job forgets its repo's cached listing
 // ETags — the retry must re-read pages the failed job fetched but never
-// stored; the hook runs on the failure path AFTER CompleteJob, and both
+// stored; the hook runs on the failure path BEFORE CompleteJob (the row
+// flips back to queued there — pass 31), and both
 // forge clients expose ForgetRepoETags over the repo's path prefix.
 func TestFailedJobForgetsTheRepoETags(t *testing.T) {
 	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/scheduler.go"), "func (s *Scheduler) runJob("))

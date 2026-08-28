@@ -637,6 +637,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 	deleted, err := s.store.PurgeStagedProcessed(ctx, s.cfg.Collection.StagingRetentionDuration())
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure (the v0.27.28 ClassCanceled rule)
+		}
 		s.logger.Warn("staging cleanup failed", "error", err)
 		return
 	}
@@ -651,6 +654,9 @@ func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 	// table) so leftover processed rows from a prior enablement don't bloat.
 	mlDeleted, err := s.store.PurgeMailingListStagingProcessed(ctx, s.cfg.Collection.StagingRetentionDuration().Seconds())
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure (the v0.27.28 ClassCanceled rule)
+		}
 		s.logger.Warn("mailing-list staging cleanup failed", "error", err)
 		return
 	}
@@ -697,6 +703,9 @@ func (s *Scheduler) runSearchResolve(ctx context.Context) {
 	}
 	candidates, err := s.store.GetContributorsNeedingSearch(ctx, SearchResolveBatchSize)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure (the v0.27.28 ClassCanceled rule)
+		}
 		s.logger.Warn("search resolve: failed to get candidates", "error", err)
 		return
 	}
@@ -784,6 +793,9 @@ func (s *Scheduler) runEnrichment(ctx context.Context) {
 func (s *Scheduler) runAffiliationsPopulation(ctx context.Context) {
 	count, err := s.store.PopulateAffiliations(ctx)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure (the v0.27.28 ClassCanceled rule)
+		}
 		s.logger.Warn("affiliations population failed", "error", err)
 		return
 	}
@@ -1928,7 +1940,14 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 		"active_workers_at_start", "see monitor banner")
 
 	start := time.Now()
-	if err := db.RefreshMaterializedViews(ctx, s.store, s.logger); err != nil {
+	// A `stop serve` inside the multi-hour (views) or multi-day (dm_)
+	// pass is the common shape — shutdown is not a failure (the v0.27.28
+	// ClassCanceled rule); the rebuild is owed again on the next
+	// rebuild day.
+	if err := db.RefreshMaterializedViews(ctx, s.store, s.logger); errors.Is(err, context.Canceled) {
+		s.logger.Info("weekly matview rebuild canceled by shutdown — owed again on the next rebuild day", "elapsed", time.Since(start).Truncate(time.Second))
+		return
+	} else if err != nil {
 		s.logger.Error("weekly matview rebuild failed", "error", err)
 	} else {
 		s.logger.Info("weekly matview rebuild complete", "duration", time.Since(start).Truncate(time.Second))
@@ -1949,6 +1968,9 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 			// An operator `refresh-views --aggregates` overlapping the
 			// weekly tick is expected, not a failure; the next tick retries.
 			s.logger.Warn("dm_ aggregate refresh skipped — another pass holds the aggregate lock; the next weekly tick retries", "error", err)
+		} else if errors.Is(err, context.Canceled) {
+			s.logger.Info("dm_ aggregate refresh canceled by shutdown — owed again on the next rebuild day", "elapsed", time.Since(aggStart).Truncate(time.Second))
+			return
 		} else if err != nil {
 			s.logger.Error("dm_ aggregate refresh failed", "error", err)
 		} else {
@@ -1986,6 +2008,9 @@ func (s *Scheduler) maybeScanNewOrgs(ctx context.Context) {
 	}
 	pending, err := s.store.HasNeverScannedOrgs(ctx)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure (the v0.27.28 ClassCanceled rule)
+		}
 		s.logger.Warn("never-scanned-orgs probe failed", "error", err)
 		return
 	}
@@ -2223,7 +2248,9 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 	// per FULL cycle; the 10s demand probe (onlyNeverScanned) stays
 	// cheap and skips it.
 	if !onlyNeverScanned {
-		if linked, err := s.store.ReconcileOrgRepoLinks(ctx); err != nil {
+		if linked, err := s.store.ReconcileOrgRepoLinks(ctx); errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		} else if err != nil {
 			s.logger.Warn("org link reconciliation failed", "error", err)
 		} else if linked > 0 {
 			s.logger.Info("org link reconciliation linked stranded tracked repos",
@@ -2244,6 +2271,9 @@ func (s *Scheduler) runBreadth(ctx context.Context) {
 	}
 	result, err := s.breadthWorker.Run(ctx, s.cfg.Collection.BreadthBatchSizeOrDefault(), s.cfg.Collection.BreadthCooldownDuration())
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure (the v0.27.28 ClassCanceled rule)
+		}
 		s.logger.Warn("breadth worker failed", "error", err)
 		return
 	}

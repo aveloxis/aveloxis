@@ -36,11 +36,11 @@ func TestRefreshAllRepoAggregatesReturnsPartialFailures(t *testing.T) {
 	// Pass 27: both loops bail on a canceled ctx (one exit, not one WARN
 	// per remaining repo), and the group-query error keeps the repo
 	// failures accumulated before it.
-	if strings.Count(body, "if ctx.Err() != nil {") < 2 {
-		t.Error("both per-repo loops must check ctx.Err() before each iteration")
+	if strings.Count(body, "if ctx.Err() != nil {") < 3 {
+		t.Error("both per-repo loops must check ctx.Err() before each iteration AND once after the loops (a cancel inside the last item never reaches a loop-top guard)")
 	}
-	if !strings.Contains(body, `append(failed, fmt.Errorf("querying repo groups: %w", err))`) {
-		t.Error("a repo-groups query failure must return the already-accumulated repo failures with it")
+	if strings.Contains(body, "SELECT DISTINCT repo_group_id") || strings.Contains(body, "groupRows") {
+		t.Error("the dead DISTINCT repo_group_id connectivity query must stay gone (pass 28: it pinned a connection and its error arm buried its own cause)")
 	}
 	// One call deeper: a repo_group lookup ERROR must surface, not read
 	// as "no group" (pass 26 — a canceled pass reported failed_groups=0).
@@ -54,6 +54,9 @@ func TestRefreshAllRepoAggregatesReturnsPartialFailures(t *testing.T) {
 		if !strings.Contains(views, needle) {
 			t.Errorf("RefreshMaterializedViews must accumulate and return per-view failures: missing %q", needle)
 		}
+	}
+	if strings.Count(views, "if ctx.Err() != nil {") < 2 {
+		t.Error("RefreshMaterializedViews must check ctx.Err() per view AND once after the loop")
 	}
 	// The CLI returns the pass's error verbatim (nonzero exit), and the
 	// weekly caller still distinguishes the lock skip from a failure.

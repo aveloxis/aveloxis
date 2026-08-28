@@ -1119,11 +1119,11 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 			}
 			defer store.Close()
 			viewErr := db.RefreshMaterializedViews(ctx, store, logger)
-			if viewErr != nil {
-				logger.Error("materialized view refresh reported failures (the rest of the views were refreshed)", "error", viewErr)
-			}
 			if !aggregates {
-				return viewErr
+				return viewErr // cobra prints it once; no second copy
+			}
+			if viewErr != nil {
+				logger.Error("materialized view refresh reported failures — continuing to the dm_ aggregate pass; both ride the exit", "error", viewErr)
 			}
 			// The dm_ pass reads only commits/repos, never a matview, so a
 			// stale view is no reason to skip it — with the skip knob on

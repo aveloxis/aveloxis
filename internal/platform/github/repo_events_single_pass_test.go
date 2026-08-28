@@ -119,11 +119,12 @@ func TestListRepoEventsSecondCycle304IsCleanZero(t *testing.T) {
 			t.Fatalf("cycle 1: %v", err)
 		}
 	}
-	// Cycle 2: nothing changed upstream → 304 → clean zero items, no
-	// error. That's the CORRECT incremental semantic — the ETag layer
-	// is only pathological when two passes alias within one cycle.
+	// Cycle 2 (INCREMENTAL — a real since): nothing changed upstream →
+	// 304 → clean zero items, no error. That's the CORRECT incremental
+	// semantic — the ETag layer is only pathological when two passes
+	// alias within one cycle.
 	var items int
-	for _, err := range client.ListRepoEvents(t.Context(), "o", "r", time.Time{}) {
+	for _, err := range client.ListRepoEvents(t.Context(), "o", "r", time.Now().Add(-time.Hour)) {
 		if err != nil {
 			t.Fatalf("cycle 2 must be a clean zero, got error: %v", err)
 		}
@@ -131,5 +132,19 @@ func TestListRepoEventsSecondCycle304IsCleanZero(t *testing.T) {
 	}
 	if items != 0 {
 		t.Errorf("cycle 2 should yield 0 items on 304, got %d", items)
+	}
+	// Cycle 3 (FULL SNAPSHOT — a zero since, the force-full / gap-filler
+	// shape): the listing is a truth set and bypasses the cache — it
+	// must yield the events again, never the cached "nothing new"
+	// (Copilot round 5, v0.28.18).
+	items = 0
+	for _, err := range client.ListRepoEvents(t.Context(), "o", "r", time.Time{}) {
+		if err != nil {
+			t.Fatalf("cycle 3 (full snapshot): %v", err)
+		}
+		items++
+	}
+	if items == 0 {
+		t.Error("a full-snapshot listing (zero since) must bypass the ETag cache and yield the events again, got 0")
 	}
 }

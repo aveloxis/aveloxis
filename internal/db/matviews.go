@@ -123,6 +123,9 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 			"view", name, "duration", time.Since(viewStart).Truncate(time.Millisecond))
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err() // a cancel inside the last view is one exit, not "complete"
+	}
 	logger.Info("materialized view refresh complete",
 		"total_duration", time.Since(start).Truncate(time.Second), "failed", len(failed))
 	if len(failed) > 0 {

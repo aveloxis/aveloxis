@@ -267,9 +267,11 @@ var ErrAggregateRebuildRunning = errors.New("another dm_ aggregate rebuild is al
 // exists — the layer enforces the "one pass at a time" invariant (SR-18)
 // so neither caller has to know about the other.
 //
-// This is more efficient than per-repo refresh because it can use bulk SQL
-// without per-repo DELETE+INSERT cycles. For the repo_group tables, it
-// refreshes each distinct group once.
+// Shape (pass 28 rewrote a doc that claimed bulk SQL): two per-repo
+// DELETE+INSERT loops — the repo tables, then the group tables via each
+// repo's group (same-group repos are refreshed redundantly; per-group is a
+// future optimization). One bad repo never aborts the fleet: failures are
+// WARN'd, counted, and returned bounded; a canceled ctx is one exit.
 func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger interface {
 	Info(string, ...any)
 	Warn(string, ...any)
@@ -346,22 +348,11 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 		}
 	}
 
-	// Refresh repo group aggregates for each distinct group.
-	groupRows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT repo_group_id FROM aveloxis_data.repos WHERE repo_group_id IS NOT NULL`)
-	if err != nil {
-		// The repo failures already accumulated must ride this exit too.
-		return boundedJoin(fmt.Sprintf("dm_ aggregate refresh aborted before the group pass (%d repo refreshes had failed)", failedRepos),
-			append(failed, fmt.Errorf("querying repo groups: %w", err)), partialFailureSample)
-	}
-	defer groupRows.Close()
-	// NOTE: the DISTINCT repo_group_id result set is intentionally not
-	// iterated — RefreshRepoGroupAggregates derives the group from each
-	// repo. The query remains only as a connectivity check; the dead
-	// groupIDs accumulation it once fed was removed in v0.25.36
-	// (staticcheck SA4010). Refreshing per-group instead of per-repo is
-	// a future optimization (redundant refreshes for same-group repos).
-
+	// Group tables: per repo — RefreshRepoGroupAggregates derives the
+	// group from the repo. The v0.25.36-era `SELECT DISTINCT repo_group_id`
+	// "connectivity check" that used to sit here is gone (pass 28): it
+	// iterated nothing, pinned a pool connection for the whole loop, and
+	// its error arm buried its own cause behind ten repo failures.
 	for _, repoID := range repoIDs {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -374,6 +365,12 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 		}
 	}
 
+	if ctx.Err() != nil {
+		// A cancel inside the LAST item never reaches a loop-top guard;
+		// a killed pass must not log "refreshed" nor hide the cancel
+		// behind a truncated join.
+		return ctx.Err()
+	}
 	logger.Info("dm_ aggregate tables refreshed", "repos", len(repoIDs), "failed_repos", failedRepos, "failed_groups", failedGroups)
 	if len(failed) > 0 {
 		return boundedJoin(fmt.Sprintf("dm_ aggregate refresh left stale rows: %d repo and %d group refreshes failed across %d repos", failedRepos, failedGroups, len(repoIDs)), failed, partialFailureSample)

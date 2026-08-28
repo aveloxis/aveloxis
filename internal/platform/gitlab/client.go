@@ -90,6 +90,12 @@ func projectPath(owner, repo string) string {
 // --- IssueCollector ---
 
 func (c *Client) ListIssues(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.Issue, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/issues?scope=all&sort=desc&order_by=updated_at", pp)
 	if !since.IsZero() {
@@ -180,6 +186,12 @@ func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, iss
 // --- PullRequestCollector (GitLab Merge Requests) ---
 
 func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.PullRequest, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests?scope=all&sort=desc&order_by=updated_at", pp)
 	if !since.IsZero() {
@@ -524,6 +536,12 @@ type glUserRefFlight struct {
 // merge_request), so there is no ETag aliasing here and two fetches
 // are correct.
 func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.RepoEvent, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	return func(yield func(platform.RepoEvent, error) bool) {
 		for ev, err := range c.ListIssueEvents(ctx, owner, repo, since) {
 			if err != nil {
@@ -549,6 +567,12 @@ func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since t
 }
 
 func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.IssueEvent, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	// GitLab uses resource state events per-issue. We iterate all issues and fetch events.
 	// For bulk collection, we use the project events endpoint filtered to issues.
@@ -581,6 +605,12 @@ func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since 
 }
 
 func (c *Client) ListPREvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.PullRequestEvent, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/events?target_type=merge_request&sort=desc", pp)
 	if !since.IsZero() {
@@ -613,6 +643,12 @@ func (c *Client) ListPREvents(ctx context.Context, owner, repo string, since tim
 // --- MessageCollector ---
 
 func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.MessageWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 
 	// GitLab doesn't have a bulk notes endpoint across all issues.
@@ -667,6 +703,12 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 }
 
 func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.MessageWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	mrsPath := fmt.Sprintf("/projects/%s/merge_requests?scope=all&sort=desc&order_by=updated_at", pp)
 	if !since.IsZero() {
@@ -715,6 +757,12 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 }
 
 func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.ReviewCommentWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	mrsPath := fmt.Sprintf("/projects/%s/merge_requests?scope=all&sort=desc&order_by=updated_at", pp)
 	if !since.IsZero() {
@@ -1092,7 +1140,7 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	// statistics were not read. Disabled → definitive 0; unknown → the
 	// store carries the prior snapshot's value forward with the totals.
 	openIssues := raw.OpenIssuesCount
-	if raw.IssuesAccessLevel == "disabled" {
+	if !featureEnabled(raw.IssuesAccessLevel, raw.IssuesEnabled) {
 		openIssues = 0
 		// Definitive zero, not unknown: the feature is DISABLED, so there
 		// is nothing to count and the probe would only 404 (and log) every
@@ -1118,7 +1166,7 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	// marks the PR counts unknown instead of storing 0.
 	prUnknown := false
 	mrCounts := map[string]int{}
-	if raw.MergeRequestsAccessLevel != "disabled" { // see IssuesAccessLevel above
+	if featureEnabled(raw.MergeRequestsAccessLevel, raw.MergeRequestsEnabled) { // the one rule — see the issues gate above
 		for _, state := range []string{"opened", "closed", "merged"} {
 			n, err := c.countGitLabResource(ctx, pp, "merge_requests", state)
 			if err == nil {

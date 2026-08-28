@@ -91,8 +91,18 @@ func (st *countsRouterState) handler() http.Handler {
 				enabled, level = `false`, `disabled`
 			case "members-only":
 				enabled, level = `false`, `private`
+			case "legacy-disabled":
+				enabled, level = `false`, ``
+			case "legacy-enabled":
+				enabled, level = `true`, ``
 			}
-			_, _ = w.Write([]byte(`{"id":101,"default_branch":"main","web_url":"https://gitlab.com/owner/repo","path_with_namespace":"owner/repo","star_count":1,"forks_count":0,"open_issues_count":77,"issues_enabled":` + enabled + `,"merge_requests_enabled":` + enabled + `,"issues_access_level":"` + level + `","merge_requests_access_level":"` + level + `","wiki_enabled":` + enabled + `,"wiki_access_level":"` + level + `","pages_access_level":"` + level + `","statistics":{"commit_count":12}}`))
+			// Older GitLab responses omit the *_access_level fields entirely
+			// (the legacy-* modes); the booleans are then the only signal.
+			levels := ``
+			if level != `` {
+				levels = `,"issues_access_level":"` + level + `","merge_requests_access_level":"` + level + `","wiki_access_level":"` + level + `","pages_access_level":"` + level + `"`
+			}
+			_, _ = w.Write([]byte(`{"id":101,"default_branch":"main","web_url":"https://gitlab.com/owner/repo","path_with_namespace":"owner/repo","star_count":1,"forks_count":0,"open_issues_count":77,"issues_enabled":` + enabled + `,"merge_requests_enabled":` + enabled + `,"wiki_enabled":` + enabled + levels + `,"statistics":{"commit_count":12}}`))
 		}
 	})
 }
@@ -302,5 +312,47 @@ func TestFetchRepoInfoMarksIssueCountsUnknownOnStatsError(t *testing.T) {
 	}
 	if !capture.has(slog.LevelWarn, "issue statistics unavailable") {
 		t.Error("expected a WARN naming the unavailable issue statistics")
+	}
+}
+
+// Copilot round 5 on PR #191: the probe gates follow the SAME rule as the
+// persisted flags. A legacy payload (no *_access_level) with
+// *_enabled=false is a definitive zero — no probes, no "unknown", no
+// stale carry-forward for a feature GitLab reported disabled — and with
+// *_enabled=true the probes run as before.
+func TestFetchRepoInfoLegacyPayloadGatesOnTheBooleans(t *testing.T) {
+	st := &countsRouterState{mode: "legacy-disabled"}
+	client, capture := newTestClientWithCapture(t, st.handler())
+	info, err := client.FetchRepoInfo(context.Background(), "owner", "repo")
+	if err != nil {
+		t.Fatalf("FetchRepoInfo: %v", err)
+	}
+	if info.PRCountUnknown || info.IssuesCountUnknown || info.PRCount != 0 || info.IssuesCount != 0 || info.OpenIssues != 0 {
+		t.Errorf("legacy-disabled must be a definitive zero, not unknown: pr_unknown=%v issues_unknown=%v pr=%d issues=%d open=%d", info.PRCountUnknown, info.IssuesCountUnknown, info.PRCount, info.IssuesCount, info.OpenIssues)
+	}
+	if info.IssuesEnabled || info.PRsEnabled || info.WikiEnabled || info.PagesEnabled {
+		t.Errorf("legacy-disabled must persist every flag false: issues=%v prs=%v wiki=%v pages=%v", info.IssuesEnabled, info.PRsEnabled, info.WikiEnabled, info.PagesEnabled)
+	}
+	if n := atomic.LoadInt32(&st.probeHits); n != 0 {
+		t.Errorf("legacy-disabled must not probe a feature the payload reports disabled, probed %d times", n)
+	}
+	if capture.has(slog.LevelWarn, "unavailable") {
+		t.Error("no unavailable-count WARN expected for a definitive zero")
+	}
+
+	st = &countsRouterState{mode: "legacy-enabled"}
+	client, _ = newTestClientWithCapture(t, st.handler())
+	info, err = client.FetchRepoInfo(context.Background(), "owner", "repo")
+	if err != nil {
+		t.Fatalf("FetchRepoInfo: %v", err)
+	}
+	if info.PRCountUnknown || info.IssuesCountUnknown || info.PRCount != 6 || info.IssuesCount != 9 || info.OpenIssues != 5 {
+		t.Errorf("legacy-enabled must probe and read 6/9/5: pr=%d issues=%d open=%d unknown=%v/%v", info.PRCount, info.IssuesCount, info.OpenIssues, info.PRCountUnknown, info.IssuesCountUnknown)
+	}
+	if !info.IssuesEnabled || !info.PRsEnabled || !info.WikiEnabled || info.PagesEnabled {
+		t.Errorf("legacy-enabled: issues/prs/wiki follow the booleans (true); pages has no boolean and an absent level is not an observed feature (false): %v/%v/%v/%v", info.IssuesEnabled, info.PRsEnabled, info.WikiEnabled, info.PagesEnabled)
+	}
+	if n := atomic.LoadInt32(&st.probeHits); n == 0 {
+		t.Error("legacy-enabled must probe")
 	}
 }

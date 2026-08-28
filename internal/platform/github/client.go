@@ -95,6 +95,12 @@ func (c *Client) ParseRepoURL(url string) (owner, repo string, err error) {
 // --- IssueCollector ---
 
 func (c *Client) ListIssues(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.Issue, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	path := fmt.Sprintf("/repos/%s/%s/issues?state=all&sort=updated&direction=desc", owner, repo)
 	if !since.IsZero() {
 		path += "&since=" + since.Format(time.RFC3339)
@@ -183,6 +189,12 @@ func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, iss
 // --- PullRequestCollector ---
 
 func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.PullRequest, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls?state=all&sort=updated&direction=desc", owner, repo)
 
 	return func(yield func(model.PullRequest, error) bool) {
@@ -426,6 +438,12 @@ func (c *Client) FetchPRRepos(ctx context.Context, owner, repo string, prNumber 
 // one cycle: the per-URL ETag cache turns the second pass into a 304
 // with zero items (the pre-v0.26.3 silent PR-event loss).
 func (c *Client) fetchRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[ghEvent, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/events", owner, repo)
 	return func(yield func(ghEvent, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghEvent](ctx, c.http, path) {
@@ -447,6 +465,12 @@ func (c *Client) fetchRepoEvents(ctx context.Context, owner, repo string, since 
 // repo-wide feed, routing each raw event by its pull_request marker.
 // See fetchRepoEvents for why a single pass is load-bearing.
 func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.RepoEvent, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	return func(yield func(platform.RepoEvent, error) bool) {
 		for raw, err := range c.fetchRepoEvents(ctx, owner, repo, since) {
 			if err != nil {
@@ -493,6 +517,12 @@ func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since t
 // --- MessageCollector ---
 
 func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.MessageWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/comments?sort=updated&direction=desc", owner, repo)
 	if !since.IsZero() {
 		path += "&since=" + since.Format(time.RFC3339)
@@ -551,6 +581,12 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 }
 
 func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.MessageWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	// PR comments in GitHub are the same as issue comments.
 	// The ListIssueComments method already classifies them.
 	// This method exists for the interface; delegate to ListIssueComments
@@ -571,6 +607,12 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 }
 
 func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.ReviewCommentWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/comments?sort=updated&direction=desc", owner, repo)
 	if !since.IsZero() {
 		path += "&since=" + since.Format(time.RFC3339)

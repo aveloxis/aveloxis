@@ -726,7 +726,11 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 			resp, err := c.Get(ctx, currentPath)
 			if err != nil {
 				// 304 Not Modified means the data hasn't changed since our last
-				// request (ETag match). This is not an error — just means zero new items.
+				// request (ETag match). This is not an error — just means zero new
+				// items — for an INCREMENTAL listing (a since-bounded URL). A
+				// full-snapshot listing (since zero) is a truth set and must never
+				// be answered this way: the forge clients bypass the cache for it
+				// (WithoutETag) at the listing entry point (v0.28.18).
 				if errors.Is(err, ErrNotModified) {
 					if currentPath != basePath {
 						// A 304 MID-pagination is unusual (per-page ETag matched

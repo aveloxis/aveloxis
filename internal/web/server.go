@@ -1153,7 +1153,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 
 		for {
 			path := fmt.Sprintf("%s?per_page=100&type=all&page=%d", basePath, page)
-			resp, err := httpClient.Get(ctx, path)
+			resp, err := httpClient.Get(platform.WithoutETag(ctx), path)
 			if err != nil {
 				// 404/403 means this isn't an org (or isn't visible) —
 				// try the /users/ path. v0.27.36: sentinel-classified via

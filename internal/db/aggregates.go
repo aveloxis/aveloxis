@@ -130,7 +130,12 @@ func (s *PostgresStore) RefreshRepoGroupAggregates(ctx context.Context, repoID i
 	err := s.pool.QueryRow(ctx,
 		`SELECT repo_group_id FROM aveloxis_data.repos WHERE repo_id = $1`, repoID,
 	).Scan(&rgID)
-	if err != nil || rgID == nil {
+	if err != nil {
+		// A lookup ERROR is not "no group" (SR-5) — RefreshAllRepoAggregates
+		// counts it, or a canceled pass would report failed_groups=0.
+		return fmt.Errorf("repo_group for repo %d: %w", repoID, err)
+	}
+	if rgID == nil {
 		return nil // no group, nothing to aggregate
 	}
 
@@ -265,7 +270,10 @@ var ErrAggregateRebuildRunning = errors.New("another dm_ aggregate rebuild is al
 // This is more efficient than per-repo refresh because it can use bulk SQL
 // without per-repo DELETE+INSERT cycles. For the repo_group tables, it
 // refreshes each distinct group once.
-func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger interface{ Info(string, ...any) }) error {
+func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger interface {
+	Info(string, ...any)
+	Warn(string, ...any)
+}) error {
 	lockConn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquiring connection for the dm_ aggregate lock: %w", err)
@@ -318,9 +326,17 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 
 	logger.Info("refreshing dm_ aggregate tables", "repos", len(repoIDs))
 
+	// Copilot round 4 (v0.28.18): per-repo / per-group failures used to
+	// be logged and dropped, so the pass returned nil over stale dm_
+	// rows and `refresh-views --aggregates` exited 0. Keep going (one
+	// bad repo must not abort the fleet) but ACCUMULATE and return them.
+	var failed []error
+	failedRepos, failedGroups := 0, 0
 	for _, repoID := range repoIDs {
 		if err := s.RefreshRepoAggregates(ctx, repoID); err != nil {
-			logger.Info("aggregate refresh failed", "repo_id", repoID, "error", err)
+			logger.Warn("aggregate refresh failed", "repo_id", repoID, "error", err)
+			failedRepos++
+			failed = append(failed, fmt.Errorf("repo %d: %w", repoID, err))
 			continue // Don't abort all repos if one fails.
 		}
 	}
@@ -342,10 +358,33 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 	for _, repoID := range repoIDs {
 		// RefreshRepoGroupAggregates looks up the group from the repo.
 		if err := s.RefreshRepoGroupAggregates(ctx, repoID); err != nil {
-			logger.Info("group aggregate refresh failed", "repo_id", repoID, "error", err)
+			logger.Warn("group aggregate refresh failed", "repo_id", repoID, "error", err)
+			failedGroups++
+			failed = append(failed, fmt.Errorf("group of repo %d: %w", repoID, err))
 		}
 	}
 
-	logger.Info("dm_ aggregate tables refreshed", "repos", len(repoIDs))
+	logger.Info("dm_ aggregate tables refreshed", "repos", len(repoIDs), "failed_repos", failedRepos, "failed_groups", failedGroups)
+	if len(failed) > 0 {
+		return boundedJoin(fmt.Sprintf("dm_ aggregate refresh left stale rows: %d repo and %d group refreshes failed across %d repos", failedRepos, failedGroups, len(repoIDs)), failed, aggregateErrorSample)
+	}
 	return nil
+}
+
+// aggregateErrorSample bounds how many per-repo failures ride the
+// returned error — a fleet-wide outage would otherwise join 140K errors
+// into one message. The counts in the prefix stay exact.
+const aggregateErrorSample = 10
+
+// boundedJoin wraps the first `keep` errors (errors.Is / errors.As reach
+// them through the join) under a prefix that carries the full count.
+func boundedJoin(prefix string, errs []error, keep int) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	n := len(errs)
+	if keep > 0 && keep < n {
+		n = keep
+	}
+	return fmt.Errorf("%s (first %d of %d): %w", prefix, n, len(errs), errors.Join(errs[:n]...))
 }

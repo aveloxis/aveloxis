@@ -644,7 +644,7 @@ func listGitHubOrgRepos(ctx context.Context, http *platform.HTTPClient, org stri
 	page := 1
 	for {
 		path := fmt.Sprintf("/orgs/%s/repos?per_page=100&type=all&page=%d", org, page)
-		resp, err := http.Get(ctx, path)
+		resp, err := http.Get(platform.WithoutETag(ctx), path)
 		if err != nil {
 			return repos, err
 		}
@@ -688,7 +688,7 @@ func listGitLabGroupRepos(ctx context.Context, http *platform.HTTPClient, group 
 	encodedGroup := url.PathEscape(group)
 	for {
 		path := fmt.Sprintf("/groups/%s/projects?per_page=100&include_subgroups=true&page=%d", encodedGroup, page)
-		resp, err := http.Get(ctx, path)
+		resp, err := http.Get(platform.WithoutETag(ctx), path)
 		if err != nil {
 			return repos, err
 		}

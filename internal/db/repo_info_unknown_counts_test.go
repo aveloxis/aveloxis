@@ -23,7 +23,7 @@ import (
 func TestInsertRepoInfoCarriesUnknownCountsForward(t *testing.T) {
 	src := readSourceFile(t, "postgres.go")
 	body := extractFuncBody(t, src, "func (s *PostgresStore) InsertRepoInfo(")
-	for _, needle := range []string{"PRCountUnknown", "IssuesCountUnknown", "repo_info_history", "NULLS LAST"} {
+	for _, needle := range []string{"PRCountUnknown", "IssuesCountUnknown", "repo_info_history", "NULLS LAST", "COALESCE(open_issues, 0)", "info.IssuesCount, info.IssuesClosed, info.OpenIssues = ", "info.OpenIssues = 0"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("InsertRepoInfo must consult %s (carry the prior snapshot's counts forward when the fetcher could not supply them)", needle)
 		}
@@ -72,18 +72,31 @@ func TestInsertRepoInfoUnknownCountsEndToEnd(t *testing.T) {
 		return
 	}
 
-	// First-ever snapshot with unknown counts: nothing to carry → zeros.
-	insert(model.RepoInfo{PRCountUnknown: true, IssuesCountUnknown: true, CommitCount: 5})
+	currentOpen := func() int {
+		t.Helper()
+		var n int
+		if err := store.pool.QueryRow(ctx, `SELECT open_issues FROM aveloxis_data.repo_info WHERE repo_id = $1 ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC LIMIT 1`, repoID).Scan(&n); err != nil {
+			t.Fatalf("read open_issues: %v", err)
+		}
+		return n
+	}
+
+	// First-ever snapshot with unknown counts: nothing to carry → zeros,
+	// open_issues included (the fetcher hands in the payload's 77 here).
+	insert(model.RepoInfo{PRCountUnknown: true, IssuesCountUnknown: true, OpenIssues: 77, CommitCount: 5})
 	if pr, _, is, _ := current(); pr != 0 || is != 0 {
 		t.Fatalf("first snapshot with unknown counts: pr_count=%d issues_count=%d, want 0/0", pr, is)
 	}
+	if n := currentOpen(); n != 0 {
+		t.Fatalf("first snapshot with unknown issue counts stored open_issues=%d, want 0 (the whole triple is 0)", n)
+	}
 	// A known snapshot.
-	insert(model.RepoInfo{PRCount: 42, PRsOpen: 7, IssuesCount: 99, IssuesClosed: 90, CommitCount: 6})
+	insert(model.RepoInfo{PRCount: 42, PRsOpen: 7, IssuesCount: 99, IssuesClosed: 90, OpenIssues: 9, CommitCount: 6})
 	if pr, open, is, closed := current(); pr != 42 || open != 7 || is != 99 || closed != 90 {
 		t.Fatalf("known snapshot stored %d/%d/%d/%d", pr, open, is, closed)
 	}
 	// Unknown PR counts, known issue counts: PRs carried, issues fresh.
-	insert(model.RepoInfo{PRCountUnknown: true, IssuesCount: 100, IssuesClosed: 91, CommitCount: 7})
+	insert(model.RepoInfo{PRCountUnknown: true, IssuesCount: 100, IssuesClosed: 91, OpenIssues: 8, CommitCount: 7})
 	if pr, open, is, closed := current(); pr != 42 || open != 7 || is != 100 || closed != 91 {
 		t.Fatalf("PR-unknown snapshot stored %d/%d/%d/%d, want 42/7 carried + 100/91 fresh", pr, open, is, closed)
 	}
@@ -91,5 +104,10 @@ func TestInsertRepoInfoUnknownCountsEndToEnd(t *testing.T) {
 	insert(model.RepoInfo{PRCountUnknown: true, IssuesCountUnknown: true, CommitCount: 8})
 	if pr, open, is, closed := current(); pr != 42 || open != 7 || is != 100 || closed != 91 {
 		t.Fatalf("all-unknown snapshot stored %d/%d/%d/%d, want 42/7/100/91 carried", pr, open, is, closed)
+	}
+	// Copilot round 4: open_issues travels with the issue totals — an
+	// unknown-count snapshot must not read total=100/closed=91/open=0.
+	if openIssues := currentOpen(); openIssues != 8 {
+		t.Fatalf("all-unknown snapshot stored open_issues=%d, want 8 carried with the issue totals", openIssues)
 	}
 }

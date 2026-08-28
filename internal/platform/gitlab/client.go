@@ -1086,7 +1086,14 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	}
 	issueStatsPath := fmt.Sprintf("/projects/%s/issues_statistics", pp)
 	issuesUnknown := false
+	// open_issues comes from the same statistics read as the totals so
+	// the triple (all / closed / opened) is one snapshot; the project
+	// payload's open_issues_count is the fallback only where the
+	// statistics were not read. Disabled → definitive 0; unknown → the
+	// store carries the prior snapshot's value forward with the totals.
+	openIssues := raw.OpenIssuesCount
 	if raw.IssuesAccessLevel == "disabled" {
+		openIssues = 0
 		// Definitive zero, not unknown: the feature is DISABLED, so there
 		// is nothing to count and the probe would only 404 (and log) every
 		// cycle. Not raw.IssuesEnabled — that is feature_available?(user)
@@ -1100,6 +1107,8 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		issuesUnknown = true
 		c.logger.Warn("issue statistics unavailable — issue counts marked unknown, prior snapshot's counts carry forward",
 			"owner", owner, "repo", repo, "error", err)
+	} else {
+		openIssues = issueStats.Statistics.Counts.Opened
 	}
 
 	// GitLab merge_requests count by state.
@@ -1193,15 +1202,15 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		CreatedAt:          raw.CreatedAt,               // v0.27.104
 		Keywords:           strings.Join(raw.Topics, ","),
 		LastUpdated:        raw.LastActivityAt,
-		IssuesEnabled:      raw.IssuesEnabled,
-		PRsEnabled:         raw.MergeRequestsEnabled,
-		WikiEnabled:        raw.WikiEnabled,
-		PagesEnabled:       raw.PagesAccessLevel != "disabled",
+		IssuesEnabled:      featureEnabled(raw.IssuesAccessLevel, raw.IssuesEnabled),
+		PRsEnabled:         featureEnabled(raw.MergeRequestsAccessLevel, raw.MergeRequestsEnabled),
+		WikiEnabled:        featureEnabled(raw.WikiAccessLevel, raw.WikiEnabled),
+		PagesEnabled:       featureEnabled(raw.PagesAccessLevel, false), // no pages_enabled boolean exists; an absent level is not an observed feature
 		IsFork:             isFork,
 		ForkParent:         forkParent,
 		ForkCount:          raw.ForksCount,
 		StarCount:          raw.StarCount,
-		OpenIssues:         raw.OpenIssuesCount,
+		OpenIssues:         openIssues,
 		DefaultBranch:      raw.DefaultBranch,
 		License:            license,
 		LicenseFile:        license,
@@ -1416,4 +1425,18 @@ func (c *Client) FetchPRByNumber(ctx context.Context, owner, repo string, number
 		return nil, err
 	}
 	return mrToPullRequest(raw, prDataSourceGapFill), nil
+}
+
+// featureEnabled derives a repo_info *_enabled flag from GitLab's
+// *_access_level when the payload carries it: "disabled" is the only
+// off state — "private" is enabled-for-members, which the legacy
+// *_enabled boolean (feature_available?(current_user)) reports as false
+// to a token that is not a member, i.e. it would record a live feature
+// as disabled. The boolean is the fallback only for older GitLab
+// responses that omit the level.
+func featureEnabled(accessLevel string, legacy bool) bool {
+	if accessLevel == "" {
+		return legacy
+	}
+	return accessLevel != "disabled"
 }

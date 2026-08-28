@@ -1689,7 +1689,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	page := 1
 	for {
 		path := fmt.Sprintf("/orgs/%s/repos?per_page=100&type=all&page=%d", g.Name, page)
-		resp, err := http.Get(ctx, path)
+		resp, err := http.Get(platform.WithoutETag(ctx), path)
 		if err != nil {
 			s.logger.Warn("org refresh API error", "org", g.Name, "error", err)
 			break
@@ -1787,7 +1787,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	encodedGroup := url.PathEscape(g.Name)
 	for {
 		path := fmt.Sprintf("/groups/%s/projects?per_page=100&include_subgroups=true&page=%d", encodedGroup, page)
-		resp, err := http.Get(ctx, path)
+		resp, err := http.Get(platform.WithoutETag(ctx), path)
 		if err != nil {
 			s.logger.Warn("group refresh API error", "group", g.Name, "error", err)
 			break
@@ -2102,7 +2102,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 				found := false
 				for {
 					path := fmt.Sprintf("%s?per_page=100&type=all&page=%d", basePath, page)
-					resp, err := httpC.Get(ctx, path)
+					resp, err := httpC.Get(platform.WithoutETag(ctx), path)
 					if err != nil {
 						break
 					}

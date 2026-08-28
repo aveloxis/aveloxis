@@ -2156,34 +2156,42 @@ func (s *PostgresStore) InsertRepoInfo(ctx context.Context, info *model.RepoInfo
 	// lookup ERROR is not "no prior snapshot" (SR-5): it fails the insert
 	// rather than storing zeros on bad information.
 	if info.PRCountUnknown || info.IssuesCountUnknown {
-		var prPRs, prOpen, prClosed, prMerged, prIssues, prIssuesClosed int
+		var prPRs, prOpen, prClosed, prMerged, prIssues, prIssuesClosed, prIssuesOpen int
 		err := s.pool.QueryRow(ctx, `
 			SELECT COALESCE(pr_count, 0), COALESCE(prs_open, 0), COALESCE(prs_closed, 0), COALESCE(prs_merged, 0),
-			       COALESCE(issues_count, 0), COALESCE(issues_closed, 0)
+			       COALESCE(issues_count, 0), COALESCE(issues_closed, 0), COALESCE(open_issues, 0)
 			FROM (
-				SELECT pr_count, prs_open, prs_closed, prs_merged, issues_count, issues_closed,
+				SELECT pr_count, prs_open, prs_closed, prs_merged, issues_count, issues_closed, open_issues,
 				       data_collection_date, repo_info_id
 				FROM aveloxis_data.repo_info WHERE repo_id = $1
 				UNION ALL
-				SELECT pr_count, prs_open, prs_closed, prs_merged, issues_count, issues_closed,
+				SELECT pr_count, prs_open, prs_closed, prs_merged, issues_count, issues_closed, open_issues,
 				       data_collection_date, repo_info_id
 				FROM aveloxis_data.repo_info_history WHERE repo_id = $1
 			) prior
 			ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC
 			LIMIT 1`, info.RepoID,
-		).Scan(&prPRs, &prOpen, &prClosed, &prMerged, &prIssues, &prIssuesClosed)
+		).Scan(&prPRs, &prOpen, &prClosed, &prMerged, &prIssues, &prIssuesClosed, &prIssuesOpen)
 		switch {
 		case err == nil:
 			if info.PRCountUnknown {
 				info.PRCount, info.PRsOpen, info.PRsClosed, info.PRsMerged = prPRs, prOpen, prClosed, prMerged
 			}
 			if info.IssuesCountUnknown {
-				info.IssuesCount, info.IssuesClosed = prIssues, prIssuesClosed
+				// The whole issue triple travels together — open_issues
+				// too, or the snapshot reads total=N/closed=M/open=0.
+				info.IssuesCount, info.IssuesClosed, info.OpenIssues = prIssues, prIssuesClosed, prIssuesOpen
 			}
 			s.logger.Info("repo_info counts unavailable from the forge — prior snapshot's counts carried forward",
 				"repo_id", info.RepoID, "pr_count_unknown", info.PRCountUnknown, "issues_count_unknown", info.IssuesCountUnknown,
 				"pr_count", info.PRCount, "issues_count", info.IssuesCount)
 		case errors.Is(err, pgx.ErrNoRows):
+			if info.IssuesCountUnknown {
+				// The fetcher's OpenIssues is the project payload's count
+				// on this path; without the totals it would store the
+				// incoherent 0/0/N triple. The whole triple is 0.
+				info.OpenIssues = 0
+			}
 			s.logger.Warn("repo_info counts unavailable from the forge and no prior snapshot exists — counts stored as 0 until a fetch succeeds",
 				"repo_id", info.RepoID, "pr_count_unknown", info.PRCountUnknown, "issues_count_unknown", info.IssuesCountUnknown)
 		default:

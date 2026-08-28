@@ -94,6 +94,11 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 	start := time.Now()
 	logger.Info("refreshing materialized views", "count", len(matviewNames))
 
+	// Pass 26 (v0.28.18): the sibling of the dm_ aggregate fix — a failed
+	// REFRESH was a WARN and the function returned nil, so
+	// `aveloxis refresh-views` exited 0 over a stale view. Keep going,
+	// accumulate, return.
+	var failed []error
 	for _, name := range matviewNames {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -109,6 +114,7 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 			if err != nil {
 				logger.Warn("failed to refresh materialized view",
 					"view", name, "error", err, "duration", time.Since(viewStart))
+				failed = append(failed, fmt.Errorf("view %s: %w", name, err))
 				continue // Don't abort all views if one fails.
 			}
 		}
@@ -118,6 +124,9 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 	}
 
 	logger.Info("materialized view refresh complete",
-		"total_duration", time.Since(start).Truncate(time.Second))
+		"total_duration", time.Since(start).Truncate(time.Second), "failed", len(failed))
+	if len(failed) > 0 {
+		return boundedJoin(fmt.Sprintf("materialized view refresh left %d of %d views stale", len(failed), len(matviewNames)), failed, aggregateErrorSample)
+	}
 	return nil
 }

@@ -162,6 +162,7 @@ type glProject struct {
 	// 403) so a narrowed token never stores a fabricated 0.
 	IssuesAccessLevel        string `json:"issues_access_level"`
 	MergeRequestsAccessLevel string `json:"merge_requests_access_level"`
+	WikiAccessLevel          string `json:"wiki_access_level"`
 	WikiEnabled              bool   `json:"wiki_enabled"`
 	PagesAccessLevel         string `json:"pages_access_level"`
 	ForkedFromProject        *struct {

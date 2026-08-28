@@ -92,7 +92,7 @@ func (st *countsRouterState) handler() http.Handler {
 			case "members-only":
 				enabled, level = `false`, `private`
 			}
-			_, _ = w.Write([]byte(`{"id":101,"default_branch":"main","web_url":"https://gitlab.com/owner/repo","path_with_namespace":"owner/repo","star_count":1,"forks_count":0,"open_issues_count":5,"issues_enabled":` + enabled + `,"merge_requests_enabled":` + enabled + `,"issues_access_level":"` + level + `","merge_requests_access_level":"` + level + `","statistics":{"commit_count":12}}`))
+			_, _ = w.Write([]byte(`{"id":101,"default_branch":"main","web_url":"https://gitlab.com/owner/repo","path_with_namespace":"owner/repo","star_count":1,"forks_count":0,"open_issues_count":77,"issues_enabled":` + enabled + `,"merge_requests_enabled":` + enabled + `,"issues_access_level":"` + level + `","merge_requests_access_level":"` + level + `","wiki_enabled":` + enabled + `,"wiki_access_level":"` + level + `","pages_access_level":"` + level + `","statistics":{"commit_count":12}}`))
 		}
 	})
 }
@@ -112,6 +112,15 @@ func TestFetchRepoInfoCountsHealthy(t *testing.T) {
 	}
 	if info.IssuesCount != 9 || info.IssuesClosed != 4 {
 		t.Errorf("issue counts = %d/%d, want 9/4", info.IssuesCount, info.IssuesClosed)
+	}
+	// open_issues comes from the SAME statistics read as the totals (the
+	// payload's open_issues_count is 77 in this fixture — a different
+	// snapshot), and every feature flag from its access level.
+	if info.OpenIssues != 5 {
+		t.Errorf("OpenIssues = %d, want 5 (the statistics' opened count, not the payload's 77)", info.OpenIssues)
+	}
+	if !info.IssuesEnabled || !info.PRsEnabled || !info.WikiEnabled || !info.PagesEnabled {
+		t.Errorf("healthy (access_level=enabled) must persist every feature flag TRUE: issues=%v prs=%v wiki=%v pages=%v", info.IssuesEnabled, info.PRsEnabled, info.WikiEnabled, info.PagesEnabled)
 	}
 	if capture.has(slog.LevelWarn, "count unavailable") || capture.has(slog.LevelInfo, "counts unavailable") {
 		t.Error("no unavailable-count log expected on the healthy path")
@@ -133,6 +142,9 @@ func TestFetchRepoInfoDisabledFeaturesAreDefinitiveZero(t *testing.T) {
 	}
 	if info.PRCount != 0 || info.IssuesCount != 0 || info.IssuesEnabled || info.PRsEnabled {
 		t.Errorf("disabled features: counts %d/%d enabled %v/%v, want 0/0 false/false", info.PRCount, info.IssuesCount, info.IssuesEnabled, info.PRsEnabled)
+	}
+	if info.OpenIssues != 0 || info.WikiEnabled || info.PagesEnabled {
+		t.Errorf("disabled: open_issues=%d wiki=%v pages=%v, want 0/false/false (a definitive zero, never the payload's count)", info.OpenIssues, info.WikiEnabled, info.PagesEnabled)
 	}
 	if n := atomic.LoadInt32(&st.probeHits); n != 0 {
 		t.Errorf("disabled features must not be probed (they 404 and log every cycle) — %d probe requests", n)
@@ -161,6 +173,40 @@ func TestFetchRepoInfoMembersOnlyFeaturesAreUnknownNotZero(t *testing.T) {
 	}
 	if !capture.has(slog.LevelWarn, "unavailable") {
 		t.Error("expected the unavailable-count WARN")
+	}
+	// Copilot round 4: the legacy booleans read false here, but the
+	// feature is enabled (access_level=private) — persisting false would
+	// record the very "disabled" the unknown-count logic refuses to claim.
+	if !info.IssuesEnabled || !info.PRsEnabled || !info.WikiEnabled || !info.PagesEnabled {
+		t.Errorf("members-only (access_level=private) must persist every feature flag TRUE — the level, not the token-scoped boolean, decides: issues=%v prs=%v wiki=%v pages=%v", info.IssuesEnabled, info.PRsEnabled, info.WikiEnabled, info.PagesEnabled)
+	}
+	// With the statistics unreadable, OpenIssues is the payload's count
+	// (77) — the store carries the prior snapshot's value forward instead.
+	if info.OpenIssues != 77 {
+		t.Errorf("unknown issue counts: OpenIssues = %d, want the payload fallback 77 (the store overrides it by carry-forward)", info.OpenIssues)
+	}
+}
+
+// featureEnabled: the access level decides when present; the boolean is
+// the fallback only when older responses omit it.
+func TestFeatureEnabledDerivesFromAccessLevel(t *testing.T) {
+	for _, c := range []struct {
+		level  string
+		legacy bool
+		want   bool
+	}{
+		{"disabled", false, false},
+		{"disabled", true, false}, // the level wins even over a stale true
+		{"private", false, true},  // members-only, token not a member
+		{"private", true, true},
+		{"enabled", false, true},
+		{"enabled", true, true},
+		{"", false, false}, // older GitLab: no level → the boolean
+		{"", true, true},
+	} {
+		if got := featureEnabled(c.level, c.legacy); got != c.want {
+			t.Errorf("featureEnabled(%q, %v) = %v, want %v", c.level, c.legacy, got, c.want)
+		}
 	}
 }
 

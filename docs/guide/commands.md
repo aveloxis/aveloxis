@@ -835,7 +835,8 @@ Both consolidation arms (the dataless heal and the per-pair merge)
 share `dedup-repos`' precondition: the v0.28.18 migrate must have built
 the `email_message` FK indexes, or each such repo is skipped with a
 warning naming the migrate to run first (the other classifications —
-dead, re-enqueue — proceed).
+dead, re-enqueue — proceed) and the run exits nonzero at the end so a
+script cannot read a refused run as success.
 
 ## `aveloxis generate-showcase`
 

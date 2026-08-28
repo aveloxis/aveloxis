@@ -156,36 +156,46 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	// reconcile-repos' pair consolidation per pair, prelim's rename heal
 	// — and the gate derives its columns and index names from
 	// emailMessageFKIndexes (SR-17), never a hand list.
-	// ret pins the statement that FOLLOWS the gate, anchored on the
-	// closing brace (`return …, err }`) so a substituted expression
-	// (`errPairCollecting`, `errors.New(…)`, `errors.Join(err, …)`)
-	// cannot pass. Two shapes: the three entry points return the gate's
-	// error UNWRAPPED — the pin rejects even a `%w` wrap, which would
-	// keep errors.Is working, because only DedupCaseVariantReposBatch's
-	// caller (the CLI's "precondition unmet" branch, `errors.Is` on the
-	// sentinel; a `%v` rewrap would silently resurrect "batch dedup
-	// errored mid-way") consumes the sentinel and none of the three has
-	// anything to add to the gate's own message; the list dedup instead
-	// classifies on the sentinel FIRST and then wraps `%w` with its step
-	// label for the migrate collector.
-	for _, site := range []struct{ file, fn, needle, ret string }{
-		{"repo_dedup.go", "func DedupCaseVariantReposBatch(", `emailMessageFKIndexesReadyFor(ctx, store.pool, "repos")`, "return 0, 0, err }"},
-		{"stranded_repos.go", "func DedupRenamedRepoPair(", `emailMessageFKIndexesReadyFor(ctx, store.pool, "repos")`, "return err }"},
-		{"rename_duplicate_heal.go", "func (s *PostgresStore) HealRenamedDuplicate(", `emailMessageFKIndexesReadyFor(ctx, s.pool, "repos")`, "return false, err }"},
-		{"email_message_fk_indexes.go", "func dedupRepoGroupsListServe(", `emailMessageFKIndexesReadyFor(ctx, pg.pool, "repo_groups_list_serve")`, "if errors.Is(err, ErrEmailMessageIndexesNotReady) {"},
+	// ret pins the statement that FOLLOWS the gate — matched as a PREFIX
+	// of the source from the (exactly one) gate call, anchored on the
+	// closing brace (`return …, err }`) — so neither a substituted
+	// expression (`errPairCollecting`, `errors.New(…)`, `errors.Join(err,
+	// …)`), a statement slipped in between, nor a decorative first gate
+	// with a well-formed copy after the write can pass. Two shapes: the
+	// three entry points return the gate's error UNWRAPPED — the pin
+	// rejects even a `%w` wrap, which would keep errors.Is working,
+	// because none of them has anything to add to the gate's own message
+	// and both CLIs classify on the sentinel (dedup-repos stops with
+	// "precondition unmet"; reconcile-repos counts each refused repo for
+	// its nonzero exit; prelim never inspects it); the list dedup
+	// instead classifies on the sentinel FIRST and then wraps `%w` with
+	// its step label for the migrate collector.
+	for _, site := range []struct{ file, fn, needle, ret, why string }{
+		{"repo_dedup.go", "func DedupCaseVariantReposBatch(", `emailMessageFKIndexesReadyFor(ctx, store.pool, "repos")`, "return 0, 0, err }",
+			`dedup-repos classifies on the sentinel — a substituted or rewrapped error would log "batch dedup errored mid-way" for a refusal`},
+		{"stranded_repos.go", "func DedupRenamedRepoPair(", `emailMessageFKIndexesReadyFor(ctx, store.pool, "repos")`, "return err }",
+			"reconcile-repos classifies on the sentinel to exit nonzero after a refused run"},
+		{"rename_duplicate_heal.go", "func (s *PostgresStore) HealRenamedDuplicate(", `emailMessageFKIndexesReadyFor(ctx, s.pool, "repos")`, "return false, err }",
+			"reconcile-repos classifies on the sentinel to exit nonzero after a refused run (prelim treats any error as heal-unavailable)"},
+		{"email_message_fk_indexes.go", "func dedupRepoGroupsListServe(", `emailMessageFKIndexesReadyFor(ctx, pg.pool, "repo_groups_list_serve")`, "if errors.Is(err, ErrEmailMessageIndexesNotReady) {",
+			"a rewrap before the classification would turn the WARN skip into a failed migrate step"},
 	} {
 		fnBody := srctest.FuncBody(t, readSourceFile(t, site.file), site.fn)
+		if n := strings.Count(fnBody, site.needle); n != 1 {
+			t.Errorf("%s must pass the gate exactly once, found %d", site.fn, n)
+			continue
+		}
 		gate := strings.Index(fnBody, site.needle)
 		write := strings.Index(fnBody, "Begin(ctx)")
 		if write < 0 {
 			write = strings.Index(fnBody, "dedupOnePair(")
 		}
-		if gate < 0 || write < 0 || gate > write {
+		if write < 0 || gate > write {
 			t.Errorf("%s must pass %s BEFORE it opens a transaction or hands off to dedupOnePair", site.fn, site.needle)
 			continue
 		}
-		if !strings.Contains(srctest.NormalizeWS(fnBody[gate:]), srctest.NormalizeWS(site.needle+"; err != nil { "+site.ret)) {
-			t.Errorf("%s must follow the gate with exactly `%s` — the entry points return the gate's error unwrapped (no wrap at all, even %%w; a substituted or %%v-rewrapped error would break the CLI's errors.Is on ErrEmailMessageIndexesNotReady and log \"batch dedup errored mid-way\" for a refusal), and the list dedup classifies on the sentinel before wrapping for the migrate collector", site.fn, site.ret)
+		if !strings.HasPrefix(srctest.NormalizeWS(fnBody[gate:]), srctest.NormalizeWS(site.needle+"; err != nil { "+site.ret)) {
+			t.Errorf("%s must follow the gate with exactly `%s` — %s", site.fn, site.ret, site.why)
 		}
 	}
 	gateBody := srctest.FuncBody(t, src, "func emailMessageFKIndexesReadyFor(")

@@ -526,3 +526,472 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 		}
 	}
 }
+
+// scancodePackageFiles parses every non-test source of package
+// collector. Package-wide because (*ScancodeWorker)'s methods span
+// scancode_worker.go and scancode_preflight.go, and Run calls into
+// both — a same-file walk let a sibling-file helper hold a runner
+// wait invisibly (pass 46).
+func scancodePackageFiles(t *testing.T) (*token.FileSet, []*ast.File) {
+	t.Helper()
+	dir := filepath.Join(srctest.Root(t), "internal", "collector")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read internal/collector: %v", err)
+	}
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		files = append(files, f)
+	}
+	if len(files) < 10 {
+		t.Fatalf("parsed only %d non-test sources in internal/collector — the walk below would be scoped to almost nothing; fix the file discovery", len(files))
+	}
+	return fset, files
+}
+
+// declKey names a declaration the way scancodeDecls keys it: methods
+// by receiver type so a method and a same-named package function can
+// never collide.
+func declKey(fn *ast.FuncDecl) string {
+	if fn.Recv != nil && len(fn.Recv.List) == 1 {
+		return types.ExprString(fn.Recv.List[0].Type) + "." + fn.Name.Name
+	}
+	return fn.Name.Name
+}
+
+// scancodeDecls indexes every declaration of the package by declKey.
+func scancodeDecls(files []*ast.File) map[string]*ast.FuncDecl {
+	byName := map[string]*ast.FuncDecl{}
+	for _, file := range files {
+		for _, d := range file.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Body != nil {
+				byName[declKey(fn)] = fn
+			}
+		}
+	}
+	return byName
+}
+
+// sortedDecls returns the walk's members in a stable order so failures
+// read the same way run to run.
+func sortedDecls(set map[string]*ast.FuncDecl) []*ast.FuncDecl {
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]*ast.FuncDecl, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, set[k])
+	}
+	return out
+}
+
+// declFile returns the parsed file that declares fn.
+func declFile(fset *token.FileSet, files []*ast.File, fn *ast.FuncDecl) *ast.File {
+	want := fset.Position(fn.Pos()).Filename
+	for _, f := range files {
+		if fset.Position(f.Pos()).Filename == want {
+			return f
+		}
+	}
+	return nil
+}
+
+// readDeclSource reads the source file that declares fn. Derived from
+// the AST rather than hardcoded, so the textual operand check below
+// follows Run if it ever moves to a sibling file (pass 47).
+func readDeclSource(t *testing.T, fset *token.FileSet, fn *ast.FuncDecl) string {
+	t.Helper()
+	data, err := os.ReadFile(fset.Position(fn.Pos()).Filename)
+	if err != nil {
+		t.Fatalf("read %s: %v", fset.Position(fn.Pos()).Filename, err)
+	}
+	return string(data)
+}
+
+// safegoAlias returns the name internal/safego is imported under in
+// file — "safego" normally, but an aliased import must not silently
+// stop counting as a goroutine launch (pass 47).
+func safegoAlias(file *ast.File) string {
+	if file == nil {
+		return "safego"
+	}
+	for _, imp := range file.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		if !strings.HasSuffix(path, "/safego") {
+			continue
+		}
+		if imp.Name != nil {
+			return imp.Name.Name
+		}
+		return "safego"
+	}
+	return "safego"
+}
+
+// waitCall is one X.Wait() call site, with the declaration it sits in.
+type waitCall struct {
+	recv  string
+	pos   token.Pos
+	owner *ast.FuncDecl
+}
+
+// waitCalls returns every X.Wait() call inside n. An AST walk, so
+// ".Wait()" inside a log string is not a call and cannot count.
+func waitCalls(n ast.Node) []waitCall {
+	var out []waitCall
+	ast.Inspect(n, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Wait" {
+			out = append(out, waitCall{recv: types.ExprString(sel.X), pos: call.Pos()})
+		}
+		return true
+	})
+	return out
+}
+
+// asyncSet records what Run launches asynchronously: the spans of
+// goroutine literals, and the declarations reached from them.
+type asyncSet struct {
+	spans []struct {
+		from, to, launch token.Pos
+	}
+	decls map[*ast.FuncDecl]token.Pos
+}
+
+// reaches reports whether the drain site is launched asynchronously,
+// and where that launch sits in Run.
+func (a asyncSet) reaches(w waitCall) (token.Pos, bool) {
+	for _, s := range a.spans {
+		if w.pos > s.from && w.pos < s.to {
+			return s.launch, true
+		}
+	}
+	if pos, ok := a.decls[w.owner]; ok {
+		return pos, true
+	}
+	return 0, false
+}
+
+// asyncLaunches collects what Run starts in a goroutine: `go` statements
+// and safego.Go calls, whether they carry a literal, a local holding
+// one, or a method — plus, transitively, everything those reach. A
+// literal that is merely invoked is deliberately excluded: deleting
+// `go ` was the pass-46 escape.
+func asyncLaunches(run *ast.FuncDecl, byName map[string]*ast.FuncDecl, safego string) asyncSet {
+	out := asyncSet{decls: map[*ast.FuncDecl]token.Pos{}}
+	lits := map[string]*ast.FuncLit{} // locals holding a literal
+	ast.Inspect(run, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, rhs := range as.Rhs {
+			if lit, ok := rhs.(*ast.FuncLit); ok && i < len(as.Lhs) {
+				if id, ok := as.Lhs[i].(*ast.Ident); ok {
+					lits[id.Name] = lit
+				}
+			}
+		}
+		return true
+	})
+	add := func(target ast.Expr, launch token.Pos) {
+		switch f := target.(type) {
+		case *ast.FuncLit:
+			out.spans = append(out.spans, struct{ from, to, launch token.Pos }{f.Pos(), f.End(), launch})
+		case *ast.Ident:
+			if lit, ok := lits[f.Name]; ok {
+				out.spans = append(out.spans, struct{ from, to, launch token.Pos }{lit.Pos(), lit.End(), launch})
+				return
+			}
+			if fn, ok := byName[f.Name]; ok {
+				out.decls[fn] = launch
+			}
+		case *ast.SelectorExpr:
+			if fn, ok := byName["*ScancodeWorker."+f.Sel.Name]; ok {
+				out.decls[fn] = launch
+			}
+		}
+	}
+	ast.Inspect(run, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.GoStmt:
+			add(s.Call.Fun, s.Pos())
+		case *ast.CallExpr:
+			if types.ExprString(s.Fun) != safego+".Go" {
+				return true
+			}
+			for _, arg := range s.Args {
+				add(arg, s.Pos())
+			}
+		}
+		return true
+	})
+	// Transitive closure: a drain one more hop below an async entry
+	// point is still asynchronous.
+	for fn, launch := range out.decls {
+		for _, sub := range scancodeReachable(byName, fn) {
+			if _, seen := out.decls[sub]; !seen {
+				out.decls[sub] = launch
+			}
+		}
+	}
+	return out
+}
+
+// receive is one receive Run performs itself.
+type receive struct {
+	operand string
+	pos     token.Pos
+}
+
+// runOwnReceives returns the receives Run performs, excluding those
+// inside the goroutines it launches — those belong to the goroutine.
+// A receive inside a merely-invoked literal still counts as Run's,
+// because an immediately-invoked literal is synchronous code.
+func runOwnReceives(run *ast.FuncDecl, async asyncSet) []receive {
+	var out []receive
+	ast.Inspect(run, func(n ast.Node) bool {
+		u, ok := n.(*ast.UnaryExpr)
+		if !ok || u.Op != token.ARROW {
+			return true
+		}
+		for _, s := range async.spans {
+			if u.Pos() > s.from && u.Pos() < s.to {
+				return true
+			}
+		}
+		out = append(out, receive{operand: types.ExprString(u.X), pos: u.Pos()})
+		return true
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].pos < out[j].pos })
+	return out
+}
+
+// assignedTargets returns, for every target fn binds (an identifier or
+// a struct field), whether it was ever bound by a call the predicate
+// accepts and whether it was ever bound to anything else. Covering
+// ValueSpec keeps `var x = make(chan struct{})` legal (46f); covering
+// SelectorExpr targets keeps a channel hoisted to a field legal (47i);
+// and tracking "bound to something else" is what stops a WaitGroup
+// named `cmd` from inheriting a subprocess exemption (47e).
+func assignedTargets(fn ast.Node, accept func(*ast.CallExpr) bool) (matched, other map[string]bool) {
+	matched, other = map[string]bool{}, map[string]bool{}
+	name := func(e ast.Expr) (string, bool) {
+		switch t := e.(type) {
+		case *ast.Ident:
+			return t.Name, true
+		case *ast.SelectorExpr:
+			return types.ExprString(t), true
+		}
+		return "", false
+	}
+	record := func(lhs, rhs []ast.Expr) {
+		for i, l := range lhs {
+			n, ok := name(l)
+			if !ok {
+				continue
+			}
+			if i >= len(rhs) {
+				// Multi-value RHS: only the first target can be
+				// attributed, and it was handled at i == 0.
+				continue
+			}
+			if call, isCall := rhs[i].(*ast.CallExpr); isCall && accept(call) {
+				matched[n] = true
+			} else {
+				other[n] = true
+			}
+		}
+	}
+	ast.Inspect(fn, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			record(s.Lhs, s.Rhs)
+		case *ast.ValueSpec:
+			lhs := make([]ast.Expr, 0, len(s.Names))
+			for _, nm := range s.Names {
+				lhs = append(lhs, nm)
+			}
+			record(lhs, s.Values)
+		}
+		return true
+	})
+	return matched, other
+}
+
+// runLocalsFrom returns fn's locals bound to a call to any of callees.
+func runLocalsFrom(fn ast.Node, callees ...string) map[string]bool {
+	matched, _ := assignedTargets(fn, func(call *ast.CallExpr) bool {
+		name := types.ExprString(call.Fun)
+		for _, c := range callees {
+			if name == c {
+				return true
+			}
+		}
+		return false
+	})
+	return matched
+}
+
+// subprocessHandles returns the locals fn binds to exec.Command or
+// exec.CommandContext and never rebinds to anything else — the only
+// receivers besides w.bookkeeping whose .Wait() is legal.
+func subprocessHandles(fn ast.Node) map[string]bool {
+	matched, other := assignedTargets(fn, func(call *ast.CallExpr) bool {
+		name := types.ExprString(call.Fun)
+		return name == "exec.Command" || name == "exec.CommandContext"
+	})
+	out := map[string]bool{}
+	for n := range matched {
+		if !other[n] {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// runJoinChannels returns the channel handles fn both make()s and
+// close()s — its own goroutine-join handles. Derived rather than
+// hard-coded so renaming one, or hoisting it to a struct field, stays
+// a legal refactor. A channel closed by some OTHER function is
+// excluded: that is the pass-44 escape shape.
+func runJoinChannels(fn *ast.FuncDecl) map[string]bool {
+	made, _ := assignedTargets(fn, func(call *ast.CallExpr) bool {
+		if types.ExprString(call.Fun) != "make" || len(call.Args) == 0 {
+			return false
+		}
+		_, isChan := call.Args[0].(*ast.ChanType)
+		return isChan
+	})
+	joins := map[string]bool{}
+	ast.Inspect(fn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || types.ExprString(call.Fun) != "close" || len(call.Args) != 1 {
+			return true
+		}
+		if name := types.ExprString(call.Args[0]); made[name] {
+			joins[name] = true
+		}
+		return true
+	})
+	return joins
+}
+
+// boundSpec knows the shutdown deadline's legal spellings, all of them
+// derived from Run rather than hardcoded.
+type boundSpec struct {
+	timers, deadlines, ctxDeadlines map[string]bool
+}
+
+// is reports whether a receive operand is the shutdown deadline:
+// time.After(...) inline or in a local, a time.NewTimer local's .C, or
+// a context.WithTimeout/WithDeadline local's .Done().
+func (b boundSpec) is(operand string) bool {
+	if strings.HasPrefix(operand, "time.After(") || b.deadlines[operand] {
+		return true
+	}
+	if name, ok := strings.CutSuffix(operand, ".C"); ok && b.timers[name] {
+		return true
+	}
+	name, ok := strings.CutSuffix(operand, ".Done()")
+	return ok && b.ctxDeadlines[name]
+}
+
+// commReceiveOperand returns the operand of `case <-X:` or
+// `case v := <-X:`, and whether the clause is a receive at all. A
+// `default:` clause has a nil Comm; callers must reject those
+// separately rather than skipping them (pass 46).
+func commReceiveOperand(cc *ast.CommClause) (string, bool) {
+	var expr ast.Expr
+	switch s := cc.Comm.(type) {
+	case *ast.ExprStmt:
+		expr = s.X
+	case *ast.AssignStmt:
+		if len(s.Rhs) == 1 {
+			expr = s.Rhs[0]
+		}
+	}
+	u, ok := expr.(*ast.UnaryExpr)
+	if !ok || u.Op != token.ARROW {
+		return "", false
+	}
+	return types.ExprString(u.X), true
+}
+
+// scancodeReachable walks the PACKAGE-WIDE call graph from start to a
+// fixpoint (the pass-34 pattern). A method call resolves whatever its
+// receiver is spelled: renaming one receiver `w`→`s` made the walk a
+// dead end for everything below it, hiding a runner wait two hops
+// down (pass 47).
+func scancodeReachable(byName map[string]*ast.FuncDecl, start *ast.FuncDecl) map[string]*ast.FuncDecl {
+	seen := map[string]*ast.FuncDecl{}
+	queue := []*ast.FuncDecl{start}
+	for len(queue) > 0 {
+		fn := queue[0]
+		queue = queue[1:]
+		ast.Inspect(fn, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			var keys []string
+			switch f := call.Fun.(type) {
+			case *ast.Ident:
+				keys = []string{f.Name}
+			case *ast.SelectorExpr:
+				if _, isIdent := f.X.(*ast.Ident); isIdent {
+					keys = []string{"*ScancodeWorker." + f.Sel.Name}
+				}
+			}
+			for _, key := range keys {
+				if _, done := seen[key]; done {
+					continue
+				}
+				target, ok := byName[key]
+				if !ok || target == start {
+					continue
+				}
+				seen[key] = target
+				queue = append(queue, target)
+			}
+			return true
+		})
+	}
+	return seen
+}
+
+// scancodeMethodDecl returns the (*ScancodeWorker) method named name,
+// from whichever file of the package declares it. The receiver type is
+// checked so a same-named method on another type can never be pinned
+// by mistake.
+func scancodeMethodDecl(t *testing.T, files []*ast.File, name string) *ast.FuncDecl {
+	t.Helper()
+	for _, file := range files {
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != name || fn.Body == nil || fn.Recv == nil || len(fn.Recv.List) != 1 {
+				continue
+			}
+			if types.ExprString(fn.Recv.List[0].Type) != "*ScancodeWorker" {
+				continue
+			}
+			return fn
+		}
+	}
+	t.Fatalf("cannot find (*ScancodeWorker).%s", name)
+	return nil
+}

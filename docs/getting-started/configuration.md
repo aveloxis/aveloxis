@@ -37,11 +37,15 @@ claim on two axes, and they have different reach:
   default"), so presence is asserted separately. The one reasoned
   exemption is `github.gitlab_hosts`: the two forge blocks share one
   struct and that field is GitLab-only.
-- **Values — the `collection` block.** Every value there must equal
-  the compiled default, compared through the same effective accessors
-  the running code uses. The remaining blocks carry site-specific
-  placeholders (tokens, hostnames, secrets) that have no compiled
-  default to match; their defaults are documented in the reference
+- **Values — every block that has compiled defaults.** `collection`,
+  `api`, `monitor` and `mail` are compared field by field against the
+  compiled defaults, through the same effective accessors the running
+  code uses. The exceptions are named and carry a reason in the test:
+  `mail`'s sender address, app password, display name and site URL are
+  placeholders with no compiled default. `database`, `github`,
+  `gitlab` and `web` are **not** value-checked at all — every field
+  there is site-specific (hosts, tokens, secrets), so treat those
+  values as illustrative and take their defaults from the reference
   tables below.
 
 The value check exists because the snippet taught

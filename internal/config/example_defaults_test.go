@@ -208,6 +208,7 @@ func TestConfigurationDocSnippetMatchesEffectiveDefaults(t *testing.T) {
 	}
 	block := configurationDocSnippet(t, string(doc))
 	assertCollectionMatchesEffectiveDefaults(t, docsSnippetLabel, []byte(block))
+	assertSnippetBlockValues(t, block)
 
 	// Values alone cannot police the snippet's "every supported
 	// option" claim: an OMITTED key silently keeps the default, so the
@@ -251,7 +252,11 @@ func TestConfigurationDocSnippetMatchesEffectiveDefaults(t *testing.T) {
 				"(absent means default). Add it to the snippet, or soften the claim.", tag)
 			continue
 		}
-		if field.Type.Kind() != reflect.Struct {
+		blockType := field.Type
+		for blockType.Kind() == reflect.Ptr {
+			blockType = blockType.Elem()
+		}
+		if blockType.Kind() != reflect.Struct {
 			continue
 		}
 		var sub map[string]json.RawMessage
@@ -259,11 +264,7 @@ func TestConfigurationDocSnippetMatchesEffectiveDefaults(t *testing.T) {
 			t.Errorf("the %q block of the configuration.md snippet does not parse as an object: %v", tag, err)
 			continue
 		}
-		for j := 0; j < field.Type.NumField(); j++ {
-			sTag := strings.Split(field.Type.Field(j).Tag.Get("json"), ",")[0]
-			if sTag == "" || sTag == "-" {
-				continue
-			}
+		for _, sTag := range jsonTagsOf(blockType) {
 			if _, ok := sub[sTag]; ok {
 				continue
 			}
@@ -342,4 +343,161 @@ func TestExampleConfigsCarryNoEnvVarSyntax(t *testing.T) {
 			}
 		}
 	}
+}
+
+// jsonTagsOf returns every JSON key a config block serialises,
+// following embedded structs (whose fields are promoted into the
+// parent object) and dereferencing pointers. Pass 47: the flat
+// `field.Type.NumField()` walk skipped a pointer-to-struct block
+// entirely and treated an embedded struct's tag-less field as
+// nothing, so a field added that way could never be missed by the
+// presence check that exists to catch exactly that.
+func jsonTagsOf(t reflect.Type) []string {
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	var out []string
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		tag := strings.Split(f.Tag.Get("json"), ",")[0]
+		if f.Anonymous && tag == "" {
+			out = append(out, jsonTagsOf(f.Type)...)
+			continue
+		}
+		if tag == "" || tag == "-" {
+			continue
+		}
+		out = append(out, tag)
+	}
+	return out
+}
+
+// snippetValueBlocks are the configuration.md blocks whose values are
+// COMPILED DEFAULTS, so the snippet can be held to them the same way
+// the collection block is. database/github/gitlab/web are excluded on
+// purpose: they carry site-specific placeholders (hosts, tokens,
+// secrets) with no default to match.
+//
+// Pass 47 added this. Pass 46 documented `api` and `monitor` in the
+// snippet and checked only that the KEYS were present, which
+// re-created the exact rot the collection value check exists to
+// prevent — proven by changing two compiled defaults with every test
+// still green.
+var snippetValueBlocks = []string{"api", "monitor", "mail"}
+
+// snippetValueAccessors mirrors effectiveAccessors for the blocks
+// above: a field whose meaning comes from an accessor is compared
+// through it, not through its zero value.
+var snippetValueAccessors = map[string]func(*Config) any{
+	"api.RateLimitRPS":             func(c *Config) any { return c.API.RateLimitRPSOrDefault() },
+	"api.RateLimitBurst":           func(c *Config) any { return c.API.RateLimitBurstOrDefault() },
+	"api.RateLimitDaily":           func(c *Config) any { return c.API.RateLimitDailyOrDefault() },
+	"api.ExemptCIDRs":              func(c *Config) any { return c.API.ExemptCIDRsOrDefault() },
+	"monitor.RefreshSeconds":       func(c *Config) any { return c.Monitor.MonitorRefreshSecondsOrDefault() },
+	"mail.VulnDigestMinSeverity":   func(c *Config) any { return c.Mail.VulnDigestMinSeverityOrDefault() },
+	"mail.VulnDigestIntervalHours": func(c *Config) any { return c.Mail.VulnDigestInterval() },
+}
+
+// snippetValueAllowlist exempts the placeholder fields inside an
+// otherwise default-valued block, with the reason, under the same
+// staleness reverse-check the collection allowlist uses.
+var snippetValueAllowlist = map[string]string{
+	"mail.GmailUser":        "a placeholder address; there is no compiled default sender",
+	"mail.GmailAppPassword": "a placeholder secret; there is no compiled default",
+	"mail.FromName":         "a placeholder display name; the compiled default is empty, and an empty From name is worse guidance than a concrete one",
+	"mail.SiteURL":          "a placeholder host; there is no compiled default",
+}
+
+// assertSnippetBlockValues holds the snippet's default-valued blocks
+// to the compiled defaults, through the accessors where they exist.
+func assertSnippetBlockValues(t *testing.T, block string) {
+	t.Helper()
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(block), &envelope); err != nil {
+		t.Fatalf("parse snippet: %v", err)
+	}
+	cfgType := reflect.TypeOf(Config{})
+	defaults := DefaultConfig()
+	usedAllowlist := map[string]bool{}
+
+	for _, name := range snippetValueBlocks {
+		raw, ok := envelope[name]
+		if !ok {
+			continue // the presence check above already reported it
+		}
+		field, ok := fieldByJSONTag(cfgType, name)
+		if !ok {
+			t.Fatalf("no Config field carries json tag %q", name)
+			continue
+		}
+		applied := DefaultConfig()
+		target := reflect.ValueOf(applied).Elem().FieldByName(field.Name)
+		if err := json.Unmarshal(raw, target.Addr().Interface()); err != nil {
+			t.Errorf("apply snippet %q block: %v", name, err)
+			continue
+		}
+		blockType := field.Type
+		for i := 0; i < blockType.NumField(); i++ {
+			key := name + "." + blockType.Field(i).Name
+			if reason, exempt := snippetValueAllowlist[key]; exempt {
+				got := snippetFieldValue(applied, field.Name, blockType.Field(i).Name, key)
+				want := snippetFieldValue(defaults, field.Name, blockType.Field(i).Name, key)
+				if !equalConfigValue(got, want) {
+					usedAllowlist[key] = true
+				}
+				_ = reason
+				continue
+			}
+			got := snippetFieldValue(applied, field.Name, blockType.Field(i).Name, key)
+			want := snippetFieldValue(defaults, field.Name, blockType.Field(i).Name, key)
+			if !equalConfigValue(got, want) {
+				t.Errorf("the configuration.md snippet teaches a NON-DEFAULT value for %s: "+
+					"snippet-effective=%v compiled-default=%v. Operators read this snippet as the "+
+					"defaults document; either fix the value, or add %q to snippetValueAllowlist "+
+					"with a reason.", key, got, want, key)
+			}
+		}
+	}
+	for key, reason := range snippetValueAllowlist {
+		if !usedAllowlist[key] {
+			t.Errorf("snippetValueAllowlist[%q] suppresses nothing — the snippet now matches the compiled "+
+				"default. Delete the entry (its reason was: %s).", key, reason)
+		}
+	}
+}
+
+// snippetFieldValue reads one block field, through its accessor when
+// one is registered.
+func snippetFieldValue(cfg *Config, blockField, fieldName, key string) any {
+	if getter, ok := snippetValueAccessors[key]; ok {
+		return getter(cfg)
+	}
+	return reflect.ValueOf(cfg).Elem().FieldByName(blockField).FieldByName(fieldName).Interface()
+}
+
+// fieldByJSONTag finds the struct field carrying a given json tag.
+func fieldByJSONTag(t reflect.Type, tag string) (reflect.StructField, bool) {
+	for i := 0; i < t.NumField(); i++ {
+		if strings.Split(t.Field(i).Tag.Get("json"), ",")[0] == tag {
+			return t.Field(i), true
+		}
+	}
+	return reflect.StructField{}, false
+}
+
+// equalConfigValue compares two config values, treating an empty
+// slice and a nil slice as the same thing — `"cors_origins": []` in
+// the snippet and an absent default both mean "none".
+func equalConfigValue(a, b any) bool {
+	norm := func(v any) any {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() == reflect.Slice && rv.Len() == 0 {
+			return nil
+		}
+		return v
+	}
+	return reflect.DeepEqual(norm(a), norm(b))
 }

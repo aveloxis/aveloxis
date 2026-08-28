@@ -1336,3 +1336,11 @@ func urlPathHasSegment(rawURL, segment string) bool {
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 	return len(parts) >= 3 && parts[2] == segment
 }
+
+// ForgetRepoETags drops every cached ETag under /repos/{owner}/{repo}/ —
+// the scheduler's hook for a FAILED job, so the retry re-reads the
+// listing pages instead of being answered 304 from a walk whose results
+// were never stored (pass 30, v0.28.18).
+func (c *Client) ForgetRepoETags(owner, repo string) int {
+	return c.http.ForgetETagsWithPrefix(fmt.Sprintf("/repos/%s/%s/", owner, repo))
+}

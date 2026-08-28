@@ -33,9 +33,9 @@ func TestRefreshAllRepoAggregatesReturnsPartialFailures(t *testing.T) {
 	if strings.Contains(body, `logger.Info("aggregate refresh failed"`) || strings.Contains(body, `logger.Info("group aggregate refresh failed"`) {
 		t.Error("a refresh failure is a WARN, not an INFO")
 	}
-	// Pass 27: both loops bail on a canceled ctx (one exit, not one WARN
-	// per remaining repo), and the group-query error keeps the repo
-	// failures accumulated before it.
+	// Pass 27/29: both loops bail on a canceled ctx before each iteration
+	// AND once after the loops (one exit, not one WARN per remaining repo;
+	// a cancel inside the last item never reaches a loop-top guard).
 	if strings.Count(body, "if ctx.Err() != nil {") < 3 {
 		t.Error("both per-repo loops must check ctx.Err() before each iteration AND once after the loops (a cancel inside the last item never reaches a loop-top guard)")
 	}

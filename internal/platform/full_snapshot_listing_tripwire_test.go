@@ -29,12 +29,22 @@ func TestFullSnapshotListingsBypassTheETagCache(t *testing.T) {
 			total++
 			name := src[m[2]:m[3]]
 			body := srctest.FuncBody(t, src, "func (c *Client) "+name+"(")
-			head := body
-			if len(head) > 600 {
-				head = head[:600]
-			}
-			if !strings.Contains(srctest.NormalizeWS(head), "if since.IsZero() { ctx = platform.WithoutETag(ctx) }") {
+			guard := strings.Index(srctest.NormalizeWS(body), "if since.IsZero() { ctx = platform.WithoutETag(ctx) }")
+			if guard < 0 {
 				t.Errorf("%s: %s takes a since but does not bypass the ETag cache when since is zero (a full-snapshot listing must never read as a 304)", file, name)
+				continue
+			}
+			// …and it must come BEFORE the first use of the client (a guard
+			// placed after the ctx was handed to paginate is decorative).
+			firstUse := -1
+			ws := srctest.NormalizeWS(body)
+			for _, anchor := range []string{"platform.Paginate", "c.http", "c.List", "c.fetch"} {
+				if j := strings.Index(ws, anchor); j >= 0 && (firstUse < 0 || j < firstUse) {
+					firstUse = j
+				}
+			}
+			if firstUse < 0 || guard > firstUse {
+				t.Errorf("%s: %s must bypass the ETag cache BEFORE its first client use (guard at %d, first use at %d)", file, name, guard, firstUse)
 			}
 		}
 	}

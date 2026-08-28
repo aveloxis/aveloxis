@@ -280,6 +280,27 @@ func (c *HTTPClient) forgetETag(path string) {
 	c.etagMu.Unlock()
 }
 
+// ForgetETagsWithPrefix drops every cached ETag whose path starts with
+// prefix and reports how many. A collection job that fetched a repo's
+// listing pages and then FAILED leaves their ETags cached; the retry in
+// the same process would be answered 304 on those pages — zero items —
+// and, with the facade's commits keeping the outcome green, advance
+// last_collected past a window it never stored (pass 30, v0.28.18).
+// The scheduler calls this through the forge clients' ForgetRepoETags
+// on every failed job.
+func (c *HTTPClient) ForgetETagsWithPrefix(prefix string) int {
+	c.etagMu.Lock()
+	defer c.etagMu.Unlock()
+	n := 0
+	for path := range c.etagCache {
+		if strings.HasPrefix(path, prefix) {
+			delete(c.etagCache, path)
+			n++
+		}
+	}
+	return n
+}
+
 // Get performs a single authenticated GET request with retries and rate-limit handling.
 func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, error) {
 	url := c.baseURL + path
@@ -726,11 +747,14 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 			resp, err := c.Get(ctx, currentPath)
 			if err != nil {
 				// 304 Not Modified means the data hasn't changed since our last
-				// request (ETag match). This is not an error — just means zero new
-				// items — for an INCREMENTAL listing (a since-bounded URL). A
-				// full-snapshot listing (since zero) is a truth set and must never
-				// be answered this way: the forge clients bypass the cache for it
-				// (WithoutETag) at the listing entry point (v0.28.18).
+				// FETCH of this URL (ETag match) — not since last_collected. This
+				// is not an error — zero new items — for an INCREMENTAL listing
+				// whose previous fetch was fully consumed. A full-snapshot listing
+				// (since zero) is a truth set and a listing used as an iteration
+				// DRIVER (the GitLab comment walks) must never be answered this
+				// way: the forge clients bypass the cache for those (WithoutETag);
+				// a job that FAILED after fetching forgets its repo's cached ETags
+				// (ForgetRepoETags) so the retry re-reads the pages (v0.28.18).
 				if errors.Is(err, ErrNotModified) {
 					if currentPath != basePath {
 						// A 304 MID-pagination is unusual (per-page ETag matched

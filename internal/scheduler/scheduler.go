@@ -1022,12 +1022,26 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// for every gap-fill failure — exactly the silent-loop class that
 	// the v0.18.24 force_full_collect mechanism exists to prevent.
 	var gapFillErr error
+	// Pass 30 (v0.28.18): a job that fetched listing pages and then FAILED
+	// leaves their ETags cached — the retry in this process would be
+	// answered 304 on those pages (zero items) while the facade's commits
+	// keep the outcome green and last_collected advances past a window
+	// that was never stored. On failure, forget this repo's cached ETags.
+	var forgetRepoETags func()
 	if !repo.Platform.IsGitOnly() {
 		client, clientErr := s.selectClient(repo.Platform)
 		if clientErr != nil {
 			s.logger.Error("unknown platform", "repo_id", job.RepoID, "platform", repo.Platform)
 			s.failJob(ctx, job.RepoID, clientErr.Error())
 			return
+		}
+		if f, ok := client.(interface{ ForgetRepoETags(owner, repo string) int }); ok {
+			forgetRepoETags = func() {
+				if n := f.ForgetRepoETags(repo.Owner, repo.Name); n > 0 {
+					s.logger.Info("failed job — forgot the repo's cached listing ETags so the retry re-reads its pages",
+						"repo_id", job.RepoID, "owner", repo.Owner, "repo", repo.Name, "etags", n)
+				}
+			}
 		}
 		since := s.determineSince(job)
 		if since.IsZero() {
@@ -1133,6 +1147,9 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// but keep ordering explicit). The flag is picked up on the repo's
 	// next DequeueNext and causes determineSince to return zero for a
 	// full re-collection. See v0.18.24 troubleshooting docs.
+	if !outcome.success && forgetRepoETags != nil {
+		forgetRepoETags()
+	}
 	if !outcome.success && shouldForceFullRecollect(outcome.errMsg) {
 		if err := s.store.SetForceFullCollect(ctx, job.RepoID, true); err != nil {
 			s.logger.Warn("failed to set force_full_collect flag", "repo_id", job.RepoID, "error", err)

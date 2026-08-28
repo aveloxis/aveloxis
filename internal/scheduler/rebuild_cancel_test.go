@@ -62,9 +62,21 @@ func TestTickerTasksTreatShutdownAsCanceledNotFailed(t *testing.T) {
 			t.Errorf("log site %s not found", msg)
 			continue
 		}
-		window := src[max(0, i-400):i]
-		if !strings.Contains(window, "errors.Is(err, context.Canceled)") {
-			t.Errorf("%s must be preceded by an errors.Is(err, context.Canceled) return (shutdown is not a failure)", msg)
+		// Anchor on THIS site's own failure arm — the `if err != nil {`
+		// immediately before the message — and require the classification
+		// right ahead of it (a neighbour's arm 372 chars earlier used to
+		// satisfy a plain lookback).
+		arm := strings.LastIndex(src[:i], "if err != nil {")
+		if arm < 0 || i-arm > 200 {
+			t.Errorf("%s must sit inside an `if err != nil {` failure arm (found at distance %d)", msg, i-arm)
+			continue
+		}
+		// Two legitimate shapes: the classification right BEFORE the arm
+		// (`if errors.Is(...) { return }` then `if err != nil {`), or as the
+		// arm's FIRST statement (`if err != nil { if errors.Is(...) { return }`).
+		// Either way it lies between shortly before the arm and the message.
+		if !strings.Contains(src[max(0, arm-160):i], "errors.Is(err, context.Canceled)") {
+			t.Errorf("%s: the failure arm must classify errors.Is(err, context.Canceled) and return before it logs (shutdown is not a failure)", msg)
 		}
 	}
 }

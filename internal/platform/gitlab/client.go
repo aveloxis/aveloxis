@@ -658,8 +658,16 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 		issuesPath += "&updated_after=" + since.Format(time.RFC3339)
 	}
 
+	// The issue/MR listing here is a DRIVER, not a "what changed" question:
+	// it is byte-identical to the URL the listing phase walked minutes
+	// earlier in the same cycle, so a conditional read is answered 304
+	// from that walk's ETag and this iterator yields NOTHING — no notes on
+	// any incremental cycle (pass 30, the v0.26.3 two-pass alias on the
+	// GitLab side). The per-item notes/discussions reads keep their own
+	// ETags: a 304 there is "this item's notes are unchanged".
+	driverCtx := platform.WithoutETag(ctx)
 	return func(yield func(platform.MessageWithRef, error) bool) {
-		for issue, err := range platform.PaginateGitLab[glIssue](ctx, c.http, issuesPath) {
+		for issue, err := range platform.PaginateGitLab[glIssue](driverCtx, c.http, issuesPath) {
 			if err != nil {
 				yield(platform.MessageWithRef{}, err)
 				return
@@ -715,8 +723,16 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 		mrsPath += "&updated_after=" + since.Format(time.RFC3339)
 	}
 
+	// The issue/MR listing here is a DRIVER, not a "what changed" question:
+	// it is byte-identical to the URL the listing phase walked minutes
+	// earlier in the same cycle, so a conditional read is answered 304
+	// from that walk's ETag and this iterator yields NOTHING — no notes on
+	// any incremental cycle (pass 30, the v0.26.3 two-pass alias on the
+	// GitLab side). The per-item notes/discussions reads keep their own
+	// ETags: a 304 there is "this item's notes are unchanged".
+	driverCtx := platform.WithoutETag(ctx)
 	return func(yield func(platform.MessageWithRef, error) bool) {
-		for mr, err := range platform.PaginateGitLab[glMergeRequest](ctx, c.http, mrsPath) {
+		for mr, err := range platform.PaginateGitLab[glMergeRequest](driverCtx, c.http, mrsPath) {
 			if err != nil {
 				yield(platform.MessageWithRef{}, err)
 				return
@@ -769,8 +785,16 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 		mrsPath += "&updated_after=" + since.Format(time.RFC3339)
 	}
 
+	// The issue/MR listing here is a DRIVER, not a "what changed" question:
+	// it is byte-identical to the URL the listing phase walked minutes
+	// earlier in the same cycle, so a conditional read is answered 304
+	// from that walk's ETag and this iterator yields NOTHING — no notes on
+	// any incremental cycle (pass 30, the v0.26.3 two-pass alias on the
+	// GitLab side). The per-item notes/discussions reads keep their own
+	// ETags: a 304 there is "this item's notes are unchanged".
+	driverCtx := platform.WithoutETag(ctx)
 	return func(yield func(platform.ReviewCommentWithRef, error) bool) {
-		for mr, err := range platform.PaginateGitLab[glMergeRequest](ctx, c.http, mrsPath) {
+		for mr, err := range platform.PaginateGitLab[glMergeRequest](driverCtx, c.http, mrsPath) {
 			if err != nil {
 				yield(platform.ReviewCommentWithRef{}, err)
 				return
@@ -1487,4 +1511,10 @@ func featureEnabled(accessLevel string, legacy bool) bool {
 		return legacy
 	}
 	return accessLevel != "disabled"
+}
+
+// ForgetRepoETags drops every cached ETag under /projects/{path}/ — the
+// scheduler's hook for a FAILED job (see the GitHub twin).
+func (c *Client) ForgetRepoETags(owner, repo string) int {
+	return c.http.ForgetETagsWithPrefix(fmt.Sprintf("/projects/%s/", projectPath(owner, repo)))
 }

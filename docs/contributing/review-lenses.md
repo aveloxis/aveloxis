@@ -147,7 +147,52 @@ entry (SR-17 applied to test/runtime pairs). History: PR #191 —
 also covered `repoGroupFKCoveredElsewhere`; the gate could pass with an
 unindexed child.
 
+## L14 — Keep-going passes and exits tell the truth
+
+*Anchor: L9 (diagnostics) + the v0.27.106 nonzero-exit convention.*
+
+A loop that logs a failure and continues must accumulate what it
+dropped and return it (bounded — the first N with the exact count in
+the prefix), and the command driving it must exit nonzero when any item
+was refused or failed; a canceled context is ONE exit, classified
+before the failure arm and never logged as a failure or as "complete";
+a summary line that says "complete" or "N remain because X" must be
+true for the exit path that printed it (a `--limit` cap is not "mid-
+collection"). Ask of every keep-going loop: *what does the caller see
+when one item fails — and when all of them do?*
+
+Incidents: v0.28.18 passes 26–29 — the dm_ aggregate and materialized
+view refreshes returned nil over stale rows; `refresh-views --aggregates`
+skipped the aggregate pass on a view failure; `reconcile-repos` exited 0
+after refusing every consolidation; the weekly rebuild and seven tickers
+logged `stop serve` as `… failed: context canceled`.
+
+## L15 — The forge's cache and session semantics
+
+*Anchor: L8 (external authority) + the ETag rules of v0.28.15/.17/.18.*
+
+A 304 means "nothing new" ONLY for an incremental listing (a since-
+bounded walk); a single-object read and a full-snapshot walk (zero
+since: a set-diff's expected set, a force-full recollect) must bypass
+the conditional cache, or the second read in one process returns an
+empty truth set. A payload field whose value depends on the caller's
+token (`feature_available?(current_user)` booleans, counts hidden from
+a narrowed token, totals a forge omits above a threshold) is not the
+feature's state — read the access level or mark the value unknown,
+never persist the token's view as the fact. Ask of every forge read:
+*what does this return to a token that cannot see the feature, and to
+the second identical request in this process?*
+
+Incidents: the GitLab MR batch 304 (v0.28.15), `GetJSON` 304 (v0.28.17),
+full-snapshot listings answered from the ETag cache (Copilot round 5),
+`*_enabled` booleans persisted as "disabled" for members-only features
+and `pages` read as enabled when its level was absent (rounds 4 and 26).
+
 ## Running the pass
+
+The brief, the verification protocol and the pre-launch checklist are
+in [review-pass-brief.md](review-pass-brief.md).
+
 
 - Scope: the full diff of the push batch (not per-micro-release), so
   the pass covers exactly what an external reviewer will see.

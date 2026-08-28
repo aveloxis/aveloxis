@@ -172,15 +172,18 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	// its step label for the migrate collector.
 	for _, site := range []struct{ file, fn, needle, ret, why string }{
 		{"repo_dedup.go", "func DedupCaseVariantReposBatch(", `emailMessageFKIndexesReadyFor(ctx, store.pool, "repos")`, "return 0, 0, err }",
-			`dedup-repos classifies on the sentinel — a substituted or rewrapped error would log "batch dedup errored mid-way" for a refusal`},
+			`dedup-repos classifies on the sentinel — a substituted or %v-rewrapped error would log "batch dedup errored mid-way" for a refusal (a %w wrap is rejected because it adds nothing, not because it breaks that)`},
 		{"stranded_repos.go", "func DedupRenamedRepoPair(", `emailMessageFKIndexesReadyFor(ctx, store.pool, "repos")`, "return err }",
 			"reconcile-repos classifies on the sentinel to exit nonzero after a refused run"},
 		{"rename_duplicate_heal.go", "func (s *PostgresStore) HealRenamedDuplicate(", `emailMessageFKIndexesReadyFor(ctx, s.pool, "repos")`, "return false, err }",
 			"reconcile-repos classifies on the sentinel to exit nonzero after a refused run (prelim treats any error as heal-unavailable)"},
 		{"email_message_fk_indexes.go", "func dedupRepoGroupsListServe(", `emailMessageFKIndexesReadyFor(ctx, pg.pool, "repo_groups_list_serve")`, "if errors.Is(err, ErrEmailMessageIndexesNotReady) {",
-			"a rewrap before the classification would turn the WARN skip into a failed migrate step"},
+			"a %v rewrap before the classification would lose the sentinel — the fail-closed skip (it fails the migrate either way) would log as a generic failed step instead of naming the index build to rerun"},
 	} {
-		fnBody := srctest.FuncBody(t, readSourceFile(t, site.file), site.fn)
+		// Comment-stripped: FuncBody keeps body comments, and a gate
+		// disabled inside /* */ would otherwise still count as the one
+		// gate AND prefix-match (NormalizeWS collapses its newlines).
+		fnBody := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, site.file), site.fn))
 		if n := strings.Count(fnBody, site.needle); n != 1 {
 			t.Errorf("%s must pass the gate exactly once, found %d", site.fn, n)
 			continue

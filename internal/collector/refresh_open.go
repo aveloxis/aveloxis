@@ -68,6 +68,14 @@ func (r *OpenItemRefresher) RefreshOpenItems(ctx context.Context, repoID int64, 
 		r.logger.Info("refreshing open issues", "repo_id", repoID, "count", len(openIssues))
 		refreshed := r.refreshIssues(ctx, repoID, owner, repo, openIssues)
 		totalRefreshed += refreshed
+		// Copilot round 8: refreshIssues returns its count on a cancel
+		// (the staging batch went unflushed), so without this the
+		// shutdown was logged as "open issues refreshed" and the PR
+		// half started anyway. Open items stay open — the next cycle
+		// redoes them.
+		if ctx.Err() != nil {
+			return totalRefreshed
+		}
 		r.logger.Info("open issues refreshed", "repo_id", repoID, "refreshed", refreshed)
 	}
 
@@ -82,6 +90,9 @@ func (r *OpenItemRefresher) RefreshOpenItems(ctx context.Context, repoID int64, 
 		r.logger.Info("refreshing open PRs", "repo_id", repoID, "count", len(openPRs))
 		refreshed := r.refreshPRs(ctx, repoID, owner, repo, openPRs)
 		totalRefreshed += refreshed
+		if ctx.Err() != nil {
+			return totalRefreshed
+		}
 		r.logger.Info("open PRs refreshed", "repo_id", repoID, "refreshed", refreshed)
 	}
 

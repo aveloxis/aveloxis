@@ -45,19 +45,26 @@ func TestSchemaVersionAtLeast(t *testing.T) {
 func TestGitLabForceFullStepIsSeededFromThePriorStamp(t *testing.T) {
 	src := readSourceFile(t, "migrate.go")
 	const label = `"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)"`
-	seed := strings.Index(src, "runOnceSeedIfApplied(ctx, pg, logger,\n\t\t"+label+", \"0.27.37\")")
-	step := strings.Index(src, "runOnceStep(ctx, pg, logger, errs,\n\t\t"+label)
+	// Copilot round 8: the seed now GATES the step. A failed stamp
+	// probe is not proof the step is unapplied (SR-5), and running it
+	// re-flags the whole GitLab fleet for a full recollect — so on a
+	// failed probe neither the seed nor the step may run.
+	seed := strings.Index(src, "if runOnceSeedIfApplied(ctx, pg, logger,\n\t\t"+label+", \"0.27.37\") {")
+	step := strings.Index(src, "runOnceStep(ctx, pg, logger, errs,\n\t\t\t"+label)
 	if seed < 0 || step < 0 {
 		t.Fatalf("expected the seed call (%d) and the ledgered step (%d) for the v0.27.37 label", seed, step)
 	}
 	if seed > step {
 		t.Error("the ledger seed must precede the ledgered step, or the step runs before the seed can skip it")
 	}
+	if step < seed || step > seed+400 {
+		t.Error("the ledgered step must sit INSIDE the seed's gate — a probe that could not read the stamp must skip it, not fall through to a fleet-wide GitLab recollect")
+	}
 	if strings.Contains(src, "execMigrationStep(ctx, pg, logger, errs,\n\t\t"+label) {
 		t.Error("the v0.27.37 step must not be a plain execMigrationStep (it re-flags every GitLab repo on every migrate)")
 	}
 	body := srctest.FuncBody(t, readSourceFile(t, "migration_ledger.go"), "func runOnceSeedIfApplied(")
-	for _, needle := range []string{"GetSchemaVersion(ctx)", "schemaVersionAtLeast(prior, appliedSince)", "ON CONFLICT (step_label) DO NOTHING"} {
+	for _, needle := range []string{"schemaVersionProbe(ctx)", "schemaVersionAtLeast(prior, appliedSince)", "ON CONFLICT (step_label) DO NOTHING", "return false"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("runOnceSeedIfApplied must contain %s", needle)
 		}

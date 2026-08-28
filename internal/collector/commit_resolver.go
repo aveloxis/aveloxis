@@ -203,6 +203,13 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 
 		// Update commit rows with the resolved login.
 		if err := r.store.SetCommitAuthorLogin(ctx, repoID, cmt.Hash, login); err != nil {
+			// Round-8 class sweep: warn-and-continue per commit, and
+			// result.Errors feeds IsSuccess() — so a shutdown both
+			// flooded the log and could report "commit resolution
+			// FAILED" for a clean stop.
+			if errors.Is(err, context.Canceled) {
+				return result, err
+			}
 			r.logger.Warn("failed to set commit author login", "hash", cmt.Hash[:8], "error", err)
 			result.Errors++
 			continue
@@ -456,6 +463,12 @@ func (r *CommitResolver) ensureContributor(ctx context.Context, login string, gh
 
 	created, actualID, err := r.store.UpsertContributorFull(ctx, desiredID, login, ghUserID, commitEmail)
 	if err != nil {
+		// Round-8 class sweep: a shutdown must not count as a resolve
+		// error — result.Errors feeds IsSuccess(). The caller's loop-top
+		// ctx guard ends the pass on the next iteration.
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		r.logger.Warn("failed to upsert contributor", "login", login, "error", err)
 		result.Errors++
 		return

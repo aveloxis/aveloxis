@@ -351,6 +351,14 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 			return ctx.Err()
 		}
 		if err := s.RefreshRepoAggregates(ctx, repoID); err != nil {
+			// Copilot round 8: shutdown is not a per-repo failure. The
+			// loop-top guard runs BEFORE the call; the call that
+			// observed the cancellation is already past it, so without
+			// this every `stop serve` mid-pass emits a WARN and records
+			// a stale-row failure for the repo it was working on.
+			if errors.Is(err, context.Canceled) {
+				return ctx.Err()
+			}
 			logger.Warn("aggregate refresh failed", "repo_id", repoID, "error", err)
 			failedRepos++
 			failed = append(failed, fmt.Errorf("repo %d: %w", repoID, err))
@@ -387,6 +395,11 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 			return ctx.Err()
 		}
 		if err := s.RefreshGroupAggregates(ctx, groupID); err != nil {
+			// Copilot round 8: same shutdown misclassification as the
+			// repo loop above.
+			if errors.Is(err, context.Canceled) {
+				return ctx.Err()
+			}
 			logger.Warn("group aggregate refresh failed", "repo_group_id", groupID, "error", err)
 			failedGroups++
 			failed = append(failed, fmt.Errorf("group %d: %w", groupID, err))

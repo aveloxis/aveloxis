@@ -126,6 +126,14 @@ func TestExampleConfigCollectionValuesMatchEffectiveDefaults(t *testing.T) {
 				t.Fatalf("read %s: %v", name, err)
 			}
 			assertCollectionMatchesEffectiveDefaults(t, name, raw)
+			// Round-8 review: the collection comparator covers ONE
+			// block. api.addr was added to these copyable files with no
+			// value protection at all — setting it to "0.0.0.0:19999"
+			// (a routable bind of the whole catalog while require_auth
+			// is false) left the whole suite green. The example files
+			// now go through the same whole-Config comparator as the
+			// docs snippet.
+			assertBlockValues(t, blockValueOpts{label: name}, string(raw))
 		})
 	}
 }
@@ -208,7 +216,7 @@ func TestConfigurationDocSnippetMatchesEffectiveDefaults(t *testing.T) {
 	}
 	block := configurationDocSnippet(t, string(doc))
 	assertCollectionMatchesEffectiveDefaults(t, docsSnippetLabel, []byte(block))
-	assertSnippetBlockValues(t, block)
+	assertSnippetBlockValues(t, docsSnippetLabel, block)
 	assertSnippetAccessorsAreComplete(t)
 
 	// Values alone cannot police the snippet's "every supported
@@ -482,6 +490,19 @@ func assertSnippetAccessorsAreComplete(t *testing.T) {
 // snippetValueAllowlist exempts the placeholder fields inside an
 // otherwise default-valued block, with the reason, under the same
 // staleness reverse-check the collection allowlist uses.
+// exampleBlockAllowlist is exampleValueAllowlist's twin for the
+// non-collection blocks (round 8): the whole-Config comparator now runs
+// over the example files too, and these three deviations are the
+// deployment profile the file exists to demonstrate, not drift. Same
+// staleness reverse-check as every other exemption here.
+var exampleBlockAllowlist = map[string]map[string]string{
+	exampleDockerFile: {
+		"database.Host":    "compose service name — the container reaches Postgres as `postgres`, not localhost",
+		"database.SSLMode": "intra-compose network; TLS terminates outside the container",
+		"web.DevMode":      "the compose stack serves plain HTTP on localhost, so Secure cookies would never be sent",
+	},
+}
+
 var snippetValueAllowlist = map[string]string{
 	"database.User":          "a placeholder DB role; the compiled default is the Augur-era \"augur\", which is worse guidance for a fresh install",
 	"database.Password":      "a placeholder secret; there is no compiled default",
@@ -503,15 +524,37 @@ var snippetValueAllowlist = map[string]string{
 
 // assertSnippetBlockValues holds the snippet's default-valued blocks
 // to the compiled defaults, through the accessors where they exist.
-func assertSnippetBlockValues(t *testing.T, block string) {
+// blockValueOpts separates the rules that belong to the configuration.md
+// SNIPPET (which is the defaults reference, so it must state every
+// accessor-backed value, and owns snippetValueAllowlist) from the ones
+// that apply to any config document (no field may teach a non-default,
+// and no field may state a value its accessor coerces).
+type blockValueOpts struct {
+	label string
+	// requireExplicitDefaults: an accessor-backed field left at zero is
+	// invisible to the comparison, so the defaults reference must spell
+	// it out. An example config may legitimately omit optional blocks.
+	requireExplicitDefaults bool
+	// ownsAllowlist: only the document snippetValueAllowlist was built
+	// from can judge an entry stale.
+	ownsAllowlist bool
+}
+
+func assertSnippetBlockValues(t *testing.T, label, block string) {
+	assertBlockValues(t, blockValueOpts{label: label, requireExplicitDefaults: true, ownsAllowlist: true}, block)
+}
+
+func assertBlockValues(t *testing.T, opts blockValueOpts, block string) {
+	label := opts.label
 	t.Helper()
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(block), &envelope); err != nil {
-		t.Fatalf("parse snippet: %v", err)
+		t.Fatalf("%s: parse: %v", label, err)
 	}
 	cfgType := reflect.TypeOf(Config{})
 	defaults := DefaultConfig()
 	usedAllowlist := map[string]bool{}
+	usedBlockAllow := map[string]bool{}
 
 	for f := 0; f < cfgType.NumField(); f++ {
 		field := cfgType.Field(f)
@@ -533,7 +576,7 @@ func assertSnippetBlockValues(t *testing.T, block string) {
 		applied := DefaultConfig()
 		target := reflect.ValueOf(applied).Elem().FieldByName(field.Name)
 		if err := json.Unmarshal(raw, target.Addr().Interface()); err != nil {
-			t.Errorf("apply snippet %q: %v", name, err)
+			t.Errorf("%s: apply %q: %v", label, name, err)
 			continue
 		}
 		blockType := field.Type
@@ -550,15 +593,19 @@ func assertSnippetBlockValues(t *testing.T, block string) {
 			got := reflect.ValueOf(applied).Elem().FieldByName(field.Name).Interface()
 			want := reflect.ValueOf(defaults).Elem().FieldByName(field.Name).Interface()
 			if !equalConfigValue(got, want) {
-				t.Errorf("the configuration.md snippet teaches a NON-DEFAULT value for %s: "+
+				t.Errorf("%s teaches a NON-DEFAULT value for %s: "+
 					"snippet=%v compiled-default=%v. Operators read this snippet as the defaults "+
 					"document; either fix the value, or add %q to snippetValueAllowlist with a reason.",
-					name, got, want, name)
+					label, name, got, want, name)
 			}
 			continue
 		}
 		for i := 0; i < blockType.NumField(); i++ {
 			key := name + "." + blockType.Field(i).Name
+			if _, exempt := exampleBlockAllowlist[opts.label][key]; exempt {
+				usedBlockAllow[key] = true
+				continue
+			}
 			if _, exempt := snippetValueAllowlist[key]; exempt {
 				got := snippetFieldValue(applied, field.Name, blockType.Field(i).Name, key)
 				want := snippetFieldValue(defaults, field.Name, blockType.Field(i).Name, key)
@@ -570,10 +617,10 @@ func assertSnippetBlockValues(t *testing.T, block string) {
 			got := snippetFieldValue(applied, field.Name, blockType.Field(i).Name, key)
 			want := snippetFieldValue(defaults, field.Name, blockType.Field(i).Name, key)
 			if !equalConfigValue(got, want) {
-				t.Errorf("the configuration.md snippet teaches a NON-DEFAULT value for %s: "+
+				t.Errorf("%s teaches a NON-DEFAULT value for %s: "+
 					"snippet-effective=%v compiled-default=%v. Operators read this snippet as the "+
 					"defaults document; either fix the value, or add %q to snippetValueAllowlist "+
-					"with a reason.", key, got, want, key)
+					"with a reason.", label, key, got, want, key)
 				continue
 			}
 			// An accessor maps the zero value back to the default, so
@@ -582,17 +629,47 @@ func assertSnippetBlockValues(t *testing.T, block string) {
 			// unlimited API and no exempt networks while passing (pass
 			// 48). Where an accessor exists the snippet must STATE the
 			// value.
-			if _, coerced := snippetValueAccessors[key]; coerced {
+			if acc, coerced := snippetValueAccessors[key]; coerced {
 				raw := blockFieldValue(applied, field.Name, blockType.Field(i).Name)
 				if isEmptyValue(raw) {
-					t.Errorf("the configuration.md snippet leaves %s at its zero value. That field has an "+
+					if !opts.requireExplicitDefaults {
+						continue // an example config may omit an optional block
+					}
+					t.Errorf("%s leaves %s at its zero value. That field has an "+
 						"accessor which maps zero back to the default, so the comparison above cannot see it "+
-						"— and the snippet would be teaching operators the zero (unlimited, never, none) "+
+						"— and the document would be teaching operators the zero (unlimited, never, none) "+
 						"while the reference table below states the real default. Write the effective "+
-						"default explicitly.", key)
+						"default explicitly.", label, key)
+					continue
+				}
+				// Round-8 review: zero is only ONE of the values an
+				// accessor coerces. `refresh_seconds: 7` (below the
+				// [10,3600] clamp) or `rate_limit_daily: -5` are equally
+				// unreachable, and the comparison above cannot see them
+				// either — it reads the accessor's OUTPUT, which equals
+				// the default in both cases. A document may only state a
+				// value the accessor returns unchanged.
+				out := acc.get(applied)
+				// Only accessors that return the FIELD's own type can be
+				// round-tripped: VulnDigestInterval converts int hours to
+				// a time.Duration, so comparing them would false-fire.
+				if reflect.TypeOf(out) == raw.Type() &&
+					!reflect.DeepEqual(out, raw.Interface()) {
+					t.Errorf("%s states %s = %v, but %s() coerces that to %v — the document is teaching a "+
+						"value the binary cannot honour. State a value the accessor returns unchanged.",
+						label, key, raw.Interface(), acc.method, out)
 				}
 			}
 		}
+	}
+	for key, reason := range exampleBlockAllowlist[opts.label] {
+		if !usedBlockAllow[key] {
+			t.Errorf("exampleBlockAllowlist[%q][%q] suppresses nothing — %s now matches the compiled "+
+				"default. Delete the entry (its reason was: %s).", opts.label, key, opts.label, reason)
+		}
+	}
+	if !opts.ownsAllowlist {
+		return
 	}
 	for key, reason := range snippetValueAllowlist {
 		if !usedAllowlist[key] {

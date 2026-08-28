@@ -161,19 +161,23 @@ func TestScancodeStoreMethodsExist(t *testing.T) {
 	storeCode := string(storeSrc)
 
 	// Methods in scancode_store.go.
-	for _, fn := range []string{"InsertScancodeScan", "InsertScancodeFileResultBatch", "ScancodeLastRun"} {
+	// Round 8: InsertScancodeScan / InsertScancodeFileResultBatch were
+	// DELETED — the v0.28.19 fusion made them unreachable, and pinning
+	// their existence made this test assert dead code and describe an
+	// ingest path that no longer exists.
+	for _, fn := range []string{"ReplaceScancodeSnapshot", "ScancodeLastRun"} {
 		if !strings.Contains(storeCode, fn) {
 			t.Errorf("scancode_store.go must contain %s", fn)
 		}
 	}
 
-	// RotateScancodeToHistory lives in history.go alongside other rotation methods.
+	// The rotation statements live in history.go as one shared helper.
 	historySrc, err := os.ReadFile("../db/history.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(historySrc), "RotateScancodeToHistory") {
-		t.Error("history.go must contain RotateScancodeToHistory")
+	if !strings.Contains(string(historySrc), "func rotateScancodeRows(") {
+		t.Error("history.go must contain rotateScancodeRows")
 	}
 }
 
@@ -253,11 +257,11 @@ func TestScancodeHistoryRotation(t *testing.T) {
 	}
 	code := string(src)
 
-	if !strings.Contains(code, "RotateScancodeToHistory") {
-		t.Error("history.go must contain RotateScancodeToHistory")
+	if !strings.Contains(code, "func rotateScancodeRows(") {
+		t.Error("history.go must contain rotateScancodeRows")
 	}
 	if !strings.Contains(code, "scancode_scans_history") {
-		t.Error("RotateScancodeToHistory must reference scancode_scans_history")
+		t.Error("rotateScancodeRows must reference scancode_scans_history")
 	}
 	if !strings.Contains(code, "scancode_file_results_history") {
 		t.Error("RotateScancodeToHistory must reference scancode_file_results_history")

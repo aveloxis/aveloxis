@@ -24,7 +24,7 @@ import (
 //
 // Deliberately NOT migrated onto this helper (follow-up, out of scope
 // for v0.27.7): RotateRepoInfoToHistory, RotateLibyearToHistory,
-// RotateScancodeToHistory (multi-table, cross-schema), and the
+// rotateScancodeRows (multi-table, cross-schema), and the
 // distribution rotation inside MarkDistributionComplete (runs inside
 // an existing caller-owned transaction with its own quirks).
 var historyRotationAllowlist = map[string]string{
@@ -166,23 +166,6 @@ func (s *PostgresStore) RotateScorecardToHistory(ctx context.Context, repoID int
 			return err
 		}
 
-		return tx.Commit(ctx)
-	})
-}
-
-// RotateScancodeToHistory moves all existing scancode data (both scan metadata
-// and per-file results) for a repo into the corresponding history tables, then
-// deletes from the main tables. Called before inserting new scancode results.
-func (s *PostgresStore) RotateScancodeToHistory(ctx context.Context, repoID int64) error {
-	return s.withRetry(ctx, func(ctx context.Context) error {
-		tx, err := s.pool.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback(ctx)
-		if err := rotateScancodeRows(ctx, tx, repoID); err != nil {
-			return err
-		}
 		return tx.Commit(ctx)
 	})
 }

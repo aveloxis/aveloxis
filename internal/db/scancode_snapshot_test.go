@@ -45,24 +45,42 @@ func TestIngestUsesTheFusedSnapshotReplace(t *testing.T) {
 	if !strings.Contains(body, "store.ReplaceScancodeSnapshot(") {
 		t.Error("ingestScancodeOutput must call store.ReplaceScancodeSnapshot")
 	}
-	for _, banned := range []string{"store.RotateScancodeToHistory(", "store.InsertScancodeScan(", "store.InsertScancodeFileResultBatch("} {
-		if strings.Contains(body, banned) {
-			t.Errorf("ingestScancodeOutput still calls %s — the three-call sequence is what left a rotated-but-unwritten snapshot when anything failed in the middle", banned)
+	// Round 8: banning the three calls inside ONE function body was
+	// scoped too narrowly — a new call site anywhere else would reopen
+	// the half-applied-snapshot window. The three writers are DELETED
+	// instead (remove-don't-deprecate), so this asserts they cannot
+	// come back as exported store methods at all.
+	dbSrc := srctest.Read(t, "internal/db/scancode_store.go") + srctest.Read(t, "internal/db/history.go")
+	for _, banned := range []string{
+		"func (s *PostgresStore) RotateScancodeToHistory(",
+		"func (s *PostgresStore) InsertScancodeScan(",
+		"func (s *PostgresStore) InsertScancodeFileResultBatch(",
+	} {
+		if strings.Contains(dbSrc, banned) {
+			t.Errorf("%s is back — the rotate-then-insert sequence is what left a rotated-but-unwritten "+
+				"snapshot when anything failed in the middle; ReplaceScancodeSnapshot is the only writer", banned)
 		}
 	}
 }
 
-// One copy of the rotation statements, shared by both callers.
+// One copy of the rotation statements (SR-17). Round 8 deleted the
+// exported RotateScancodeToHistory once the fusion left it with zero
+// production callers, so the "both callers delegate" half of this pin
+// is gone with it — what remains is that the four-statement rotation
+// has exactly ONE definition, and that it is the unexported helper the
+// fused writer calls inside its transaction.
 func TestRotationStatementsHaveOneDefinition(t *testing.T) {
 	src := srctest.Read(t, "internal/db/history.go")
 	if !strings.Contains(src, "func rotateScancodeRows(ctx context.Context, tx pgx.Tx, repoID int64) error") {
-		t.Fatal("rotateScancodeRows must exist so the exported rotation and the fused replace share one definition (SR-17)")
-	}
-	exported := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) RotateScancodeToHistory("))
-	if !strings.Contains(exported, "rotateScancodeRows(ctx, tx, repoID)") {
-		t.Error("RotateScancodeToHistory must delegate to rotateScancodeRows — two copies of a four-statement rotation WILL drift")
+		t.Fatal("rotateScancodeRows must exist as the single definition of the scancode rotation (SR-17)")
 	}
 	if strings.Count(src, "scancode_file_results_history") != 1 {
 		t.Errorf("the scancode rotation statements appear %d times in history.go, want 1 — a second copy is the drift SR-17 exists to prevent", strings.Count(src, "scancode_file_results_history"))
+	}
+	// It must run inside the fused writer's transaction, not open its own.
+	fused := srctest.StripGoComments(srctest.FuncBody(t,
+		srctest.Read(t, "internal/db/scancode_store.go"), "func (s *PostgresStore) ReplaceScancodeSnapshot("))
+	if !strings.Contains(fused, "rotateScancodeRows(ctx, tx, repoID)") {
+		t.Error("ReplaceScancodeSnapshot must rotate via rotateScancodeRows on its OWN tx — a rotation that commits separately reopens the half-applied-snapshot window")
 	}
 }

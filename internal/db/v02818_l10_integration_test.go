@@ -539,3 +539,47 @@ func TestDedupBatchPagesPastCollectingHead(t *testing.T) {
 		t.Errorf("pair A must be consolidated to its winner on the rerun, found %d of 2 rows", n)
 	}
 }
+
+// TestRunOnceSeedFailsClosedWhenTheStampCannotBeRead (AVELOXIS_TEST_DB) —
+// Copilot round 8, SR-5: GetSchemaVersion maps EVERY failure to "", and
+// runOnceSeedIfApplied read "" as "no stamp, so the step has not run".
+// The step it gates re-flags the ENTIRE GitLab fleet for a full
+// recollect, so a transient catalog or connection error during migrate
+// triggered exactly the fleet-wide pass the seed exists to prevent.
+//
+// A canceled context is the cheapest real read failure. The contract:
+// the probe reports the error, the seed records NOTHING, and it returns
+// false so the caller skips the step this migrate (it is ledgered — the
+// next migrate decides on a working connection).
+func TestRunOnceSeedFailsClosedWhenTheStampCannotBeRead(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+
+	if _, err := store.schemaVersionProbe(ctx); err != nil {
+		t.Fatalf("probe on a healthy connection must succeed: %v", err)
+	}
+
+	dead, cancel := context.WithCancel(ctx)
+	cancel()
+
+	if _, err := store.schemaVersionProbe(dead); err == nil {
+		t.Error("schemaVersionProbe swallowed a failed read — SR-5: a lookup ERROR is not \"no stamp\"")
+	}
+	if v := store.GetSchemaVersion(dead); v != "" {
+		t.Errorf("GetSchemaVersion on a failed read = %q, want \"\" (its lossy contract is preserved for its other callers)", v)
+	}
+
+	label := "_avseed failclosed " + t.Name()
+	t.Cleanup(func() {
+		cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_ops.migration_ledger WHERE step_label = $1`, label)
+	})
+	if runOnceSeedIfApplied(dead, store, slog.Default(), label, "0.27.37") {
+		t.Error("a failed stamp probe must return false so the caller SKIPS the step — " +
+			"returning true lets a transient error force a full recollect of every GitLab repo")
+	}
+	var n int
+	mustQueryRowRetry(ctx, t, store, `SELECT count(*) FROM aveloxis_ops.migration_ledger WHERE step_label = $1`, &n, label)
+	if n != 0 {
+		t.Fatalf("a failed probe seeded %d ledger rows, want 0 — it must leave the ledger untouched", n)
+	}
+}

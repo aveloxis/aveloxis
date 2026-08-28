@@ -316,10 +316,10 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// already proves a ≥ v0.27.37 migrate completed has ALREADY run it
 	// (every migrate did), so the ledger row is seeded instead of
 	// forcing one more fleet-wide GitLab full pass on upgrade.
-	runOnceSeedIfApplied(ctx, pg, logger,
-		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", "0.27.37")
-	runOnceStep(ctx, pg, logger, errs,
-		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
+	if runOnceSeedIfApplied(ctx, pg, logger,
+		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", "0.27.37") {
+		runOnceStep(ctx, pg, logger, errs,
+			"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
 		UPDATE aveloxis_ops.collection_queue q
 		SET force_full_collect = TRUE
 		FROM aveloxis_data.repos r
@@ -327,6 +327,7 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 		  AND r.platform_id = 2
 		  AND q.last_collected IS NOT NULL
 		  AND q.force_full_collect = FALSE`)
+	}
 
 	// SBOM storage: format and timestamp columns (added in v0.5.4).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_sbom_scans", "sbom_format", "TEXT DEFAULT ''")
@@ -2329,14 +2330,34 @@ func stampSchemaVersion(ctx context.Context, pg *PostgresStore, logger *slog.Log
 // GetSchemaVersion reads the schema version from the database. Returns an
 // empty string if the schema_meta table doesn't exist yet (pre-v0.14.5 DB).
 func (s *PostgresStore) GetSchemaVersion(ctx context.Context) string {
+	v, _ := s.schemaVersionProbe(ctx)
+	return v
+}
+
+// schemaVersionProbe is GetSchemaVersion with the error arm kept (SR-5:
+// a lookup ERROR is not "no"). Copilot round 8: GetSchemaVersion maps
+// EVERY failure to "", and runOnceSeedIfApplied reads "" as "no stamp,
+// so the step has not run" — a transient catalog or connection error
+// during migrate therefore re-flagged the ENTIRE GitLab fleet for a
+// full recollect, which is the outcome the seed exists to prevent.
+// ErrNoRows and an absent schema_meta (42P01, pre-v0.14.5) are the
+// only definitive absences; everything else is a failed read.
+func (s *PostgresStore) schemaVersionProbe(ctx context.Context) (string, error) {
 	var version string
 	err := s.pool.QueryRow(ctx,
 		`SELECT schema_version FROM aveloxis_ops.schema_meta WHERE id = TRUE`,
 	).Scan(&version)
-	if err != nil {
-		return ""
+	if err == nil {
+		return version, nil
 	}
-	return version
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil // definitively unstamped
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		return "", nil // schema_meta does not exist: pre-v0.14.5 database
+	}
+	return "", err
 }
 
 // CheckSchemaVersion compares the database schema version against the running
@@ -2908,6 +2929,11 @@ func ensureRepoLaborNaturalKeyUnique(ctx context.Context, pg *PostgresStore, log
 // groups, THEN create uq_repo_groups_rg_name (after dedup —
 // schema-DDL-ordering rule: NOT in schema.sql). All idempotent.
 func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	// Baseline for the fail-closed gate below: any repoint that fails
+	// appends to errs, and the deletes must not run over a partial
+	// repoint. It covers the repos repoint too — that one is first.
+	errsBeforeRepoint := len(*errs)
+
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.17 repoint repos.repo_group_id to canonical group per rg_name",
 		`UPDATE aveloxis_data.repos r SET repo_group_id = c.canon
@@ -2935,6 +2961,19 @@ func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.
 			       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
 			 WHERE g.repo_group_id = t.repo_group_id
 			   AND g.rg_name = c.rg_name AND t.repo_group_id <> c.canon`)
+	}
+	// Copilot round 8: the repoints above are execMigrationStep, which
+	// ACCUMULATES a failure and continues. mailing_list_staging has no
+	// FK to repo_groups (schema.sql: `repo_group_id BIGINT,`), so a
+	// failed repoint followed by the loser-group DELETE below leaves
+	// dangling repo_group_id values that wedge DrainList for the whole
+	// list ("no repo for group, leaving staged"). Fail closed: a
+	// successful repoint is idempotent, so the next migrate retries the
+	// failed one and then deletes.
+	if len(*errs) > errsBeforeRepoint {
+		logger.Warn("repo_groups consolidation: a repoint step failed — skipping the loser-group deletes this migrate (re-run migrate; the repoints are idempotent)",
+			"failed_steps", len(*errs)-errsBeforeRepoint)
+		return
 	}
 	for _, tbl := range []string{
 		"aveloxis_data.dm_repo_group_annual",

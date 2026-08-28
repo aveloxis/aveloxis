@@ -119,10 +119,21 @@ func runOnceStep(ctx context.Context, pg *PostgresStore, logger *slog.Logger, er
 // work is provably done. Any stamp below appliedSince, an absent stamp
 // (fresh or pre-v0.14.5 database) or an unparseable one leaves the step
 // to run: running an idempotent step once more is the safe direction.
-func runOnceSeedIfApplied(ctx context.Context, pg *PostgresStore, logger *slog.Logger, label, appliedSince string) {
-	prior := pg.GetSchemaVersion(ctx)
+// It returns false when the stamp could not be READ (Copilot round 8,
+// SR-5): a transient catalog or connection error is not proof that the
+// step is unapplied, and the caller's step here re-flags the entire
+// GitLab fleet for a full recollect. On a failed probe the ledger is
+// left untouched and the caller must SKIP the step this migrate — it is
+// ledgered, so the next migrate decides on a working connection.
+func runOnceSeedIfApplied(ctx context.Context, pg *PostgresStore, logger *slog.Logger, label, appliedSince string) bool {
+	prior, err := pg.schemaVersionProbe(ctx)
+	if err != nil {
+		logger.Warn("migration ledger seed probe failed — skipping the step this migrate rather than assuming it is unapplied",
+			"label", label, "applied_since", appliedSince, "error", err)
+		return false
+	}
 	if prior == "" || !schemaVersionAtLeast(prior, appliedSince) {
-		return
+		return true
 	}
 	tag, err := pg.pool.Exec(ctx, `
 		INSERT INTO aveloxis_ops.migration_ledger (step_label, tool_version)
@@ -130,11 +141,12 @@ func runOnceSeedIfApplied(ctx context.Context, pg *PostgresStore, logger *slog.L
 		ON CONFLICT (step_label) DO NOTHING`, label, ToolVersion)
 	if err != nil {
 		logger.Warn("migration ledger seed failed — the step will run once more instead", "label", label, "error", err)
-		return
+		return true
 	}
 	if tag.RowsAffected() > 0 {
 		logger.Info("migration ledger seeded — step already applied by every migrate since the stamp proves", "label", label, "prior_schema_version", prior, "applied_since", appliedSince)
 	}
+	return true
 }
 
 // schemaVersionAtLeast compares dotted numeric versions ("0.27.37").

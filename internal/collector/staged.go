@@ -1380,6 +1380,14 @@ func (p *Processor) processStagedIssue(ctx context.Context, repoID int64, platID
 	// Process bundled children using the parent's DB ID.
 	if len(env.Labels) > 0 {
 		if err := p.store.UpsertIssueLabels(ctx, issueID, repoID, env.Labels); err != nil {
+			// Copilot round 8 (class sweep): all 12 child-upsert arms
+			// below are warn-and-continue, so a cancel mid-row emitted
+			// one WARN per remaining child — the v0.27.91 flood class.
+			// Shutdown ends the row; the staging row stays unprocessed
+			// and the next cycle redoes it (idempotent upserts).
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert issue labels", "issue_id", issueID, "error", err)
 		}
 	}
@@ -1391,6 +1399,9 @@ func (p *Processor) processStagedIssue(ctx context.Context, repoID int64, platID
 			env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
 		}
 		if err := p.store.UpsertIssueAssignees(ctx, issueID, repoID, env.Assignees); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert issue assignees", "issue_id", issueID, "error", err)
 		}
 	}
@@ -1416,6 +1427,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 	// Process all bundled children using the parent's DB ID.
 	if len(env.Labels) > 0 {
 		if err := p.store.UpsertPRLabels(ctx, prID, repoID, env.Labels); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR labels", "pr_id", prID, "error", err)
 		}
 	}
@@ -1424,6 +1438,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 			env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
 		}
 		if err := p.store.UpsertPRAssignees(ctx, prID, repoID, env.Assignees); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR assignees", "pr_id", prID, "error", err)
 		}
 	}
@@ -1432,6 +1449,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 			env.Reviewers[i].ContributorID = p.resolveUser(ctx, platID, env.Reviewers[i].UserRef)
 		}
 		if err := p.store.UpsertPRReviewers(ctx, prID, repoID, env.Reviewers); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR reviewers", "pr_id", prID, "error", err)
 		}
 	}
@@ -1440,6 +1460,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		review.RepoID = repoID
 		review.ContributorID = p.resolveUser(ctx, platID, review.AuthorRef)
 		if err := p.store.UpsertPRReview(ctx, &review); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR review", "pr_id", prID, "error", err)
 		}
 	}
@@ -1448,6 +1471,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		commit.RepoID = repoID
 		commit.AuthorID = p.resolveUser(ctx, platID, commit.AuthorRef)
 		if err := p.store.UpsertPRCommit(ctx, &commit); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR commit", "pr_id", prID, "error", err)
 		}
 	}
@@ -1455,6 +1481,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		file.PRID = prID
 		file.RepoID = repoID
 		if err := p.store.UpsertPRFile(ctx, &file); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR file", "pr_id", prID, "error", err)
 		}
 	}
@@ -1466,6 +1495,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		env.MetaHead.AuthorID = p.resolveUser(ctx, platID, env.MetaHead.AuthorRef)
 		headMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaHead)
 		if metaErr != nil {
+			if errors.Is(metaErr, context.Canceled) {
+				return metaErr
+			}
 			p.logger.Warn("failed to upsert PR meta (head)", "pr_id", prID, "error", metaErr)
 		}
 	}
@@ -1476,6 +1508,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		env.MetaBase.AuthorID = p.resolveUser(ctx, platID, env.MetaBase.AuthorRef)
 		baseMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaBase)
 		if metaErr != nil {
+			if errors.Is(metaErr, context.Canceled) {
+				return metaErr
+			}
 			p.logger.Warn("failed to upsert PR meta (base)", "pr_id", prID, "error", metaErr)
 		}
 	}
@@ -1497,6 +1532,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		env.RepoHead.MetaID = headMetaID
 		env.RepoHead.ContribID = p.resolveUser(ctx, platID, env.RepoHead.OwnerRef)
 		if err := p.store.UpsertPRRepo(ctx, env.RepoHead); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR repo (head)", "pr_id", prID, "error", err)
 		}
 	}
@@ -1504,6 +1542,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		env.RepoBase.MetaID = baseMetaID
 		env.RepoBase.ContribID = p.resolveUser(ctx, platID, env.RepoBase.OwnerRef)
 		if err := p.store.UpsertPRRepo(ctx, env.RepoBase); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR repo (base)", "pr_id", prID, "error", err)
 		}
 	}

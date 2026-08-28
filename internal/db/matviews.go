@@ -8,6 +8,7 @@ package db
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -109,9 +110,23 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 		// Try CONCURRENTLY first (requires a unique index and at least one row).
 		_, err := pg.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW CONCURRENTLY %s", name))
 		if err != nil {
+			// Copilot round 8: a shutdown is not a failed view. The
+			// loop-top guard cannot see it — the in-flight Exec that
+			// OBSERVED the cancellation is already past it — and the
+			// non-concurrent retry below would be issued on the same
+			// dead ctx, so it fails too and the pair lands as a WARN
+			// plus a stale-view failure on every `stop serve`.
+			if errors.Is(err, context.Canceled) {
+				logger.Info("materialized view refresh interrupted by shutdown", "view", name)
+				return ctx.Err()
+			}
 			// Fall back to non-concurrent refresh (blocks reads but always works).
 			_, err = pg.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW %s", name))
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					logger.Info("materialized view refresh interrupted by shutdown", "view", name)
+					return ctx.Err()
+				}
 				logger.Warn("failed to refresh materialized view",
 					"view", name, "error", err, "duration", time.Since(viewStart))
 				failed = append(failed, fmt.Errorf("view %s: %w", name, err))

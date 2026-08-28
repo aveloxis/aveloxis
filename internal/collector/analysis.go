@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -226,6 +227,12 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 	// Clear previous dependency data before inserting fresh results.
 	// repo_dependencies is a snapshot table (no history rotation needed).
 	if err := ac.store.ClearRepoDependencies(ctx, repoID); err != nil {
+		// Round-8 class sweep: shutdown is not a scan failure, and
+		// continuing the whole dependency scan on a dead ctx just
+		// produces one WARN per dep below.
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
 		ac.logger.Warn("failed to clear old dependencies", "repo_id", repoID, "error", err)
 	}
 
@@ -283,6 +290,12 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 	for lang, deps := range depCounts {
 		for depName, count := range deps {
 			if err := ac.store.InsertRepoDependency(ctx, repoID, depName, count, lang); err != nil {
+				// Round-8 class sweep: warn-and-continue over every dep
+				// of every language — a shutdown here emitted one WARN
+				// per dependency (v0.27.91 flood class).
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
 				ac.logger.Warn("failed to insert dependency", "dep", depName, "error", err)
 				continue
 			}
@@ -1341,6 +1354,11 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			continue
 		}
 		if err := ac.store.InsertRepoLibyear(ctx, repoID, lb); err != nil {
+			// Round-8 class sweep: same flood shape as the dependency
+			// loop above.
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			ac.logger.Warn("failed to insert libyear", "dep", dep.Name, "error", err)
 			continue
 		}

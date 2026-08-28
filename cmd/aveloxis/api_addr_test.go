@@ -65,6 +65,13 @@ func TestWarnAPIPortMismatch(t *testing.T) {
 		{"no port in url", "127.0.0.1:9383", "http://127.0.0.1", false},
 		{"unparseable url", "127.0.0.1:9383", "://nope", false},
 		{"ipv6 loopback mismatch", "127.0.0.1:9383", "http://[::1]:8383", true},
+		// Round-8 review: "localhost" is not an IP literal, so keying
+		// the loopback test on net.ParseIP alone made the warning
+		// silent for exactly the spelling docs/guide/api.md teaches
+		// ("The API URL is configured as http://localhost:8383").
+		{"localhost mismatch", "127.0.0.1:9383", "http://localhost:8383", true},
+		{"localhost aligned", "127.0.0.1:8383", "http://localhost:8383", false},
+		{"localhost uppercase mismatch", "127.0.0.1:9383", "http://LOCALHOST:8383", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

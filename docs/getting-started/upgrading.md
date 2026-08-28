@@ -127,8 +127,12 @@ below covers the history; and path values in `aveloxis.json` are never
 
 ## Operator-run heals, with the release that introduced each
 
-Run every row whose **Since** is newer than the version you are coming
-from, in table order. Every command is idempotent and resumable;
+Run every row whose **Since** cell names *any* release newer than the
+version you are coming from, in table order. Several rows list later
+extensions in parentheses — row 4 gained `pull_request_repo` owners in
+v0.27.104 and row 6 gained `platform_repo_id` in v0.27.102, both long
+after the row's first release — so comparing against the first version
+alone would skip a repair that does apply to you. Every command is idempotent and resumable;
 re-running is always safe. Rows marked *fleet-scale* take hours on a
 100K-repo fleet and minutes on a small one.
 

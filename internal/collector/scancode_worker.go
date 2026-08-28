@@ -1120,7 +1120,8 @@ func (w *ScancodeWorker) finishScan(ctx context.Context, job db.ScancodeJob, ex 
 		// cadence gate will see the recent scancode_scans row
 		// via the v0.21.0 backfill semantics on the next migrate
 		// run, OR re-run scancode (no harm — ingest is
-		// idempotent via RotateScancodeToHistory).
+		// idempotent via ReplaceScancodeSnapshot, which rotates and
+		// re-inserts in one transaction).
 		return
 	}
 

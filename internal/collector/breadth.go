@@ -404,7 +404,16 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 		if len(oc.rows) > 0 {
 			insErr := bw.store.InsertContributorRepoBatch(ctx, oc.rows)
 			if errors.Is(insErr, context.Canceled) {
-				continue // shutdown, not a failure: unmarked, retried next cycle
+				// Copilot round 8: shutdown, not a failure — but it must
+				// ABORT, not merely skip this contributor. A bare
+				// `continue` on the LAST outcome left abortErr nil, so
+				// the loop ended and the worker logged "contributor
+				// breadth complete" and returned nil on a `stop serve`.
+				// Aborting also stops the remaining in-flight fetches.
+				aborted = true
+				abortErr = insErr
+				cancelFetch()
+				continue // unmarked: retried next cycle
 			}
 			if insErr != nil {
 				bw.logger.Warn("breadth: failed to insert contributor events — leaving unmarked for retry",

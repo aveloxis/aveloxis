@@ -47,9 +47,12 @@ import (
 // per-row history rotation.
 func ingestScancodeOutput(ctx context.Context, store ScancodeStore, repoID int64, outputPath string, logger *slog.Logger) (string, error) {
 	if ctx.Err() != nil {
-		// Never start the rotate-then-insert pair under a done ctx: a
-		// rotate that commits before the insert fails leaves the repo
-		// with no current scan rows until the full re-scan (pass 39).
+		// Cheap early-out. The rotate-then-insert WINDOW this guard was
+		// written for (pass 39) is closed by ReplaceScancodeSnapshot,
+		// which rotates and re-inserts in ONE transaction — so a
+		// cancellation can no longer leave the repo with a rotated-away
+		// snapshot and nothing current. Skipping the file read and the
+		// parse on a dead ctx is all this still buys.
 		return "", ctx.Err()
 	}
 	data, err := os.ReadFile(outputPath)

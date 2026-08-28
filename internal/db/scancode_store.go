@@ -79,54 +79,6 @@ func (s *PostgresStore) ScancodeFreshness(ctx context.Context, repoID int64) (ti
 	return t, v, nil
 }
 
-// InsertScancodeScan inserts a scan metadata row and returns the scan_id.
-func (s *PostgresStore) InsertScancodeScan(ctx context.Context, repoID int64, scancodeVersion string, filesScanned, filesWithFindings int, durationSecs float64, scanErrors json.RawMessage) (int64, error) {
-	var scanID int64
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO aveloxis_scan.scancode_scans
-			(repo_id, scancode_version, files_scanned, files_with_findings,
-			 scan_duration_secs, scan_errors,
-			 tool_source, data_source, data_collection_date)
-		VALUES ($1, $2, $3, $4, $5, $6,
-			'aveloxis-scancode', 'scancode-toolkit', NOW())
-		RETURNING scan_id`,
-		repoID, scancodeVersion, filesScanned, filesWithFindings, durationSecs, scanErrors).Scan(&scanID)
-	return scanID, err
-}
-
-// InsertScancodeFileResultBatch inserts per-file scancode results in a single
-// round-trip using pgx batch. A scan of a large repo can produce thousands of
-// file results, so batching is important for performance.
-func (s *PostgresStore) InsertScancodeFileResultBatch(ctx context.Context, repoID int64, rows []*ScancodeFileRow) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	batch := &pgx.Batch{}
-	for _, row := range rows {
-		batch.Queue(`
-			INSERT INTO aveloxis_scan.scancode_file_results
-				(repo_id, path, file_type, programming_language,
-				 detected_license_expression, detected_license_expression_spdx,
-				 percentage_of_license_text,
-				 copyrights, holders, license_detections, package_data, scan_errors,
-				 tool_source, data_source, data_collection_date)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-				'aveloxis-scancode', 'scancode-toolkit', NOW())`,
-			repoID, row.Path, row.FileType, row.ProgrammingLanguage,
-			row.DetectedLicenseExpression, row.DetectedLicenseExpressionSPDX,
-			row.PercentageOfLicenseText,
-			row.Copyrights, row.Holders, row.LicenseDetections, row.PackageData, row.ScanErrors)
-	}
-	results := s.pool.SendBatch(ctx, batch)
-	defer results.Close()
-	for range batch.Len() {
-		if _, err := results.Exec(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // ScancodeForSBOM holds aggregated scancode data for SBOM enrichment.
 type ScancodeForSBOM struct {
 	ConcludedLicenseSPDX string   // aggregated SPDX expression (e.g., "Apache-2.0 AND MIT")
@@ -448,21 +400,37 @@ func (s *PostgresStore) ReplaceScancodeSnapshot(ctx context.Context, repoID int6
 			return fmt.Errorf("inserting scancode scan: %w", err)
 		}
 
-		for _, row := range rows {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO aveloxis_scan.scancode_file_results
-					(repo_id, path, file_type, programming_language,
-					 detected_license_expression, detected_license_expression_spdx,
-					 percentage_of_license_text,
-					 copyrights, holders, license_detections, package_data, scan_errors,
-					 tool_source, data_source, data_collection_date)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-					'aveloxis-scancode', 'scancode-toolkit', NOW())`,
-				repoID, row.Path, row.FileType, row.ProgrammingLanguage,
-				row.DetectedLicenseExpression, row.DetectedLicenseExpressionSPDX,
-				row.PercentageOfLicenseText,
-				row.Copyrights, row.Holders, row.LicenseDetections, row.PackageData,
-				row.ScanErrors); err != nil {
+		// Chunked batch sends inside the single tx — the same shape
+		// ReplaceRepoLaborSnapshot uses (v0.27.7). The first cut of this
+		// fusion carried the transaction over from the three separate
+		// calls but left the pgx.Batch behind, degrading ingest to one
+		// round-trip per finding: measured 10,000 rows at 299 ms
+		// (loopback) versus 50 ms batched, and every one of those
+		// round-trips is held inside a transaction that has already
+		// deleted the repo's current rows. On a network-attached
+		// Postgres a kernel-class repo (80K findings) would hold that
+		// transaction open for over a minute.
+		const chunkSize = 5000
+		for start := 0; start < len(rows); start += chunkSize {
+			end := min(start+chunkSize, len(rows))
+			batch := &pgx.Batch{}
+			for _, row := range rows[start:end] {
+				batch.Queue(`
+					INSERT INTO aveloxis_scan.scancode_file_results
+						(repo_id, path, file_type, programming_language,
+						 detected_license_expression, detected_license_expression_spdx,
+						 percentage_of_license_text,
+						 copyrights, holders, license_detections, package_data, scan_errors,
+						 tool_source, data_source, data_collection_date)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+						'aveloxis-scancode', 'scancode-toolkit', NOW())`,
+					repoID, row.Path, row.FileType, row.ProgrammingLanguage,
+					row.DetectedLicenseExpression, row.DetectedLicenseExpressionSPDX,
+					row.PercentageOfLicenseText,
+					row.Copyrights, row.Holders, row.LicenseDetections, row.PackageData,
+					row.ScanErrors)
+			}
+			if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 				return fmt.Errorf("inserting scancode file results: %w", err)
 			}
 		}

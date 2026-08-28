@@ -313,7 +313,14 @@ func warnAPIPortMismatch(cfg *config.Config, logger *slog.Logger) {
 	if err != nil {
 		return // no explicit port; nothing to compare
 	}
-	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+	// "localhost" is loopback but not an IP literal — and it is the
+	// spelling docs/guide/api.md teaches, so keying on ParseIP alone
+	// made the warning silent for the project's own documented value.
+	isLoopback := strings.EqualFold(host, "localhost")
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		isLoopback = true
+	}
+	if !isLoopback {
 		return
 	}
 	_, apiPort, err := net.SplitHostPort(cfg.API.AddrOrDefault())

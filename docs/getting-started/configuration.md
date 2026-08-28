@@ -37,17 +37,19 @@ claim on two axes, and they have different reach:
   default"), so presence is asserted separately. The one reasoned
   exemption is `github.gitlab_hosts`: the two forge blocks share one
   struct and that field is GitLab-only.
-- **Values — every block, every field.** Each field is compared
-  against the compiled default, through the same effective accessors
-  the running code uses; where a field has an accessor the snippet
-  must also *state* the value rather than leave it zero, since an
-  accessor would map zero back to the default and hide the drift. The
-  only exceptions are the genuinely site-specific fields — tokens,
-  secrets, OAuth client ids, your database role and name, your public
-  URLs — each named in the test with a reason, under a check that
-  fails if an exception stops suppressing anything. So the values
-  below are real defaults unless the field is obviously yours to
-  fill in.
+- **Values — every block, every field, plus the top-level scalars.**
+  Each field is compared against the compiled default: through its
+  effective accessor where it has one, and by value where it does
+  not. Where a field has an accessor the snippet must also *state* the
+  value rather than leave it zero, since the accessor would map zero
+  back to the default and hide the drift. The set of what is checked
+  is derived from the `Config` type, so a block or option added later
+  is covered the day it is declared. The only exceptions are the
+  genuinely site-specific fields — tokens, secrets, OAuth client ids,
+  your database role and name, your public URLs — each named in the
+  test with a reason, under a check that fails if an exception stops
+  suppressing anything. So the values below are real defaults unless
+  the field is obviously yours to fill in.
 
 The value check exists because the snippet taught
 `scancode_shutdown_grace_minutes: 30` for three months after the

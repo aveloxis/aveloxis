@@ -172,7 +172,7 @@ type ScancodeWorkerOptions struct {
 //     themselves, whose clone-dir removal needs no pool. Then the
 //     shutdown sweep clears all clone dirs and Run() returns.
 type ScancodeWorker struct {
-	store         *db.PostgresStore
+	store         ScancodeStore
 	logger        *slog.Logger
 	workerCount   int
 	startInterval time.Duration
@@ -263,7 +263,7 @@ func (w *ScancodeWorker) scancodeEnv() []string {
 // v0.23.7-fix: ShutdownGrace 0 means 0 (immediate kill) — the zero
 // value is a real setting here, matching the v0.23.7 contract that
 // subprocesses outliving aveloxis can't deliver output anyway.
-func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger, opts ScancodeWorkerOptions) *ScancodeWorker {
+func NewScancodeWorker(store ScancodeStore, logger *slog.Logger, opts ScancodeWorkerOptions) *ScancodeWorker {
 	if opts.Workers <= 0 {
 		opts.Workers = 2
 	}
@@ -305,7 +305,7 @@ func NewScancodeWorker(store *db.PostgresStore, logger *slog.Logger, opts Scanco
 		cadence:              opts.Cadence,
 		cloneDir:             opts.CloneDir,
 		shutdownGrace:        opts.ShutdownGrace,
-		bookkeepingAllowance: time.Millisecond,
+		bookkeepingAllowance: ScancodeShutdownBookkeepingGrace,
 		bookkeepingDone:      make(chan struct{}),
 		runTimeoutBase:       opts.RunTimeoutBase,
 		runTimeoutCap:        opts.RunTimeoutCap,
@@ -1206,11 +1206,27 @@ const (
 // the shipped default grace of 0, and a source pin could not tell the
 // difference (pass 48).
 func (w *ScancodeWorker) shutdownDeadline() time.Duration {
-	allowance := w.bookkeepingAllowance
-	if allowance <= 0 {
-		allowance = ScancodeShutdownBookkeepingGrace
+	if w.bookkeepingAllowance > 0 {
+		// The test seam: a 70-second bound is only provable by
+		// waiting for it. Production always takes the branch below.
+		return w.shutdownGrace + w.bookkeepingAllowance
 	}
-	return w.shutdownGrace + allowance
+	return ScancodeShutdownBound(w.shutdownGrace)
+}
+
+// ScancodeShutdownBound is how long a caller must wait for a scancode
+// worker running with this grace to finish its shutdown bookkeeping.
+// The scheduler waits on BookkeepingDone() for exactly this long, and
+// `aveloxis stop`'s budget and the documented systemd TimeoutStopSec
+// derive from it (pass 39).
+//
+// ONE definition, exported so the sum is not re-derived per caller.
+// It was computed independently in three places until pass 50 —
+// worker, scheduler, cmd — all arriving at the same 4m10s by hand.
+// Dropping an operand from one is exactly the pass-48 escape a layer
+// out, and nothing checked the three agreed.
+func ScancodeShutdownBound(grace time.Duration) time.Duration {
+	return grace + ScancodeShutdownBookkeepingGrace
 }
 
 // awaitBookkeeping blocks until every claimed job's DB bookkeeping is
@@ -1235,8 +1251,12 @@ func (w *ScancodeWorker) awaitBookkeeping() {
 	case <-w.bookkeepingDone:
 		w.logger.Info("scancode worker stopped cleanly — every runner finished its shutdown bookkeeping")
 	case <-time.After(w.shutdownDeadline()):
+		// Log the EFFECTIVE deadline, not the constant: the allowance
+		// is a field, so printing ScancodeShutdownBookkeepingGrace
+		// would describe a bound the code did not use (SR-10's
+		// logging half, pass 50).
 		w.logger.Warn("scancode worker shutdown grace expired — runners still inside their bookkeeping; their locks are recovered on the next start",
-			"grace", w.shutdownGrace.String(), "bookkeeping_allowance", ScancodeShutdownBookkeepingGrace.String())
+			"grace", w.shutdownGrace.String(), "deadline", w.shutdownDeadline().String())
 	}
 }
 

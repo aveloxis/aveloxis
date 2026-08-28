@@ -221,9 +221,20 @@ Two structural answers, in order of preference:
 Corollary: when a pin has been escaped repeatedly and each fix adds
 surface, that is evidence the property is being asserted at the wrong
 level, not that the next predicate will be the one that holds. Passes
-43–48 escaped the same shutdown pin eleven times; the runtime test that
-replaced its semantic half catches all eight bound-class escapes
-without naming any of them, and let ~330 lines of pin go.
+43–48 escaped the same shutdown pin fifteen times (by the labels the
+code carries); the runtime test that replaced its semantic half
+catches all nine bound-class escapes without naming any of them.
+
+Note what that did NOT buy: the total surface for this one contract
+went from ~356 lines to ~1000. Moving a property to a runtime test is
+not a code-size win, and claiming one here was itself an unchecked
+claim — pass 50 measured it. What changes is which failures are
+*reachable*: the escape-prone half (deadline spellings, goroutine-launch
+derivation, synchronous-path analysis, select-arm taxonomy) is gone,
+and with it all four of the round's false fires. The remaining pin
+asserts only structural facts — where the wait lives, that Run
+delegates to it, that nothing else blocks — which are the facts a
+source pin can actually hold.
 
 Incidents: the `context.WithTimeout` recommendation (pass 48); the
 deadline arm that checked only the function name while both operands

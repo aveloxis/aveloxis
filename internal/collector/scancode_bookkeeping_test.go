@@ -81,7 +81,12 @@ func TestSchedulerWaitsForScancodeBookkeeping(t *testing.T) {
 	src := srctest.StripGoComments(srctest.Read(t, "internal/scheduler/scheduler.go"))
 	for _, needle := range []string{
 		"<-scancodeWorker.BookkeepingDone()",
-		"s.cfg.Collection.ScancodeShutdownGrace() + collector.ScancodeShutdownBookkeepingGrace",
+		// v0.28.19: derived from the one definition rather than
+		// re-summed here. The worker, the scheduler and `stop`'s
+		// budget all computed this by hand until then, and nothing
+		// checked they agreed — TestScancodeWorkerShutdownBoundsNest
+		// now does.
+		"collector.ScancodeShutdownBound(s.cfg.Collection.ScancodeShutdownGrace())",
 		"s.background.Wait()",
 	} {
 		if !strings.Contains(src, needle) {

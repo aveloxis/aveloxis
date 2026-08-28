@@ -268,9 +268,8 @@ func TestConfigurationDocSnippetMatchesEffectiveDefaults(t *testing.T) {
 			if _, ok := sub[sTag]; ok {
 				continue
 			}
-			if reason, exempt := snippetPresenceExemptions[tag+"."+sTag]; exempt {
+			if _, exempt := snippetPresenceExemptions[tag+"."+sTag]; exempt {
 				exemptionUsed[tag+"."+sTag] = true
-				_ = reason
 				continue
 			}
 			t.Errorf("the configuration.md full-configuration snippet omits %q from its %q block — it "+
@@ -375,21 +374,22 @@ func jsonTagsOf(t reflect.Type) []string {
 	return out
 }
 
-// snippetValueBlocks are the configuration.md blocks whose values the
-// snippet is held to, the same way the collection block is. That is
-// EVERY block: pass 47 excluded database/github/gitlab/web on the
-// claim that "every field there is site-specific", which is false —
-// Database.Host/Port/SSLMode, both BaseURLs and Web.Addr/
-// GitLabBaseURL/APIInternalURL are all compiled defaults, and
-// `api_internal_url` could be taught wrong while contradicting its own
-// reference table 190 lines below (pass 48). The genuinely
-// site-specific fields are named in snippetValueAllowlist with a
-// reason, under a staleness reverse-check.
+// Which of the snippet's values are checked is DERIVED from
+// reflect.TypeOf(Config{}), not listed: every top-level field, and
+// every field of every block.
 //
-// Pass 46 documented `api` and `monitor` with a PRESENCE check only,
-// re-creating the exact rot the value check exists to prevent —
-// proven by changing two compiled defaults with every test green.
-var snippetValueBlocks = []string{"api", "monitor", "mail", "database", "github", "gitlab", "web"}
+// Pass 47 excluded database/github/gitlab/web on the claim that
+// "every field there is site-specific" — false for six compiled
+// defaults. Pass 48 replaced that with a hand-written list of the
+// remaining blocks, which had neither a completeness guard nor a
+// staleness one: dropping an entry silently stopped value-checking a
+// whole block, and `log_level` was never checked at all while the
+// prose said "every block, every field" (pass 50 — the fourth
+// consecutive over-claim in this one paragraph). Deriving the set is
+// what stops a fifth: a new block or scalar is covered the moment it
+// is declared. The genuinely site-specific fields are named in
+// snippetValueAllowlist with a reason, under a staleness
+// reverse-check.
 
 // snippetValueAccessors mirrors effectiveAccessors for the blocks
 // above: a field whose meaning comes from an accessor is compared
@@ -438,32 +438,57 @@ func assertSnippetBlockValues(t *testing.T, block string) {
 	defaults := DefaultConfig()
 	usedAllowlist := map[string]bool{}
 
-	for _, name := range snippetValueBlocks {
+	for f := 0; f < cfgType.NumField(); f++ {
+		field := cfgType.Field(f)
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		if name == "collection" {
+			// Covered by assertCollectionMatchesEffectiveDefaults,
+			// called just above, which compares every field through
+			// the effectiveAccessors map — strictly more than this
+			// loop can (it would compare *int pointers by identity).
+			continue
+		}
 		raw, ok := envelope[name]
 		if !ok {
 			continue // the presence check above already reported it
 		}
-		field, ok := fieldByJSONTag(cfgType, name)
-		if !ok {
-			t.Fatalf("no Config field carries json tag %q", name)
-			continue
-		}
 		applied := DefaultConfig()
 		target := reflect.ValueOf(applied).Elem().FieldByName(field.Name)
 		if err := json.Unmarshal(raw, target.Addr().Interface()); err != nil {
-			t.Errorf("apply snippet %q block: %v", name, err)
+			t.Errorf("apply snippet %q: %v", name, err)
 			continue
 		}
 		blockType := field.Type
+		for blockType.Kind() == reflect.Pointer {
+			// The presence walkalready derefs; this one must too, or a
+			// pointer block panics in NumField below (pass 50).
+			blockType = blockType.Elem()
+		}
+		if blockType.Kind() != reflect.Struct {
+			// A top-level scalar such as log_level. Compared directly:
+			// pass 48's block-only loop never checked it while the
+			// prose claimed every field was covered.
+			got := reflect.ValueOf(applied).Elem().FieldByName(field.Name).Interface()
+			want := reflect.ValueOf(defaults).Elem().FieldByName(field.Name).Interface()
+			if !equalConfigValue(got, want) {
+				t.Errorf("the configuration.md snippet teaches a NON-DEFAULT value for %s: "+
+					"snippet=%v compiled-default=%v. Operators read this snippet as the defaults "+
+					"document; either fix the value, or add %q to snippetValueAllowlist with a reason.",
+					name, got, want, name)
+			}
+			continue
+		}
 		for i := 0; i < blockType.NumField(); i++ {
 			key := name + "." + blockType.Field(i).Name
-			if reason, exempt := snippetValueAllowlist[key]; exempt {
+			if _, exempt := snippetValueAllowlist[key]; exempt {
 				got := snippetFieldValue(applied, field.Name, blockType.Field(i).Name, key)
 				want := snippetFieldValue(defaults, field.Name, blockType.Field(i).Name, key)
 				if !equalConfigValue(got, want) {
 					usedAllowlist[key] = true
 				}
-				_ = reason
 				continue
 			}
 			got := snippetFieldValue(applied, field.Name, blockType.Field(i).Name, key)
@@ -508,16 +533,6 @@ func snippetFieldValue(cfg *Config, blockField, fieldName, key string) any {
 		return getter(cfg)
 	}
 	return reflect.ValueOf(cfg).Elem().FieldByName(blockField).FieldByName(fieldName).Interface()
-}
-
-// fieldByJSONTag finds the struct field carrying a given json tag.
-func fieldByJSONTag(t reflect.Type, tag string) (reflect.StructField, bool) {
-	for i := 0; i < t.NumField(); i++ {
-		if strings.Split(t.Field(i).Tag.Get("json"), ",")[0] == tag {
-			return t.Field(i), true
-		}
-	}
-	return reflect.StructField{}, false
 }
 
 // isEmptyValue reports whether a config field carries nothing an

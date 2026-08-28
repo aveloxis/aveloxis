@@ -599,7 +599,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 				s.background.Wait()
 				close(bgDone)
 			}()
-			bgBound := s.cfg.Collection.ScancodeShutdownGrace() + collector.ScancodeShutdownBookkeepingGrace
+			bgBound := collector.ScancodeShutdownBound(s.cfg.Collection.ScancodeShutdownGrace())
 			select {
 			case <-bgDone:
 			case <-time.After(bgBound):

@@ -240,7 +240,7 @@ func (w *ScancodeWorker) recordScancodeStatus(ctx context.Context, status, detai
 	}
 	// Defensive nil guard: the behavioral tests drive the health gate
 	// without a database; production always has a store.
-	if w.store == nil {
+	if !w.storeAvailable() {
 		return
 	}
 	if err := w.store.SetAveloxisStatus(ctx, scancodeStatusName, status, detail, scancodeStatusSource); err != nil {

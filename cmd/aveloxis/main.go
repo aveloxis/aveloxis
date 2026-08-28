@@ -270,7 +270,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 // backend poll, the documented systemd TimeoutStopSec) derives from it
 // (pass 39).
 func shutdownBudget(cfg *config.Config) time.Duration {
-	return cfg.Collection.ShutdownGraceDuration() + cfg.Collection.ScancodeShutdownGrace() + collector.ScancodeShutdownBookkeepingGrace
+	return cfg.Collection.ShutdownGraceDuration() + collector.ScancodeShutdownBound(cfg.Collection.ScancodeShutdownGrace())
 }
 
 // --- api: REST API server ---

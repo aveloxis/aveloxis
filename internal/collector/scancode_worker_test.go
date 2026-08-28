@@ -329,9 +329,9 @@ func TestRecoverOrphansSkipsCrossHostLocks(t *testing.T) {
 // BOOKKEEPING, not for the runner goroutines, and that wait is bounded
 // so `aveloxis stop` can never hang — was pinned at the source level
 // through passes 38–48. A reviewer escaped it in EVERY one of passes
-// 43–48: eleven one-line refactors, five of which re-introduced the
-// exact hang the bound exists to prevent, and three of the last four
-// fixes were themselves defective. Pass 48 found the pin RECOMMENDING
+// 43–48 — fifteen labelled one-line refactors, nine of them
+// re-introducing the exact hang the bound exists to prevent — and
+// three of the last four fixes were themselves defective. Pass 48 found the pin RECOMMENDING
 // a refactor (a context.WithTimeout child of the already-canceled
 // worker ctx) that silently reduced the wait to zero.
 //
@@ -366,6 +366,7 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 	fset, files := scancodePackageFiles(t)
 	run := scancodeMethodDecl(t, files, "Run")
 	byName := scancodeDecls(files)
+	safego := safegoAlias(declFile(fset, files, run))
 	reachable := scancodeReachable(byName, run)
 
 	// The walk must not go decorative (lens L4). It resolves ~47
@@ -398,18 +399,48 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 		t.Errorf("w.bookkeeping.Wait() now lives in %s, not %s — the shutdown bound is proven by the runtime tests in scancode_shutdown_runtime_test.go, which call %s directly and measure whether it returns while the bookkeeping is wedged. Moving the wait out of it (inlining it back into Run, say) leaves those tests driving dead code, and every escape they catch — a synchronous drain, a dropped allowance, an expired bound, an extra blocking wait — becomes invisible again.", owner, drainHome, drainHome)
 	}
 
-	// 2. Run must delegate to it.
-	if !callsMethod(run, "awaitBookkeeping") {
-		t.Errorf("Run does not call w.awaitBookkeeping() — that is the one place the shutdown wait may happen, because it is the one place the runtime tests can observe (pass 49).")
+	joins := runJoinChannels(run)
+
+	// 2. Run must delegate to it — as a plain call, in the right
+	//    place. `go w.awaitBookkeeping()` deletes the wait outright
+	//    and every test stayed green (pass 50); so does moving it
+	//    behind the clone-dir sweep, which v0.27.13 measured at 10+
+	//    minutes PER DIRECTORY — long past the scheduler's own bound,
+	//    so it closes the pool under the runners' lock clears.
+	awaitIdx, ok := topLevelCallIndex(run, "awaitBookkeeping")
+	if !ok {
+		t.Error("Run must call w.awaitBookkeeping() as a plain statement in its own body — not with `go`, not with `defer`, not inside a literal. Launched in a goroutine it does not delay Run at all: the shutdown wait simply does not happen, and the scheduler's pool close lands on the runners' in-flight lock clears (passes 38/39, pass 50).")
+	}
+	sweepIdx, sweepOK := topLevelCallIndex(run, "sweepCloneDirAtShutdown")
+	if ok && sweepOK && awaitIdx > sweepIdx {
+		t.Error("Run performs its clone-dir sweep BEFORE awaiting the bookkeeping. The drain goroutine is launched inside awaitBookkeeping, so nothing signals bookkeepingDone until the sweep finishes — minutes on a spinning disk, and 10+ minutes per directory when v0.27.13 measured it. The scheduler's bound (scancode grace + the allowance) expires first and it closes the pool under the runners' lock clears (passes 38/39, pass 50).")
+	}
+	joinIdx, joinOK := topLevelReceiveIndex(run, joins)
+	if ok && joinOK && awaitIdx < joinIdx {
+		t.Error("Run awaits the bookkeeping BEFORE joining the dispatcher — the claim loop is still handing out jobs, so runners can register bookkeeping after the wait has already passed (passes 38/39).")
 	}
 
 	// 3. Run blocks on nothing but its own join channels.
-	joins := runJoinChannels(run)
-	for _, op := range runBlockingOps(run, goroutineSpans(run, safegoAlias(declFile(fset, files, run)))) {
+	for _, op := range runBlockingOps(run, goroutineSpans(run, safego)) {
 		if op.kind == blockRecv && joins[op.operand] {
 			continue
 		}
 		t.Errorf("Run %s at line %d — the only thing Run may block on is a channel it both makes and closes itself (its dispatcher join); the shutdown wait belongs in awaitBookkeeping, where it is bounded and runtime-tested. A receive on the bookkeeping signal, a range over it, a send or a lock all hold `aveloxis stop` open just the same (passes 44, 47, 48).", op.desc, fset.Position(op.pos).Line)
+	}
+
+	// 4b. A helper Run calls SYNCHRONOUSLY blocks Run exactly as if it
+	//     were inlined, so the runner join can simply be respelled as
+	//     a channel receive one hop away — which pin 3 cannot see and
+	//     `.Wait()` matching never could (pass 50). awaitBookkeeping is
+	//     the one sanctioned blocker; its semantics belong to the
+	//     runtime tests.
+	for _, fn := range sortedDecls(syncReachable(run, byName, safego)) {
+		if declKey(fn) == drainHome {
+			continue
+		}
+		for _, op := range channelBlockingOps(fn, goroutineSpans(fn, safego)) {
+			t.Errorf("%s is called synchronously from Run and %s at line %d — that blocks Run just as if it were written inline, so it is another way to re-add the runner join `.Wait()` matching was meant to stop (passes 39/40, pass 50). The only blocking Run may delegate is awaitBookkeeping, which is bounded and runtime-tested.", declKey(fn), op.desc, fset.Position(op.pos).Line)
+		}
 	}
 
 	// 4. Nothing Run reaches may wait on anything but w.bookkeeping.
@@ -424,30 +455,148 @@ func TestGracefulShutdownWaitsForBookkeepingWithinGrace(t *testing.T) {
 	}
 }
 
-// drainHome is the function the runtime shutdown tests drive. Named
-// once so the pin above and those tests cannot drift apart.
+// drainHome is the function the runtime shutdown tests drive. A rename
+// is safe: those tests call the method directly, so the compiler
+// catches them, and this constant is the only textual anchor.
 const drainHome = "*ScancodeWorker.awaitBookkeeping"
 
-// callsMethod reports whether fn calls a method of its own receiver by
-// that name, at any depth including inside literals.
-func callsMethod(fn *ast.FuncDecl, name string) bool {
+// topLevelCallIndex returns the position, in fn's own statement list,
+// of a PLAIN call to a method of fn's receiver by that name — and
+// whether such a statement exists at all. Top-level and plain on
+// purpose: `go w.awaitBookkeeping()` and `defer w.awaitBookkeeping()`
+// both call the method and neither performs the wait Run is supposed
+// to perform (pass 50).
+func topLevelCallIndex(fn *ast.FuncDecl, name string) (int, bool) {
 	recv := receiverName(fn)
-	found := false
-	ast.Inspect(fn, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
+	for i, stmt := range fn.Body.List {
+		expr, ok := stmt.(*ast.ExprStmt)
 		if !ok {
-			return true
+			continue
+		}
+		call, ok := expr.X.(*ast.CallExpr)
+		if !ok {
+			continue
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok || sel.Sel.Name != name {
-			return true
+			continue
 		}
 		if id, ok := sel.X.(*ast.Ident); ok && id.Name == recv {
-			found = true
+			return i, true
 		}
-		return true
+	}
+	return 0, false
+}
+
+// topLevelReceiveIndex returns the position of fn's first top-level
+// receive on one of its own join channels — the dispatcher join.
+func topLevelReceiveIndex(fn *ast.FuncDecl, joins map[string]bool) (int, bool) {
+	for i, stmt := range fn.Body.List {
+		expr, ok := stmt.(*ast.ExprStmt)
+		if !ok {
+			continue
+		}
+		u, ok := expr.X.(*ast.UnaryExpr)
+		if !ok || u.Op != token.ARROW {
+			continue
+		}
+		if joins[types.ExprString(u.X)] {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// syncReachable returns what fn reaches WITHOUT crossing a goroutine
+// boundary — the functions whose blocking is fn's own blocking.
+func syncReachable(start *ast.FuncDecl, byName map[string]*ast.FuncDecl, safego string) map[string]*ast.FuncDecl {
+	seen := map[string]*ast.FuncDecl{}
+	queue := []*ast.FuncDecl{start}
+	for len(queue) > 0 {
+		fn := queue[0]
+		queue = queue[1:]
+		spans := goroutineSpans(fn, safego)
+		launched := map[*ast.CallExpr]bool{}
+		ast.Inspect(fn, func(n ast.Node) bool {
+			switch s := n.(type) {
+			case *ast.GoStmt:
+				launched[s.Call] = true
+			case *ast.CallExpr:
+				if types.ExprString(s.Fun) == safego+".Go" {
+					launched[s] = true
+				}
+			}
+			return true
+		})
+		aliases := funcValueAliases(fn)
+		recv := receiverName(fn)
+		ast.Inspect(fn, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || launched[call] {
+				return true
+			}
+			for _, sp := range spans {
+				if sp.holds(call.Pos()) {
+					return true
+				}
+			}
+			for _, target := range callTargets(call, recv, aliases, byName) {
+				key := declKey(target)
+				if _, done := seen[key]; done || target == start {
+					continue
+				}
+				seen[key] = target
+				queue = append(queue, target)
+			}
+			return true
+		})
+	}
+	return seen
+}
+
+// channelBlockingOps is runBlockingOps restricted to operations that
+// are unambiguously channel or lock waits. Ranges are excluded unless
+// the operand is a known channel: without type information a `for _, x
+// := range someSlice` is indistinguishable from a channel range, and
+// the synchronously-reachable set is full of the former (measured: 8
+// slice ranges, 0 channel ranges).
+func channelBlockingOps(fn *ast.FuncDecl, spans []span) []blockingOp {
+	chans := channelIdents(fn)
+	var out []blockingOp
+	for _, op := range runBlockingOps(fn, spans) {
+		if op.kind == blockRange && !chans[op.operand] {
+			continue
+		}
+		out = append(out, op)
+	}
+	return out
+}
+
+// channelIdents returns the identifiers fn holds channels in: its
+// channel-typed parameters and its own make(chan …) locals.
+func channelIdents(fn *ast.FuncDecl) map[string]bool {
+	out := map[string]bool{}
+	if fn.Type.Params != nil {
+		for _, p := range fn.Type.Params.List {
+			if _, isChan := p.Type.(*ast.ChanType); !isChan {
+				continue
+			}
+			for _, nm := range p.Names {
+				out[nm.Name] = true
+			}
+		}
+	}
+	made, _ := assignedTargets(fn, func(call *ast.CallExpr) bool {
+		if types.ExprString(call.Fun) != "make" || len(call.Args) == 0 {
+			return false
+		}
+		_, isChan := call.Args[0].(*ast.ChanType)
+		return isChan
 	})
-	return found
+	for n := range made {
+		out[n] = true
+	}
+	return out
 }
 
 // span is a half-open source range.

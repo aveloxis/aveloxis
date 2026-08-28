@@ -14,8 +14,8 @@ import (
 // The shutdown bound, tested by WAITING for it (pass 49).
 //
 // Passes 43–48 each pinned this contract at the source level, and a
-// reviewer escaped it in every single one of those passes — eleven
-// distinct one-line refactors, five of which re-introduced the exact
+// reviewer escaped it in every single one of those passes — fifteen
+// labelled one-line refactors, nine of which re-introduced the exact
 // hang the bound exists to prevent. The static pin kept growing
 // (deadline expressions, goroutine-launch derivation, synchronous-path
 // analysis, blocking-operation taxonomy) and each iteration bought
@@ -29,9 +29,9 @@ import (
 // approximate it by naming shapes. These tests observe it instead:
 // wedge the bookkeeping and measure whether the call returns.
 //
-// What that buys, concretely — every one of these was a live escape
-// that a source pin accepted, and each fails here without naming a
-// shape:
+// What that buys, concretely — all NINE bound-class escapes below
+// were live, a source pin accepted each one, and each fails here
+// without naming a shape:
 //
 //	45a/46a/48d  a synchronous drain (inline, an immediately-invoked
 //	             literal, or a plain call laundered by an unrelated
@@ -168,8 +168,47 @@ func TestShutdownDeadlineIncludesBothOperands(t *testing.T) {
 	}
 }
 
-// TestAwaitBookkeepingIsSafeToCallTwice pins the sync.Once: Run's
-// deferred close and the drain both close the signal.
+// TestNewScancodeWorkerSetsTheProductionAllowance pins the assignment
+// that actually ships. The value checks above run on bare test
+// structs, so nothing covered NewScancodeWorker's own
+// `bookkeepingAllowance:` line — and on 2026-08-28 a review probe
+// setting it to 1ms was committed and the ENTIRE suite stayed green
+// (pass 50). A 1ms allowance means Run stops waiting, its deferred
+// close fires, the scheduler's <-BookkeepingDone() is released, and
+// s.store.Close() lands on the runners' in-flight lock clears: the
+// exact failure passes 38/39 exist to prevent, shipped.
+func TestNewScancodeWorkerSetsTheProductionAllowance(t *testing.T) {
+	const grace = 3 * time.Minute
+	w := NewScancodeWorker(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), ScancodeWorkerOptions{ShutdownGrace: grace})
+	if got, want := w.shutdownDeadline(), grace+ScancodeShutdownBookkeepingGrace; got != want {
+		t.Errorf("NewScancodeWorker builds a worker whose shutdown deadline is %s, want %s (the operator's grace plus ScancodeShutdownBookkeepingGrace). bookkeepingAllowance exists only so a TEST can shrink a 70-second bound; production must get the real one, and this is the only assignment that decides that.", got, want)
+	}
+	if w.bookkeepingAllowance != ScancodeShutdownBookkeepingGrace {
+		t.Errorf("NewScancodeWorker set bookkeepingAllowance = %s, want %s — the seam must never leak a test value into the shipped binary.", w.bookkeepingAllowance, ScancodeShutdownBookkeepingGrace)
+	}
+}
+
+// TestScancodeWorkerShutdownBoundsNest pins the relationship the outer
+// bounds depend on (pass 39): the worker's own deadline must not
+// exceed what the scheduler waits for it, which must not exceed the
+// budget `aveloxis stop` and the documented TimeoutStopSec derive
+// from. The three sums are computed in three places; before pass 50
+// nothing checked they agreed.
+func TestScancodeWorkerShutdownBoundsNest(t *testing.T) {
+	for _, grace := range []time.Duration{0, 30 * time.Second, 30 * time.Minute} {
+		w := NewScancodeWorker(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), ScancodeWorkerOptions{ShutdownGrace: grace})
+		schedulerBound := ScancodeShutdownBound(grace)
+		if w.shutdownDeadline() > schedulerBound {
+			t.Errorf("grace=%s: the worker waits up to %s but the scheduler only waits %s for it — the scheduler gives up first, logs that the background pools did not finish, and closes the pgx pool under the runners' lock clears (passes 38/39).", grace, w.shutdownDeadline(), schedulerBound)
+		}
+	}
+}
+
+// TestAwaitBookkeepingIsSafeToCallTwice pins that concurrent callers
+// both return. It does NOT pin the sync.Once: the drain goroutine's
+// safego.Recover swallows a "close of closed channel" panic, so a bare
+// close still passes here (pass 50). TestScancodeBookkeepingContract
+// is what holds the Once.
 func TestAwaitBookkeepingIsSafeToCallTwice(t *testing.T) {
 	w := shutdownTestWorker(0, time.Second)
 	var wg sync.WaitGroup

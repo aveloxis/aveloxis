@@ -45,7 +45,7 @@ import (
 // Safe to call from multiple goroutines on different repoIDs
 // because all writes target rows keyed by repoID with appropriate
 // per-row history rotation.
-func ingestScancodeOutput(ctx context.Context, store *db.PostgresStore, repoID int64, outputPath string, logger *slog.Logger) (string, error) {
+func ingestScancodeOutput(ctx context.Context, store ScancodeStore, repoID int64, outputPath string, logger *slog.Logger) (string, error) {
 	if ctx.Err() != nil {
 		// Never start the rotate-then-insert pair under a done ctx: a
 		// rotate that commits before the insert fails leaves the repo

@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -1117,14 +1118,20 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 				return err
 			}
 			defer store.Close()
-			if err := db.RefreshMaterializedViews(ctx, store, logger); err != nil {
-				return err
+			viewErr := db.RefreshMaterializedViews(ctx, store, logger)
+			if viewErr != nil {
+				logger.Error("materialized view refresh reported failures (the rest of the views were refreshed)", "error", viewErr)
 			}
 			if !aggregates {
-				return nil
+				return viewErr
 			}
+			// The dm_ pass reads only commits/repos, never a matview, so a
+			// stale view is no reason to skip it — with the skip knob on
+			// this flag is the ONLY way the dm_ tables update. Both halves'
+			// failures ride the (nonzero) exit.
 			logger.Info("refresh-views --aggregates: rebuilding dm_ aggregate tables (per-repo pass; hours at fleet scale)")
-			return store.RefreshAllRepoAggregates(ctx, logger)
+			aggErr := store.RefreshAllRepoAggregates(ctx, logger)
+			return errors.Join(viewErr, aggErr)
 		},
 	}
 	cmd.Flags().BoolVar(&aggregates, "aggregates", false, "also rebuild the dm_repo_* / dm_repo_group_* aggregate tables after the views (slow at fleet scale)")

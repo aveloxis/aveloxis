@@ -126,7 +126,7 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 	logger.Info("materialized view refresh complete",
 		"total_duration", time.Since(start).Truncate(time.Second), "failed", len(failed))
 	if len(failed) > 0 {
-		return boundedJoin(fmt.Sprintf("materialized view refresh left %d of %d views stale", len(failed), len(matviewNames)), failed, aggregateErrorSample)
+		return boundedJoin(fmt.Sprintf("materialized view refresh left %d of %d views stale", len(failed), len(matviewNames)), failed, partialFailureSample)
 	}
 	return nil
 }

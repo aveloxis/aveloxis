@@ -902,7 +902,7 @@ Point-in-time snapshots of repository metadata and statistics. A new row is inse
 | `issues_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}` | Whether issues are enabled. |
 | `prs_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}` | Whether PRs/MRs are enabled. |
 | `wiki_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}` | Whether the wiki is enabled. |
-| `pages_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}` | Whether GitHub Pages is enabled. |
+| `pages_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}` (`pages_access_level`) | Whether GitHub Pages / GitLab Pages is enabled. On GitLab every feature flag derives from its `*_access_level` (v0.28.18): the legacy `*_enabled` booleans read false for a members-only feature the token cannot see. |
 | `fork_count` | INT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}?statistics=true` | Number of forks. |
 | `star_count` | INT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}?statistics=true` | Number of stars. |
 | `watcher_count` | INT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}?statistics=true` | Number of watchers. |

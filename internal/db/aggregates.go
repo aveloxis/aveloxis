@@ -333,6 +333,11 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 	var failed []error
 	failedRepos, failedGroups := 0, 0
 	for _, repoID := range repoIDs {
+		if ctx.Err() != nil {
+			// One exit, not ~140K "context canceled" WARNs (a `stop serve`
+			// inside the multi-day weekly pass is the common shape).
+			return ctx.Err()
+		}
 		if err := s.RefreshRepoAggregates(ctx, repoID); err != nil {
 			logger.Warn("aggregate refresh failed", "repo_id", repoID, "error", err)
 			failedRepos++
@@ -345,7 +350,9 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 	groupRows, err := s.pool.Query(ctx,
 		`SELECT DISTINCT repo_group_id FROM aveloxis_data.repos WHERE repo_group_id IS NOT NULL`)
 	if err != nil {
-		return fmt.Errorf("querying repo groups: %w", err)
+		// The repo failures already accumulated must ride this exit too.
+		return boundedJoin(fmt.Sprintf("dm_ aggregate refresh aborted before the group pass (%d repo refreshes had failed)", failedRepos),
+			append(failed, fmt.Errorf("querying repo groups: %w", err)), partialFailureSample)
 	}
 	defer groupRows.Close()
 	// NOTE: the DISTINCT repo_group_id result set is intentionally not
@@ -356,6 +363,9 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 	// a future optimization (redundant refreshes for same-group repos).
 
 	for _, repoID := range repoIDs {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		// RefreshRepoGroupAggregates looks up the group from the repo.
 		if err := s.RefreshRepoGroupAggregates(ctx, repoID); err != nil {
 			logger.Warn("group aggregate refresh failed", "repo_id", repoID, "error", err)
@@ -366,15 +376,16 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 
 	logger.Info("dm_ aggregate tables refreshed", "repos", len(repoIDs), "failed_repos", failedRepos, "failed_groups", failedGroups)
 	if len(failed) > 0 {
-		return boundedJoin(fmt.Sprintf("dm_ aggregate refresh left stale rows: %d repo and %d group refreshes failed across %d repos", failedRepos, failedGroups, len(repoIDs)), failed, aggregateErrorSample)
+		return boundedJoin(fmt.Sprintf("dm_ aggregate refresh left stale rows: %d repo and %d group refreshes failed across %d repos", failedRepos, failedGroups, len(repoIDs)), failed, partialFailureSample)
 	}
 	return nil
 }
 
-// aggregateErrorSample bounds how many per-repo failures ride the
-// returned error — a fleet-wide outage would otherwise join 140K errors
+// partialFailureSample bounds how many per-item failures ride a
+// keep-going pass's returned error (the dm_ aggregate and matview
+// refreshes) — a fleet-wide outage would otherwise join 140K errors
 // into one message. The counts in the prefix stay exact.
-const aggregateErrorSample = 10
+const partialFailureSample = 10
 
 // boundedJoin wraps the first `keep` errors (errors.Is / errors.As reach
 // them through the join) under a prefix that carries the full count.

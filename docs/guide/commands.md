@@ -601,6 +601,8 @@ Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so rea
 
 `--aggregates` (v0.28.18) additionally runs the `dm_` aggregate pass after the views — the same per-repo loop the weekly rebuild runs unless `collection.matview_rebuild_skip_dm_aggregates` is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the only way the `dm_` tables update. The pass holds a database advisory lock for its whole duration — if the weekly scheduler rebuild (or another `--aggregates` run) is already in it, the command exits nonzero with `another dm_ aggregate rebuild is already running` instead of interleaving two DELETE+INSERT passes over tables that have no unique key.
 
+Both halves keep going past a failing view or repo but **exit nonzero** when any failed (v0.28.18): the error names the first ten failures with the full count, the rest of the pass's work stands, and a view failure does not skip the aggregate pass. Scripts wrapping the command will see exits they never saw before — that is the point; re-run after fixing the named view or repo.
+
 ---
 
 ## `aveloxis sbom`

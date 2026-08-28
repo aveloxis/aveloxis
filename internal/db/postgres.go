@@ -2186,11 +2186,16 @@ func (s *PostgresStore) InsertRepoInfo(ctx context.Context, info *model.RepoInfo
 				"repo_id", info.RepoID, "pr_count_unknown", info.PRCountUnknown, "issues_count_unknown", info.IssuesCountUnknown,
 				"pr_count", info.PRCount, "issues_count", info.IssuesCount)
 		case errors.Is(err, pgx.ErrNoRows):
+			// The store enforces the coherent zero set itself (SR-18) —
+			// whatever the fetcher left in the fields.
+			if info.PRCountUnknown {
+				info.PRCount, info.PRsOpen, info.PRsClosed, info.PRsMerged = 0, 0, 0, 0
+			}
 			if info.IssuesCountUnknown {
 				// The fetcher's OpenIssues is the project payload's count
 				// on this path; without the totals it would store the
 				// incoherent 0/0/N triple. The whole triple is 0.
-				info.OpenIssues = 0
+				info.IssuesCount, info.IssuesClosed, info.OpenIssues = 0, 0, 0
 			}
 			s.logger.Warn("repo_info counts unavailable from the forge and no prior snapshot exists — counts stored as 0 until a fetch succeeds",
 				"repo_id", info.RepoID, "pr_count_unknown", info.PRCountUnknown, "issues_count_unknown", info.IssuesCountUnknown)

@@ -33,6 +33,15 @@ func TestRefreshAllRepoAggregatesReturnsPartialFailures(t *testing.T) {
 	if strings.Contains(body, `logger.Info("aggregate refresh failed"`) || strings.Contains(body, `logger.Info("group aggregate refresh failed"`) {
 		t.Error("a refresh failure is a WARN, not an INFO")
 	}
+	// Pass 27: both loops bail on a canceled ctx (one exit, not one WARN
+	// per remaining repo), and the group-query error keeps the repo
+	// failures accumulated before it.
+	if strings.Count(body, "if ctx.Err() != nil {") < 2 {
+		t.Error("both per-repo loops must check ctx.Err() before each iteration")
+	}
+	if !strings.Contains(body, `append(failed, fmt.Errorf("querying repo groups: %w", err))`) {
+		t.Error("a repo-groups query failure must return the already-accumulated repo failures with it")
+	}
 	// One call deeper: a repo_group lookup ERROR must surface, not read
 	// as "no group" (pass 26 — a canceled pass reported failed_groups=0).
 	group := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, "aggregates.go"), "func (s *PostgresStore) RefreshRepoGroupAggregates("))
@@ -48,8 +57,8 @@ func TestRefreshAllRepoAggregatesReturnsPartialFailures(t *testing.T) {
 	}
 	// The CLI returns the pass's error verbatim (nonzero exit), and the
 	// weekly caller still distinguishes the lock skip from a failure.
-	if !strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), "return store.RefreshAllRepoAggregates(ctx, logger)") {
-		t.Error("refresh-views --aggregates must return RefreshAllRepoAggregates' error (nonzero exit on partial failure)")
+	if !strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), "return errors.Join(viewErr, aggErr)") {
+		t.Error("refresh-views --aggregates must return the aggregate pass's error joined with the view half's (nonzero exit on partial failure, and the aggregate pass runs even when a view failed)")
 	}
 }
 

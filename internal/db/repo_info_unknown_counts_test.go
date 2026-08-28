@@ -23,7 +23,7 @@ import (
 func TestInsertRepoInfoCarriesUnknownCountsForward(t *testing.T) {
 	src := readSourceFile(t, "postgres.go")
 	body := extractFuncBody(t, src, "func (s *PostgresStore) InsertRepoInfo(")
-	for _, needle := range []string{"PRCountUnknown", "IssuesCountUnknown", "repo_info_history", "NULLS LAST", "COALESCE(open_issues, 0)", "info.IssuesCount, info.IssuesClosed, info.OpenIssues = ", "info.OpenIssues = 0"} {
+	for _, needle := range []string{"PRCountUnknown", "IssuesCountUnknown", "repo_info_history", "NULLS LAST", "COALESCE(open_issues, 0)", "info.IssuesCount, info.IssuesClosed, info.OpenIssues = ", "info.PRCount, info.PRsOpen, info.PRsClosed, info.PRsMerged = 0, 0, 0, 0", "info.IssuesCount, info.IssuesClosed, info.OpenIssues = 0, 0, 0"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("InsertRepoInfo must consult %s (carry the prior snapshot's counts forward when the fetcher could not supply them)", needle)
 		}
@@ -83,9 +83,9 @@ func TestInsertRepoInfoUnknownCountsEndToEnd(t *testing.T) {
 
 	// First-ever snapshot with unknown counts: nothing to carry → zeros,
 	// open_issues included (the fetcher hands in the payload's 77 here).
-	insert(model.RepoInfo{PRCountUnknown: true, IssuesCountUnknown: true, OpenIssues: 77, CommitCount: 5})
-	if pr, _, is, _ := current(); pr != 0 || is != 0 {
-		t.Fatalf("first snapshot with unknown counts: pr_count=%d issues_count=%d, want 0/0", pr, is)
+	insert(model.RepoInfo{PRCountUnknown: true, IssuesCountUnknown: true, PRsOpen: 3, OpenIssues: 77, CommitCount: 5})
+	if pr, open, is, _ := current(); pr != 0 || open != 0 || is != 0 {
+		t.Fatalf("first snapshot with unknown counts: pr_count=%d prs_open=%d issues_count=%d, want 0/0/0 (the store zeroes the whole set)", pr, open, is)
 	}
 	if n := currentOpen(); n != 0 {
 		t.Fatalf("first snapshot with unknown issue counts stored open_issues=%d, want 0 (the whole triple is 0)", n)

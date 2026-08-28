@@ -118,8 +118,10 @@ type ScancodeWorkerOptions struct {
 	// CloneDir is the parent directory for per-run shallow clones.
 	// Default /tmp/aveloxis-scancode.
 	CloneDir string
-	// ShutdownGrace caps how long Run waits for in-flight scans on
-	// stop. Default 0 = immediate kill (v0.23.7 contract).
+	// ShutdownGrace is added to ScancodeShutdownBookkeepingGrace to
+	// bound how long Run waits, on stop, for the runners' post-kill DB
+	// bookkeeping. It cannot let a scan finish — every scan is
+	// SIGKILLed at cancel. Default 0 (v0.23.7 contract).
 	ShutdownGrace time.Duration
 	// RunTimeoutBase / RunTimeoutCap drive the v0.23.8 adaptive
 	// per-job wall-clock timeout `min(base * 2^attempts, cap)`.
@@ -161,9 +163,14 @@ type ScancodeWorkerOptions struct {
 //     call runOne(). Each runOne does: generated-content skip check,
 //     shallow clone, scancode subprocess, outcome classification,
 //     ingest, completion/failure/timeout bookkeeping.
-//  7. On ctx.Done(), the dispatcher exits immediately. Runners
-//     keep going until shutdownGrace elapses, then the shutdown
-//     sweep clears all clone dirs and Run() returns.
+//  7. On ctx.Done(), the dispatcher exits immediately and every scan
+//     subprocess is SIGKILLed at once (its ctx derives from the
+//     worker's — v0.23.3). Run then waits for the claimed jobs' DB
+//     BOOKKEEPING (the post-kill lock clear / stamp retry), bounded by
+//     shutdownGrace + ScancodeShutdownBookkeepingGrace and signalled
+//     through bookkeepingDone; it does NOT wait for the runners
+//     themselves, whose clone-dir removal needs no pool. Then the
+//     shutdown sweep clears all clone dirs and Run() returns.
 type ScancodeWorker struct {
 	store         *db.PostgresStore
 	logger        *slog.Logger
@@ -318,18 +325,23 @@ func (w *ScancodeWorker) staleLockWindow() time.Duration {
 	return w.runTimeoutCap + 2*time.Hour
 }
 
-// Run starts the worker pool and blocks until ctx is done. After
-// ctx cancellation, waits up to shutdownGrace for in-flight runners
-// before forcing them to exit and returning.
-//
-// Probes for the scancode binary at startup; if not installed, logs
-// once and returns without spawning goroutines (matches the pre-
-// v0.21.0 silent-skip behavior of the inline analysis-phase scan).
 // BookkeepingDone closes when every claimed job's DB bookkeeping is
 // over after shutdown (or when Run returns for any other reason) — the
 // scheduler waits for it before closing the pool (pass 39).
 func (w *ScancodeWorker) BookkeepingDone() <-chan struct{} { return w.bookkeepingDone }
 
+// Run starts the worker pool and blocks until ctx is done. The scans
+// themselves die AT cancellation (cmd.Cancel SIGKILLs each process
+// group since v0.23.3); after that Run waits up to
+// shutdownGrace + ScancodeShutdownBookkeepingGrace for the claimed
+// jobs' DB BOOKKEEPING — the post-kill Wait and the lock clear or
+// stamp retry on a background context — then sweeps the clone dir and
+// returns. The runner goroutines' own return (which trails their
+// clone-dir removal) is deliberately unwaited (passes 38–41).
+//
+// Probes for the scancode binary at startup; if not installed, logs
+// once and returns without spawning goroutines (matches the pre-
+// v0.21.0 silent-skip behavior of the inline analysis-phase scan).
 func (w *ScancodeWorker) Run(ctx context.Context) {
 	defer w.bookkeepingClose.Do(func() { close(w.bookkeepingDone) })
 	if _, err := exec.LookPath("scancode"); err != nil {

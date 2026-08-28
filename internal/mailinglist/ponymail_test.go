@@ -138,6 +138,46 @@ func TestPonyMailFetchMonthTransient(t *testing.T) {
 	}
 }
 
+// Pass 41/42 (v0.28.18): a body that dies mid-read is the same
+// transport class as a failed Do — both read arms must wrap
+// ErrTransient AND keep the cause. A truncated 200 (Content-Length
+// promises more than the handler writes) gives io.ReadAll a
+// deterministic unexpected-EOF without a network.
+func TestPonyMailReadFailuresAreTransient(t *testing.T) {
+	truncating := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Returning without writing the promised bytes makes the client
+		// see an unexpected EOF mid-body.
+	}
+	srv := httptest.NewServer(http.HandlerFunc(truncating))
+	defer srv.Close()
+	pm := NewPonyMail(srv.URL, "")
+
+	// FetchMonth's read arm.
+	_, _, err := pm.FetchMonth(context.Background(), "dev@kafka.apache.org", "2026-05")
+	if !errors.Is(err, ErrTransient) {
+		t.Errorf("a truncated mbox body must wrap ErrTransient, got %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "EOF") {
+		t.Errorf("the read cause must stay visible in the error, got %v", err)
+	}
+
+	// get()'s read arm (via FirstMonth, whose stats.lua read goes
+	// through the shared helper).
+	_, err = pm.FirstMonth(context.Background(), "dev@kafka.apache.org")
+	if !errors.Is(err, ErrTransient) {
+		t.Errorf("a truncated stats.lua body must wrap ErrTransient, got %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "EOF") {
+		t.Errorf("the read cause must stay visible in the error, got %v", err)
+	}
+}
+
 func TestSplitListAddress(t *testing.T) {
 	l, d := splitListAddress("dev@kafka.apache.org")
 	if l != "dev" || d != "kafka.apache.org" {

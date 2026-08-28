@@ -61,6 +61,11 @@ func TestProcessorEndToEnd(t *testing.T) {
 			`DELETE FROM aveloxis_ops.staging WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE '%` + slug + `%')`,
 			`DELETE FROM aveloxis_data.repos WHERE repo_git ILIKE '%` + slug + `%'`,
 			`DELETE FROM aveloxis_data.contributor_identities WHERE cntrb_id IN (SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login = '` + slug + `_reporter')`,
+			// contributor_login_history is an ON DELETE RESTRICT cntrb_id
+			// child (v0.23.0) that every resolved login writes — without
+			// this the contributors DELETE fails 23001 and strands the
+			// fixture (children before parents; pass 44).
+			`DELETE FROM aveloxis_data.contributor_login_history WHERE cntrb_id IN (SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login = '` + slug + `_reporter')`,
 			`DELETE FROM aveloxis_data.contributors WHERE cntrb_login = '` + slug + `_reporter'`,
 		} {
 			raw.Exec(ctx, sql)

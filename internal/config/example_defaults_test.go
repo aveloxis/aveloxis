@@ -26,15 +26,55 @@ import (
 	"testing"
 )
 
-// exampleValueAllowlist: fields where aveloxis.example.json may
-// legitimately differ from the compiled default. Keep this SHORT.
-var exampleValueAllowlist = map[string]string{
-	// v0.27.147 (round 26): the example previously advertised
-	// "$HOME/aveloxis-repos/" — but config.Load never expands env vars,
-	// so a copied config created a relative directory literally named
-	// $HOME. The example now uses a real absolute path (/data/...),
-	// which legitimately differs from the computed home-dir default.
-	"RepoCloneDir": "default is home-dir-dependent (defaultCloneDir); the example uses a literal absolute path because aveloxis.json values are never env-expanded",
+// exampleValueAllowlist: per-file fields where a committed example
+// may legitimately differ from the compiled default. Keep each list
+// SHORT — a value that is not a deliberate tuning choice belongs in
+// the file, not in here. Pass 45 widened this from one file to all
+// three: TestExampleConfigsCarryNoEnvVarSyntax already treated the
+// three as one copyable set, and README.md tells operators to
+// `cp aveloxis.docker.example.json aveloxis.docker.json` — but only
+// aveloxis.example.json was value-checked, so both siblings shipped
+// scancode_shutdown_grace_minutes: 30 for the same year-plus after
+// v0.23.7 flipped the default to 0. In the sharded profile that also
+// inflated shutdownBudget() to ~31m50s against the TimeoutStopSec=180
+// that docs/guide/running-as-a-service.md tells operators to set.
+const (
+	exampleDefaultsFile = "aveloxis.example.json"
+	exampleDockerFile   = "aveloxis.docker.example.json"
+	exampleShardedFile  = "aveloxis.sharded.example.json"
+	docsSnippetLabel    = "docs/getting-started/configuration.md snippet"
+)
+
+var exampleValueAllowlist = map[string]map[string]string{
+	exampleDefaultsFile: {
+		// v0.27.147 (round 26): the example previously advertised
+		// "$HOME/aveloxis-repos/" — but config.Load never expands env
+		// vars, so a copied config created a relative directory
+		// literally named $HOME. The example now uses a real absolute
+		// path, which legitimately differs from the home-dir default.
+		"RepoCloneDir": "default is home-dir-dependent (defaultCloneDir); the example uses a literal absolute path because aveloxis.json values are never env-expanded",
+	},
+	exampleDockerFile: {
+		"RepoCloneDir": "container-local path for the compose bind mount; the default is home-dir-dependent and meaningless inside the image",
+	},
+	exampleShardedFile: {
+		// This file is a TUNING PROFILE for a large sharded fleet, so
+		// its throughput knobs deliberately differ. Anything NOT about
+		// that profile (a retired default, a stale flag value) is a
+		// bug in the example and must be fixed there.
+		"RepoCloneDir":                 "placeholder the operator fills in; the default is home-dir-dependent",
+		"DaysUntilRecollect":           "sharded profile: a 100K-repo fleet cannot re-walk daily",
+		"Workers":                      "sharded profile: sized for the documented 180-worker deployment",
+		"MatviewRebuildDay":            "sharded profile: Sunday rebuild to clear the weekday window",
+		"ThreadingMode":                "sharded profile: this file exists to demonstrate threading_mode=sharded",
+		"ShardSize":                    "sharded profile: paired with threading_mode above",
+		"SearchResolveIntervalMinutes": "sharded profile: a larger contributor pool wants a tighter search-resolve cadence",
+		"ShutdownGraceSeconds":         "sharded profile: 180 workers need longer than the 10s default to drain",
+		"ScancodeWorkers":              "sharded profile: sized for the dedicated scancode host",
+	},
+	docsSnippetLabel: {
+		"RepoCloneDir": "same reason as aveloxis.example.json: the snippet cannot print a home-dir-dependent default",
+	},
 }
 
 // effectiveAccessors maps accessor-backed fields to their effective
@@ -79,45 +119,136 @@ var effectiveAccessors = map[string]func(c *CollectionConfig) any{
 }
 
 func TestExampleConfigCollectionValuesMatchEffectiveDefaults(t *testing.T) {
-	raw, err := os.ReadFile("../../aveloxis.example.json")
-	if err != nil {
-		t.Fatalf("read aveloxis.example.json: %v", err)
+	for _, name := range []string{exampleDefaultsFile, exampleDockerFile, exampleShardedFile} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := os.ReadFile("../../" + name)
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			assertCollectionMatchesEffectiveDefaults(t, name, raw)
+		})
 	}
+}
+
+// assertCollectionMatchesEffectiveDefaults applies doc's collection
+// block over a pristine DefaultConfig and compares every field through
+// its accessor. Shared by the three example configs and the docs
+// snippet so the four can never drift apart from each other either.
+func assertCollectionMatchesEffectiveDefaults(t *testing.T, label string, doc []byte) {
+	t.Helper()
 	var envelope struct {
 		Collection json.RawMessage `json:"collection"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		t.Fatalf("parse example: %v", err)
+	if err := json.Unmarshal(doc, &envelope); err != nil {
+		t.Fatalf("%s: parse: %v", label, err)
 	}
-
-	exampleCfg := DefaultConfig()
-	if err := json.Unmarshal(envelope.Collection, &exampleCfg.Collection); err != nil {
-		t.Fatalf("apply example collection block: %v", err)
+	if len(envelope.Collection) == 0 {
+		t.Fatalf("%s: must carry a collection block", label)
+	}
+	cfg := DefaultConfig()
+	if err := json.Unmarshal(envelope.Collection, &cfg.Collection); err != nil {
+		t.Fatalf("%s: apply collection block: %v", label, err)
 	}
 	defaultCfg := DefaultConfig()
+	allow := exampleValueAllowlist[label]
+
+	// Track which allowlisted fields actually differ, so an entry that
+	// stopped suppressing anything fails instead of lingering as
+	// permission nobody needs (the Phase-3 policy-registry pattern).
+	stillDiffers := map[string]bool{}
 
 	typ := reflect.TypeOf(CollectionConfig{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
-		if _, allowed := exampleValueAllowlist[field.Name]; allowed {
+		if _, allowed := allow[field.Name]; allowed {
+			if getter, ok := effectiveAccessors[field.Name]; ok {
+				stillDiffers[field.Name] = !reflect.DeepEqual(getter(&cfg.Collection), getter(&defaultCfg.Collection))
+			} else {
+				stillDiffers[field.Name] = !reflect.DeepEqual(
+					reflect.ValueOf(cfg.Collection).Field(i).Interface(),
+					reflect.ValueOf(defaultCfg.Collection).Field(i).Interface())
+			}
 			continue
 		}
-
 		var got, want any
 		if getter, ok := effectiveAccessors[field.Name]; ok {
-			got = getter(&exampleCfg.Collection)
-			want = getter(&defaultCfg.Collection)
+			got, want = getter(&cfg.Collection), getter(&defaultCfg.Collection)
 		} else {
-			got = reflect.ValueOf(exampleCfg.Collection).Field(i).Interface()
+			got = reflect.ValueOf(cfg.Collection).Field(i).Interface()
 			want = reflect.ValueOf(defaultCfg.Collection).Field(i).Interface()
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Errorf("aveloxis.example.json teaches a NON-DEFAULT value for %s "+
-				"(json %q): example-effective=%v default-effective=%v. Either fix "+
-				"the example to match the compiled default, or add the field to "+
-				"exampleValueAllowlist with a reason.",
-				field.Name, jsonTag(field), got, want)
+			t.Errorf("%s teaches a NON-DEFAULT value for %s (json %q): "+
+				"effective=%v default-effective=%v. Operators copy this file verbatim; "+
+				"either fix the value, or add the field to exampleValueAllowlist[%q] with a reason.",
+				label, field.Name, jsonTag(field), got, want, label)
 		}
+	}
+
+	for name := range allow {
+		if !stillDiffers[name] {
+			t.Errorf("exampleValueAllowlist[%q][%q] suppresses nothing — %s now matches the compiled default. "+
+				"Delete the entry; a stale exemption is standing permission for a future drift nobody reviewed.",
+				label, name, name)
+		}
+	}
+}
+
+// TestConfigurationDocSnippetMatchesEffectiveDefaults — pass 44. The
+// docs' "every supported option" snippet is a defaults document that
+// nothing checked: docs_coverage_test.go matches KEYS only, so the
+// snippet taught scancode_shutdown_grace_minutes: 30 for three months
+// after the flip to 0, and threading_mode: "sharded" for three and a
+// half against its own reference table. Run its collection block
+// through the same effective-accessor comparison as the example JSON.
+func TestConfigurationDocSnippetMatchesEffectiveDefaults(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/getting-started/configuration.md")
+	if err != nil {
+		t.Fatalf("read configuration.md: %v", err)
+	}
+	block := configurationDocSnippet(t, string(doc))
+	assertCollectionMatchesEffectiveDefaults(t, docsSnippetLabel, []byte(block))
+
+	// Values alone cannot police the snippet's "every supported
+	// option" claim: an OMITTED key silently keeps the default, so the
+	// comparison above passes and TestConfigurationDocsCoverEveryJSONField
+	// passes too (it scans the whole document, and the reference table
+	// below the snippet mentions every tag). Pass 45 proved the gap by
+	// deleting staging_retention_hours from the snippet with both
+	// tests still green. So assert presence explicitly.
+	typ := reflect.TypeOf(CollectionConfig{})
+	for i := 0; i < typ.NumField(); i++ {
+		tag := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
+		if tag == "" || tag == "-" {
+			continue
+		}
+		if !strings.Contains(block, `"`+tag+`"`) {
+			t.Errorf("the configuration.md full-configuration snippet omits %q — it claims to carry "+
+				"EVERY supported option, and an omitted key is invisible to the value check above "+
+				"(absent means default). Add it to the snippet, or soften the claim.", tag)
+		}
+	}
+}
+
+// configurationDocSnippet returns the first fenced ```json block that
+// carries a "collection" key — the "every supported option" example.
+func configurationDocSnippet(t *testing.T, doc string) string {
+	t.Helper()
+	rest := doc
+	for {
+		open := strings.Index(rest, "```json\n")
+		if open < 0 {
+			t.Fatal("configuration.md must contain a fenced ```json full-configuration snippet with a collection block")
+		}
+		body := rest[open+len("```json\n"):]
+		end := strings.Index(body, "\n```")
+		if end < 0 {
+			t.Fatal("unterminated ```json fence in configuration.md")
+		}
+		if block := body[:end]; strings.Contains(block, `"collection"`) {
+			return block
+		}
+		rest = body[end:]
 	}
 }
 

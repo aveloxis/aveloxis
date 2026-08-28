@@ -135,8 +135,11 @@ func (p *PonyMail) get(ctx context.Context, u string) ([]byte, error) {
 		body, rerr := io.ReadAll(resp.Body)
 		if rerr != nil {
 			// A mid-body reset is the same transport class as a failed
-			// Do — the breaker must count it and the cause must stay
-			// visible (pass 41; FetchMonth's read arm already did this).
+			// Do: classify it the same way and keep the cause visible
+			// (pass 41; FetchMonth's read arm already did this). get()'s
+			// own callers — EnumerateLists and FirstMonth — only log or
+			// fall back, so no breaker sees this; the classification is
+			// the package's contract, not accounting.
 			return nil, fmt.Errorf("%s: %w: %w", u, ErrTransient, rerr)
 		}
 		return body, nil

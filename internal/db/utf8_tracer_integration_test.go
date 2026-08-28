@@ -288,17 +288,22 @@ func TestUTF8TracerProtectsUpsertContributorBatch(t *testing.T) {
 	ctx := context.Background()
 
 	login := "utf8-fixture-user"
-	t.Cleanup(func() {
-		_, _ = store.pool.Exec(context.Background(),
+	// UpsertContributorBatch's per-identity loop calls
+	// recordLoginObservation, and contributor_login_history is an
+	// ON DELETE RESTRICT cntrb_id child (v0.23.0) — without this the
+	// contributors DELETE fails 23001 and strands the fixture on
+	// every run (children before parents; pass 44).
+	purge := func(c context.Context) {
+		_, _ = store.pool.Exec(c,
 			`DELETE FROM aveloxis_data.contributor_identities WHERE login = $1`, login)
-		_, _ = store.pool.Exec(context.Background(),
+		_, _ = store.pool.Exec(c,
+			`DELETE FROM aveloxis_data.contributor_login_history WHERE cntrb_id IN (SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login = $1)`, login)
+		_, _ = store.pool.Exec(c,
 			`DELETE FROM aveloxis_data.contributors WHERE cntrb_login = $1`, login)
-	})
+	}
+	t.Cleanup(func() { purge(context.Background()) })
 	// Pre-cleanup in case of a prior failed run.
-	_, _ = store.pool.Exec(ctx,
-		`DELETE FROM aveloxis_data.contributor_identities WHERE login = $1`, login)
-	_, _ = store.pool.Exec(ctx,
-		`DELETE FROM aveloxis_data.contributors WHERE cntrb_login = $1`, login)
+	purge(ctx)
 
 	c := model.Contributor{
 		Login:    login,

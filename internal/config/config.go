@@ -488,7 +488,8 @@ type CollectionConfig struct {
 	ScancodeCloneDir string `json:"scancode_clone_dir"`
 
 	// ScancodeShutdownGraceMinutes caps how long the ScancodeWorker
-	// waits for in-flight scans to finish on aveloxis stop. Default
+	// waits, on aveloxis stop, for the runners' POST-KILL DB
+	// bookkeeping — it cannot let a scan finish (see below). Default
 	// 0 (immediate kill) as of v0.23.7.
 	//
 	// Why 0 by default: a scancode subprocess that outlives aveloxis
@@ -501,12 +502,17 @@ type CollectionConfig struct {
 	// queue. Either way, lingering past stop buys nothing — it just
 	// delays shutdown AND increases ghost-process risk.
 	//
-	// Operators who genuinely want the old behavior (let in-flight
-	// scans finish if they're close) set this explicitly to a
-	// positive minute count. Within the grace window: runners
-	// complete their scans naturally and ingest results. At grace
-	// expiry: the worker's ctx.Done() fires cmd.Cancel which kills
-	// the process group.
+	// A positive value CANNOT let a scan finish: since v0.23.3 the
+	// scan's ctx derives from the worker's, so cmd.Cancel SIGKILLs
+	// each process group at t=0 of the cancel — the grace window
+	// contains no live scans (pass 44 corrected this block; the
+	// pre-v0.23.3 model it described was retired three releases
+	// earlier). What the value lengthens is the wait for the
+	// runners' POST-kill DB bookkeeping (lock clear / completion-
+	// stamp retry): the worker waits
+	// shutdownGrace + collector.ScancodeShutdownBookkeepingGrace,
+	// and the scheduler holds the pgx pool open for the same window.
+	// See docs/architecture/scancode.md §6.
 	//
 	// Separate from collection.shutdown_grace_seconds (which paces
 	// the main scheduler's stop).
@@ -1102,8 +1108,9 @@ func (c *CollectionConfig) ScancodeCloneDirOrDefault() string {
 // subprocesses surviving `aveloxis stop` can't deliver their output
 // anyway. See the field docstring above for the full rationale.
 //
-// Operators who set a positive value explicitly in aveloxis.json
-// keep getting the old "let in-flight scans finish" behavior.
+// A positive value does NOT keep in-flight scans alive (they die at
+// cancel since v0.23.3); it only lengthens the wait for the runners'
+// post-kill DB bookkeeping. See the field docstring above.
 func (c *CollectionConfig) ScancodeShutdownGrace() time.Duration {
 	if c.ScancodeShutdownGraceMinutes <= 0 {
 		return 0

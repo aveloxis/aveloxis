@@ -180,7 +180,7 @@ All five knobs live under the `collection` block in `aveloxis.json`:
 | `scancode_start_interval_s` | `90` | Minimum seconds between *successful* claim starts. As of v0.21.3 this is a minimum-gap pacing primitive, NOT a throughput cap — the dispatcher claims as fast as workers free up, with this interval enforced only between consecutive starts. Bounds clone-bandwidth bursts on restart. See §3.3. |
 | `scancode_cadence_days` | `180` | Minimum days between successive scans on the same repo. Per-file licenses change rarely. |
 | `scancode_clone_dir` | `/tmp/aveloxis-scancode` | Parent directory for per-run shallow clones. Size for ~50 MB × workers peak. |
-| `scancode_shutdown_grace_minutes` | `30` | Wait budget for in-flight scans on `aveloxis stop`. Outstanding scans become live-orphans (see §5) if not finished. |
+| `scancode_shutdown_grace_minutes` | `0` | Extra wait, on top of the fixed bookkeeping allowance, for the runners' post-kill DB bookkeeping on `aveloxis stop`. It canNOT let a scan finish — every scan dies at cancel (§6 steps 4–5); a lock survives only if the process exits before its bookkeeping does, and the next start's `recoverOrphans` (§5) adopts it. |
 
 See [`docs/getting-started/configuration.md`](../getting-started/configuration.md#scancode-worker-v0210) for the tuning rationale per knob.
 

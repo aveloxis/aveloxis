@@ -156,6 +156,15 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	// reconcile-repos' pair consolidation per pair, prelim's rename heal
 	// — and the gate derives its columns and index names from
 	// emailMessageFKIndexes (SR-17), never a hand list.
+	// Scope (declined, twenty-second pass): these are TEXTUAL pins on the
+	// comment-stripped body — the gate's text hidden inside a raw-string
+	// literal or a never-invoked closure would pass. Declined for scope,
+	// not for cost: go/parser could confirm the needle is a CallExpr in
+	// the FuncDecl's own body, outside any FuncLit (FuncBody is already
+	// AST-sliced), but those shapes are deliberate concealment, not
+	// refactors. (testing.md's graduation criteria gate
+	// a go/analysis ANALYZER — type/call-graph need AND ≥2 review-missed
+	// incidents AND two wrong text-scan results — not AST use in tests.)
 	// ret pins the statement that FOLLOWS the gate — matched as a PREFIX
 	// of the source from the (exactly one) gate call, anchored on the
 	// closing brace (`return …, err }`) — so neither a substituted
@@ -178,7 +187,7 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 		{"rename_duplicate_heal.go", "func (s *PostgresStore) HealRenamedDuplicate(", `emailMessageFKIndexesReadyFor(ctx, s.pool, "repos")`, "return false, err }",
 			"reconcile-repos classifies on the sentinel to exit nonzero after a refused run (prelim treats any error as heal-unavailable)"},
 		{"email_message_fk_indexes.go", "func dedupRepoGroupsListServe(", `emailMessageFKIndexesReadyFor(ctx, pg.pool, "repo_groups_list_serve")`, "if errors.Is(err, ErrEmailMessageIndexesNotReady) {",
-			"a %v rewrap before the classification would lose the sentinel — the fail-closed skip (it fails the migrate either way) would log as a generic failed step instead of naming the index build to rerun"},
+			`a %v rewrap before the classification would lose the sentinel — the fail-closed skip (it fails the migrate either way) would log at ERROR as "migration step failed" instead of the WARN "list dedup skipped — email_message(rgls_id) index not valid" plus the collected "… rerun the migrate once it builds" error (the gate's own text, index name included, survives either way)`},
 	} {
 		// Comment-stripped: FuncBody keeps body comments, and a gate
 		// disabled inside /* */ would otherwise still count as the one
@@ -189,9 +198,13 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 			continue
 		}
 		gate := strings.Index(fnBody, site.needle)
-		write := strings.Index(fnBody, "Begin(ctx)")
-		if write < 0 {
-			write = strings.Index(fnBody, "dedupOnePair(")
+		// The write anchor is the EARLIEST of the two (a gate placed just
+		// before a later Begin, after the dedupOnePair calls, must fail).
+		write := -1
+		for _, anchor := range []string{"Begin(ctx)", "dedupOnePair("} {
+			if i := strings.Index(fnBody, anchor); i >= 0 && (write < 0 || i < write) {
+				write = i
+			}
 		}
 		if write < 0 || gate > write {
 			t.Errorf("%s must pass %s BEFORE it opens a transaction or hands off to dedupOnePair", site.fn, site.needle)

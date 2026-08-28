@@ -40,7 +40,8 @@ func TestReconcileExitsNonzeroOnUnmetPrecondition(t *testing.T) {
 	if !strings.Contains(ws, "if preconditionUnmet > 0 {") || !strings.Contains(s, "return fmt.Errorf(\"%d stranded repos refused for the email_message index precondition") {
 		t.Error("the summary must return an error (nonzero exit) when any consolidation was refused for the precondition")
 	}
-	if strings.Index(s, "if preconditionUnmet > 0 {") < strings.Index(s, "re-run to retry skipped repos") {
-		t.Error("the counts line and skip advice must print before the precondition error (the operator sees what did run)")
+	counts, advice, check := strings.Index(s, "reconcile-repos%s: dead="), strings.Index(s, "re-run to retry skipped repos"), strings.Index(s, "if preconditionUnmet > 0 {")
+	if counts < 0 || advice < 0 || check < 0 || !(counts < advice && advice < check) {
+		t.Errorf("the counts line, then the skip advice, must print before the precondition error (the operator sees what did run): counts=%d advice=%d check=%d", counts, advice, check)
 	}
 }

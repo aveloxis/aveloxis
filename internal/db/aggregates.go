@@ -386,6 +386,12 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 	// query.
 	groupIDs, err := s.distinctRepoGroupIDs(ctx)
 	if err != nil {
+		// Round-8 ratchet burn-down: this arm is NEW in the per-group
+		// refactor, so it must not be frozen into the baseline as
+		// legacy — a shutdown here is not a failed enumeration.
+		if errors.Is(err, context.Canceled) {
+			return ctx.Err()
+		}
 		logger.Warn("could not enumerate repo groups; dm_repo_group_* not refreshed", "error", err)
 		failedGroups++
 		failed = append(failed, fmt.Errorf("enumerating repo groups: %w", err))

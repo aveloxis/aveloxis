@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -126,7 +127,7 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	cmd.Env = gitCloneEnv()
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return result, fmt.Errorf("local clone failed: %w: %s", err, stderr.String())
+		return result, fmt.Errorf("local clone failed: %w: %s", execErr(ctx, err), stderr.String())
 	}
 
 	// Phase 1: Dependency scanning.
@@ -226,6 +227,12 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 	// Clear previous dependency data before inserting fresh results.
 	// repo_dependencies is a snapshot table (no history rotation needed).
 	if err := ac.store.ClearRepoDependencies(ctx, repoID); err != nil {
+		// Round-8 class sweep: shutdown is not a scan failure, and
+		// continuing the whole dependency scan on a dead ctx just
+		// produces one WARN per dep below.
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
 		ac.logger.Warn("failed to clear old dependencies", "repo_id", repoID, "error", err)
 	}
 
@@ -283,6 +290,12 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 	for lang, deps := range depCounts {
 		for depName, count := range deps {
 			if err := ac.store.InsertRepoDependency(ctx, repoID, depName, count, lang); err != nil {
+				// Round-8 class sweep: warn-and-continue over every dep
+				// of every language — a shutdown here emitted one WARN
+				// per dependency (v0.27.91 flood class).
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
 				ac.logger.Warn("failed to insert dependency", "dep", depName, "error", err)
 				continue
 			}
@@ -1103,8 +1116,13 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	// NOTHING never protected against this — it was dead code). The
 	// next cycle retries with a fresh rotation.
 	if err := ac.store.RotateLibyearToHistory(ctx, repoID); err != nil {
-		ac.logger.Error("failed to rotate libyear to history — skipping libyear insert this cycle",
-			"repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			ac.logger.Error("failed to rotate libyear to history — skipping libyear insert this cycle",
+				"repo_id", repoID, "error", err)
+		}
 		return fmt.Errorf("rotate libyear to history: %w", err)
 	}
 
@@ -1341,6 +1359,11 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			continue
 		}
 		if err := ac.store.InsertRepoLibyear(ctx, repoID, lb); err != nil {
+			// Round-8 class sweep: same flood shape as the dependency
+			// loop above.
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			ac.logger.Warn("failed to insert libyear", "dep", dep.Name, "error", err)
 			continue
 		}
@@ -2295,7 +2318,7 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	cmd := exec.CommandContext(ctx, sccPath, "-f", "json", "--by-file", workDir)
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("scc failed: %w", err)
+		return fmt.Errorf("scc failed: %w", execErr(ctx, err))
 	}
 
 	var languages []sccLanguage
@@ -3510,7 +3533,7 @@ func ListRepoFiles(ctx context.Context, barePath string) ([]string, error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return nil, err
+		return nil, execErr(ctx, err)
 	}
 	var files []string
 	scanner := bufio.NewScanner(&out)

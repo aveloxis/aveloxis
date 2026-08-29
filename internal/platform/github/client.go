@@ -95,6 +95,12 @@ func (c *Client) ParseRepoURL(url string) (owner, repo string, err error) {
 // --- IssueCollector ---
 
 func (c *Client) ListIssues(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.Issue, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	path := fmt.Sprintf("/repos/%s/%s/issues?state=all&sort=updated&direction=desc", owner, repo)
 	if !since.IsZero() {
 		path += "&since=" + since.Format(time.RFC3339)
@@ -137,6 +143,13 @@ func (c *Client) ListIssues(ctx context.Context, owner, repo string, since time.
 }
 
 func (c *Client) ListIssueLabels(ctx context.Context, owner, repo string, issueNumber int) iter.Seq2[model.IssueLabel, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, issueNumber)
 	return func(yield func(model.IssueLabel, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghLabel](ctx, c.http, path) {
@@ -158,6 +171,13 @@ func (c *Client) ListIssueLabels(ctx context.Context, owner, repo string, issueN
 }
 
 func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, issueNumber int) iter.Seq2[model.IssueAssignee, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	// Assignees come embedded in the issue response; this endpoint is for
 	// explicit per-issue fetching if needed. For bulk collection, we extract
 	// assignees during ListIssues and handle them in the collector.
@@ -183,6 +203,12 @@ func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, iss
 // --- PullRequestCollector ---
 
 func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.PullRequest, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls?state=all&sort=updated&direction=desc", owner, repo)
 
 	return func(yield func(model.PullRequest, error) bool) {
@@ -229,6 +255,13 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, since
 }
 
 func (c *Client) ListPRLabels(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestLabel, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, prNumber)
 	return func(yield func(model.PullRequestLabel, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghLabel](ctx, c.http, path) {
@@ -251,6 +284,13 @@ func (c *Client) ListPRLabels(ctx context.Context, owner, repo string, prNumber 
 }
 
 func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestAssignee, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, prNumber)
 	return func(yield func(model.PullRequestAssignee, error) bool) {
 		var raw ghPullRequest
@@ -270,6 +310,13 @@ func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumb
 }
 
 func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestReviewer, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/requested_reviewers", owner, repo, prNumber)
 	return func(yield func(model.PullRequestReviewer, error) bool) {
 		var resp struct {
@@ -291,6 +338,13 @@ func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumb
 }
 
 func (c *Client) ListPRReviews(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestReview, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, prNumber)
 	return func(yield func(model.PullRequestReview, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghReview](ctx, c.http, path) {
@@ -317,6 +371,13 @@ func (c *Client) ListPRReviews(ctx context.Context, owner, repo string, prNumber
 }
 
 func (c *Client) ListPRCommits(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestCommit, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits", owner, repo, prNumber)
 	return func(yield func(model.PullRequestCommit, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghCommit](ctx, c.http, path) {
@@ -342,6 +403,13 @@ func (c *Client) ListPRCommits(ctx context.Context, owner, repo string, prNumber
 }
 
 func (c *Client) ListPRFiles(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestFile, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/files", owner, repo, prNumber)
 	return func(yield func(model.PullRequestFile, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghFile](ctx, c.http, path) {
@@ -426,6 +494,12 @@ func (c *Client) FetchPRRepos(ctx context.Context, owner, repo string, prNumber 
 // one cycle: the per-URL ETag cache turns the second pass into a 304
 // with zero items (the pre-v0.26.3 silent PR-event loss).
 func (c *Client) fetchRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[ghEvent, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/events", owner, repo)
 	return func(yield func(ghEvent, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghEvent](ctx, c.http, path) {
@@ -447,6 +521,12 @@ func (c *Client) fetchRepoEvents(ctx context.Context, owner, repo string, since 
 // repo-wide feed, routing each raw event by its pull_request marker.
 // See fetchRepoEvents for why a single pass is load-bearing.
 func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.RepoEvent, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	return func(yield func(platform.RepoEvent, error) bool) {
 		for raw, err := range c.fetchRepoEvents(ctx, owner, repo, since) {
 			if err != nil {
@@ -493,6 +573,12 @@ func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since t
 // --- MessageCollector ---
 
 func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.MessageWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/comments?sort=updated&direction=desc", owner, repo)
 	if !since.IsZero() {
 		path += "&since=" + since.Format(time.RFC3339)
@@ -551,6 +637,12 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 }
 
 func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.MessageWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	// PR comments in GitHub are the same as issue comments.
 	// The ListIssueComments method already classifies them.
 	// This method exists for the interface; delegate to ListIssueComments
@@ -571,6 +663,12 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 }
 
 func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.ReviewCommentWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/comments?sort=updated&direction=desc", owner, repo)
 	if !since.IsZero() {
 		path += "&since=" + since.Format(time.RFC3339)
@@ -621,6 +719,13 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 // GET /repos/{o}/{r}/issues/{n}/comments. Results carry an IssueRef so the
 // downstream processor writes them to aveloxis_data.issue_message_ref.
 func (c *Client) ListCommentsForIssue(ctx context.Context, owner, repo string, issueNumber int) iter.Seq2[platform.MessageWithRef, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments?sort=created&direction=asc", owner, repo, issueNumber)
 	return func(yield func(platform.MessageWithRef, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghComment](ctx, c.http, path) {
@@ -656,6 +761,13 @@ func (c *Client) ListCommentsForIssue(ctx context.Context, owner, repo string, i
 // the result with PRRef instead of IssueRef so the processor writes to
 // aveloxis_data.pull_request_message_ref.
 func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[platform.MessageWithRef, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments?sort=created&direction=asc", owner, repo, prNumber)
 	return func(yield func(platform.MessageWithRef, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghComment](ctx, c.http, path) {
@@ -690,6 +802,13 @@ func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, prNu
 // for a single PR via GET /repos/{o}/{r}/pulls/{n}/comments. Distinct from
 // ListCommentsForPR which covers the conversation tab.
 func (c *Client) ListReviewCommentsForPR(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[platform.ReviewCommentWithRef, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments?sort=created&direction=asc", owner, repo, prNumber)
 	return func(yield func(platform.ReviewCommentWithRef, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghReviewComment](ctx, c.http, path) {
@@ -1293,4 +1412,14 @@ func urlPathHasSegment(rawURL, segment string) bool {
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 	return len(parts) >= 3 && parts[2] == segment
+}
+
+// ForgetRepoETags drops every cached ETag under /repos/{owner}/{repo}/ —
+// the scheduler's hook for a FAILED job, so the retry re-reads the
+// listing pages instead of being answered 304 from a walk whose results
+// were never stored (pass 30, v0.28.18). Every page of a walk lives in
+// that namespace: the platform paginator rebases GitHub's
+// /repositories/{id}/ Link-header continuations onto it (pass 34).
+func (c *Client) ForgetRepoETags(owner, repo string) int {
+	return c.http.ForgetETagsWithPrefix(fmt.Sprintf("/repos/%s/%s/", owner, repo))
 }

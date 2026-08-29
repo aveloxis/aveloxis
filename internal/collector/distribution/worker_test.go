@@ -36,6 +36,7 @@ type fakeStore struct {
 	failures       []int64
 	claimErr       error
 	releasedJobIDs []int64
+	released       []int64 // ReleaseDistributionClaim calls (pass 40)
 }
 
 type markCall struct {
@@ -318,5 +319,40 @@ func TestWorkerHandlesEmptyQueueGracefully(t *testing.T) {
 
 	if atomic.LoadInt32(&scanner.calls) != 0 {
 		t.Errorf("scanner called %d times on empty queue, want 0", scanner.calls)
+	}
+}
+
+func (f *fakeStore) ReleaseDistributionClaim(_ context.Context, job *db.DistributionJob) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released = append(f.released, job.RepoID)
+	return nil
+}
+
+// Pass 40 (v0.28.18): a shutdown that cuts a scan short is a RELEASE,
+// never a strike (RecordDistributionFailure feeds the 10-strike
+// sideline) and never a completion (a partial snapshot must not rotate
+// good current rows to history). Red without the processJob guard.
+func TestProcessJobReleasesTheClaimOnShutdown(t *testing.T) {
+	store := &fakeStore{}
+	scanner := &fakeScanner{}
+	w := NewWorker(WorkerOptions{
+		Store:         store,
+		Scanner:       scanner,
+		Workers:       1,
+		StartInterval: 0,
+		Cadence:       180 * 24 * time.Hour,
+		Logger:        testLogger(),
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	w.processJob(ctx, &db.DistributionJob{RepoID: 42, RepoOwner: "o", RepoName: "r"})
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.released) != 1 || store.released[0] != 42 {
+		t.Fatalf("a shutdown-cut scan must release the claim exactly once, got %v", store.released)
+	}
+	if len(store.failures) != 0 || len(store.marks) != 0 {
+		t.Errorf("a shutdown-cut scan must record neither a failure (%v) nor a completion (%v)", store.failures, store.marks)
 	}
 }

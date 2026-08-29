@@ -70,6 +70,12 @@ Conventions for adding integration tests:
 
 Runs three blocking tiers in sequence: `go vet`, `staticcheck`, and [golangci-lint](https://golangci-lint.run/) at a pinned version. All three block the merge — run the pinned golangci-lint locally before pushing (bare staticcheck and golangci-lint disagree on some checks, e.g. ST1000).
 
+### Docs (`docs.yml`)
+
+**Trigger:** Every push to main, every PR to main.
+
+Builds the Sphinx/MyST site exactly as Read the Docs does (Python 3.12, `docs/requirements.txt`) with `sphinx-build -W --keep-going`, so an unknown fence language, a code block that does not lex in its declared language, or a dead cross-reference fails the job — `--keep-going` walks the whole tree so one run lists every offender. `.readthedocs.yaml` enforces the same rule at publish time via `fail_on_warning`. Run the identical command locally before pushing (see "Build docs" in the README).
+
 ### CodeQL (`codeql.yml`)
 
 **Trigger:** Every PR to main, plus weekly Monday scan.

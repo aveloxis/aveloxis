@@ -19,7 +19,7 @@ or `migrate.go`.
   gate. The harness exit code is 0 on PASS / FLAG-only and 1 on any
   FAIL (row loss), so it can drive CI.
 - **Operators** — before deploying a release with schema changes to a
-  production fleet. The CLAUDE.md changelog for each release notes
+  production fleet. The release notes for each version note
   whether schema changed; if it did, run the harness against the prior
   released tag first.
 

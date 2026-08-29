@@ -1,0 +1,5 @@
+# Shutdown-classification baseline — ctx-bound failure logs that do
+# not yet classify context.Canceled, frozen at ratchet introduction.
+# SHRINK-ONLY: fixing a site means deleting its line here in the same
+# change; a new site is a build failure.
+# Regenerate: AVELOXIS_UPDATE_BASELINE=1 go test ./scripts/ -run ShutdownClassification

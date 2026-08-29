@@ -22,7 +22,7 @@ That's enough to verify your environment. To run the binary or write code agains
 
 ## Where to start reading
 
-- **New to the codebase?** Read [`docs/architecture/overview.md`](docs/architecture/overview.md) and [`CLAUDE.md`](CLAUDE.md) (the latter is dense but it's the canonical record of every architectural decision).
+- **New to the codebase?** Read [`docs/architecture/overview.md`](docs/architecture/overview.md) and [`docs/contributing/README.md`](docs/contributing/README.md) (the handbook's reading order).
 - **Want to fix a bug?** Pick one from [GitHub issues](https://github.com/aveloxis/aveloxis/issues). Open a discussion if you're unsure about the approach.
 - **Want to add a feature?** Open an issue first to discuss scope. Then follow the relevant chapter in [`docs/contributing/`](docs/contributing/).
 - **Want to add a new data source (e.g. Bugzilla, Gitea, Forgejo)?** Read [`docs/contributing/adding-a-platform.md`](docs/contributing/adding-a-platform.md) — that's the worked example.
@@ -49,7 +49,7 @@ These are the non-negotiables. The handbook chapters go deep on the rationale.
 
 1. **Test-driven development.** Write a failing test first, then implement, then verify. No exceptions for "trivial" changes — they're the ones that bite. See [`testing.md`](docs/contributing/testing.md).
 2. **Bump the version on every change.** `internal/db/version.go` is the single source of truth. The version appears in `tool_version` columns across all tables and in SBOMs. See [`code-conventions.md`](docs/contributing/code-conventions.md).
-3. **CLAUDE.md is the canonical record.** Add a changelog entry under `## Current Status` for any user-visible behavior change. Future contributors (and the AI agents that help maintain the project) read this to understand why decisions were made.
+3. **The release notes are the public record.** Describe any user-visible behavior change in your PR description — what changed, why, and what operators must do (migrate, run a heal, restart) — in the shape the release notes use; the maintainers carry it into the notes for the version that ships it. Future contributors read those notes and the architecture chapters to understand why decisions were made.
 4. **No emojis in code or commit messages** unless explicitly requested by the user/operator. Markdown docs follow the same convention.
 5. **Everything that errors should be logged.** Silent failures cost us hours of operator triage time. See `level=ERROR` patterns in existing code.
 6. **GitHub and GitLab parity where possible.** Every feature targeting one platform should at least be considered for the other; if it isn't possible, document the gap in the README and the relevant docs page. See [`docs/architecture/platform-layer.md`](docs/architecture/platform-layer.md).

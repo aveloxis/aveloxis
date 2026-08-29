@@ -43,7 +43,7 @@ The CompositeScanner consults up to five sources per scan, in this order:
 
 Google's open-source dependency database. Reverse-lookup across seven major registries (NPM, PyPI, Maven, Cargo, Go, RubyGems, NuGet). Aggregated by `(system, name)` into one `repo_distribution` row per package; version count plus first/latest publish timestamps.
 
-Two API quirks that matter (both learned the hard way; see CLAUDE.md v0.24.1):
+Two API quirks that matter (both learned the hard way; see the v0.24.1 release notes):
 
 - **Project ID is a single path segment.** Internal slashes must be percent-encoded as `%2F`. `url.PathEscape` over the whole `github.com/owner/repo` string handles this correctly; per-segment escape (the v0.24.0 bug) produces a 404 that's indistinguishable from "deps.dev doesn't know this repo".
 - **`:packageversions` does NOT carry `publishedAt`.** The reverse-lookup endpoint returns versions without timestamps. To populate `first_published_at` / `latest_published_at`, the client chains one call per distinct `(system, name)` to `/v3/systems/{SYSTEM}/packages/{name}` and merges. Best-effort: a failed package-detail call silently leaves that package's timestamps at zero.
@@ -154,7 +154,7 @@ Current tables carry a natural-key UNIQUE constraint:
 - `repo_distribution` UNIQUE on `(repo_id, ecosystem, package_name, source)`. The `source` column distinguishes deps.dev rows from ecosyste.ms rows from github_release_asset rows — when multiple sources observe the same package, they coexist as multiple rows so each source's data quality stays auditable.
 - `repo_distribution_manifest` UNIQUE on `(repo_id, manifest_path)`. A monorepo with two `setup.py` files in different subdirectories produces two rows.
 
-History tables do NOT carry those UNIQUE constraints (v0.25.1 fix — see CLAUDE.md). They hold many snapshots over time per logical key.
+History tables do NOT carry those UNIQUE constraints (v0.25.1 fix — see its release notes). They hold many snapshots over time per logical key.
 
 ### 5.3 Rotation semantics
 
@@ -317,7 +317,7 @@ See [`docs/getting-started/configuration.md`](../getting-started/configuration.m
 ## 11. Cross-references
 
 - **Architectural cousin**: [`scancode.md`](scancode.md) covers the v0.21.0 ScancodeWorker, which uses the same decoupled-pool pattern for a different domain (per-file license + copyright scanning). Read both to understand the shape Aveloxis applies to "work that doesn't fit the per-job budget".
-- **Schema rationale**: history-table UNIQUE constraint drop is documented in the v0.25.1 CLAUDE.md changelog entry — explains why `LIKE … INCLUDING ALL` was wrong for history tables and how the fix preserves the PK while dropping the natural-key constraints.
+- **Schema rationale**: history-table UNIQUE constraint drop is documented in the v0.25.1 release notes — explains why `LIKE … INCLUDING ALL` was wrong for history tables and how the fix preserves the PK while dropping the natural-key constraints.
 - **Source-of-truth files**:
   - `internal/collector/distribution/` — worker + scanner + manifest parsers
   - `internal/platform/depsdev/`, `internal/platform/ecosystems/` — external API clients

@@ -114,7 +114,7 @@ func TestFindRepoByURLCaseFallbackAndExactPreference(t *testing.T) {
 	t.Cleanup(func() { cleanupCaseRepos(ctx, t, store, slug) })
 
 	gid := defaultRepoGroup(ctx, t, store)
-	dropCaseUniqueIndex(ctx, t, store)
+	dropCaseUniqueIndex(ctx, t, store, func() { cleanupCaseRepos(ctx, t, store, slug) })
 
 	// Seed BOTH variants directly (bypassing UpsertRepo's resolution) —
 	// exactly the pre-dedup production state.
@@ -218,7 +218,7 @@ func TestHealRepoCaseDriftEndToEnd(t *testing.T) {
 
 	// Occupancy guard: another row already holds the canonical URL.
 	// (Seeding a real duplicate pair requires the pre-dedup state.)
-	dropCaseUniqueIndex(ctx, t, store)
+	dropCaseUniqueIndex(ctx, t, store, func() { cleanupCaseRepos(ctx, t, store, slug) })
 	gid := defaultRepoGroup(ctx, t, store)
 	var occupantID, driftedID int64
 	if err := store.pool.QueryRow(ctx, `
@@ -317,11 +317,27 @@ func TestAddRepoToGroupSharesRepoAcrossGroups(t *testing.T) {
 // that still HAS case-variant duplicates, uq_repos_repo_git_ci cannot
 // exist yet (the migration skips it with a WARN until `aveloxis
 // dedup-repos` drains). Tests that deliberately seed duplicate pairs
-// must drop it first — on a clean scratch DB the previous RunMigrations
-// created it, which is itself proof the backstop works. The next
-// RunMigrations recreates it once the test's cleanup removes the pairs.
-func dropCaseUniqueIndex(ctx context.Context, t *testing.T, store *PostgresStore) {
+// must drop it first. Nothing rebuilds it afterwards — every connect
+// helper fast-paths on the schema stamp — so this fixture restores it
+// itself once the caller's rows are gone (see the body).
+func dropCaseUniqueIndex(ctx context.Context, t *testing.T, store *PostgresStore, cleanup func()) {
 	t.Helper()
+	// v0.28.18: nothing else rebuilds the index — every connect helper
+	// fast-paths on the schema stamp — so the fixture restores it itself.
+	// Callers register their row cleanup BEFORE this drop, so under LIFO
+	// this cleanup runs FIRST: it therefore runs the caller's own row
+	// cleanup for its fixture — which must remove every row the fixture
+	// seeds, children included where it seeds any (the dedup tests pass
+	// cleanupDedupRepos; a CIC over a surviving case-variant pair leaves
+	// the index INVALID) — before dropping any residue CONCURRENTLY and
+	// rebuilding. Best-effort: residue from another package's fixtures
+	// can legitimately leave a pair behind.
+	t.Cleanup(func() {
+		cleanup()
+		cleanupExecRetry(ctx, store, `DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.uq_repos_repo_git_ci`)
+		cleanupExecRetry(ctx, store, `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repos_repo_git_ci
+			ON aveloxis_data.repos (LOWER(repo_git)) WHERE platform_id IN (1, 2)`)
+	})
 	if _, err := store.pool.Exec(ctx, `DROP INDEX IF EXISTS aveloxis_data.uq_repos_repo_git_ci`); err != nil {
 		t.Fatalf("drop uq_repos_repo_git_ci: %v", err)
 	}

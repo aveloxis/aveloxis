@@ -54,7 +54,7 @@ func TestWhitespaceGateIsOperative(t *testing.T) {
 	}
 	s := string(src)
 	if !strings.Contains(s, "result.CommitWriteFailures == 0") {
-		t.Error("the whitespace-phase gate must read FacadeResult.CommitWriteFailures (result.Errors alone never fires — insertCommitBatch swallows DB failures)")
+		t.Error("the whitespace-phase gate must read FacadeResult.CommitWriteFailures (result.Errors alone never fires — insertCommitBatch swallows DB failures; its only non-nil return is the shutdown cut-off, pass 37, which exits CollectRepo before the gate)")
 	}
 	if strings.Count(s, "CommitWriteFailures +") < 1 || !strings.Contains(s, "CommitWriteFailures++") {
 		t.Error("the commit-row swallow sites (fallback per-row failure + ctx-cancel bail) must bump CommitWriteFailures")

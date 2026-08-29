@@ -740,7 +740,7 @@ Join table linking pull requests to their **conversation** comments in the messa
 
 Inline code review comments with full diff positioning. One row per diff-anchored review comment. Each row links to both a `pull_request_reviews` row (the parent review) and a `messages` row (the comment body text).
 
-**Always populated via REST `/repos/{o}/{r}/pulls/comments` regardless of `pr_child_mode` / `listing_mode` configuration.** GitHub's GraphQL `PullRequestReviewComment` type does not expose the `side` / `startSide` fields aveloxis requires for diff-side fidelity, so the v0.18.5 Phase 4 GraphQL-inline-comments work explicitly carved this endpoint out and kept the REST iterator running. See CLAUDE.md's "Inline REVIEW comments NOT fetched via GraphQL — deliberate" subsection for the schema-validation history.
+**Always populated via REST `/repos/{o}/{r}/pulls/comments` regardless of `pr_child_mode` / `listing_mode` configuration.** GitHub's GraphQL `PullRequestReviewComment` type does not expose the `side` / `startSide` fields aveloxis requires for diff-side fidelity, so the v0.18.5 Phase 4 GraphQL-inline-comments work explicitly carved this endpoint out and kept the REST iterator running. The v0.18.5 release notes carry the schema-validation history.
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
@@ -902,7 +902,7 @@ Point-in-time snapshots of repository metadata and statistics. A new row is inse
 | `issues_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}` | Whether issues are enabled. |
 | `prs_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}` | Whether PRs/MRs are enabled. |
 | `wiki_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}` | Whether the wiki is enabled. |
-| `pages_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}` | Whether GitHub Pages is enabled. |
+| `pages_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}` (`pages_access_level`) | Whether GitHub Pages / GitLab Pages is enabled. On GitLab every feature flag derives from its `*_access_level` (v0.28.18): the legacy `*_enabled` booleans read false for a members-only feature the token cannot see. |
 | `fork_count` | INT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}?statistics=true` | Number of forks. |
 | `star_count` | INT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}?statistics=true` | Number of stars. |
 | `watcher_count` | INT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}?statistics=true` | Number of watchers. |

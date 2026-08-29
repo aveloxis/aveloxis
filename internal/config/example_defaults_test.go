@@ -26,15 +26,55 @@ import (
 	"testing"
 )
 
-// exampleValueAllowlist: fields where aveloxis.example.json may
-// legitimately differ from the compiled default. Keep this SHORT.
-var exampleValueAllowlist = map[string]string{
-	// v0.27.147 (round 26): the example previously advertised
-	// "$HOME/aveloxis-repos/" — but config.Load never expands env vars,
-	// so a copied config created a relative directory literally named
-	// $HOME. The example now uses a real absolute path (/data/...),
-	// which legitimately differs from the computed home-dir default.
-	"RepoCloneDir": "default is home-dir-dependent (defaultCloneDir); the example uses a literal absolute path because aveloxis.json values are never env-expanded",
+// exampleValueAllowlist: per-file fields where a committed example
+// may legitimately differ from the compiled default. Keep each list
+// SHORT — a value that is not a deliberate tuning choice belongs in
+// the file, not in here. Pass 45 widened this from one file to all
+// three: TestExampleConfigsCarryNoEnvVarSyntax already treated the
+// three as one copyable set, and README.md tells operators to
+// `cp aveloxis.docker.example.json aveloxis.docker.json` — but only
+// aveloxis.example.json was value-checked, so both siblings shipped
+// scancode_shutdown_grace_minutes: 30 for the same year-plus after
+// v0.23.7 flipped the default to 0. In the sharded profile that also
+// inflated shutdownBudget() to ~31m50s against the TimeoutStopSec=180
+// that docs/guide/running-as-a-service.md tells operators to set.
+const (
+	exampleDefaultsFile = "aveloxis.example.json"
+	exampleDockerFile   = "aveloxis.docker.example.json"
+	exampleShardedFile  = "aveloxis.sharded.example.json"
+	docsSnippetLabel    = "docs/getting-started/configuration.md snippet"
+)
+
+var exampleValueAllowlist = map[string]map[string]string{
+	exampleDefaultsFile: {
+		// v0.27.147 (round 26): the example previously advertised
+		// "$HOME/aveloxis-repos/" — but config.Load never expands env
+		// vars, so a copied config created a relative directory
+		// literally named $HOME. The example now uses a real absolute
+		// path, which legitimately differs from the home-dir default.
+		"RepoCloneDir": "default is home-dir-dependent (defaultCloneDir); the example uses a literal absolute path because aveloxis.json values are never env-expanded",
+	},
+	exampleDockerFile: {
+		"RepoCloneDir": "container-local path for the compose bind mount; the default is home-dir-dependent and meaningless inside the image",
+	},
+	exampleShardedFile: {
+		// This file is a TUNING PROFILE for a large sharded fleet, so
+		// its throughput knobs deliberately differ. Anything NOT about
+		// that profile (a retired default, a stale flag value) is a
+		// bug in the example and must be fixed there.
+		"RepoCloneDir":                 "placeholder the operator fills in; the default is home-dir-dependent",
+		"DaysUntilRecollect":           "sharded profile: a 100K-repo fleet cannot re-walk daily",
+		"Workers":                      "sharded profile: sized for the documented 180-worker deployment",
+		"MatviewRebuildDay":            "sharded profile: Sunday rebuild to clear the weekday window",
+		"ThreadingMode":                "sharded profile: this file exists to demonstrate threading_mode=sharded",
+		"ShardSize":                    "sharded profile: paired with threading_mode above",
+		"SearchResolveIntervalMinutes": "sharded profile: a larger contributor pool wants a tighter search-resolve cadence",
+		"ShutdownGraceSeconds":         "sharded profile: 180 workers need longer than the 10s default to drain",
+		"ScancodeWorkers":              "sharded profile: sized for the dedicated scancode host",
+	},
+	docsSnippetLabel: {
+		"RepoCloneDir": "same reason as aveloxis.example.json: the snippet cannot print a home-dir-dependent default",
+	},
 }
 
 // effectiveAccessors maps accessor-backed fields to their effective
@@ -79,45 +119,204 @@ var effectiveAccessors = map[string]func(c *CollectionConfig) any{
 }
 
 func TestExampleConfigCollectionValuesMatchEffectiveDefaults(t *testing.T) {
-	raw, err := os.ReadFile("../../aveloxis.example.json")
-	if err != nil {
-		t.Fatalf("read aveloxis.example.json: %v", err)
+	for _, name := range []string{exampleDefaultsFile, exampleDockerFile, exampleShardedFile} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := os.ReadFile("../../" + name)
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			assertCollectionMatchesEffectiveDefaults(t, name, raw)
+			// Round-8 review: the collection comparator covers ONE
+			// block. api.addr was added to these copyable files with no
+			// value protection at all — setting it to "0.0.0.0:19999"
+			// (a routable bind of the whole catalog while require_auth
+			// is false) left the whole suite green. The example files
+			// now go through the same whole-Config comparator as the
+			// docs snippet.
+			assertBlockValues(t, blockValueOpts{label: name}, string(raw))
+		})
 	}
+}
+
+// assertCollectionMatchesEffectiveDefaults applies doc's collection
+// block over a pristine DefaultConfig and compares every field through
+// its accessor. Shared by the three example configs and the docs
+// snippet so the four can never drift apart from each other either.
+func assertCollectionMatchesEffectiveDefaults(t *testing.T, label string, doc []byte) {
+	t.Helper()
 	var envelope struct {
 		Collection json.RawMessage `json:"collection"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		t.Fatalf("parse example: %v", err)
+	if err := json.Unmarshal(doc, &envelope); err != nil {
+		t.Fatalf("%s: parse: %v", label, err)
 	}
-
-	exampleCfg := DefaultConfig()
-	if err := json.Unmarshal(envelope.Collection, &exampleCfg.Collection); err != nil {
-		t.Fatalf("apply example collection block: %v", err)
+	if len(envelope.Collection) == 0 {
+		t.Fatalf("%s: must carry a collection block", label)
+	}
+	cfg := DefaultConfig()
+	if err := json.Unmarshal(envelope.Collection, &cfg.Collection); err != nil {
+		t.Fatalf("%s: apply collection block: %v", label, err)
 	}
 	defaultCfg := DefaultConfig()
+	allow := exampleValueAllowlist[label]
+
+	// Track which allowlisted fields actually differ, so an entry that
+	// stopped suppressing anything fails instead of lingering as
+	// permission nobody needs (the Phase-3 policy-registry pattern).
+	stillDiffers := map[string]bool{}
 
 	typ := reflect.TypeOf(CollectionConfig{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
-		if _, allowed := exampleValueAllowlist[field.Name]; allowed {
+		if _, allowed := allow[field.Name]; allowed {
+			if getter, ok := effectiveAccessors[field.Name]; ok {
+				stillDiffers[field.Name] = !reflect.DeepEqual(getter(&cfg.Collection), getter(&defaultCfg.Collection))
+			} else {
+				stillDiffers[field.Name] = !reflect.DeepEqual(
+					reflect.ValueOf(cfg.Collection).Field(i).Interface(),
+					reflect.ValueOf(defaultCfg.Collection).Field(i).Interface())
+			}
 			continue
 		}
-
 		var got, want any
 		if getter, ok := effectiveAccessors[field.Name]; ok {
-			got = getter(&exampleCfg.Collection)
-			want = getter(&defaultCfg.Collection)
+			got, want = getter(&cfg.Collection), getter(&defaultCfg.Collection)
 		} else {
-			got = reflect.ValueOf(exampleCfg.Collection).Field(i).Interface()
+			got = reflect.ValueOf(cfg.Collection).Field(i).Interface()
 			want = reflect.ValueOf(defaultCfg.Collection).Field(i).Interface()
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Errorf("aveloxis.example.json teaches a NON-DEFAULT value for %s "+
-				"(json %q): example-effective=%v default-effective=%v. Either fix "+
-				"the example to match the compiled default, or add the field to "+
-				"exampleValueAllowlist with a reason.",
-				field.Name, jsonTag(field), got, want)
+			t.Errorf("%s teaches a NON-DEFAULT value for %s (json %q): "+
+				"effective=%v default-effective=%v. Operators copy this file verbatim; "+
+				"either fix the value, or add the field to exampleValueAllowlist[%q] with a reason.",
+				label, field.Name, jsonTag(field), got, want, label)
 		}
+	}
+
+	for name := range allow {
+		if !stillDiffers[name] {
+			t.Errorf("exampleValueAllowlist[%q][%q] suppresses nothing — %s now matches the compiled default. "+
+				"Delete the entry; a stale exemption is standing permission for a future drift nobody reviewed.",
+				label, name, name)
+		}
+	}
+}
+
+// TestConfigurationDocSnippetMatchesEffectiveDefaults — pass 44. The
+// docs' "every supported option" snippet is a defaults document that
+// nothing checked: docs_coverage_test.go matches KEYS only, so the
+// snippet taught scancode_shutdown_grace_minutes: 30 for three months
+// after the flip to 0, and threading_mode: "sharded" for three and a
+// half against its own reference table. Run its collection block
+// through the same effective-accessor comparison as the example JSON.
+func TestConfigurationDocSnippetMatchesEffectiveDefaults(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/getting-started/configuration.md")
+	if err != nil {
+		t.Fatalf("read configuration.md: %v", err)
+	}
+	block := configurationDocSnippet(t, string(doc))
+	assertCollectionMatchesEffectiveDefaults(t, docsSnippetLabel, []byte(block))
+	assertSnippetBlockValues(t, docsSnippetLabel, block)
+	assertSnippetAccessorsAreComplete(t)
+
+	// Values alone cannot police the snippet's "every supported
+	// option" claim: an OMITTED key silently keeps the default, so the
+	// comparison above passes and TestConfigurationDocsCoverEveryJSONField
+	// passes too (it scans the whole document, and the reference table
+	// below the snippet mentions every tag). Pass 45 proved the gap by
+	// deleting staging_retention_hours from the snippet with both
+	// tests still green. So assert presence explicitly.
+	//
+	// Pass 46: over EVERY block, not just collection. The claim is
+	// about the whole document, and scoping the check to one block
+	// let the snippet omit the entire `monitor` and `api` sections
+	// and five of the nine `mail` fields while reading as complete.
+	// Parsed rather than substring-matched so a key that exists in
+	// one block cannot satisfy another block's requirement.
+	var snippet map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(block), &snippet); err != nil {
+		t.Fatalf("the configuration.md full-configuration snippet is not valid JSON: %v", err)
+	}
+	// One reasoned exemption, in the shape the value allowlist above
+	// uses: the github and gitlab blocks share PlatformConfig, and
+	// GitLabHosts is documented "Only relevant for GitLab config".
+	// Requiring it under github would teach operators a setting that
+	// does nothing there. The gitlab block does carry it.
+	snippetPresenceExemptions := map[string]string{
+		"github.gitlab_hosts": "PlatformConfig is shared by both forge blocks; GitLabHosts is GitLab-only, and the gitlab block carries it",
+	}
+	exemptionUsed := map[string]bool{}
+
+	cfgType := reflect.TypeOf(Config{})
+	for i := 0; i < cfgType.NumField(); i++ {
+		field := cfgType.Field(i)
+		tag := strings.Split(field.Tag.Get("json"), ",")[0]
+		if tag == "" || tag == "-" {
+			continue
+		}
+		raw, ok := snippet[tag]
+		if !ok {
+			t.Errorf("the configuration.md full-configuration snippet omits the %q block — it claims to "+
+				"carry EVERY supported option, and an omitted key is invisible to the value check above "+
+				"(absent means default). Add it to the snippet, or soften the claim.", tag)
+			continue
+		}
+		blockType := field.Type
+		for blockType.Kind() == reflect.Pointer {
+			blockType = blockType.Elem()
+		}
+		if blockType.Kind() != reflect.Struct {
+			continue
+		}
+		var sub map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &sub); err != nil {
+			t.Errorf("the %q block of the configuration.md snippet does not parse as an object: %v", tag, err)
+			continue
+		}
+		for _, sTag := range jsonTagsOf(blockType) {
+			if _, ok := sub[sTag]; ok {
+				continue
+			}
+			if _, exempt := snippetPresenceExemptions[tag+"."+sTag]; exempt {
+				exemptionUsed[tag+"."+sTag] = true
+				continue
+			}
+			t.Errorf("the configuration.md full-configuration snippet omits %q from its %q block — it "+
+				"claims to carry EVERY supported option, and an omitted key is invisible to a value "+
+				"check (absent means default). Add it to the snippet, or soften the claim.", sTag, tag)
+		}
+	}
+
+	// Staleness reverse-check, matching exampleValueAllowlist's: an
+	// exemption that no longer suppresses anything is standing
+	// permission for a future omission nobody reviewed.
+	for key, reason := range snippetPresenceExemptions {
+		if !exemptionUsed[key] {
+			t.Errorf("snippetPresenceExemptions[%q] suppresses nothing — the snippet now carries that key. "+
+				"Delete the entry (its reason was: %s).", key, reason)
+		}
+	}
+}
+
+// configurationDocSnippet returns the first fenced ```json block that
+// carries a "collection" key — the "every supported option" example.
+func configurationDocSnippet(t *testing.T, doc string) string {
+	t.Helper()
+	rest := doc
+	for {
+		open := strings.Index(rest, "```json\n")
+		if open < 0 {
+			t.Fatal("configuration.md must contain a fenced ```json full-configuration snippet with a collection block")
+		}
+		body := rest[open+len("```json\n"):]
+		end := strings.Index(body, "\n```")
+		if end < 0 {
+			t.Fatal("unterminated ```json fence in configuration.md")
+		}
+		if block := body[:end]; strings.Contains(block, `"collection"`) {
+			return block
+		}
+		rest = body[end:]
 	}
 }
 
@@ -152,4 +351,383 @@ func TestExampleConfigsCarryNoEnvVarSyntax(t *testing.T) {
 			}
 		}
 	}
+}
+
+// jsonTagsOf returns every JSON key a config block serialises,
+// following embedded structs (whose fields are promoted into the
+// parent object) and dereferencing pointers. Pass 47: the flat
+// `field.Type.NumField()` walk skipped a pointer-to-struct block
+// entirely and treated an embedded struct's tag-less field as
+// nothing, so a field added that way could never be missed by the
+// presence check that exists to catch exactly that.
+func jsonTagsOf(t reflect.Type) []string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	var out []string
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		tag := strings.Split(f.Tag.Get("json"), ",")[0]
+		if f.Anonymous && tag == "" {
+			out = append(out, jsonTagsOf(f.Type)...)
+			continue
+		}
+		if tag == "" || tag == "-" {
+			continue
+		}
+		out = append(out, tag)
+	}
+	return out
+}
+
+// Which of the snippet's values are checked is DERIVED from
+// reflect.TypeOf(Config{}), not listed: every top-level field, and
+// every field of every block.
+//
+// Pass 47 excluded database/github/gitlab/web on the claim that
+// "every field there is site-specific" — false for six compiled
+// defaults. Pass 48 replaced that with a hand-written list of the
+// remaining blocks, which had neither a completeness guard nor a
+// staleness one: dropping an entry silently stopped value-checking a
+// whole block, and `log_level` was never checked at all while the
+// prose said "every block, every field" (pass 50 — the fourth
+// consecutive over-claim in this one paragraph). Deriving the set is
+// what stops a fifth: a new block or scalar is covered the moment it
+// is declared. The genuinely site-specific fields are named in
+// snippetValueAllowlist with a reason, under a staleness
+// reverse-check.
+
+// snippetValueAccessors mirrors effectiveAccessors for the blocks
+// above: a field whose meaning comes from an accessor is compared
+// through it, not through its zero value.
+// snippetAccessor pairs the getter with the NAME of the accessor it
+// calls, so the completeness check below can tell a registered
+// accessor from an unregistered one.
+type snippetAccessor struct {
+	method string
+	get    func(*Config) any
+}
+
+var snippetValueAccessors = map[string]snippetAccessor{
+	"api.Addr":                     {"AddrOrDefault", func(c *Config) any { return c.API.AddrOrDefault() }},
+	"api.RateLimitRPS":             {"RateLimitRPSOrDefault", func(c *Config) any { return c.API.RateLimitRPSOrDefault() }},
+	"api.RateLimitBurst":           {"RateLimitBurstOrDefault", func(c *Config) any { return c.API.RateLimitBurstOrDefault() }},
+	"api.RateLimitDaily":           {"RateLimitDailyOrDefault", func(c *Config) any { return c.API.RateLimitDailyOrDefault() }},
+	"api.ExemptCIDRs":              {"ExemptCIDRsOrDefault", func(c *Config) any { return c.API.ExemptCIDRsOrDefault() }},
+	"monitor.RefreshSeconds":       {"MonitorRefreshSecondsOrDefault", func(c *Config) any { return c.Monitor.MonitorRefreshSecondsOrDefault() }},
+	"mail.VulnDigestMinSeverity":   {"VulnDigestMinSeverityOrDefault", func(c *Config) any { return c.Mail.VulnDigestMinSeverityOrDefault() }},
+	"mail.VulnDigestIntervalHours": {"VulnDigestInterval", func(c *Config) any { return c.Mail.VulnDigestInterval() }},
+}
+
+// snippetAccessorExemptions are accessor methods that deliberately
+// need no registration, with the reason — under a staleness check,
+// like every other exemption in this file.
+var snippetAccessorExemptions = map[string]string{
+	"database.ConnectionString":    "derives a DSN from the whole block; it is not any one field's default, and every field it reads is compared directly",
+	"web.AutoApproveAddLimitValue": "identity for every value the snippet can carry — it only clamps negatives to 0, and the default IS 0, so a raw comparison is exact",
+}
+
+// assertSnippetAccessorsAreComplete fails when a config block grows an
+// accessor the snippet value check does not route through.
+//
+// Pass 50 derived WHICH FIELDS are compared from the Config type, and
+// the prose then promised "a block or option added later is covered
+// the day it is declared". True of the field set; false of the
+// accessor routing, which is this hand-written map — a new
+// accessor-backed field written as its zero compared zero-to-zero and
+// passed, teaching (in the probed case) a 0-byte request cap against a
+// 1 MiB default. Fifth consecutive over-claim in that one paragraph,
+// so the claim is now enforced rather than reworded (pass 51).
+func assertSnippetAccessorsAreComplete(t *testing.T) {
+	t.Helper()
+	registered := map[string]bool{}
+	for key, acc := range snippetValueAccessors {
+		registered[strings.SplitN(key, ".", 2)[0]+"."+acc.method] = true
+	}
+	usedExemption := map[string]bool{}
+
+	cfgType := reflect.TypeOf(Config{})
+	for i := 0; i < cfgType.NumField(); i++ {
+		field := cfgType.Field(i)
+		block := strings.Split(field.Tag.Get("json"), ",")[0]
+		if block == "" || block == "-" || block == "collection" {
+			continue // collection has its own accessor map and comparison
+		}
+		blockType := field.Type
+		for blockType.Kind() == reflect.Pointer {
+			blockType = blockType.Elem()
+		}
+		if blockType.Kind() != reflect.Struct {
+			continue
+		}
+		for m := 0; m < blockType.NumMethod(); m++ {
+			method := blockType.Method(m)
+			// An accessor: nothing but the receiver in, one value out.
+			if method.Type.NumIn() != 1 || method.Type.NumOut() != 1 {
+				continue
+			}
+			key := block + "." + method.Name
+			if registered[key] {
+				continue
+			}
+			if _, exempt := snippetAccessorExemptions[key]; exempt {
+				usedExemption[key] = true
+				continue
+			}
+			t.Errorf("%s is an accessor the snippet value check does not route through. A field whose meaning comes from an accessor compares zero-to-zero without one, so the snippet could carry 0 and pass while the reference table below states the real default. Register it in snippetValueAccessors, or add %q to snippetAccessorExemptions with a reason.", key, key)
+		}
+	}
+	for key, reason := range snippetAccessorExemptions {
+		if !usedExemption[key] {
+			t.Errorf("snippetAccessorExemptions[%q] suppresses nothing — that accessor is registered or gone. Delete the entry (its reason was: %s).", key, reason)
+		}
+	}
+}
+
+// snippetValueAllowlist exempts the placeholder fields inside an
+// otherwise default-valued block, with the reason, under the same
+// staleness reverse-check the collection allowlist uses.
+// exampleBlockAllowlist is exampleValueAllowlist's twin for the
+// non-collection blocks (round 8): the whole-Config comparator now runs
+// over the example files too, and these three deviations are the
+// deployment profile the file exists to demonstrate, not drift. Same
+// staleness reverse-check as every other exemption here.
+var exampleBlockAllowlist = map[string]map[string]string{
+	exampleDockerFile: {
+		"database.Host":    "compose service name — the container reaches Postgres as `postgres`, not localhost",
+		"database.SSLMode": "intra-compose network; TLS terminates outside the container",
+		"web.DevMode":      "the compose stack serves plain HTTP on localhost, so Secure cookies would never be sent",
+	},
+}
+
+var snippetValueAllowlist = map[string]string{
+	"database.User":          "a placeholder DB role; the compiled default is the Augur-era \"augur\", which is worse guidance for a fresh install",
+	"database.Password":      "a placeholder secret; there is no compiled default",
+	"database.DBName":        "a placeholder database name; the compiled default is the Augur-era \"augur\"",
+	"github.APIKeys":         "placeholder tokens; there is no compiled default",
+	"gitlab.APIKeys":         "placeholder tokens; there is no compiled default",
+	"gitlab.GitLabHosts":     "an illustrative self-hosted host list; the compiled default is empty",
+	"web.SessionSecret":      "a placeholder secret; there is no compiled default",
+	"web.BaseURL":            "a placeholder public URL; there is no compiled default",
+	"web.GitHubClientID":     "a placeholder OAuth app id; there is no compiled default",
+	"web.GitHubClientSecret": "a placeholder OAuth secret; there is no compiled default",
+	"web.GitLabClientID":     "a placeholder OAuth app id; there is no compiled default",
+	"web.GitLabClientSecret": "a placeholder OAuth secret; there is no compiled default",
+	"mail.GmailUser":         "a placeholder address; there is no compiled default sender",
+	"mail.GmailAppPassword":  "a placeholder secret; there is no compiled default",
+	"mail.FromName":          "a placeholder display name; the compiled default is empty, and an empty From name is worse guidance than a concrete one",
+	"mail.SiteURL":           "a placeholder host; there is no compiled default",
+}
+
+// assertSnippetBlockValues holds the snippet's default-valued blocks
+// to the compiled defaults, through the accessors where they exist.
+// blockValueOpts separates the rules that belong to the configuration.md
+// SNIPPET (which is the defaults reference, so it must state every
+// accessor-backed value, and owns snippetValueAllowlist) from the ones
+// that apply to any config document (no field may teach a non-default,
+// and no field may state a value its accessor coerces).
+type blockValueOpts struct {
+	label string
+	// requireExplicitDefaults: an accessor-backed field left at zero is
+	// invisible to the comparison, so the defaults reference must spell
+	// it out. An example config may legitimately omit optional blocks.
+	requireExplicitDefaults bool
+	// ownsAllowlist: only the document snippetValueAllowlist was built
+	// from can judge an entry stale.
+	ownsAllowlist bool
+}
+
+func assertSnippetBlockValues(t *testing.T, label, block string) {
+	assertBlockValues(t, blockValueOpts{label: label, requireExplicitDefaults: true, ownsAllowlist: true}, block)
+}
+
+func assertBlockValues(t *testing.T, opts blockValueOpts, block string) {
+	label := opts.label
+	t.Helper()
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(block), &envelope); err != nil {
+		t.Fatalf("%s: parse: %v", label, err)
+	}
+	cfgType := reflect.TypeOf(Config{})
+	defaults := DefaultConfig()
+	usedAllowlist := map[string]bool{}
+	usedBlockAllow := map[string]bool{}
+
+	for f := 0; f < cfgType.NumField(); f++ {
+		field := cfgType.Field(f)
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		if name == "collection" {
+			// Covered by assertCollectionMatchesEffectiveDefaults,
+			// called just above, which compares every field through
+			// the effectiveAccessors map — strictly more than this
+			// loop can (it would compare *int pointers by identity).
+			continue
+		}
+		raw, ok := envelope[name]
+		if !ok {
+			continue // the presence check above already reported it
+		}
+		applied := DefaultConfig()
+		target := reflect.ValueOf(applied).Elem().FieldByName(field.Name)
+		if err := json.Unmarshal(raw, target.Addr().Interface()); err != nil {
+			t.Errorf("%s: apply %q: %v", label, name, err)
+			continue
+		}
+		blockType := field.Type
+		for blockType.Kind() == reflect.Pointer {
+			// The presence walk already derefs; this one must too.
+			// Pass 50 derefed only the TYPE, leaving a pointer block
+			// to panic in snippetFieldValue (pass 51).
+			blockType = blockType.Elem()
+		}
+		if blockType.Kind() != reflect.Struct {
+			// A top-level scalar such as log_level. Compared directly:
+			// pass 48's block-only loop never checked it while the
+			// prose claimed every field was covered.
+			got := reflect.ValueOf(applied).Elem().FieldByName(field.Name).Interface()
+			want := reflect.ValueOf(defaults).Elem().FieldByName(field.Name).Interface()
+			if !equalConfigValue(got, want) {
+				t.Errorf("%s teaches a NON-DEFAULT value for %s: "+
+					"snippet=%v compiled-default=%v. Operators read this snippet as the defaults "+
+					"document; either fix the value, or add %q to snippetValueAllowlist with a reason.",
+					label, name, got, want, name)
+			}
+			continue
+		}
+		for i := 0; i < blockType.NumField(); i++ {
+			key := name + "." + blockType.Field(i).Name
+			if _, exempt := exampleBlockAllowlist[opts.label][key]; exempt {
+				usedBlockAllow[key] = true
+				continue
+			}
+			if _, exempt := snippetValueAllowlist[key]; exempt {
+				got := snippetFieldValue(applied, field.Name, blockType.Field(i).Name, key)
+				want := snippetFieldValue(defaults, field.Name, blockType.Field(i).Name, key)
+				if !equalConfigValue(got, want) {
+					usedAllowlist[key] = true
+				}
+				continue
+			}
+			got := snippetFieldValue(applied, field.Name, blockType.Field(i).Name, key)
+			want := snippetFieldValue(defaults, field.Name, blockType.Field(i).Name, key)
+			if !equalConfigValue(got, want) {
+				t.Errorf("%s teaches a NON-DEFAULT value for %s: "+
+					"snippet-effective=%v compiled-default=%v. Operators read this snippet as the "+
+					"defaults document; either fix the value, or add %q to snippetValueAllowlist "+
+					"with a reason.", label, key, got, want, key)
+				continue
+			}
+			// An accessor maps the zero value back to the default, so
+			// comparing only through it cannot tell `"rate_limit_daily": 0`
+			// from the real number — the snippet would teach an
+			// unlimited API and no exempt networks while passing (pass
+			// 48). Where an accessor exists the snippet must STATE the
+			// value.
+			if acc, coerced := snippetValueAccessors[key]; coerced {
+				raw := blockFieldValue(applied, field.Name, blockType.Field(i).Name)
+				if isEmptyValue(raw) {
+					if !opts.requireExplicitDefaults {
+						continue // an example config may omit an optional block
+					}
+					t.Errorf("%s leaves %s at its zero value. That field has an "+
+						"accessor which maps zero back to the default, so the comparison above cannot see it "+
+						"— and the document would be teaching operators the zero (unlimited, never, none) "+
+						"while the reference table below states the real default. Write the effective "+
+						"default explicitly.", label, key)
+					continue
+				}
+				// Round-8 review: zero is only ONE of the values an
+				// accessor coerces. `refresh_seconds: 7` (below the
+				// [10,3600] clamp) or `rate_limit_daily: -5` are equally
+				// unreachable, and the comparison above cannot see them
+				// either — it reads the accessor's OUTPUT, which equals
+				// the default in both cases. A document may only state a
+				// value the accessor returns unchanged.
+				out := acc.get(applied)
+				// Only accessors that return the FIELD's own type can be
+				// round-tripped: VulnDigestInterval converts int hours to
+				// a time.Duration, so comparing them would false-fire.
+				if reflect.TypeOf(out) == raw.Type() &&
+					!reflect.DeepEqual(out, raw.Interface()) {
+					t.Errorf("%s states %s = %v, but %s() coerces that to %v — the document is teaching a "+
+						"value the binary cannot honour. State a value the accessor returns unchanged.",
+						label, key, raw.Interface(), acc.method, out)
+				}
+			}
+		}
+	}
+	for key, reason := range exampleBlockAllowlist[opts.label] {
+		if !usedBlockAllow[key] {
+			t.Errorf("exampleBlockAllowlist[%q][%q] suppresses nothing — %s now matches the compiled "+
+				"default. Delete the entry (its reason was: %s).", opts.label, key, opts.label, reason)
+		}
+	}
+	if !opts.ownsAllowlist {
+		return
+	}
+	for key, reason := range snippetValueAllowlist {
+		if !usedAllowlist[key] {
+			t.Errorf("snippetValueAllowlist[%q] suppresses nothing — the snippet now matches the compiled "+
+				"default. Delete the entry (its reason was: %s).", key, reason)
+		}
+	}
+}
+
+// snippetFieldValue reads one block field, through its accessor when
+// one is registered.
+func snippetFieldValue(cfg *Config, blockField, fieldName, key string) any {
+	if acc, ok := snippetValueAccessors[key]; ok {
+		return acc.get(cfg)
+	}
+	return blockFieldValue(cfg, blockField, fieldName).Interface()
+}
+
+// blockFieldValue reads one field of a config block, dereferencing a
+// pointer block on the way. Pass 50 derefed the block's TYPE and left
+// the VALUE alone, so a pointer-to-struct block panicked with
+// "FieldByName on ptr Value" inside the very check added to handle it
+// (pass 51).
+func blockFieldValue(cfg *Config, blockField, fieldName string) reflect.Value {
+	block := reflect.ValueOf(cfg).Elem().FieldByName(blockField)
+	for block.Kind() == reflect.Pointer {
+		if block.IsNil() {
+			block = reflect.New(block.Type().Elem())
+		}
+		block = block.Elem()
+	}
+	return block.FieldByName(fieldName)
+}
+
+// isEmptyValue reports whether a config field carries nothing an
+// accessor would not overwrite with its default. Deliberately not
+// reflect.Value.IsZero: an empty-but-non-nil slice is not "zero", and
+// `"exempt_cidrs": []` would otherwise pass while teaching operators
+// that no network is exempt from rate limiting or auth (pass 48).
+func isEmptyValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Slice, reflect.Map, reflect.String, reflect.Array:
+		return v.Len() == 0
+	default:
+		return v.IsZero()
+	}
+}
+
+// equalConfigValue compares two config values, treating an empty
+// slice and a nil slice as the same thing — `"cors_origins": []` in
+// the snippet and an absent default both mean "none".
+func equalConfigValue(a, b any) bool {
+	norm := func(v any) any {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() == reflect.Slice && rv.Len() == 0 {
+			return nil
+		}
+		return v
+	}
+	return reflect.DeepEqual(norm(a), norm(b))
 }

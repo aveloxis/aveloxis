@@ -5,6 +5,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -57,6 +58,9 @@ func (s *Scheduler) runVulnDigest(ctx context.Context) {
 	items, err := s.store.GetNewVulnerabilityFindings(ctx, since,
 		s.cfg.Mail.VulnDigestMinSeverityOrDefault(), s.cfg.Mail.VulnDigestIncludeTransitive,
 		s.cfg.Mail.VulnDigestIncludeDev)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure: the stamp is untouched, the window retries next hour
+	}
 	if err != nil {
 		s.logger.Warn("vuln digest: query failed", "error", err)
 		return

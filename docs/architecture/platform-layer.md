@@ -23,8 +23,7 @@ platform.Client
   |     |-- ListPRReviews, ListPRCommits, ListPRFiles
   |     |-- FetchPRMeta
   |-- EventCollector
-  |     |-- ListIssueEvents
-  |     |-- ListPREvents
+  |     |-- ListRepoEvents
   |-- MessageCollector
   |     |-- ListIssueComments
   |     |-- ListPRComments
@@ -49,7 +48,7 @@ Shared by both GitHub and GitLab implementations. Features:
 - **Automatic retries**: Up to 10 retries with exponential backoff for transient errors (502/503/504).
 - **Rate limit awareness**: Reads `X-RateLimit-*` (GitHub) and `RateLimit-*` (GitLab) headers, waits for reset when exhausted.
 - **Secondary rate limit handling**: Respects `Retry-After` headers from GitHub's secondary rate limits.
-- **Conditional requests (ETags)**: Caches ETags from responses and sends `If-None-Match` on subsequent requests. GitHub does not count 304 responses against the rate limit, saving quota on unchanged data during incremental collection.
+- **Conditional requests (ETags)**: for paginated listings (`Get` via `paginate`), the client caches ETags and sends `If-None-Match` on subsequent requests; a 304 means "nothing new since last time" and ends pagination cleanly, and GitHub does not count 304s against the rate limit. Single-object reads (`GetJSON` — one PR, one issue, one user, one project) are **always ETag-free** (v0.28.17): a body-decoding reader cannot use a 304, and before the change a repeat read of the same URL in one process either errored (`not modified (304)`) or silently returned empty children — the GitLab MR batch and every REST child waterfall were affected. A job that fetched listing pages and then failed forgets its repo's cached ETags (`ForgetRepoETags`, v0.28.18) so the retry re-reads every page; the paginator rebases GitHub's `/repositories/{id}/…` Link-header continuations onto the listing's `/repos/{owner}/{repo}/` namespace so page 2 onward is forgotten with page 1.
 - **Bad credential detection**: 401 responses permanently invalidate the API key.
 - **Explicit redirect handling (v0.16.10+)**: Go's default redirect follower is disabled (`CheckRedirect: http.ErrUseLastResponse`). The switch handles 301, 302, 307, 308 directly by reading the `Location` header and re-issuing against the new URL, capped at `maxRedirectHops = 5` per call. Each hop logs `following redirect from=... to=... status=... hop=N`. Centralizing the logic means there is only one place to reason about auth-header preservation, hop caps, and cross-host edge cases.
 - **`ErrGone` sentinel (v0.16.10+)**: Distinct from `ErrNotFound`. Returned for (a) 410 Gone responses, (b) 3xx responses with an empty/missing `Location` header (observed when GitHub cannot determine the redirect target, body `{"url":""}`), and (c) redirect chains exceeding `maxRedirectHops`. Callers use `errors.Is(err, ErrGone)` to treat these as "skip this resource" without failing the job. The staged collector's `isOptionalEndpointSkip` checks `ErrNotFound | ErrForbidden | ErrGone` together.
@@ -114,7 +113,8 @@ The `HTTPClient`, `KeyPool`, and pagination engine are reusable across all platf
 ## Design notes
 
 - **GitLab API differences**: GitLab lacks bulk endpoints for notes (comments) and requires iterating parent entities. The GitLab client iterates issues/MRs and fetches their notes individually. This is slower but unavoidable given the API design.
-- **GitHub events endpoint**: GitHub's `/repos/{owner}/{repo}/issues/events` returns events for both issues and PRs. The GitHub client fetches this once via a shared helper and filters by type for `ListIssueEvents` and `ListPREvents`.
+- **GitHub events endpoint**: GitHub's `/repos/{owner}/{repo}/issues/events` returns events for both issues and PRs. `ListRepoEvents` walks it ONCE and yields a tagged union (`RepoEvent.Issue` or `RepoEvent.PR`). The pre-v0.26.3 design walked the endpoint twice (issues, then PRs) and the second pass got a 304 from the first pass's ETag on any quiet repo — silently dropping the entire PR-event history; the single pass makes that impossible.
+- **GitLab metadata counts**: issue counts come from `/issues_statistics`; merge-request counts from the `X-Total` header of one-row `/merge_requests?state=…` probes. GitLab omits `X-Total` on any listing above 10,000 records, so above that the client counts through GitLab GraphQL (`mergeRequests(state:) { count }`, one query for all three states). A probe that fails outright marks the count UNKNOWN (never a fabricated 0) and the store carries the prior snapshot's counts forward; disabled features are a definitive zero and are not probed (v0.28.18).
 - **GitLab review comments**: GitLab uses "discussions" with positioned notes instead of GitHub's explicit review comments. The `ListReviewComments` method maps positioned discussion notes to the `ReviewComment` model.
 
 ## GitHub vs GitLab data gaps

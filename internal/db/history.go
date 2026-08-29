@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -23,7 +24,7 @@ import (
 //
 // Deliberately NOT migrated onto this helper (follow-up, out of scope
 // for v0.27.7): RotateRepoInfoToHistory, RotateLibyearToHistory,
-// RotateScancodeToHistory (multi-table, cross-schema), and the
+// rotateScancodeRows (multi-table, cross-schema), and the
 // distribution rotation inside MarkDistributionComplete (runs inside
 // an existing caller-owned transaction with its own quirks).
 var historyRotationAllowlist = map[string]string{
@@ -169,45 +170,39 @@ func (s *PostgresStore) RotateScorecardToHistory(ctx context.Context, repoID int
 	})
 }
 
-// RotateScancodeToHistory moves all existing scancode data (both scan metadata
-// and per-file results) for a repo into the corresponding history tables, then
-// deletes from the main tables. Called before inserting new scancode results.
-func (s *PostgresStore) RotateScancodeToHistory(ctx context.Context, repoID int64) error {
-	return s.withRetry(ctx, func(ctx context.Context) error {
-		tx, err := s.pool.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback(ctx)
+// rotateScancodeRows moves a repo's current scancode rows to the
+// history tables inside the caller's transaction. Shared so
+// ReplaceScancodeSnapshot can fuse the rotation with its inserts
+// without a second copy of the statements (v0.28.19).
+func rotateScancodeRows(ctx context.Context, tx pgx.Tx, repoID int64) error {
 
-		// Rotate file results first (no FK, but logically dependent on scan).
-		_, err = tx.Exec(ctx, `
+	// Rotate file results first (no FK, but logically dependent on scan).
+	_, err := tx.Exec(ctx, `
 			INSERT INTO aveloxis_scan.scancode_file_results_history
 			SELECT * FROM aveloxis_scan.scancode_file_results
 			WHERE repo_id = $1`, repoID)
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
 			DELETE FROM aveloxis_scan.scancode_file_results WHERE repo_id = $1`, repoID)
-		if err != nil {
-			return err
-		}
+	if err != nil {
+		return err
+	}
 
-		// Rotate scan metadata.
-		_, err = tx.Exec(ctx, `
+	// Rotate scan metadata.
+	_, err = tx.Exec(ctx, `
 			INSERT INTO aveloxis_scan.scancode_scans_history
 			SELECT * FROM aveloxis_scan.scancode_scans
 			WHERE repo_id = $1`, repoID)
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
 			DELETE FROM aveloxis_scan.scancode_scans WHERE repo_id = $1`, repoID)
-		if err != nil {
-			return err
-		}
+	if err != nil {
+		return err
+	}
 
-		return tx.Commit(ctx)
-	})
+	return nil
 }

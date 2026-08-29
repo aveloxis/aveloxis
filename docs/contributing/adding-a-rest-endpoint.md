@@ -212,7 +212,7 @@ Iterate until green.
 
 ### Step 6 — bump version, document
 
-Bump `internal/db/version.go`. Add a changelog entry in `CLAUDE.md`. Update `docs/guide/api.md` with the new endpoint signature and response shape.
+Bump `internal/db/version.go`. Put the release-note entry in your PR description. Update `docs/guide/api.md` with the new endpoint signature and response shape.
 
 ## Patterns to follow
 
@@ -236,16 +236,16 @@ Never leak SQL errors or stack traces to the client.
 
 JSON. Wrap collections in a named field:
 
-```json
-{"contributors": [...], "repo_id": 123}
+```jsonc
+{"contributors": [ /* ... */ ], "repo_id": 123}
 ```
 
 Not just `[...]` — that locks you in if you ever need to add pagination metadata.
 
 For paginated endpoints, follow the existing `ListQueuePage` shape:
 
-```json
-{"items": [...], "total": 1234, "page": 1, "page_size": 100}
+```jsonc
+{"items": [ /* ... */ ], "total": 1234, "page": 1, "page_size": 100}
 ```
 
 ### CORS
@@ -271,4 +271,4 @@ If the underlying query is expensive (full table scan, complex aggregate), consi
 
 If your endpoint feeds a chart or panel, that's a separate task — see [`adding-a-visualization.md`](adding-a-visualization.md).
 
-The web GUI consumes the REST API via `fetch()` in the templates. The base URL is hardcoded to `http://localhost:8383` in the templates currently (one of the known-issues items in the CLAUDE.md status section). When you add an endpoint, you'll likely also update a template under `internal/web/templates.go` to call it.
+The web GUI consumes the REST API via `fetch()` in the templates. The base URL is hardcoded to `http://localhost:8383` in the templates currently (a known limitation). When you add an endpoint, you'll likely also update a template under `internal/web/templates.go` to call it.

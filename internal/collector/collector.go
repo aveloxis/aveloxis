@@ -5,6 +5,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -163,7 +164,12 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 		RepoID:     repoID,
 		CoreStatus: string(StatusCollecting),
 	}); err != nil {
-		c.logger.Warn("failed to update collection status", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			c.logger.Warn("failed to update collection status", "repo_id", repoID, "error", err)
+		}
 	}
 
 	// API phases: contributors, issues, PRs, events, messages, repo
@@ -185,7 +191,12 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 		RepoID:       repoID,
 		FacadeStatus: string(StatusCollecting),
 	}); err != nil {
-		c.logger.Warn("failed to update facade status", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			c.logger.Warn("failed to update facade status", "repo_id", repoID, "error", err)
+		}
 	}
 	facadeResult, err := c.facade.CollectRepo(ctx, repoID, gitURL)
 	if err != nil {
@@ -230,7 +241,12 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 		FacadeStatus:            facadeStatus,
 		FacadeDataLastCollected: &now,
 	}); err != nil {
-		c.logger.Warn("failed to update final collection status", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			c.logger.Warn("failed to update final collection status", "repo_id", repoID, "error", err)
+		}
 	}
 
 	c.logger.Info("collection complete",

@@ -16,10 +16,14 @@ import (
 // on PullRequest — notably missing a clean cursor-based commits connection
 // and lacking state-change timeline items. Rather than half-implement a
 // GraphQL path and diverge from GitHub at column-level, this fallback
-// composes GitLab's existing REST methods (ListPRLabels, ListPRAssignees,
-// ListPRReviewers, ListPRReviews, ListPRCommits, ListPRFiles,
-// FetchPRMeta, FetchPRRepos, FetchPRByNumber) to produce the same
-// platform.StagedPR shape the GraphQL path returns on GitHub.
+// composes REST: ONE GET of each merge request (whose payload carries the
+// labels, assignees, reviewers, branch/SHA meta, and source/target
+// project ids — mr_map.go derives them) plus the distinct child endpoints
+// (approvals, commits, diffs) and the two /projects/:id lookups, to
+// produce the same platform.StagedPR shape the GraphQL path returns on
+// GitHub. v0.28.15: pre-fix it re-GET the same MR URL six times per MR via
+// the public per-child methods, and the ETag cache's 304 on the second
+// hit aborted every batch — see fetchOnePRWithChildren.
 //
 // Parity is preserved at the row/column level: both the REST-via-batch
 // and REST-direct paths on GitLab populate identical database rows.
@@ -53,54 +57,41 @@ func (c *Client) FetchPRBatch(ctx context.Context, owner, repo string, numbers [
 	return out, nil
 }
 
-// fetchOnePRWithChildren composes the per-PR REST methods for a single
-// merge request number. Returns nil, nil when the PR is inaccessible
-// (ClassSkip-classifiable error from FetchPRByNumber); the caller appends
-// only non-nil results.
+// fetchOnePRWithChildren composes the per-MR data for a single merge
+// request number. Any error from the MR GET is returned verbatim;
+// FetchPRBatch classifies it — a ClassSkip error (deleted/private MR)
+// skips that MR, anything else aborts the batch. There is no nil, nil
+// path (the old comment claiming one described a branch that was dead
+// even then — Copilot round on PR #191).
+//
+// v0.28.15: ONE GET of the merge request. Labels, assignees, reviewers,
+// branch/SHA meta, and the source/target project ids all live in that
+// payload (mr_map.go derives them), so the six identical GETs the
+// pre-v0.28.15 composition issued per MR are gone. The batch also runs
+// ETag-free (platform.WithoutETag, the v0.25.0 precedent): the HTTP
+// client's ETag cache turned every repeat hit on an MR URL into a 304
+// that a single-object reader cannot use ("labels: not modified (304)"
+// aborted every GitLab MR batch — petsc/petsc: 0 of 9,450 MRs stored),
+// and the paginated children under a 304 would silently yield ZERO
+// items on the repo's next cycle (the v0.26.3 class). A batch needs the
+// current body every time; the 304 saving does not apply to it.
 func (c *Client) fetchOnePRWithChildren(ctx context.Context, owner, repo string, number int) (*platform.StagedPR, error) {
-	pr, err := c.FetchPRByNumber(ctx, owner, repo, number)
-	if err != nil {
+	ctx = platform.WithoutETag(ctx)
+	pp := projectPath(owner, repo)
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d", pp, number)
+	var raw glMergeRequest
+	if err := c.http.GetJSON(ctx, path, &raw); err != nil {
 		return nil, err
 	}
-	if pr == nil {
-		return nil, nil
-	}
 
-	staged := platform.StagedPR{PR: *pr}
+	staged := platform.StagedPR{PR: *mrToPullRequest(raw, prDataSourceBatch)}
+	staged.Labels = mrLabels(raw)
+	staged.Assignees = mrAssignees(raw)
+	staged.Reviewers = mrReviewers(raw)
 
-	// Labels — iterator breaks on non-skip error; skip-class errors
-	// stop collection for this child and leave the slice empty (parity
-	// with GitHub path's "no labels rather than fail").
-	for label, err := range c.ListPRLabels(ctx, owner, repo, number) {
-		if err != nil {
-			if platform.ClassifyError(err) == platform.ClassSkip {
-				break
-			}
-			return nil, fmt.Errorf("labels: %w", err)
-		}
-		staged.Labels = append(staged.Labels, label)
-	}
-
-	for a, err := range c.ListPRAssignees(ctx, owner, repo, number) {
-		if err != nil {
-			if platform.ClassifyError(err) == platform.ClassSkip {
-				break
-			}
-			return nil, fmt.Errorf("assignees: %w", err)
-		}
-		staged.Assignees = append(staged.Assignees, a)
-	}
-
-	for r, err := range c.ListPRReviewers(ctx, owner, repo, number) {
-		if err != nil {
-			if platform.ClassifyError(err) == platform.ClassSkip {
-				break
-			}
-			return nil, fmt.Errorf("reviewers: %w", err)
-		}
-		staged.Reviewers = append(staged.Reviewers, r)
-	}
-
+	// Reviews, commits, and files are distinct endpoints; skip-class
+	// errors leave the slice empty (parity with the GitHub path's "no
+	// children rather than fail").
 	for rv, err := range c.ListPRReviews(ctx, owner, repo, number) {
 		if err != nil {
 			if platform.ClassifyError(err) == platform.ClassSkip {
@@ -131,21 +122,7 @@ func (c *Client) fetchOnePRWithChildren(ctx context.Context, owner, repo string,
 		staged.Files = append(staged.Files, f)
 	}
 
-	head, base, err := c.FetchPRMeta(ctx, owner, repo, number)
-	if err == nil {
-		staged.MetaHead = head
-		staged.MetaBase = base
-	} else if platform.ClassifyError(err) != platform.ClassSkip {
-		return nil, fmt.Errorf("meta: %w", err)
-	}
-
-	headRepo, baseRepo, err := c.FetchPRRepos(ctx, owner, repo, number)
-	if err == nil {
-		staged.RepoHead = headRepo
-		staged.RepoBase = baseRepo
-	} else if platform.ClassifyError(err) != platform.ClassSkip {
-		return nil, fmt.Errorf("repos: %w", err)
-	}
-
+	staged.MetaHead, staged.MetaBase = mrMeta(raw)
+	staged.RepoHead, staged.RepoBase = c.mrRepos(ctx, raw)
 	return &staged, nil
 }

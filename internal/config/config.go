@@ -225,8 +225,9 @@ type CollectionConfig struct {
 	// added after the 2026-07-27→30 incident where the dm_ step (a
 	// 93K-repo × two-pass per-repo loop) ran 3+ days holding
 	// MatviewRebuildActive, silently pausing all collection claims.
-	// Deliberately does NOT affect `aveloxis refresh-views` or
-	// `aveloxis migrate` — those are explicit operator commands.
+	// With the skip on, the dm_ tables update ONLY via the explicit
+	// operator command `aveloxis refresh-views --aggregates` (v0.28.18;
+	// plain refresh-views and migrate refresh the materialized views only).
 	// The FULL weekly-rebuild off-switch is matview_rebuild_day:
 	// "disabled".
 	MatviewRebuildSkipDMAggregates bool `json:"matview_rebuild_skip_dm_aggregates"`
@@ -487,7 +488,8 @@ type CollectionConfig struct {
 	ScancodeCloneDir string `json:"scancode_clone_dir"`
 
 	// ScancodeShutdownGraceMinutes caps how long the ScancodeWorker
-	// waits for in-flight scans to finish on aveloxis stop. Default
+	// waits, on aveloxis stop, for the runners' POST-KILL DB
+	// bookkeeping — it cannot let a scan finish (see below). Default
 	// 0 (immediate kill) as of v0.23.7.
 	//
 	// Why 0 by default: a scancode subprocess that outlives aveloxis
@@ -500,12 +502,17 @@ type CollectionConfig struct {
 	// queue. Either way, lingering past stop buys nothing — it just
 	// delays shutdown AND increases ghost-process risk.
 	//
-	// Operators who genuinely want the old behavior (let in-flight
-	// scans finish if they're close) set this explicitly to a
-	// positive minute count. Within the grace window: runners
-	// complete their scans naturally and ingest results. At grace
-	// expiry: the worker's ctx.Done() fires cmd.Cancel which kills
-	// the process group.
+	// A positive value CANNOT let a scan finish: since v0.23.3 the
+	// scan's ctx derives from the worker's, so cmd.Cancel SIGKILLs
+	// each process group at t=0 of the cancel — the grace window
+	// contains no live scans (pass 44 corrected this block; the
+	// pre-v0.23.3 model it described was retired three releases
+	// earlier). What the value lengthens is the wait for the
+	// runners' POST-kill DB bookkeeping (lock clear / completion-
+	// stamp retry): the worker waits
+	// shutdownGrace + collector.ScancodeShutdownBookkeepingGrace,
+	// and the scheduler holds the pgx pool open for the same window.
+	// See docs/architecture/scancode.md §6.
 	//
 	// Separate from collection.shutdown_grace_seconds (which paces
 	// the main scheduler's stop).
@@ -1101,8 +1108,9 @@ func (c *CollectionConfig) ScancodeCloneDirOrDefault() string {
 // subprocesses surviving `aveloxis stop` can't deliver their output
 // anyway. See the field docstring above for the full rationale.
 //
-// Operators who set a positive value explicitly in aveloxis.json
-// keep getting the old "let in-flight scans finish" behavior.
+// A positive value does NOT keep in-flight scans alive (they die at
+// cancel since v0.23.3); it only lengthens the wait for the runners'
+// post-kill DB bookkeeping. See the field docstring above.
 func (c *CollectionConfig) ScancodeShutdownGrace() time.Duration {
 	if c.ScancodeShutdownGraceMinutes <= 0 {
 		return 0
@@ -1487,12 +1495,36 @@ type APIConfig struct {
 	// believed when resolving the client address (the nginx-on-
 	// same-box layout). Empty = XFF ignored.
 	TrustedProxy string `json:"trusted_proxy,omitempty"`
+	// Addr is the listen address for `aveloxis api`. Default
+	// 127.0.0.1:8383 — loopback only, because the API serves the
+	// whole catalog and its rate limiter exempts loopback and RFC1918
+	// by default. Set a routable address ONLY together with
+	// require_auth and a reviewed exempt_cidrs; see the "Reaching the
+	// API from another host" section of
+	// docs/getting-started/configuration.md.
+	//
+	// v0.28.19: `aveloxis start api` spawns the process with only
+	// --config, so before this existed the address could be changed
+	// only by launching `aveloxis api --addr …` by hand, and two
+	// instances on one host collided on 8383.
+	Addr string `json:"addr,omitempty"`
+
 	// RequireAuth gates every data endpoint (all but /health) behind
 	// Bearer session tokens. Default FALSE: flip it on once the
 	// aveloxis-gui token flow is deployed — enabling it earlier
 	// breaks the server-rendered GUI's browser-side chart fetches.
 	// Exempt-CIDR clients bypass auth even when enabled.
 	RequireAuth bool `json:"require_auth,omitempty"`
+}
+
+// AddrOrDefault returns the configured listen address, or the
+// loopback default. Empty means unset: an address is a host:port
+// string with no meaningful zero value.
+func (a APIConfig) AddrOrDefault() string {
+	if strings.TrimSpace(a.Addr) == "" {
+		return "127.0.0.1:8383"
+	}
+	return a.Addr
 }
 
 // RateLimitRPSOrDefault returns the configured sustained rate, or 1.

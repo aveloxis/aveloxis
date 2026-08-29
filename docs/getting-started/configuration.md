@@ -27,7 +27,34 @@ A minimal configuration only needs the `database` section:
 }
 ```
 
-A full configuration with **every** supported option (current as of v0.20.12):
+A full configuration with **every** supported option.
+`TestConfigurationDocSnippetMatchesEffectiveDefaults` enforces that
+claim on two axes, and they have different reach:
+
+- **Presence — every block, every key.** Each section of the snippet
+  must carry every field of its Go config struct. An omitted key is
+  invisible to any value check (absent simply means "use the
+  default"), so presence is asserted separately. The one reasoned
+  exemption is `github.gitlab_hosts`: the two forge blocks share one
+  struct and that field is GitLab-only.
+- **Values — every block, every field, plus the top-level scalars.**
+  Each field is compared against the compiled default: through its
+  effective accessor where it has one, and by value where it does
+  not. Where a field has an accessor the snippet must also *state* the
+  value rather than leave it zero, since the accessor would map zero
+  back to the default and hide the drift. The set of what is checked
+  is derived from the `Config` type, so a block or option added later
+  is covered the day it is declared. The only exceptions are the
+  genuinely site-specific fields — tokens, secrets, OAuth client ids,
+  your database role and name, your public URLs — each named in the
+  test with a reason, under a check that fails if an exception stops
+  suppressing anything. So the values below are real defaults unless
+  the field is obviously yours to fill in.
+
+The value check exists because the snippet taught
+`scancode_shutdown_grace_minutes: 30` for three months after the
+default flipped to `0`, and `threading_mode: "sharded"` for three and
+a half against its own reference table below:
 
 ```json
 {
@@ -52,7 +79,12 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "gmail_user": "aveloxis-ops@yourdomain.com",
     "gmail_app_password": "xxxx xxxx xxxx xxxx",
     "from_name": "Aveloxis",
-    "site_url": "https://your-host.example"
+    "site_url": "https://your-host.example",
+    "operator_email": "",
+    "vuln_digest_min_severity": "HIGH",
+    "vuln_digest_interval_hours": 24,
+    "vuln_digest_include_transitive": false,
+    "vuln_digest_include_dev": false
   },
   "collection": {
     "days_until_recollect": 1,
@@ -71,7 +103,7 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "activity_history_cooldown_days": 90,
     "pr_child_mode": "graphql",
     "listing_mode": "graphql",
-    "threading_mode": "sharded",
+    "threading_mode": "single",
     "shard_size": 3000,
     "issue_child_mode": "graphql",
     "enrich_interval_minutes": 30,
@@ -86,7 +118,7 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "scancode_start_interval_s": 90,
     "scancode_cadence_days": 180,
     "scancode_clone_dir": "/tmp/aveloxis-scancode",
-    "scancode_shutdown_grace_minutes": 30,
+    "scancode_shutdown_grace_minutes": 0,
     "scancode_run_timeout_hours": 2,
     "scancode_run_timeout_cap_hours": 24,
     "scancode_max_in_memory": 5000,
@@ -129,6 +161,19 @@ A full configuration with **every** supported option (current as of v0.20.12):
     "api_internal_url": "http://127.0.0.1:8383",
     "spa_url": "",
     "auto_approve_add_limit": 0
+  },
+  "monitor": {
+    "refresh_seconds": 60
+  },
+  "api": {
+    "addr": "127.0.0.1:8383",
+    "rate_limit_rps": 1,
+    "rate_limit_burst": 10,
+    "rate_limit_daily": 1000,
+    "exempt_cidrs": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+    "cors_origins": [],
+    "trusted_proxy": "",
+    "require_auth": false
   },
   "log_level": "info"
 }
@@ -192,7 +237,7 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 | `collection.activity_history_concurrency` | integer | `8` | v0.28.3: contributors fetched concurrently within a cycle (the worker pool). The pre-v0.28.3 sweep was fully serial — ~1,170 contributors/day against a multi-million pool. |
 | `collection.activity_history_window_concurrency` | integer | `4` | v0.28.3: history windows fetched concurrently per contributor (a 10-year account is ~20 windows; the serial chain was the dominant per-contributor cost). |
 | `collection.activity_history_cooldown_days` | integer | `90` | v0.28.3: the re-audit cooldown — how long a backfilled contributor stays out of the claim pool (jittered like the breadth cooldown). |
-| `collection.matview_rebuild_skip_dm_aggregates` | boolean | `false` | When `true`, the weekly scheduler rebuild refreshes ONLY the materialized views and skips the `dm_` aggregate table pass (a per-repo loop that can run for days on fleet-scale databases — while it runs, new collection claims are paused). With the skip on, `dm_repo_*` / `dm_repo_group_*` tables update only when an operator runs `aveloxis refresh-views` or `aveloxis migrate`. To disable the weekly rebuild entirely (matviews AND aggregates), set `matview_rebuild_day` to `"disabled"`. |
+| `collection.matview_rebuild_skip_dm_aggregates` | boolean | `false` | When `true`, the weekly scheduler rebuild refreshes ONLY the materialized views and skips the `dm_` aggregate table pass (a per-repo loop that can run for days on fleet-scale databases — while it runs, new collection claims are paused). With the skip on, `dm_repo_*` / `dm_repo_group_*` tables update only when an operator runs `aveloxis refresh-views --aggregates` (v0.28.18; plain `refresh-views` and `aveloxis migrate` refresh the materialized views only). To disable the weekly rebuild entirely (matviews AND aggregates), set `matview_rebuild_day` to `"disabled"`. |
 
 **REST → GraphQL refactor (v0.18.x phases)**
 
@@ -226,17 +271,17 @@ Periodic tickers that run on the scheduler. v0.16.5 / v0.18.29 / v0.19.7 moved e
 |---|---|---|---|
 | `collection.shutdown_grace_seconds` | integer | `10` | v0.20.0: ctx-cancel grace window for in-flight workers before `Scheduler.Run` closes the pgx pool. Pre-v0.20.0 the wait was unbounded — a 26-minute `commits` UPDATE blocked shutdown for the full duration. Setting this too low means worker transactions abort mid-flight (Postgres rolls them back safely but logs are noisy); too high means slow shutdown. |
 
-**Scancode worker (v0.21.0)**
+#### Scancode worker (v0.21.0)
 
 The scancode per-file license + copyright + package scan is run by a dedicated `ScancodeWorker` pool, decoupled from the per-repo collection pipeline. Pre-v0.21.0 scancode ran inline in `AnalysisCollector.AnalyzeRepo` gated by a 2-slot package-level semaphore; the 2026-05-14 production incident showed that shape doesn't survive fleet-scale operation (177 of 180 collection workers parked behind the semaphore for 7+ hours). The decoupled pool fixes the structural problem and adds operator-tunable cadence + concurrency. See `docs/architecture/scancode.md` for the full architecture write-up.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `collection.scancode_workers` | integer | `2` | Maximum concurrent scancode invocations. Pre-v0.21.0 the limit was hardcoded to 2; the default matches that so upgrading operators don't see a sudden change in scancode CPU load. Operators with spare CPU cores should raise this (the user running the fleet that surfaced the 2026-05-14 incident has tested 12 against 64 cores). v0.27.6: an EXPLICIT `0` disables the scancode pool on `aveloxis serve` entirely — the dedicated-scancode-host recipe (an adjacent machine runs `aveloxis scancode-worker` against the shared DB; see the [dedicated scancode host guide](../guide/dedicated-scancode-host.md)). An absent key keeps the default of 2; pre-v0.27.6 an explicit 0 was silently clamped to 2. |
-| `collection.scancode_start_interval_s` | integer | `90` | Minimum seconds between *successful* scancode claim starts (v0.21.3+). As of v0.21.3 this is a minimum-gap pacing primitive, not a throughput cap — the dispatcher claims as fast as workers free up, with this interval enforced only between consecutive successful starts. Bounds clone-bandwidth bursts on restart. Pre-v0.21.3 this was a `time.NewTicker` rate cap and limited first-pass throughput to one claim per interval regardless of worker availability; that bug is documented in CLAUDE.md v0.21.3. |
+| `collection.scancode_start_interval_s` | integer | `90` | Minimum seconds between *successful* scancode claim starts (v0.21.3+). As of v0.21.3 this is a minimum-gap pacing primitive, not a throughput cap — the dispatcher claims as fast as workers free up, with this interval enforced only between consecutive successful starts. Bounds clone-bandwidth bursts on restart. Pre-v0.21.3 this was a `time.NewTicker` rate cap and limited first-pass throughput to one claim per interval regardless of worker availability; that bug is documented in the v0.21.3 release notes. |
 | `collection.scancode_cadence_days` | integer | `180` | Minimum days between successive scancode runs on the same repo. Pre-v0.21.0 was 30 days; the change reflects that per-file license + copyright headers in source files change rarely on the timescale that matters, and the I/O cost of scanning a Linux-kernel-scale mirror doesn't justify monthly re-scans. Dependency-level licenses (which DO change as packages update) still flow through the per-cycle Phase 4 dependency scan + Phase 6 SBOM generation. |
 | `collection.scancode_clone_dir` | string | `"/tmp/aveloxis-scancode"` | Parent directory for per-run shallow clones. Each scan creates `<dir>/repo_<id>_<unix_ts>` and removes it on completion (success or failure). Size budget: each clone is the working tree only (`git clone --depth 1`), so ≈ checked-out repo size. With default 2 workers and average ~50 MB clones, ~100 MB peak; raise expectations for big-repo / many-worker installs. |
-| `collection.scancode_shutdown_grace_minutes` | integer | `0` | Time the `ScancodeWorker` waits for in-flight scans to finish on `aveloxis stop`. v0.23.7 flipped the default from 30 minutes to 0 (immediate kill). Rationale: a scancode subprocess that outlives `aveloxis stop` cannot deliver its output back — the JSON file is read by Go code inside aveloxis. The v0.21.0 `recoverOrphans` path on next startup notices orphaned lock rows and either ingests from disk if a usable file exists or clears the lock; either way, lingering past stop buys nothing. Operators who explicitly want the old "let in-flight scans finish if they're close" behavior set this to a positive minute count. |
+| `collection.scancode_shutdown_grace_minutes` | integer | `0` | Extra time the `ScancodeWorker` waits, on top of the fixed bookkeeping allowance, for the runners' POST-kill DB bookkeeping on `aveloxis stop` — it cannot let a scan finish (every scan is killed at cancel since v0.23.3). v0.23.7 flipped the default from 30 minutes to 0. Rationale: a scancode subprocess that outlives `aveloxis stop` cannot deliver its output back — the JSON file is read by Go code inside aveloxis. The v0.21.0 `recoverOrphans` path on next startup notices orphaned lock rows and either ingests from disk if a usable file exists or clears the lock; either way, lingering past stop buys nothing. Since v0.23.3 the scan subprocess is killed at cancel regardless of this value — it cannot let a scan finish; it only lengthens the wait for the runners' post-kill bookkeeping (lock clear / completion-stamp retry), and `aveloxis stop`, the `serve` process join and the documented systemd `TimeoutStopSec` size their budgets from it (v0.28.18). |
 | `collection.scancode_run_timeout_hours` | integer | `2` | v0.23.8. BASE wall-clock timeout for a single scancode subprocess. Default 2h matches the pre-v0.23.8 hardcoded constant. The effective per-job timeout is `min(base * 2^scancode_timeout_attempts, scancode_run_timeout_cap_hours)`: every time a scan exits with `signal: killed` (cmd.Cancel signature when the wall-clock fires), the row's `scancode_timeout_attempts` counter increments and the next attempt gets twice the timeout. Kernel-class repos (~80K files, ~3h scan minimum) discover their natural runtime over a few cycles. Operators with a fleet skewed toward big repos can raise the base directly (e.g., `8`) rather than waiting for adaptive scaling. Timeout-class failures do NOT increment `scancode_failed_attempts` (the v0.21.4 10-strike sideline counter) — kernel-class repos legitimately need long timeouts and shouldn't be sidelined. |
 | `collection.scancode_run_timeout_cap_hours` | integer | `24` | v0.23.8. Upper bound on the adaptive per-job scancode timeout. Even kernel-class repos shouldn't need a single scan slot for more than a day; rows that genuinely take longer are more likely broken than legitimately big. Combined with the cap, a repo's effective timeout is `min(base * 2^attempts, cap)` — so attempts 0/1/2/3/4 with base=2h compute to 2h/4h/8h/16h/24h-capped. Operators with extremely large fleets can raise the cap; the v0.21.4 ScancodeMaxFailures (10-strike sideline on the SEPARATE `scancode_failed_attempts` counter) still bounds genuine-failure risk. |
 | `collection.scancode_max_in_memory` | integer | `5000` | v0.25.2. Caps how many file scan results scancode keeps in RAM before spilling intermediate state to a tempfile. The value flows verbatim to scancode's `--max-in-memory N` argument. Default 5000 matches the pre-v0.25.2 hardcoded value and is conservative — appropriate for low-memory dev hosts. Production hosts with hundreds of GB of RAM can safely raise this (e.g. `50000` or higher) to speed up monorepo scans where the default forces an early disk spill; the linux kernel and chromium-class repos benefit most. Memory cost is roughly per-process: `--processes N` × `--max-in-memory M` × per-file working set, so account for the multiplier when sizing on RAM-rich hosts. Zero or negative values fall back to the default; the value never reaches the scancode CLI unchecked. |
@@ -250,21 +295,6 @@ The scancode per-file license + copyright + package scan is run by a dedicated `
 | `collection.scancode_ignore_globs` | string array | `[]` | v0.27.6. Optional path globs passed to the scancode subprocess as repeated `--ignore <glob>` flags (e.g. `["*.min.js", "*/node_modules/*", "*/docs/_build/*"]`). Empty by default — no flags are added and scan behavior is byte-identical to pre-v0.27.6. Use it to exclude generated or vendored trees fleet-wide; per-repo skips of overwhelmingly-generated repos are handled automatically by the v0.27.6 generated-content skip policy (`scancode_skip_reason = 'generated-content'`). |
 | `collection.staging_retention_hours` | integer | `1` | How long processed staging rows are kept before the hourly `PurgeStagedProcessed` sweep deletes them. v0.22.4 cut from the prior hardcoded 7-day window: 2026-05-16 production diagnostics showed JSONB tombstones stacking 3–5× on frequently-re-collected repos (zephyr had 84K issue rows against an actual 28K count). Not a correctness bug (`Processor` reads `WHERE NOT processed`) but real disk waste. Operators who need forensic retention (shadow-diff debugging, post-mortem analysis) can raise this — `24` (one day) is a reasonable middle ground. |
 | `collection.phase_watchdog_minutes` | integer | `75` | Stall threshold for the v0.22.4 observation-only long-jobs watchdog. If a repo's staging row count has not grown for this many minutes, the watchdog appends one JSON-lines event to `~/.aveloxis/aveloxis-long-jobs.log` and writes a per-event goroutine dump under `~/.aveloxis/long-jobs/`. The watchdog **NEVER cancels the job, NEVER requeues the repo, NEVER kills anything** — large first-cycle collections (microsoft/vscode-class) may legitimately run for days, and aborting them would prevent them from ever completing. Re-emits every `phase_watchdog_minutes` while the stall persists; emits a `stall_resumed` event when staging row count grows again so analysts can compute total stall duration. Lower this (e.g. `30`) during active incident triage to spot smaller hangs; raise it on installations whose largest-repo collection routinely takes many hours. |
-| `collection.distribution_tracking_enabled` | bool | `false` | v0.24.0. Master switch for the DistributionWorker — the periodic worker pool that records evidence of where each repo is *published* (deps.dev, ecosyste.ms, GitHub Packages, GitHub release assets) and which manifests it carries (intent). **Off by default**: the subsystem makes outbound calls to deps.dev + ecosyste.ms and operators should explicitly opt in. Independent of every other collection setting; flipping this on does not affect the per-repo collection pipeline. |
-| `collection.distribution_tracking_interval_days` | integer | `180` | v0.24.0. Per-repo cadence (in days) between successive distribution scans. Default 180 (6 months) — package-distribution mappings are stable on this timescale; re-scanning more frequently buys little signal at the cost of registry API load. The next scan picks up: new ecosystems the repo was published to, deprecated packages no longer in the registry, and updated `latest_published_at` timestamps. The prior snapshot rotates into `repo_distribution_history` so analysts can observe drift over time. |
-| `collection.distribution_tracking_workers` | integer | `4` | v0.24.0. Concurrent runner goroutines fetching against deps.dev / ecosyste.ms / GitHub. Each runner performs ~5 cheap HTTP calls per claimed repo; concurrency is bounded primarily to keep total outbound traffic predictable. Raise this only if first-pass coverage timing matters and outbound bandwidth is not a concern. |
-| `collection.distribution_tracking_start_interval_s` | integer | `30` | v0.24.0. Minimum seconds between successful CLAIM operations. With default 4 workers and a 30s ticker, steady-state throughput is ~120 repos/hour — comfortably under any known external rate limit. Same minimum-gap pacing primitive as scancode (post-v0.21.3); not a throughput cap. |
-| `collection.distribution_tracking_polite_email` | string | `""` | v0.24.0. Value sent in the `From:` HTTP request header to ecosyste.ms so the operator's traffic lands in their "polite pool" priority queue. Optional but recommended: ecosyste.ms documents the polite-pool contract at https://ecosyste.ms — provide a real email address so they can contact you should rate-limit discussions be needed. Missing value falls back to the lower-priority "common pool". |
-| `collection.distribution_tracking_user_agent` | string | `""` | v0.24.0. Overrides the User-Agent header sent to deps.dev / ecosyste.ms / GitHub. When empty the client uses `aveloxis/<tool_version>`. Operators behind shared egress IPs may want a more identifying string so registry operators can route diagnostics. |
-| `collection.distribution_tracking_cross_check_sources` | bool | `true` | v0.25.0. When true (the default), guarantees BOTH deps.dev AND ecosyste.ms are queried for every repo even when one returns non-empty data. Each source persists its own rows into `repo_distribution` (UNIQUE constraint includes the `source` column so two rows for the same package coexist). The trade-off is ~2× external-registry API calls per scan, but at 180-day cadence the absolute budget is tiny (~5K calls/hour on a 100K-repo fleet). Operator-mandated lock-in for v0.25.0 — set to false only when you explicitly want to halve registry traffic at the cost of single-source-of-truth dependence. The field is a JSON boolean; when omitted from `aveloxis.json`, the v0.25.0 default of `true` applies (pointer-to-bool internally so the decoder distinguishes "absent" from "explicit false"). **v0.25.x-era escape hatch** — see [v0.25.x distribution-tracking knobs](#v025x-distribution-tracking-knobs) for the planned deprecation horizon. |
-| `collection.mailing_list_enabled` | bool | `false` | v0.25.7. Master switch for the MailingListWorker — the decoupled pool that ingests mailing-list archives (Apache Pony Mail today; lore.kernel.org public-inbox planned) into `email_message` + `messages`. **Off by default**: makes outbound calls to archive hosts and depends on a populated per-PMC `repo_group` (run `load-foundation-orgs` first). Independent of the per-repo collection pipeline. |
-| `collection.mailing_list_workers` | integer | `2` | v0.25.7. Concurrent list-runner goroutines. Each claims one list and scans it month-by-month with adaptive (AIMD) pacing, so modest concurrency is intentional — these are community archive servers, not a CDN. |
-| `collection.mailing_list_cadence_days` | integer | `30` | v0.25.7. Per-list tail-refresh cadence in days. A list re-scans (from its `mlls_last_month` checkpoint forward) once this elapses. Deep history is collected once on the first pass; subsequent passes only fetch new months. |
-| `collection.mailing_list_backfill_months` | integer | `6` | v0.25.7. How many months of history to scan when a list has no checkpoint yet. Bounds the first-pass cost — full-archive backfill would be enormous on high-volume lists, so the default is a recent window. Raise it to deepen history, or set it to **`0` (or negative) for full history** from each list's first month (v0.25.12 — `0` was previously coerced to 6, so full history was unreachable and lists only collected the recent window). **Applies only to un-checkpointed lists:** once scanned, a list resumes forward from its checkpoint, so changing this value does NOT re-backfill already-scanned lists. To re-scan from the beginning, reset the checkpoint: `UPDATE aveloxis_data.repo_groups_list_serve SET mlls_last_month='', mlls_scan_complete=FALSE, mlls_last_run=NULL WHERE mlls_system <> ''` then restart serve. |
-| `collection.mailing_list_polite_email` | string | `""` | v0.25.7. Contact address embedded in the `User-Agent` sent to archive hosts, so admins can reach the operator instead of blocking (Apache/lore actively gate scrapers). Recommended whenever `mailing_list_enabled` is true. |
-| `collection.mailing_list_mirror_handling` | string | `"metadata_only"` | v0.25.7. How to handle messages that mirror data we already collect from GitHub (`github_mirror`/`commit_notify` classes). `metadata_only` (default): record the `email_message` provenance row + link, but do NOT re-copy the body into `messages`. `skip`: drop mirrors entirely. `full`: keep everything (belt-and-suspenders completeness). §5 of the design — awareness, not zero-overlap zealotry. |
-| `collection.mailing_list_processor_workers` | integer | `1` | v0.25.x. Drain goroutines **per mailing-list system** for the resolve+write half of the pipeline. The fetch+classify worker stages classified messages into `aveloxis_ops.mailing_list_staging`; the `MailingListProcessor` drains that staging table and does the DB-dependent work (sender→contributor resolution, mirror-link, signaled-repo, and the `email_message` / `messages` / `email_message_ref` writes). This staging→batch boundary is what keeps the mailing-list pipeline off the per-message direct-upsert path that reproduced Augur's lock contention on the hot tables. Draining is **single-threaded per list** (summary/12 §11); `1` (default) drains one list at a time. `>1` fans out across **distinct** lists only — an in-process per-list guard keeps two goroutines off the same list. Keep at `1` unless a deep per-list backlog needs cross-list parallelism. |
-| `collection.distribution_tracking_immediate_partial_reclaim` | bool | `true` | v0.25.3. When true (the default), keeps the v0.25.0 behavior: a repo whose last scan was partial (`distribution_scan_complete = FALSE` — typically because the ecosyste.ms circuit breaker was open during the scan) is immediately re-eligible on the next dispatcher cycle, bypassing the cadence gate. The `ClaimNextDistributionRepo` WHERE clause includes `OR COALESCE(scan_complete, TRUE) = FALSE` in this mode. **Set to `false`** to suppress that behavior: partial-scan rows then wait for normal cadence like everything else. The `ORDER BY scan_complete ASC` tiebreaker stays in both modes — among cadence-elapsed rows, partial scans still get priority, just don't bypass the gate. Operator framing: the immediate-reclaim design is correct *during* a v0.24.x → v0.25.x transition when partial-scan repos legitimately need urgent re-collection; once a fleet is through that cohort and steady-state cadence resumes, the mechanism becomes operational churn rather than a recovery tool. This knob is the explicit off-switch. Pointer-to-bool internally — when omitted from `aveloxis.json`, the v0.25.3 default of `true` applies, preserving v0.25.0/v0.25.1 behavior on existing fleets. **v0.25.x-era escape hatch** — see [v0.25.x distribution-tracking knobs](#v025x-distribution-tracking-knobs) for the planned deprecation horizon. |
 
 **Force-rerun cookbook** — to invalidate the cadence gate and trigger a fresh scan on the next worker tick, set `scancode_last_run` back to NULL:
 
@@ -277,6 +307,31 @@ UPDATE aveloxis_data.repos SET scancode_last_run = NULL;
 ```
 
 The worker's claim query orders `NULLS FIRST`, so cleared repos move to the front of the queue.
+
+#### DistributionWorker (v0.24.0)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `collection.distribution_tracking_enabled` | bool | `false` | v0.24.0. Master switch for the DistributionWorker — the periodic worker pool that records evidence of where each repo is *published* (deps.dev, ecosyste.ms, GitHub Packages, GitHub release assets) and which manifests it carries (intent). **Off by default**: the subsystem makes outbound calls to deps.dev + ecosyste.ms and operators should explicitly opt in. Independent of every other collection setting; flipping this on does not affect the per-repo collection pipeline. |
+| `collection.distribution_tracking_interval_days` | integer | `180` | v0.24.0. Per-repo cadence (in days) between successive distribution scans. Default 180 (6 months) — package-distribution mappings are stable on this timescale; re-scanning more frequently buys little signal at the cost of registry API load. The next scan picks up: new ecosystems the repo was published to, deprecated packages no longer in the registry, and updated `latest_published_at` timestamps. The prior snapshot rotates into `repo_distribution_history` so analysts can observe drift over time. |
+| `collection.distribution_tracking_workers` | integer | `4` | v0.24.0. Concurrent runner goroutines fetching against deps.dev / ecosyste.ms / GitHub. Each runner performs ~5 cheap HTTP calls per claimed repo; concurrency is bounded primarily to keep total outbound traffic predictable. Raise this only if first-pass coverage timing matters and outbound bandwidth is not a concern. |
+| `collection.distribution_tracking_start_interval_s` | integer | `30` | v0.24.0. Minimum seconds between successful CLAIM operations. With default 4 workers and a 30s ticker, steady-state throughput is ~120 repos/hour — comfortably under any known external rate limit. Same minimum-gap pacing primitive as scancode (post-v0.21.3); not a throughput cap. |
+| `collection.distribution_tracking_polite_email` | string | `""` | v0.24.0. Value sent in the `From:` HTTP request header to ecosyste.ms so the operator's traffic lands in their "polite pool" priority queue. Optional but recommended: ecosyste.ms documents the polite-pool contract at https://ecosyste.ms — provide a real email address so they can contact you should rate-limit discussions be needed. Missing value falls back to the lower-priority "common pool". |
+| `collection.distribution_tracking_user_agent` | string | `""` | v0.24.0. Overrides the User-Agent header sent to deps.dev / ecosyste.ms / GitHub. When empty the client uses `aveloxis/<tool_version>`. Operators behind shared egress IPs may want a more identifying string so registry operators can route diagnostics. |
+| `collection.distribution_tracking_cross_check_sources` | bool | `true` | v0.25.0. When true (the default), guarantees BOTH deps.dev AND ecosyste.ms are queried for every repo even when one returns non-empty data. Each source persists its own rows into `repo_distribution` (UNIQUE constraint includes the `source` column so two rows for the same package coexist). The trade-off is ~2× external-registry API calls per scan, but at 180-day cadence the absolute budget is tiny (~5K calls/hour on a 100K-repo fleet). Operator-mandated lock-in for v0.25.0 — set to false only when you explicitly want to halve registry traffic at the cost of single-source-of-truth dependence. The field is a JSON boolean; when omitted from `aveloxis.json`, the v0.25.0 default of `true` applies (pointer-to-bool internally so the decoder distinguishes "absent" from "explicit false"). **v0.25.x-era escape hatch** — see [v0.25.x distribution-tracking knobs](#v025x-distribution-tracking-knobs) for the planned deprecation horizon. |
+| `collection.distribution_tracking_immediate_partial_reclaim` | bool | `true` | v0.25.3. When true (the default), keeps the v0.25.0 behavior: a repo whose last scan was partial (`distribution_scan_complete = FALSE` — typically because the ecosyste.ms circuit breaker was open during the scan) is immediately re-eligible on the next dispatcher cycle, bypassing the cadence gate. The `ClaimNextDistributionRepo` WHERE clause includes `OR COALESCE(scan_complete, TRUE) = FALSE` in this mode. **Set to `false`** to suppress that behavior: partial-scan rows then wait for normal cadence like everything else. The `ORDER BY scan_complete ASC` tiebreaker stays in both modes — among cadence-elapsed rows, partial scans still get priority, just don't bypass the gate. Operator framing: the immediate-reclaim design is correct *during* a v0.24.x → v0.25.x transition when partial-scan repos legitimately need urgent re-collection; once a fleet is through that cohort and steady-state cadence resumes, the mechanism becomes operational churn rather than a recovery tool. This knob is the explicit off-switch. Pointer-to-bool internally — when omitted from `aveloxis.json`, the v0.25.3 default of `true` applies, preserving v0.25.0/v0.25.1 behavior on existing fleets. **v0.25.x-era escape hatch** — see [v0.25.x distribution-tracking knobs](#v025x-distribution-tracking-knobs) for the planned deprecation horizon. |
+
+#### Mailing-list worker (v0.25.7)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `collection.mailing_list_enabled` | bool | `false` | v0.25.7. Master switch for the MailingListWorker — the decoupled pool that ingests mailing-list archives (Apache Pony Mail today; lore.kernel.org public-inbox planned) into `email_message` + `messages`. **Off by default**: makes outbound calls to archive hosts and depends on a populated per-PMC `repo_group` (run `load-foundation-orgs` first). Independent of the per-repo collection pipeline. |
+| `collection.mailing_list_workers` | integer | `2` | v0.25.7. Concurrent list-runner goroutines. Each claims one list and scans it month-by-month with adaptive (AIMD) pacing, so modest concurrency is intentional — these are community archive servers, not a CDN. |
+| `collection.mailing_list_cadence_days` | integer | `30` | v0.25.7. Per-list tail-refresh cadence in days. A list re-scans (from its `mlls_last_month` checkpoint forward) once this elapses. Deep history is collected once on the first pass; subsequent passes only fetch new months. |
+| `collection.mailing_list_backfill_months` | integer | `6` | v0.25.7. How many months of history to scan when a list has no checkpoint yet. Bounds the first-pass cost — full-archive backfill would be enormous on high-volume lists, so the default is a recent window. Raise it to deepen history, or set it to **`0` (or negative) for full history** from each list's first month (v0.25.12 — `0` was previously coerced to 6, so full history was unreachable and lists only collected the recent window). **Applies only to un-checkpointed lists:** once scanned, a list resumes forward from its checkpoint, so changing this value does NOT re-backfill already-scanned lists. To re-scan from the beginning, reset the checkpoint: `UPDATE aveloxis_data.repo_groups_list_serve SET mlls_last_month='', mlls_scan_complete=FALSE, mlls_last_run=NULL WHERE mlls_system <> ''` then restart serve. |
+| `collection.mailing_list_polite_email` | string | `""` | v0.25.7. Contact address embedded in the `User-Agent` sent to archive hosts, so admins can reach the operator instead of blocking (Apache/lore actively gate scrapers). Recommended whenever `mailing_list_enabled` is true. |
+| `collection.mailing_list_mirror_handling` | string | `"metadata_only"` | v0.25.7. How to handle messages that mirror data we already collect from GitHub (`github_mirror`/`commit_notify` classes). `metadata_only` (default): record the `email_message` provenance row + link, but do NOT re-copy the body into `messages`. `skip`: drop mirrors entirely. `full`: keep everything (belt-and-suspenders completeness). §5 of the design — awareness, not zero-overlap zealotry. |
+| `collection.mailing_list_processor_workers` | integer | `1` | v0.25.x. Drain goroutines **per mailing-list system** for the resolve+write half of the pipeline. The fetch+classify worker stages classified messages into `aveloxis_ops.mailing_list_staging`; the `MailingListProcessor` drains that staging table and does the DB-dependent work (sender→contributor resolution, mirror-link, signaled-repo, and the `email_message` / `messages` / `email_message_ref` writes). This staging→batch boundary is what keeps the mailing-list pipeline off the per-message direct-upsert path that reproduced Augur's lock contention on the hot tables. Draining is **single-threaded per list** (summary/12 §11); `1` (default) drains one list at a time. `>1` fans out across **distinct** lists only — an in-process per-list guard keeps two goroutines off the same list. Keep at `1` unless a deep per-list backlog needs cross-list parallelism. |
 
 ### Web (OAuth + GUI)
 
@@ -407,6 +462,7 @@ same-box and same-LAN traffic is never limited.
 
 | Field | Default | Meaning |
 |---|---|---|
+| `addr` | `"127.0.0.1:8383"` | Listen address for `aveloxis api`, as `host:port`. v0.28.19 — before it, the address could only be set by running `aveloxis api --addr …` by hand, because `aveloxis start api` spawns the process with only `--config`; two instances on one host therefore collided on 8383. `--addr` still wins when given. Read "Reaching the API from another host" below before binding anything routable. |
 | `rate_limit_rps` | `1` | Sustained per-IP requests/second (token bucket). |
 | `rate_limit_burst` | `10` | Per-IP burst capacity. |
 | `rate_limit_daily` | `1000` | Per-IP daily request quota — the anti-bulk-crawl control. Exceeding returns 429 with `Retry-After: 86400`. |
@@ -415,12 +471,53 @@ same-box and same-LAN traffic is never limited.
 | `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set this to your nginx host when proxying — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). |
 | `require_auth` | `false` | Gate every data endpoint (all but `/health`) behind Bearer session tokens minted by the web process's `/auth/token`. Flip on once the aveloxis-gui token flow is deployed. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
 
+### Reaching the API from another host
+
+The default `127.0.0.1:8383` is loopback-only, and deliberately so:
+the API serves the whole catalog, `require_auth` is `false` by
+default, and `exempt_cidrs` waives rate limiting **and** auth for
+loopback and RFC1918. Those three defaults are safe together only
+because nothing outside the machine can connect.
+
+Changing `addr` alone changes all three. There are two ways to expose
+the API, and only one of them is a one-line change:
+
+**Proxy it (recommended).** Leave `addr` on loopback and terminate TLS
+in nginx on the same host, forwarding to `127.0.0.1:8383`. Set
+`trusted_proxy` to the proxy's peer IP, or every request will appear
+to come from the proxy and the limits and exemptions will misapply to
+all of them at once. Nothing else changes.
+
+**Bind it directly.** Set `addr` to a routable address — `0.0.0.0:8383`
+for every interface, or a specific one such as `10.0.0.5:8383`. Then,
+before starting it:
+
+- Set `require_auth: true`. Without it every endpoint is open to
+  anyone who can reach the port.
+- Review `exempt_cidrs`. Its entries bypass rate limiting *and* auth,
+  so the RFC1918 defaults hand unauthenticated access to everything
+  else on the private network. On a shared network, narrow it.
+- Put a firewall in front of the port regardless.
+
+**Running two instances on one host** (a test and a production
+deployment, say) is what `addr` is mainly for: give each its own port
+and its own `aveloxis.json`, and remember each also needs a distinct
+`web.addr`.
+
+**Whichever you choose, `web.api_internal_url` must follow.** The web
+GUI proxies `/api/*` to that URL; if the API moves and the URL does
+not, every chart returns 502 while both processes report healthy. The
+web process warns at startup when the URL names a loopback port the
+API is not listening on — but it cannot detect the case where the URL
+names a different host, so check that one yourself.
+
 For the full public-GUI deployment runbook (nginx layout, OAuth
 callbacks, when to flip `require_auth`), see the aveloxis-gui
 repository's README "Production deployment" section.
 
 ```jsonc
 "api": {
+  "addr": "127.0.0.1:8383",
   "rate_limit_rps": 1,
   "rate_limit_burst": 10,
   "rate_limit_daily": 1000,

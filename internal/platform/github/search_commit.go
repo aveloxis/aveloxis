@@ -30,6 +30,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // SearchCommitByAuthorEmail looks up a GitHub login by searching for any
@@ -44,7 +46,9 @@ func (c *Client) SearchCommitByAuthorEmail(ctx context.Context, email string) (s
 	// author-email: is a search qualifier; the value itself is URL-escaped.
 	path := fmt.Sprintf("/search/commits?q=%s&per_page=1",
 		url.QueryEscape("author-email:"+email))
-	resp, err := c.http.Get(ctx, path)
+	// v0.28.17: ETag-free — a repeat search for the same email in one
+	// process would otherwise get a 304 this body reader cannot use.
+	resp, err := c.http.Get(platform.WithoutETag(ctx), path)
 	if err != nil {
 		return "", 0, err
 	}

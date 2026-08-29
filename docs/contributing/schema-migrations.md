@@ -247,6 +247,11 @@ Within `RunMigrations`, steps run in source order. Order matters when:
 
 The convention: order steps roughly by version (oldest at top, newest at bottom). Add a comment noting which version owns each step. The v0.22.x cntrb_id work is the canonical example — `ensureOnUpdateCascadeOnCntrbIDFKs` runs BEFORE `ensureCntrbIDFKIndexes` because cascade behavior is the load-bearing change, the indexes just make it fast (pinned by `TestEnsureCntrbIDFKIndexesRunsAfterCascadeStep`).
 
+Two ordering rules are now build-time invariants (v0.28.15):
+
+- **A data step must come after every `addColumnIfMissing` it reads or writes.** `TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded` scans every literal-SQL `execMigrationStep` / `runOnceStep` and fails when the SQL names a table and a column that is only added *later* in `RunMigrations`. Fresh databases never notice (the base DDL creates the column), and a populated fleet on the current version never notices (the column already exists) — only a fleet upgrading from *before* the column fails, with SQLSTATE 42703 on the first migrate and success on the retry. That "fails once, passes on retry" shape is the tell: the failed run added the column. It shipped twice (the v0.28.7 `vuln_scan_last_run` backfill and the v0.27.37 GitLab force-full step) before the analyzer landed.
+- **Index every FK child before a step bulk-deletes the parent.** A `DELETE` on a parent fires one FK check per child table per deleted row; with `DEFERRABLE INITIALLY DEFERRED` FKs those checks run at commit, and an unindexed child column makes each one a sequential scan. The v0.27.17 `repo_groups` consolidation spent ~1.6 h deleting 873 loser groups against a 12 GB unindexed `email_message.repo_group_id`; `ensureRepoGroupFKIndexes` now precedes that step and `TestEveryRepoGroupsFKChildIsIndexed` requires every `REFERENCES repo_groups` column to be indexed. When you add an FK to a parent whose rows a migration may delete, add the child index (migration-owned, CONCURRENTLY) in the same change.
+
 ## Materialized views
 
 The 20 real materialized views (`explorer_*`, `api_get_*`) are declared in `matviews.sql` and created/refreshed via `internal/db/matviews.go`. Do NOT confuse them with `dm_repo_annual/monthly/weekly` (+ group variants) — those are ordinary aggregate TABLES rebuilt by SQL in `internal/db/aggregates.go` on the matview-rebuild day, not matviews. Refresh helpers:
@@ -285,7 +290,7 @@ This was added in v0.19.5 specifically for the "iterate on a v0.19.4 schema-erro
 3. Write source-contract tests for both files.
 4. Write an integration test that runs RunMigrations + asserts the post-state.
 5. Bump `internal/db/version.go`.
-6. Add a `### Changes in vX.Y.Z` section to `CLAUDE.md` documenting:
+6. Write the release-note entry (in the PR description) documenting:
    - What was added and why.
    - What the migration does on existing deployments.
    - The operator command sequence to deploy (`aveloxis stop all; aveloxis migrate --skip-views; aveloxis start all`).

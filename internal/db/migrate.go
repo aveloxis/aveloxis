@@ -255,26 +255,6 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 // Split from the former 1,570-line RunMigrations (v0.27.42, summary/18
 // Phase 4); step ORDER across stages is load-bearing and unchanged.
 func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	// Set tool_version column defaults to the current version so new inserts
-	// automatically get the right value without every INSERT needing to specify it.
-	// v0.27.37 (summary/18 Phase 1b): GitLab conversation comments
-	// were silently dropped on the main collection path since
-	// inception (client refs carried no parent number). The forward
-	// fix makes new cycles collect them, but incremental cycles are
-	// since-filtered — only a FULL pass re-walks comment history.
-	// One-shot: flag every collected GitLab repo for force-full.
-	// Self-disabling: once flagged (or after the full pass clears the
-	// flag on success), the filter matches nothing.
-	execMigrationStep(ctx, pg, logger, errs,
-		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
-		UPDATE aveloxis_ops.collection_queue q
-		SET force_full_collect = TRUE
-		FROM aveloxis_data.repos r
-		WHERE r.repo_id = q.repo_id
-		  AND r.platform_id = 2
-		  AND q.last_collected IS NOT NULL
-		  AND q.force_full_collect = FALSE`)
-
 	// v0.27.38 (summary/18 Phase 1a): messages msg_kind — see
 	// msg_kind_migration.go for the full sequence + rationale.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_kind", "SMALLINT NOT NULL DEFAULT 0")
@@ -315,6 +295,39 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// class that leaves PR child data incomplete; set manually via
 	// `aveloxis recollect <url>`. CompleteJob clears it on success.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.collection_queue", "force_full_collect", "BOOLEAN NOT NULL DEFAULT FALSE")
+
+	// v0.28.15: the v0.27.37 force-full step below WRITES force_full_collect,
+	// so it must run after the column add above (it previously sat ~50
+	// lines earlier — TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded
+	// caught it on the day the analyzer landed). Same class as the v0.28.7
+	// last_seen_at relocation.
+	// v0.27.37 (summary/18 Phase 1b): GitLab conversation comments
+	// were silently dropped on the main collection path since
+	// inception (client refs carried no parent number). The forward
+	// fix makes new cycles collect them, but incremental cycles are
+	// since-filtered — only a FULL pass re-walks comment history.
+	// One-shot: flag every collected GitLab repo for force-full.
+	// v0.28.18: LEDGERED. The old comment called this "self-disabling",
+	// but the predicate re-matches every collected GitLab repo the moment
+	// CompleteJob clears the flag on a successful pass — so as a plain
+	// step it re-flagged the whole GitLab fleet on EVERY migrate (each
+	// version bump forced a full recollect of every GitLab repo). The
+	// ledger runs it exactly once per database — and a fleet whose stamp
+	// already proves a ≥ v0.27.37 migrate completed has ALREADY run it
+	// (every migrate did), so the ledger row is seeded instead of
+	// forcing one more fleet-wide GitLab full pass on upgrade.
+	if runOnceSeedIfApplied(ctx, pg, logger,
+		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", "0.27.37") {
+		runOnceStep(ctx, pg, logger, errs,
+			"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
+		UPDATE aveloxis_ops.collection_queue q
+		SET force_full_collect = TRUE
+		FROM aveloxis_data.repos r
+		WHERE r.repo_id = q.repo_id
+		  AND r.platform_id = 2
+		  AND q.last_collected IS NOT NULL
+		  AND q.force_full_collect = FALSE`)
+	}
 
 	// SBOM storage: format and timestamp columns (added in v0.5.4).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_sbom_scans", "sbom_format", "TEXT DEFAULT ''")
@@ -396,6 +409,21 @@ func migrateStage2MailingList(ctx context.Context, pg *PostgresStore, logger *sl
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_issues_external_key",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_external_key
 		 ON aveloxis_data.issues (repo_id, external_key) WHERE external_key <> ''`)
+	// v0.28.18: email_message's three v0.25.7 FK columns get their indexes
+	// (dedup-repos and the list dedup below repoint by them; the repos
+	// delete's deferred FK checks probe them), then the list table is
+	// deduplicated BEFORE the UNIQUE below can be attempted (SR-1).
+	ensureEmailMessageFKIndexes(ctx, pg, logger, errs)
+	// v0.28.18: repo_info_history was created with LIKE … INCLUDING ALL
+	// BEFORE idx_repo_info_repo_id existed, so it never inherited a
+	// repo_id index — and InsertRepoInfo's unknown-count carry-forward
+	// reads the prior snapshot from it (rotation precedes the insert).
+	// Migration-owned CONCURRENTLY (SR-2): the history table is
+	// fleet-scale (one row per repo per cycle).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_info_history_repo_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_info_history_repo_id
+		 ON aveloxis_data.repo_info_history (repo_id)`)
+	dedupRepoGroupsListServe(ctx, pg, logger, errs)
 	// Idempotent list registration: one row per (repo_group, list address).
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_rgls_group_email",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_rgls_group_email
@@ -468,29 +496,6 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// exits — never on error paths — so NULL means "never scanned"
 	// and a date on a zero-finding repo means "scanned, clean".
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "vuln_scan_last_run", "TIMESTAMPTZ")
-
-	// v0.28.7 (Copilot round 3): upgraded fleets get the column as
-	// NULL for every repo, but the API documents NULL as "never
-	// scanned" — a repo with STORED findings would serve active
-	// findings alongside scanned_at:null until its next scan. A
-	// finding's last_seen_at PROVES an OSV scan touched the repo at
-	// that time (resolved findings included — they were seen once
-	// too), so backfill the stamp from the latest finding evidence.
-	// Historically CLEAN scans left no evidence and honestly stay
-	// NULL until the repo's next scan stamps for real. Ledgered: a
-	// one-shot GROUP BY over the fleet's vuln table.
-	runOnceStep(ctx, pg, logger, errs,
-		"v0.28.7 backfill vuln_scan_last_run from finding evidence (a scan provably ran)", `
-		UPDATE aveloxis_data.repos r
-		SET vuln_scan_last_run = sub.last_seen
-		FROM (
-		    SELECT repo_id, MAX(last_seen_at) AS last_seen
-		    FROM aveloxis_data.repo_deps_vulnerabilities
-		    WHERE last_seen_at IS NOT NULL
-		    GROUP BY repo_id
-		) sub
-		WHERE r.repo_id = sub.repo_id
-		  AND r.vuln_scan_last_run IS NULL`)
 
 	// v0.28.1 (A6): the distinct "gone" state — prelim's 404/410
 	// sideline stamps it alongside repo_archived so the GUI can say
@@ -1351,6 +1356,37 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "first_detected_at", "TIMESTAMPTZ DEFAULT NOW()")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "last_seen_at", "TIMESTAMPTZ DEFAULT NOW()")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "resolved_at", "TIMESTAMPTZ")
+
+	// v0.28.15: the v0.28.7 stamp backfill below READS last_seen_at, so it
+	// must run AFTER the column add above. It originally sat ~870 lines
+	// earlier next to the vuln_scan_last_run column add and failed with
+	// SQLSTATE 42703 on every fleet upgrading from before v0.27.4 (the
+	// 2026-08-26 `aveloxis` DB, 0.25.26 → 0.28.x) — "fails on the first
+	// migrate, passes on the retry" because the retry ran after this add.
+	// TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded now bans the
+	// class. Ledgered; label unchanged (the ledger registry pins it).
+	// v0.28.7 (Copilot round 3): upgraded fleets get the column as
+	// NULL for every repo, but the API documents NULL as "never
+	// scanned" — a repo with STORED findings would serve active
+	// findings alongside scanned_at:null until its next scan. A
+	// finding's last_seen_at PROVES an OSV scan touched the repo at
+	// that time (resolved findings included — they were seen once
+	// too), so backfill the stamp from the latest finding evidence.
+	// Historically CLEAN scans left no evidence and honestly stay
+	// NULL until the repo's next scan stamps for real. Ledgered: a
+	// one-shot GROUP BY over the fleet's vuln table.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.28.7 backfill vuln_scan_last_run from finding evidence (a scan provably ran)", `
+		UPDATE aveloxis_data.repos r
+		SET vuln_scan_last_run = sub.last_seen
+		FROM (
+		    SELECT repo_id, MAX(last_seen_at) AS last_seen
+		    FROM aveloxis_data.repo_deps_vulnerabilities
+		    WHERE last_seen_at IS NOT NULL
+		    GROUP BY repo_id
+		) sub
+		WHERE r.repo_id = sub.repo_id
+		  AND r.vuln_scan_last_run IS NULL`)
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.4 create user_repo_stars",
 		`CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
@@ -1714,65 +1750,43 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_pr_review_msg_ref
 		 ON aveloxis_data.pull_request_review_message_ref (pr_review_id, msg_id)`)
 
-	// v0.27.17 — repo_groups consolidation. The lazy 'Default'-group
-	// creation used a bare ON CONFLICT DO NOTHING with NO unique on
-	// rg_name, so the INSERT succeeded on EVERY UpsertRepo call with
-	// GroupID=0: production accumulated 93,912 'Default' groups (one
-	// per repo), making almost every repo its own singleton group in
-	// every repo_group_id rollup (dm_repo_group_*, rg-name metric
-	// routes, 8Knot). Consolidate per rg_name to the MIN id, repoint
-	// every FK table, hygiene-delete the dm_repo_group_* rows of the
-	// losers (rebuilt by the weekly aggregate pass), delete the loser
-	// groups, THEN create uq_repo_groups_rg_name (after dedup —
-	// schema-DDL-ordering rule: NOT in schema.sql). All idempotent.
-	execMigrationStep(ctx, pg, logger, errs,
-		"v0.27.17 repoint repos.repo_group_id to canonical group per rg_name",
-		`UPDATE aveloxis_data.repos r SET repo_group_id = c.canon
-		 FROM aveloxis_data.repo_groups g,
-		      (SELECT rg_name, MIN(repo_group_id) AS canon
-		       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
-		 WHERE g.repo_group_id = r.repo_group_id
-		   AND g.rg_name = c.rg_name AND r.repo_group_id <> c.canon`)
-	for _, tbl := range []string{
-		"aveloxis_data.repo_groups_list_serve",
-		"aveloxis_data.email_message",
-		"aveloxis_data.email_message_ref",
-		"aveloxis_data.repo_group_insights",
-	} {
-		execMigrationStep(ctx, pg, logger, errs,
-			"v0.27.17 repoint "+tbl+".repo_group_id to canonical group",
-			`UPDATE `+tbl+` t SET repo_group_id = c.canon
-			 FROM aveloxis_data.repo_groups g,
-			      (SELECT rg_name, MIN(repo_group_id) AS canon
-			       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
-			 WHERE g.repo_group_id = t.repo_group_id
-			   AND g.rg_name = c.rg_name AND t.repo_group_id <> c.canon`)
+	// v0.28.15 — index every repo_groups FK child BEFORE the v0.27.17
+	// consolidation deletes loser groups: each deleted group fires a
+	// deferred FK check per child, and an unindexed 12 GB email_message
+	// made that a 5.3 s seq scan × 873 losers on the 2026-08-26 `aveloxis`
+	// DB upgrade. Migration-owned CONCURRENTLY (SR-2); see
+	// repo_group_fk_indexes.go.
+	ensureRepoGroupFKIndexes(ctx, pg, logger, errs)
+
+	// v0.28.16 (Copilot round on PR #191, verified): the index step above
+	// only RECORDS a failed CONCURRENTLY build — on its own it would let the
+	// consolidation below run its loser DELETE unindexed anyway, the exact
+	// multi-hour grind the indexes exist to prevent (the decorative-gate
+	// class, v0.27.107). So readiness GATES the consolidation: every
+	// repo_groups FK-child index must exist and be valid. Skipping is safe —
+	// the consolidation is idempotent and runs on the next migrate once the
+	// index builds — and the skip is itself an error so the migrate still
+	// fails closed (v0.19.4). A probe ERROR is not "ready" (SR-5).
+	if pending, perr := listDedupPending(ctx, pg.pool); perr != nil {
+		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: %w", perr))
+		logger.Warn("repo_groups consolidation skipped — duplicate list partition probe failed", "error", perr)
+	} else if pending > 0 {
+		// v0.28.18: a duplicate (group, list) partition the stage-2 dedup
+		// left (skipped because a serve is connected, or a failed step) is
+		// exactly the row the plain repo_groups_list_serve repoint below
+		// would collide on (23505 on idx_rgls_group_email) — and the loser
+		// group's DELETE then fails its deferred FK.
+		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: %d duplicate (group, list) partitions still present — either the list dedup skipped them because another aveloxis-serve is connected (see the WARN above; rerun `aveloxis migrate --skip-views` with serve stopped) or a list-dedup step failed (its error is above)", pending))
+		logger.Warn("repo_groups consolidation skipped — duplicate list partitions pending", "partitions", pending)
+	} else if ready, perr := repoGroupFKIndexesReady(ctx, pg); perr != nil {
+		*errs = append(*errs, fmt.Errorf("repo_groups FK-child index readiness probe: %w", perr))
+		logger.Warn("skipping v0.27.17 repo_groups consolidation — could not verify the FK-child indexes", "error", perr)
+	} else if !ready {
+		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: a repo_groups FK-child index is missing or INVALID (see the index build error above); it runs on the next migrate once the index builds"))
+		logger.Warn("skipping v0.27.17 repo_groups consolidation — a repo_groups FK-child index is missing or INVALID; the consolidation runs on the next migrate once it builds")
+	} else {
+		consolidateRepoGroups(ctx, pg, logger, errs)
 	}
-	for _, tbl := range []string{
-		"aveloxis_data.dm_repo_group_annual",
-		"aveloxis_data.dm_repo_group_monthly",
-		"aveloxis_data.dm_repo_group_weekly",
-	} {
-		execMigrationStep(ctx, pg, logger, errs,
-			"v0.27.17 drop "+tbl+" rows of consolidated loser groups (weekly rebuild recomputes)",
-			`DELETE FROM `+tbl+` t
-			 WHERE EXISTS (
-			   SELECT 1 FROM aveloxis_data.repo_groups g
-			   JOIN (SELECT rg_name, MIN(repo_group_id) AS canon
-			         FROM aveloxis_data.repo_groups GROUP BY rg_name) c
-			     ON c.rg_name = g.rg_name
-			   WHERE g.repo_group_id = t.repo_group_id AND g.repo_group_id <> c.canon)`)
-	}
-	execMigrationStep(ctx, pg, logger, errs,
-		"v0.27.17 delete consolidated loser repo_groups rows",
-		`DELETE FROM aveloxis_data.repo_groups g
-		 WHERE g.repo_group_id <> (
-		   SELECT MIN(g2.repo_group_id) FROM aveloxis_data.repo_groups g2
-		   WHERE g2.rg_name = g.rg_name)`)
-	execCreateIndexConcurrently(ctx, pg, logger, errs,
-		"aveloxis_data", "uq_repo_groups_rg_name",
-		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repo_groups_rg_name
-		 ON aveloxis_data.repo_groups (rg_name)`)
 
 	// v0.27.11 — vulnerability version-resolution accuracy. Every
 	// finding carries the raw manifest requirement and how the scanned
@@ -2233,7 +2247,8 @@ func checkBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		       LEFT(a.query, 200)                  AS waiter_query,
 		       pg_blocking_pids(a.pid)              AS blockers
 		FROM pg_stat_activity a
-		WHERE a.application_name LIKE 'aveloxis-%'
+		WHERE a.datname = current_database()
+		  AND a.application_name LIKE 'aveloxis-%'
 		  AND a.wait_event_type = 'Lock'
 		  AND a.state = 'active'`)
 	if err != nil {
@@ -2315,14 +2330,34 @@ func stampSchemaVersion(ctx context.Context, pg *PostgresStore, logger *slog.Log
 // GetSchemaVersion reads the schema version from the database. Returns an
 // empty string if the schema_meta table doesn't exist yet (pre-v0.14.5 DB).
 func (s *PostgresStore) GetSchemaVersion(ctx context.Context) string {
+	v, _ := s.schemaVersionProbe(ctx)
+	return v
+}
+
+// schemaVersionProbe is GetSchemaVersion with the error arm kept (SR-5:
+// a lookup ERROR is not "no"). Copilot round 8: GetSchemaVersion maps
+// EVERY failure to "", and runOnceSeedIfApplied reads "" as "no stamp,
+// so the step has not run" — a transient catalog or connection error
+// during migrate therefore re-flagged the ENTIRE GitLab fleet for a
+// full recollect, which is the outcome the seed exists to prevent.
+// ErrNoRows and an absent schema_meta (42P01, pre-v0.14.5) are the
+// only definitive absences; everything else is a failed read.
+func (s *PostgresStore) schemaVersionProbe(ctx context.Context) (string, error) {
 	var version string
 	err := s.pool.QueryRow(ctx,
 		`SELECT schema_version FROM aveloxis_ops.schema_meta WHERE id = TRUE`,
 	).Scan(&version)
-	if err != nil {
-		return ""
+	if err == nil {
+		return version, nil
 	}
-	return version
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil // definitively unstamped
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		return "", nil // schema_meta does not exist: pre-v0.14.5 database
+	}
+	return "", err
 }
 
 // CheckSchemaVersion compares the database schema version against the running
@@ -2876,4 +2911,93 @@ func ensureRepoLaborNaturalKeyUnique(ctx context.Context, pg *PostgresStore, log
 	for _, e := range errs {
 		logger.Warn("repo_labor unique: build failed (warn-only — retried next migrate)", "error", e)
 	}
+}
+
+// consolidateRepoGroups is the v0.27.17 repo_groups consolidation,
+// extracted (v0.28.16) so RunMigrations (via migrateStage10RecentReleases) can gate it
+// on repoGroupFKIndexesReady. Body unchanged from v0.27.17.
+//
+// v0.27.17 — repo_groups consolidation. The lazy 'Default'-group
+// creation used a bare ON CONFLICT DO NOTHING with NO unique on
+// rg_name, so the INSERT succeeded on EVERY UpsertRepo call with
+// GroupID=0: production accumulated 93,912 'Default' groups (one
+// per repo), making almost every repo its own singleton group in
+// every repo_group_id rollup (dm_repo_group_*, rg-name metric
+// routes, 8Knot). Consolidate per rg_name to the MIN id, repoint
+// every FK table, hygiene-delete the dm_repo_group_* rows of the
+// losers (rebuilt by the weekly aggregate pass), delete the loser
+// groups, THEN create uq_repo_groups_rg_name (after dedup —
+// schema-DDL-ordering rule: NOT in schema.sql). All idempotent.
+func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	// Baseline for the fail-closed gate below: any repoint that fails
+	// appends to errs, and the deletes must not run over a partial
+	// repoint. It covers the repos repoint too — that one is first.
+	errsBeforeRepoint := len(*errs)
+
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.17 repoint repos.repo_group_id to canonical group per rg_name",
+		`UPDATE aveloxis_data.repos r SET repo_group_id = c.canon
+		 FROM aveloxis_data.repo_groups g,
+		      (SELECT rg_name, MIN(repo_group_id) AS canon
+		       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+		 WHERE g.repo_group_id = r.repo_group_id
+		   AND g.rg_name = c.rg_name AND r.repo_group_id <> c.canon`)
+	for _, tbl := range []string{
+		"aveloxis_data.repo_groups_list_serve",
+		"aveloxis_data.email_message",
+		"aveloxis_data.email_message_ref",
+		"aveloxis_data.repo_group_insights",
+		// v0.28.18: no FK, but DrainList reads the first staged row's
+		// repo_group_id as the LIST's identity (GetPrimaryRepoForGroup) —
+		// a row still stamped with a deleted loser group wedges the drain
+		// of the whole list ("no repo for group, leaving staged").
+		"aveloxis_ops.mailing_list_staging",
+	} {
+		execMigrationStep(ctx, pg, logger, errs,
+			"v0.27.17 repoint "+tbl+".repo_group_id to canonical group",
+			`UPDATE `+tbl+` t SET repo_group_id = c.canon
+			 FROM aveloxis_data.repo_groups g,
+			      (SELECT rg_name, MIN(repo_group_id) AS canon
+			       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+			 WHERE g.repo_group_id = t.repo_group_id
+			   AND g.rg_name = c.rg_name AND t.repo_group_id <> c.canon`)
+	}
+	// Copilot round 8: the repoints above are execMigrationStep, which
+	// ACCUMULATES a failure and continues. mailing_list_staging has no
+	// FK to repo_groups (schema.sql: `repo_group_id BIGINT,`), so a
+	// failed repoint followed by the loser-group DELETE below leaves
+	// dangling repo_group_id values that wedge DrainList for the whole
+	// list ("no repo for group, leaving staged"). Fail closed: a
+	// successful repoint is idempotent, so the next migrate retries the
+	// failed one and then deletes.
+	if len(*errs) > errsBeforeRepoint {
+		logger.Warn("repo_groups consolidation: a repoint step failed — skipping the loser-group deletes this migrate (re-run migrate; the repoints are idempotent)",
+			"failed_steps", len(*errs)-errsBeforeRepoint)
+		return
+	}
+	for _, tbl := range []string{
+		"aveloxis_data.dm_repo_group_annual",
+		"aveloxis_data.dm_repo_group_monthly",
+		"aveloxis_data.dm_repo_group_weekly",
+	} {
+		execMigrationStep(ctx, pg, logger, errs,
+			"v0.27.17 drop "+tbl+" rows of consolidated loser groups (weekly rebuild recomputes)",
+			`DELETE FROM `+tbl+` t
+			 WHERE EXISTS (
+			   SELECT 1 FROM aveloxis_data.repo_groups g
+			   JOIN (SELECT rg_name, MIN(repo_group_id) AS canon
+			         FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+			     ON c.rg_name = g.rg_name
+			   WHERE g.repo_group_id = t.repo_group_id AND g.repo_group_id <> c.canon)`)
+	}
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.17 delete consolidated loser repo_groups rows",
+		`DELETE FROM aveloxis_data.repo_groups g
+		 WHERE g.repo_group_id <> (
+		   SELECT MIN(g2.repo_group_id) FROM aveloxis_data.repo_groups g2
+		   WHERE g2.rg_name = g.rg_name)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "uq_repo_groups_rg_name",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repo_groups_rg_name
+		 ON aveloxis_data.repo_groups (rg_name)`)
 }

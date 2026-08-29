@@ -125,6 +125,11 @@ Every release candidate passes, in order (v0.27.43, summary/18 Phase
    fixture-tested" as necessary but NOT sufficient for a
    volume-knob flip.
 
+10. **Docs build** — docs.yml: `sphinx-build -W --keep-going` over
+    `docs/`; every Sphinx/MyST warning (unknown fence language, a block
+    that does not lex in its declared language, a dead cross-reference)
+    is an error, matching Read the Docs' `fail_on_warning`.
+
 ## TDD discipline
 
 The contract:
@@ -493,14 +498,14 @@ When a test fails, the failure message should:
 
 1. Say what was expected vs what was observed.
 2. Explain WHY this matters (the load-bearing invariant being violated).
-3. Point at the relevant CLAUDE.md section or production incident if applicable.
+3. Point at the relevant release note or production incident if applicable.
 
 ```go
 if !strings.Contains(code, "ON UPDATE CASCADE") {
     t.Error("RunMigrations must add ON UPDATE CASCADE to every " +
         "cntrb_id child FK. Without this, the v0.22.2 cntrb_id " +
         "data migration can't propagate UPDATEs to child rows. " +
-        "See CLAUDE.md `Changes in v0.22.1`.")
+        "See the v0.22.1 release notes.")
 }
 ```
 
@@ -557,5 +562,6 @@ GitHub Actions runs:
 - `codeql.yml`: security scanning.
 - `cifuzz.yml`: ClusterFuzzLite over the 7 native Go fuzz targets.
 - `network-canary.yml`: weekly live-API contract checks (`AVELOXIS_TEST_NETWORK=1`).
+- `docs.yml`: `sphinx-build -W --keep-going` over `docs/` — every Sphinx/MyST warning (unknown fence language, block that does not lex, dead cross-reference) is an error.
 
-The first four must pass for a PR to merge. The maintainers can override but rarely do.
+The first four plus `docs.yml` must pass for a PR to merge — a Sphinx warning fails the docs job the same way a lint finding fails `lint.yml`. The maintainers can override but rarely do.

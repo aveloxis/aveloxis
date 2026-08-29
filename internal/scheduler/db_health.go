@@ -5,6 +5,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
@@ -92,6 +93,9 @@ func (s *Scheduler) runDBHealthMonitor(ctx context.Context) {
 			return
 		case <-t.C:
 			err := s.store.Ping(ctx)
+			if errors.Is(err, context.Canceled) {
+				return // shutdown mid-probe is not an outage (pass 35)
+			}
 			if err != nil {
 				consecutiveFail++
 				lastErr = err

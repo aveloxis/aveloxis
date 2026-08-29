@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Code conventions
 
-How aveloxis code is organized, what idioms to follow, and what to avoid. Most of these are durable patterns from production incidents — if a rule seems arbitrary, search [`CLAUDE.md`](../../CLAUDE.md) for the context.
+How aveloxis code is organized, what idioms to follow, and what to avoid. Most of these are durable patterns from production incidents — if a rule seems arbitrary, the rationale is usually in [`review-lenses.md`](review-lenses.md) or the architecture chapter it points to.
 
 ## SPDX headers (mandatory)
 
@@ -82,7 +82,7 @@ Groups: stdlib, third-party, project-local.
 - Use sentinel errors for cases callers branch on: `platform.ErrNotFound`, `platform.ErrGone`, `platform.ErrNoContent`, `platform.ErrForbidden`, `platform.ErrAllKeysInvalidated`, `platform.ErrPaginationLimitExceeded`, `platform.ErrTransient`. Compare with `errors.Is`.
 - For classification across many error shapes, use `platform.ClassifyError(err) ErrorClass`. New error shapes should classify through this single helper — never add ad-hoc retry logic to a call site.
 
-### The CLAUDE.md rule (mandatory)
+### Everything that errors is logged (mandatory)
 
 > **Everything that errors should be logged.**
 
@@ -178,9 +178,9 @@ Closes #N
 
 Body should explain **why**, not just **what**. The diff already shows what changed.
 
-## CLAUDE.md is the canonical record
+## The release notes are the public record
 
-When your change has user-visible behavior, add a `### Changes in vX.Y.Z` section under `## Current Status` in `CLAUDE.md`. Future contributors AND the AI agents that help maintain the project read this to understand decisions.
+When your change has user-visible behavior, write the release-note entry into your PR description; the maintainers carry it into the notes for the version that ships it. Future contributors read those notes (and the architecture chapters) to understand decisions.
 
 Format established by existing entries:
 
@@ -196,7 +196,7 @@ Don't be afraid of length. Operators (and the project's memory) value detail.
 
 ## Don't add features beyond what the task requires
 
-From `CLAUDE.md`:
+The house rule:
 
 > Don't add features, refactor, or introduce abstractions beyond what the task requires. A bug fix doesn't need surrounding cleanup; a one-shot operation doesn't need a helper. Don't design for hypothetical future requirements. Three similar lines is better than a premature abstraction.
 

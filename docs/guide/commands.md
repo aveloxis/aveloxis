@@ -122,18 +122,29 @@ See the [Web GUI guide](web-gui.md) for detailed setup instructions.
 
 ## `aveloxis api`
 
-Starts the REST API server (default `:8383`). Serves repo statistics, weekly
-time series, dependency licenses, scancode results, SBOM downloads, repo
-search, and the Augur-compatible metric endpoints. The web GUI's charts and
-the comparison page load their data from this process.
+Starts the REST API server on `127.0.0.1:8383` unless configured
+otherwise. Serves repo statistics, weekly time series, dependency
+licenses, scancode results, SBOM downloads, repo search, and the
+Augur-compatible metric endpoints. The web GUI's charts and the
+comparison page load their data from this process.
 
 ```bash
-aveloxis api --addr :8383
+aveloxis api                        # 127.0.0.1:8383, or api.addr from the config
+aveloxis api --addr 0.0.0.0:9383    # override for this invocation
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--addr` | string | `":8383"` | Listen address for the API server. |
+| `--addr` | string | *(from config)* | Listen address for the API server. Overrides `api.addr`; when neither is set the default is `127.0.0.1:8383`. |
+
+The listen address is normally set with `api.addr` in `aveloxis.json`
+(v0.28.19), because `aveloxis start api` spawns the process with only
+`--config` — a flag-only setting could not reach a backgrounded API,
+and two instances on one host collided on 8383. The default is
+loopback on purpose; see
+[Reaching the API from another host](../getting-started/configuration.md#reaching-the-api-from-another-host)
+before binding a routable address, and remember that
+`web.api_internal_url` has to follow the API when it moves.
 
 Run alongside `aveloxis serve` and `aveloxis web` — `aveloxis start all`
 starts all three. See the [REST API guide](api.md) for the endpoint
@@ -369,6 +380,8 @@ Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970
 
 Safe to run repeatedly. All DDL uses `CREATE ... IF NOT EXISTS` and inserts use `ON CONFLICT DO NOTHING`. Does not touch Augur schemas if sharing a database.
 
+Upgrading an existing deployment across many releases? `migrate` covers every schema change and one-shot SQL backfill, but a separate set of operator-run heal commands (API-calling or long-running repairs) is deliberately not a migration — see [Upgrading](../getting-started/upgrading.md) for the ordered list with the release that introduced each.
+
 ### The completed-backfill ledger (v0.28.4)
 
 Expensive **one-shot data steps** — keyset backfills, history rotations, dedups, the timestamp cleanup — record their completion in `aveloxis_ops.migration_ledger` and are skipped on every later migrate. Before the ledger, every version bump re-walked all of them as no-ops (~1.5–2.5 hours on a fleet-scale database). DDL steps (tables, columns, indexes, views) are deliberately **not** ledgered: an explicit `aveloxis migrate` still heals hand-dropped objects on every run.
@@ -470,9 +483,21 @@ Per pair, winner = the **oldest** `repo_id`, in one transaction:
    itself. Nothing is lost: both sides collected the same repository.
 4. Enqueues the winner if it has never been collected.
 
-Pairs with either side `status='collecting'` are **skipped and
-reported** — re-run once those jobs finish. The command is idempotent;
-merged pairs drop out of the candidate set.
+Pairs with either side `status='collecting'` are **left out of each
+batch's window** so they cannot stall the run (a mid-collection pair at
+the head of the alphabetical order used to occupy a slot every round);
+the end-of-run summary reports how many groups remain — re-run once
+those jobs finish. The command is idempotent; merged pairs drop out of
+the candidate set.
+
+### Precondition
+
+The merge refuses to start until the v0.28.18 migrate has built the
+`email_message` FK indexes (`idx_email_message_repo_id` /
+`idx_email_message_signaled_repo_id`) — without them every pair would
+sequential-scan that table on the repoints and again at commit. Run
+`aveloxis migrate --skip-views` on the new binary first; the refusal
+names the missing index.
 
 ### After the run
 
@@ -562,6 +587,13 @@ every collected repo — the completeness mode for repos whose
 stored-but-deleted rows numerically hide the gap; not recommended for
 routine use). Exits nonzero when any repo's heal failed.
 
+Sizing, measured on a ~140K-repo fleet (2026-08-23): 6,809 candidates /
+279,100 items took ~65 hours at `--workers 4` (the largest single repo
+filled 24,845 items); reruns then converged in minutes. Expect a small
+residual candidate set that heals with `filled=0` on every rerun — repos
+whose forge metadata count exceeds what the forge's own listing returns
+(transferred or hidden items); that is the floor, not unfinished work.
+
 Run it on a binary at v0.27.139 or later — earlier binaries re-open
 the blind window on the next routine cycle. Typical ordering after an
 upgrade across the v0.27.13x train: `aveloxis migrate` first, then
@@ -572,10 +604,15 @@ this command, then `aveloxis refresh-views` once the heal settles.
 Manually refreshes all 20 materialized views.
 
 ```bash
-aveloxis refresh-views
+aveloxis refresh-views                # the materialized views
+aveloxis refresh-views --aggregates   # + the dm_repo_* / dm_repo_group_* aggregate tables
 ```
 
 Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. Views are also rebuilt automatically every Saturday by `aveloxis serve`.
+
+`--aggregates` (v0.28.18) additionally runs the `dm_` aggregate pass after the views — the same per-repo loop the weekly rebuild runs unless `collection.matview_rebuild_skip_dm_aggregates` is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the only way the `dm_` tables update. The pass holds a database advisory lock for its whole duration — if the weekly scheduler rebuild (or another `--aggregates` run) is already in it, the command exits nonzero with `another dm_ aggregate rebuild is already running` instead of interleaving two DELETE+INSERT passes over tables that have no unique key.
+
+Both halves keep going past a failing view or repo but **exit nonzero** when any failed (v0.28.18): the error names the first ten failures with the full count, the rest of the pass's work stands, and a view failure does not skip the aggregate pass. Scripts wrapping the command will see exits they never saw before — that is the point; re-run after fixing the named view or repo.
 
 ---
 
@@ -807,6 +844,13 @@ The scheduler also logs a startup gauge (`non-archived repos with no
 collection_queue row`) pointing here whenever the count is non-zero.
 Re-run until stranded = 0; healed repos drop out of the set.
 
+Both consolidation arms (the dataless heal and the per-pair merge)
+share `dedup-repos`' precondition: the v0.28.18 migrate must have built
+the `email_message` FK indexes, or each such repo is skipped with a
+warning naming the migrate to run first (the other classifications —
+dead, re-enqueue — proceed) and the run exits nonzero at the end so a
+script cannot read a refused run as success.
+
 ## `aveloxis generate-showcase`
 
 Renders the PUBLIC collection showcase pages (v0.27.77 growth plan):
@@ -933,8 +977,9 @@ extrapolate from the first hour. Safe alongside a running serve —
 repos mid-collection are skipped this pass, and overlapping updates
 are same-value idempotent. Resumable by construction: the marker IS
 the resume state, so a re-run skips every already-walked repo. After
-the fleet run, `aveloxis refresh-views` (or the next scheduled
-aggregate rebuild) picks the corrected sums into the `dm_` tables.
+the fleet run, `aveloxis refresh-views --aggregates` (or the next
+scheduled aggregate rebuild) picks the corrected sums into the `dm_`
+tables.
 Does not run migrations (v0.21.5 policy) — run `aveloxis migrate`
 first so the marker column exists.
 

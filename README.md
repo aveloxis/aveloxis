@@ -1215,12 +1215,12 @@ The suite currently stands at **~2,960 test functions across ~670 test files** (
 ```bash
 cd docs
 pip install -r requirements.txt
-sphinx-build -b html . _build/html
+sphinx-build -W --keep-going -b html . _build/html   # same warnings-as-errors gate as CI / Read the Docs
 open _build/html/index.html
 
 Or if you prefer a one-liner from the repo root:
 
-pip install sphinx sphinx-rtd-theme myst-parser && sphinx-build -b html docs docs/_build/html && open docs/_build/html/index.html
+pip install sphinx sphinx-rtd-theme myst-parser && sphinx-build -W --keep-going -b html docs docs/_build/html && open docs/_build/html/index.html
 ```
 
 # Turning on Apache Mailing List Collection

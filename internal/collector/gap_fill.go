@@ -41,10 +41,24 @@ const GapThreshold = 0.05
 // to re-fetch, ensuring their associated data (comments, events, etc.) is complete.
 const GapEdgeCount = 2
 
-// Gap represents a contiguous range of missing issue/PR numbers.
+// Gap represents a run of missing issue/PR numbers in the EXPECTED
+// sequence — not a run of consecutive integers.
+//
+// Start/End bound the run; Numbers holds the exact expected numbers
+// that are missing inside it, and they need not be consecutive: on
+// GitHub the issue and PR number spaces are shared, so a PR gap
+// [3, 7] whose expected set is {3, 7} lists just those two (4..6 are
+// issues, not missing PRs). v0.28.15: only Numbers are fetched.
+// ExpandGapsWithEdges used to fetch every integer in [Start, End], and
+// on GitHub — whose issue and PR number spaces are shared — a PR gap
+// spanning issue numbers fetched those issues as PRs: 22,837 NOT_FOUND
+// per-path GraphQL errors on one aveloxis_large heal run, all wasted
+// aliases. The expected set has always come from a full listing (the
+// range walk was simply a bug, never a heuristic).
 type Gap struct {
-	Start int // first missing number (inclusive)
-	End   int // last missing number (inclusive)
+	Start   int   // first missing number (inclusive)
+	End     int   // last missing number (inclusive)
+	Numbers []int // the expected numbers missing in [Start, End], ascending
 }
 
 // GapFiller detects and fills collection gaps for a repo.
@@ -115,6 +129,9 @@ func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID 
 			// healer reported "healed" and exited zero having checked
 			// nothing, and routine gap fill's v0.20.5 recovery never
 			// armed.
+			if errors.Is(err, context.Canceled) {
+				return totalFilled, err // shutdown, not a failure (pass 35)
+			}
 			gf.logger.Warn("failed to list API issue numbers for gap fill", "error", err)
 			fillErrs = append(fillErrs, fmt.Errorf("issue number listing: %w", err))
 		} else {
@@ -126,6 +143,9 @@ func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID 
 					"gaps", len(gaps),
 					"items_to_fetch", len(toFetch))
 				filled, err := gf.fillIssueGaps(ctx, repoID, owner, repo, toFetch)
+				if errors.Is(err, context.Canceled) {
+					return totalFilled, err
+				}
 				if err != nil {
 					gf.logger.Warn("issue gap fill error", "error", err)
 					fillErrs = append(fillErrs, fmt.Errorf("issue gap fill: %w", err))
@@ -150,6 +170,9 @@ func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID 
 
 		apiPRNumbers, err := gf.listAPIPRNumbers(ctx, owner, repo)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return totalFilled, err
+			}
 			gf.logger.Warn("failed to list API PR numbers for gap fill", "error", err)
 			fillErrs = append(fillErrs, fmt.Errorf("PR number listing: %w", err))
 		} else {
@@ -161,6 +184,9 @@ func (gf *GapFiller) AssessAndFillGapsWithThreshold(ctx context.Context, repoID 
 					"gaps", len(gaps),
 					"items_to_fetch", len(toFetch))
 				filled, err := gf.fillPRGaps(ctx, repoID, owner, repo, toFetch)
+				if errors.Is(err, context.Canceled) {
+					return totalFilled, err
+				}
 				if err != nil {
 					gf.logger.Warn("PR gap fill error", "error", err)
 					fillErrs = append(fillErrs, fmt.Errorf("PR gap fill: %w", err))
@@ -216,6 +242,9 @@ func (gf *GapFiller) fillIssueGaps(ctx context.Context, repoID int64, owner, rep
 				gf.logger.Debug("issue not found or inaccessible (skip)", "number", num, "error", err)
 				continue
 			}
+			if errors.Is(err, context.Canceled) {
+				return filled, err // shutdown: no partial flush on the dead ctx, no WARN (pass 36)
+			}
 			// Non-skippable: rate limit, network failure, etc. Bubble up so
 			// the scheduler can retry on the next cycle instead of silently
 			// closing the gap fill with `filled=N` while the rest of the
@@ -224,8 +253,13 @@ func (gf *GapFiller) fillIssueGaps(ctx context.Context, repoID int64, owner, rep
 				"repo_id", repoID, "number", num, "filled_so_far", filled, "error", err)
 			if filled > 0 {
 				if ferr := sw.Flush(ctx); ferr != nil {
-					gf.logger.Warn("failed to flush partial gap-fill issue staging",
-						"repo_id", repoID, "staged", filled, "error", ferr)
+					// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+					// defect. Only the log is suppressed — surrounding behaviour is
+					// unchanged and the work is retried on the next cycle.
+					if !errors.Is(ferr, context.Canceled) {
+						gf.logger.Warn("failed to flush partial gap-fill issue staging",
+							"repo_id", repoID, "staged", filled, "error", ferr)
+					}
 				}
 			}
 			return filled, fmt.Errorf("gap fill issue %d: %w", num, err)
@@ -283,8 +317,13 @@ func (gf *GapFiller) fillIssueGaps(ctx context.Context, repoID int64, owner, rep
 	// be silently discarded when the writer goes out of scope.
 	if filled > 0 {
 		if err := sw.Flush(ctx); err != nil {
-			gf.logger.Warn("failed to flush gap-fill issue staging batch",
-				"repo_id", repoID, "staged", filled, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				gf.logger.Warn("failed to flush gap-fill issue staging batch",
+					"repo_id", repoID, "staged", filled, "error", err)
+			}
 			return filled, fmt.Errorf("flushing gap-fill issue staging: %w", err)
 		}
 		proc := NewProcessor(gf.store, gf.logger)
@@ -366,8 +405,13 @@ func (gf *GapFiller) fillPRGaps(ctx context.Context, repoID int64, owner, repo s
 	// (see fillIssueGaps above for the full rationale — same buffering bug).
 	if filled > 0 {
 		if err := sw.Flush(ctx); err != nil {
-			gf.logger.Warn("failed to flush gap-fill PR staging batch",
-				"repo_id", repoID, "staged", filled, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				gf.logger.Warn("failed to flush gap-fill PR staging batch",
+					"repo_id", repoID, "staged", filled, "error", err)
+			}
 			return filled, fmt.Errorf("flushing gap-fill PR staging: %w", err)
 		}
 		proc := NewProcessor(gf.store, gf.logger)
@@ -423,6 +467,9 @@ func (gf *GapFiller) fetchPRsForGap(ctx context.Context, repoID int64, owner, re
 				gf.logger.Debug("PR gap fill graphql batch skipped", "error", err)
 				return out, nil
 			}
+			if errors.Is(err, context.Canceled) {
+				return out, err // shutdown, not a failure
+			}
 			if len(batch) > 0 {
 				gf.logger.Info("gap fill partial batch — staging recovered envelopes before bubbling error",
 					"repo_id", repoID, "partial_count", len(batch), "total_requested", len(numbers), "error", err)
@@ -442,6 +489,9 @@ func (gf *GapFiller) fetchPRsForGap(ctx context.Context, repoID int64, owner, re
 			if isOptionalEndpointSkip(err) {
 				gf.logger.Debug("PR not found or inaccessible (skip)", "number", num, "error", err)
 				continue
+			}
+			if errors.Is(err, context.Canceled) {
+				return out, err
 			}
 			gf.logger.Warn("gap fill aborting on non-skippable PR fetch error",
 				"repo_id", repoID, "number", num, "error", err)
@@ -514,9 +564,10 @@ func ComputeGaps(collected, expected []int) []Gap {
 		} else {
 			// Missing — extend or start a gap.
 			if current == nil {
-				current = &Gap{Start: n, End: n}
+				current = &Gap{Start: n, End: n, Numbers: []int{n}}
 			} else {
 				current.End = n
+				current.Numbers = append(current.Numbers, n)
 			}
 		}
 	}
@@ -544,7 +595,8 @@ func ExpandGapsWithEdges(gaps []Gap, collected []int, edgeCount int) []int {
 
 	for _, g := range gaps {
 		// Add all gap numbers.
-		for n := g.Start; n <= g.End; n++ {
+		// Only the listed missing numbers — never the integer range (see Gap).
+		for _, n := range g.Numbers {
 			fetchSet[n] = true
 		}
 

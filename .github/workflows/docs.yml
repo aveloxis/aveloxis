@@ -1,0 +1,35 @@
+# Build the Sphinx/MyST docs with warnings-as-errors on pushes to main and
+# pull requests — the same toolchain Read the Docs uses (Python 3.12,
+# docs/requirements.txt), so an unknown fence language, a code block that
+# does not lex, or a dead cross-reference fails here before it fails the
+# RTD build (.readthedocs.yaml enforces the same via fail_on_warning).
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # matches .readthedocs.yaml
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install docs toolchain
+        run: pip install -r docs/requirements.txt
+
+      # -W promotes every warning to an error; --keep-going still walks the
+      # whole tree so one run lists ALL offenders, not just the first.
+      - name: Build docs (warnings are errors)
+        run: sphinx-build -W --keep-going -b html docs "$RUNNER_TEMP/docs-html"

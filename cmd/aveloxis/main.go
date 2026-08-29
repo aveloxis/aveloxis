@@ -9,8 +9,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -171,7 +173,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	poolSize := max(int32(workers+15), 20)
 	// application_name = "aveloxis-serve" so post-stop verification
 	// (and operators reading pg_stat_activity) can filter per-process.
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-serve"), logger, poolSize)
+	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(db.ServeApplicationName), logger, poolSize)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
 	}
@@ -246,15 +248,30 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	}
 	// Wait for the scheduler's graceful shutdown (worker drain, lock
 	// release, its own pool close) before the deferred store.Close()
-	// runs. Bounded: the scheduler's drain is already capped by
-	// shutdown_grace_seconds; the margin here is a backstop against a
-	// wedged DB call in the drain path itself.
+	// runs. Bounded: the scheduler's drain is capped by
+	// shutdown_grace_seconds and its wait for the background pools'
+	// bookkeeping by the scancode grace + allowance (shutdownBudget);
+	// the margin here is a backstop against a wedged DB call in the
+	// drain path itself. Expiring here skips releaseOurLocks (the next
+	// start's RecoverOtherWorkerLocks covers) and closes the pool under
+	// any bookkeeping still in flight — so this bound must exceed the
+	// scheduler's (pass 39).
 	select {
 	case <-schedDone:
-	case <-time.After(cfg.Collection.ShutdownGraceDuration() + 30*time.Second):
-		logger.Warn("scheduler did not finish shutdown within grace + margin — exiting anyway")
+	case <-time.After(shutdownBudget(cfg) + 30*time.Second):
+		logger.Warn("scheduler did not finish shutdown within the shutdown budget + margin — exiting anyway")
 	}
 	return nil
+}
+
+// shutdownBudget is the longest a graceful serve shutdown takes before
+// its pool close: the collection drain grace, plus the operator's
+// scancode grace and the runners' bookkeeping allowance the scheduler
+// waits for. Every outer bound (the runServe join, `aveloxis stop`'s
+// backend poll, the documented systemd TimeoutStopSec) derives from it
+// (pass 39).
+func shutdownBudget(cfg *config.Config) time.Duration {
+	return cfg.Collection.ShutdownGraceDuration() + collector.ScancodeShutdownBound(cfg.Collection.ScancodeShutdownGrace())
 }
 
 // --- api: REST API server ---
@@ -272,8 +289,48 @@ Run alongside 'aveloxis serve' and 'aveloxis web'.`,
 			return runAPI(*cfgPath, addr)
 		},
 	}
-	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8383", "listen address for the API server")
+	cmd.Flags().StringVar(&addr, "addr", "", "listen address for the API server (overrides api.addr in aveloxis.json; default 127.0.0.1:8383)")
 	return cmd
+}
+
+// warnAPIPortMismatch surfaces the one mistake api.addr makes easy:
+// move the API to another port and the web GUI keeps proxying /api/*
+// to the old one, so every chart silently 502s while both processes
+// look healthy.
+//
+// Deliberately narrow. api_internal_url pointing at a DIFFERENT HOST
+// is a legitimate split deployment (or an nginx hop) and says nothing
+// about this machine's api.addr, so only a LOOPBACK target with a
+// mismatched port is reported — that combination cannot be right.
+// A warning, not an error: the operator may be mid-migration, and web
+// serves the GUI fine without the proxy.
+func warnAPIPortMismatch(cfg *config.Config, logger *slog.Logger) {
+	target, err := url.Parse(strings.TrimSpace(cfg.Web.APIInternalURL))
+	if err != nil || target.Host == "" {
+		return // web.New already warns about an unparseable value
+	}
+	host, port, err := net.SplitHostPort(target.Host)
+	if err != nil {
+		return // no explicit port; nothing to compare
+	}
+	// "localhost" is loopback but not an IP literal — and it is the
+	// spelling docs/guide/api.md teaches, so keying on ParseIP alone
+	// made the warning silent for the project's own documented value.
+	isLoopback := strings.EqualFold(host, "localhost")
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		isLoopback = true
+	}
+	if !isLoopback {
+		return
+	}
+	_, apiPort, err := net.SplitHostPort(cfg.API.AddrOrDefault())
+	if err != nil || apiPort == port {
+		return
+	}
+	logger.Warn("web.api_internal_url points at a loopback port the API is not listening on — /api/* will 502 and every chart in the GUI will be empty",
+		"api_internal_url", cfg.Web.APIInternalURL,
+		"api_addr", cfg.API.AddrOrDefault(),
+		"fix", "set web.api_internal_url to http://127.0.0.1:"+apiPort)
 }
 
 func runAPI(cfgPath, addr string) error {
@@ -289,6 +346,13 @@ func runAPI(cfgPath, addr string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// Flag beats config beats default. `aveloxis start api` passes only
+	// --config, so the config value is the one that governs a
+	// backgrounded API process (v0.28.19).
+	if addr == "" {
+		addr = cfg.API.AddrOrDefault()
+	}
 
 	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-api"), logger)
 	if err != nil {
@@ -644,7 +708,7 @@ func listGitHubOrgRepos(ctx context.Context, http *platform.HTTPClient, org stri
 	page := 1
 	for {
 		path := fmt.Sprintf("/orgs/%s/repos?per_page=100&type=all&page=%d", org, page)
-		resp, err := http.Get(ctx, path)
+		resp, err := http.Get(platform.WithoutETag(ctx), path)
 		if err != nil {
 			return repos, err
 		}
@@ -688,7 +752,7 @@ func listGitLabGroupRepos(ctx context.Context, http *platform.HTTPClient, group 
 	encodedGroup := url.PathEscape(group)
 	for {
 		path := fmt.Sprintf("/groups/%s/projects?per_page=100&include_subgroups=true&page=%d", encodedGroup, page)
-		resp, err := http.Get(ctx, path)
+		resp, err := http.Get(platform.WithoutETag(ctx), path)
 		if err != nil {
 			return repos, err
 		}
@@ -1100,10 +1164,13 @@ running migrations.`,
 }
 
 func refreshViewsCmd(cfgPath *string) *cobra.Command {
-	return &cobra.Command{
+	var aggregates bool
+	cmd := &cobra.Command{
 		Use:   "refresh-views",
 		Short: "Refresh all materialized views (for 8Knot/analytics)",
-		Long:  `Refreshes all 20 materialized views used by 8Knot and other analytics tools. Views are also rebuilt automatically by aveloxis serve on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json).`,
+		Long: `Refreshes all 20 materialized views used by 8Knot and other analytics tools. Views are also rebuilt automatically by aveloxis serve on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json).
+
+--aggregates additionally rebuilds the dm_repo_* / dm_repo_group_* aggregate tables after the views — the per-repo pass the weekly rebuild runs unless collection.matview_rebuild_skip_dm_aggregates is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the ONLY way the dm_ tables update (v0.28.18).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)
@@ -1114,9 +1181,24 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 				return err
 			}
 			defer store.Close()
-			return db.RefreshMaterializedViews(ctx, store, logger)
+			viewErr := db.RefreshMaterializedViews(ctx, store, logger)
+			if !aggregates {
+				return viewErr // cobra prints it once; no second copy
+			}
+			if viewErr != nil {
+				logger.Error("materialized view refresh reported failures — continuing to the dm_ aggregate pass; both ride the exit", "error", viewErr)
+			}
+			// The dm_ pass reads only commits/repos, never a matview, so a
+			// stale view is no reason to skip it — with the skip knob on
+			// this flag is the ONLY way the dm_ tables update. Both halves'
+			// failures ride the (nonzero) exit.
+			logger.Info("refresh-views --aggregates: rebuilding dm_ aggregate tables (per-repo pass; hours at fleet scale)")
+			aggErr := store.RefreshAllRepoAggregates(ctx, logger)
+			return errors.Join(viewErr, aggErr)
 		},
 	}
+	cmd.Flags().BoolVar(&aggregates, "aggregates", false, "also rebuild the dm_repo_* / dm_repo_group_* aggregate tables after the views (slow at fleet scale)")
+	return cmd
 }
 
 func sbomCmd(cfgPath *string) *cobra.Command {
@@ -1285,6 +1367,8 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			// can still serve the GUI without keys, just can't scan orgs).
 			ghKeys, _, _ := loadKeys(ctx, cfg, store, false, logger)
 
+			warnAPIPortMismatch(cfg, logger)
+
 			webServer := web.New(store, cfg.Web, ghKeys, logger).
 				WithMailer(mailer.New(mailerConfigFrom(cfg), logger))
 			srv := &http.Server{Addr: cfg.Web.Addr, Handler: webServer.Handler()}
@@ -1397,10 +1481,10 @@ func startComponent(component, cfgPath string) error {
 
 // verifyBackendsDisconnected polls pg_stat_activity for backends with
 // the given application_name (e.g., "aveloxis-serve") and waits up to
-// 30 seconds for the count to drop to zero. If any persist, prints
-// the persistent PIDs paired with a pg_terminate_backend recipe so
-// the operator can act in seconds rather than wait the full TCP
-// keepalive timeout (tens of minutes).
+// the serve shutdown budget + margin for the count to drop to zero.
+// If any persist, prints the persistent PIDs paired with a
+// pg_terminate_backend recipe so the operator can act in seconds
+// rather than wait the full TCP keepalive timeout (tens of minutes).
 //
 // v0.20.0 introduced this to close the gap that produced the
 // 2026-05-08 26-minute orphan: SIGTERM was sent successfully, but the
@@ -1415,21 +1499,44 @@ func verifyBackendsDisconnected(cfgPath, appName string) {
 		// degrade gracefully.
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-	defer cancel()
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), bootLog)
+	// The dial gets its own bound so a slow connect can never eat into
+	// the poll window (pass 41 — the pass-40 shared ctx let a >5s dial
+	// reintroduce the mid-poll expiry it was fixing).
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer dialCancel()
+	store, err := db.NewPostgresStore(dialCtx, cfg.Database.ConnectionString(), bootLog)
 	if err != nil {
 		fmt.Printf("(could not verify %s backends disconnected: %v)\n", appName, err)
 		return
 	}
 	defer store.Close()
 
-	// Poll once a second for up to 30 seconds.
-	deadline := time.Now().Add(30 * time.Second)
+	// Poll once a second for the serve's full shutdown budget plus a
+	// margin (pass 39: a serve legitimately inside its bookkeeping wait
+	// used to be reported as orphaned backends at 30s). The poll ctx is
+	// sized FROM the budget — pass 40: a fixed 35s ctx expired mid-poll,
+	// the query error's silent return skipped the WARNING below, and a
+	// genuine orphan was never reported.
+	budget := shutdownBudget(cfg) + 30*time.Second
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), budget+5*time.Second)
+	defer cancel()
+	deadline := start.Add(budget)
 	var lastPids []int
 	for time.Now().Before(deadline) {
 		pids, err := store.PidsByAppName(ctx, appName)
 		if err != nil {
+			// A failed poll is not "all clear" — but it is not the
+			// orphan verdict either: the pids from the last successful
+			// check may be a serve mid-graceful-shutdown, and printing
+			// the terminate recipes here would invite the operator to
+			// kill live backends mid-bookkeeping (pass 41). Hedge.
+			fmt.Printf("(backend verification aborted %s into the %s budget: %v)\n",
+				time.Since(start).Truncate(time.Second), budget.Truncate(time.Second), err)
+			if len(lastPids) > 0 {
+				fmt.Printf("%s backends still connected as of the last successful check: %v — re-check pg_stat_activity before terminating anything.\n",
+					appName, lastPids)
+			}
 			return
 		}
 		if len(pids) == 0 {
@@ -1438,10 +1545,11 @@ func verifyBackendsDisconnected(cfgPath, appName string) {
 		lastPids = pids
 		time.Sleep(1 * time.Second)
 	}
-	// Persistent backends after 30s — surface PIDs and the actionable fix.
+	// Persistent backends past the FULL budget — surface PIDs and the
+	// actionable fix.
 	if len(lastPids) > 0 {
-		fmt.Printf("WARNING: %d %s backend(s) did not disconnect within 30s after SIGTERM.\n",
-			len(lastPids), appName)
+		fmt.Printf("WARNING: %d %s backend(s) did not disconnect within %s after SIGTERM.\n",
+			len(lastPids), appName, budget.Truncate(time.Second))
 		fmt.Printf("Persistent PIDs: %v\n", lastPids)
 		fmt.Println("If you don't see a matching aveloxis process in `ps`, these are orphans.")
 		fmt.Println("Terminate them with:")
@@ -1489,8 +1597,9 @@ PID files are cleaned up automatically.`,
 					stopped++
 					// v0.20.0: poll pg_stat_activity for the matching
 					// application_name and warn if backends linger past
-					// 30 seconds. Surfaces orphans-after-stop without
-					// requiring the operator to know about pg_locks.
+					// the shutdown budget + margin (pass 39). Surfaces
+					// orphans-after-stop without requiring the operator
+					// to know about pg_locks.
 					verifyBackendsDisconnected(*cfgPath, "aveloxis-"+comp)
 				}
 			}

@@ -237,8 +237,13 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
-			s.Logger.Warn("distribution: github release assets failed",
-				"repo_id", repoID, "owner", owner, "repo", repo, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				s.Logger.Warn("distribution: github release assets failed",
+					"repo_id", repoID, "owner", owner, "repo", repo, "error", err)
+			}
 		} else {
 			distributions = append(distributions, assets...)
 		}
@@ -249,8 +254,13 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
-			s.Logger.Warn("distribution: github packages failed",
-				"repo_id", repoID, "owner", owner, "repo", repo, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				s.Logger.Warn("distribution: github packages failed",
+					"repo_id", repoID, "owner", owner, "repo", repo, "error", err)
+			}
 		} else {
 			distributions = append(distributions, pkgs...)
 		}
@@ -261,8 +271,13 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
-			s.Logger.Warn("distribution: github manifests failed",
-				"repo_id", repoID, "owner", owner, "repo", repo, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				s.Logger.Warn("distribution: github manifests failed",
+					"repo_id", repoID, "owner", owner, "repo", repo, "error", err)
+			}
 		} else {
 			for _, m := range rawManifests {
 				// Best-effort: fetch content and parse declared

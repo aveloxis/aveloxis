@@ -29,6 +29,7 @@ type mlStore interface {
 	CheckpointListMonth(ctx context.Context, rglsID int64, yyyymm string) error
 	CompleteListScan(ctx context.Context, rglsID int64, complete bool) error
 	RecordListFailure(ctx context.Context, rglsID int64) error
+	ReleaseListLock(ctx context.Context, rglsID int64, lockedAt time.Time) error
 	StageMailingListMessage(ctx context.Context, rglsID int64, repoGroupID, repoID *int64, msg model.MailingListStagedMessage) error
 }
 
@@ -90,6 +91,25 @@ func (w *MailingListWorker) RunOnce(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	if err := w.ProcessList(ctx, job); err != nil {
+		if errors.Is(err, context.Canceled) {
+			// Shutdown mid-scan: release the lock NOW on a bounded
+			// Background ctx (the scan ctx is dead) so the list is
+			// reclaimable on restart instead of after the 2h stale
+			// window; the month checkpoint resumes it (pass 37). Keyed
+			// on the claim's own lock stamp (pass 39).
+			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if rerr := w.store.ReleaseListLock(rctx, job.RglsID, job.LockedAt); rerr != nil {
+				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+				// defect. Only the log is suppressed — surrounding behaviour is
+				// unchanged and the work is retried on the next cycle.
+				if !errors.Is(rerr, context.Canceled) {
+					w.logger.Warn("mailing-list: lock release on shutdown failed — the stale-lock gate reclaims the list later",
+						"list", job.ListAddress, "error", rerr)
+				}
+			}
+			return true, err
+		}
 		w.logger.Warn("mailing-list: list scan failed (will resume from checkpoint)",
 			"system", w.sys.Name, "list", job.ListAddress, "error", err)
 	}
@@ -111,6 +131,15 @@ func (w *MailingListWorker) ProcessList(ctx context.Context, job *db.ListJob) er
 			}
 		}
 		msgs, retryAfter, ferr := w.backend.FetchMonth(ctx, job.ListAddress, month)
+		if ferr != nil && ctx.Err() != nil {
+			// Shutdown killed the fetch. Decided HERE on the ctx (SR-18):
+			// both real backends wrap a transport failure as ErrTransient
+			// and the first cut's errors.Is(ferr, context.Canceled) never
+			// matched them — the release was decorative for the phase a
+			// scan spends nearly all its time in (pass 39). No strain, no
+			// failure record.
+			return ctx.Err()
+		}
 		if ferr != nil {
 			w.pacer.OnStrain()
 			switch {
@@ -133,8 +162,14 @@ func (w *MailingListWorker) ProcessList(ctx context.Context, job *db.ListJob) er
 		rgID := job.RepoGroupID
 		staged := 0
 		for i := range msgs {
+			if ctx.Err() != nil {
+				return ctx.Err() // shutdown mid-month: one exit, not one WARN per remaining message
+			}
 			env := w.buildStagedMessage(msgs[i])
 			if err := w.store.StageMailingListMessage(ctx, job.RglsID, &rgID, nil, env); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
 				w.logger.Warn("mailing-list: stage message failed", "list", job.ListAddress,
 					"message_id", msgs[i].MessageID, "error", err)
 				continue

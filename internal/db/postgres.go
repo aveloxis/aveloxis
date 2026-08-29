@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,40 @@ type PostgresStore struct {
 	matviewSkip      bool // whether to skip the matview block entirely (--skip-views on migrate)
 	migrateNoWait    bool // whether to fail fast on advisory-lock contention (--no-wait on migrate)
 	migrateFastPath  bool // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
+
+	// backendPIDs are the server-side PIDs of THIS process's pool
+	// connections (v0.28.18), maintained by the pool's AfterConnect /
+	// BeforeClose hooks. The mailing-list lock liveness probe excludes them
+	// from pg_stat_activity exactly — no pool counters, no client_addr —
+	// so `aveloxis serve`'s own startup migrate never counts itself as a
+	// running worker host. Under a transaction pooler the reported PIDs
+	// are the pooler's, so exclusion silently fails toward "live" (safe).
+	backendMu   sync.Mutex
+	backendPIDs map[uint32]struct{}
+}
+
+func (s *PostgresStore) trackBackend(pid uint32, alive bool) {
+	s.backendMu.Lock()
+	defer s.backendMu.Unlock()
+	if s.backendPIDs == nil {
+		s.backendPIDs = map[uint32]struct{}{}
+	}
+	if alive {
+		s.backendPIDs[pid] = struct{}{}
+	} else {
+		delete(s.backendPIDs, pid)
+	}
+}
+
+// ownBackendPIDs snapshots this process's pool backend PIDs.
+func (s *PostgresStore) ownBackendPIDs() []int32 {
+	s.backendMu.Lock()
+	defer s.backendMu.Unlock()
+	out := make([]int32, 0, len(s.backendPIDs))
+	for pid := range s.backendPIDs {
+		out = append(out, int32(pid))
+	}
+	return out
 }
 
 // NewPostgresStore connects to PostgreSQL and returns a Store.
@@ -126,6 +161,14 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	// incident history.
 	cfg.ConnConfig.Tracer = utf8ScrubTracer{}
 
+	store := &PostgresStore{logger: logger}
+	cfg.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
+		store.trackBackend(conn.PgConn().PID(), true)
+		return nil
+	}
+	cfg.BeforeClose = func(conn *pgx.Conn) {
+		store.trackBackend(conn.PgConn().PID(), false)
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to database: %w", err)
@@ -136,7 +179,8 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 		return nil, fmt.Errorf("pinging database: %w", err)
 	}
 
-	return &PostgresStore{pool: pool, logger: logger}, nil
+	store.pool = pool
+	return store, nil
 }
 
 func (s *PostgresStore) Close() {
@@ -149,7 +193,7 @@ func (s *PostgresStore) Close() {
 // returning. v0.20.0.
 func (s *PostgresStore) PidsByAppName(ctx context.Context, appName string) ([]int, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT pid FROM pg_stat_activity WHERE application_name = $1`, appName)
+		`SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND application_name = $1`, appName)
 	if err != nil {
 		return nil, err
 	}
@@ -2105,6 +2149,60 @@ func (s *PostgresStore) UpsertCommitMessage(ctx context.Context, msg *model.Comm
 // ============================================================
 
 func (s *PostgresStore) InsertRepoInfo(ctx context.Context, info *model.RepoInfo) error {
+	// v0.28.18: counts the fetcher could not determine carry forward from
+	// the latest prior snapshot instead of being stored as a fabricated 0.
+	// The processor rotates the current row to repo_info_history BEFORE
+	// this insert, so the prior snapshot may live in either table. A
+	// lookup ERROR is not "no prior snapshot" (SR-5): it fails the insert
+	// rather than storing zeros on bad information.
+	if info.PRCountUnknown || info.IssuesCountUnknown {
+		var prPRs, prOpen, prClosed, prMerged, prIssues, prIssuesClosed, prIssuesOpen int
+		err := s.pool.QueryRow(ctx, `
+			SELECT COALESCE(pr_count, 0), COALESCE(prs_open, 0), COALESCE(prs_closed, 0), COALESCE(prs_merged, 0),
+			       COALESCE(issues_count, 0), COALESCE(issues_closed, 0), COALESCE(open_issues, 0)
+			FROM (
+				SELECT pr_count, prs_open, prs_closed, prs_merged, issues_count, issues_closed, open_issues,
+				       data_collection_date, repo_info_id
+				FROM aveloxis_data.repo_info WHERE repo_id = $1
+				UNION ALL
+				SELECT pr_count, prs_open, prs_closed, prs_merged, issues_count, issues_closed, open_issues,
+				       data_collection_date, repo_info_id
+				FROM aveloxis_data.repo_info_history WHERE repo_id = $1
+			) prior
+			ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC
+			LIMIT 1`, info.RepoID,
+		).Scan(&prPRs, &prOpen, &prClosed, &prMerged, &prIssues, &prIssuesClosed, &prIssuesOpen)
+		switch {
+		case err == nil:
+			if info.PRCountUnknown {
+				info.PRCount, info.PRsOpen, info.PRsClosed, info.PRsMerged = prPRs, prOpen, prClosed, prMerged
+			}
+			if info.IssuesCountUnknown {
+				// The whole issue triple travels together — open_issues
+				// too, or the snapshot reads total=N/closed=M/open=0.
+				info.IssuesCount, info.IssuesClosed, info.OpenIssues = prIssues, prIssuesClosed, prIssuesOpen
+			}
+			s.logger.Info("repo_info counts unavailable from the forge — prior snapshot's counts carried forward",
+				"repo_id", info.RepoID, "pr_count_unknown", info.PRCountUnknown, "issues_count_unknown", info.IssuesCountUnknown,
+				"pr_count", info.PRCount, "issues_count", info.IssuesCount)
+		case errors.Is(err, pgx.ErrNoRows):
+			// The store enforces the coherent zero set itself (SR-18) —
+			// whatever the fetcher left in the fields.
+			if info.PRCountUnknown {
+				info.PRCount, info.PRsOpen, info.PRsClosed, info.PRsMerged = 0, 0, 0, 0
+			}
+			if info.IssuesCountUnknown {
+				// The fetcher's OpenIssues is the project payload's count
+				// on this path; without the totals it would store the
+				// incoherent 0/0/N triple. The whole triple is 0.
+				info.IssuesCount, info.IssuesClosed, info.OpenIssues = 0, 0, 0
+			}
+			s.logger.Warn("repo_info counts unavailable from the forge and no prior snapshot exists — counts stored as 0 until a fetch succeeds",
+				"repo_id", info.RepoID, "pr_count_unknown", info.PRCountUnknown, "issues_count_unknown", info.IssuesCountUnknown)
+		default:
+			return fmt.Errorf("repo_info prior-snapshot counts for repo %d: %w", info.RepoID, err)
+		}
+	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		// Schema uses TEXT for boolean fields (matching Augur's varchar), so convert.
 		boolStr := func(b bool) string {

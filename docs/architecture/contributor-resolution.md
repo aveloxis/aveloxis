@@ -564,7 +564,7 @@ Per [R1](#r1-identity-key-determinism), commit authors with no resolvable platfo
 
 ### GitLab parity gaps
 
-GitLab does not expose all the fields GitHub does. CLAUDE.md's "GitHub/GitLab Parity Gaps — Closure Plan" section enumerates the accepted limitations:
+GitLab does not expose all the fields GitHub does. The accepted limitations (the GitHub/GitLab parity closure plan):
 
 - **Watcher count** — no GitLab equivalent; `star_count` is the closest analog but semantically different.
 - **GraphQL node IDs** (`gh_node_id`) — GitLab uses numeric project IDs only; `SrcRepoID` numeric serves the same purpose.

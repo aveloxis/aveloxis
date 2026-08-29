@@ -100,8 +100,17 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 					// would stay dark until restart. Uncached, the
 					// next observation re-runs this branch (indexed
 					// point read) and retries the heal.
-					r.store.logger.Warn("identity node_id/user_type heal failed",
-						"platform_id", platformID, "platform_user_id", userID, "error", herr)
+					// Round-8 ratchet burn-down: Resolve runs once per
+					// staged row, so a shutdown here logged one WARN
+					// per issue / PR / comment / event still to
+					// process. Shutdown leaves the cache cold exactly
+					// like any other failed heal — the next cycle
+					// retries — it just does not announce itself as a
+					// defect N thousand times.
+					if !errors.Is(herr, context.Canceled) {
+						r.store.logger.Warn("identity node_id/user_type heal failed",
+							"platform_id", platformID, "platform_user_id", userID, "error", herr)
+					}
 					return cntrbID, nil
 				}
 			}
@@ -175,8 +184,13 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 					// login-hit branch this time). Resolution itself
 					// still succeeds; the next observation retries the
 					// (indexed) login lookup + this backfill.
-					r.store.logger.Warn("contributor identity backfill failed — leaving resolver cache cold so the next observation retries",
-						"cntrb_id", existingID, "login", login, "error", herr)
+					// Round-8 ratchet burn-down: same per-row flood as
+					// the heal arm above. The cache-cold contract is
+					// unchanged for a shutdown — it just is not a WARN.
+					if !errors.Is(herr, context.Canceled) {
+						r.store.logger.Warn("contributor identity backfill failed — leaving resolver cache cold so the next observation retries",
+							"cntrb_id", existingID, "login", login, "error", herr)
+					}
 					return existingID, nil
 				}
 			}

@@ -130,12 +130,25 @@ func retrySleep(ctx context.Context, wait time.Duration, attempt, budget int) er
 // from Get, so GraphQL calls get the same firewall resilience the REST
 // path has.
 func (c *HTTPClient) GraphQL(ctx context.Context, query string, variables map[string]any, dest any) error {
+	return c.GraphQLAt(ctx, c.graphqlEndpoint(), query, variables, dest)
+}
+
+// BaseURL returns the REST base URL this client was built with (e.g.
+// "https://gitlab.com/api/v4"); forge clients derive sibling endpoints
+// from it (v0.28.18: GitLab's GraphQL lives at /api/graphql, not under
+// /api/v4).
+func (c *HTTPClient) BaseURL() string { return c.baseURL }
+
+// GraphQLAt is GraphQL against an explicit endpoint (v0.28.18): same
+// retry loop, key rotation and bearer auth; GitLab accepts a personal
+// access token as a bearer token on its GraphQL API.
+func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, variables map[string]any, dest any) error {
 	body, err := json.Marshal(graphqlRequestBody{Query: query, Variables: variables})
 	if err != nil {
 		return fmt.Errorf("marshal graphql body: %w", err)
 	}
 
-	url := c.graphqlEndpoint()
+	url := endpoint
 
 	// Body-read retries (Fix C) have a tighter sub-budget than the outer
 	// retry loop. If three fresh streams in a row all abort mid-body, the

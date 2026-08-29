@@ -55,6 +55,10 @@ const (
 	historyStored activityHistoryOutcome = iota
 	historyMarked
 	historyFailed
+	// historyCanceled: the worker observed ctx cancellation mid-flight.
+	// Counted nowhere — shutdown is not a failure (pass 34); the
+	// contributor stays unstamped and re-claims next tick.
+	historyCanceled
 )
 
 // runActivityHistory performs one sweep tick: claim a batch, fetch
@@ -78,6 +82,9 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 	claimed, err := s.store.GetContributorsForHistoryBackfill(ctx,
 		s.cfg.Collection.ActivityHistoryBatchValue(),
 		s.cfg.Collection.ActivityHistoryCooldownValue())
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
 	if err != nil {
 		s.logger.Warn("activity history: claim failed", "error", err)
 		return
@@ -115,6 +122,7 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 					stored.Add(1)
 				case historyMarked:
 					marked.Add(1)
+				case historyCanceled:
 				default:
 					failed.Add(1)
 				}
@@ -123,6 +131,14 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 		}(c)
 	}
 	wg.Wait()
+	if ctx.Err() != nil {
+		// A canceled cycle never logs "complete" (L14): the counters
+		// describe a cut-short sweep, and every unfinished contributor
+		// re-claims next tick.
+		s.logger.Info("activity history cycle stopped by shutdown",
+			"claimed", len(claimed), "stored", stored.Load(), "marked_no_data", marked.Load(), "failed", failed.Load())
+		return
+	}
 	// Log the EFFECTIVE knob values with the throughput so operators
 	// can measure config changes directly.
 	s.logger.Info("activity history cycle complete",
@@ -138,6 +154,9 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 func (s *Scheduler) processHistoryContributor(ctx context.Context, fetcher contributorHistoryFetcher,
 	c db.ActivityCheckContributor, windowDays int) activityHistoryOutcome {
 	created, years, err := fetcher.FetchContributorHistoryMeta(ctx, c.Login)
+	if errors.Is(err, context.Canceled) {
+		return historyCanceled // shutdown, not a failure
+	}
 	if err != nil {
 		if errors.Is(err, platform.ErrNotFound) || platform.ClassifyError(err) == platform.ClassSkip {
 			// Deleted/renamed account: stamp so the claim head drains.
@@ -145,7 +164,11 @@ func (s *Scheduler) processHistoryContributor(ctx context.Context, fetcher contr
 			// for a pointless re-fetch every tick — log it and count
 			// it as a failure so the operator sees the churn (Copilot
 			// review, PR #171).
-			if merr := s.store.MarkHistoryBackfilled(ctx, c.ID); merr != nil {
+			merr := s.store.MarkHistoryBackfilled(ctx, c.ID)
+			if errors.Is(merr, context.Canceled) {
+				return historyCanceled
+			}
+			if merr != nil {
 				s.logger.Warn("activity history: mark-only stamp failed — contributor will be re-claimed", "login", c.Login, "error", merr)
 				return historyFailed
 			}
@@ -158,18 +181,29 @@ func (s *Scheduler) processHistoryContributor(ctx context.Context, fetcher contr
 	if len(windows) == 0 {
 		// Account exists but has zero contribution years: nothing to
 		// fetch, ever — stamp it. Same failure treatment as above.
-		if merr := s.store.MarkHistoryBackfilled(ctx, c.ID); merr != nil {
+		merr := s.store.MarkHistoryBackfilled(ctx, c.ID)
+		if errors.Is(merr, context.Canceled) {
+			return historyCanceled
+		}
+		if merr != nil {
 			s.logger.Warn("activity history: zero-years stamp failed — contributor will be re-claimed", "login", c.Login, "error", merr)
 			return historyFailed
 		}
 		return historyMarked
 	}
 	days, totals, err := fetcher.FetchContributorDailyHistory(ctx, c.Login, windows)
+	if errors.Is(err, context.Canceled) {
+		return historyCanceled
+	}
 	if err != nil {
 		s.logger.Warn("activity history: fetch failed — will retry on next claim", "login", c.Login, "windows", len(windows), "error", err)
 		return historyFailed
 	}
-	if err := s.store.StoreContributorActivityHistory(ctx, c.ID, days, totals); err != nil {
+	err = s.store.StoreContributorActivityHistory(ctx, c.ID, days, totals)
+	if errors.Is(err, context.Canceled) {
+		return historyCanceled
+	}
+	if err != nil {
 		s.logger.Warn("activity history: store failed — will retry on next claim", "login", c.Login, "error", err)
 		return historyFailed
 	}

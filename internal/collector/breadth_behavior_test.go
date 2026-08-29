@@ -52,6 +52,10 @@ type fakeBreadthStore struct {
 	// insertErrFor makes InsertContributorRepoBatch fail for batches
 	// containing this cntrb_id (ordering-contract tests).
 	insertErrFor string
+	// insertCanceledFor makes InsertContributorRepoBatch return
+	// context.Canceled for batches containing this cntrb_id — the
+	// shutdown-mid-insert shape (Copilot round 8).
+	insertCanceledFor string
 }
 
 func (f *fakeBreadthStore) GetContributorsForBreadth(ctx context.Context, limit int, cooldown time.Duration) ([]db.BreadthContributor, error) {
@@ -98,6 +102,13 @@ func (f *fakeBreadthStore) InsertContributorRepoBatch(ctx context.Context, rows 
 		for _, r := range rows {
 			if r.CntrbID == f.insertErrFor {
 				return fmt.Errorf("synthetic insert failure for %s", f.insertErrFor)
+			}
+		}
+	}
+	if f.insertCanceledFor != "" {
+		for _, r := range rows {
+			if r.CntrbID == f.insertCanceledFor {
+				return context.Canceled
 			}
 		}
 	}

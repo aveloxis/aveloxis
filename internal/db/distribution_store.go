@@ -63,6 +63,19 @@ type DistributionJob struct {
 	tx        pgx.Tx
 }
 
+// ReleaseDistributionClaim rolls the claim transaction back WITHOUT
+// recording anything: the row's distribution_last_run and failure
+// counters are untouched, so it is immediately re-claimable. The
+// shutdown path (pass 39) and the dispatcher's claimed-but-undispatched
+// release use it; RecordDistributionFailure is a strike and stays for
+// real failures.
+func (s *PostgresStore) ReleaseDistributionClaim(ctx context.Context, job *DistributionJob) error {
+	if job == nil || job.tx == nil {
+		return nil
+	}
+	return job.tx.Rollback(ctx)
+}
+
 // ClaimNextDistributionRepo atomically claims the highest-priority
 // eligible repo for distribution tracking. Returns (nil, nil) when
 // no eligible row exists — the caller treats this as "queue empty,

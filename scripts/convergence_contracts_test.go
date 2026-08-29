@@ -59,6 +59,16 @@ var convergenceContracts = []convergenceContract{
 		// "re-run until 0 pairs": the e2e asserts the merged pair drops
 		// out of the candidate set (findPairByLowerGit → nil).
 		DrivingTests: []string{"TestDedupOnePairEndToEnd"}},
+	{File: "internal/db/repo_dedup.go",
+		// v0.28.18: DedupCaseVariantReposBatch's doc quotes the same
+		// "rerun until 0 pairs" contract and names the stall that broke
+		// it (a collecting head filling every batch window). The paging
+		// test drives a batch PAST a collecting pair to the mergeable one
+		// beyond it, then finishes that pair's job and reruns until it
+		// too has left the candidate set (scoped to the fixture's pairs —
+		// the shared scratch DB may carry residue); the e2e is the
+		// drop-out-of-candidate-set half.
+		DrivingTests: []string{"TestDedupBatchPagesPastCollectingHead", "TestDedupOnePairEndToEnd"}},
 	{File: "cmd/aveloxis/rewalk_whitespace.go",
 		// "the marker IS the resume state": stamping whitespace_head_hash
 		// drains the repo from GetReposForWhitespaceRewalk.

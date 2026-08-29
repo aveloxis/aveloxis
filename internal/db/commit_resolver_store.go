@@ -228,7 +228,12 @@ func (s *PostgresStore) backfillGHColumns(ctx context.Context, cntrbID string) {
 		    OR c.gh_avatar_url IS NULL OR c.gh_avatar_url = '')`,
 		cntrbID)
 	if err != nil {
-		s.logger.Warn("backfillGHColumns failed", "cntrb_id", cntrbID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			s.logger.Warn("backfillGHColumns failed", "cntrb_id", cntrbID, "error", err)
+		}
 	}
 }
 
@@ -247,7 +252,12 @@ func (s *PostgresStore) InsertUnresolvedEmail(ctx context.Context, email string)
 		)`,
 		email, ToolVersion)
 	if err != nil {
-		s.logger.Warn("InsertUnresolvedEmail failed", "email", email, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			s.logger.Warn("InsertUnresolvedEmail failed", "email", email, "error", err)
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -147,6 +148,9 @@ func (p *MailingListProcessor) DrainOnce(ctx context.Context, listLimit int) (in
 		n, derr := p.DrainList(ctx, rgls)
 		p.release(rgls)
 		total += n
+		if errors.Is(derr, context.Canceled) {
+			return total, derr // shutdown mid-list: the wiring loop exits (pass 36)
+		}
 		if derr != nil {
 			p.logger.Warn("mailing-list processor: list drain failed (will resume)",
 				"rgls_id", rgls, "processed", n, "error", derr)
@@ -199,7 +203,13 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 		done := make([]int64, 0, len(batch))
 		dropped := 0
 		for _, row := range batch {
+			if ctx.Err() != nil {
+				return processed, ctx.Err() // shutdown mid-batch: nothing marked, the rows drain next start (pass 37)
+			}
 			if err := p.processRow(ctx, repoID, rglsID, row, cntrbCache, threadIssue); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return processed, err // not a drop: the row stays staged
+				}
 				// Mark processed anyway so the drain makes progress (collect what
 				// we can; one bad message must not wedge the whole list — the
 				// failing-cohort-dominates-pool lesson). The message IS lost,
@@ -284,6 +294,9 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		// data_source = 'JIRA' for the Apache issue_event case (the only
 		// projected tracker today; Bugzilla support is a follow-up).
 		if id, _, perr := p.store.LinkOrCreateIssueFromEmail(ctx, repoID, m.ExternalKey, title, m.Body, "JIRA", reporterID, m.SentAt); perr != nil {
+			if errors.Is(perr, context.Canceled) {
+				return perr // shutdown: DrainList reports it once (pass 38)
+			}
 			p.logger.Warn("mailing-list processor: issue projection failed",
 				"rgls_id", rglsID, "external_key", m.ExternalKey, "error", perr)
 		} else if id > 0 {

@@ -5,6 +5,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -121,9 +122,14 @@ func (w *ScancodeWorker) ensureTypecodeEnvPair(ctx context.Context) {
 	w.logger.Warn("scancode preflight: typecode-libmagic wheel not found in the scancode venv — injecting",
 		"command", "pipx inject "+scancodePipxPackage+" typecode-libmagic")
 	if err := runLoggedCommand(w.logger)(ctx, "pipx", "inject", scancodePipxPackage, "typecode-libmagic"); err != nil {
-		w.logger.Error("scancode preflight: typecode-libmagic injection failed",
-			"error", err,
-			"retry_hint", "pipx inject "+scancodePipxPackage+" typecode-libmagic")
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			w.logger.Error("scancode preflight: typecode-libmagic injection failed",
+				"error", err,
+				"retry_hint", "pipx inject "+scancodePipxPackage+" typecode-libmagic")
+		}
 	}
 	if pair, ok := discoverTypecodeLibmagic(); ok {
 		w.setTypecodeEnvPair(pair)
@@ -244,7 +250,12 @@ func (w *ScancodeWorker) recordScancodeStatus(ctx context.Context, status, detai
 		return
 	}
 	if err := w.store.SetAveloxisStatus(ctx, scancodeStatusName, status, detail, scancodeStatusSource); err != nil {
-		w.logger.Warn("scancode preflight: failed to record status", "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			w.logger.Warn("scancode preflight: failed to record status", "error", err)
+		}
 	}
 }
 

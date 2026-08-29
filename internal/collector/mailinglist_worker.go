@@ -100,8 +100,13 @@ func (w *MailingListWorker) RunOnce(ctx context.Context) (bool, error) {
 			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if rerr := w.store.ReleaseListLock(rctx, job.RglsID, job.LockedAt); rerr != nil {
-				w.logger.Warn("mailing-list: lock release on shutdown failed — the stale-lock gate reclaims the list later",
-					"list", job.ListAddress, "error", rerr)
+				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+				// defect. Only the log is suppressed — surrounding behaviour is
+				// unchanged and the work is retried on the next cycle.
+				if !errors.Is(rerr, context.Canceled) {
+					w.logger.Warn("mailing-list: lock release on shutdown failed — the stale-lock gate reclaims the list later",
+						"list", job.ListAddress, "error", rerr)
+				}
 			}
 			return true, err
 		}

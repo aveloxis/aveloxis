@@ -264,7 +264,7 @@ func TestScancodeHistoryRotation(t *testing.T) {
 		t.Error("rotateScancodeRows must reference scancode_scans_history")
 	}
 	if !strings.Contains(code, "scancode_file_results_history") {
-		t.Error("RotateScancodeToHistory must reference scancode_file_results_history")
+		t.Error("rotateScancodeRows must reference scancode_file_results_history")
 	}
 }
 

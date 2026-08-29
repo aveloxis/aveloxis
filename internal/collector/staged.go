@@ -261,8 +261,13 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		// Non-fatal — if the UPDATE fails we log and continue;
 		// the next cycle will retry.
 		if updateErr := sc.store.UpdateRepoMetadata(ctx, repoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived", info.ForkedFrom(), info.PlatformRepoID, info.CreatedAt, info.LastUpdated); updateErr != nil {
-			sc.logger.Warn("failed to update repos.repo_description/primary_language/languages",
-				"owner", owner, "repo", repo, "error", updateErr)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(updateErr, context.Canceled) {
+				sc.logger.Warn("failed to update repos.repo_description/primary_language/languages",
+					"owner", owner, "repo", repo, "error", updateErr)
+			}
 		}
 
 		// v0.25.32: case self-heal. The forge returns the CANONICAL
@@ -274,8 +279,13 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		// collection job, so failures log and continue.
 		if info.FullName != "" {
 			if healed, healErr := sc.store.HealRepoCaseDrift(ctx, repoID, info.FullName); healErr != nil {
-				sc.logger.Warn("case-drift self-heal failed",
-					"owner", owner, "repo", repo, "error", healErr)
+				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+				// defect. Only the log is suppressed — surrounding behaviour is
+				// unchanged and the work is retried on the next cycle.
+				if !errors.Is(healErr, context.Canceled) {
+					sc.logger.Warn("case-drift self-heal failed",
+						"owner", owner, "repo", repo, "error", healErr)
+				}
 			} else if healed {
 				sc.logger.Info("healed repo case drift",
 					"repo_id", repoID, "canonical", info.FullName)
@@ -1225,7 +1235,12 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 	// attributed. Events are processed by this point, so the derivation
 	// is platform- and mode-agnostic with zero API cost.
 	if n, err := p.store.DeriveIssueClosedByFromEvents(ctx, repoID); err != nil {
-		p.logger.Warn("closed_by derivation failed", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			p.logger.Warn("closed_by derivation failed", "repo_id", repoID, "error", err)
+		}
 	} else if n > 0 {
 		p.logger.Info("derived issue closed_by from events", "repo_id", repoID, "count", n)
 	}
@@ -1242,7 +1257,12 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 		CoreStatus:            status,
 		CoreDataLastCollected: &now,
 	}); err != nil {
-		p.logger.Warn("failed to update final processing status", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			p.logger.Warn("failed to update final processing status", "repo_id", repoID, "error", err)
+		}
 	}
 
 	if p.unresolvableRefs > 0 {
@@ -1521,6 +1541,16 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 	// targeted follow-up UPDATE, warn-don't-fail like the siblings.
 	if headMetaID != 0 || baseMetaID != 0 {
 		if err := p.store.SetPRMetaLinks(ctx, prID, headMetaID, baseMetaID); err != nil {
+			// L10 pass: the one child-write arm in this function the
+			// round-8 sweep missed — its verb is "link", and the pin
+			// that was supposed to derive the sites only matched
+			// upsert/insert/clear/set. meta_head_id/meta_base_id are
+			// the columns v0.27.104 un-darkened after being 100% dark
+			// on 41.2M rows; a shutdown here left them unset for the
+			// PR while the row still stamped processed.
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to link PR meta ids", "pr_id", prID, "error", err)
 		}
 	}
@@ -1687,7 +1717,12 @@ func (p *Processor) processStagedRepoInfo(ctx context.Context, repoID int64, pla
 	info.RepoID = repoID
 	// Rotate previous snapshot to history before inserting the latest.
 	if err := p.store.RotateRepoInfoToHistory(ctx, repoID); err != nil {
-		p.logger.Warn("failed to rotate repo info to history", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			p.logger.Warn("failed to rotate repo info to history", "repo_id", repoID, "error", err)
+		}
 	}
 	return p.store.InsertRepoInfo(ctx, &info)
 }

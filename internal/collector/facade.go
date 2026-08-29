@@ -666,8 +666,13 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 		}
 		for _, parentHash := range pc.Parents {
 			if err := f.store.InsertCommitParent(ctx, repoID, pc.Hash, parentHash); err != nil {
-				f.logger.Warn("failed to insert commit parent",
-					"hash", pc.Hash, "parent", parentHash, "error", err)
+				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+				// defect. Only the log is suppressed — surrounding behaviour is
+				// unchanged and the work is retried on the next cycle.
+				if !errors.Is(err, context.Canceled) {
+					f.logger.Warn("failed to insert commit parent",
+						"hash", pc.Hash, "parent", parentHash, "error", err)
+				}
 			}
 		}
 	}
@@ -685,7 +690,12 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 					break
 				}
 				if err := f.store.UpsertCommitMessage(ctx, msg); err != nil {
-					f.logger.Warn("failed to upsert commit message", "hash", msg.Hash, "error", err)
+					// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+					// defect. Only the log is suppressed — surrounding behaviour is
+					// unchanged and the work is retried on the next cycle.
+					if !errors.Is(err, context.Canceled) {
+						f.logger.Warn("failed to upsert commit message", "hash", msg.Hash, "error", err)
+					}
 				} else {
 					result.CommitMessages++
 				}
@@ -712,7 +722,12 @@ func (f *FacadeCollector) upsertCommitRowsFallback(ctx context.Context, repoID i
 			break
 		}
 		if err := f.store.UpsertCommit(ctx, commit); err != nil {
-			f.logger.Warn("failed to upsert commit", "hash", commit.Hash, "file", commit.Filename, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				f.logger.Warn("failed to upsert commit", "hash", commit.Hash, "file", commit.Filename, "error", err)
+			}
 			result.CommitWriteFailures++
 			continue
 		}

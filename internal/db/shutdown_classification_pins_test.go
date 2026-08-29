@@ -10,66 +10,10 @@ import (
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
-// Copilot round 8 on PR #191 found the shutdown-classification sweep of
-// passes 28-37 had stopped at the scheduler package boundary: the
-// structural analyzer (internal/scheduler/ticker_cancel_structural_test.go)
-// says so itself — "Delegates in OTHER packages … are outside this pin".
-// These are the internal/db sites it could not see. Each fires on every
-// `stop serve` that lands mid-pass, and each is a keep-going loop, so a
-// loop-top ctx.Err() guard cannot cover it: the call that OBSERVED the
-// cancellation is already past the guard.
-//
-// The rule per site: the cancellation classification must sit BETWEEN
-// the producing call and the failure log, so the log never fires.
-func TestShutdownIsNotAFailureInDBKeepGoingLoops(t *testing.T) {
-	for _, tc := range []struct {
-		file, fn string
-		// producer → the call whose error is classified;
-		// classify → the classification that must follow it;
-		// log      → the failure log that must NOT be reached first.
-		producer, classify, logCall, why string
-	}{
-		{
-			file: "matviews.go", fn: "func RefreshMaterializedViews(",
-			// Anchored on the FALLBACK exec, not the CONCURRENTLY one:
-			// the classification that actually guards the log is the
-			// one after the retry. (The earlier one merely skips a
-			// doomed retry — removing it is not a regression, so
-			// anchoring there would make this pin decorative.)
-			producer: `REFRESH MATERIALIZED VIEW %s`,
-			classify: `errors.Is(err, context.Canceled)`,
-			logCall:  `logger.Warn("failed to refresh materialized view"`,
-			why:      "a canceled CONCURRENTLY refresh was retried non-concurrently on the same dead ctx, so the pair landed as a WARN plus a stale-view failure on every stop",
-		},
-		{
-			file: "aggregates.go", fn: "func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger interface {",
-			producer: `s.RefreshRepoAggregates(ctx, repoID)`,
-			classify: `errors.Is(err, context.Canceled)`,
-			logCall:  `logger.Warn("aggregate refresh failed"`,
-			why:      "shutdown was recorded as a per-repo aggregate failure and a stale-row error",
-		},
-		{
-			file: "aggregates.go", fn: "func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger interface {",
-			producer: `s.RefreshGroupAggregates(ctx, groupID)`,
-			classify: `errors.Is(err, context.Canceled)`,
-			logCall:  `logger.Warn("group aggregate refresh failed"`,
-			why:      "same misclassification in the group loop",
-		},
-	} {
-		body := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, tc.file), tc.fn))
-		prod := strings.Index(body, tc.producer)
-		logAt := strings.Index(body, tc.logCall)
-		if prod < 0 || logAt < 0 {
-			t.Errorf("%s: could not anchor producer (%d) / log (%d) — re-anchor this pin", tc.file, prod, logAt)
-			continue
-		}
-		cls := strings.Index(body[prod:logAt], tc.classify)
-		if cls < 0 {
-			t.Errorf("%s %s: %q must classify %s between the call and the log — %s",
-				tc.file, tc.producer, tc.classify, tc.logCall, tc.why)
-		}
-	}
-}
+// NOTE: the per-site classification pin that lived here is GONE — the
+// L10 pass proved it decorative (it checked the token existed, not that
+// the log became unreachable). scripts/shutdown_classification_test.go
+// supersedes it repo-wide with the stronger rule.
 
 // The v0.27.17 consolidation repoints several tables' repo_group_id and
 // THEN deletes the loser groups. mailing_list_staging has no FK to

@@ -1116,8 +1116,13 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	// NOTHING never protected against this — it was dead code). The
 	// next cycle retries with a fresh rotation.
 	if err := ac.store.RotateLibyearToHistory(ctx, repoID); err != nil {
-		ac.logger.Error("failed to rotate libyear to history — skipping libyear insert this cycle",
-			"repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			ac.logger.Error("failed to rotate libyear to history — skipping libyear insert this cycle",
+				"repo_id", repoID, "error", err)
+		}
 		return fmt.Errorf("rotate libyear to history: %w", err)
 	}
 

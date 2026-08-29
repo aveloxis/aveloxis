@@ -28,6 +28,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -241,8 +242,13 @@ func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client pla
 						"repo_id", k.repoID, "number", k.number, "side", k.side)
 					continue
 				}
-				logger.Warn("message heal: parent refetch failed — its messages stay pending",
-					"repo_id", k.repoID, "number", k.number, "side", k.side, "error", fetchErr)
+				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+				// defect. Only the log is suppressed — surrounding behaviour is
+				// unchanged and the work is retried on the next cycle.
+				if !errors.Is(fetchErr, context.Canceled) {
+					logger.Warn("message heal: parent refetch failed — its messages stay pending",
+						"repo_id", k.repoID, "number", k.number, "side", k.side, "error", fetchErr)
+				}
 				res.ParentErrors++
 				for _, m := range parents[k] {
 					failed[m] = true
@@ -250,7 +256,12 @@ func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client pla
 			}
 		}
 		if err := sw.Flush(ctx); err != nil {
-			logger.Warn("message heal: staging flush failed — repo's messages stay pending", "repo_id", repoID, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				logger.Warn("message heal: staging flush failed — repo's messages stay pending", "repo_id", repoID, "error", err)
+			}
 			for _, k := range keys {
 				for _, m := range parents[k] {
 					failed[m] = true
@@ -261,7 +272,12 @@ func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client pla
 		if staged > 0 {
 			proc := NewProcessor(store, logger)
 			if err := proc.ProcessRepo(ctx, repoID, 1); err != nil {
-				logger.Warn("message heal: processing failed — repo's messages stay pending", "repo_id", repoID, "error", err)
+				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+				// defect. Only the log is suppressed — surrounding behaviour is
+				// unchanged and the work is retried on the next cycle.
+				if !errors.Is(err, context.Canceled) {
+					logger.Warn("message heal: processing failed — repo's messages stay pending", "repo_id", repoID, "error", err)
+				}
 				for _, k := range keys {
 					for _, m := range parents[k] {
 						failed[m] = true
@@ -284,7 +300,12 @@ func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client pla
 		// correct links against new kind-1 rows).
 		if it.MsgKind == db.MsgKindReviewComment || it.MsgKind == db.MsgKindReviewBody {
 			if err := store.DeleteStaleConversationRefs(ctx, it.MsgID); err != nil {
-				logger.Warn("message heal: stale-link cleanup failed — row stays pending", "msg_id", it.MsgID, "error", err)
+				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+				// defect. Only the log is suppressed — surrounding behaviour is
+				// unchanged and the work is retried on the next cycle.
+				if !errors.Is(err, context.Canceled) {
+					logger.Warn("message heal: stale-link cleanup failed — row stays pending", "msg_id", it.MsgID, "error", err)
+				}
 				continue
 			}
 		}

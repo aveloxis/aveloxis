@@ -517,8 +517,13 @@ func (bw *BreadthWorker) fetchContributor(ctx context.Context, c db.BreadthContr
 		"cntrb_id", c.ID, "old_login", c.Login, "new_login", newLogin,
 		"gh_user_id", c.GHUserID)
 	if renameErr := bw.store.RenameContributorGhLogin(ctx, c.ID, newLogin, c.GHUserID); renameErr != nil {
-		bw.logger.Warn("breadth: failed to persist rename — bubbling original 404",
-			"cntrb_id", c.ID, "new_login", newLogin, "error", renameErr)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(renameErr, context.Canceled) {
+			bw.logger.Warn("breadth: failed to persist rename — bubbling original 404",
+				"cntrb_id", c.ID, "new_login", newLogin, "error", renameErr)
+		}
 		return rows, false, err
 	}
 

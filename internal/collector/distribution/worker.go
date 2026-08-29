@@ -5,6 +5,7 @@ package distribution
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -239,7 +240,12 @@ func (w *Worker) dispatcher(ctx context.Context, jobs chan<- *db.DistributionJob
 
 		job, err := w.store.ClaimNextDistributionRepo(ctx, w.cadence, w.immediatePartialReclaim)
 		if err != nil {
-			w.logger.Warn("distribution dispatcher: claim failed", "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				w.logger.Warn("distribution dispatcher: claim failed", "error", err)
+			}
 			// Back off briefly to avoid spinning on a broken DB.
 			select {
 			case <-ctx.Done():

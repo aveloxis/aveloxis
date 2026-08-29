@@ -226,7 +226,12 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 
 	// Bulk backfill: connect commits to contributors via cmt_ght_author_id.
 	if n, err := r.store.BackfillCommitAuthorIDs(ctx, repoID); err != nil {
-		r.logger.Warn("backfill cmt_ght_author_id failed", "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			r.logger.Warn("backfill cmt_ght_author_id failed", "error", err)
+		}
 	} else if n > 0 {
 		r.logger.Info("backfilled cmt_ght_author_id", "rows", n)
 	}
@@ -483,7 +488,12 @@ func (r *CommitResolver) ensureContributor(ctx context.Context, login string, gh
 	// if the login already existed under a different UUID).
 	if commitEmail != "" && !IsNoreplyEmail(commitEmail) && !IsBotEmail(commitEmail) {
 		if err := r.store.EnsureContributorAlias(ctx, actualID, commitEmail); err != nil {
-			r.logger.Warn("failed to create alias", "email", commitEmail, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				r.logger.Warn("failed to create alias", "email", commitEmail, "error", err)
+			}
 		} else {
 			result.AliasesCreated++
 		}
@@ -502,7 +512,12 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 		return
 	}
 	if err := r.store.EnsureContributorAlias(ctx, cntrbID, commitEmail); err != nil {
-		r.logger.Warn("failed to create alias", "email", commitEmail, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			r.logger.Warn("failed to create alias", "email", commitEmail, "error", err)
+		}
 	} else {
 		result.AliasesCreated++
 	}
@@ -515,7 +530,12 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 	// table but left cntrb_canonical empty on the parent contributor
 	// row, suppressing the email-canonical join path downstream.
 	if err := r.store.SetContributorCanonical(ctx, cntrbID, commitEmail); err != nil {
-		r.logger.Warn("failed to backfill canonical", "cntrb_id", cntrbID, "email", commitEmail, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			r.logger.Warn("failed to backfill canonical", "cntrb_id", cntrbID, "email", commitEmail, "error", err)
+		}
 	}
 }
 

@@ -253,8 +253,13 @@ func (gf *GapFiller) fillIssueGaps(ctx context.Context, repoID int64, owner, rep
 				"repo_id", repoID, "number", num, "filled_so_far", filled, "error", err)
 			if filled > 0 {
 				if ferr := sw.Flush(ctx); ferr != nil {
-					gf.logger.Warn("failed to flush partial gap-fill issue staging",
-						"repo_id", repoID, "staged", filled, "error", ferr)
+					// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+					// defect. Only the log is suppressed — surrounding behaviour is
+					// unchanged and the work is retried on the next cycle.
+					if !errors.Is(ferr, context.Canceled) {
+						gf.logger.Warn("failed to flush partial gap-fill issue staging",
+							"repo_id", repoID, "staged", filled, "error", ferr)
+					}
 				}
 			}
 			return filled, fmt.Errorf("gap fill issue %d: %w", num, err)
@@ -312,8 +317,13 @@ func (gf *GapFiller) fillIssueGaps(ctx context.Context, repoID int64, owner, rep
 	// be silently discarded when the writer goes out of scope.
 	if filled > 0 {
 		if err := sw.Flush(ctx); err != nil {
-			gf.logger.Warn("failed to flush gap-fill issue staging batch",
-				"repo_id", repoID, "staged", filled, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				gf.logger.Warn("failed to flush gap-fill issue staging batch",
+					"repo_id", repoID, "staged", filled, "error", err)
+			}
 			return filled, fmt.Errorf("flushing gap-fill issue staging: %w", err)
 		}
 		proc := NewProcessor(gf.store, gf.logger)
@@ -395,8 +405,13 @@ func (gf *GapFiller) fillPRGaps(ctx context.Context, repoID int64, owner, repo s
 	// (see fillIssueGaps above for the full rationale — same buffering bug).
 	if filled > 0 {
 		if err := sw.Flush(ctx); err != nil {
-			gf.logger.Warn("failed to flush gap-fill PR staging batch",
-				"repo_id", repoID, "staged", filled, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				gf.logger.Warn("failed to flush gap-fill PR staging batch",
+					"repo_id", repoID, "staged", filled, "error", err)
+			}
 			return filled, fmt.Errorf("flushing gap-fill PR staging: %w", err)
 		}
 		proc := NewProcessor(gf.store, gf.logger)

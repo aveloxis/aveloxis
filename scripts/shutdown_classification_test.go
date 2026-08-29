@@ -134,14 +134,21 @@ func scanShutdownClassification(t *testing.T) []string {
 			"resolving calls any more, so every migration site would be reported as a violation. "+
 			"Re-anchor the walk before trusting this ratchet.", len(migration))
 	}
-	out = append(out, auditFuncs(dbFns, migration)...)
+	dbViolations, dbExamined := auditFuncs(dbFns, migration)
+	out = append(out, dbViolations...)
 
 	// internal/collector is entirely collection path: no exclusions.
-	out = append(out, auditFuncs(parseFuncs(t, "../internal/collector"), nil)...)
+	colViolations, colExamined := auditFuncs(parseFuncs(t, "../internal/collector"), nil)
+	out = append(out, colViolations...)
 
-	if len(out) == 0 {
-		t.Fatal("the scan found zero sites in either package — the corpus or the regexes broke; " +
-			"a silently-empty analyzer passes forever")
+	// Guard on sites EXAMINED, never on violations found: an empty
+	// baseline is the GOAL state, and guarding on the violation count
+	// would make a completed burn-down fail forever (the v0.27.122
+	// lesson, repeated here on the first day the burn-down finished).
+	if dbExamined+colExamined < 50 {
+		t.Fatalf("the scan examined only %d ctx-bound failure logs (db %d, collector %d) — the "+
+			"corpus or the regexes broke; a silently-empty analyzer passes forever",
+			dbExamined+colExamined, dbExamined, colExamined)
 	}
 	sort.Strings(out)
 	return out
@@ -220,7 +227,7 @@ func reachableFrom(fns []shutdownFunc, seed string) map[string]bool {
 
 var shutdownLogRe = regexp.MustCompile(`\.(?:Warn|Error)\(\s*"([^"]*)"[^)]*"error",\s*(\w+)`)
 
-func auditFuncs(fns []shutdownFunc, exclude map[string]bool) []string {
+func auditFuncs(fns []shutdownFunc, exclude map[string]bool) (violations []string, examined int) {
 	var out []string
 	for _, f := range fns {
 		if exclude[f.name] {
@@ -233,6 +240,7 @@ func auditFuncs(fns []shutdownFunc, exclude map[string]bool) []string {
 			if !ok {
 				continue // not ctx-bound: a parse error is not a shutdown
 			}
+			examined++
 			// The classification must sit between the producing call and
 			// the log (a guard elsewhere in the function does not count —
 			// L14: a loop-top guard cannot see the in-flight call that
@@ -242,60 +250,111 @@ func auditFuncs(fns []shutdownFunc, exclude map[string]bool) []string {
 			// `if errors.Is(err, context.Canceled) {` and replacing its
 			// `return` with a bare `continue` (or a Debug log) escapes a
 			// presence check while restoring the exact defect.
-			if classificationTerminates(f.body[prodAt:loc[0]]) {
+			if logUnreachableOnCancel(f.body, prodAt, loc[0]) {
 				continue
 			}
 			out = append(out, fmt.Sprintf("%s::%s::%s", f.file, f.name, msg))
 		}
 	}
-	return out
+	return out, examined
 }
 
-// classificationTerminates reports whether the window contains a
-// cancellation classification whose BLOCK ends the work before the log.
+// logUnreachableOnCancel reports whether a cancellation classification
+// between the producing call and the log makes the log UNREACHABLE when
+// the error is context.Canceled. That is the property; "the token
+// appears somewhere in between" is not.
 //
-// `return` is the terminator this rule wants. A bare `continue` is not:
-// in a child-write loop it skips the item and lets the enclosing row
-// complete and be stamped processed with that child missing — the
-// pre-fix defect minus the WARN. The one legitimate non-return shape is
-// "record the abort, then drain" (breadth.go sets aborted/abortErr and
-// cancels the remaining fetches), so a `continue`/`break` counts only
-// when the block also ASSIGNS — i.e. it recorded something.
-func classificationTerminates(window string) bool {
-	for _, at := range regexp.MustCompile(`errors\.Is\([^)]*context\.Canceled\)`).FindAllStringIndex(window, -1) {
-		open := strings.Index(window[at[1]:], "{")
-		if open < 0 {
+// Checking only for the token is the decorative-gate class: keeping
+// `if errors.Is(err, context.Canceled) {` and replacing its `return`
+// with a bare `continue` escapes a presence check while restoring the
+// exact defect — in a child-write loop the item is skipped, the
+// enclosing row completes, and it is stamped processed with that child
+// missing.
+//
+// Four shapes satisfy the property, all of them in the tree:
+//
+//	if errors.Is(err, ctx.Canceled) { … return … }; log   // terminates
+//	if errors.Is(err, ctx.Canceled) { abort = true; continue }; log
+//	if errors.Is(err, ctx.Canceled) { … } else { log }    // guarded else
+//	if !errors.Is(err, ctx.Canceled) { log }              // negated guard
+//
+// The second is "record the abort, then drain" (breadth.go sets
+// aborted/abortErr and cancels the remaining fetches), so a
+// continue/break counts only when the block also ASSIGNS.
+func logUnreachableOnCancel(body string, prodAt, logAt int) bool {
+	for _, at := range classifyRe.FindAllStringIndex(body[prodAt:logAt], -1) {
+		abs := prodAt + at[0]
+		negated := abs > 0 && strings.TrimSpace(body[max(0, abs-1):abs]) == "!"
+		blockStart, blockEnd, ok := enclosingBlock(body, prodAt+at[1])
+		if !ok {
 			continue
 		}
-		start := at[1] + open
-		depth, end := 0, -1
-		for i := start; i < len(window); i++ {
-			switch window[i] {
-			case '{':
-				depth++
-			case '}':
-				depth--
-				if depth == 0 {
-					end = i
-				}
+		if negated {
+			// The log sits inside the not-canceled block.
+			if logAt > blockStart && logAt < blockEnd {
+				return true
 			}
-			if end >= 0 {
-				break
-			}
-		}
-		if end < 0 {
 			continue
 		}
-		block := window[start : end+1]
+		block := body[blockStart : blockEnd+1]
 		if strings.Contains(block, "return") {
 			return true
 		}
 		if (strings.Contains(block, "continue") || strings.Contains(block, "break")) &&
-			regexp.MustCompile(`\w\s*(?::=|=|\+\+)[^=]`).MatchString(block) {
-			return true // recorded the abort, then drains
+			assignRe.MatchString(block) {
+			return true
+		}
+		// `} else {` immediately after: the log is in the else arm.
+		rest := body[blockEnd+1:]
+		if trimmed := strings.TrimLeft(rest, " \t"); strings.HasPrefix(trimmed, "else") {
+			elseStart, elseEnd, ok := enclosingBlock(body, blockEnd+1)
+			if ok && logAt > elseStart && logAt < elseEnd {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+var (
+	// Two spellings make a log unreachable on cancel, and BOTH are in
+	// the tree. `errors.Is(err, context.Canceled)` classifies the error;
+	// `ctx.Err() != nil` asks the context directly — which a worker loop
+	// prefers, because it catches the cancel however the error surfaced
+	// (an exec'd child reports `signal: killed`, never context.Canceled
+	// — the pass-35 lesson). Recognising only the first would have
+	// reported ~60 already-correct sites as violations.
+	classifyRe = regexp.MustCompile(`errors\.Is\([^)]*context\.Canceled\)|ctx\.Err\(\)\s*!=\s*nil`)
+	assignRe   = regexp.MustCompile(`\w\s*(?::=|=|\+\+)[^=]`)
+)
+
+// enclosingBlock brace-matches the first `{` at or after from.
+func enclosingBlock(body string, from int) (start, end int, ok bool) {
+	open := strings.Index(body[from:], "{")
+	if open < 0 {
+		return 0, 0, false
+	}
+	start = from + open
+	depth := 0
+	for i := start; i < len(body); i++ {
+		switch body[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return start, i, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // producerOffset finds the nearest assignment to v before the log and

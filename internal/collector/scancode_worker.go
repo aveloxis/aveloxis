@@ -37,6 +37,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1052,8 +1053,12 @@ func (w *ScancodeWorker) finishScan(ctx context.Context, job db.ScancodeJob, ex 
 				"timeout_cap", w.runTimeoutCap.String())
 		}
 		if recErr := w.store.RecordScancodeTimeout(ctx, job.RepoID, outcome.sideline); recErr != nil {
-			w.logger.Warn("scancode runOne: RecordScancodeTimeout failed",
-				"repo_id", job.RepoID, "error", recErr)
+			// Round-8 burn-down: shutdown is not a failure. The write is
+			// best-effort bookkeeping; the next claim cycle recovers the row.
+			if !errors.Is(recErr, context.Canceled) {
+				w.logger.Warn("scancode runOne: RecordScancodeTimeout failed",
+					"repo_id", job.RepoID, "error", recErr)
+			}
 		}
 		return
 
@@ -1140,8 +1145,12 @@ func (w *ScancodeWorker) finishScan(ctx context.Context, job db.ScancodeJob, ex 
 func (w *ScancodeWorker) sweepCloneDirAtStartup(ctx context.Context) {
 	rows, err := w.store.ListLockedScancodeRows(ctx)
 	if err != nil {
-		w.logger.Warn("scancode startup sweep: ListLockedScancodeRows failed — skipping sweep",
-			"error", err)
+		// Round-8 burn-down: shutdown is not a failure. The write is
+		// best-effort bookkeeping; the next claim cycle recovers the row.
+		if !errors.Is(err, context.Canceled) {
+			w.logger.Warn("scancode startup sweep: ListLockedScancodeRows failed — skipping sweep",
+				"error", err)
+		}
 		return
 	}
 	keep := make(map[int64]bool, len(rows))
@@ -1382,8 +1391,12 @@ func (w *ScancodeWorker) checkOwnLocks(ctx context.Context) {
 		case <-ticker.C:
 			cleared, err := w.store.ClearStaleNullPidLocks(ctx, stalePidLockMaxAge)
 			if err != nil {
-				w.logger.Warn("scancode in-flight orphan recovery: ClearStaleNullPidLocks failed",
-					"error", err)
+				// Round-8 burn-down: shutdown is not a failure. The write is
+				// best-effort bookkeeping; the next claim cycle recovers the row.
+				if !errors.Is(err, context.Canceled) {
+					w.logger.Warn("scancode in-flight orphan recovery: ClearStaleNullPidLocks failed",
+						"error", err)
+				}
 				continue
 			}
 			if cleared > 0 {
@@ -1398,8 +1411,12 @@ func (w *ScancodeWorker) checkOwnLocks(ctx context.Context) {
 func (w *ScancodeWorker) recoverOrphans(ctx context.Context) {
 	rows, err := w.store.ListLockedScancodeRows(ctx)
 	if err != nil {
-		w.logger.Warn("scancode recoverOrphans: ListLockedScancodeRows failed — proceeding without recovery",
-			"error", err)
+		// Round-8 burn-down: shutdown is not a failure. The write is
+		// best-effort bookkeeping; the next claim cycle recovers the row.
+		if !errors.Is(err, context.Canceled) {
+			w.logger.Warn("scancode recoverOrphans: ListLockedScancodeRows failed — proceeding without recovery",
+				"error", err)
+		}
 		return
 	}
 	if len(rows) == 0 {
@@ -1450,8 +1467,12 @@ func (w *ScancodeWorker) recoverOrphans(ctx context.Context) {
 					"repo_id", r.RepoID, "owner", r.RepoOwner, "repo", r.RepoName,
 					"version", version)
 				if err := w.store.MarkScancodeComplete(ctx, r.RepoID, version); err != nil {
-					w.logger.Warn("scancode recover: MarkScancodeComplete failed after corpse ingest",
-						"repo_id", r.RepoID, "error", err)
+					// Round-8 burn-down: shutdown is not a failure. The write is
+					// best-effort bookkeeping; the next claim cycle recovers the row.
+					if !errors.Is(err, context.Canceled) {
+						w.logger.Warn("scancode recover: MarkScancodeComplete failed after corpse ingest",
+							"repo_id", r.RepoID, "error", err)
+					}
 				}
 				continue
 			}
@@ -1492,8 +1513,12 @@ func (w *ScancodeWorker) monitorOrphan(ctx context.Context, row db.ScancodeLocke
 				version, err := ingestScancodeOutput(ctx, w.store, row.RepoID, row.OutputPath, w.logger)
 				if err == nil {
 					if mErr := w.store.MarkScancodeComplete(ctx, row.RepoID, version); mErr != nil {
-						w.logger.Warn("scancode orphan monitor: MarkScancodeComplete failed",
-							"repo_id", row.RepoID, "error", mErr)
+						// Round-8 burn-down: shutdown is not a failure. The write is
+						// best-effort bookkeeping; the next claim cycle recovers the row.
+						if !errors.Is(mErr, context.Canceled) {
+							w.logger.Warn("scancode orphan monitor: MarkScancodeComplete failed",
+								"repo_id", row.RepoID, "error", mErr)
+						}
 					} else {
 						w.logger.Info("scancode orphan monitor: orphan finished, output ingested",
 							"repo_id", row.RepoID, "owner", row.RepoOwner, "repo", row.RepoName,

@@ -361,7 +361,12 @@ func persistScorecard(ctx context.Context, store scorecardStore, repoID int64, r
 
 	// Rotate previous scorecard results to history before inserting new ones.
 	if err := store.RotateScorecardToHistory(ctx, repoID); err != nil {
-		logger.Warn("failed to rotate scorecard to history", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			logger.Warn("failed to rotate scorecard to history", "repo_id", repoID, "error", err)
+		}
 	}
 
 	// Store the aggregate ("headline") score under the reserved
@@ -370,7 +375,12 @@ func persistScorecard(ctx context.Context, store scorecardStore, repoID int64, r
 	// matching scorecard's own output.
 	if err := store.InsertScorecardResult(ctx, repoID, db.ScorecardOverallName,
 		fmt.Sprintf("%.1f", raw.Score), nil, mode); err != nil {
-		logger.Warn("failed to store scorecard overall score", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			logger.Warn("failed to store scorecard overall score", "repo_id", repoID, "error", err)
+		}
 	}
 
 	// Store each check as a row in repo_deps_scorecard.
@@ -386,7 +396,12 @@ func persistScorecard(ctx context.Context, store scorecardStore, repoID int64, r
 		// Store in database with full check details as JSONB.
 		detailsJSON, _ := json.Marshal(check)
 		if err := store.InsertScorecardResult(ctx, repoID, check.Name, strconv.FormatFloat(check.Score, 'f', -1, 64), detailsJSON, mode); err != nil {
-			logger.Warn("failed to store scorecard check", "check", check.Name, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				logger.Warn("failed to store scorecard check", "check", check.Name, "error", err)
+			}
 		}
 	}
 

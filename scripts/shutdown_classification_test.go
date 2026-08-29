@@ -47,11 +47,18 @@ import (
 //     from RunMigrations is excluded by call-graph fixpoint, not by a
 //     file list. That alone takes internal/db from 53 sites to 8.
 //
-// What remains is a genuine legacy tail, frozen in
-// shutdown_classification_baseline.txt and SHRINK-ONLY: a new site is a
-// build failure, and a baselined site that gets fixed must be deleted
-// from the baseline in the same change. Regenerate after a burn-down
-// wave: AVELOXIS_UPDATE_BASELINE=1 go test ./scripts/ -run ShutdownClassification
+// The residual tail was frozen in shutdown_classification_baseline.txt
+// and burned down to ZERO in the same release: the baseline is now
+// empty and every ctx-bound failure log in both packages classifies.
+// The file stays as the mechanism — SHRINK-ONLY, so a new site is a
+// build failure and a fixed site must leave the baseline in the same
+// change. Regenerate after a burn-down wave:
+// AVELOXIS_UPDATE_BASELINE=1 go test ./scripts/ -run ShutdownClassification
+//
+// The guard below counts sites EXAMINED, never violations found — an
+// empty baseline is the GOAL state, and guarding on the violation
+// count would make the completed burn-down fail forever (v0.27.122
+// hit exactly that in the srctest ratchet).
 //
 // Deliberately NOT go/types: full cross-package resolution would pull
 // golang.org/x/tools in for a test-only analyzer. The two rules above

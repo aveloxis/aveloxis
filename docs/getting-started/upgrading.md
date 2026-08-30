@@ -150,7 +150,8 @@ re-running is always safe. Rows marked *fleet-scale* take hours on a
 | 10 | `aveloxis reconcile-repos` | v0.27.39 (index precondition v0.28.18) | stranded repositories (a `repos` row with no queue row) left by upstream renames | periodic, until the residue drains; its consolidation arms skip with a warning (and the run exits nonzero) until the new binary's migrate has built the `email_message` indexes |
 | 11 | `aveloxis mark-gone-repos` | v0.28.1 | the explicit "gone" state for deleted or privatized repositories that still hold data | optional — display honesty only |
 | 12 | `aveloxis heal-vulnerabilities` | v0.27.4 (scan-side version normalization v0.27.72) | empty OSV stub findings and malformed-purl false positives | optional — the scheduled scans self-heal on their normal cadence |
-| 13 | `aveloxis load-apache-lists` | v0.25.7 (forge-resolved lookups v0.27.152) | registers Apache `dev@` / `users@` lists for PMCs whose primary repository is in your catalog | only if you enable mailing-list collection — see [below](#mailing-lists-on-an-existing-catalog) |
+| 13 | `scripts/heal_mirror_links.sh <db>` (`--dry-run` first) | v0.28.20 | `linked_pull_request_id` / `linked_issue_id` on GitHub-mirror mailing-list messages, NULL on every such row before v0.28.20 | only if you collect Apache mailing lists; needs the migrate to have built the `node_id` indexes first (it refuses otherwise) |
+| 14 | `aveloxis load-apache-lists` | v0.25.7 (forge-resolved lookups v0.27.152) | registers Apache `dev@` / `users@` lists for PMCs whose primary repository is in your catalog | only if you enable mailing-list collection — see [below](#mailing-lists-on-an-existing-catalog) |
 
 Skipped as instance-specific: the `load-foundation-*` importers (only if
 you track a foundation's whole catalog) and `register-mailing-list`

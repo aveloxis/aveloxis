@@ -37,4 +37,11 @@ type MailingListStagedMessage struct {
 	MirrorRepo   string `json:"mirror_repo,omitempty"`
 	MirrorKind   string `json:"mirror_kind,omitempty"`
 	MirrorNumber int    `json:"mirror_number,omitempty"`
+
+	// MirrorNodeID is the GitHub GraphQL node ID recovered from the GitBox
+	// Message-ID (see mailinglist.NodeIDFromMessageID). It is the PRIMARY
+	// mirror-link key: it is exact, needs no owner guess, and — unlike the
+	// body-URL captures above — survives mirror_handling="metadata_only",
+	// which does not store the body. Empty means no exact link is available.
+	MirrorNodeID string `json:"mirror_node_id,omitempty"`
 }

@@ -5,10 +5,14 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 )
@@ -80,7 +84,19 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 			linked_pr_review_id    = COALESCE(EXCLUDED.linked_pr_review_id, aveloxis_data.email_message.linked_pr_review_id),
 			linked_external_key    = EXCLUDED.linked_external_key,
 			linked_commit_hash     = EXCLUDED.linked_commit_hash,
-			projected_kind     = EXCLUDED.projected_kind,
+			-- v0.28.20: derive the kind from the POST-COALESCE links, not from
+			-- EXCLUDED alone. The three link columns above are preserve-on-
+			-- conflict, so a caller that failed to resolve (e.g. a transient
+			-- ResolveMirrorLinkByNodeID error) sends NULLs and would otherwise
+			-- assert 'mailing_list_only' over a link the row already holds --
+			-- permanently, since the heal only considers rows whose links are
+			-- both NULL. The owning layer enforces the invariant (SR-18) so a
+			-- caller cannot desynchronise kind from links.
+			projected_kind     = CASE
+				WHEN COALESCE(EXCLUDED.linked_pull_request_id, aveloxis_data.email_message.linked_pull_request_id) IS NOT NULL THEN 'pr'
+				WHEN COALESCE(EXCLUDED.linked_pr_review_id, aveloxis_data.email_message.linked_pr_review_id) IS NOT NULL THEN 'review'
+				WHEN COALESCE(EXCLUDED.linked_issue_id, aveloxis_data.email_message.linked_issue_id) IS NOT NULL THEN 'issue'
+				ELSE EXCLUDED.projected_kind END,
 			data_source        = EXCLUDED.data_source,
 			tool_version       = EXCLUDED.tool_version
 		RETURNING email_message_id`,
@@ -175,34 +191,99 @@ func (s *PostgresStore) GetPrimaryRepoForGroup(ctx context.Context, repoGroupID 
 	return id, true, nil
 }
 
+// ResolveMirrorLinkByNodeID resolves a GitHub-mirror email to the issue or
+// pull request it mirrors, using the GitHub GraphQL node ID recovered from the
+// GitBox Message-ID (mailinglist.NodeIDFromMessageID).
+//
+// This is the PRIMARY mirror-link path. ResolveMirrorLink (below) resolves by
+// owner/repo/kind/number from the body URL and stays as the fallback for
+// systems whose mail carries one; on Apache it never fires, because the body
+// captures are absent (2026-08-29 production audit) AND the default
+// mirror_handling="metadata_only" does not retain bodies at all.
+//
+// Node IDs are globally unique on GitHub and type-prefixed, so the prefix
+// selects the table and no repo scoping is needed. Returns (nil, nil, nil)
+// for a clean miss — an entity we have not collected. A real query failure
+// propagates: a lookup ERROR is not "not found" (SR-5), and silently
+// treating one as a miss would leave the row permanently unlinked while
+// reporting success.
+func (s *PostgresStore) ResolveMirrorLinkByNodeID(ctx context.Context, nodeID string) (issueID, prID *int64, err error) {
+	if nodeID == "" {
+		return nil, nil, nil
+	}
+	switch {
+	case strings.HasPrefix(nodeID, "PR_"):
+		var id int64
+		e := s.pool.QueryRow(ctx,
+			`SELECT pull_request_id FROM aveloxis_data.pull_requests WHERE node_id = $1 LIMIT 1`,
+			nodeID).Scan(&id)
+		if errors.Is(e, pgx.ErrNoRows) {
+			return nil, nil, nil // not collected — clean miss
+		}
+		if e != nil {
+			return nil, nil, fmt.Errorf("resolve mirror PR by node_id %q: %w", nodeID, e)
+		}
+		return nil, &id, nil
+	case strings.HasPrefix(nodeID, "I_"):
+		var id int64
+		e := s.pool.QueryRow(ctx,
+			`SELECT issue_id FROM aveloxis_data.issues WHERE node_id = $1 LIMIT 1`,
+			nodeID).Scan(&id)
+		if errors.Is(e, pgx.ErrNoRows) {
+			return nil, nil, nil
+		}
+		if e != nil {
+			return nil, nil, fmt.Errorf("resolve mirror issue by node_id %q: %w", nodeID, e)
+		}
+		return &id, nil, nil
+	}
+	return nil, nil, nil
+}
+
 // ResolveMirrorLink resolves a GitHub-mirror email's body URL
 // (owner/repo/kind/number) to the existing issue or pull_request row we
 // already collected, so a mirror message links to its parent instead of
 // duplicating it (§5b). kind is "pull" or "issues". Returns (nil, nil, nil)
 // when the repo or the issue/PR isn't in the catalog yet.
 func (s *PostgresStore) ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int) (issueID, prID *int64, err error) {
+	// SR-5 throughout: ErrNoRows is a clean miss (we have not collected the
+	// entity); any other failure is an ERROR. Before v0.28.20 every failure
+	// here collapsed to a miss, which became load-bearing once the caller
+	// started branching on error-vs-miss to decide whether to fall back to
+	// this guessed-owner path at all.
 	var repoID int64
 	e := s.pool.QueryRow(ctx, `
 		SELECT repo_id FROM aveloxis_data.repos
 		WHERE lower(repo_owner) = lower($1) AND lower(repo_name) = lower($2)
 		LIMIT 1`, owner, repo).Scan(&repoID)
-	if e != nil {
+	if errors.Is(e, pgx.ErrNoRows) {
 		return nil, nil, nil // repo not collected — clean miss
+	}
+	if e != nil {
+		return nil, nil, fmt.Errorf("resolve mirror repo %s/%s: %w", owner, repo, e)
 	}
 	switch kind {
 	case "pull":
 		var id int64
-		if e := s.pool.QueryRow(ctx,
+		e := s.pool.QueryRow(ctx,
 			`SELECT pull_request_id FROM aveloxis_data.pull_requests WHERE repo_id = $1 AND pr_number = $2 LIMIT 1`,
-			repoID, number).Scan(&id); e == nil {
+			repoID, number).Scan(&id)
+		if e == nil {
 			return nil, &id, nil
+		}
+		if !errors.Is(e, pgx.ErrNoRows) {
+			return nil, nil, fmt.Errorf("resolve mirror PR %s/%s#%d: %w", owner, repo, number, e)
 		}
 	case "issues":
 		var id int64
-		if e := s.pool.QueryRow(ctx,
+		e := s.pool.QueryRow(ctx,
 			`SELECT issue_id FROM aveloxis_data.issues WHERE repo_id = $1 AND issue_number = $2 LIMIT 1`,
-			repoID, number).Scan(&id); e == nil {
+			repoID, number).Scan(&id)
+		if e == nil {
 			return &id, nil, nil
+		}
+		if !errors.Is(e, pgx.ErrNoRows) {
+			return nil, nil, fmt.Errorf("resolve mirror issue %s/%s#%d: %w", owner, repo, number, e)
 		}
 	}
 	return nil, nil, nil

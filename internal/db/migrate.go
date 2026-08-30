@@ -2059,6 +2059,35 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_request_review_message_ref_msg_id
 		 ON aveloxis_data.pull_request_review_message_ref (msg_id)`)
 
+	// v0.28.20: node_id probe indexes for GitHub-mirror mailing-list link
+	// resolution. ResolveMirrorLinkByNodeID looks an issue/PR up by its
+	// GraphQL node ID once per mirror message; the heal
+	// (scripts/heal_mirror_links.sh) joins the whole mirror cohort against
+	// the same columns. Neither column was indexed (2026-08-29 audit) — the
+	// v0.27.54 class exactly: a probe column no write-path audit sees, free
+	// until a reader arrives. Unindexed cost measured on `aveloxis`: the
+	// heal's node_id join over 396,809 mirrors did not finish in 5 minutes;
+	// indexed it returns in ~26s.
+	//
+	// NON-partial deliberately. A partial variant restricted to non-empty
+	// node_id is unusable for the heal, whose probe is a JOIN variable the
+	// planner cannot prove the predicate for (the v0.27.54 lesson, second
+	// half). Do not "optimize" these to partial in a future audit.
+	//
+	// Migration-only (SR-2): NOT declared in schema.sql, because the base
+	// DDL runs first and would block-build these on fleet-scale tables
+	// (aveloxis_large: 23.0M pull_requests, 9.6M issues) during startup
+	// migrate. Operators can pre-create by hand — the step then no-ops via
+	// IF NOT EXISTS.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_pull_requests_node_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_node_id
+		 ON aveloxis_data.pull_requests (node_id)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_issues_node_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_node_id
+		 ON aveloxis_data.issues (node_id)`)
+
 	// v0.27.115 (2026-08-20 schema-drift audit remediation, operator
 	// decisions on findings 3 + 4):
 	//   - contributors_old: Augur-import residue — zero writers ever,

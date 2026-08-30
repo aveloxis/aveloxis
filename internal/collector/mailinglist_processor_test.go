@@ -5,6 +5,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -30,7 +31,15 @@ type fakeProcStore struct {
 	primaryRepoOK bool
 	mirrorIssueID *int64
 	mirrorPRID    *int64
-	nextBodyID    int64
+
+	// v0.28.20 node-ID mirror-link path.
+	chunk        int // >0 → hand out rows in batches of this size
+	nodeIssueID  *int64
+	nodePRID     *int64
+	nodeErr      error
+	nodeErrUntil int // fail only for the first N resolve calls (0 = use nodeErr for all)
+	nodeIDsAsked []string
+	nextBodyID   int64
 
 	// projection (Phase A)
 	issueByKey    map[string]int64 // external_key → issue_id (link-or-create)
@@ -43,9 +52,27 @@ type fakeProcStore struct {
 func (f *fakeProcStore) ListsWithStaging(context.Context, int) ([]int64, error) {
 	return []int64{7}, nil
 }
-func (f *fakeProcStore) GetMailingListStagingBatch(_ context.Context, _ int64, _ int) ([]db.StagedMailingListRow, error) {
-	out := f.rows
-	f.rows = nil // second call returns empty → drain terminates
+
+// GetMailingListStagingBatch honors `chunk` when set, so a test can drive a
+// MULTI-batch drain. With chunk == 0 it returns everything at once (the
+// original single-batch behavior every pre-existing test relies on).
+//
+// The chunking matters: per-BATCH state (drainCounters) is indistinguishable
+// from per-DRAIN state when the fake can only ever produce one batch — a test
+// asserting "logged once per batch" would pass either way.
+func (f *fakeProcStore) GetMailingListStagingBatch(_ context.Context, _ int64, limit int) ([]db.StagedMailingListRow, error) {
+	n := len(f.rows)
+	if n == 0 {
+		return nil, nil
+	}
+	if f.chunk > 0 && f.chunk < n {
+		n = f.chunk
+	}
+	if limit > 0 && limit < n {
+		n = limit
+	}
+	out := f.rows[:n]
+	f.rows = f.rows[n:]
 	return out, nil
 }
 func (f *fakeProcStore) MarkMailingListStagingProcessed(_ context.Context, ids []int64) error {
@@ -68,6 +95,24 @@ func (f *fakeProcStore) ResolveContributorIDByEmail(_ context.Context, email str
 func (f *fakeProcStore) ResolveMirrorLink(context.Context, string, string, string, int) (*int64, *int64, error) {
 	return f.mirrorIssueID, f.mirrorPRID, nil
 }
+
+// ResolveMirrorLinkByNodeID records the node IDs the processor asked about so
+// tests can pin that the node-ID path is tried, and returns the configured
+// node-keyed result (v0.28.20).
+func (f *fakeProcStore) ResolveMirrorLinkByNodeID(_ context.Context, nodeID string) (*int64, *int64, error) {
+	f.nodeIDsAsked = append(f.nodeIDsAsked, nodeID)
+	if f.nodeErrUntil > 0 {
+		if len(f.nodeIDsAsked) <= f.nodeErrUntil {
+			return nil, nil, errors.New("connection reset")
+		}
+		return f.nodeIssueID, f.nodePRID, nil
+	}
+	if f.nodeErr != nil {
+		return nil, nil, f.nodeErr
+	}
+	return f.nodeIssueID, f.nodePRID, nil
+}
+
 func (f *fakeProcStore) FindRepoByURL(context.Context, string) (int64, error) { return 0, nil }
 func (f *fakeProcStore) UpsertEmailMessage(_ context.Context, em *model.EmailMessage) (int64, error) {
 	f.emails = append(f.emails, em)

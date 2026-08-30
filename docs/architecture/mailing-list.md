@@ -167,6 +167,34 @@ The pipeline is split into a **fetch** half and a **resolve+write** half across 
 
 The default avoids wholesale-duplicating GitHub data into a second form while keeping the linkage and timeline.
 
+### How a mirror message is linked (v0.28.20)
+
+The link key is the **GitHub GraphQL node ID**, recovered from the
+Message-ID. Apache's GitBox relay uses it as the local part
+(`PR_kwDOBCyuKc8AAAABBMldbw@gitbox.apache.org`); replies append a UUID,
+which is stripped by its exact 8-4-4-4-12 shape — never by cutting at the
+first dash, since node IDs are base64url and may legitimately contain one.
+`mailinglist.NodeIDFromMessageID` does the extraction and
+`ResolveMirrorLinkByNodeID` joins it to `pull_requests.node_id` /
+`issues.node_id` (both indexed since v0.28.20).
+
+The node ID is preferred over the body-URL captures
+(`owner`/`repo`/`kind`/`number`) that the systems.yaml body rule can
+supply, for three reasons: it is an exact platform identifier rather than
+a number matched within a guessed owner; it is available under
+`metadata_only`, which stores no body at all; and in practice the body
+rule does not fire on Apache mail — a 2026-08-29 production audit found
+**0 of 396,809** mirror rows carried its captures, which is why
+`linked_issue_id` / `linked_pull_request_id` were NULL on every one of
+them before v0.28.20. The body-URL path remains as the fallback for
+relays whose mail does carry a canonical URL.
+
+Legacy `MDExO…` node IDs are deliberately not matched: they carry no type
+prefix, so accepting them could key a row onto an unrelated entity. A
+message whose referenced issue/PR is not in the catalog is left NULL
+rather than guessed. Historical rows are repaired by
+`scripts/heal_mirror_links.sh`, which uses the same key.
+
 ## 10. Operator CLI
 
 ```bash
@@ -218,7 +246,7 @@ Layer 1 (every email → `email_message` + body + classification + threading) is
 
 **Sender attribution (Phases 2+4):** senders the DB can't resolve are run through the shared email→identity chain; direct-human senders that still don't resolve get an **email-only contributor** (random `cntrb_id`, `cntrb_email` set) so they're counted and ride the convergence ticker. Bot/relay senders (`jira@`, `git@`, CI) never become contributors.
 
-**Phase B (verified, NOT built) — PR/review synthesis** from `github_mirror` mail. Verification (2026-06-04, summary/12 §3) settled it: `pull_requests.platform_pr_id` stores the GitHub PR **`databaseId`**, but mirror mail carries only the PR **number** — a synthesized PR keyed on the number would *duplicate* the API collector's row rather than merge. Decision: **don't synthesize**; the lever for full Apache PR data is **org collection** (`load-foundation-orgs`) + the existing `github_mirror` **LINK** path (which already covers collected PRs correctly). `linked_pr_review_id` remains in the schema should a future uncollectable-sibling case justify a number→databaseId resolution step.
+**Phase B (verified, NOT built) — PR/review synthesis** from `github_mirror` mail. Verification (2026-06-04, summary/12 §3) settled it: `pull_requests.platform_pr_id` stores the GitHub PR **`databaseId`**, but mirror mail carries only the PR **number** — a synthesized PR keyed on the number would *duplicate* the API collector's row rather than merge. Decision: **don't synthesize**; the lever for full Apache PR data is **org collection** (`load-foundation-orgs`) + the existing `github_mirror` **LINK** path (repaired in v0.28.20 — see §9; it was dark until then). `linked_pr_review_id` remains in the schema should a future uncollectable-sibling case justify a number→databaseId resolution step.
 
 For `projection_policy: none` (kernel): none of the above runs — a `[PATCH]` is not a PR; Layer 1 is the faithful record.
 

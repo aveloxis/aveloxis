@@ -35,6 +35,7 @@ type mlProcessorStore interface {
 	GetPrimaryRepoForGroup(ctx context.Context, repoGroupID int64) (int64, bool, error)
 	ResolveContributorIDByEmail(ctx context.Context, email string) (string, bool, error)
 	ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int) (*int64, *int64, error)
+	ResolveMirrorLinkByNodeID(ctx context.Context, nodeID string) (*int64, *int64, error)
 	FindRepoByURL(ctx context.Context, gitURL string) (int64, error)
 	UpsertEmailMessage(ctx context.Context, em *model.EmailMessage) (int64, error)
 	UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string) (int64, error)
@@ -202,11 +203,12 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 
 		done := make([]int64, 0, len(batch))
 		dropped := 0
+		counters := &drainCounters{}
 		for _, row := range batch {
 			if ctx.Err() != nil {
 				return processed, ctx.Err() // shutdown mid-batch: nothing marked, the rows drain next start (pass 37)
 			}
-			if err := p.processRow(ctx, repoID, rglsID, row, cntrbCache, threadIssue); err != nil {
+			if err := p.processRow(ctx, repoID, rglsID, row, cntrbCache, threadIssue, counters); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return processed, err // not a drop: the row stays staged
 				}
@@ -227,10 +229,41 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 			p.logger.Error("mailing-list processor: batch completed with dropped messages",
 				"rgls_id", rglsID, "dropped", dropped, "batch", len(batch))
 		}
+		if counters.nodeResolveFailures > 0 {
+			// One line per batch, not per message: mirror-heavy lists would
+			// otherwise flood at 500 WARNs/batch on a systemic failure.
+			//
+			// The counters are BATCH-scoped, so `failures` describes this
+			// batch. Keyed "error" like every other failure log in this
+			// package, so one grep finds them all. A canceled ctx never
+			// reaches here: processRow returns the cancellation and the
+			// loop's errors.Is arm above returns before this line -- pinned
+			// by TestMirrorNodeIDCancellationSkipsAggregateLog.
+			err := counters.firstNodeErr
+			p.logger.Warn("mailing-list processor: mirror node-id resolve failed",
+				"rgls_id", rglsID, "failures", counters.nodeResolveFailures,
+				"batch", len(batch), "error", err)
+		}
 		if err := p.store.MarkMailingListStagingProcessed(ctx, done); err != nil {
 			return processed, err
 		}
 		processed += len(done)
+	}
+}
+
+// drainCounters accumulates per-batch diagnostics for one DrainList call so a
+// systemic failure is reported ONCE per batch instead of once per message.
+// Scoped to a single DrainList (one list), so no synchronisation is needed —
+// processor_workers > 1 fans out across DISTINCT lists only.
+type drainCounters struct {
+	nodeResolveFailures int
+	firstNodeErr        error
+}
+
+func (c *drainCounters) noteNodeResolveFailure(err error) {
+	c.nodeResolveFailures++
+	if c.firstNodeErr == nil {
+		c.firstNodeErr = err
 	}
 }
 
@@ -250,7 +283,7 @@ func (p *MailingListProcessor) resolveRepo(ctx context.Context, row db.StagedMai
 // processRow resolves + writes one staged message. Mirrors the pre-split
 // worker.routeMessage, reading the already-computed classification from the
 // staging envelope instead of re-classifying.
-func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID int64, row db.StagedMailingListRow, cntrbCache map[string]*string, threadIssue map[string]int64) error {
+func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID int64, row db.StagedMailingListRow, cntrbCache map[string]*string, threadIssue map[string]int64, c *drainCounters) error {
 	m := row.Message
 
 	// §5b mirror handling: "skip" drops mirrors entirely (no provenance row).
@@ -271,12 +304,47 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	// §5b: a github_mirror with a resolvable body URL links to the existing
 	// issue/PR we already collected (instead of duplicating it).
 	var linkedIssueID, linkedPRID *int64
-	if m.MsgClass == mailinglist.ClassGitHubMirror && m.MirrorRepo != "" && m.MirrorNumber > 0 {
-		owner := m.MirrorOwner
-		if owner == "" {
-			owner = "apache"
+	if m.MsgClass == mailinglist.ClassGitHubMirror {
+		// PRIMARY: exact GitHub node ID from the GitBox Message-ID. Tried
+		// first because it needs no owner guess and is the only path that
+		// works under mirror_handling="metadata_only" (no body stored).
+		var nodeErr error
+		if m.MirrorNodeID != "" {
+			linkedIssueID, linkedPRID, nodeErr = p.store.ResolveMirrorLinkByNodeID(ctx, m.MirrorNodeID)
+			if nodeErr != nil {
+				if errors.Is(nodeErr, context.Canceled) {
+					return nodeErr // shutdown, not a failure (pass 38)
+				}
+				// Not fatal to the message: provenance still lands, the link
+				// stays NULL and a later heal can fill it. Counted rather than
+				// logged per row — Apache dev@ lists are ~100% mirror traffic,
+				// so a systemic resolver failure would emit one WARN per row
+				// across a 500-row batch (the v0.27.91 flood class). DrainList
+				// emits one aggregate line per batch.
+				c.noteNodeResolveFailure(nodeErr)
+			}
 		}
-		linkedIssueID, linkedPRID, _ = p.store.ResolveMirrorLink(ctx, owner, m.MirrorRepo, m.MirrorKind, m.MirrorNumber)
+		// FALLBACK: body-URL captures (owner/repo/kind/number), for systems
+		// whose mail carries a canonical URL. Skipped when the node-ID lookup
+		// ERRORED: that path guesses an owner, and degrading from the exact
+		// key to a guess is backwards precisely when confidence is lowest.
+		// A clean miss (nodeErr == nil) still falls through.
+		if nodeErr == nil && linkedIssueID == nil && linkedPRID == nil && m.MirrorRepo != "" && m.MirrorNumber > 0 {
+			owner := m.MirrorOwner
+			if owner == "" {
+				owner = "apache"
+			}
+			var bodyErr error
+			linkedIssueID, linkedPRID, bodyErr = p.store.ResolveMirrorLink(ctx, owner, m.MirrorRepo, m.MirrorKind, m.MirrorNumber)
+			if bodyErr != nil {
+				if errors.Is(bodyErr, context.Canceled) {
+					return bodyErr // shutdown, not a failure
+				}
+				// Same discipline as the node-ID path: an error is not a miss,
+				// and it is counted rather than logged per row.
+				c.noteNodeResolveFailure(bodyErr)
+			}
+		}
 	}
 
 	// Phase A projection (§3): an issue_event with a parsed external_key →

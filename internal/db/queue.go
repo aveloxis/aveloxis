@@ -223,6 +223,12 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 				last_error = $4,
 				last_issues = (SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1),
 				last_prs = (SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1),
+				-- v0.29.0 home ranking; stamped on success AND failure like the
+				-- cumulative counts above (it counts stored truth either way)
+				last_activity_90d = (SELECT COUNT(*) FROM aveloxis_data.issues
+				                     WHERE repo_id = $1 AND created_at >= NOW() - INTERVAL '90 days')
+				                  + (SELECT COUNT(*) FROM aveloxis_data.pull_requests
+				                     WHERE repo_id = $1 AND created_at >= NOW() - INTERVAL '90 days'),
 				last_messages = $5,
 				last_events = $6,
 				last_releases = $7,

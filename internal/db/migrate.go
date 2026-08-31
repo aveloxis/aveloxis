@@ -254,6 +254,28 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 // migrateStage1CoreColumns — recent heals, msg_kind, tool_version defaults, libyear/users/queue/sbom columns, contributor cooldowns.
 // Split from the former 1,570-line RunMigrations (v0.27.42, summary/18
 // Phase 4); step ORDER across stages is load-bearing and unchanged.
+// homeActivityBackfillSQL seeds collection_queue.last_activity_90d —
+// ONE named spelling (SR-17) shared by the ledgered migrate step and
+// its behavioral test, so the test exercises the exact statement the
+// fleet runs. collection_queue.repo_id is the PRIMARY KEY, so the
+// q/q0 self-join matches exactly one row and both GROUP BY subqueries
+// are repo-unique: every NULL row fills exactly once (zero-activity
+// repos fill with 0, never stay NULL).
+const homeActivityBackfillSQL = `
+		UPDATE aveloxis_ops.collection_queue q
+		SET last_activity_90d = COALESCE(iss.c, 0) + COALESCE(prs.c, 0)
+		FROM aveloxis_ops.collection_queue q0
+		LEFT JOIN (
+		    SELECT repo_id, COUNT(*) AS c FROM aveloxis_data.issues
+		    WHERE created_at >= NOW() - INTERVAL '90 days' GROUP BY repo_id
+		) iss ON iss.repo_id = q0.repo_id
+		LEFT JOIN (
+		    SELECT repo_id, COUNT(*) AS c FROM aveloxis_data.pull_requests
+		    WHERE created_at >= NOW() - INTERVAL '90 days' GROUP BY repo_id
+		) prs ON prs.repo_id = q0.repo_id
+		WHERE q.repo_id = q0.repo_id
+		  AND q.last_activity_90d IS NULL`
+
 func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
 	// v0.27.38 (summary/18 Phase 1a): messages msg_kind — see
 	// msg_kind_migration.go for the full sequence + rationale.
@@ -307,6 +329,7 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 
 	// Collection queue: commits column (added in v0.5.4).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.collection_queue", "last_commits", "INT DEFAULT 0")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.collection_queue", "last_activity_90d", "INT")
 
 	// Collection queue: force-full-recollect flag (added in v0.18.24).
 	// Set automatically when a job ends with a GraphQL PR batch error
@@ -1450,6 +1473,21 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_pull_requests_repo_created",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_repo_created
 			ON aveloxis_data.pull_requests (repo_id, created_at)`)
+
+	// v0.29.0: seed the home page's cached 90-day activity ranking so
+	// the page is fast on the first post-deploy render, not after a
+	// full recollect cycle (the v0.21.2 backfill precedent; the
+	// per-render aggregation this replaces measured mean 8.1s /
+	// max 48.2s on the production fleet for a 143K-repo admin scope —
+	// this pass pays it ONCE). Runs AFTER the two composite-index
+	// builds above so even a pre-v0.27.4 fleet's one-shot pass is
+	// index-served (review 2026-08-31 #4 — the v0.28.15 ordering
+	// class, index variant). Ledgered: CompleteJob keeps the column
+	// current afterwards; RefreshQueueGatheredCounts covers healed
+	// repos.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.0 backfill collection_queue.last_activity_90d from the 90-day window",
+		homeActivityBackfillSQL)
 
 	// v0.27.5 — scorecard execution-mode marker. 'remote' (--repo, ~18
 	// checks) vs 'local' (--local, ~11 checks) overall scores are NOT

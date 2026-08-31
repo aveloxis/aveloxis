@@ -118,6 +118,10 @@ func (s *PostgresStore) RefreshQueueGatheredCounts(ctx context.Context, repoID i
 			UPDATE aveloxis_ops.collection_queue
 			SET last_issues = (SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1),
 				last_prs = (SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1),
+				last_activity_90d = (SELECT COUNT(*) FROM aveloxis_data.issues
+				                     WHERE repo_id = $1 AND created_at >= NOW() - INTERVAL '90 days')
+				                  + (SELECT COUNT(*) FROM aveloxis_data.pull_requests
+				                     WHERE repo_id = $1 AND created_at >= NOW() - INTERVAL '90 days'),
 				updated_at = NOW()
 			WHERE repo_id = $1`, repoID)
 		return err

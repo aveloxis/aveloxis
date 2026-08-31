@@ -931,6 +931,17 @@ Token semantics:
   requests opened). Default limit is 50 (v0.27.14; was 20). There is
   no cap on the number of repos a user may star — the limit only
   bounds how many rows the home list returns per request.
+  Freshness (v0.29.0): the activity ranking reads the queue's cached
+  `last_activity_90d`, stamped per completed collection cycle — the
+  same as-of-last-collected freshness as every gathered count. The
+  response is additionally cached per user for 5 minutes and served
+  **stale-while-revalidate** past that: an expired entry returns
+  immediately while one background refresh recomputes it (stale
+  serving is bounded at one hour past expiry — older entries block
+  on a fresh load, which the cached ranking keeps fast). The
+  `X-Cache` header reports `hit`, `stale`, or `miss`; starring a
+  repo invalidates the entry so the next request reorders
+  immediately.
 - `GET /api/v1/home/new-repos?days=30` — the "New Repositories" home
   feed (v0.27.62): `{"days", "fleet": [...], "mine": [...]}` where
   each row is `{repo_id, owner, name, org, added_at}`, newest-first,

@@ -92,6 +92,7 @@ func TestRunMigrationsCreatesLedgerBeforeLedgeredSteps(t *testing.T) {
 // so renames must be deliberate: update BOTH the call site and this
 // fixture in the same change.
 var ledgeredStepLabels = []string{
+	"v0.29.0 backfill collection_queue.last_activity_90d from the 90-day window",
 	// Function-wrapped walkers.
 	"cleanup garbage timestamps from prior versions",
 	"v0.27.7 rotate non-latest repo_labor snapshots to repo_labor_history",

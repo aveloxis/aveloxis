@@ -2303,6 +2303,11 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_queue (
     last_releases    INT DEFAULT 0,
     last_contributors INT DEFAULT 0,
     last_commits     INT DEFAULT 0,
+    -- v0.29.0: cached trailing-90-day activity (issues + PRs opened),
+    -- stamped by CompleteJob per completed job (success or failure) — the home page's
+    -- ranking column. Freshness = last_collected, like every other
+    -- cached count on this row (the v0.19.11/v0.21.2 pattern).
+    last_activity_90d INT,
     last_duration_ms BIGINT DEFAULT 0,
     -- Force a full (since=zero) re-collection on the next scheduler
     -- cycle. Auto-set by the scheduler when a collection ends with a

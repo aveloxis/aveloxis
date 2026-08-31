@@ -22,7 +22,7 @@ type HomeRepo struct {
 	Owner      string `json:"owner"`
 	Name       string `json:"name"`
 	Starred    bool   `json:"starred"`
-	Activity90 int    `json:"activity_90d"` // issues + PRs opened + distinct commits, last 90 days
+	Activity90 int    `json:"activity_90d"` // issues + PRs opened (the queue-cached last_activity_90d), last 90 days
 }
 
 // StarRepo stars repoID for userID. Idempotent.
@@ -69,6 +69,12 @@ func (s *PostgresStore) GetHomeRepos(ctx context.Context, userID int, limit int)
 	if limit <= 0 {
 		limit = 50 // v0.27.14: raised from 20 (operator ask — the home list capacity)
 	}
+	// v0.29.0: the 90-day activity is READ from the queue's cached
+	// column (stamped by CompleteJob, backfilled once at migrate) —
+	// the per-render fleet-wide aggregation this replaced measured
+	// mean 8.1s / max 48.2s on the production fleet for a 143K-repo
+	// admin scope (pg_stat_statements, 2026-08-31). LEFT JOIN so a
+	// queueless repo (the gone cohort) still renders, ranked as 0.
 	rows, err := s.pool.Query(ctx, `
 		WITH mine AS (
 			SELECT DISTINCT ur.repo_id,
@@ -81,27 +87,12 @@ func (s *PostgresStore) GetHomeRepos(ctx context.Context, userID int, limit int)
 			SELECT st.repo_id, TRUE
 			FROM aveloxis_ops.user_repo_stars st
 			WHERE st.user_id = $1
-		),
-		iss AS (
-			SELECT i.repo_id, COUNT(*) AS c
-			FROM aveloxis_data.issues i
-			JOIN mine m ON m.repo_id = i.repo_id
-			WHERE i.created_at >= NOW() - INTERVAL '90 days'
-			GROUP BY i.repo_id
-		),
-		prs AS (
-			SELECT p.repo_id, COUNT(*) AS c
-			FROM aveloxis_data.pull_requests p
-			JOIN mine m ON m.repo_id = p.repo_id
-			WHERE p.created_at >= NOW() - INTERVAL '90 days'
-			GROUP BY p.repo_id
 		)
 		SELECT m.repo_id, r.repo_owner, r.repo_name, m.starred,
-		       COALESCE(iss.c, 0) + COALESCE(prs.c, 0) AS activity
+		       COALESCE(q.last_activity_90d, 0) AS activity
 		FROM mine m
 		JOIN aveloxis_data.repos r USING (repo_id)
-		LEFT JOIN iss ON iss.repo_id = m.repo_id
-		LEFT JOIN prs ON prs.repo_id = m.repo_id
+		LEFT JOIN aveloxis_ops.collection_queue q ON q.repo_id = m.repo_id
 		ORDER BY m.starred DESC, activity DESC, r.repo_owner, r.repo_name
 		LIMIT $2`, userID, limit)
 	if err != nil {

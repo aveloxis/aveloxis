@@ -478,6 +478,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 	if s.cfg.Collection.MailingListEnabled {
 		s.spawnMailingListWorker(ctx)
 	}
+	if s.cfg.Collection.JiraEnabled {
+		s.spawnJiraWorkers(ctx)
+	}
 
 	// Materialized view rebuild: check hourly, run on Saturdays.
 	// Collection is suspended during the rebuild.
@@ -713,6 +716,19 @@ func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 	}
 	if mlDeleted > 0 {
 		s.logger.Info("mailing-list staging cleanup complete", "rows_deleted", mlDeleted)
+	}
+
+	// v0.29.0: the Jira staging table rides the same retention knob.
+	jiraDeleted, err := s.store.PurgeJiraStagingProcessed(ctx, s.cfg.Collection.StagingRetentionDuration())
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		s.logger.Warn("jira staging cleanup failed", "error", err)
+		return
+	}
+	if jiraDeleted > 0 {
+		s.logger.Info("jira staging cleanup complete", "rows_deleted", jiraDeleted)
 	}
 }
 

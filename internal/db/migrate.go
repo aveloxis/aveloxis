@@ -258,6 +258,24 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// v0.27.38 (summary/18 Phase 1a): messages msg_kind — see
 	// msg_kind_migration.go for the full sequence + rationale.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_kind", "SMALLINT NOT NULL DEFAULT 0")
+	// v0.29.0 Part B: quote-stripped body + rule version. msg_text_clean
+	// carries NO DEFAULT on purpose (NULL = no clean variant; a DEFAULT
+	// the empty string would empty every forge row via the COALESCE read path). The
+	// 12.6M-row history strip is `aveloxis strip-quoted-history`, a
+	// resumable CLI — NEVER a migrate walker (the F13 class).
+	// v0.29.0 C3a: the real Jira internal id gets its OWN column —
+	// synthetics keep their negative platform_issue_id (id-space
+	// collision + sign-keyed detector class; see schema.sql).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.issues", "jira_issue_id", "BIGINT")
+	// v0.29.0 C3a: the notification→native-comment supersession link
+	// (see schema.sql). The FK is added only on fresh installs via the
+	// base DDL; existing fleets get the bare column — the stamp writer
+	// only ever writes ids RETURNING'd from messages in the same
+	// process, and a backfilled FK VALIDATE over 12.6M rows is not
+	// worth a migrate stall for a link column.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.email_message", "linked_msg_id", "BIGINT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_text_clean", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_text_clean_rule", "TEXT DEFAULT ''")
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.38 create message_heal_worklist", `
 		CREATE TABLE IF NOT EXISTS aveloxis_ops.message_heal_worklist (
@@ -536,7 +554,7 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// liveness is only adjudicable on the machine that wrote it.
 	// scancode_skip_reason: why the last "run" was a no-scan skip
 	// ('generated-content' for the >5 GiB / >=90% HTML+CSS+JS
-	// policy); cleared back to '' by the next real successful scan.
+	// policy); cleared back to the empty string by the next real successful scan.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_locked_host", "TEXT")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_skip_reason", "TEXT DEFAULT ''")
 
@@ -670,7 +688,7 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// gh_login wasn't. The same missing index made
 	// BackfillCommitAuthorIDs's join probe a hash join over the entire
 	// contributors table, producing 2:30-minute UPDATE durations.
-	// Partial — `WHERE gh_login != ''` excludes the email-only
+	// Partial — `WHERE gh_login != the empty string` excludes the email-only
 	// contributor cohort, mirroring the idx_contributors_login pattern.
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
 		"aveloxis_data", "idx_contributors_gh_login",
@@ -686,8 +704,8 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// (2026-07-20), against a documented expectation of tens of
 	// minutes. v0.20.12's own comment named this index as "the next
 	// step" if the join profiled as a bottleneck. Same partial
-	// predicate as its sibling: the email-only cohort (gh_login = '')
-	// is excluded, matching the query's v0.27.25 `!= ''` guards.
+	// predicate as its sibling: the email-only cohort (gh_login = the empty string)
+	// is excluded, matching the query's v0.27.25 `!= the empty string` guards.
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
 		"aveloxis_data", "idx_contributors_gh_login_lower",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_gh_login_lower
@@ -1408,7 +1426,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// v0.27.5 — scorecard execution-mode marker. 'remote' (--repo, ~18
 	// checks) vs 'local' (--local, ~11 checks) overall scores are NOT
 	// comparable, so every check row and the __overall__ row records
-	// which mode produced it. '' = pre-v0.27.5 scan. MUST be added to
+	// which mode produced it. the empty string = pre-v0.27.5 scan. MUST be added to
 	// BOTH the main table AND the history table: RotateScorecardToHistory
 	// does `INSERT INTO ..._history SELECT * FROM ...`, which requires
 	// identical column sets — adding the column to only one side breaks
@@ -1542,7 +1560,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	//      rows with an alias but no canonical (created via
 	//      resolution strategies 2 + 4 pre-v0.25.6) stay empty
 	//      without this. Picks MIN(alias_email) per cntrb_id for
-	//      determinism. COALESCE on cntrb_canonical = '' so we
+	//      determinism. COALESCE on cntrb_canonical = the empty string so we
 	//      never overwrite an existing real canonical. Soft-deleted
 	//      contributors are skipped per the v0.20.2 contract.
 	//
@@ -1610,7 +1628,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// (pr_cmt_node_id, issue_assignees.platform_node_id) need API
 	// values and heal only via full re-collection.
 	//
-	// Idempotent: the COALESCE(col, '') = '' predicates stop matching
+	// Idempotent: the COALESCE(col, the empty string) = the empty string predicates stop matching
 	// once filled.
 	runOnceStep(ctx, pg, logger, errs,
 		"v0.26.4 backfill pull_requests.pr_diff_url from pr_html_url",
@@ -1735,6 +1753,35 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		func(errs *[]error) {
 			ensureMsgRefMetadata(ctx, pg, logger, errs)
 		})
+	// v0.29.0 C1: close the permanently-open synthetic Jira issues
+	// from the Resolved/Closed/Reopened notifications already in
+	// email_message (485,892 open synthetics vs 358,384 Resolved
+	// notifications on the aveloxis DB; the parsed action was captured
+	// and discarded until this release). Keyset-windowed, event-time
+	// guarded, synthetic-gated. Pure SQL — ledger-scoped.
+	runOnce(ctx, pg, logger, errs,
+		"v0.29.0 backfill synthetic Jira issue state from notification subjects",
+		func(errs *[]error) {
+			if err := pg.BackfillSyntheticJiraState(ctx, logger); err != nil {
+				*errs = append(*errs, err)
+			}
+		})
+
+	// v0.29.0 C1-pre: repair the automation-phantom identity
+	// fabrication (2026-08-31 find): the pre-guard sender-resolve
+	// ticker minted email-only contributor rows for relay addresses
+	// (jira@apache.org, gitbox@, a list address) and 83,746 messages
+	// were attributed to the jira@ phantom on the aveloxis DB.
+	// Soft-deletes the phantoms, drops their aliases, NULLs their
+	// attributions. Pure SQL, bounded, idempotent — ledger-scoped.
+	runOnce(ctx, pg, logger, errs,
+		"v0.29.0 heal automation-phantom contributors (relay identity fabrication)",
+		func(errs *[]error) {
+			if err := pg.HealAutomationPhantomContributors(ctx); err != nil {
+				*errs = append(*errs, err)
+			}
+		})
+
 	// The uq_pr_review_msg_ref arbiter stays LIVE-healed regardless of
 	// the ledger (the plan's "CIC builds are never ledgered" rule): a
 	// hand-dropped unique must come back on the next explicit migrate.
@@ -1791,7 +1838,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// v0.27.11 — vulnerability version-resolution accuracy. Every
 	// finding carries the raw manifest requirement and how the scanned
 	// version was chosen ('locked'/'exact'/'bounded-range'/
-	// 'range-floor'/'unpinned'). Pre-v0.27.11 rows keep '' and heal on
+	// 'range-floor'/'unpinned'). Pre-v0.27.11 rows keep the empty string and heal on
 	// the repo's next scan — deliberately NO backfill: the
 	// classification must come from the current manifest, which only a
 	// scan can read.
@@ -1912,15 +1959,15 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		   AND COALESCE(r.repo_archived, FALSE) IS DISTINCT FROM (latest.status = 'Archived')`)
 
 	// v0.27.51: dependency_scope stores the WORD 'runtime' instead of
-	// '' (operator decision — '' was uninterpretable for direct table
-	// readers). Backfill every ''-scope direct/transitive finding:
-	// under the presentation contract '' already READ as runtime
+	// the empty string (operator decision — the empty string was uninterpretable for direct table
+	// readers). Backfill every the empty string-scope direct/transitive finding:
+	// under the presentation contract the empty string already READ as runtime
 	// everywhere (IsRuntimeScope), so this is a spelling change, not a
 	// semantic one — and it is SELF-CORRECTING for legacy rows whose
 	// dep is really non-runtime: the upsert refreshes scope
 	// unconditionally on each repo's next scan, overwriting the
 	// backfilled 'runtime' with the fine value. kind='self' rows
-	// deliberately stay '' — scope vocabulary does not apply to a
+	// deliberately stay the empty string — scope vocabulary does not apply to a
 	// project's own advisories. Idempotent by predicate.
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.51 backfill dependency_scope '' -> 'runtime' on dependency findings",

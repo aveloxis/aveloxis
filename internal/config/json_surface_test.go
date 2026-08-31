@@ -77,6 +77,11 @@ var frozenCollectionKeys = []string{
 	"mailing_list_polite_email",
 	"mailing_list_mirror_handling",
 	"mailing_list_processor_workers",
+	"mailing_list_sender_backfill_interval_minutes",
+	"jira_enabled",
+	"jira_workers",
+	"jira_cadence_hours",
+	"jira_polite_email",
 }
 
 func TestCollectionJSONSurfaceIsFrozen(t *testing.T) {

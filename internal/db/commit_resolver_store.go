@@ -264,7 +264,11 @@ func (s *PostgresStore) InsertUnresolvedEmail(ctx context.Context, email string)
 // EnsureContributorAlias creates an alias linking a commit email to a contributor.
 // The canonical_email is looked up from the contributor row; alias_email is the
 // commit email that differs from the canonical.
-func (s *PostgresStore) EnsureContributorAlias(ctx context.Context, cntrbID, aliasEmail string) error {
+// v0.29.0 Part E: toolSource/dataSource are parameters now — the old
+// hardcoded 'aveloxis-commit-resolver'/'GitHub API' stamped
+// mailing-list-origin aliases with commit-resolver provenance, which
+// misled every provenance audit that trusted the columns.
+func (s *PostgresStore) EnsureContributorAlias(ctx context.Context, cntrbID, aliasEmail, toolSource, dataSource string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_data.contributors_aliases
 			(cntrb_id, canonical_email, alias_email, cntrb_active,
@@ -276,9 +280,9 @@ func (s *PostgresStore) EnsureContributorAlias(ctx context.Context, cntrbID, ali
 				$2
 			),
 			$2, 1,
-			'aveloxis-commit-resolver', 'GitHub API', NOW())
+			$3, $4, NOW())
 		ON CONFLICT (alias_email) DO NOTHING`,
-		cntrbID, aliasEmail)
+		cntrbID, aliasEmail, toolSource, dataSource)
 	return err
 }
 

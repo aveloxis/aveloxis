@@ -55,6 +55,7 @@ var cntrbIDChildFKs = []cntrbIDChildFK{
 	// complete on legacy databases.
 	{"contributor_activity_days", "cntrb_id", "contributor_activity_days_cntrb_id_fkey"},
 	{"contributor_activity_day_totals", "cntrb_id", "contributor_activity_day_totals_cntrb_id_fkey"},
+	{"jira_identities", "cntrb_id", "jira_identities_cntrb_id_fkey"},
 }
 
 // ensureOnUpdateCascadeOnCntrbIDFKs is the v0.22.1 idempotent

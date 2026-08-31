@@ -6,6 +6,7 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -42,11 +43,14 @@ type fakeProcStore struct {
 	nextBodyID   int64
 
 	// projection (Phase A)
-	issueByKey    map[string]int64 // external_key → issue_id (link-or-create)
-	createdIssues []string         // external_keys for which CREATE/LINK was called
-	bridgedIssues []int64          // issue_ids bridged
-	nextIssueID   int64
-	threadIssues  map[string]int64 // thread root → issue_id (FindIssueForThread fake)
+	issueByKey     map[string]int64 // external_key → issue_id (link-or-create)
+	createdIssues  []string         // external_keys for which CREATE/LINK was called
+	bridgedIssues  []int64          // issue_ids bridged
+	nextIssueID    int64
+	threadIssues   map[string]int64 // thread root → issue_id (FindIssueForThread fake)
+	cleanBodies    []string
+	cleanRules     []string
+	appliedActions []string
 }
 
 func (f *fakeProcStore) ListsWithStaging(context.Context, int) ([]int64, error) {
@@ -118,10 +122,16 @@ func (f *fakeProcStore) UpsertEmailMessage(_ context.Context, em *model.EmailMes
 	f.emails = append(f.emails, em)
 	return int64(len(f.emails)), nil
 }
-func (f *fakeProcStore) UpsertMailingListMessageBody(context.Context, int64, string, string, string, string, time.Time, *string) (int64, error) {
+func (f *fakeProcStore) UpsertMailingListMessageBody(_ context.Context, _ int64, _, _, _, _ string, _ time.Time, _ *string, cleanBody, cleanRule string) (int64, error) {
 	f.bodies++
 	f.nextBodyID++
+	f.cleanBodies = append(f.cleanBodies, cleanBody)
+	f.cleanRules = append(f.cleanRules, cleanRule)
 	return f.nextBodyID, nil
+}
+func (f *fakeProcStore) ApplyTrackerAction(_ context.Context, issueID int64, action string, _ time.Time) error {
+	f.appliedActions = append(f.appliedActions, fmt.Sprintf("%d:%s", issueID, action))
+	return nil
 }
 func (f *fakeProcStore) InsertEmailMessageRef(context.Context, int64, int64, *int64) error {
 	f.refs++

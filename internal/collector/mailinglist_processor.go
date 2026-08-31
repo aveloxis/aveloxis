@@ -34,11 +34,12 @@ type mlProcessorStore interface {
 
 	GetPrimaryRepoForGroup(ctx context.Context, repoGroupID int64) (int64, bool, error)
 	ResolveContributorIDByEmail(ctx context.Context, email string) (string, bool, error)
+	ApplyTrackerAction(ctx context.Context, issueID int64, action string, sentAt time.Time) error
 	ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int) (*int64, *int64, error)
 	ResolveMirrorLinkByNodeID(ctx context.Context, nodeID string) (*int64, *int64, error)
 	FindRepoByURL(ctx context.Context, gitURL string) (int64, error)
 	UpsertEmailMessage(ctx context.Context, em *model.EmailMessage) (int64, error)
-	UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string) (int64, error)
+	UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string, cleanBody, cleanRule string) (int64, error)
 	InsertEmailMessageRef(ctx context.Context, emailMessageID, msgID int64, repoGroupID *int64) error
 
 	// Phase A projection (§3): LINK an existing issue by external_key, else
@@ -292,6 +293,13 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	}
 
 	// Per-list write-through contributor cache.
+	// C1-pre: automation senders (relays, bots, the list itself) must
+	// NEVER acquire an identity — resolving them is how 83,746 messages
+	// got attributed to a jira@apache.org phantom (2026-08-31).
+	if IsAutomationEmail(m.SenderEmail) || strings.EqualFold(m.SenderEmail, m.ListAddress) {
+		var nilPtr *string
+		cntrbCache[m.SenderEmail] = nilPtr
+	}
 	cntrbPtr, cached := cntrbCache[m.SenderEmail]
 	if !cached {
 		if id, ok, _ := p.store.ResolveContributorIDByEmail(ctx, m.SenderEmail); ok {
@@ -355,7 +363,7 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		// Reporter = the resolved sender, but NEVER the jira@/bot sender
 		// (attribution integrity; real-actor-from-body parsing is a follow-up).
 		var reporterID *string
-		if cntrbPtr != nil && !IsBotEmail(m.SenderEmail) {
+		if cntrbPtr != nil && !IsAutomationEmail(m.SenderEmail) {
 			reporterID = cntrbPtr
 		}
 		title := mailingListIssueTitle(m.Subject, m.ExternalKey)
@@ -370,6 +378,21 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		} else if id > 0 {
 			projectedIssueID = id
 			linkedIssueID = &id
+			// C1: apply the notification's ACTION to the issue's state.
+			// Must be an explicit call on the LINK path — for an
+			// already-existing issue LinkOrCreateIssueFromEmail returns
+			// before its INSERT, so a DO UPDATE clause can never see a
+			// [Resolved]. Synthetic-gating + event-time ordering are
+			// enforced inside ApplyTrackerAction (SR-18).
+			if action := mailinglist.TrackerActionFromSubject(m.Subject); action != "" {
+				if aerr := p.store.ApplyTrackerAction(ctx, id, action, m.SentAt); aerr != nil {
+					if errors.Is(aerr, context.Canceled) {
+						return aerr
+					}
+					p.logger.Warn("mailing-list processor: tracker action apply failed",
+						"issue_id", id, "action", action, "error", aerr)
+				}
+			}
 		}
 	}
 
@@ -450,7 +473,11 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		return nil
 	}
 
-	msgID, err := p.store.UpsertMailingListMessageBody(ctx, repoID, m.MessageID, m.ListAddress, m.SenderEmail, m.Body, m.SentAt, cntrbPtr)
+	// Part B: store the quote-stripped variant beside the raw body —
+	// 82.5% of list mail embeds the thread it replies to (64% of body
+	// chars measured); consumers read COALESCE(msg_text_clean, msg_text).
+	cleanBody, cleanRule := mailinglist.StripQuotedHistory(m.Body)
+	msgID, err := p.store.UpsertMailingListMessageBody(ctx, repoID, m.MessageID, m.ListAddress, m.SenderEmail, m.Body, m.SentAt, cntrbPtr, cleanBody, cleanRule)
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"time"
@@ -250,4 +251,110 @@ func (s *PostgresStore) BridgeEmailToIssue(ctx context.Context, issueID, repoID,
 		return fmt.Errorf("bridge email to issue: recount: %w", err)
 	}
 	return nil
+}
+
+// trackerCloseActions is the SQL-side spelling of "this action closes
+// the ticket" — Resolved and Closed; Reopened reopens. Everything else
+// (Created, Commented, Work logged, ...) is state-neutral. The subject
+// regex below is the third spelling of the action vocabulary
+// (systems.yaml capture + mailinglist.TrackerActionFromSubject are the
+// others) — TestTrackerActionParityWithSystemsYAML and the fixtures in
+// tracker_state_test.go pin them together (SR-17).
+const trackerActionSubjectSQL = `substring(subject from '^\[jira\] \[([\w ]+)\] \([A-Z][A-Z0-9]+-[0-9]+\)')`
+
+// trackerActionRe is internal/db's Go spelling of the same extraction
+// (this package cannot import internal/mailinglist — no sibling
+// feature-package edges). TestTrackerActionDBSpellingParity pins it to
+// mailinglist.TrackerActionFromSubject on the shared fixtures.
+var trackerActionRe = regexp.MustCompile(`^\[jira\] \[([\w ]+)\] \([A-Z][A-Z0-9]+-[0-9]+\)`)
+
+func trackerActionFromSubject(subject string) string {
+	if m := trackerActionRe.FindStringSubmatch(subject); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// ApplyTrackerAction applies a Jira-notification action to a projected
+// issue: Resolved/Closed -> closed (+closed_at = the notification's
+// sent_at), Reopened -> open. Two hard rules (C3a provider
+// precedence, SR-18 — enforced HERE, not at call sites):
+//
+//   - SYNTHETIC rows only (platform_issue_id < 0). The LINK path can
+//     resolve a native GitHub issue (the Jira→GitHub migration case)
+//     whose state is API-owned; a notification must never touch it.
+//   - EVENT-TIME guarded: the write stamps updated_at with the
+//     action's sent_at and only applies when the stored updated_at is
+//     older — so a replayed old archive month can never regress a
+//     newer state, regardless of drain order. Pilot-measured (2026-08-31,
+//     6,000 keys): mail-derived state falsely closes 0.04%; the guard
+//     is what keeps replays from adding to that.
+//
+// State-neutral actions ("Commented", "Work logged", "") are no-ops.
+func (s *PostgresStore) ApplyTrackerAction(ctx context.Context, issueID int64, action string, sentAt time.Time) error {
+	var newState string
+	switch action {
+	case "Resolved", "Closed":
+		newState = "closed"
+	case "Reopened":
+		newState = "open"
+	default:
+		return nil
+	}
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.issues
+		SET issue_state = $2,
+		    closed_at = CASE WHEN $2 = 'closed' THEN $3 ELSE NULL END,
+		    updated_at = $3
+		WHERE issue_id = $1
+		  AND platform_issue_id < 0
+		  AND (updated_at IS NULL OR updated_at <= $3)`,
+			issueID, newState, NullTime(sentAt))
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("apply tracker action %q on issue %d: %w", action, issueID, err)
+	}
+	return nil
+}
+
+// BackfillSyntheticJiraState is the ledgered history walk closing the
+// permanently-open synthetics: every keyed issue_event notification
+// already in email_message carries its action in the subject; the walk
+// derives each (repo, key)'s LATEST state-relevant action per window
+// and applies it under the same synthetic gate + event-time guard as
+// ApplyTrackerAction (window order cannot matter — the newest sent_at
+// wins whichever window lands last). Keyset windows over
+// email_message_id per the house rule; found 485,892 open synthetics
+// against 358,384 Resolved notifications on the aveloxis DB.
+// Idempotent: reruns re-derive the same latest actions and the guard's
+// <= keeps the result stable.
+func (s *PostgresStore) BackfillSyntheticJiraState(ctx context.Context, logger *slog.Logger) error {
+	return runKeysetWindows(ctx, s, logger,
+		"v0.29.0 synthetic Jira issue state from notification subjects",
+		`SELECT COALESCE(MAX(email_message_id), 0) FROM aveloxis_data.email_message`,
+		`
+		UPDATE aveloxis_data.issues i
+		SET issue_state = CASE WHEN l.action IN ('Resolved','Closed') THEN 'closed' ELSE 'open' END,
+		    closed_at = CASE WHEN l.action IN ('Resolved','Closed') THEN l.at ELSE NULL END,
+		    updated_at = l.at
+		FROM (
+			SELECT em.repo_id, em.linked_external_key AS key,
+			       (array_agg(`+trackerActionSubjectSQL+` ORDER BY em.sent_at DESC))[1] AS action,
+			       (array_agg(em.sent_at ORDER BY em.sent_at DESC))[1] AS at
+			FROM aveloxis_data.email_message em
+			WHERE em.email_message_id > $1 AND em.email_message_id <= $2
+			  AND em.msg_class = 'issue_event'
+			  AND em.repo_id IS NOT NULL
+			  AND em.linked_external_key <> ''
+			  AND em.sent_at IS NOT NULL
+			  AND `+trackerActionSubjectSQL+` IN ('Resolved','Closed','Reopened')
+			GROUP BY em.repo_id, em.linked_external_key
+		) l
+		WHERE i.repo_id = l.repo_id
+		  AND i.external_key = l.key
+		  AND i.external_key <> ''
+		  AND i.platform_issue_id < 0
+		  AND (i.updated_at IS NULL OR i.updated_at <= l.at)`)
 }

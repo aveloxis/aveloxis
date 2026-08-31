@@ -108,7 +108,7 @@ func (s *PostgresStore) CreateEmailOnlyContributor(ctx context.Context, email st
 		return "", fmt.Errorf("create email-only contributor %q: %w", email, err)
 	}
 	// Alias for commit-email convergence (best-effort).
-	_ = s.EnsureContributorAlias(ctx, id, email)
+	_ = s.EnsureContributorAlias(ctx, id, email, MailingListToolSource, "Mailing List")
 	return id, nil
 }
 
@@ -166,7 +166,7 @@ func (s *PostgresStore) LinkMailingListSender(ctx context.Context, senderEmail, 
 		return "", err
 	}
 	if senderEmail != "" {
-		if err := s.EnsureContributorAlias(ctx, actualID, senderEmail); err != nil {
+		if err := s.EnsureContributorAlias(ctx, actualID, senderEmail, MailingListToolSource, "Mailing List"); err != nil {
 			return actualID, err
 		}
 		// Best-effort canonical backfill (COALESCE-guarded inside the method).

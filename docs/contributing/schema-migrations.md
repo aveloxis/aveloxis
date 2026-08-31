@@ -303,8 +303,17 @@ This was added in v0.19.5 specifically for the "iterate on a v0.19.4 schema-erro
    (v0.27.117). A column registered at introduction can never acquire a
    conflicting writer unnoticed. Columns with no meaningful policy
    (free-form display fields) stay unregistered.
-8. Run `go test ./...` AND the integration tier.
-9. (Optional but recommended) Run `aveloxis data-test --released-tag <prev> --repo <test-repo>` to verify the new version doesn't lose data vs the prior release. See [`docs/guide/data-test.md`](../guide/data-test.md).
+8. **Update `docs/schema.md`'s Source column** for every column you
+   add — the Source cell is the column's provenance record ("who
+   writes this, from what"), and identity-bearing columns feed
+   [`docs/architecture/human-provenance.md`](../architecture/human-provenance.md)
+   too. The 2026-08-31 provenance audit traced years of drift
+   (columns documented as "Computed" that had NO writer, writers
+   attributed to the wrong subsystem) to this checklist lacking the
+   step — a column documented at introduction can never drift
+   silently.
+9. Run `go test ./...` AND the integration tier.
+10. (Optional but recommended) Run `aveloxis data-test --released-tag <prev> --repo <test-repo>` to verify the new version doesn't lose data vs the prior release. See [`docs/guide/data-test.md`](../guide/data-test.md).
 
 ## What v0.21.5 made explicit: who can run migrations
 

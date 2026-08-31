@@ -46,6 +46,17 @@ func seedRealignRepo(ctx context.Context, t *testing.T, store *PostgresStore, ta
 	if err != nil {
 		t.Fatalf("UpsertRepo(%s): %v", slug, err)
 	}
+	// Nanosecond-unique slugs never collide — which also means every
+	// leaked row accumulates FOREVER on the shared scratch DB (4,456
+	// _avrealign rows found 2026-08-31; they pushed the fleet-ordered
+	// scancode claim test past its bounded loop). Each seed cleans
+	// itself up.
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, id)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+	})
 	return id
 }
 

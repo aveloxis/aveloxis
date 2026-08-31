@@ -487,7 +487,7 @@ func (r *CommitResolver) ensureContributor(ctx context.Context, login string, gh
 	// Create alias using the actual cntrb_id (may differ from desiredID
 	// if the login already existed under a different UUID).
 	if commitEmail != "" && !IsNoreplyEmail(commitEmail) && !IsBotEmail(commitEmail) {
-		if err := r.store.EnsureContributorAlias(ctx, actualID, commitEmail); err != nil {
+		if err := r.store.EnsureContributorAlias(ctx, actualID, commitEmail, "aveloxis-commit-resolver", "GitHub API"); err != nil {
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
 			// unchanged and the work is retried on the next cycle.
@@ -511,7 +511,7 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 	if err != nil || cntrbID == "" {
 		return
 	}
-	if err := r.store.EnsureContributorAlias(ctx, cntrbID, commitEmail); err != nil {
+	if err := r.store.EnsureContributorAlias(ctx, cntrbID, commitEmail, "aveloxis-commit-resolver", "GitHub API"); err != nil {
 		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 		// defect. Only the log is suppressed — surrounding behaviour is
 		// unchanged and the work is retried on the next cycle.

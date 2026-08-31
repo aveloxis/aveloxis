@@ -43,7 +43,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
   │                                                     │
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
-  │  │ 100 tables        │  │ 39 tables              │ │
+  │  │ 101 tables        │  │ 41 tables              │ │
   │  │ 20 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
@@ -71,7 +71,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
 
 Aveloxis uses four PostgreSQL schemas to separate collected data, ScanCode results, operational state, and Augur compatibility.
 
-### `aveloxis_data` (100 tables + 20 materialized views)
+### `aveloxis_data` (101 tables + 20 materialized views)
 
 All collected open source community health data:
 
@@ -97,7 +97,7 @@ Plus 20 materialized views for 8Knot compatibility.
 
 ScanCode per-file license and copyright detections: `scancode_scans` + `scancode_file_results`, each with a `_history` twin. Written by the decoupled scancode worker pool (180-day cadence per repo).
 
-### `aveloxis_ops` (39 tables)
+### `aveloxis_ops` (41 tables)
 
 Operational and orchestration tables:
 
@@ -238,7 +238,7 @@ aveloxis/
       postgres.go         # All upsert methods
       staging.go          # JSONB staging writer and processor
       migrate.go          # Schema migration
-      schema.sql          # Full DDL (143 tables)
+      schema.sql          # Full DDL (146 tables)
       matviews.sql        # 20 materialized views
       contributors.go     # Contributor resolver with cache
       affiliations.go     # Email domain -> org resolver

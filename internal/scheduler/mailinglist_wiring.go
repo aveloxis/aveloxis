@@ -184,7 +184,7 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 					return
 				}
 				// Bots are never people — terminal stamp so they drop out.
-				if collector.IsBotEmail(c.SenderEmail) {
+				if collector.IsAutomationEmail(c.SenderEmail) {
 					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "bot", "")
 					continue
 				}
@@ -200,7 +200,7 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 					// DIRECT-HUMAN sender (not a Jira/GitBox/CI relay), create an
 					// email-only contributor so they're attributed and ride the
 					// convergence ticker. Bot-relayed senders get no contributor.
-					if c.HumanClass && !collector.IsBotEmail(c.SenderEmail) {
+					if c.HumanClass && !collector.IsAutomationEmail(c.SenderEmail) {
 						_, cerr := s.store.CreateEmailOnlyContributor(ctx, c.SenderEmail)
 						if errors.Is(cerr, context.Canceled) {
 							return // shutdown, not a failure: no attempt stamped
@@ -237,11 +237,17 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 	}
 }
 
-// mailingListSenderBackfillInterval is how often unresolved sender→cntrb
-// links are retried. Hourly is ample — it only matters as commit resolution
-// + search-resolve add identities over days.
-const mailingListSenderBackfillInterval = time.Hour
-const mailingListSenderBackfillBatch = 5000
+// mailingListSenderBackfillWindow is the msg_id keyset-window width of
+// one BackfillMailingListSenderIDs call. 500K measured as an Index Scan
+// (~6s/window on the production aveloxis DB); at 2M the planner flips to
+// a parallel seq scan.
+const mailingListSenderBackfillWindow = int64(500_000)
+
+// mailingListSenderBackfillMaxWindowsPerTick bounds one tick's work so a
+// pathologically wide msg_id range cannot occupy the goroutine past its
+// interval. A full production pass is ~57 windows today; 200 is
+// headroom, not a target.
+const mailingListSenderBackfillMaxWindowsPerTick = 200
 
 // mailingListBackendFor builds the ArchiveSource for a system definition,
 // or nil for an unsupported backend.
@@ -256,24 +262,87 @@ func mailingListBackendFor(sys *mailinglist.System, userAgent string) mailinglis
 	}
 }
 
+// runMailingListSenderBackfill walks the sender→cntrb_id backfill in
+// keyset windows at the knob-driven cadence
+// (collection.mailing_list_sender_backfill_interval_minutes). The pass
+// cursor PERSISTS across ticks: if a tick's window budget truncates a
+// pass, the next tick resumes where it stopped — restart-from-zero
+// would starve the high-msg_id tail forever. A pass ends when the
+// cursor clears the ceiling (never on rows-affected — sparse windows
+// legally resolve 0); the floor is cached for the process lifetime
+// (~17.5s to compute, and it never moves down).
 func (s *Scheduler) runMailingListSenderBackfill(ctx context.Context) {
-	t := time.NewTicker(mailingListSenderBackfillInterval)
+	interval := s.cfg.Collection.MailingListSenderBackfillInterval()
+	// SR-10's logging half: the EFFECTIVE cadence, post-default.
+	s.logger.Info("mailing-list: sender backfill ticker starting",
+		"interval", interval, "window", mailingListSenderBackfillWindow)
+	t := time.NewTicker(interval)
 	defer t.Stop()
+	var (
+		floor        int64 // process-lifetime cache (0 = not yet known)
+		cursor       int64 // pass cursor — persists across ticks
+		passCeil     int64 // 0 = start a fresh pass on the next tick
+		passResolved int64
+	)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			n, err := s.store.BackfillMailingListSenderIDs(ctx, mailingListSenderBackfillBatch)
-			if errors.Is(err, context.Canceled) {
-				return // shutdown, not a failure
-			}
-			if err != nil {
-				s.logger.Warn("mailing-list: sender backfill error", "error", err)
-				continue
-			}
-			if n > 0 {
-				s.logger.Info("mailing-list: resolved sender identities", "count", n)
+			for w := 0; w < mailingListSenderBackfillMaxWindowsPerTick; w++ {
+				if ctx.Err() != nil {
+					return
+				}
+				if passCeil == 0 {
+					if floor == 0 {
+						f, err := s.store.MailingListMsgIDFloor(ctx)
+						if errors.Is(err, context.Canceled) {
+							return
+						}
+						if err != nil {
+							s.logger.Warn("mailing-list: sender backfill floor query failed", "error", err)
+							break
+						}
+						if f == 0 {
+							break // no mailing-list bodies at all yet
+						}
+						floor = f
+					}
+					c, err := s.store.MailingListMsgIDCeiling(ctx)
+					if errors.Is(err, context.Canceled) {
+						return
+					}
+					if err != nil {
+						s.logger.Warn("mailing-list: sender backfill ceiling query failed", "error", err)
+						break
+					}
+					if c == 0 {
+						break
+					}
+					passCeil = c
+					cursor = floor - 1
+					passResolved = 0
+				}
+				n, err := s.store.BackfillMailingListSenderIDs(ctx, cursor, mailingListSenderBackfillWindow)
+				if errors.Is(err, context.Canceled) {
+					return // shutdown, not a failure
+				}
+				if err != nil {
+					// Cursor unchanged — the SAME window retries next tick.
+					s.logger.Warn("mailing-list: sender backfill window failed",
+						"error", err, "after_msg_id", cursor)
+					break
+				}
+				passResolved += n
+				cursor += mailingListSenderBackfillWindow
+				if cursor >= passCeil {
+					if passResolved > 0 {
+						s.logger.Info("mailing-list: resolved sender identities",
+							"count", passResolved, "ceiling", passCeil)
+					}
+					passCeil = 0 // next tick starts a fresh pass
+					break
+				}
 			}
 		}
 	}

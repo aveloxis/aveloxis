@@ -83,6 +83,26 @@ var convergenceContracts = []convergenceContract{
 		// from the bottom. Same drain driver as the command: stamping is
 		// what removes a row from GetMessageHealBatch.
 		DrivingTests: []string{"TestMessageHealWorklistDrainsOnStamp"}},
+	{File: "internal/db/email_message_store.go",
+		// Part A (email attribution): BackfillMailingListSenderIDs'
+		// doc states "cntrb_id IS NULL is the resume state" / "rerun
+		// until the cursor clears the ceiling". The driver walks
+		// floor→ceiling windows, proves every resolvable fixture row
+		// attributes, and reruns the pass proving idempotence (scoped
+		// to the fixture's rows — the shared scratch DB may carry
+		// residue).
+		DrivingTests: []string{"TestSenderBackfillFullPassConverges"}},
+	{File: "cmd/aveloxis/strip_quoted_history.go",
+		// Part B: "msg_text_clean IS NULL is the resume state" — the
+		// driver proves an unstripped row appears in the strip batch,
+		// stamping removes it, and --rule-rerun re-selects stale-rule
+		// rows.
+		DrivingTests: []string{"TestStripWalkerBatchAndResumeState"}},
+	{File: "cmd/aveloxis/resolve_email_identities.go",
+		// The one-shot CLI quotes the same contract ("rerun until it
+		// reports 0"); same driver — the command is a thin loop over
+		// the store method the driver exercises.
+		DrivingTests: []string{"TestSenderBackfillFullPassConverges"}},
 	{File: "cmd/aveloxis/heal_collection_gaps.go",
 		// "rerun until 0 candidates" — the flagship: candidate → fill →
 		// RefreshQueueGatheredCounts → candidate set empty.

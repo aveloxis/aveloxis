@@ -87,7 +87,12 @@
     "mailing_list_backfill_months": 6,
     "mailing_list_polite_email": "",
     "mailing_list_mirror_handling": "metadata_only",
-    "mailing_list_processor_workers": 1
+    "mailing_list_processor_workers": 1,
+    "mailing_list_sender_backfill_interval_minutes": 60,
+    "jira_enabled": false,
+    "jira_workers": 1,
+    "jira_cadence_hours": 24,
+    "jira_polite_email": ""
   },
   "web": {
     "addr": ":8082",

@@ -1,0 +1,145 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+// jira_worker_test.go — C3 fetch half: claim a project, page its
+// incremental JQL window against the Jira Server search API, stage
+// envelopes, checkpoint per staged page (SR-3), complete. A dead
+// project key (400) disables the row; a transient failure records
+// backoff and keeps the checkpoint.
+package collector
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/aveloxis/aveloxis/internal/db"
+)
+
+type fakeJiraStore struct {
+	job        *db.JiraProjectJob
+	staged     []string // issueKey@updated
+	checkpts   []time.Time
+	completed  *bool
+	failures   int
+	disabled   bool
+	claimCalls int
+}
+
+func (f *fakeJiraStore) ClaimNextJiraProject(context.Context, time.Duration, string) (*db.JiraProjectJob, error) {
+	f.claimCalls++
+	if f.claimCalls > 1 {
+		return nil, nil
+	}
+	return f.job, nil
+}
+func (f *fakeJiraStore) StageJiraIssue(_ context.Context, _ int64, _, issueKey string, updated time.Time, _ *int64, _ []byte) error {
+	f.staged = append(f.staged, issueKey+"@"+updated.UTC().Format("15:04"))
+	return nil
+}
+func (f *fakeJiraStore) CheckpointJiraProject(_ context.Context, _ int64, at time.Time) error {
+	f.checkpts = append(f.checkpts, at)
+	return nil
+}
+func (f *fakeJiraStore) CompleteJiraScan(_ context.Context, _ int64, complete bool) error {
+	f.completed = &complete
+	return nil
+}
+func (f *fakeJiraStore) RecordJiraFailure(context.Context, int64) error { f.failures++; return nil }
+func (f *fakeJiraStore) DisableJiraProject(context.Context, int64) error {
+	f.disabled = true
+	return nil
+}
+
+func jiraSearchPage(keys []string, total int, base time.Time) string {
+	var issues []string
+	for i, k := range keys {
+		up := base.Add(time.Duration(i) * time.Minute).Format("2006-01-02T15:04:05.000-0700")
+		issues = append(issues, fmt.Sprintf(
+			`{"id":"%d","key":"%s","fields":{"summary":"s","status":{"name":"Open"},"updated":"%s","created":"%s"}}`,
+			1000+i, k, up, up))
+	}
+	return fmt.Sprintf(`{"startAt":0,"maxResults":%d,"total":%d,"issues":[%s]}`,
+		len(keys), total, strings.Join(issues, ","))
+}
+
+// TestJiraWorkerSyncsProjectPages — two pages staged, checkpoint
+// advances per page, scan completes.
+func TestJiraWorkerSyncsProjectPages(t *testing.T) {
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+		w.Header().Set("Content-Type", "application/json")
+		if start == 0 {
+			_, _ = io.WriteString(w, jiraSearchPage([]string{"AVJW-1", "AVJW-2"}, 3, base))
+			return
+		}
+		_, _ = io.WriteString(w, jiraSearchPage([]string{"AVJW-3"}, 3, base.Add(time.Hour)))
+	}))
+	defer srv.Close()
+
+	repoID := int64(42)
+	store := &fakeJiraStore{job: &db.JiraProjectJob{JpsID: 7, ProjectKey: "AVJW", BaseURL: srv.URL, RepoID: &repoID}}
+	w := NewJiraWorker(store, 24*time.Hour, "", 2 /*pageSize*/, 0 /*pageSleep*/, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.RunOnce(context.Background())
+
+	if len(store.staged) != 3 {
+		t.Fatalf("staged = %v, want 3 issues", store.staged)
+	}
+	if len(store.checkpts) != 2 {
+		t.Fatalf("checkpoints = %v, want one per staged page (SR-3)", store.checkpts)
+	}
+	if store.completed == nil || !*store.completed {
+		t.Fatal("scan must complete")
+	}
+	// Decode-ability of the envelope is the processor's contract; the
+	// worker stages raw client JSON.
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(`{"key":"x"}`), &probe); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestJiraWorkerDisablesDeadProject — a 400 (dead key, 5 of 191 in
+// the pilot) disables the registration instead of retrying forever.
+func TestJiraWorkerDisablesDeadProject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+	}))
+	defer srv.Close()
+	store := &fakeJiraStore{job: &db.JiraProjectJob{JpsID: 8, ProjectKey: "DEADKEY", BaseURL: srv.URL}}
+	w := NewJiraWorker(store, 24*time.Hour, "", 100, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.RunOnce(context.Background())
+	if !store.disabled {
+		t.Fatal("a 400 project must be disabled")
+	}
+	if store.completed != nil {
+		t.Fatal("a disabled project must not stamp a completed scan")
+	}
+}
+
+// TestJiraWorkerRecordsTransientFailure — a 503 records backoff, no
+// completion, checkpoint untouched.
+func TestJiraWorkerRecordsTransientFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+	}))
+	defer srv.Close()
+	store := &fakeJiraStore{job: &db.JiraProjectJob{JpsID: 9, ProjectKey: "AVJW", BaseURL: srv.URL}}
+	w := NewJiraWorker(store, 24*time.Hour, "", 100, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.RunOnce(context.Background())
+	if store.failures != 1 {
+		t.Fatalf("failures = %d, want 1", store.failures)
+	}
+	if len(store.checkpts) != 0 || store.completed != nil {
+		t.Fatal("a failed sync must not checkpoint or complete")
+	}
+}

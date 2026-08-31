@@ -146,7 +146,12 @@ a half against its own reference table below:
     "mailing_list_backfill_months": 6,
     "mailing_list_polite_email": "",
     "mailing_list_mirror_handling": "metadata_only",
-    "mailing_list_processor_workers": 1
+    "mailing_list_processor_workers": 1,
+    "mailing_list_sender_backfill_interval_minutes": 60,
+    "jira_enabled": false,
+    "jira_workers": 1,
+    "jira_cadence_hours": 24,
+    "jira_polite_email": ""
   },
   "web": {
     "addr": ":8082",
@@ -332,6 +337,11 @@ The worker's claim query orders `NULLS FIRST`, so cleared repos move to the fron
 | `collection.mailing_list_polite_email` | string | `""` | v0.25.7. Contact address embedded in the `User-Agent` sent to archive hosts, so admins can reach the operator instead of blocking (Apache/lore actively gate scrapers). Recommended whenever `mailing_list_enabled` is true. |
 | `collection.mailing_list_mirror_handling` | string | `"metadata_only"` | v0.25.7. How to handle messages that mirror data we already collect from GitHub (`github_mirror`/`commit_notify` classes). `metadata_only` (default): record the `email_message` provenance row + link, but do NOT re-copy the body into `messages`. `skip`: drop mirrors entirely. `full`: keep everything (belt-and-suspenders completeness). §5 of the design — awareness, not zero-overlap zealotry. |
 | `collection.mailing_list_processor_workers` | integer | `1` | v0.25.x. Drain goroutines **per mailing-list system** for the resolve+write half of the pipeline. The fetch+classify worker stages classified messages into `aveloxis_ops.mailing_list_staging`; the `MailingListProcessor` drains that staging table and does the DB-dependent work (sender→contributor resolution, mirror-link, signaled-repo, and the `email_message` / `messages` / `email_message_ref` writes). This staging→batch boundary is what keeps the mailing-list pipeline off the per-message direct-upsert path that reproduced Augur's lock contention on the hot tables. Draining is **single-threaded per list** (summary/12 §11); `1` (default) drains one list at a time. `>1` fans out across **distinct** lists only — an in-process per-list guard keeps two goroutines off the same list. Keep at `1` unless a deep per-list backlog needs cross-list parallelism. |
+| `collection.mailing_list_sender_backfill_interval_minutes` | integer | `60` | Cadence of the DB-side sender→contributor backfill ticker: retained `sender_email` values on mailing-list message bodies are re-joined against the ever-fuller `contributors` / `contributors_aliases` tables (email, canonical, and alias chains) in keyset windows, so attribution converges as commit resolution and search-resolve add identities. One full pass measures ~5–10 minutes on a 12.6M-body fleet, so the hourly default means new identities attach to their mail within the hour. For an immediate full pass (after a migrate or an identity backfill), run `aveloxis resolve-email-identities` instead of waiting for the ticker. Distinct from the API-side sender-*resolve* ticker, which looks unknown senders up on the forge. |
+| `collection.jira_enabled` | boolean | `false` | v0.29.0. Turns on the Jira collector: projects registered in `aveloxis_ops.jira_project_serve` (see `aveloxis register-jira-projects`) sync incrementally from their Jira Server instance — issue state, reporter and comment-author identity, and native comment bodies, all converging on the SAME issues rows the mailing-list projection creates (one logical ticket per `(repo, external_key)`; the deterministic negative id means the two writers converge at write time in either arrival order). Off by default. |
+| `collection.jira_workers` | integer | `1` | Concurrent Jira project runners. issues.apache.org is a shared community server with NO rate limiting of its own (measured: zero 429s, no limit headers) — politeness is self-imposed, so keep this low. |
+| `collection.jira_cadence_hours` | integer | `24` | Per-project incremental-sync cadence. The sync JQL is `updated >= <checkpoint>`, so a quiet project costs one cheap search per cycle. |
+| `collection.jira_polite_email` | string | `""` | Contact email embedded in the User-Agent on every Jira API request so the instance's admins can reach us (the polite-pool pattern). Set it before enabling the collector. |
 
 ### Web (OAuth + GUI)
 

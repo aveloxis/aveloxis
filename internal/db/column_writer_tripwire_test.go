@@ -53,6 +53,13 @@ var auditedTables = []string{
 	"pull_request_meta", "pull_request_repo", "pull_request_commits",
 	"pull_request_files", "repo_deps_libyear", "repo_dependencies",
 	"contributor_identities", "repo_labor", "repo_lockfile_edges",
+	// v0.29.0 Part E: the identity-bearing mailing-list/Jira chain —
+	// found ABSENT from this audit while carrying the columns the
+	// whole attribution program hangs off (a dark column here is a
+	// dark identity).
+	"email_message", "email_message_ref", "issue_message_ref",
+	"pull_request_message_ref", "contributors_aliases",
+	"jira_identities",
 }
 
 // documentedEmpty: columns with NO writer, kept as Augur schema-parity
@@ -60,6 +67,8 @@ var auditedTables = []string{
 // list IS the documentation contract (mirrored in
 // docs/architecture/column-mapping.md "Known-empty columns").
 var documentedEmpty = map[string]string{
+	"contributors_aliases.cntrb_last_modified": "DEFAULT NOW() at insert; alias rows are insert-only (ON CONFLICT keeps or repoints, never edits in place), so no refresh writer exists by design",
+	"jira_identities.first_seen":              "DEFAULT NOW() at first insert and deliberately never refreshed — it records the FIRST observation; last_seen is the refreshed twin",
 	"issues.pull_request":                   "Augur-legacy: aveloxis stores PRs in their own table; the column is structurally always NULL",
 	"issues.pull_request_id":                "Augur-legacy twin of issues.pull_request",
 	"issues.due_on":                         "no writer; GitHub issues have no due date (GitLab due_date is a candidate if GitLab tracking grows)",

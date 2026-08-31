@@ -47,7 +47,7 @@ type jiraStore interface {
 	ClaimNextJiraProject(ctx context.Context, cadence time.Duration, keyFilter string) (*db.JiraProjectJob, error)
 	StageJiraIssue(ctx context.Context, jpsID int64, projectKey, issueKey string, issueUpdated time.Time, repoID *int64, envelope []byte) error
 	CheckpointJiraProject(ctx context.Context, jpsID int64, lastUpdated time.Time) error
-	CompleteJiraScan(ctx context.Context, jpsID int64, complete bool) error
+	CompleteJiraScan(ctx context.Context, jpsID int64) error
 	RecordJiraFailure(ctx context.Context, jpsID int64) error
 	DisableJiraProject(ctx context.Context, jpsID int64) error
 }
@@ -177,15 +177,27 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 		}
 		var pageMax time.Time
 		for _, is := range page.Issues {
+			// Review 2026-08-30 #7 (SR-3): a skipped issue must FAIL the
+			// scan, never `continue` — later issues in the ASC page would
+			// push pageMax past it and the checkpoint would stamp over
+			// work never staged. Jira's timestamp format is fixed, so a
+			// parse failure is a defect signal; backoff-retry is the
+			// honest arm.
 			updated, perr := time.Parse(jiraTimeLayout, is.Fields.Updated)
 			if perr != nil {
-				w.logger.Warn("jira: unparseable updated timestamp", "issue", is.Key, "raw", is.Fields.Updated)
-				continue
+				w.logger.Warn("jira: unparseable updated timestamp — failing scan", "issue", is.Key, "raw", is.Fields.Updated)
+				if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
+					w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
+				}
+				return
 			}
 			envelope, merr := json.Marshal(is)
 			if merr != nil {
-				w.logger.Warn("jira: envelope marshal failed", "issue", is.Key, "error", merr)
-				continue
+				w.logger.Warn("jira: envelope marshal failed — failing scan", "issue", is.Key, "error", merr)
+				if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
+					w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
+				}
+				return
 			}
 			if serr := w.store.StageJiraIssue(ctx, job.JpsID, job.ProjectKey, is.Key, updated, job.RepoID, envelope); serr != nil {
 				if errors.Is(serr, context.Canceled) {
@@ -217,7 +229,7 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 			}
 		}
 	}
-	if err := w.store.CompleteJiraScan(ctx, job.JpsID, true); err != nil && !errors.Is(err, context.Canceled) {
+	if err := w.store.CompleteJiraScan(ctx, job.JpsID); err != nil && !errors.Is(err, context.Canceled) {
 		w.logger.Warn("jira: complete failed", "project", job.ProjectKey, "error", err)
 	}
 	w.logger.Info("jira: project synced", "project", job.ProjectKey, "staged", staged)

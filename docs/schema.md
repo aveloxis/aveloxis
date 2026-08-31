@@ -261,6 +261,29 @@ Maps alternate email addresses to a contributor. The identity bridge for everyth
 
 ---
 
+#### jira_identities
+
+Every Jira identity observed via the REST API, raw and permanent
+(v0.29.0). `jira_name` is the Server-era stable username — the field
+Atlassian Cloud's API no longer exposes, which is why these rows are
+banked early. `cntrb_id` links to a contributor ONLY on an unambiguous
+match or a deliberate mint; ambiguous stays NULL with the raw identity
+preserved (SR-6). See the identity chapter in
+[Human provenance](architecture/human-provenance.md).
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `jira_identity_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
+| `jira_name` | TEXT NOT NULL UNIQUE | Jira API | The stable Server-era username (the matching key). |
+| `jira_user_key` | TEXT | Jira API | The internal `JIRAUSERnnnn` key. |
+| `display_name` | TEXT | Jira API | Display name (the secondary matching arm). |
+| `cntrb_id` | UUID (FK -> contributors) | `ResolveJiraIdentity` / `MintJiraContributor` | NULL = unmatched or ambiguous — never a guess. |
+| `match_method` | TEXT NOT NULL | Resolver | `login` / `display` / `minted` / empty (unmatched). |
+| `first_seen` / `last_seen` | TIMESTAMPTZ | Auto / resolver | First observation (immutable) / refreshed per sighting. |
+| | | | *Standard metadata columns* |
+
+---
+
 #### contributor_affiliations
 
 Maps email domains to organizational affiliations. Used to attribute commits and activity to companies/organizations.
@@ -338,6 +361,7 @@ Issue tracker records from GitHub Issues or GitLab Issues. Each row represents o
 | `due_on` | TIMESTAMPTZ | GitHub REST: `/repos/{o}/{r}/issues`, GitLab: `/projects/{id}/issues` | Due date from milestone. |
 | `comment_count` | INT | GitHub REST: `/repos/{o}/{r}/issues`, GitLab: `/projects/{id}/issues` | Number of comments on the issue. |
 | `external_key` | TEXT | `backfill-issue-external-keys` | Bracketed `[KEY-N]` Jira/Bugzilla key from the title (Apache Jira → GitHub imports). Lets mailing-list `issue_event` mail bridge to the imported issue. Partial unique `(repo_id, external_key) WHERE external_key <> ''`. v0.25.7. |
+| `jira_issue_id` | BIGINT | Jira API (v0.29.0) | The REAL Jira internal id, in its own column. Synthetic rows keep their deterministic NEGATIVE `platform_issue_id` forever — one logical ticket is one row keyed `(repo_id, external_key)` across all three providers (forge > Jira API > mail); see [Human provenance](architecture/human-provenance.md). |
 | | | | *Standard metadata columns* |
 
 **Unique constraint:** `(repo_id, platform_issue_id)`
@@ -1762,6 +1786,26 @@ Tracks the current working commit for facade processing per repository.
 ---
 
 ## aveloxis_ops Schema
+
+### Jira collection state (v0.29.0)
+
+#### jira_project_serve
+
+The Jira collector's registration/checkpoint row — the
+`repo_groups_list_serve` pattern applied to a tracker: per-project
+claim lock, quadratic failure backoff, and `jps_last_updated` as the
+incremental-sync cursor (`updated >= <checkpoint>` JQL). `repo_id` is
+nullable and un-FK'd: a project can register before its repo mapping
+exists. Seeded by `aveloxis register-jira-projects`; dead upstream
+keys are disabled by the worker on their first 400.
+
+#### jira_staging
+
+The Jira fetch/classify → resolve/write boundary, cloned from
+`mailing_list_staging`: `UNIQUE (project_key, issue_key,
+issue_updated)` makes a replayed sync window a true no-op; `repo_id`
+is nullable and un-FK'd; `envelope` is the raw API issue JSON. Shares
+`staging_retention_hours` with the other staging tables.
 
 ### Subsystem health
 

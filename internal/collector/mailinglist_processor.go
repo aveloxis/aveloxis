@@ -241,7 +241,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 			// loop's errors.Is arm above returns before this line -- pinned
 			// by TestMirrorNodeIDCancellationSkipsAggregateLog.
 			err := counters.firstNodeErr
-			p.logger.Warn("mailing-list processor: mirror node-id resolve failed",
+			p.logger.Warn("mailing-list processor: mirror link resolve failed (node-id or body-url path)",
 				"rgls_id", rglsID, "failures", counters.nodeResolveFailures,
 				"batch", len(batch), "error", err)
 		}

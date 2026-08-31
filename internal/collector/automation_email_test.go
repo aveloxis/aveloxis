@@ -12,7 +12,12 @@
 // attribution pass would have handed it 5.48M more.
 package collector
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
+)
 
 func TestIsAutomationEmail(t *testing.T) {
 	cases := []struct {
@@ -50,6 +55,23 @@ func TestIsAutomationEmailSupersetOfIsBotEmail(t *testing.T) {
 	} {
 		if IsBotEmail(email) && !IsAutomationEmail(email) {
 			t.Errorf("%q: IsBotEmail=true but IsAutomationEmail=false — the superset contract is broken", email)
+		}
+	}
+}
+
+// TestResolverGatesUseAutomationPredicate (review 2026-08-30 #12): the
+// commit resolver and the shared email-identity chain gate on the FULL
+// automation predicate — IsBotEmail alone lets a relay address
+// (git@/jira@apache.org as a commit author) acquire the exact
+// alias/identity rows the automation-phantom heal deletes.
+func TestResolverGatesUseAutomationPredicate(t *testing.T) {
+	for _, f := range []string{
+		"internal/collector/commit_resolver.go",
+		"internal/collector/email_identity_resolver.go",
+	} {
+		src := srctest.StripGoComments(srctest.Read(t, f))
+		if strings.Contains(src, "IsBotEmail(") {
+			t.Errorf("%s still gates on IsBotEmail( — use IsAutomationEmail (the pinned superset)", f)
 		}
 	}
 }

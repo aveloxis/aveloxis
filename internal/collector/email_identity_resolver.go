@@ -82,8 +82,9 @@ func ResolveEmailToIdentity(ctx context.Context, store emailDBLookup, client ema
 	if info := ParseNoreplyEmail(email); info != nil {
 		return info.Login, info.UserID, EmailSourceNoreply, nil
 	}
-	// Bot/junk/non-email short-circuit.
-	if IsBotEmail(email) || email == "" || !strings.Contains(email, "@") {
+	// Automation/junk/non-email short-circuit (IsAutomationEmail ⊇
+	// IsBotEmail; the ticker pre-gates too — belt at the owning layer).
+	if IsAutomationEmail(email) || email == "" || !strings.Contains(email, "@") {
 		return "", 0, "", nil
 	}
 	// Strategy 2: DB lookup (cntrb_email/canonical + aliases).

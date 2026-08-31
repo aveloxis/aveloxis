@@ -171,7 +171,7 @@ func TestMirrorNodeIDFailuresLogOncePerBatch(t *testing.T) {
 	if want := chunk * batches; n != want || len(store.emails) != want {
 		t.Fatalf("processed=%d emails=%d, want %d/%d — provenance must survive", n, len(store.emails), want, want)
 	}
-	if got := strings.Count(buf.String(), "mirror node-id resolve failed"); got != 1 {
+	if got := strings.Count(buf.String(), "mirror link resolve failed"); got != 1 {
 		t.Errorf("logged the mirror-resolve failure %d times across %d batches, want exactly 1 "+
 			"(per-message logging is the v0.27.91 flood class; a DRAIN-scoped counter re-logs "+
 			"a stale count on every later batch)", got, batches)
@@ -235,7 +235,7 @@ func TestMirrorNodeIDCancellationSkipsAggregateLog(t *testing.T) {
 		t.Errorf("DrainList err = %v, want context.Canceled — a cancelled resolve must "+
 			"surface as shutdown, not be swallowed as a per-row failure", err)
 	}
-	if strings.Contains(buf.String(), "mirror node-id resolve failed") {
+	if strings.Contains(buf.String(), "mirror link resolve failed") {
 		t.Errorf("logged a resolve failure on shutdown; a stop serve is not a failure. got: %s", buf.String())
 	}
 	if len(store.emails) != 0 {

@@ -65,7 +65,7 @@ func TestJiraProjectServeLifecycle(t *testing.T) {
 	if err := store.CheckpointJiraProject(ctx, job.JpsID, cp); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteJiraScan(ctx, job.JpsID, true); err != nil {
+	if err := store.CompleteJiraScan(ctx, job.JpsID); err != nil {
 		t.Fatal(err)
 	}
 	// Within cadence: no reclaim.

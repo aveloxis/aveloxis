@@ -168,6 +168,12 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 	if is.Fields.Status != nil {
 		in.Status = is.Fields.Status.Name
 	}
+	if is.Fields.Resolution != nil {
+		// Review 2026-08-30 #5: the resolution NAME drives closed-state
+		// derivation for per-project custom terminal statuses the three
+		// canonical names miss.
+		in.Resolution = is.Fields.Resolution.Name
+	}
 	in.Created = jiraTime(is.Fields.Created)
 	in.Updated = jiraTime(is.Fields.Updated)
 	in.ResolutionDate = jiraTime(is.Fields.ResolutionDate)
@@ -178,6 +184,15 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 	}
 	if is.Fields.Comment == nil {
 		return nil
+	}
+	// Review 2026-08-30 #6: the pilot measured zero inline truncation
+	// (718/718), but if Jira ever returns fewer comments than the
+	// block's total the tail is never collected — make it visible.
+	if is.Fields.Comment.Total > len(is.Fields.Comment.Comments) {
+		p.logger.Warn("jira: inline comment block truncated — tail comments not collected",
+			"issue", is.Key,
+			"total", is.Fields.Comment.Total,
+			"returned", len(is.Fields.Comment.Comments))
 	}
 	for _, cm := range is.Fields.Comment.Comments {
 		var commentID int64

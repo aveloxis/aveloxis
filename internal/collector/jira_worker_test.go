@@ -28,7 +28,7 @@ type fakeJiraStore struct {
 	job        *db.JiraProjectJob
 	staged     []string // issueKey@updated
 	checkpts   []time.Time
-	completed  *bool
+	completed  bool
 	failures   int
 	disabled   bool
 	claimCalls int
@@ -49,8 +49,8 @@ func (f *fakeJiraStore) CheckpointJiraProject(_ context.Context, _ int64, at tim
 	f.checkpts = append(f.checkpts, at)
 	return nil
 }
-func (f *fakeJiraStore) CompleteJiraScan(_ context.Context, _ int64, complete bool) error {
-	f.completed = &complete
+func (f *fakeJiraStore) CompleteJiraScan(_ context.Context, _ int64) error {
+	f.completed = true
 	return nil
 }
 func (f *fakeJiraStore) RecordJiraFailure(context.Context, int64) error { f.failures++; return nil }
@@ -97,7 +97,7 @@ func TestJiraWorkerSyncsProjectPages(t *testing.T) {
 	if len(store.checkpts) != 2 {
 		t.Fatalf("checkpoints = %v, want one per staged page (SR-3)", store.checkpts)
 	}
-	if store.completed == nil || !*store.completed {
+	if !store.completed {
 		t.Fatal("scan must complete")
 	}
 	// Decode-ability of the envelope is the processor's contract; the
@@ -121,7 +121,7 @@ func TestJiraWorkerDisablesDeadProject(t *testing.T) {
 	if !store.disabled {
 		t.Fatal("a 400 project must be disabled")
 	}
-	if store.completed != nil {
+	if store.completed {
 		t.Fatal("a disabled project must not stamp a completed scan")
 	}
 }
@@ -139,7 +139,38 @@ func TestJiraWorkerRecordsTransientFailure(t *testing.T) {
 	if store.failures != 1 {
 		t.Fatalf("failures = %d, want 1", store.failures)
 	}
-	if len(store.checkpts) != 0 || store.completed != nil {
+	if len(store.checkpts) != 0 || store.completed {
 		t.Fatal("a failed sync must not checkpoint or complete")
+	}
+}
+
+// TestJiraWorkerPageSkipFailsScanNotCheckpoint (review 2026-08-30 #7,
+// SR-3): an unparseable issue in a page must FAIL the scan (backoff
+// retry) — a `continue` would let later issues push pageMax past the
+// skipped one and the checkpoint would stamp over work never staged.
+func TestJiraWorkerPageSkipFailsScanNotCheckpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// One good issue, then one with garbage `updated`, then a good
+		// LATER one whose timestamp would advance the checkpoint past
+		// the broken issue.
+		_, _ = io.WriteString(w, `{"startAt":0,"maxResults":3,"total":3,"issues":[
+		  {"id":"1","key":"AVJW-10","fields":{"summary":"s","status":{"name":"Open"},"updated":"2026-01-01T00:00:00.000+0000"}},
+		  {"id":"2","key":"AVJW-11","fields":{"summary":"s","status":{"name":"Open"},"updated":"not-a-timestamp"}},
+		  {"id":"3","key":"AVJW-12","fields":{"summary":"s","status":{"name":"Open"},"updated":"2026-01-03T00:00:00.000+0000"}}]}`)
+	}))
+	defer srv.Close()
+
+	store := &fakeJiraStore{job: &db.JiraProjectJob{JpsID: 7, ProjectKey: "AVJW", BaseURL: srv.URL}}
+	w := NewJiraWorker(store, 24*time.Hour, "", 100, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.RunOnce(context.Background())
+
+	if store.failures != 1 {
+		t.Fatalf("an unparseable issue must record a scan failure (backoff retry), failures=%d", store.failures)
+	}
+	if len(store.checkpts) != 0 {
+		t.Fatalf("the failed page must not checkpoint (SR-3 — AVJW-11 was never staged): %v", store.checkpts)
+	}
+	if store.completed {
+		t.Fatal("a failed scan must not complete")
 	}
 }

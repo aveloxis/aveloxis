@@ -49,7 +49,13 @@ type GapHealCandidate struct {
 // repo (indexed via idx_repo_info_repo_id; repo_info_id DESC breaks
 // same-timestamp ties toward the newer insert).
 func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID int64, limit int, all bool) ([]GapHealCandidate, error) {
-	gapPredicate := `AND (COALESCE(ri.issues_count, 0) > q.last_issues OR COALESCE(ri.pr_count, 0) > q.last_prs)`
+	// Review 2026-08-30 #3: q.last_issues is COUNT(*) INCLUDING the
+	// mail-projected Jira synthetics (negative platform_issue_id), so an
+	// Apache repo's cached count outruns the forge's meta count and a
+	// genuine NATIVE gap is masked. The sy lateral subtracts the live
+	// synthetic count (cheap via the partial idx_issues_synthetic_repo);
+	// PRs have no synthetic population and stay as-is.
+	gapPredicate := `AND (COALESCE(ri.issues_count, 0) > q.last_issues - sy.synth OR COALESCE(ri.pr_count, 0) > q.last_prs)`
 	if all {
 		gapPredicate = ""
 	}
@@ -61,9 +67,14 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 	rows, err := s.pool.Query(ctx, `
 		SELECT q.repo_id, r.repo_owner, r.repo_name, r.platform_id,
 		       COALESCE(ri.issues_count, 0), COALESCE(ri.pr_count, 0),
-		       GREATEST(COALESCE(ri.issues_count, 0) - q.last_issues, 0) + GREATEST(COALESCE(ri.pr_count, 0) - q.last_prs, 0)
+		       GREATEST(COALESCE(ri.issues_count, 0) - (q.last_issues - sy.synth), 0) + GREATEST(COALESCE(ri.pr_count, 0) - q.last_prs, 0)
 		FROM aveloxis_ops.collection_queue q
 		JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS synth
+			FROM aveloxis_data.issues si
+			WHERE si.repo_id = q.repo_id AND si.platform_issue_id < 0
+		) sy ON TRUE
 		LEFT JOIN LATERAL (
 			SELECT ri0.issues_count, ri0.pr_count
 			FROM aveloxis_data.repo_info ri0

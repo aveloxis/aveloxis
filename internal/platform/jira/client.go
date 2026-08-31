@@ -83,8 +83,9 @@ type Comment struct {
 }
 
 // CommentBlock is the inline comments connection. The pilot measured
-// zero truncation on 200 issues / 718 comments, but Returned<Total is
-// still checked by consumers (Total vs len(Comments)).
+// zero truncation on 200 issues / 718 comments; the processor still
+// compares Total against len(Comments) and WARNs when Jira truncates
+// (the tail would otherwise vanish silently).
 type CommentBlock struct {
 	Total    int       `json:"total"`
 	Comments []Comment `json:"comments"`

@@ -18,7 +18,7 @@ import (
 
 // TestSchemaDeclaresMsgTextClean pins the two columns — and that
 // msg_text_clean carries NO DEFAULT: the house TEXT convention is
-// an empty-string DEFAULT, but a defaulted the empty string here would make
+// an empty-string DEFAULT, but a defaulted empty string here would make
 // COALESCE(msg_text_clean, msg_text) return EMPTY for every GitHub row
 // (their writers never touch the column). NULL must mean "no clean
 // variant — read the raw text".

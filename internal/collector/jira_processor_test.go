@@ -10,9 +10,11 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,4 +150,52 @@ func TestJiraProcessorNeverMintsAmbiguous(t *testing.T) {
 		t.Fatalf("ambiguous reporter must stay unattributed: %+v", store.issues[0])
 	}
 	_ = time.Now
+}
+
+// TestJiraProcessorPassesResolutionThrough (review 2026-08-30 #5): the
+// envelope's resolution NAME must reach the writer — closed-state
+// derivation keys on it for the per-project custom terminal statuses
+// the three canonical names miss.
+func TestJiraProcessorPassesResolutionThrough(t *testing.T) {
+	repoID := int64(42)
+	env := `{"id":"9","key":"AVJP-9","fields":{"summary":"s",
+	  "status":{"name":"Delivered"},
+	  "resolution":{"name":"Fixed"},
+	  "updated":"2026-02-01T10:00:00.000+0000"}}`
+	store := &fakeJiraProcStore{batches: [][]db.JiraStagingRow{{
+		{JsID: 9, IssueKey: "AVJP-9", RepoID: &repoID, Envelope: []byte(env)},
+	}}}
+	p := NewJiraProcessor(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := p.DrainOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.issues) != 1 || store.issues[0].Resolution != "Fixed" {
+		t.Fatalf("resolution name must flow to the writer: %+v", store.issues)
+	}
+}
+
+// TestJiraProcessorWarnsOnTruncatedCommentBlock (review 2026-08-30 #6):
+// if Jira ever returns fewer inline comments than the block's total
+// (unobserved in the pilot, 718/718 inline), the tail is silently never
+// collected — the truncation must at least be visible.
+func TestJiraProcessorWarnsOnTruncatedCommentBlock(t *testing.T) {
+	repoID := int64(42)
+	env := `{"id":"8","key":"AVJP-8","fields":{"summary":"s",
+	  "status":{"name":"Open"},
+	  "updated":"2026-02-01T10:00:00.000+0000",
+	  "comment":{"total":5,"comments":[
+	    {"id":"211","author":{"name":"alice-gh","displayName":"A"},"body":"c","created":"2026-01-05T08:00:00.000+0000"}
+	  ]}}}`
+	store := &fakeJiraProcStore{
+		batches:    [][]db.JiraStagingRow{{{JsID: 8, IssueKey: "AVJP-8", RepoID: &repoID, Envelope: []byte(env)}}},
+		identities: map[string][3]any{"alice-gh": {"cntrb-alice", "login", false}},
+	}
+	var buf bytes.Buffer
+	p := NewJiraProcessor(store, slog.New(slog.NewTextHandler(&buf, nil)))
+	if _, err := p.DrainOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "truncat") {
+		t.Fatalf("a comment block with total > returned must WARN about truncation; log: %s", buf.String())
+	}
 }

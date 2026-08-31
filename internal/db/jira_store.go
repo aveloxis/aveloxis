@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // JiraPlatformID stamps messages rows holding NATIVE Jira comment
@@ -45,7 +46,29 @@ type JiraProjectJob struct {
 // collection. Idempotent on project_key; repoID fills only when
 // currently NULL (re-registration never clobbers an operator fix).
 func (s *PostgresStore) RegisterJiraProject(ctx context.Context, projectKey, baseURL string, repoID *int64) error {
-	_, err := s.pool.Exec(ctx, `
+	// Review 2026-08-30 #10: jira_identities (UNIQUE jira_name) and the
+	// comment arbiter (platform_msg_id = Jira comment id) are
+	// INSTANCE-BLIND — usernames and comment ids are unique only per
+	// Jira instance. Until those keys are instance-scoped, a second
+	// distinct base_url is refused outright. NOTE (L10 #3): with two or
+	// more projects registered, this also refuses a per-project URL
+	// correction — the probe cannot tell "new instance" from "the same
+	// instance moved". A whole-instance address change (same Jira, new
+	// URL — identity keys unaffected) is one hand UPDATE over every
+	// row; the error below says so. Check-then-act: concurrent
+	// registrations of distinct instances can both pass the probe —
+	// acceptable for the sequential operator CLI that owns this path.
+	var other string
+	err := s.pool.QueryRow(ctx, `
+		SELECT base_url FROM aveloxis_ops.jira_project_serve
+		WHERE base_url <> $1 AND project_key <> $2 LIMIT 1`, baseURL, projectKey).Scan(&other)
+	if err == nil {
+		return fmt.Errorf("register jira project %q: a different Jira instance %q is already registered — identity and comment keys are instance-blind, one instance per deployment until they are scoped (same instance at a new address: UPDATE aveloxis_ops.jira_project_serve SET base_url = ... for every row by hand)", projectKey, other)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("register jira project %q: instance probe: %w", projectKey, err)
+	}
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_ops.jira_project_serve (project_key, base_url, repo_id, tool_version)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (project_key) DO UPDATE SET
@@ -73,7 +96,6 @@ func (s *PostgresStore) ClaimNextJiraProject(ctx context.Context, cadence time.D
 			  AND ($2 = '' OR project_key = $2)
 			  AND (jps_locked_at IS NULL OR jps_locked_at < NOW() - INTERVAL '2 hours')
 			  AND (jps_last_run IS NULL
-			       OR COALESCE(jps_scan_complete, TRUE) = FALSE
 			       OR jps_last_run < NOW() - make_interval(secs => $1))
 			  AND (jps_last_failed_at IS NULL
 			       OR jps_last_failed_at < NOW() - make_interval(secs =>
@@ -109,12 +131,12 @@ func (s *PostgresStore) CheckpointJiraProject(ctx context.Context, jpsID int64, 
 }
 
 // CompleteJiraScan releases the claim and stamps the run.
-func (s *PostgresStore) CompleteJiraScan(ctx context.Context, jpsID int64, complete bool) error {
+func (s *PostgresStore) CompleteJiraScan(ctx context.Context, jpsID int64) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.jira_project_serve
-		SET jps_locked_at = NULL, jps_last_run = NOW(), jps_scan_complete = $2,
+		SET jps_locked_at = NULL, jps_last_run = NOW(),
 		    jps_failed_attempts = 0, jps_last_failed_at = NULL
-		WHERE jps_id = $1`, jpsID, complete)
+		WHERE jps_id = $1`, jpsID)
 	if err != nil {
 		return fmt.Errorf("complete jira scan %d: %w", jpsID, err)
 	}
@@ -227,12 +249,24 @@ func (s *PostgresStore) JiraProjectsWithStaging(ctx context.Context, limit int) 
 	return out, rows.Err()
 }
 
-// GetJiraStagingBatch pages one project's unprocessed envelopes.
+// GetJiraStagingBatch reads unprocessed rows for one project. The repo
+// is read through the LIVE registration first (review 2026-08-30 #2,
+// L10 #4): the staged copy is only a snapshot of jira_project_serve's
+// repo_id at stage time (the worker's sole staging call passes
+// job.RepoID), so the registration wins — an operator fixing a NULL or
+// wrong registration heals every undrained row on the next drain, and
+// nil-repo rows can no longer head-block the project's drain. The
+// staged copy is the fallback only for rows whose registration row
+// somehow lost its mapping.
 func (s *PostgresStore) GetJiraStagingBatch(ctx context.Context, jpsID int64, limit int) ([]JiraStagingRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT js_id, issue_key, repo_id, envelope FROM aveloxis_ops.jira_staging
-		WHERE jps_id = $1 AND NOT processed
-		ORDER BY js_id LIMIT $2`, jpsID, limit)
+		SELECT js.js_id, js.issue_key,
+		       COALESCE(jps.repo_id, js.repo_id) AS repo_id,
+		       js.envelope
+		FROM aveloxis_ops.jira_staging js
+		JOIN aveloxis_ops.jira_project_serve jps ON jps.jps_id = js.jps_id
+		WHERE js.jps_id = $1 AND NOT js.processed
+		ORDER BY js.js_id LIMIT $2`, jpsID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("jira staging batch: %w", err)
 	}
@@ -314,7 +348,8 @@ func (s *PostgresStore) ResolveJiraIdentity(ctx context.Context, jiraName, jiraU
 		SELECT count(DISTINCT cntrb_id), COALESCE(min(cntrb_id::text), '')
 		FROM aveloxis_data.contributors
 		WHERE COALESCE(cntrb_deleted, 0) = 0
-		  AND (lower(gh_login) = lower($1) OR lower(cntrb_login) = lower($1))`,
+		  AND ((gh_login <> '' AND lower(gh_login) = lower($1))
+		       OR (cntrb_login <> '' AND lower(cntrb_login) = lower($1)))`,
 		jiraName).Scan(&n, &cntrb)
 	if err != nil {
 		return "", "", false, fmt.Errorf("jira login match %q: %w", jiraName, err)
@@ -379,18 +414,26 @@ func (s *PostgresStore) MintJiraContributor(ctx context.Context, jiraName, displ
 	if err != nil {
 		return "", fmt.Errorf("mint jira contributor %q: %w", jiraName, err)
 	}
-	_, err = s.pool.Exec(ctx, `
+	// RETURNING makes the identity upsert the single source of the
+	// returned id: under a concurrent double-mint the ON CONFLICT keeps
+	// the winner's link, and the loser must hand the WINNER's cntrb_id
+	// to its batch — never its own orphan contributor row (review
+	// 2026-08-30 #9; the orphan row stays, empty-login rows are legal
+	// under the partial unique and invisible to every read path).
+	var winner string
+	err = s.pool.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.jira_identities (jira_name, display_name, cntrb_id, match_method, tool_version)
 		VALUES ($1, $2, $3::uuid, 'minted', $4)
 		ON CONFLICT (jira_name) DO UPDATE SET
 			cntrb_id = COALESCE(aveloxis_data.jira_identities.cntrb_id, EXCLUDED.cntrb_id),
 			match_method = CASE WHEN aveloxis_data.jira_identities.cntrb_id IS NULL THEN 'minted'
-			                    ELSE aveloxis_data.jira_identities.match_method END`,
-		jiraName, displayName, cntrb, ToolVersion)
+			                    ELSE aveloxis_data.jira_identities.match_method END
+		RETURNING cntrb_id::text`,
+		jiraName, displayName, cntrb, ToolVersion).Scan(&winner)
 	if err != nil {
 		return "", fmt.Errorf("mint jira identity link %q: %w", jiraName, err)
 	}
-	return cntrb, nil
+	return winner, nil
 }
 
 // JiraAPIIssue is the typed input to the provider-precedence issue
@@ -401,6 +444,7 @@ type JiraAPIIssue struct {
 	JiraIssueID    int64
 	Title          string
 	Status         string
+	Resolution     string // resolution NAME ("" = unresolved); any non-empty value means closed
 	ResolutionDate time.Time
 	Created        time.Time
 	Updated        time.Time
@@ -427,8 +471,16 @@ type JiraAPIIssue struct {
 func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIssue) (int64, error) {
 	state := "open"
 	var closedAt *time.Time
+	// Review 2026-08-30 #5: ASF Jira workflows carry per-project custom
+	// terminal status names — a set resolution (or resolutiondate) means
+	// CLOSED regardless of the status vocabulary. The three canonical
+	// names stay as the secondary signal for resolution-less closes.
+	closed := in.Resolution != "" || !in.ResolutionDate.IsZero()
 	switch in.Status {
 	case "Resolved", "Closed", "Done":
+		closed = true
+	}
+	if closed {
 		state = "closed"
 		if !in.ResolutionDate.IsZero() {
 			closedAt = &in.ResolutionDate
@@ -472,8 +524,16 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 		return id, nil
 	}
 	// The synthetic slot may be shadowed by a NATIVE row carrying the
-	// key (LINK case) — probe by external_key. 23505 on the partial
-	// unique (repo_id, external_key) lands here too.
+	// key (LINK case): the INSERT then trips 23505 on the partial
+	// unique (repo_id, external_key). ONLY that error routes to the
+	// LINK path — any other failure (transient, encode, constraint)
+	// must surface, or the caller marks the staging row processed
+	// while the API's state/title write was silently dropped and the
+	// incremental JQL never re-fetches it (review 2026-08-30 #1).
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return 0, fmt.Errorf("upsert jira issue %q: %w", in.ExternalKey, err)
+	}
 	var linkedID int64
 	var nativePID int64
 	lerr := s.pool.QueryRow(ctx, `
@@ -483,7 +543,14 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 	if lerr != nil {
 		return 0, fmt.Errorf("upsert jira issue %q: %w (link probe: %w)", in.ExternalKey, err, lerr)
 	}
-	// Rank 1 protection: enrichment only on native rows.
+	// Rank 1 protection, ENFORCED: the LINK path may only attach to a
+	// native forge row. A key-collision row with a negative id under a
+	// different synthetic value is an anomaly (hand-inserted or a
+	// hashing change) — never silently succeed onto it.
+	if nativePID < 0 {
+		return 0, fmt.Errorf("upsert jira issue %q: key held by non-native row issue_id=%d platform_issue_id=%d — refusing to LINK (%w)",
+			in.ExternalKey, linkedID, nativePID, err)
+	}
 	_, uerr := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.issues
 		SET jira_issue_id = COALESCE(jira_issue_id, NULLIF($2, 0))

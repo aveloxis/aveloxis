@@ -1371,7 +1371,7 @@ aveloxis backfill-jira-identities          # the full pass
 
 ---
 
-## `aveloxis strip-quoted-history`## `aveloxis strip-quoted-history`
+## `aveloxis strip-quoted-history`
 
 Fills `messages.msg_text_clean` — the quote-stripped body — on
 mailing-list messages ingested before the ingest-time stripper

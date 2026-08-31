@@ -106,6 +106,9 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 						if is.Fields.Status != nil {
 							in.Status = is.Fields.Status.Name
 						}
+						if is.Fields.Resolution != nil {
+							in.Resolution = is.Fields.Resolution.Name
+						}
 						in.Created = jiraParse(is.Fields.Created)
 						in.Updated = jiraParse(is.Fields.Updated)
 						in.ResolutionDate = jiraParse(is.Fields.ResolutionDate)

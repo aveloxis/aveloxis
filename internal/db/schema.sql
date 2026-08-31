@@ -310,8 +310,8 @@ CREATE INDEX IF NOT EXISTS idx_contributors_last_breadth
 -- cannot serve the LOWER() form, and without expression statistics
 -- the planner misestimated the join by ~4 orders of magnitude — a
 -- live backfill ran 2+ days orphaned on aveloxis_large. Partial:
--- the email-only cohort (gh_login = the empty string) is excluded, matching the
--- query's `!= the empty string` guards. Existing fleets get the CONCURRENTLY build
+-- the email-only cohort (gh_login = '') is excluded, matching the
+-- query's `!= ''` guards. Existing fleets get the CONCURRENTLY build
 -- from migrate.go; this plain form covers fresh installs.
 CREATE INDEX IF NOT EXISTS idx_contributors_gh_login_lower
     ON aveloxis_data.contributors (LOWER(gh_login)) WHERE gh_login != '';
@@ -1018,7 +1018,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.messages (
     -- GitLab comments measured 2% quoted and stay NULL) + the pattern-
     -- library version that produced it. msg_text_clean deliberately has
     -- NO DEFAULT: NULL means "no clean variant, read the raw text", and
-    -- a an empty-string DEFAULT would empty every forge row through the
+    -- an empty-string DEFAULT would empty every forge row through the
     -- COALESCE(msg_text_clean, msg_text) read path.
     msg_text_clean   TEXT,
     msg_text_clean_rule TEXT DEFAULT '',
@@ -1487,7 +1487,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
     declared_requirement TEXT DEFAULT '',
     version_resolution   TEXT DEFAULT '',
     -- v0.27.21 C1: 'direct' | 'transitive' (the empty string = pre-C1 row) +
-    -- 'dev'/'runtime'/the empty string scope from the lockfile.
+    -- 'dev'/'runtime'/'' scope from the lockfile.
     dependency_kind  TEXT NOT NULL DEFAULT '',
     dependency_scope TEXT NOT NULL DEFAULT '',
     data_collection_date TIMESTAMPTZ DEFAULT NOW(),
@@ -1580,7 +1580,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfile_packages (
     lockfile_path    TEXT NOT NULL,
     -- v0.27.21 C1: TRUE = resolution of a declared direct dependency
     -- (the only rows written with vuln_scan_transitive off); FALSE =
-    -- transitive entry. dependency_scope is 'dev'/'runtime'/the empty string
+    -- transitive entry. dependency_scope is 'dev'/'runtime'/''
     -- (unknown) where the lockfile format flags it.
     direct           BOOLEAN NOT NULL DEFAULT TRUE,
     dependency_scope TEXT NOT NULL DEFAULT '',
@@ -2242,13 +2242,10 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.jira_project_serve (
     repo_group_id     BIGINT,
     jps_enabled       BOOLEAN NOT NULL DEFAULT TRUE,
     jps_last_updated  TIMESTAMPTZ,
-    jps_scan_complete BOOLEAN NOT NULL DEFAULT TRUE,
     jps_failed_attempts INTEGER NOT NULL DEFAULT 0,
     jps_last_failed_at TIMESTAMPTZ,
     jps_last_run      TIMESTAMPTZ,
     jps_locked_at     TIMESTAMPTZ,
-    jps_locked_pid    BIGINT,
-    jps_locked_boot_id TEXT DEFAULT '',
     tool_version      TEXT DEFAULT '',
     data_collection_date TIMESTAMPTZ DEFAULT NOW()
 );

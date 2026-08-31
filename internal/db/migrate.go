@@ -688,7 +688,7 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// gh_login wasn't. The same missing index made
 	// BackfillCommitAuthorIDs's join probe a hash join over the entire
 	// contributors table, producing 2:30-minute UPDATE durations.
-	// Partial — `WHERE gh_login != the empty string` excludes the email-only
+	// Partial — `WHERE gh_login != ''` excludes the email-only
 	// contributor cohort, mirroring the idx_contributors_login pattern.
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
 		"aveloxis_data", "idx_contributors_gh_login",
@@ -704,12 +704,40 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// (2026-07-20), against a documented expectation of tens of
 	// minutes. v0.20.12's own comment named this index as "the next
 	// step" if the join profiled as a bottleneck. Same partial
-	// predicate as its sibling: the email-only cohort (gh_login = the empty string)
-	// is excluded, matching the query's v0.27.25 `!= the empty string` guards.
+	// predicate as its sibling: the email-only cohort (empty gh_login)
+	// is excluded, matching the query's v0.27.25 non-empty guards.
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
 		"aveloxis_data", "idx_contributors_gh_login_lower",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_gh_login_lower
 		ON aveloxis_data.contributors (LOWER(gh_login)) WHERE gh_login != ''`)
+
+	// v0.29.0 (review 2026-08-30 #15) — the Jira identity probes.
+	// ResolveJiraIdentity matches each first-seen Jira username against
+	// lower(cntrb_login) and each display name against
+	// lower(cntrb_full_name); without these, every cold identity in the
+	// ASF backfill (tens of thousands) is 1-2 sequential scans of the
+	// 1.7M-row contributors table (the v0.27.53/54 email-lookup class).
+	// Partial, and USABLE because the query carries the literal
+	// non-empty guards (the v0.27.125 FindRepoByPlatformRepoID rule —
+	// a generic plan cannot prove $1 <> ''). Migration-only per SR-2.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_cntrb_login_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_cntrb_login_lower
+		ON aveloxis_data.contributors (LOWER(cntrb_login)) WHERE cntrb_login <> ''`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_full_name_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_full_name_lower
+		ON aveloxis_data.contributors (LOWER(cntrb_full_name)) WHERE cntrb_full_name <> ''`)
+
+	// v0.29.0 (review 2026-08-30 #3) — the gap healer's synthetic-count
+	// lateral (`platform_issue_id < 0` per repo) must not walk every
+	// repo's full issues index range. Partial, and usable because the
+	// lateral's predicate matches the index predicate verbatim.
+	// Synthetics are ~486K rows fleet-wide, so the index stays small.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_issues_synthetic_repo",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_synthetic_repo
+		ON aveloxis_data.issues (repo_id) WHERE platform_issue_id < 0`)
 
 	// v0.21.0 — ScancodeWorker claim-query index.
 	//
@@ -1468,6 +1496,19 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_review
 		ON aveloxis_data.email_message (linked_pr_review_id) WHERE linked_pr_review_id IS NOT NULL`)
 
+	// v0.29.0: fourth sibling — the Part D native>notification dedup in
+	// aveloxis-analytics enumerates notifications whose native twin was
+	// collected (linked_msg_id IS NOT NULL, stamped by the Jira comment
+	// ingester) to exclude their body rows from edge/text queries. The
+	// query predicate matches the index predicate verbatim, so partial is
+	// usable here (unlike the v0.27.54 join-variable class). Migration-only
+	// per SR-2 — deliberately NOT in schema.sql (13M-row email_message on
+	// the mailing-list deployment would block-build in base DDL; the
+	// v0.25.34 trio above is grandfathered).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_email_message_linked_msg",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_msg
+		ON aveloxis_data.email_message (linked_msg_id) WHERE linked_msg_id IS NOT NULL`)
+
 	// v0.23.0: contributor_login_history table + backfill. Closes the
 	// rename-audit gap documented as a v0.22.13 limitation
 	// ("Intermediate login history is NOT stored"). The CREATE TABLE
@@ -1560,7 +1601,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	//      rows with an alias but no canonical (created via
 	//      resolution strategies 2 + 4 pre-v0.25.6) stay empty
 	//      without this. Picks MIN(alias_email) per cntrb_id for
-	//      determinism. COALESCE on cntrb_canonical = the empty string so we
+	//      determinism. COALESCE on cntrb_canonical = '' so we
 	//      never overwrite an existing real canonical. Soft-deleted
 	//      contributors are skipped per the v0.20.2 contract.
 	//
@@ -1628,7 +1669,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// (pr_cmt_node_id, issue_assignees.platform_node_id) need API
 	// values and heal only via full re-collection.
 	//
-	// Idempotent: the COALESCE(col, the empty string) = the empty string predicates stop matching
+	// Idempotent: the COALESCE(col, '') = '' predicates stop matching
 	// once filled.
 	runOnceStep(ctx, pg, logger, errs,
 		"v0.26.4 backfill pull_requests.pr_diff_url from pr_html_url",
@@ -1960,7 +2001,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 
 	// v0.27.51: dependency_scope stores the WORD 'runtime' instead of
 	// the empty string (operator decision — the empty string was uninterpretable for direct table
-	// readers). Backfill every the empty string-scope direct/transitive finding:
+	// readers). Backfill every empty-scope direct/transitive finding:
 	// under the presentation contract the empty string already READ as runtime
 	// everywhere (IsRuntimeScope), so this is a spelling change, not a
 	// semantic one — and it is SELF-CORRECTING for legacy rows whose

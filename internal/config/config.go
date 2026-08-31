@@ -1528,7 +1528,7 @@ func DefaultConfig() *Config {
 			// v0.29.0 Jira collector. Off by default.
 			JiraEnabled:      false,
 			JiraWorkers:      1,
-			JiraCadenceHours: 24, // single-threaded per list (summary/12 §11)
+			JiraCadenceHours: 24, // one incremental JQL sweep per project per day
 		},
 		LogLevel: "info",
 	}

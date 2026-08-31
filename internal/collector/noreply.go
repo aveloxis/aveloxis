@@ -59,8 +59,6 @@ func IsNoreplyEmail(email string) bool {
 	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(email)), "@users.noreply.github.com")
 }
 
-// IsBotEmail returns true if the email looks like an automated/bot email
-// that shouldn't be resolved to a human contributor.
 // IsAutomationEmail reports whether an email address belongs to an
 // automated sender: everything IsBotEmail catches PLUS the Apache
 // notification relays (jira@ / jira+<project>@ / git@ / gitbox@
@@ -88,6 +86,10 @@ func IsAutomationEmail(email string) bool {
 	return false
 }
 
+// IsBotEmail reports whether the email looks like an automated/bot
+// email that shouldn't be resolved to a human contributor. Production
+// gates use IsAutomationEmail (the superset); this narrower predicate
+// remains for the SQL-parity split and as IsAutomationEmail's first arm.
 func IsBotEmail(email string) bool {
 	lower := strings.ToLower(email)
 	return strings.Contains(lower, "[bot]") ||

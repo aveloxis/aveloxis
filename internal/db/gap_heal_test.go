@@ -145,9 +145,36 @@ func TestGetGapHealCandidatesEndToEnd(t *testing.T) {
 		INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at, last_collected, last_issues, last_prs)
 		VALUES ($1, 100, 'queued', NOW(), NOW() - INTERVAL '1 day', 0, 0)
 		ON CONFLICT (repo_id) DO UPDATE SET last_collected = NOW() - INTERVAL '1 day', status = 'queued'`, base+5)
+	// Review 2026-08-30 #3: last_issues is COUNT(*) INCLUDING the
+	// mail-projected Jira synthetics (negative platform_issue_id), so an
+	// Apache repo's cached count outruns the forge's meta count and a
+	// genuine NATIVE gap is masked from the candidate predicate. Seed:
+	// 3 synthetic issue rows + a cached last_issues=4 that MODELS
+	// 1 native + 3 synthetics (only the count matters to the
+	// predicate); forge meta 3 → 2 native issues genuinely missing.
+	// Pre-fix: 3 > 4 is false and the repo never becomes a candidate.
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repos (repo_id, repo_git, repo_owner, repo_name, platform_id)
+		VALUES ($1, 'https://example.com/_avheal/jirainfl', '_avheal', 'jirainfl', 1)
+		ON CONFLICT (repo_id) DO NOTHING`, base+6)
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at, last_collected, last_issues, last_prs)
+		VALUES ($1, 100, 'queued', NOW(), NOW() - INTERVAL '1 day', 4, 0)
+		ON CONFLICT (repo_id) DO UPDATE SET last_collected = NOW() - INTERVAL '1 day',
+			last_issues = 4, last_prs = 0, status = 'queued'`, base+6)
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repo_info (repo_id, issues_count, pr_count, data_collection_date)
+		VALUES ($1, 3, 0, NOW())`, base+6)
+	for i := 1; i <= 3; i++ {
+		mustExecRetry(ctx, t, store, `
+			INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number, issue_title, issue_state, external_key, data_source)
+			VALUES ($1, $2, $3, 't', 'open', $4, 'JIRA') ON CONFLICT DO NOTHING`,
+			base+6, -int64(900000+i), 900+i, fmt.Sprintf("AVHEAL-%d", i))
+	}
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.issues WHERE repo_id >= $1 AND repo_id <= $2`, base, base+10)
 		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repo_info WHERE repo_id >= $1 AND repo_id <= $2`, base, base+10)
 		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id >= $1 AND repo_id <= $2`, base, base+10)
 		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repos WHERE repo_id >= $1 AND repo_id <= $2`, base, base+10)
@@ -170,8 +197,8 @@ func TestGetGapHealCandidatesEndToEnd(t *testing.T) {
 			}
 		}
 	}
-	if len(got) != 1 || got[0] != base+1 {
-		t.Fatalf("want exactly the gap-bearing GitHub repo %d, got %v", base+1, got)
+	if len(got) != 2 || got[0] != base+1 || got[1] != base+6 {
+		t.Fatalf("want the gap-bearing repo %d AND the synthetic-inflated repo %d, got %v", base+1, base+6, got)
 	}
 
 	// --all: the clean repo joins; generic git stays excluded.

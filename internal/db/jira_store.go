@@ -40,13 +40,18 @@ const JiraAPIDataSource = "JIRA API"
 // messages identifies the message's SOURCE system, never the repo's.
 const JiraPlatformID int16 = 4
 
-// JiraProjectJob is one claimed project sync.
+// JiraProjectJob is one claimed project sync. LockedAt is the claim's
+// OWN jps_locked_at stamp — the ownership key ReleaseJiraClaim
+// qualifies on (the pass-39 mailing-list rule: a scan that outlived
+// the stale window and was re-claimed elsewhere cannot clear the new
+// holder's lock).
 type JiraProjectJob struct {
 	JpsID       int64
 	ProjectKey  string
 	BaseURL     string
 	RepoID      *int64
 	LastUpdated *time.Time // the incremental checkpoint; nil = full history
+	LockedAt    time.Time
 }
 
 // RegisterJiraProject registers (or re-registers) a project for
@@ -111,8 +116,8 @@ func (s *PostgresStore) ClaimNextJiraProject(ctx context.Context, cadence time.D
 			ORDER BY jps_last_run NULLS FIRST, jps_id
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED)
-		RETURNING j.jps_id, j.project_key, j.base_url, j.repo_id, j.jps_last_updated`,
-		cadence.Seconds(), keyFilter).Scan(&job.JpsID, &job.ProjectKey, &job.BaseURL, &job.RepoID, &job.LastUpdated)
+		RETURNING j.jps_id, j.project_key, j.base_url, j.repo_id, j.jps_last_updated, j.jps_locked_at`,
+		cadence.Seconds(), keyFilter).Scan(&job.JpsID, &job.ProjectKey, &job.BaseURL, &job.RepoID, &job.LastUpdated, &job.LockedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -161,6 +166,27 @@ func (s *PostgresStore) RecordJiraFailure(ctx context.Context, jpsID int64) erro
 		WHERE jps_id = $1`, jpsID)
 	if err != nil {
 		return fmt.Errorf("record jira failure %d: %w", jpsID, err)
+	}
+	return nil
+}
+
+// ReleaseJiraClaim clears a claim WITHOUT recording a failure or a
+// completed run — the shutdown rollback (Copilot round 4 on PR #193:
+// every context.Canceled exit in syncProject left jps_locked_at held,
+// stranding the project for the claim query's 2-hour stale window on
+// every restart — the pass-37 mailing-list ReleaseListLock class).
+// Ownership-qualified by the claim's own jps_locked_at stamp
+// (JiraProjectJob.LockedAt): a scan that outlived the stale window
+// and was re-claimed elsewhere cannot clear the new holder's lock.
+// Checkpoints and backoff counters are untouched — the per-page
+// checkpoint (SR-3) is the resume state.
+func (s *PostgresStore) ReleaseJiraClaim(ctx context.Context, jpsID int64, lockedAt time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_ops.jira_project_serve
+		SET jps_locked_at = NULL
+		WHERE jps_id = $1 AND jps_locked_at = $2`, jpsID, lockedAt)
+	if err != nil {
+		return fmt.Errorf("release jira claim %d: %w", jpsID, err)
 	}
 	return nil
 }

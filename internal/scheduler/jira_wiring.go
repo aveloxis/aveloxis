@@ -4,8 +4,10 @@
 // jira_wiring.go — C3: the Jira collector's scheduler wiring, the
 // mailing-list shape applied to a tracker. Spawned from Run only when
 // collection.jira_enabled; every long-lived goroutine goes through
-// goTracked so the shutdown arm waits for post-cancel bookkeeping
-// before closing the pgx pool.
+// goTracked so the shutdown arm waits for post-cancel bookkeeping —
+// concretely the worker's bounded-background claim release
+// (releaseClaimBestEffort, Copilot round 4 on PR #193) — before
+// closing the pgx pool.
 
 package scheduler
 

@@ -69,6 +69,19 @@ var convergenceContracts = []convergenceContract{
 		// the shared scratch DB may carry residue); the e2e is the
 		// drop-out-of-candidate-set half.
 		DrivingTests: []string{"TestDedupBatchPagesPastCollectingHead", "TestDedupOnePairEndToEnd"}},
+	{File: "internal/collector/jira_worker.go",
+		// Copilot round 4 on PR #193: the shutdown claim release's
+		// contract — "the per-page checkpoint is the resume state". The
+		// driver runs the RESUMED scan (LastUpdated = the mid-corpus
+		// checkpoint a killed scan left) to completion: pre-checkpoint
+		// work is skipped, the tail is collected, the scan stamps done.
+		DrivingTests: []string{"TestJiraResumeFromCheckpointCompletes"}},
+	{File: "internal/db/jira_store.go",
+		// ReleaseJiraClaim's doc quotes the same contract; its own
+		// driver proves the released claim is IMMEDIATELY reclaimable
+		// (no stale-window wait) with the checkpoint untouched, and the
+		// worker-side driver completes the resumed scan.
+		DrivingTests: []string{"TestReleaseJiraClaimOwnershipAndReclaim", "TestJiraResumeFromCheckpointCompletes"}},
 	{File: "cmd/aveloxis/rewalk_whitespace.go",
 		// "the marker IS the resume state": stamping whitespace_head_hash
 		// drains the repo from GetReposForWhitespaceRewalk.

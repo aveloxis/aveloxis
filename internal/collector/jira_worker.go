@@ -54,7 +54,13 @@ type jiraStore interface {
 	CompleteJiraScan(ctx context.Context, jpsID int64) error
 	RecordJiraFailure(ctx context.Context, jpsID int64) error
 	DisableJiraProject(ctx context.Context, jpsID int64) error
+	ReleaseJiraClaim(ctx context.Context, jpsID int64, lockedAt time.Time) error
 }
+
+// jiraClaimReleaseTimeout bounds the background-context claim release
+// on the shutdown path (inside the scheduler's goTracked drain — the
+// scancode/CompleteJob best-effort-write budget).
+const jiraClaimReleaseTimeout = 5 * time.Second
 
 // JiraWorker syncs one claimed project at a time.
 type JiraWorker struct {
@@ -127,6 +133,23 @@ func (w *JiraWorker) RunOnce(ctx context.Context) bool {
 	return true
 }
 
+// releaseClaimBestEffort clears a shutdown-cut scan's claim on a
+// bounded BACKGROUND context (Copilot round 4 on PR #193: every
+// Canceled exit left jps_locked_at held, so a graceful restart
+// stranded the project for the claim query's 2-hour stale window).
+// No failure recorded, no completion stamped — the per-page
+// checkpoint is the resume state; the release only makes the row
+// immediately reclaimable. Runs inside the scheduler's goTracked
+// shutdown drain, so the pool is still open.
+func (w *JiraWorker) releaseClaimBestEffort(job *db.JiraProjectJob) {
+	rctx, cancel := context.WithTimeout(context.Background(), jiraClaimReleaseTimeout)
+	defer cancel()
+	if err := w.store.ReleaseJiraClaim(rctx, job.JpsID, job.LockedAt); err != nil && !errors.Is(err, context.Canceled) {
+		w.logger.Warn("jira: shutdown claim release failed — the project waits out the stale window",
+			"project", job.ProjectKey, "error", err)
+	}
+}
+
 // syncProject pages one project's incremental window through the ONE
 // shared drift-safe walk (jira.WalkProjectByUpdated — SR-17; the walk
 // mechanics, ceiling, tie-minute fallback and termination bound live
@@ -193,25 +216,46 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 		if errors.Is(err, context.Canceled) {
 			// Shutdown mid-sync: pages already staged are checkpointed;
 			// no failure recorded (v0.27.28 — cancellation is terminal,
-			// not a strike).
+			// not a strike). The claim is released on a bounded
+			// background context so the restart can re-claim
+			// immediately instead of waiting out the 2h stale window.
+			w.releaseClaimBestEffort(job)
 			return
 		}
 		if platform.ClassifyError(err) == platform.ClassSkip {
 			// Dead project key — disable, never retry (the 5 dead
 			// James sub-keys of the pilot's 191).
 			w.logger.Warn("jira: dead project key — disabling", "project", job.ProjectKey, "error", err)
-			if derr := w.store.DisableJiraProject(ctx, job.JpsID); derr != nil && !errors.Is(derr, context.Canceled) {
+			if derr := w.store.DisableJiraProject(ctx, job.JpsID); derr != nil {
+				if errors.Is(derr, context.Canceled) {
+					w.releaseClaimBestEffort(job)
+					return
+				}
 				w.logger.Warn("jira: disable failed", "project", job.ProjectKey, "error", derr)
 			}
 			return
 		}
 		w.logger.Warn("jira: sync failed", "project", job.ProjectKey, "error", err)
-		if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
+		if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil {
+			if errors.Is(ferr, context.Canceled) {
+				// The failure record (which also clears the lock) was
+				// itself cut down by shutdown — release so the claim
+				// doesn't strand; the failure re-derives on the next run.
+				w.releaseClaimBestEffort(job)
+				return
+			}
 			w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
 		}
 		return
 	}
-	if err := w.store.CompleteJiraScan(ctx, job.JpsID); err != nil && !errors.Is(err, context.Canceled) {
+	if err := w.store.CompleteJiraScan(ctx, job.JpsID); err != nil {
+		if errors.Is(err, context.Canceled) {
+			// A canceled completion write leaves the lock held AND must
+			// not log "synced" — release and stop; the checkpointed work
+			// stands and the next claim re-runs a no-op window.
+			w.releaseClaimBestEffort(job)
+			return
+		}
 		w.logger.Warn("jira: complete failed", "project", job.ProjectKey, "error", err)
 	}
 	// "staged" = distinct issues this scan; "stage_calls" includes the

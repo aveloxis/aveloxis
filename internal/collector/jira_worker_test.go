@@ -11,6 +11,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -32,6 +33,11 @@ type fakeJiraStore struct {
 	failures   int
 	disabled   bool
 	claimCalls int
+	released   []string // "jpsID@lockedAt" — shutdown claim releases
+
+	// cancelOnClaim, when set, fires as the claim returns — the
+	// "shutdown lands right after the claim" shape.
+	cancelOnClaim context.CancelFunc
 }
 
 func (f *fakeJiraStore) ClaimNextJiraProject(context.Context, time.Duration, string) (*db.JiraProjectJob, error) {
@@ -39,7 +45,15 @@ func (f *fakeJiraStore) ClaimNextJiraProject(context.Context, time.Duration, str
 	if f.claimCalls > 1 {
 		return nil, nil
 	}
+	if f.cancelOnClaim != nil {
+		f.cancelOnClaim()
+	}
 	return f.job, nil
+}
+
+func (f *fakeJiraStore) ReleaseJiraClaim(_ context.Context, jpsID int64, lockedAt time.Time) error {
+	f.released = append(f.released, fmt.Sprintf("%d@%s", jpsID, lockedAt.UTC().Format("15:04")))
+	return nil
 }
 func (f *fakeJiraStore) StageJiraIssue(_ context.Context, _ int64, _, issueKey string, updated time.Time, _ *int64, envelope []byte) error {
 	// The fake honors the real writer's boundary: jira_staging carries

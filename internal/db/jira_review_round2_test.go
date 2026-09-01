@@ -338,3 +338,74 @@ func TestListJiraProjectRegistrations(t *testing.T) {
 		t.Fatalf("registration 2 = %+v, want listed with nil repo (the operator-heals-it case)", r2)
 	}
 }
+
+// TestReleaseJiraClaimOwnershipAndReclaim (Copilot round 4 on
+// PR #193): the shutdown claim release is ownership-qualified by the
+// claim's OWN jps_locked_at stamp — a scan that outlived the stale
+// window and was re-claimed elsewhere cannot clear the new holder's
+// lock — and a correct release makes the project immediately
+// reclaimable with counters and checkpoint untouched.
+func TestReleaseJiraClaimOwnershipAndReclaim(t *testing.T) {
+	store, ctx := emConnect(t)
+	t.Cleanup(store.Close)
+	repoID := jr2Repo(t, store, "release")
+
+	base := "https://issues.example.org/jira"
+	var existingBase string
+	_ = store.pool.QueryRow(ctx, `SELECT base_url FROM aveloxis_ops.jira_project_serve LIMIT 1`).Scan(&existingBase)
+	if existingBase != "" {
+		base = existingBase
+	}
+	cleanup := func() {
+		store.pool.Exec(context.Background(),
+			`DELETE FROM aveloxis_ops.jira_project_serve WHERE project_key = '_AVJRC1'`)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	if err := store.RegisterJiraProject(ctx, "_AVJRC1", base, &repoID); err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.ClaimNextJiraProject(ctx, 24*time.Hour, "_AVJRC1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v (job=%v)", err, job)
+	}
+	if job.LockedAt.IsZero() {
+		t.Fatal("claim must return its own jps_locked_at stamp — the release's ownership key")
+	}
+
+	// A WRONG stamp releases nothing (the straggler-release guard).
+	if err := store.ReleaseJiraClaim(ctx, job.JpsID, job.LockedAt.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	var locked *time.Time
+	if err := store.pool.QueryRow(ctx, `SELECT jps_locked_at FROM aveloxis_ops.jira_project_serve
+		WHERE jps_id = $1`, job.JpsID).Scan(&locked); err != nil {
+		t.Fatal(err)
+	}
+	if locked == nil {
+		t.Fatal("a mismatched ownership stamp must release NOTHING")
+	}
+
+	// The claim's own stamp releases; the project is immediately
+	// reclaimable (no 2h stale-window wait) with counters untouched.
+	if err := store.ReleaseJiraClaim(ctx, job.JpsID, job.LockedAt); err != nil {
+		t.Fatal(err)
+	}
+	var fails int
+	var lastRun *time.Time
+	if err := store.pool.QueryRow(ctx, `SELECT jps_locked_at, COALESCE(jps_failed_attempts, 0), jps_last_run
+		FROM aveloxis_ops.jira_project_serve WHERE jps_id = $1`, job.JpsID).Scan(&locked, &fails, &lastRun); err != nil {
+		t.Fatal(err)
+	}
+	if locked != nil {
+		t.Fatal("the claim's own stamp must release the lock")
+	}
+	if fails != 0 || lastRun != nil {
+		t.Fatalf("release must touch NOTHING but the lock (fails=%d lastRun=%v) — it is a rollback, not an outcome", fails, lastRun)
+	}
+	again, err := store.ClaimNextJiraProject(ctx, 24*time.Hour, "_AVJRC1")
+	if err != nil || again == nil {
+		t.Fatalf("released project must be immediately reclaimable, got %v (err=%v)", again, err)
+	}
+}

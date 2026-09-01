@@ -297,3 +297,103 @@ func TestFetchAllJiraCommentsHonorsServerCappedPages(t *testing.T) {
 		t.Fatalf("fetched %d comments, want all %d — a server-capped page must not read as the final page", len(all), total)
 	}
 }
+
+// TestJiraShutdownReleasesTheClaim (Copilot round 4 on PR #193): a
+// scan cut down by shutdown must release its claim on a bounded
+// background context — every Canceled exit used to leave
+// jps_locked_at held, stranding the project for the claim query's
+// 2-hour stale window on every restart (the pass-37 mailing-list
+// ReleaseListLock class). No failure recorded, no completion stamped:
+// the release is a rollback, not an outcome.
+func TestJiraShutdownReleasesTheClaim(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a canceled scan must not reach the server")
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	repoID := int64(42)
+	lockedAt := time.Date(2026, 5, 1, 11, 30, 0, 0, time.UTC)
+	store := &fakeJiraStore{
+		job:           &db.JiraProjectJob{JpsID: 7, ProjectKey: "AVRL", BaseURL: srv.URL, RepoID: &repoID, LockedAt: lockedAt},
+		cancelOnClaim: cancel, // shutdown lands right after the claim
+	}
+	w := NewJiraWorker(store, 24*time.Hour, "", 50, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.RunOnce(ctx)
+
+	if len(store.released) != 1 || store.released[0] != "7@11:30" {
+		t.Fatalf("released = %v, want exactly one ownership-stamped release (7@11:30)", store.released)
+	}
+	if store.failures != 0 {
+		t.Fatalf("failures = %d — shutdown is a rollback, never a strike", store.failures)
+	}
+	if store.completed {
+		t.Fatal("a canceled scan must not stamp complete")
+	}
+}
+
+// TestJiraResumeFromCheckpointCompletes — the SR-19 driver for "the
+// per-page checkpoint is the resume state" (the shutdown claim
+// release's contract, Copilot round 4 on PR #193): a scan cut down
+// mid-corpus leaves jps_last_updated at its last checkpointed page;
+// the released claim's next run starts its window THERE and completes
+// the tail (the boundary minute re-lists as a natural-key no-op).
+// Driven as the resumed run: LastUpdated = the mid-corpus checkpoint
+// a killed scan would have left.
+func TestJiraResumeFromCheckpointCompletes(t *testing.T) {
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	all := []string{"AVRS2-A", "AVRS2-B", "AVRS2-C"}
+	ups := []time.Time{base, base.Add(time.Minute), base.Add(time.Hour)}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+		jql := r.URL.Query().Get("jql")
+		cursor := time.Time{}
+		if i := strings.Index(jql, "updated >= '"); i >= 0 {
+			rest := jql[i+len("updated >= '"):]
+			cursor, _ = time.Parse("2006-01-02 15:04", rest[:strings.Index(rest, "'")])
+		}
+		var keys []string
+		var when []time.Time
+		for i := range all {
+			if !ups[i].Before(cursor) {
+				keys = append(keys, all[i])
+				when = append(when, ups[i])
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, jiraSearchPageAt(keys, when, start))
+	}))
+	defer srv.Close()
+
+	repoID := int64(42)
+	checkpoint := ups[1] // the killed scan checkpointed through B@10:01
+	store := &fakeJiraStore{job: &db.JiraProjectJob{
+		JpsID: 7, ProjectKey: "AVRS2", BaseURL: srv.URL, RepoID: &repoID,
+		LastUpdated: &checkpoint,
+	}}
+	w := NewJiraWorker(store, 24*time.Hour, "", 2, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.RunOnce(context.Background())
+
+	if !store.completed {
+		t.Fatal("the resumed scan must run to done")
+	}
+	// The resume window is `updated >= checkpoint`: B re-lists (no-op
+	// under the natural key) and the tail C is collected. A must NOT
+	// re-list — the checkpoint's whole point is skipping drained work.
+	sawA, sawC := false, false
+	for _, s := range store.staged {
+		if strings.HasPrefix(s, "AVRS2-A@") {
+			sawA = true
+		}
+		if strings.HasPrefix(s, "AVRS2-C@") {
+			sawC = true
+		}
+	}
+	if sawA {
+		t.Fatalf("staged = %v — the resume window re-walked BEFORE the checkpoint", store.staged)
+	}
+	if !sawC {
+		t.Fatalf("staged = %v — the resumed scan never completed the tail", store.staged)
+	}
+}

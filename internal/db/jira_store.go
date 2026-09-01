@@ -28,6 +28,13 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// JiraAPIDataSource is THE data_source value the Jira API writers stamp
+// (SR-17): trackerActionEventGuardSQL keys provider RANK on it — a
+// drifted spelling would silently degrade every API-owned row to the
+// mail-owned <= arm (re-opening the Part G 53-flip tie bug), so the
+// writers, the guard, and the rank-guard test all share this symbol.
+const JiraAPIDataSource = "JIRA API"
+
 // JiraPlatformID stamps messages rows holding NATIVE Jira comment
 // bodies (platforms row 4). The platform-6 precedent: platform_id on
 // messages identifies the message's SOURCE system, never the repo's.
@@ -409,7 +416,7 @@ func (s *PostgresStore) MintJiraContributor(ctx context.Context, jiraName, displ
 	var cntrb string
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.contributors (cntrb_login, cntrb_full_name, tool_source, data_source)
-		VALUES ('', $1, 'Aveloxis Jira Collector', 'JIRA API')
+		VALUES ('', $1, 'Aveloxis Jira Collector', '`+JiraAPIDataSource+`')
 		RETURNING cntrb_id::text`, displayName).Scan(&cntrb)
 	if err != nil {
 		return "", fmt.Errorf("mint jira contributor %q: %w", jiraName, err)
@@ -500,7 +507,7 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 			 closed_at, external_key, jira_issue_id, reporter_id, created_at, updated_at,
 			 data_source, tool_source, tool_version, data_collection_date)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, 0), $9, $10, $11,
-			'JIRA API', 'Aveloxis Jira Collector', $12, NOW())
+			'`+JiraAPIDataSource+`', 'Aveloxis Jira Collector', $12, NOW())
 		ON CONFLICT (repo_id, platform_issue_id) DO UPDATE SET
 			-- rank 2 overwrites rank 3 — but ONLY on synthetic rows;
 			-- guarded per column below. (This arm only ever fires for the
@@ -513,7 +520,7 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 			jira_issue_id = COALESCE(EXCLUDED.jira_issue_id, aveloxis_data.issues.jira_issue_id),
 			reporter_id = COALESCE(EXCLUDED.reporter_id, aveloxis_data.issues.reporter_id),
 			updated_at = EXCLUDED.updated_at,
-			data_source = 'JIRA API',
+			data_source = '`+JiraAPIDataSource+`',
 			data_collection_date = NOW()
 		RETURNING issue_id`,
 			in.RepoID, pid, num, SanitizeText(in.Title), state, closedAt,
@@ -592,7 +599,7 @@ func (s *PostgresStore) UpsertJiraComment(ctx context.Context, in JiraAPIComment
 		INSERT INTO aveloxis_data.messages
 			(repo_id, platform_msg_id, platform_id, msg_kind, msg_text, msg_timestamp,
 			 cntrb_id, tool_source, tool_version, data_source)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, 'Aveloxis Jira Collector', $8, 'JIRA API')
+		VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, 'Aveloxis Jira Collector', $8, '`+JiraAPIDataSource+`')
 		ON CONFLICT (platform_msg_id, platform_id, msg_kind) DO UPDATE SET
 			msg_text = EXCLUDED.msg_text,
 			cntrb_id = COALESCE(EXCLUDED.cntrb_id, aveloxis_data.messages.cntrb_id),

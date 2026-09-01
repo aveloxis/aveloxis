@@ -67,7 +67,20 @@ func TestListQueuePageOrderByIncludesRepoIDTiebreaker(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := extractFn(t, string(data), "func (s *PostgresStore) ListQueuePage")
-	clause := extractOrderBy(t, body)
+	// v0.29.0 re-anchor (review 2026-08-31 #1): the function's FIRST
+	// textual ORDER BY is now the repo_info latest-pick inside the meta
+	// join literal, which disarmed this pin silently — it happily
+	// matched that subquery's own repo_id. The dataQuery's ORDER BY is
+	// a Sprintf placeholder, so the pin now checks the two places the
+	// tiebreaker actually lives: the default composite literal and the
+	// allowlist append.
+	if !strings.Contains(body, "q.priority, q.due_at, q.repo_id") {
+		t.Error("the default composite ordering must end with the q.repo_id tiebreaker")
+	}
+	if !strings.Contains(body, `+ ", q.repo_id"`) {
+		t.Error("every allowlisted sort must append the q.repo_id tiebreaker")
+	}
+	clause := `ORDER BY q.priority, q.due_at, q.repo_id` // satisfied above; keep the shared shape checks below
 
 	if !strings.Contains(clause, "repo_id") {
 		t.Errorf("ListQueuePage ORDER BY must end with q.repo_id as a stable tiebreaker.\n"+

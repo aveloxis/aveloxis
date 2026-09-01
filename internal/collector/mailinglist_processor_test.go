@@ -51,9 +51,11 @@ type fakeProcStore struct {
 	cleanBodies    []string
 	cleanRules     []string
 	appliedActions []string
+	listedSystems  []string // systems DrainOnce asked ListsWithStaging for
 }
 
-func (f *fakeProcStore) ListsWithStaging(context.Context, int) ([]int64, error) {
+func (f *fakeProcStore) ListsWithStaging(_ context.Context, system string, _ int) ([]int64, error) {
+	f.listedSystems = append(f.listedSystems, system)
 	return []int64{7}, nil
 }
 
@@ -359,5 +361,23 @@ func TestProcessorLeavesStagedWhenNoRepo(t *testing.T) {
 	}
 	if len(store.emails) != 0 {
 		t.Errorf("no email_message rows should be written without a repo; got %d", len(store.emails))
+	}
+}
+
+// TestDrainOncePassesProcessorSystem pins the cross-system drain fix at the
+// collector layer: DrainOnce must scope its list claim to the processor's OWN
+// system. A hardcoded system name here would re-open the Part G find (the
+// lore pool draining apache lists with projectionClean=false).
+func TestDrainOncePassesProcessorSystem(t *testing.T) {
+	// A NONSENSE system name, deliberately: constructing with a real name
+	// would let a hardcoded "lore_public_inbox" in DrainOnce pass (review
+	// find #3) — no production system is ever spelled like this probe.
+	f := &fakeProcStore{}
+	proc := NewMailingListProcessor(f, "xsys_probe_system", "metadata_only", false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := proc.DrainOnce(context.Background(), 10); err != nil {
+		t.Fatalf("DrainOnce: %v", err)
+	}
+	if len(f.listedSystems) == 0 || f.listedSystems[0] != "xsys_probe_system" {
+		t.Fatalf("DrainOnce must claim lists for ITS system; asked for %v", f.listedSystems)
 	}
 }

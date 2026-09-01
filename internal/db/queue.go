@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -429,10 +430,41 @@ func (s *PostgresStore) ListQueue(ctx context.Context) ([]QueueJob, error) {
 	return jobs, rows.Err()
 }
 
-// ListQueuePage returns a paginated slice of the queue for the monitor dashboard.
-// If search is non-empty, filters to repos whose owner or name contains the term.
-// Results are ordered: collecting first, then queued, then by priority and due_at.
-func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, search string) ([]QueueJob, int, error) {
+// queueSorts is the monitor queue's sort ALLOWLIST (the
+// collectionRepoSorts pattern, v0.27.74 — injection-proof by
+// construction: unknown keys fall back to the default composite).
+// meta_* keys order by the latest repo_info snapshot, joined
+// set-based in ListQueuePage.
+var queueSorts = map[string]string{
+	"repo":         "r.repo_owner %s, r.repo_name %s",
+	"status":       "CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END %s",
+	"priority":     "q.priority %s",
+	"due":          "q.due_at %s",
+	"last_run":     "q.last_collected %s NULLS LAST",
+	"issues":       "COALESCE(q.last_issues, 0) %s",
+	"prs":          "COALESCE(q.last_prs, 0) %s",
+	"commits":      "COALESCE(q.last_commits, 0) %s",
+	"meta_issues":  "COALESCE(ri.issues_count, 0) %s",
+	"meta_prs":     "COALESCE(ri.pr_count, 0) %s",
+	"meta_commits": "COALESCE(ri.commit_count, 0) %s",
+}
+
+// QueueSortValid reports whether key is a queueSorts allowlist member —
+// the handler resolves its EFFECTIVE echo through this (the
+// CollectionRepoSortValid twin), so the envelope can never claim a sort
+// the store silently fell back from.
+func QueueSortValid(key string) bool {
+	_, ok := queueSorts[key]
+	return ok
+}
+
+// ListQueuePage returns a paginated slice of the queue for the monitor
+// dashboard. If search is non-empty, filters to repos whose owner/name
+// contains the term. With an allowlisted sortKey the requested ORDER
+// BY wins; otherwise (and by default) rows order collecting-first,
+// then queued, then priority and due_at — always with the v0.18.7
+// q.repo_id tiebreaker so Prev/Next pagination stays stable.
+func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, search, sortKey, sortDir string) ([]QueueJob, int, error) {
 	// Build WHERE clause for search.
 	whereClause := ""
 	args := []interface{}{}
@@ -458,6 +490,34 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 		return nil, 0, err
 	}
 
+	// Sort resolution (v0.29.0): allowlisted keys order server-side;
+	// anything else keeps the historical composite. The repo-name sort
+	// joins repos (PK hash join); the meta_* sorts join the LATEST
+	// repo_info snapshot per repo via one set-based DISTINCT ON scan —
+	// deliberately never a per-row LATERAL, which would probe
+	// repo_info once per queue row fleet-wide before the LIMIT.
+	// The v0.18.7 repo_id tiebreaker survives on every branch.
+	dir := "ASC"
+	if strings.EqualFold(sortDir, "desc") {
+		dir = "DESC"
+	}
+	orderBy := `CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+			q.priority, q.due_at, q.repo_id`
+	joins := ""
+	if tmpl, ok := queueSorts[sortKey]; ok {
+		orderBy = strings.ReplaceAll(tmpl, "%s", dir) + ", q.repo_id"
+		if sortKey == "repo" {
+			joins = ` JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id`
+		}
+		if strings.HasPrefix(sortKey, "meta_") {
+			joins = ` LEFT JOIN (
+				SELECT DISTINCT ON (repo_id) repo_id, issues_count, pr_count, commit_count
+				FROM aveloxis_data.repo_info
+				ORDER BY repo_id, data_collection_date DESC NULLS LAST, repo_info_id DESC
+			) ri ON ri.repo_id = q.repo_id`
+		}
+	}
+
 	dataQuery := fmt.Sprintf(`
 		SELECT q.repo_id, q.priority, q.status, q.due_at, q.locked_by, q.locked_at,
 			   q.last_collected, q.last_error,
@@ -466,10 +526,9 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 			   q.last_duration_ms, q.updated_at
 		FROM aveloxis_ops.collection_queue q
 		%s
-		ORDER BY
-			CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
-			q.priority, q.due_at, q.repo_id
-		LIMIT $%d OFFSET $%d`, whereClause, argIdx, argIdx+1)
+		%s
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d`, joins, whereClause, orderBy, argIdx, argIdx+1)
 	args = append(args, limit, offset)
 
 	rows, err := s.pool.Query(ctx, dataQuery, args...)

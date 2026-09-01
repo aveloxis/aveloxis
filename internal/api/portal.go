@@ -192,7 +192,7 @@ func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 	if !db.CollectionRepoSortValid(sortKey) {
 		sortKey = "name"
 	}
-	if sortDir != "desc" {
+	if !strings.EqualFold(sortDir, "desc") {
 		sortDir = "asc"
 	}
 	jsonResponse(w, map[string]any{
@@ -640,7 +640,21 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		page = 1
 	}
 	const pageSize = 100
-	jobs, total, err := s.store.ListQueuePage(r.Context(), pageSize, (page-1)*pageSize, r.URL.Query().Get("q"))
+	sortKey := r.URL.Query().Get("sort")
+	sortDir := r.URL.Query().Get("dir")
+	jobs, total, err := s.store.ListQueuePage(r.Context(), pageSize, (page-1)*pageSize, r.URL.Query().Get("q"), sortKey, sortDir)
+	// Echo the EFFECTIVE sort values (the handleGroupRepos contract —
+	// the log-the-effective-value rule applied to response envelopes):
+	// an unknown key means the store used the default composite, and
+	// the envelope must say so, never parrot the caller's input.
+	if !db.QueueSortValid(sortKey) {
+		sortKey = ""
+	}
+	if strings.EqualFold(sortDir, "desc") {
+		sortDir = "desc"
+	} else {
+		sortDir = "asc"
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -685,6 +699,7 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 	}
 	jsonResponse(w, map[string]any{
 		"jobs": out, "total": total, "page": page, "page_size": pageSize,
+		"sort": sortKey, "dir": sortDir,
 	})
 }
 

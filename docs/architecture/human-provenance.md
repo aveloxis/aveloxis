@@ -123,3 +123,31 @@ address.
 | Permanently-open Jira synthetics | ledgered migrate step (`v0.29.0 backfill synthetic Jira issue state`) | once; the projection + collector keep state forward |
 | Jira reporter/comment identity | `aveloxis backfill-jira-identities` | once soon (the Cloud-migration window); the collector keeps it forward |
 | Phantom automation contributors | ledgered migrate step (`v0.29.0 heal automation-phantom contributors`) | once; the gates prevent recurrence |
+| Mis-drained mailing-list rows (cross-system drain) | ledgered migrate step (`v0.29.0 heal cross-system mis-drained mailing-list rows`) + `aveloxis backfill-mailing-list-projection` | once; the system-scoped drain claim prevents recurrence |
+
+## Validated invariants (Part G, 2026-09-01)
+
+The five-project main-vs-branch validation (tomcat, hbase, kafka, beam,
+arrow — full collection + full-history mailing lists + Jira sync on two
+scratch databases) closed with these properties holding, now the
+documented contract for the identity chains above:
+
+- **I1** — zero duplicate `(repo_id, external_key)` issues in any arrival
+  order (mail-then-API and API-then-mail both converge on one row via the
+  deterministic negative id).
+- **I2** — `platform_issue_id < 0` exactly for mail/Jira-born rows; native
+  forge rows never carry a synthetic id.
+- **I3** — every Jira-touched issue whose key has conversational mail
+  keeps at least one `issue_message_ref` bridge (68,332 of 68,444 API
+  issues bridged; the 112 residual are provably mail-less).
+- **I4** — `email_message.linked_msg_id` covers 98.8% of comment
+  notifications on the overlap window (pilot floor: 94.4%).
+- **I5/I6** — no automation-phantom contributors; no message attribution
+  points at an automation sender.
+- **I7** — mail/Jira state writers never alter a native forge row
+  (arrow's 28K native issues byte-stable across sides), and API-owned
+  rows only yield to strictly newer mail events
+  (`trackerActionEventGuardSQL`).
+- **Analytics A/B** — network growth is connective (largest-component
+  share 0.97–1.00 on both sides), and text features read the
+  quote-stripped bodies (`COALESCE(msg_text_clean, msg_text)`).

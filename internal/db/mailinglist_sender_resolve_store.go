@@ -54,6 +54,14 @@ func (s *PostgresStore) GetMailingListSenderResolveCandidates(ctx context.Contex
 		  )
 		GROUP BY em.sender_email, r.last_attempt_at, r.resolved
 		HAVING count(*) >= $2
+		   -- The SQL twin, NOT the Go-side predicate: only the DB knows
+		   -- "sender IS a registered list address" (DMARC-munged From headers
+		   -- put list addresses on human mail — the I5 phantom-mint find).
+		   -- In HAVING, not WHERE: the predicate depends only on the group
+		   -- key, and per-row evaluation would run its registered-list
+		   -- EXISTS ~13M times per hourly tick on the mailing-list
+		   -- deployment (the v0.27.53/54 CPU class; review find #1).
+		   AND NOT aveloxis_data.is_automation_email(em.sender_email)
 		ORDER BY count(*) DESC
 		LIMIT $3`, cooldownSeconds, minMessages, limit)
 	if err != nil {

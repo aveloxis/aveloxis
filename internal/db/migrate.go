@@ -1861,6 +1861,22 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 			}
 		})
 
+	// Part G layer-3 find (2026-09-01): the pre-fix drain pools were
+	// system-blind — the lore processor (projectionClean=false) drained
+	// 90-92% of apache lists' staged rows, stamping ml_system wrong and
+	// skipping ALL Layer-2 projection. Restamp + reset those rows to the
+	// pending sentinel so `aveloxis backfill-mailing-list-projection`
+	// re-runs the keyed + thread passes over exactly that cohort (the
+	// operator step is documented in upgrading.md). Keyset-windowed
+	// (13M rows on the mailing-list deployment); ledgered — one-shot.
+	runOnce(ctx, pg, logger, errs,
+		"v0.29.0 heal cross-system mis-drained mailing-list rows",
+		func(errs *[]error) {
+			if err := pg.HealMisdrainedMailingListRows(ctx, logger); err != nil {
+				*errs = append(*errs, err)
+			}
+		})
+
 	// The uq_pr_review_msg_ref arbiter stays LIVE-healed regardless of
 	// the ledger (the plan's "CIC builds are never ledgered" rule): a
 	// hand-dropped unique must come back on the next explicit migrate.

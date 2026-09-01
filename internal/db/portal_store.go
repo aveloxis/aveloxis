@@ -77,7 +77,7 @@ func (s *PostgresStore) GetPortalGroupReposForUser(ctx context.Context, userID i
 		sortExpr = collectionRepoSorts["name"]
 	}
 	dir := "ASC"
-	if sortDir == "desc" {
+	if strings.EqualFold(sortDir, "desc") {
 		dir = "DESC"
 	}
 	orderBy := strings.ReplaceAll(sortExpr, "%s", dir) + ", r.repo_id"

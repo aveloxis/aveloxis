@@ -275,6 +275,22 @@ func trackerActionFromSubject(subject string) string {
 	return ""
 }
 
+// trackerActionEventGuardSQL is the ONE spelling of the mail-rank
+// event-time guard (SR-17), shared by ApplyTrackerAction and
+// BackfillSyntheticJiraState. Column references are unqualified — both
+// writers alias-inject via format. Two arms (the C3a provider ranks):
+//   - a row the Jira API has written (data_source = 'JIRA API') only
+//     advances on a STRICTLY newer mail event. Pony Mail rounds sent_at
+//     to the minute, so a same-minute [Reopened]+[Resolved] pair TIES a
+//     <= guard and batch order picks the winner — Part G measured 53
+//     API-closed synthetics flipped open exactly that way. Rank beats
+//     tie-break luck: on equal times the higher-rank write stands.
+//   - a mail-owned row keeps <= (replay safety: re-draining an old
+//     archive month re-applies the same latest action, a no-op).
+const trackerActionEventGuardSQL = `(%[1]s.updated_at IS NULL
+		OR (%[1]s.data_source = '%[3]s' AND %[1]s.updated_at < %[2]s)
+		OR (%[1]s.data_source <> '%[3]s' AND %[1]s.updated_at <= %[2]s))`
+
 // ApplyTrackerAction applies a Jira-notification action to a projected
 // issue: Resolved/Closed -> closed (+closed_at = the notification's
 // sent_at), Reopened -> open. Two hard rules (C3a provider
@@ -309,7 +325,7 @@ func (s *PostgresStore) ApplyTrackerAction(ctx context.Context, issueID int64, a
 		    updated_at = $3
 		WHERE issue_id = $1
 		  AND platform_issue_id < 0
-		  AND (updated_at IS NULL OR updated_at <= $3)`,
+		  AND `+fmt.Sprintf(trackerActionEventGuardSQL, "issues", "$3", JiraAPIDataSource),
 			issueID, newState, NullTime(sentAt))
 		return err
 	})
@@ -328,8 +344,11 @@ func (s *PostgresStore) ApplyTrackerAction(ctx context.Context, issueID int64, a
 // wins whichever window lands last). Keyset windows over
 // email_message_id per the house rule; found 485,892 open synthetics
 // against 358,384 Resolved notifications on the aveloxis DB.
-// Idempotent: reruns re-derive the same latest actions and the guard's
-// <= keeps the result stable.
+// Idempotent: reruns re-derive the same latest actions, and under the
+// shared trackerActionEventGuardSQL (mail-owned rows re-apply the same
+// latest action on the tie — a no-op; API-owned rows require a strictly
+// newer event, which a re-derivation never produces) the result is
+// stable.
 func (s *PostgresStore) BackfillSyntheticJiraState(ctx context.Context, logger *slog.Logger) error {
 	return runKeysetWindows(ctx, s, logger,
 		"v0.29.0 synthetic Jira issue state from notification subjects",
@@ -356,5 +375,5 @@ func (s *PostgresStore) BackfillSyntheticJiraState(ctx context.Context, logger *
 		  AND i.external_key = l.key
 		  AND i.external_key <> ''
 		  AND i.platform_issue_id < 0
-		  AND (i.updated_at IS NULL OR i.updated_at <= l.at)`)
+		  AND `+fmt.Sprintf(trackerActionEventGuardSQL, "i", "l.at", JiraAPIDataSource))
 }

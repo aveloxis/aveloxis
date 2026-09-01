@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -594,6 +595,40 @@ func (s *PostgresStore) UpdateMessageCleanBatch(ctx context.Context, msgIDs []in
 		return fmt.Errorf("update clean batch (%d rows): %w", len(msgIDs), err)
 	}
 	return nil
+}
+
+// HealMisdrainedMailingListRows repairs the cross-system drain residue
+// (Part G layer-3 find, 2026-09-01): rows drained by ANOTHER system's
+// processor carry that system's ml_system stamp and — because
+// lore_public_inbox's projectionClean is false — were never projected.
+// Two repairs in ONE keyset-windowed statement per window:
+//   - restamp ml_system from the list's registered mlls_system (all
+//     mismatched rows, links or not);
+//   - reset projected_kind to the pending sentinel (empty string) for mismatched rows
+//     that are mailing_list_only AND carry no links, so
+//     backfill-mailing-list-projection re-runs the keyed + thread passes
+//     over exactly the mis-drained cohort. Rows the wrong-system drain
+//     still linked (the mirror path is not projection-gated) keep their
+//     kind — resetting them would discard a correct link.
+//
+// Idempotent: once restamped, ml_system matches and the row never matches
+// again. Keyset windows per the house bulk-backfill rule (production
+// email_message is 13M rows on the mailing-list deployment).
+func (s *PostgresStore) HealMisdrainedMailingListRows(ctx context.Context, logger *slog.Logger) error {
+	return runKeysetWindows(ctx, s, logger,
+		"heal cross-system mis-drained mailing-list rows",
+		`SELECT COALESCE(MAX(email_message_id), 0) FROM aveloxis_data.email_message`,
+		`UPDATE aveloxis_data.email_message em
+		 SET ml_system = r.mlls_system,
+		     projected_kind = CASE WHEN em.projected_kind = 'mailing_list_only'
+		                            AND em.linked_issue_id IS NULL
+		                            AND em.linked_pull_request_id IS NULL
+		                            AND em.linked_pr_review_id IS NULL
+		                           THEN '' ELSE em.projected_kind END
+		 FROM aveloxis_data.repo_groups_list_serve r
+		 WHERE em.rgls_id = r.rgls_id
+		   AND em.ml_system <> r.mlls_system
+		   AND em.email_message_id > $1 AND em.email_message_id <= $2`)
 }
 
 // HealAutomationPhantomContributors repairs the 2026-08-31 identity

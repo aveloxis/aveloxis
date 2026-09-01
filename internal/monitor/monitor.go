@@ -233,7 +233,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	// repeatedly. Route through ListQueuePage with the same
 	// page/page_size/q semantics as the dashboard.
 	params := parsePageParams(r)
-	jobs, total, err := s.store.ListQueuePage(r.Context(), params.PageSize, params.Offset, params.Search)
+	jobs, total, err := s.store.ListQueuePage(r.Context(), params.PageSize, params.Offset, params.Search, "", "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -336,7 +336,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// status, COUNT(*) … GROUP BY status` against a 100K-row queue
 	// table per browser tab per 10 seconds. Now once per TTL window.
 	stats, lastRefreshed, nextRefresh, _ := s.queueStatsCache.Get(ctx, s.store.QueueStats)
-	jobs, total, _ := s.store.ListQueuePage(ctx, params.PageSize, params.Offset, params.Search)
+	jobs, total, _ := s.store.ListQueuePage(ctx, params.PageSize, params.Offset, params.Search, "", "")
 
 	// Look up repo details and stats for display.
 	type enrichedJob struct {

@@ -1094,6 +1094,15 @@ Admin-only:
   the forge-reported meta counts (`meta_issues`, `meta_prs`,
   `meta_commits` from the latest repo_info snapshot) for
   gathered-vs-metadata comparison.
+  Sortable (v0.29.0): `?sort=<key>&dir=asc|desc` with keys `repo`,
+  `status`, `priority`, `due`, `last_run`, `issues`, `prs`,
+  `commits`, `meta_issues`, `meta_prs`, `meta_commits` — resolved
+  through a server-side allowlist (unknown keys keep the default
+  collecting-first composite ordering); the envelope echoes the
+  EFFECTIVE `sort`/`dir` (an unknown key echoes as `""` = the default
+  ordering). The `meta_*` keys order by the latest repo_info snapshot
+  and are API-only — the SPA's paired "(ours / meta)" headers sort the
+  gathered half.
 - `POST /api/v1/admin/monitor/queue/{repoID}/prioritize` — the SPA
   monitor's "Boost" button (v0.27.14). Pushes the repo to priority 0,
   makes it immediately due, and resets its status to `queued` — the

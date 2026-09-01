@@ -1379,7 +1379,7 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 	offset := (page - 1) * monitorPageSize
 
 	stats, _ := s.store.QueueStats(r.Context())
-	jobs, total, _ := s.store.ListQueuePage(r.Context(), monitorPageSize, offset, query)
+	jobs, total, _ := s.store.ListQueuePage(r.Context(), monitorPageSize, offset, query, "", "")
 
 	totalPages := (total + monitorPageSize - 1) / monitorPageSize
 	if totalPages < 1 {

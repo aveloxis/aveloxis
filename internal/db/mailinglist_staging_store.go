@@ -42,15 +42,25 @@ func (s *PostgresStore) StageMailingListMessage(ctx context.Context, rglsID int6
 	return err
 }
 
-// ListsWithStaging returns the rgls_ids that have unprocessed staging rows, so
-// the Processor can drain one list at a time (oldest staged first).
-func (s *PostgresStore) ListsWithStaging(ctx context.Context, limit int) ([]int64, error) {
+// ListsWithStaging returns the rgls_ids that have unprocessed staging rows
+// AND are registered under the given system, so the Processor can drain one
+// list at a time (oldest staged first).
+//
+// The system filter is LOAD-BEARING (Part G layer-3 find, 2026-09-01): the
+// wiring spawns one drain pool PER system, each built around that system's
+// processor — and lore_public_inbox's processor carries projectionClean=false.
+// Unfiltered, every pool drained every list, and 90-92% of apache mail was
+// drained by the lore processor: no issue projection, no tracker actions, no
+// thread inheritance, wrong ml_system stamp. A drain pool may only ever see
+// lists registered under ITS system.
+func (s *PostgresStore) ListsWithStaging(ctx context.Context, system string, limit int) ([]int64, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT rgls_id FROM aveloxis_ops.mailing_list_staging
-		WHERE NOT processed
-		GROUP BY rgls_id
-		ORDER BY min(created_at)
-		LIMIT $1`, limit)
+		SELECT st.rgls_id FROM aveloxis_ops.mailing_list_staging st
+		JOIN aveloxis_data.repo_groups_list_serve r ON r.rgls_id = st.rgls_id
+		WHERE NOT st.processed AND r.mlls_system = $1
+		GROUP BY st.rgls_id
+		ORDER BY min(st.created_at)
+		LIMIT $2`, system, limit)
 	if err != nil {
 		return nil, fmt.Errorf("lists with staging: %w", err)
 	}

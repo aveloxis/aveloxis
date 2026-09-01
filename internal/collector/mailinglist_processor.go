@@ -28,7 +28,7 @@ const mailingListDrainBatch = 500
 // staging→batch boundary — drained one list at a time — is what stops the
 // mailing-list pipeline from reproducing Augur's contention on the hot tables.
 type mlProcessorStore interface {
-	ListsWithStaging(ctx context.Context, limit int) ([]int64, error)
+	ListsWithStaging(ctx context.Context, system string, limit int) ([]int64, error)
 	GetMailingListStagingBatch(ctx context.Context, rglsID int64, limit int) ([]db.StagedMailingListRow, error)
 	MarkMailingListStagingProcessed(ctx context.Context, mlsIDs []int64) error
 
@@ -135,7 +135,10 @@ func (p *MailingListProcessor) release(rglsID int64) {
 // time (single-threaded per list). Returns the total number of staged rows
 // processed across all lists.
 func (p *MailingListProcessor) DrainOnce(ctx context.Context, listLimit int) (int, error) {
-	lists, err := p.store.ListsWithStaging(ctx, listLimit)
+	// Scoped to THIS processor's system: the drain pool must never touch a
+	// list registered under another system (its projection policy and
+	// ml_system stamp would be wrong — the Part G cross-system drain find).
+	lists, err := p.store.ListsWithStaging(ctx, p.system, listLimit)
 	if err != nil {
 		return 0, err
 	}

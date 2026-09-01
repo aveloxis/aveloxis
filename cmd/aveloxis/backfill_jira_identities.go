@@ -20,12 +20,18 @@ import (
 )
 
 // backfillJiraIdentitiesCmd registers `aveloxis backfill-jira-identities`
-// — the C2 one-shot: for every registered project, bulk-search the
-// Jira Server API (identity + state fields, NO comments — those are
-// the collector's job) and write reporter identity + authoritative
-// state onto the synthetic issues through the same provider-precedence
-// writers the collector uses. ~2-3 polite hours for the full 844K-issue
-// ASF corpus at 1,000 issues/search.
+// — the C2 one-shot: for every REGISTERED project (jira_project_serve
+// — run `aveloxis register-jira-projects` first), bulk-search that
+// registration's Jira Server (identity + state fields, NO comments —
+// those are the collector's job) and write reporter identity +
+// authoritative state onto the synthetic issues through the same
+// provider-precedence writers the collector uses. ~2-3 polite hours
+// for the full 844K-issue ASF corpus at 1,000 issues/search.
+//
+// Copilot round 2 on PR #193 (#1): the registrations are the ONLY
+// project source here — never a re-derivation from synthetics, which
+// would ignore operator corrections to a registration's repo_id and
+// query the wrong instance for a corrected base_url.
 //
 // Run it SOON regardless of collector enablement: the stable Server-era
 // username this matches on (49.2% of issues unambiguous by login,
@@ -39,7 +45,6 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 		dryRun  bool
 		project string
 		limit   int
-		baseURL string
 	)
 	cmd := &cobra.Command{
 		Use:   "backfill-jira-identities",
@@ -63,19 +68,30 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 			const pageSize = 1000 // identity-only pages measured 1.6MB/8.5s
 			const pageSleep = 500 * time.Millisecond
 
-			cands, err := store.DeriveJiraProjectsFromSynthetics(ctx)
+			regs, err := store.ListJiraProjectRegistrations(ctx)
 			if err != nil {
 				return err
 			}
-			processed, linked, minted, failedProjects := 0, 0, 0, 0
-			for _, c := range cands {
+			if len(regs) == 0 {
+				return fmt.Errorf("no enabled Jira project registrations — run `aveloxis register-jira-projects` first (the registration's repo mapping and base URL are what this backfill writes against)")
+			}
+			processed, linked, minted, failedProjects, failedIssues, skippedNoRepo := 0, 0, 0, 0, 0, 0
+			for _, c := range regs {
 				if project != "" && c.ProjectKey != project {
 					continue
 				}
 				if ctx.Err() != nil {
 					return fmt.Errorf("interrupted after %d issues — rerun; completed work is idempotent", processed)
 				}
-				client := jira.New(baseURL, cfg.Collection.JiraPoliteEmail)
+				if c.RepoID == nil {
+					// The registration is the operator-correctable mapping;
+					// without a repo there is nothing to write against.
+					logger.Warn("jira backfill: registration has no repo mapping — skipped (set jira_project_serve.repo_id)",
+						"project", c.ProjectKey)
+					skippedNoRepo++
+					continue
+				}
+				client := jira.New(c.BaseURL, cfg.Collection.JiraPoliteEmail)
 				jql := fmt.Sprintf("project = %s ORDER BY updated ASC", c.ProjectKey)
 				startAt, total := 0, 1
 				for startAt < total {
@@ -101,7 +117,7 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 						break
 					}
 					for _, is := range page.Issues {
-						in := db.JiraAPIIssue{RepoID: c.RepoID, ExternalKey: is.Key, Title: is.Fields.Summary}
+						in := db.JiraAPIIssue{RepoID: *c.RepoID, ExternalKey: is.Key, Title: is.Fields.Summary}
 						in.JiraIssueID, _ = strconv.ParseInt(is.ID, 10, 64)
 						if is.Fields.Status != nil {
 							in.Status = is.Fields.Status.Name
@@ -112,23 +128,43 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 						in.Created = jiraParse(is.Fields.Created)
 						in.Updated = jiraParse(is.Fields.Updated)
 						in.ResolutionDate = jiraParse(is.Fields.ResolutionDate)
-						if r := is.Fields.Reporter; r != nil && r.Name != "" {
-							cntrb, _, ambiguous, rerr := store.ResolveJiraIdentity(ctx, r.Name, r.Key, r.DisplayName)
-							if rerr != nil {
-								logger.Warn("jira backfill: identity resolve failed", "name", r.Name, "error", rerr)
-							} else if cntrb == "" && !ambiguous {
-								if m, merr := store.MintJiraContributor(ctx, r.Name, r.DisplayName); merr == nil {
-									cntrb = m
-									minted++
-								}
-							}
-							if cntrb != "" {
-								in.ReporterCntrb = cntrb
-								linked++
-							}
+						// Copilot round 2 on PR #193 (#4): a resolve/mint
+						// ERROR is not "unresolved" — swallowing it made a
+						// transient DB failure report success while
+						// attribution stayed permanently missing. Failed
+						// issues are skipped (no partial write that a rerun
+						// would then skip re-attributing) and counted; the
+						// command exits nonzero so the operator reruns from
+						// a truthful state. Ambiguity remains the
+						// intentional no-link case.
+						reporter, reporterMinted, rerr := backfillResolveIdentity(ctx, store, is.Fields.Reporter)
+						if rerr != nil {
+							logger.Warn("jira backfill: reporter identity failed — issue skipped", "key", is.Key, "error", rerr)
+							failedIssues++
+							continue
+						}
+						// Suppressed #1: bank the ASSIGNEE identity too —
+						// the Server-era username is the perishable half,
+						// and this one-shot is the banking vehicle. The id
+						// is not written anywhere yet (issues has no
+						// assignee column); the banking is the point.
+						if _, am, aerr := backfillResolveIdentity(ctx, store, is.Fields.Assignee); aerr != nil {
+							logger.Warn("jira backfill: assignee identity failed — issue skipped", "key", is.Key, "error", aerr)
+							failedIssues++
+							continue
+						} else if am {
+							minted++
+						}
+						if reporterMinted {
+							minted++
+						}
+						if reporter != "" {
+							in.ReporterCntrb = reporter
+							linked++
 						}
 						if _, uerr := store.UpsertJiraIssueFromAPI(ctx, in); uerr != nil {
 							logger.Warn("jira backfill: issue upsert failed", "key", is.Key, "error", uerr)
+							failedIssues++
 							continue
 						}
 						processed++
@@ -146,10 +182,10 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 					}
 				}
 			}
-			fmt.Printf("backfilled %d issues (reporter linked=%d, contributors minted=%d, failed projects=%d)\n",
-				processed, linked, minted, failedProjects)
-			if failedProjects > 0 {
-				return fmt.Errorf("%d project(s) failed — rerun retries them (all writes are idempotent)", failedProjects)
+			fmt.Printf("backfilled %d issues (reporter linked=%d, contributors minted=%d, failed projects=%d, failed issues=%d, skipped no-repo registrations=%d)\n",
+				processed, linked, minted, failedProjects, failedIssues, skippedNoRepo)
+			if failedProjects > 0 || failedIssues > 0 {
+				return fmt.Errorf("%d project(s) and %d issue(s) failed — rerun retries them (all writes are idempotent)", failedProjects, failedIssues)
 			}
 			return nil
 		},
@@ -157,7 +193,6 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report per-project totals without writing")
 	cmd.Flags().StringVar(&project, "project", "", "restrict to one project key")
 	cmd.Flags().IntVar(&limit, "limit", 0, "stop after N issues (canary)")
-	cmd.Flags().StringVar(&baseURL, "base-url", "https://issues.apache.org/jira", "Jira Server base URL")
 	return cmd
 }
 
@@ -170,4 +205,28 @@ func jiraParse(raw string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// backfillResolveIdentity resolves-or-mints one Jira identity: banked
+// via ResolveJiraIdentity regardless of match; unambiguous no-match
+// mints (the processor's resolveIdentity contract). Returns the linked
+// cntrb_id ("" for absent/ambiguous), whether a mint happened, and any
+// ERROR — which the caller must treat as issue failure, never as
+// "unresolved" (SR-5).
+func backfillResolveIdentity(ctx context.Context, store *db.PostgresStore, u *jira.User) (string, bool, error) {
+	if u == nil || u.Name == "" {
+		return "", false, nil
+	}
+	cntrb, _, ambiguous, err := store.ResolveJiraIdentity(ctx, u.Name, u.Key, u.DisplayName)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve jira identity %q: %w", u.Name, err)
+	}
+	if cntrb != "" || ambiguous {
+		return cntrb, false, nil
+	}
+	m, err := store.MintJiraContributor(ctx, u.Name, u.DisplayName)
+	if err != nil {
+		return "", false, fmt.Errorf("mint jira contributor %q: %w", u.Name, err)
+	}
+	return m, true, nil
 }

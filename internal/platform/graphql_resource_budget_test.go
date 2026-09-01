@@ -357,3 +357,72 @@ func TestMixedExhaustionClassifiesTransient(t *testing.T) {
 		t.Errorf("mixed exhaustion (rate limit on attempt 1, 5xxs after) classified %v, want ClassTransient — the stale rate-limit cause must not win the wrap (err=%v)", got, err)
 	}
 }
+
+// TestGitLabInBodyRateLimitExhaustsCoreBudget (Copilot round 2 on
+// PR #193, suppressed #2): GitLab GraphQL checks out via GetKey (the
+// unified/core budget — no X-RateLimit-Resource header exists there),
+// so an in-body rate limit that only zeroes GraphQLRemaining would be
+// decorative: the next retry's GetKey reads Remaining, sees it
+// healthy, and re-serves the SAME exhausted token through the whole
+// retry budget. The in-body branch must mark the budget the checkout
+// dimension actually reads: core for AuthGitLab, graphql for GitHub.
+func TestGitLabInBodyRateLimitExhaustsCoreBudget(t *testing.T) {
+	var mu sync.Mutex
+	var tokens []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "bearer ")
+		mu.Lock()
+		tokens = append(tokens, tok)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if tok == "gl-dead" {
+			// GitLab-shaped in-body rate limit: HTTP 200 + errors array,
+			// NO usable rate headers on the response.
+			_, _ = w.Write([]byte(`{"errors":[{"message":"API rate limit exceeded"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"hello":"world"}}`))
+	}))
+	defer server.Close()
+
+	keys := NewKeyPool([]string{"gl-dead", "gl-alive"}, rlTestLogger())
+	c := NewHTTPClient(server.URL, keys, rlTestLogger(), AuthGitLab)
+
+	var got struct {
+		Hello string `json:"hello"`
+	}
+	if err := c.GraphQL(context.Background(), "{ hello }", nil, &got); err != nil {
+		t.Fatalf("GraphQL must rotate past a GitLab in-body rate limit, got: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(tokens) < 2 || tokens[len(tokens)-1] == "gl-dead" {
+		t.Fatalf("tokens = %v — the retry must rotate off the exhausted GitLab key", tokens)
+	}
+	// The pool must have learned in the dimension GitLab CHECKS OUT by:
+	// the dead key's CORE budget, not (only) its graphql bucket.
+	for _, k := range keys.keys {
+		if k.Token == "gl-dead" && k.Remaining > 0 {
+			t.Errorf("gl-dead key's core Remaining = %d, want 0 — GetKey would re-serve this exhausted token", k.Remaining)
+		}
+	}
+}
+
+// TestMarkCoreExhaustedZeroesAndSetsProbeWindow — the unit contract of
+// the GitLab arm's marker: core Remaining goes to 0, and when no reset
+// is known a short probe window is installed so the key re-checks in
+// minutes rather than being consulted immediately.
+func TestMarkCoreExhaustedZeroesAndSetsProbeWindow(t *testing.T) {
+	kp := NewKeyPool([]string{"k"}, rlTestLogger())
+	key := kp.keys[0]
+	key.Remaining = 4999
+	key.ResetAt = time.Time{}
+	kp.MarkCoreExhausted(key)
+	if key.Remaining != 0 {
+		t.Fatalf("Remaining = %d, want 0", key.Remaining)
+	}
+	if key.ResetAt.Before(time.Now()) || key.ResetAt.After(time.Now().Add(10*time.Minute)) {
+		t.Fatalf("ResetAt = %v, want a short future probe window", key.ResetAt)
+	}
+}

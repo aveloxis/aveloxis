@@ -211,6 +211,44 @@ func (s *PostgresStore) DeriveJiraProjectsFromSynthetics(ctx context.Context) ([
 	return out, rows.Err()
 }
 
+// JiraProjectRegistration is one enabled jira_project_serve row — the
+// operator-correctable mapping (the registration's repo_id and
+// base_url WIN over anything derivable from synthetics; the L10 round
+// on the C3 build made GetJiraStagingBatch prefer the registration for
+// the same reason).
+type JiraProjectRegistration struct {
+	JpsID      int64
+	ProjectKey string
+	BaseURL    string
+	RepoID     *int64
+}
+
+// ListJiraProjectRegistrations returns every ENABLED registration.
+// Consumers that walk projects (the identity backfill CLI) must use
+// THIS — never re-derive projects from synthetics, which ignores
+// operator corrections to repo_id/base_url (Copilot round 2 on
+// PR #193, #1).
+func (s *PostgresStore) ListJiraProjectRegistrations(ctx context.Context) ([]JiraProjectRegistration, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT jps_id, project_key, base_url, repo_id
+		FROM aveloxis_ops.jira_project_serve
+		WHERE jps_enabled
+		ORDER BY project_key`)
+	if err != nil {
+		return nil, fmt.Errorf("list jira registrations: %w", err)
+	}
+	defer rows.Close()
+	var out []JiraProjectRegistration
+	for rows.Next() {
+		var r JiraProjectRegistration
+		if err := rows.Scan(&r.JpsID, &r.ProjectKey, &r.BaseURL, &r.RepoID); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // JiraStagingRow is one staged issue envelope.
 type JiraStagingRow struct {
 	JsID     int64
@@ -554,7 +592,16 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 			closed_at = CASE WHEN `+jiraAPISnapshotFreshSQL+`
 			                 THEN EXCLUDED.closed_at ELSE aveloxis_data.issues.closed_at END,
 			jira_issue_id = COALESCE(EXCLUDED.jira_issue_id, aveloxis_data.issues.jira_issue_id),
-			reporter_id = COALESCE(EXCLUDED.reporter_id, aveloxis_data.issues.reporter_id),
+			-- Copilot round 2 on PR #193 (#5): reporter rides the SAME
+			-- freshness predicate as the state trio — a stale replayed
+			-- snapshot naming a different (or since-fixed) reporter must
+			-- not regress attribution. Equality passes the predicate, so
+			-- an equal-timestamp snapshot can still FILL an unresolved
+			-- reporter; an incoming NULL (identity unmatched) never
+			-- clobbers a resolved one.
+			reporter_id = CASE WHEN `+jiraAPISnapshotFreshSQL+`
+			                    AND EXCLUDED.reporter_id IS NOT NULL
+			                   THEN EXCLUDED.reporter_id ELSE aveloxis_data.issues.reporter_id END,
 			updated_at = CASE WHEN `+jiraAPISnapshotFreshSQL+`
 			                  THEN EXCLUDED.updated_at ELSE aveloxis_data.issues.updated_at END,
 			data_source = '`+JiraAPIDataSource+`',

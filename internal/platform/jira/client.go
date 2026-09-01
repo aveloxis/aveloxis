@@ -193,6 +193,57 @@ func (c *Client) SearchPage(ctx context.Context, jql string, fields []string, st
 	return &out, nil
 }
 
+// CommentPage is one /rest/api/2/issue/{key}/comment page.
+type CommentPage struct {
+	StartAt    int       `json:"startAt"`
+	MaxResults int       `json:"maxResults"`
+	Total      int       `json:"total"`
+	Comments   []Comment `json:"comments"`
+}
+
+// IssueCommentsPage fetches one page of an issue's comments from the
+// dedicated comment endpoint. Used ONLY when a search result's inline
+// comment block is truncated (Fields.Comment.Total > len(Comments)) —
+// Jira caps the embedded block independently of the search page size,
+// and an envelope staged with a truncated block would lose the tail
+// forever (Copilot round 2 on PR #193, #2). Error classes mirror
+// SearchPage so ClassifyError routing is identical.
+func (c *Client) IssueCommentsPage(ctx context.Context, issueKey string, startAt, maxResults int) (*CommentPage, error) {
+	q := url.Values{}
+	q.Set("startAt", strconv.Itoa(startAt))
+	q.Set("maxResults", strconv.Itoa(maxResults))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/rest/api/2/issue/"+url.PathEscape(issueKey)+"/comment?"+q.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("jira comments request: %w", err)
+	}
+	req.Header.Set("User-Agent", c.userAgent)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("jira comments: %w: %w", platform.ErrTransient, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		// fall through to decode
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return nil, fmt.Errorf("jira comments: %w", rateLimitError{})
+	case resp.StatusCode >= 500:
+		return nil, fmt.Errorf("jira comments: status %d: %w", resp.StatusCode, platform.ErrTransient)
+	default:
+		return nil, fmt.Errorf("jira comments: unexpected status %d", resp.StatusCode)
+	}
+
+	var out CommentPage
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("jira comments decode: %w: %w", platform.ErrTransient, err)
+	}
+	return &out, nil
+}
+
 // ProjectTotal returns the issue count of a project (one maxResults=0
 // search — ~0.4s measured). ErrInvalidQuery = dead project key.
 func (c *Client) ProjectTotal(ctx context.Context, projectKey string) (int, error) {

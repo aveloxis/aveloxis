@@ -25,7 +25,8 @@ import (
 
 type fakeJiraStore struct {
 	job        *db.JiraProjectJob
-	staged     []string // issueKey@updated
+	staged     []string          // issueKey@updated
+	envelopes  map[string][]byte // issueKey@updated → first-staged envelope
 	checkpts   []time.Time
 	completed  bool
 	failures   int
@@ -40,7 +41,7 @@ func (f *fakeJiraStore) ClaimNextJiraProject(context.Context, time.Duration, str
 	}
 	return f.job, nil
 }
-func (f *fakeJiraStore) StageJiraIssue(_ context.Context, _ int64, _, issueKey string, updated time.Time, _ *int64, _ []byte) error {
+func (f *fakeJiraStore) StageJiraIssue(_ context.Context, _ int64, _, issueKey string, updated time.Time, _ *int64, envelope []byte) error {
 	// The fake honors the real writer's boundary: jira_staging carries
 	// UNIQUE (project_key, issue_key, updated_at) with ON CONFLICT DO
 	// NOTHING, so a boundary-minute re-list (the C2 window-advance walk
@@ -54,6 +55,10 @@ func (f *fakeJiraStore) StageJiraIssue(_ context.Context, _ int64, _, issueKey s
 		}
 	}
 	f.staged = append(f.staged, nk)
+	if f.envelopes == nil {
+		f.envelopes = map[string][]byte{}
+	}
+	f.envelopes[nk] = envelope
 	return nil
 }
 func (f *fakeJiraStore) CheckpointJiraProject(_ context.Context, _ int64, at time.Time) error {

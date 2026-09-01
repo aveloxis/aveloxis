@@ -311,7 +311,18 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// the next attempt's GetGraphQLKey returns a fresh key,
 				// waits for the earliest window reset, or fast-fails for
 				// callers with their own recovery machinery.
-				c.keys.MarkGraphQLExhausted(key)
+				//
+				// Budget routing (Copilot round 2 on PR #193, suppressed
+				// #2): GitLab's GraphQL shares the UNIFIED core bucket
+				// (no X-RateLimit-Resource header; checkout via GetKey),
+				// so the graphql-bucket mark would be decorative there —
+				// the next GetKey would re-serve the same exhausted
+				// token. Mark the budget the checkout actually reads.
+				if c.authStyle == AuthGitLab {
+					c.keys.MarkCoreExhausted(key)
+				} else {
+					c.keys.MarkGraphQLExhausted(key)
+				}
 				c.logger.Info("graphql in-body rate limit — rotating to a fresh key",
 					"url", url, "attempt", attempt+1, "error", parsed)
 				lastRateLimit = parsed

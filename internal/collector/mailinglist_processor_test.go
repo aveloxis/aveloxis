@@ -52,6 +52,13 @@ type fakeProcStore struct {
 	cleanRules     []string
 	appliedActions []string
 	listedSystems  []string // systems DrainOnce asked ListsWithStaging for
+
+	// Round-3 deferral knobs: fail the first N calls of the
+	// projection-side writers (0 = never fail).
+	applyActionFails int
+	applyActionCalls int
+	linkIssueFails   int
+	linkIssueCalls   int
 }
 
 func (f *fakeProcStore) ListsWithStaging(_ context.Context, system string, _ int) ([]int64, error) {
@@ -132,6 +139,10 @@ func (f *fakeProcStore) UpsertMailingListMessageBody(_ context.Context, _ int64,
 	return f.nextBodyID, nil
 }
 func (f *fakeProcStore) ApplyTrackerAction(_ context.Context, issueID int64, action string, _ time.Time) error {
+	f.applyActionCalls++
+	if f.applyActionCalls <= f.applyActionFails {
+		return errors.New("deadlock detected")
+	}
 	f.appliedActions = append(f.appliedActions, fmt.Sprintf("%d:%s", issueID, action))
 	return nil
 }
@@ -140,6 +151,10 @@ func (f *fakeProcStore) InsertEmailMessageRef(context.Context, int64, int64, *in
 	return nil
 }
 func (f *fakeProcStore) LinkOrCreateIssueFromEmail(_ context.Context, _ int64, externalKey, _, _, _ string, _ *string, _ time.Time) (int64, bool, error) {
+	f.linkIssueCalls++
+	if f.linkIssueCalls <= f.linkIssueFails {
+		return 0, false, errors.New("connection refused")
+	}
 	if f.issueByKey == nil {
 		f.issueByKey = map[string]int64{}
 	}

@@ -1337,10 +1337,17 @@ aveloxis register-jira-projects
 ## `aveloxis backfill-jira-identities`
 
 The one-shot identity + state pass over every registered Jira
-project: bulk-searches the Jira Server API (identity and state
-fields; comments are the collector's job) and writes reporter
+project: bulk-searches each registration's Jira Server (identity and
+state fields; comments are the collector's job) and writes reporter
 identity + authoritative issue state onto the synthetic issues
-through the same provider-precedence writers the collector uses.
+through the same provider-precedence writers the collector uses. The
+registrations in `jira_project_serve` are the ONLY project source —
+their repo mapping and `base_url` are operator-correctable, and the
+command refuses to run before `aveloxis register-jira-projects` has
+created them. Assignee identities are banked into `jira_identities`
+alongside reporters (the username is the perishable half). A
+resolve/mint failure skips that issue and the command exits nonzero —
+rerun to retry; all writes are idempotent.
 Measured cost: ~2–3 polite hours for the full 844,401-issue ASF
 corpus at 1,000 issues per search call.
 
@@ -1367,7 +1374,6 @@ aveloxis backfill-jira-identities          # the full pass
 | `--dry-run` | off | Report per-project issue totals without writing. |
 | `--project` | `""` | Restrict to one project key. |
 | `--limit` | `0` | Stop after N issues (canary). |
-| `--base-url` | `https://issues.apache.org/jira` | Jira Server base URL. |
 
 ---
 

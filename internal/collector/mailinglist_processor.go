@@ -6,6 +6,7 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -207,6 +208,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 
 		done := make([]int64, 0, len(batch))
 		dropped := 0
+		deferred := 0
 		counters := &drainCounters{}
 		for _, row := range batch {
 			if ctx.Err() != nil {
@@ -215,6 +217,17 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 			if err := p.processRow(ctx, repoID, rglsID, row, cntrbCache, threadIssue, counters); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return processed, err // not a drop: the row stays staged
+				}
+				if errors.Is(err, errMailingListRowRetry) {
+					// The row's OWN writes landed; only a projection-side
+					// write (issue link/create, tracker action) failed
+					// transiently. Leave it UNPROCESSED — the next drain
+					// replays the row and every write converges
+					// idempotently. Never routed to drop-for-progress:
+					// dropping would permanently lose a state transition
+					// (Copilot round 2 on PR #193, #3).
+					deferred++
+					continue
 				}
 				// Mark processed anyway so the drain makes progress (collect what
 				// we can; one bad message must not wedge the whole list — the
@@ -232,6 +245,12 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 		if dropped > 0 {
 			p.logger.Error("mailing-list processor: batch completed with dropped messages",
 				"rgls_id", rglsID, "dropped", dropped, "batch", len(batch))
+		}
+		if deferred > 0 {
+			// One aggregate line (the v0.27.91 flood rule); the per-row
+			// WARNs above carry the individual causes.
+			p.logger.Warn("mailing-list processor: rows deferred for retry (projection-side failures)",
+				"rgls_id", rglsID, "deferred", deferred, "batch", len(batch))
 		}
 		if counters.nodeResolveFailures > 0 {
 			// One line per batch, not per message: mirror-heavy lists would
@@ -252,8 +271,27 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int
 			return processed, err
 		}
 		processed += len(done)
+		if len(done) == 0 {
+			// Every row in the batch deferred for retry: the next
+			// GetMailingListStagingBatch would re-select the SAME rows —
+			// return instead of spinning within this drain; the next
+			// drain cycle retries them.
+			return processed, nil
+		}
 	}
 }
+
+// errMailingListRowRetry marks a processRow outcome where the
+// message's own writes landed (or were safely skipped) but a
+// PROJECTION-side write failed transiently — the row must stay
+// UNPROCESSED so the next drain replays it (every write in processRow
+// is an idempotent upsert, so a replay converges). Introduced for the
+// tracker-action arm (Copilot round 2 on PR #193, #3): a swallowed
+// ApplyTrackerAction failure permanently lost a Resolved/Reopened
+// state transition — the ledgered historical backfill only repairs
+// rows that existed when it ran. Distinct from the drop-for-progress
+// path, which is for rows whose OWN writes fail.
+var errMailingListRowRetry = errors.New("mailing-list row deferred for retry (projection-side write failed)")
 
 // drainCounters accumulates per-batch diagnostics for one DrainList call so a
 // systemic failure is reported ONCE per batch instead of once per message.
@@ -289,6 +327,10 @@ func (p *MailingListProcessor) resolveRepo(ctx context.Context, row db.StagedMai
 // staging envelope instead of re-classifying.
 func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID int64, row db.StagedMailingListRow, cntrbCache map[string]*string, threadIssue map[string]int64, c *drainCounters) error {
 	m := row.Message
+	// Set when a projection-side write fails transiently: the rest of
+	// the row still processes (bodies, refs, bridges — all idempotent),
+	// and the row is left UNPROCESSED so the next drain replays it.
+	var deferRetry error
 
 	// §5b mirror handling: "skip" drops mirrors entirely (no provenance row).
 	if m.IsMirror && p.mirrorHandling == "skip" {
@@ -376,8 +418,9 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 			if errors.Is(perr, context.Canceled) {
 				return perr // shutdown: DrainList reports it once (pass 38)
 			}
-			p.logger.Warn("mailing-list processor: issue projection failed",
+			p.logger.Warn("mailing-list processor: issue projection failed — row deferred for retry",
 				"rgls_id", rglsID, "external_key", m.ExternalKey, "error", perr)
+			deferRetry = perr
 		} else if id > 0 {
 			projectedIssueID = id
 			linkedIssueID = &id
@@ -392,8 +435,9 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 					if errors.Is(aerr, context.Canceled) {
 						return aerr
 					}
-					p.logger.Warn("mailing-list processor: tracker action apply failed",
+					p.logger.Warn("mailing-list processor: tracker action apply failed — row deferred for retry",
 						"issue_id", id, "action", action, "error", aerr)
+					deferRetry = aerr
 				}
 			}
 		}
@@ -473,7 +517,7 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	// no body re-copy (§5 — we already collect that data via GitHub). "full"
 	// keeps the body too (belt-and-suspenders completeness).
 	if m.IsMirror && p.mirrorHandling != "full" {
-		return nil
+		return deferRetryOutcome(deferRetry)
 	}
 
 	// Part B: store the quote-stripped variant beside the raw body —
@@ -490,9 +534,20 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	// Bridge the email body as a comment on the projected issue so the thread
 	// shows up in per-repo issue analytics.
 	if projectedIssueID > 0 {
-		return p.store.BridgeEmailToIssue(ctx, projectedIssueID, repoID, msgID)
+		if err := p.store.BridgeEmailToIssue(ctx, projectedIssueID, repoID, msgID); err != nil {
+			return err
+		}
 	}
-	return nil
+	return deferRetryOutcome(deferRetry)
+}
+
+// deferRetryOutcome wraps a collected projection-side failure in the
+// retry sentinel (nil-safe).
+func deferRetryOutcome(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", errMailingListRowRetry, cause)
 }
 
 // projectedKind maps the resolved link fields to the §10a queryable kind.

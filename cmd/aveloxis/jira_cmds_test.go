@@ -53,6 +53,17 @@ func TestBackfillJiraIdentitiesShape(t *testing.T) {
 		"ResolveJiraIdentity(",
 		"UpsertJiraIssueFromAPI(",
 		"MintJiraContributor(",
+		// Copilot round 2 on PR #193 (#1): projects come from the LIVE
+		// registrations (operator-correctable repo mapping + per-
+		// registration base URL), never a synthetics re-derivation.
+		"ListJiraProjectRegistrations(",
+		// (#4): identity resolve/mint ERRORS fail the issue and the
+		// run — a transient DB failure must not report success with
+		// attribution permanently missing.
+		"failedIssues",
+		// (suppressed #1): the assignee identity is banked too — the
+		// one-shot is the banking vehicle for the perishable username.
+		"is.Fields.Assignee",
 	} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("backfill_jira_identities.go must contain %s", needle)
@@ -61,5 +72,11 @@ func TestBackfillJiraIdentitiesShape(t *testing.T) {
 	code := srctest.StripGoComments(src)
 	if strings.Contains(code, ".Migrate(") {
 		t.Error("backfill-jira-identities must NOT call store.Migrate (v0.21.5)")
+	}
+	if strings.Contains(code, "DeriveJiraProjectsFromSynthetics(") {
+		t.Error("backfill-jira-identities must NOT re-derive projects from synthetics — the registrations are the operator-correctable mapping (Copilot round 2 on PR #193, #1)")
+	}
+	if strings.Contains(code, `"base-url"`) {
+		t.Error("backfill-jira-identities must NOT carry a command-wide base-url flag — each registration's base_url wins")
 	}
 }

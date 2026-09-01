@@ -25,6 +25,7 @@ type fakeJiraProcStore struct {
 	batches    [][]db.JiraStagingRow
 	batchCall  int
 	identities map[string][3]any // name -> {cntrb, method, ambiguous}
+	resolved   []string          // every name ResolveJiraIdentity was asked about (banking order)
 	minted     []string
 	issues     []db.JiraAPIIssue
 	comments   []db.JiraAPIComment
@@ -43,6 +44,7 @@ func (f *fakeJiraProcStore) GetJiraStagingBatch(context.Context, int64, int) ([]
 	return b, nil
 }
 func (f *fakeJiraProcStore) ResolveJiraIdentity(_ context.Context, name, _, _ string) (string, string, bool, error) {
+	f.resolved = append(f.resolved, name)
 	if v, ok := f.identities[name]; ok {
 		return v[0].(string), v[1].(string), v[2].(bool), nil
 	}

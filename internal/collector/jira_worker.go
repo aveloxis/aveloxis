@@ -32,7 +32,11 @@ import (
 )
 
 // jiraSearchFields is the production field selection: identity +
-// state + the inline comment block.
+// state + the inline comment block. Every identity-bearing field here
+// has a consumer that BANKS it (reporter AND assignee both route
+// through the processor's resolveIdentity → jira_identities) — a field
+// in this list with no banking consumer is a defect (Copilot round 2
+// on PR #193, suppressed #1).
 var jiraSearchFields = []string{
 	"summary", "reporter", "assignee", "status", "resolution",
 	"resolutiondate", "created", "updated", "comment",
@@ -234,6 +238,36 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 				}
 				return
 			}
+			// Copilot round 2 on PR #193 (#2): Jira caps the inline
+			// comment block independently of the search page size. An
+			// envelope staged with a truncated block loses the tail
+			// FOREVER (the envelope is immutable and the incremental JQL
+			// never re-serves an unchanged issue), so completeness is
+			// enforced HERE — the worker is the only layer with a client.
+			// The re-fetch walks the comment endpoint from startAt=0 and
+			// REPLACES the block (never offset-splices the tail — the C2
+			// lesson: offsets over a mutable list drift; the comment
+			// upsert dedups by comment id, so overlap is a no-op).
+			if is.Fields.Comment != nil && is.Fields.Comment.Total > len(is.Fields.Comment.Comments) {
+				all, cerr := fetchAllJiraComments(ctx, client, is.Key, w.pageSleep)
+				if cerr != nil {
+					if errors.Is(cerr, context.Canceled) {
+						return
+					}
+					// SR-3 shape: an issue that cannot stage COMPLETE must
+					// fail the scan — skipping it would let later issues
+					// push the checkpoint past it.
+					w.logger.Warn("jira: comment tail fetch failed — failing scan",
+						"issue", is.Key, "inline", len(is.Fields.Comment.Comments),
+						"total", is.Fields.Comment.Total, "error", cerr)
+					if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
+						w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
+					}
+					return
+				}
+				is.Fields.Comment.Comments = all
+				is.Fields.Comment.Total = len(all)
+			}
 			envelope, merr := json.Marshal(is)
 			if merr != nil {
 				w.logger.Warn("jira: envelope marshal failed — failing scan", "issue", is.Key, "error", merr)
@@ -320,4 +354,30 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 	// deliberate boundary-minute re-lists (natural-key no-ops).
 	w.logger.Info("jira: project synced", "project", job.ProjectKey,
 		"staged", len(seenThisScan), "stage_calls", staged)
+}
+
+// fetchAllJiraComments walks an issue's FULL comment list off the
+// dedicated endpoint. Termination: a short or empty page ends the walk
+// (the standard pagination terminator — never the mutable Total alone).
+func fetchAllJiraComments(ctx context.Context, client *jira.Client, issueKey string, sleep time.Duration) ([]jira.Comment, error) {
+	const commentPageSize = 100
+	var all []jira.Comment
+	for start := 0; ; {
+		page, err := client.IssueCommentsPage(ctx, issueKey, start, commentPageSize)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page.Comments...)
+		if len(page.Comments) < commentPageSize {
+			return all, nil
+		}
+		start += len(page.Comments)
+		if sleep > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(sleep):
+			}
+		}
+	}
 }

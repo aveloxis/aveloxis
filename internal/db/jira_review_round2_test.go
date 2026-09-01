@@ -177,3 +177,164 @@ func TestSyntheticStateBackfillTieBreaksDeterministically(t *testing.T) {
 		}
 	}
 }
+
+// TestJiraReporterFreshnessGuard (Copilot round 2 on PR #193, #5):
+// reporter_id rides the SAME API-snapshot freshness predicate as the
+// state trio. Pre-fix it was a bare COALESCE(EXCLUDED, stored) — a
+// STALE replayed snapshot naming a different (or since-fixed) reporter
+// regressed attribution while the rest of the row stayed new. Equal
+// timestamps still FILL an unresolved reporter (the predicate is <=),
+// and an incoming NULL never clobbers a resolved one.
+func TestJiraReporterFreshnessGuard(t *testing.T) {
+	store, ctx := emConnect(t)
+	t.Cleanup(store.Close)
+	repoID := jr2Repo(t, store, "repfresh")
+
+	cntrbA, err := store.MintJiraContributor(ctx, "_avjr2-rep-a", "Rep A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cntrbB, err := store.MintJiraContributor(ctx, "_avjr2-rep-b", "Rep B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.jira_identities WHERE jira_name LIKE '_avjr2-rep-%'`)
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributor_identities WHERE cntrb_id IN ($1::uuid, $2::uuid)`, cntrbA, cntrbB)
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_id IN ($1::uuid, $2::uuid)`, cntrbA, cntrbB)
+	})
+
+	readReporter := func() string {
+		t.Helper()
+		var rep *string
+		if err := store.pool.QueryRow(ctx, `SELECT reporter_id::text FROM aveloxis_data.issues
+			WHERE repo_id = $1 AND external_key = 'AVJR2-REP'`, repoID).Scan(&rep); err != nil {
+			t.Fatal(err)
+		}
+		if rep == nil {
+			return "<NULL>"
+		}
+		return *rep
+	}
+
+	t1 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+
+	// Seed at t2 with NO reporter (identity unmatched on that pass).
+	seed := JiraAPIIssue{RepoID: repoID, ExternalKey: "AVJR2-REP", JiraIssueID: 222,
+		Title: "t", Status: "Open", Created: t1, Updated: t2}
+	if _, err := store.UpsertJiraIssueFromAPI(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
+
+	// (1) EQUAL-timestamp snapshot fills the unresolved reporter.
+	fill := seed
+	fill.ReporterCntrb = cntrbA
+	if _, err := store.UpsertJiraIssueFromAPI(ctx, fill); err != nil {
+		t.Fatal(err)
+	}
+	if rep := readReporter(); rep != cntrbA {
+		t.Fatalf("equal-timestamp snapshot must FILL the unresolved reporter, got %s", rep)
+	}
+
+	// (2) A STALE replay naming a different reporter must NOT regress.
+	stale := seed
+	stale.Updated = t1
+	stale.ReporterCntrb = cntrbB
+	if _, err := store.UpsertJiraIssueFromAPI(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	if rep := readReporter(); rep != cntrbA {
+		t.Fatalf("stale replay regressed reporter to %s, want the newer snapshot's %s kept", rep, cntrbA)
+	}
+
+	// (3) A FRESH snapshot with an unmatched reporter (NULL) must not
+	// clobber the resolved one.
+	fresher := seed
+	fresher.Updated = t2.Add(time.Hour)
+	fresher.ReporterCntrb = ""
+	if _, err := store.UpsertJiraIssueFromAPI(ctx, fresher); err != nil {
+		t.Fatal(err)
+	}
+	if rep := readReporter(); rep != cntrbA {
+		t.Fatalf("fresh NULL clobbered the resolved reporter, got %s", rep)
+	}
+
+	// (4) A FRESH snapshot with a DIFFERENT resolved reporter advances.
+	moved := seed
+	moved.Updated = t2.Add(2 * time.Hour)
+	moved.ReporterCntrb = cntrbB
+	if _, err := store.UpsertJiraIssueFromAPI(ctx, moved); err != nil {
+		t.Fatal(err)
+	}
+	if rep := readReporter(); rep != cntrbB {
+		t.Fatalf("fresh snapshot's reporter change must advance, got %s", rep)
+	}
+}
+
+// TestListJiraProjectRegistrations (Copilot round 2 on PR #193, #1):
+// the identity backfill iterates the LIVE registrations — the
+// operator-correctable mapping — so the lister must serve enabled
+// rows with each registration's base_url + repo_id and hide disabled
+// ones.
+func TestListJiraProjectRegistrations(t *testing.T) {
+	store, ctx := emConnect(t)
+	t.Cleanup(store.Close)
+	repoID := jr2Repo(t, store, "reglist")
+
+	base := "https://issues.example.org/jira"
+	cleanup := func() {
+		store.pool.Exec(context.Background(),
+			`DELETE FROM aveloxis_ops.jira_project_serve WHERE project_key LIKE '_AVJRL%'`)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	// The one-instance guard: every registration must share the base.
+	var existingBase string
+	_ = store.pool.QueryRow(ctx, `SELECT base_url FROM aveloxis_ops.jira_project_serve LIMIT 1`).Scan(&existingBase)
+	if existingBase != "" {
+		base = existingBase
+	}
+
+	if err := store.RegisterJiraProject(ctx, "_AVJRL1", base, &repoID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterJiraProject(ctx, "_AVJRL2", base, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterJiraProject(ctx, "_AVJRL3", base, &repoID); err != nil {
+		t.Fatal(err)
+	}
+	var deadID int64
+	if err := store.pool.QueryRow(ctx, `SELECT jps_id FROM aveloxis_ops.jira_project_serve
+		WHERE project_key = '_AVJRL3'`).Scan(&deadID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DisableJiraProject(ctx, deadID); err != nil {
+		t.Fatal(err)
+	}
+
+	regs, err := store.ListJiraProjectRegistrations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]JiraProjectRegistration{}
+	for _, r := range regs {
+		if strings.HasPrefix(r.ProjectKey, "_AVJRL") {
+			got[r.ProjectKey] = r
+		}
+	}
+	if _, dead := got["_AVJRL3"]; dead {
+		t.Fatal("disabled registration must not list")
+	}
+	r1, ok := got["_AVJRL1"]
+	if !ok || r1.BaseURL != base || r1.RepoID == nil || *r1.RepoID != repoID {
+		t.Fatalf("registration 1 = %+v, want base %q + repo %d", r1, base, repoID)
+	}
+	r2, ok := got["_AVJRL2"]
+	if !ok || r2.RepoID != nil {
+		t.Fatalf("registration 2 = %+v, want listed with nil repo (the operator-heals-it case)", r2)
+	}
+}

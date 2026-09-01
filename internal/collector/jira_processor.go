@@ -162,6 +162,18 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 	if err != nil {
 		return err // stays staged — a transient identity failure must retry (C1)
 	}
+	// Copilot round 2 on PR #193 (suppressed #1): the assignee is
+	// requested and serialized precisely so its identity gets BANKED —
+	// ResolveJiraIdentity records the raw Server-era username (the
+	// perishable half a Cloud migration deletes) whether or not it
+	// links, and the mint arm gives unambiguous Jira-only assignees a
+	// contributor row like reporters get. The resolved id is not yet
+	// written anywhere: issues has no assignee column, and Jira rows in
+	// issue_assignees (bridge semantics vs forge-owned assignees on
+	// LINKed native rows) is undesigned — the banking is the guarantee.
+	if _, aerr := p.resolveIdentity(ctx, is.Fields.Assignee); aerr != nil {
+		return aerr // stays staged — retry (C1)
+	}
 	in := db.JiraAPIIssue{
 		RepoID:        repoID,
 		ExternalKey:   is.Key,
@@ -189,9 +201,13 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 	if is.Fields.Comment == nil {
 		return nil
 	}
-	// Review 2026-08-30 #6: the pilot measured zero inline truncation
-	// (718/718), but if Jira ever returns fewer comments than the
-	// block's total the tail is never collected — make it visible.
+	// Backstop only: the WORKER completes truncated comment blocks
+	// before staging (Copilot round 2 on PR #193, #2 — it pages the
+	// comment endpoint and replaces the block), so a truncated envelope
+	// here is either pre-fix staging residue or a worker regression.
+	// Deliberately NOT a failure: the envelope is immutable, so failing
+	// it would retry forever and head-block the drain — the tail for a
+	// legacy envelope arrives when the issue next changes upstream.
 	if is.Fields.Comment.Total > len(is.Fields.Comment.Comments) {
 		p.logger.Warn("jira: inline comment block truncated — tail comments not collected",
 			"issue", is.Key,

@@ -340,6 +340,24 @@ func (kp *KeyPool) MarkGraphQLExhausted(key *APIKey) {
 	}
 }
 
+// MarkCoreExhausted zeroes a key's CORE budget after an in-body
+// rate-limit response on a platform whose GraphQL shares the unified
+// core bucket (GitLab — no X-RateLimit-Resource header, one budget for
+// everything, checkout via GetKey). Zeroing only the graphql bucket
+// there would be decorative: the next GetKey reads the core counter,
+// sees it healthy, and re-serves the exhausted token through the whole
+// retry budget (Copilot round 2 on PR #193, suppressed #2). When no
+// reset is known, the same short probe window MarkGraphQLExhausted
+// uses re-checks within minutes.
+func (kp *KeyPool) MarkCoreExhausted(key *APIKey) {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	key.Remaining = 0
+	if key.ResetAt.IsZero() || key.ResetAt.Before(time.Now()) {
+		key.ResetAt = time.Now().Add(graphQLDepletedProbe)
+	}
+}
+
 // ErrGraphQLBudgetExhausted is returned by GetGraphQLKey under
 // WithGraphQLFastFail when every key's graphql budget is spent — the
 // fast-fail caller's own machinery (batch subdivision, deferred

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // SetHistoryWindowConcurrency bounds how many history windows fetch
@@ -101,6 +102,10 @@ func HistoryWindows(createdAt time.Time, years []int, now time.Time, windowDays 
 // FetchContributorHistoryMeta returns the account creation time and
 // contribution years — the inputs HistoryWindows needs. Cost: 1 point.
 func (c *Client) FetchContributorHistoryMeta(ctx context.Context, login string) (time.Time, []int, error) {
+	// Background sweep: leave GraphQLBackgroundReserve headroom per key for
+	// foreground collection (the 2026-09-01 pytorch diagnostic — the history
+	// sweep's sustained load kept keys graphql-dry under multi-day jobs).
+	ctx = platform.WithGraphQLBackgroundBudget(ctx)
 	query := fmt.Sprintf(`query { user(login: %q) { createdAt contributionsCollection { contributionYears } } }`, login)
 	var resp struct {
 		User struct {
@@ -192,6 +197,8 @@ type historyRepoEntry struct {
 // mutex. First error cancels the remaining windows and aborts the
 // contributor — unchanged failure semantics, reached faster.
 func (c *Client) FetchContributorDailyHistory(ctx context.Context, login string, windows []HistoryWindow) ([]model.ContributorDayActivity, []model.ContributorDayTotal, error) {
+	// Background sweep — same reserve rationale as FetchContributorHistoryMeta.
+	ctx = platform.WithGraphQLBackgroundBudget(ctx)
 	acc := newHistoryAccumulator()
 	conc := int(c.historyWindowConc.Load())
 	if conc < 1 {

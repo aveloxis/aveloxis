@@ -1,0 +1,256 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+package platform
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// The 2026-09-01 chaoss.tv diagnostic (pytorch/pytorch stuck since June):
+// the key pool tracked ONLY the core rate-limit bucket — UpdateFromResponse
+// discarded every response whose X-RateLimit-Resource was not "core", so a
+// key with a full core budget and ZERO graphql points looked perfect to
+// GetKey. 36,164 "API rate limit already exceeded for user ID …" errors in
+// 4 days: GraphQL requests kept landing on graphql-dead keys, and monster
+// PR-batch jobs (pytorch 86h43m, vscode, winget-pkgs, home-assistant/core)
+// died on single unretried hits. These tests pin the per-resource budget.
+
+func rlTestLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func gqlHeaderResp(remaining string, resetAt time.Time) *http.Response {
+	h := http.Header{}
+	h.Set("X-RateLimit-Resource", "graphql")
+	h.Set("X-RateLimit-Remaining", remaining)
+	if !resetAt.IsZero() {
+		h.Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: h}
+}
+
+// TestUpdateFromResponseRoutesGraphQLResource: a graphql-resource response
+// must update the key's GRAPHQL budget and leave the core counter alone —
+// and vice versa. Pre-fix, the graphql response was DISCARDED outright.
+func TestUpdateFromResponseRoutesGraphQLResource(t *testing.T) {
+	kp := NewKeyPool([]string{"k"}, rlTestLogger())
+	key := kp.keys[0]
+	reset := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+
+	kp.UpdateFromResponse(key, gqlHeaderResp("0", reset))
+	if key.GraphQLRemaining != 0 {
+		t.Errorf("GraphQLRemaining = %d after graphql-resource response with Remaining: 0, want 0 (the pool was graphql-blind — the pytorch root cause)", key.GraphQLRemaining)
+	}
+	if !key.GraphQLResetAt.Equal(reset) {
+		t.Errorf("GraphQLResetAt = %v, want %v", key.GraphQLResetAt, reset)
+	}
+	if key.Remaining != 5000 {
+		t.Errorf("core Remaining = %d — a graphql response must NEVER touch the core bucket (the documented starvation hazard)", key.Remaining)
+	}
+
+	// Core response leaves the graphql bucket alone.
+	key2 := kp.keys[0]
+	key2.GraphQLRemaining = 4000
+	h := http.Header{}
+	h.Set("X-RateLimit-Resource", "core")
+	h.Set("X-RateLimit-Remaining", "17")
+	kp.UpdateFromResponse(key2, &http.Response{StatusCode: 200, Header: h})
+	if key2.Remaining != 17 {
+		t.Errorf("core Remaining = %d, want 17", key2.Remaining)
+	}
+	if key2.GraphQLRemaining != 4000 {
+		t.Errorf("GraphQLRemaining = %d — a core response must not touch the graphql bucket", key2.GraphQLRemaining)
+	}
+}
+
+// TestGetGraphQLKeySkipsGraphQLDepletedKeys: checkout for GraphQL work must
+// gate on the GRAPHQL budget. A key with a dead graphql bucket and a full
+// core bucket is unusable for GraphQL (and still fine for REST).
+func TestGetGraphQLKeySkipsGraphQLDepletedKeys(t *testing.T) {
+	kp := NewKeyPool([]string{"dead-gql", "alive"}, rlTestLogger())
+	kp.keys[0].GraphQLRemaining = 0
+	kp.keys[0].GraphQLResetAt = time.Now().Add(time.Hour)
+
+	for i := 0; i < 4; i++ {
+		k, err := kp.GetGraphQLKey(context.Background())
+		if err != nil {
+			t.Fatalf("GetGraphQLKey: %v", err)
+		}
+		if k.Token != "alive" {
+			t.Fatalf("checkout %d returned the graphql-dead key — GetGraphQLKey must skip keys with no graphql budget", i)
+		}
+	}
+	// The graphql-dead key is still perfectly fine for REST (core budget full).
+	k, err := kp.GetKey(context.Background())
+	if err != nil {
+		t.Fatalf("GetKey: %v", err)
+	}
+	if k == nil {
+		t.Fatal("GetKey returned nil")
+	}
+}
+
+// TestGetGraphQLKeyRefillsAfterReset: once a key's graphql window resets,
+// the budget refills (5,000 points/hr) and the key is usable again.
+func TestGetGraphQLKeyRefillsAfterReset(t *testing.T) {
+	kp := NewKeyPool([]string{"only"}, rlTestLogger())
+	kp.keys[0].GraphQLRemaining = 0
+	kp.keys[0].GraphQLResetAt = time.Now().Add(50 * time.Millisecond)
+
+	start := time.Now()
+	k, err := kp.GetGraphQLKey(context.Background())
+	if err != nil {
+		t.Fatalf("GetGraphQLKey: %v", err)
+	}
+	if k.GraphQLRemaining <= kp.buffer {
+		t.Errorf("GraphQLRemaining = %d after reset elapsed — window refill missing", k.GraphQLRemaining)
+	}
+	if time.Since(start) > 30*time.Second {
+		t.Errorf("waited %v — should have woken at the 50ms graphql reset", time.Since(start))
+	}
+}
+
+// TestGetGraphQLKeyFastFailReturnsInsteadOfWaiting: fast-fail callers
+// (subdividing batches, the deferred-retry tickers) must get a typed
+// rate-limit error immediately instead of blocking until a window reset —
+// their claim/subdivision machinery IS the retry strategy.
+func TestGetGraphQLKeyFastFailReturnsInsteadOfWaiting(t *testing.T) {
+	kp := NewKeyPool([]string{"a", "b"}, rlTestLogger())
+	for _, k := range kp.keys {
+		k.GraphQLRemaining = 0
+		k.GraphQLResetAt = time.Now().Add(time.Hour)
+	}
+	start := time.Now()
+	_, err := kp.GetGraphQLKey(WithGraphQLFastFail(context.Background()))
+	if err == nil {
+		t.Fatal("expected a typed error when every graphql budget is exhausted under fast-fail")
+	}
+	if ClassifyError(err) != ClassRateLimit {
+		t.Errorf("ClassifyError = %v, want ClassRateLimit so subdivision/deferral machinery dispatches correctly", ClassifyError(err))
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Errorf("fast-fail checkout blocked %v — must return immediately", time.Since(start))
+	}
+}
+
+// TestGraphQLBackgroundReserveKeepsHeadroom: background sweeps (activity
+// history, classification) must refuse keys whose graphql budget is below
+// the reserve, leaving that headroom for foreground collection. Foreground
+// checkout still accepts the same key.
+func TestGraphQLBackgroundReserveKeepsHeadroom(t *testing.T) {
+	kp := NewKeyPool([]string{"low", "high"}, rlTestLogger())
+	kp.keys[0].GraphQLRemaining = GraphQLBackgroundReserve - 1 // above buffer, below reserve
+	kp.keys[1].GraphQLRemaining = GraphQLBackgroundReserve + 100
+
+	bg := WithGraphQLBackgroundBudget(context.Background())
+	for i := 0; i < 4; i++ {
+		k, err := kp.GetGraphQLKey(bg)
+		if err != nil {
+			t.Fatalf("background GetGraphQLKey: %v", err)
+		}
+		if k.Token != "high" {
+			t.Fatalf("background checkout %d got the below-reserve key — the reserve exists so sweeps can't starve collection", i)
+		}
+	}
+	// Foreground checkout may use the low key (it's above the plain buffer).
+	seen := map[string]bool{}
+	for i := 0; i < 8; i++ {
+		k, err := kp.GetGraphQLKey(context.Background())
+		if err != nil {
+			t.Fatalf("foreground GetGraphQLKey: %v", err)
+		}
+		seen[k.Token] = true
+	}
+	if !seen["low"] {
+		t.Error("foreground checkout never used the below-reserve key — the reserve must apply to BACKGROUND callers only")
+	}
+}
+
+// TestClassifyGraphQLErrorsRecognizesRateLimitVariants: production
+// (2026-09-01, pytorch shard 41) received type "RATE_LIMIT" — not the
+// documented "RATE_LIMITED" — and the classifier fell to the generic
+// ClassFatal arm, so subdivision AND the size-1 REST fallback never
+// engaged and an 86h43m job died on one hit. Every rate-limit spelling
+// must classify ClassRateLimit.
+func TestClassifyGraphQLErrorsRecognizesRateLimitVariants(t *testing.T) {
+	cases := []struct {
+		name string
+		errs []graphqlError
+	}{
+		{"documented RATE_LIMITED", []graphqlError{{Type: "RATE_LIMITED", Message: "API rate limit exceeded"}}},
+		{"observed RATE_LIMIT", []graphqlError{{Type: "RATE_LIMIT", Message: "API rate limit already exceeded for user ID 172139126."}}},
+		{"typeless with rate-limit message", []graphqlError{{Message: "API rate limit already exceeded for user ID 172139126."}}},
+		{"dominates other errors", []graphqlError{{Type: "NOT_FOUND", Message: "x"}, {Type: "RATE_LIMIT", Message: "API rate limit already exceeded"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := classifyGraphQLErrors(tc.errs)
+			if ClassifyError(err) != ClassRateLimit {
+				t.Errorf("ClassifyError = %v for %v, want ClassRateLimit", ClassifyError(err), tc.errs)
+			}
+		})
+	}
+}
+
+// TestGraphQLRotatesOnInBodyRateLimit is the end-to-end pin for the
+// production failure: an in-body RATE_LIMITED on key 1 must mark that
+// key's graphql budget dead, rotate to a fresh key, and SUCCEED — not
+// return the error to the caller (which is what killed pytorch's 86h run).
+func TestGraphQLRotatesOnInBodyRateLimit(t *testing.T) {
+	var mu sync.Mutex
+	var tokens []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		mu.Lock()
+		tokens = append(tokens, auth)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Resource", "graphql")
+		if strings.Contains(auth, "dead-key") {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"errors":[{"type":"RATE_LIMIT","message":"API rate limit already exceeded for user ID 172139126."}]}`))
+			return
+		}
+		w.Header().Set("X-RateLimit-Remaining", "4999")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"hello":"world"}}`))
+	}))
+	defer server.Close()
+
+	keys := NewKeyPool([]string{"dead-key", "live-key"}, rlTestLogger())
+	c := NewHTTPClient(server.URL, keys, rlTestLogger(), AuthGitHub)
+
+	var got struct {
+		Hello string `json:"hello"`
+	}
+	if err := c.GraphQL(context.Background(), "{ hello }", nil, &got); err != nil {
+		t.Fatalf("GraphQL must rotate past an in-body rate limit, got error: %v", err)
+	}
+	if got.Hello != "world" {
+		t.Errorf("got.Hello = %q, want \"world\"", got.Hello)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(tokens) < 2 {
+		t.Fatalf("expected >= 2 requests (rate-limited then rotated), got %d", len(tokens))
+	}
+	if tokens[0] == tokens[len(tokens)-1] {
+		t.Errorf("final request used the SAME token as the rate-limited one — rotation did not happen")
+	}
+	// And the pool must have LEARNED: the dead key's graphql budget is 0.
+	for _, k := range keys.keys {
+		if k.Token == "dead-key" && k.GraphQLRemaining > 0 {
+			t.Errorf("dead key's GraphQLRemaining = %d, want 0 (marked from the in-body rate limit)", k.GraphQLRemaining)
+		}
+	}
+}

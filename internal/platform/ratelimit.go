@@ -21,6 +21,16 @@ type APIKey struct {
 	Remaining int
 	Invalid   bool // legacy permanent-invalid backstop; the 401 path now quarantines instead
 
+	// GraphQL has its OWN per-user budget (5,000 points/hr) entirely
+	// separate from the core bucket. Tracked per key since 2026-09-01:
+	// before that UpdateFromResponse DISCARDED graphql-resource headers,
+	// so a key with a full core budget and zero graphql points looked
+	// usable to every GraphQL checkout — the chaoss.tv pytorch incident
+	// (36K "already exceeded for user ID" errors in 4 days; four monster
+	// repos' multi-day PR-batch jobs each dying on one unretried hit).
+	GraphQLRemaining int
+	GraphQLResetAt   time.Time
+
 	// authStrikes counts CONSECUTIVE 401 responses on this key. Any successful
 	// response resets it to 0. A single 401 — common when GitHub's auth
 	// backend has a transient hiccup and returns "Bad credentials" for a
@@ -44,11 +54,12 @@ type APIKey struct {
 // before collection waits. This maximizes throughput when you have dozens
 // of tokens at 400K+ repos.
 type KeyPool struct {
-	mu      sync.Mutex
-	keys    []*APIKey
-	rrIndex int // round-robin counter
-	buffer  int // stop using a key when remaining drops to this
-	logger  *slog.Logger
+	mu         sync.Mutex
+	keys       []*APIKey
+	rrIndex    int // round-robin counter (core checkout)
+	rrIndexGQL int // round-robin counter (graphql checkout — separate so the two dimensions don't skew each other)
+	buffer     int // stop using a key when remaining drops to this
+	logger     *slog.Logger
 
 	// ── v0.27.34 fleet-level API-outage circuit breaker ────────────
 	// Every HTTPClient (REST + GraphQL) for a platform shares this
@@ -88,6 +99,27 @@ const (
 // that checked out a key before the remaining count was updated.
 const DefaultBuffer = 15
 
+// graphQLPointsPerHour is GitHub's per-user GraphQL point budget — the
+// refill value when a key's graphql window resets.
+const graphQLPointsPerHour = 5000
+
+// GraphQLBackgroundReserve is the graphql-point headroom BACKGROUND
+// sweeps (contributor activity history / classification) must leave on a
+// key for foreground collection. Derivation: collection's PR batches and
+// child pagination burst ~30-60 queries/min at ~1-10 points each; 500
+// points per key x the fleet's keys reserves ~10% of the total graphql
+// budget for collection, while background work may consume the rest.
+// Background checkout (WithGraphQLBackgroundBudget) refuses keys below
+// this line; foreground checkout uses the ordinary buffer.
+const GraphQLBackgroundReserve = 500
+
+// graphQLDepletedProbe is the fallback graphql reset window used by
+// MarkGraphQLExhausted when no reset header was ever observed for the
+// key. Short enough to re-probe within minutes, long enough not to
+// thrash a genuinely-dead budget (the real window is at most an hour and
+// the headers on the next successful checkout correct it).
+const graphQLDepletedProbe = 5 * time.Minute
+
 const (
 	// maxAuthStrikes is the number of CONSECUTIVE 401 responses a key must
 	// accumulate before it is quarantined. GitHub's auth backend intermittently
@@ -121,7 +153,7 @@ func NewKeyPool(tokens []string, logger *slog.Logger) *KeyPool {
 func NewKeyPoolWithBuffer(tokens []string, buffer int, logger *slog.Logger) *KeyPool {
 	keys := make([]*APIKey, len(tokens))
 	for i, t := range tokens {
-		keys[i] = &APIKey{Token: t, Remaining: 5000}
+		keys[i] = &APIKey{Token: t, Remaining: 5000, GraphQLRemaining: graphQLPointsPerHour}
 	}
 	if buffer < 1 {
 		buffer = DefaultBuffer
@@ -250,27 +282,162 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 		kp.apiTripped = false
 	}
 
-	// Only update the key's core rate-limit tracking from core (or unknown) responses.
-	// Search and graphql have their own limits; applying their low "remaining"
-	// to the core counter would starve collection prematurely.
+	// Route the update by rate-limit RESOURCE. Core (or unknown — GitLab
+	// sends no resource header) updates the core bucket; graphql updates
+	// the key's SEPARATE graphql bucket (2026-09-01: discarding these was
+	// the pytorch root cause — the pool was graphql-blind and kept handing
+	// graphql-dead keys to GraphQL work). Search responses stay untracked:
+	// applying search's 30/min "remaining" to either bucket would starve
+	// collection prematurely, and the search paths handle their own 403
+	// waits.
 	resource := resp.Header.Get("X-RateLimit-Resource")
-	if resource != "" && resource != "core" {
-		return
-	}
 
 	// GitHub: X-RateLimit-Remaining, X-RateLimit-Reset
 	// GitLab: RateLimit-Remaining, RateLimit-Reset
 	remaining := firstHeader(resp, "X-RateLimit-Remaining", "RateLimit-Remaining")
 	reset := firstHeader(resp, "X-RateLimit-Reset", "RateLimit-Reset")
 
-	if remaining != "" {
-		if r, err := strconv.Atoi(remaining); err == nil {
-			key.Remaining = r
+	switch resource {
+	case "", "core":
+		if remaining != "" {
+			if r, err := strconv.Atoi(remaining); err == nil {
+				key.Remaining = r
+			}
 		}
+		if reset != "" {
+			if epoch, err := strconv.ParseInt(reset, 10, 64); err == nil {
+				key.ResetAt = time.Unix(epoch, 0)
+			}
+		}
+	case "graphql":
+		if remaining != "" {
+			if r, err := strconv.Atoi(remaining); err == nil {
+				key.GraphQLRemaining = r
+			}
+		}
+		if reset != "" {
+			if epoch, err := strconv.ParseInt(reset, 10, 64); err == nil {
+				key.GraphQLResetAt = time.Unix(epoch, 0)
+			}
+		}
+	default:
+		// search etc. — deliberately untracked (see above).
 	}
-	if reset != "" {
-		if epoch, err := strconv.ParseInt(reset, 10, 64); err == nil {
-			key.ResetAt = time.Unix(epoch, 0)
+}
+
+// MarkGraphQLExhausted zeroes a key's graphql budget after an IN-BODY
+// RATE_LIMITED (GitHub reports graphql exhaustion as HTTP 200 with an
+// errors array, so no status-code path catches it). Belt for the header
+// update: the same response normally carries Remaining: 0 too, but the
+// mark must not depend on it. When no reset is known, a short probe
+// window re-checks within minutes.
+func (kp *KeyPool) MarkGraphQLExhausted(key *APIKey) {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	key.GraphQLRemaining = 0
+	if key.GraphQLResetAt.IsZero() || key.GraphQLResetAt.Before(time.Now()) {
+		key.GraphQLResetAt = time.Now().Add(graphQLDepletedProbe)
+	}
+}
+
+// ErrGraphQLBudgetExhausted is returned by GetGraphQLKey under
+// WithGraphQLFastFail when every key's graphql budget is spent — the
+// fast-fail caller's own machinery (batch subdivision, deferred
+// re-claims) is the retry strategy, so blocking until a window reset
+// would defeat it. Classifies as ClassRateLimit.
+var ErrGraphQLBudgetExhausted = &classifiedGraphQLError{
+	class:   ClassRateLimit,
+	message: "graphql budget exhausted on every key (fast-fail checkout refuses to wait for the window reset)",
+}
+
+// GetGraphQLKey returns a key with GRAPHQL budget headroom, round-robin.
+// The graphql bucket is per-USER and independent of core (GetKey's
+// dimension) — a key can be graphql-dead and REST-healthy at once.
+//
+//   - Foreground callers block until some key's graphql window resets
+//     (the same contract GetKey has for core).
+//   - Under WithGraphQLFastFail, an empty pool returns
+//     ErrGraphQLBudgetExhausted immediately instead of waiting.
+//   - Under WithGraphQLBackgroundBudget, keys below
+//     GraphQLBackgroundReserve are refused, so background sweeps leave
+//     headroom for collection; when nothing clears the reserve the
+//     checkout waits (a background ticker pacing itself against budget
+//     scarcity is the desired behavior), or fast-fails if both flags set.
+func (kp *KeyPool) GetGraphQLKey(ctx context.Context) (*APIKey, error) {
+	minBudget := kp.buffer
+	if graphqlBackgroundBudgetEnabled(ctx) {
+		minBudget = GraphQLBackgroundReserve
+	}
+	for {
+		kp.mu.Lock()
+
+		if len(kp.keys) == 0 {
+			kp.mu.Unlock()
+			return nil, fmt.Errorf("no API keys configured — add keys via 'aveloxis add-key' or the database")
+		}
+
+		now := time.Now()
+
+		// Refill keys whose graphql window has reset.
+		for _, k := range kp.keys {
+			if !k.Invalid && k.GraphQLRemaining <= minBudget && !k.GraphQLResetAt.IsZero() && now.After(k.GraphQLResetAt) {
+				k.GraphQLRemaining = graphQLPointsPerHour
+				k.GraphQLResetAt = time.Time{}
+			}
+		}
+
+		n := len(kp.keys)
+		for i := 0; i < n; i++ {
+			idx := (kp.rrIndexGQL + i) % n
+			k := kp.keys[idx]
+			if !k.Invalid && now.After(k.quarantineUntil) && k.GraphQLRemaining > minBudget {
+				kp.rrIndexGQL = (idx + 1) % n
+				kp.mu.Unlock()
+				return k, nil
+			}
+		}
+
+		// Nothing usable. Fast-fail callers get the typed error; everyone
+		// else waits for the earliest graphql reset / quarantine expiry.
+		var earliestWake time.Time
+		allInvalid := true
+		for _, k := range kp.keys {
+			if k.Invalid {
+				continue
+			}
+			allInvalid = false
+			wake := k.GraphQLResetAt
+			if k.quarantineUntil.After(wake) {
+				wake = k.quarantineUntil
+			}
+			if earliestWake.IsZero() || (!wake.IsZero() && wake.Before(earliestWake)) {
+				earliestWake = wake
+			}
+		}
+		kp.mu.Unlock()
+
+		if allInvalid {
+			return nil, fmt.Errorf("%w: all API keys have been invalidated (bad credentials) — check your tokens", ErrAllKeysInvalidated)
+		}
+		if graphqlFastFailEnabled(ctx) {
+			return nil, ErrGraphQLBudgetExhausted
+		}
+
+		if earliestWake.IsZero() {
+			earliestWake = now.Add(30 * time.Second)
+		}
+		wait := time.Until(earliestWake) + time.Duration(rand.IntN(3)+1)*time.Second
+		if wait < time.Second {
+			wait = time.Second
+		}
+		kp.logger.Info("all API keys exhausted for GraphQL, waiting for window reset",
+			"keys", len(kp.keys), "min_budget", minBudget,
+			"until", earliestWake.Format(time.RFC3339), "wait", wait.Truncate(time.Second))
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
 		}
 	}
 }

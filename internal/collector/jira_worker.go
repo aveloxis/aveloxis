@@ -88,6 +88,13 @@ const (
 	jiraDefaultPageSleep = 500 * time.Millisecond
 	// jiraIdleSleep is the claim-miss idle.
 	jiraIdleSleep = 30 * time.Second
+
+	// jiraMaxStalePages: consecutive pages contributing zero NEW
+	// (key, updated) pairs before the scan fails. A boundary-minute
+	// re-list legally repeats up to one full page; two would need a
+	// pathological cohort; three consecutive means the server is
+	// re-serving content regardless of the cursor/offset.
+	jiraMaxStalePages = 3
 )
 
 // Run loops claim→sync until ctx cancels.
@@ -123,12 +130,11 @@ func (w *JiraWorker) RunOnce(ctx context.Context) bool {
 	return true
 }
 
-// syncProject pages one project's incremental window. The JQL window
-// is FIXED at claim time (updated >= checkpoint) and walked by
-// startAt; each page checkpoints AFTER its issues staged (SR-3), so an
-// interruption resumes from proven work. Dataset drift during the walk
-// is caught by the next cycle — the natural-key staging UNIQUE makes
-// overlap a no-op.
+// syncProject pages one project's incremental window with the C2
+// drift-safe walk (window advance by jql cursor; see the comment block
+// inside). Each page checkpoints AFTER its issues staged (SR-3), so an
+// interruption resumes from proven work; re-listed boundary minutes are
+// no-ops under the staging natural key.
 func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 	client := jira.New(job.BaseURL, w.politeEmail)
 	// Copilot round on PR #193, C2: NEVER walk bare offsets over
@@ -146,8 +152,8 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 	//     to the next cycle via the checkpoint;
 	//   - fall back to in-window offsets ONLY for a same-minute cohort
 	//     wider than a page (cursor cannot advance). Drift inside that
-	//     one minute is recoverable, not permanent: the checkpoint
-	//     equals the minute, so the next cycle re-lists all of it.
+	//     one minute carries a documented residual — see the fallback
+	//     branch below.
 	const jqlMinute = "2006-01-02 15:04"
 	ceiling := time.Now().UTC().Truncate(time.Minute)
 	var cursor time.Time
@@ -164,21 +170,19 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 	}
 	startAt := 0 // offset WITHIN the current window (tie-minute fallback only)
 	staged := 0
-	prevCursor, prevStart := time.Time{}, -1
+	// Defensive termination bound (L10 review, F2 — the first version
+	// keyed on an unchanged (cursor, startAt) pair, which every
+	// non-empty page strictly advances: an unfireable gate, while the
+	// rewrite had dropped the old `startAt < total` bound entirely, so a
+	// server re-serving one page regardless of startAt held the claim
+	// forever — 8,779 requests in the reviewer's probe). The signal the
+	// loop cannot self-satisfy is NEWNESS: a page whose every
+	// (key, updated) pair was already seen this scan contributes
+	// nothing; boundary-minute re-lists legally repeat one page, so
+	// only CONSECUTIVE all-stale pages fail the scan.
+	seenThisScan := map[string]struct{}{}
+	stalePages := 0
 	for {
-		// Defensive progress bound: if neither the cursor nor the
-		// in-window offset moved since the last page, the server is
-		// misbehaving (re-serving the same page regardless of startAt) —
-		// fail the scan instead of looping forever.
-		if cursor.Equal(prevCursor) && startAt == prevStart {
-			w.logger.Warn("jira: sync made no progress — failing scan",
-				"project", job.ProjectKey, "cursor", cursor, "start_at", startAt)
-			if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
-				w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
-			}
-			return
-		}
-		prevCursor, prevStart = cursor, startAt
 		jql := buildJQL()
 		if ctx.Err() != nil {
 			// Shutdown mid-sync: pages already staged are checkpointed;
@@ -214,6 +218,7 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 			break // window exhausted — the walk is done
 		}
 		var pageMax time.Time
+		pageNew := 0
 		for _, is := range page.Issues {
 			// Review 2026-08-30 #7 (SR-3): a skipped issue must FAIL the
 			// scan, never `continue` — later issues in the ASC page would
@@ -248,9 +253,27 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 				return
 			}
 			staged++
+			nk := is.Key + "@" + is.Fields.Updated
+			if _, dup := seenThisScan[nk]; !dup {
+				seenThisScan[nk] = struct{}{}
+				pageNew++
+			}
 			if updated.After(pageMax) {
 				pageMax = updated
 			}
+		}
+		if pageNew == 0 {
+			stalePages++
+			if stalePages >= jiraMaxStalePages {
+				w.logger.Warn("jira: consecutive pages contributed nothing new — failing scan (misbehaving server?)",
+					"project", job.ProjectKey, "stale_pages", stalePages, "cursor", cursor, "start_at", startAt)
+				if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
+					w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
+				}
+				return
+			}
+		} else {
+			stalePages = 0
 		}
 		// SR-3: the checkpoint stamps only over rows proven staged.
 		if !pageMax.IsZero() {
@@ -262,16 +285,24 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 		pageMaxMinute := pageMax.UTC().Truncate(time.Minute)
 		if pageMaxMinute.After(cursor) {
 			cursor = pageMaxMinute
-			// Skip the boundary-minute issues this page already staged:
-			// the next window's `updated >=` re-lists that minute.
+			// TRUE startAt=0 (L10 review on this fix, F1): the next
+			// window RE-LISTS the whole boundary minute and the staging
+			// natural key no-ops the duplicates. The first version
+			// "optimized" this to skip the boundary issues already
+			// staged — an offset ASSUMPTION that mid-walk drift defeats
+			// (an issue touched between pages shifts the window left and
+			// the skip count lands past an unseen sibling: a permanent
+			// skip, empirically reproduced by the reviewer).
 			startAt = 0
-			for _, is := range page.Issues {
-				if t, perr := time.Parse(jiraTimeLayout, is.Fields.Updated); perr == nil &&
-					t.UTC().Truncate(time.Minute).Equal(pageMaxMinute) {
-					startAt++
-				}
-			}
 		} else {
+			// Same-minute cohort wider than a page: the cursor cannot
+			// advance at minute precision, so offsets within the fixed
+			// window are the only walk. RESIDUAL (documented, accepted):
+			// drift INSIDE this one minute between its pages can skip a
+			// sibling, and once a later minute advances the checkpoint
+			// the skip is permanent — the exposure is a touch landing in
+			// the page gap of an over-a-page same-minute cohort, orders
+			// of magnitude rarer than the page-boundary hole above.
 			startAt += len(page.Issues)
 		}
 		if w.pageSleep > 0 {
@@ -285,5 +316,8 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 	if err := w.store.CompleteJiraScan(ctx, job.JpsID); err != nil && !errors.Is(err, context.Canceled) {
 		w.logger.Warn("jira: complete failed", "project", job.ProjectKey, "error", err)
 	}
-	w.logger.Info("jira: project synced", "project", job.ProjectKey, "staged", staged)
+	// "staged" = distinct issues this scan; "stage_calls" includes the
+	// deliberate boundary-minute re-lists (natural-key no-ops).
+	w.logger.Info("jira: project synced", "project", job.ProjectKey,
+		"staged", len(seenThisScan), "stage_calls", staged)
 }

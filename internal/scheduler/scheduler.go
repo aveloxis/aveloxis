@@ -1261,11 +1261,15 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		duration.Milliseconds(), outcome.errMsg)
 	if errors.Is(err, context.Canceled) {
 		// Shutdown cut down BOTH the write and its bounded background
-		// retry. The work is stored (idempotent upserts); only the
-		// completion stamp is lost — the row re-queues via the shutdown
-		// lock release and the next cycle re-walks its since window.
+		// retry (the wrapper folds the retry's own failure into a
+		// Canceled-classified wrap). The work is stored (idempotent
+		// upserts); only the completion stamp is lost — the row
+		// re-queues via the shutdown lock release and the next cycle
+		// re-walks its since window. "cause" carries the retry's own
+		// failure detail; deliberately not the "error" key — this is
+		// the classified-shutdown arm, not a failure log.
 		s.logger.Info("job interrupted by shutdown and the stamp retry also failed — the row re-queues via the shutdown lock release",
-			"repo_id", job.RepoID)
+			"repo_id", job.RepoID, "cause", err)
 		return
 	}
 	if err != nil {
@@ -1307,7 +1311,14 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 // comfortably inside ShutdownGrace (default 10s): the worker goroutine
 // still holds its semaphore slot during the retry, so the shutdown
 // drain waits for this bounded attempt before the pool closes.
-const completeJobStampRetryTimeout = 5 * time.Second
+// completeJobStampRetryTimeout bounds the background-context retry of a
+// completion stamp whose first write was cut down by shutdown. A var
+// only as a test seam (the retry-failure path needs a born-expired
+// retry context to be reachable deterministically);
+// TestCompleteJobStampRetryTimeoutProductionValue pins the production
+// value so a shrunken seam can never ship (the pass-50 1ms-allowance
+// lesson).
+var completeJobStampRetryTimeout = 5 * time.Second
 
 // completeJobWithShutdownRetry writes a job's completion stamp, retrying
 // ONCE on a bounded background context when the job ctx was canceled —
@@ -1334,7 +1345,13 @@ func (s *Scheduler) completeJobWithShutdownRetry(ctx context.Context, repoID int
 	rctx, cancel := context.WithTimeout(context.Background(), completeJobStampRetryTimeout)
 	defer cancel()
 	if rerr := write(rctx); rerr != nil {
-		return fmt.Errorf("completion stamp lost to shutdown (bounded retry also failed): %w", rerr)
+		// Preserve the SHUTDOWN classification (L10 review, F3): the
+		// retry's own failure is DeadlineExceeded / pool-closed — never
+		// context.Canceled — so wrapping rerr alone left every call
+		// site's errors.Is(err, context.Canceled) arm dead. The cause
+		// of the whole path IS the shutdown, so the wrap carries
+		// context.Canceled as the sentinel and rerr's detail as text.
+		return fmt.Errorf("completion stamp lost to shutdown (bounded retry also failed: %v): %w", rerr, context.Canceled)
 	}
 	s.logger.Info("completion stamp saved on shutdown retry",
 		"repo_id", repoID, "success", success)
@@ -1349,7 +1366,11 @@ func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
 	err := s.completeJobWithShutdownRetry(ctx, repoID, false, time.Time{},
 		0, 0, 0, 0, 0, 0, 0, 0, errMsg)
 	if errors.Is(err, context.Canceled) {
-		return // shutdown beat the bounded retry too: the row re-queues via the shutdown lock release
+		// Shutdown beat the bounded retry too (the wrapper's wrap keeps
+		// the Canceled classification). Loss is cheap here: a failure
+		// stamp carries zero counts and the re-queued row's next cycle
+		// re-fails and stamps then.
+		return
 	}
 	if err != nil {
 		s.logger.Warn("failed to record job failure", "repo_id", repoID, "error", err)
@@ -1387,7 +1408,10 @@ func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
 	err := s.completeJobWithShutdownRetry(ctx, repoID, true, time.Time{},
 		0, 0, 0, 0, 0, 0, 0, 0, reason)
 	if errors.Is(err, context.Canceled) {
-		return // shutdown beat the bounded retry too: the row re-queues via the shutdown lock release
+		// Shutdown beat the bounded retry too (Canceled classification
+		// preserved by the wrapper's wrap). A skip stamp is cheap to
+		// lose: the re-queued row's next prelim re-derives the skip.
+		return
 	}
 	if err != nil {
 		s.logger.Warn("failed to record job skip", "repo_id", repoID, "error", err)

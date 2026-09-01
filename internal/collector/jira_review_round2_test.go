@@ -30,6 +30,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -236,5 +237,119 @@ func TestJiraSyncHoldsScanCeiling(t *testing.T) {
 		if !strings.Contains(jql, "updated <= '") {
 			t.Errorf("jql %q lacks the scan CEILING — a busy project would chase its own tail forever (new updates keep re-entering the window)", jql)
 		}
+	}
+}
+
+// TestJiraSyncBoundaryDriftStillStagesSibling — the L10 F1 red-proof.
+// Corpus: A@10:00, B@10:30, C@10:30 with pageSize 2. Page 1 serves
+// [A, B]; BETWEEN pages, B is touched (updated → 10:45). The first C2
+// walk advanced the cursor to 10:30 with startAt = count-of-boundary-
+// issues-in-page (1) — an OFFSET ASSUMPTION: the drifted window is
+// [C@10:30, B@10:45], and slicing it at 1 serves [B] only. C was never
+// listed while the checkpoint advanced past 10:30: a PERMANENT skip
+// (empirically reproduced by the reviewer). The fix is TRUE startAt=0
+// on cursor advance — the boundary minute re-lists whole and the
+// staging natural key no-ops the duplicates.
+func TestJiraSyncBoundaryDriftStillStagesSibling(t *testing.T) {
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	requests := 0
+	bUpdated := base.Add(30 * time.Minute) // drifts to 10:45 after page 1
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+		jql := r.URL.Query().Get("jql")
+		cursor := time.Time{}
+		if i := strings.Index(jql, "updated >= '"); i >= 0 {
+			rest := jql[i+len("updated >= '"):]
+			cursor, _ = time.Parse("2006-01-02 15:04", rest[:strings.Index(rest, "'")])
+		}
+		mu.Lock()
+		requests++
+		if requests == 2 {
+			bUpdated = base.Add(45 * time.Minute) // the mid-walk touch
+		}
+		type row struct {
+			key string
+			up  time.Time
+		}
+		all := []row{{"AVD3-A", base}, {"AVD3-B", bUpdated}, {"AVD3-C", base.Add(30 * time.Minute)}}
+		mu.Unlock()
+		// ORDER BY updated ASC over the live window.
+		sort.Slice(all, func(i, j int) bool { return all[i].up.Before(all[j].up) })
+		var keys []string
+		var when []time.Time
+		for _, rw := range all {
+			if !rw.up.Before(cursor) {
+				keys = append(keys, rw.key)
+				when = append(when, rw.up)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, jiraSearchPageAt(keys, when, start))
+	}))
+	defer srv.Close()
+
+	repoID := int64(42)
+	store := &fakeJiraStore{job: &db.JiraProjectJob{JpsID: 7, ProjectKey: "AVD3", BaseURL: srv.URL, RepoID: &repoID}}
+	w := NewJiraWorker(store, 24*time.Hour, "", 2, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.RunOnce(context.Background())
+
+	if !store.completed {
+		t.Fatal("scan must complete")
+	}
+	sawC := false
+	for _, s := range store.staged {
+		if strings.HasPrefix(s, "AVD3-C@") {
+			sawC = true
+		}
+	}
+	if !sawC {
+		t.Fatalf("staged = %v — the boundary-minute sibling C was skipped (the F1 permanent-skip class)", store.staged)
+	}
+}
+
+// TestJiraSyncFailsOnReServingServer — the L10 F2 termination bound.
+// A misbehaving server returns the SAME non-empty page regardless of
+// jql cursor or startAt. The first C2 walk had no reachable bound
+// (the (cursor, startAt) no-progress guard could never fire — every
+// non-empty page strictly advances one of the pair — and the rewrite
+// dropped the old `startAt < total` loop condition): the reviewer's
+// probe ran 8,779 requests before the ctx timeout. The staleness bound
+// keys on what the loop cannot self-satisfy: consecutive pages whose
+// every (key, updated) pair was already seen this scan.
+func TestJiraSyncFailsOnReServingServer(t *testing.T) {
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, jiraSearchPageAt(
+			[]string{"AVRS-1", "AVRS-2"}, []time.Time{base, base.Add(time.Minute)}, 0))
+	}))
+	defer srv.Close()
+
+	repoID := int64(42)
+	store := &fakeJiraStore{job: &db.JiraProjectJob{JpsID: 7, ProjectKey: "AVRS", BaseURL: srv.URL, RepoID: &repoID}}
+	w := NewJiraWorker(store, 24*time.Hour, "", 2, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	done := make(chan struct{})
+	go func() { defer close(done); w.RunOnce(context.Background()) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("walk did not terminate against a re-serving server (the F2 unbounded-loop class)")
+	}
+	if store.completed {
+		t.Fatal("a scan that could not converge must not stamp complete")
+	}
+	if store.failures != 1 {
+		t.Fatalf("failures = %d, want exactly 1 (RecordJiraFailure backoff)", store.failures)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests > 10 {
+		t.Fatalf("requests = %d — the bound must trip within a handful of stale pages", requests)
 	}
 }

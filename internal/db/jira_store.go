@@ -469,6 +469,16 @@ type JiraAPIIssue struct {
 // (strict < against API rows so minute-rounded ties cannot flip
 // API-owned state); this one arbitrates the API writer itself, where
 // equality must pass.
+//
+// Known skew (L10 review, F4): a mail-owned row's updated_at is the
+// notification's sent_at (Pony Mail minute-rounds it, and relay
+// latency runs ahead of Jira's own clock), so it can EXCEED the API
+// snapshot's `updated` for the very change the mail announced. The
+// mail-owned arm above deliberately ignores updated_at entirely
+// (data_source <> 'JIRA API' upgrades unconditionally), so the skew
+// costs nothing here — it only means updated_at on a mail-owned row is
+// a sent_at stamp, not a Jira timestamp, until the first API snapshot
+// rewrites it.
 const jiraAPISnapshotFreshSQL = `(aveloxis_data.issues.data_source <> '` +
 	JiraAPIDataSource + `'
 			                    OR aveloxis_data.issues.updated_at IS NULL

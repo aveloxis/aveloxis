@@ -41,7 +41,19 @@ func (f *fakeJiraStore) ClaimNextJiraProject(context.Context, time.Duration, str
 	return f.job, nil
 }
 func (f *fakeJiraStore) StageJiraIssue(_ context.Context, _ int64, _, issueKey string, updated time.Time, _ *int64, _ []byte) error {
-	f.staged = append(f.staged, issueKey+"@"+updated.UTC().Format("15:04"))
+	// The fake honors the real writer's boundary: jira_staging carries
+	// UNIQUE (project_key, issue_key, updated_at) with ON CONFLICT DO
+	// NOTHING, so a boundary-minute re-list (the C2 window-advance walk
+	// re-lists the cursor minute with startAt=0 on purpose) is a no-op.
+	// A fake that appended duplicates would make every staged-count
+	// assertion depend on how many re-lists the walk performed.
+	nk := issueKey + "@" + updated.UTC().Format("15:04")
+	for _, have := range f.staged {
+		if have == nk {
+			return nil
+		}
+	}
+	f.staged = append(f.staged, nk)
 	return nil
 }
 func (f *fakeJiraStore) CheckpointJiraProject(_ context.Context, _ int64, at time.Time) error {
@@ -97,8 +109,15 @@ func TestJiraWorkerSyncsProjectPages(t *testing.T) {
 	if len(store.staged) != 3 {
 		t.Fatalf("staged = %v, want 3 issues", store.staged)
 	}
-	if len(store.checkpts) != 2 {
-		t.Fatalf("checkpoints = %v, want one per staged page (SR-3)", store.checkpts)
+	// Three pages touch staging: the two data pages plus the boundary
+	// re-list of the final minute (all-duplicate, checkpointing the
+	// same value idempotently) before the offset fallback finds the
+	// window empty.
+	if len(store.checkpts) != 3 {
+		t.Fatalf("checkpoints = %v, want one per staged page incl. the boundary re-list (SR-3)", store.checkpts)
+	}
+	if last := store.checkpts[len(store.checkpts)-1]; !last.Equal(base.Add(time.Hour)) {
+		t.Fatalf("final checkpoint = %v, want the corpus max %v", last, base.Add(time.Hour))
 	}
 	if !store.completed {
 		t.Fatal("scan must complete")

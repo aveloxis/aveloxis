@@ -267,3 +267,33 @@ func TestMailingListProjectionFailureDefersRow(t *testing.T) {
 		t.Fatalf("appliedActions = %v, want the action applied on the replay's successful projection", store.appliedActions)
 	}
 }
+
+// TestFetchAllJiraCommentsHonorsServerCappedPages (Copilot round 3 on
+// PR #193, #1): Jira Server admins can cap the comment endpoint's
+// effective maxResults BELOW the requested size; the response echoes
+// the effective value. A short-page check against the REQUESTED size
+// reads the first server-capped page as final and permanently drops
+// the tail.
+func TestFetchAllJiraCommentsHonorsServerCappedPages(t *testing.T) {
+	const serverCap = 2
+	total := 5
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+		w.Header().Set("Content-Type", "application/json")
+		var rows []string
+		for i := start; i < total && i < start+serverCap; i++ {
+			rows = append(rows, `{"id":"`+strconv.Itoa(9000+i)+`","author":{"name":"u"},"body":"c`+strconv.Itoa(i)+`","created":"2026-05-01T09:00:00.000+0000"}`)
+		}
+		_, _ = io.WriteString(w, `{"startAt":`+strconv.Itoa(start)+`,"maxResults":`+strconv.Itoa(serverCap)+`,"total":`+strconv.Itoa(total)+`,"comments":[`+strings.Join(rows, ",")+`]}`)
+	}))
+	defer srv.Close()
+
+	client := jira.New(srv.URL, "")
+	all, err := fetchAllJiraComments(context.Background(), client, "AVCP-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != total {
+		t.Fatalf("fetched %d comments, want all %d — a server-capped page must not read as the final page", len(all), total)
+	}
+}

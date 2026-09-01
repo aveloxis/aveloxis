@@ -42,9 +42,9 @@ var jiraSearchFields = []string{
 	"resolutiondate", "created", "updated", "comment",
 }
 
-// jiraTimeLayout parses Jira Server timestamps
-// ("2024-01-05T10:00:00.000+0000").
-const jiraTimeLayout = "2006-01-02T15:04:05.000-0700"
+// jiraTimeLayout aliases the jira package's ONE timestamp-layout
+// spelling (SR-17) for this package's parse sites.
+const jiraTimeLayout = jira.TimeLayout
 
 // jiraStore is the worker's narrow store surface.
 type jiraStore interface {
@@ -92,13 +92,6 @@ const (
 	jiraDefaultPageSleep = 500 * time.Millisecond
 	// jiraIdleSleep is the claim-miss idle.
 	jiraIdleSleep = 30 * time.Second
-
-	// jiraMaxStalePages: consecutive pages contributing zero NEW
-	// (key, updated) pairs before the scan fails. A boundary-minute
-	// re-list legally repeats up to one full page; two would need a
-	// pathological cohort; three consecutive means the server is
-	// re-serving content regardless of the cursor/offset.
-	jiraMaxStalePages = 3
 )
 
 // Run loops claim→sync until ctx cancels.
@@ -134,218 +127,89 @@ func (w *JiraWorker) RunOnce(ctx context.Context) bool {
 	return true
 }
 
-// syncProject pages one project's incremental window with the C2
-// drift-safe walk (window advance by jql cursor; see the comment block
-// inside). Each page checkpoints AFTER its issues staged (SR-3), so an
-// interruption resumes from proven work; re-listed boundary minutes are
-// no-ops under the staging natural key.
+// syncProject pages one project's incremental window through the ONE
+// shared drift-safe walk (jira.WalkProjectByUpdated — SR-17; the walk
+// mechanics, ceiling, tie-minute fallback and termination bound live
+// there). Each page checkpoints AFTER its issues staged (SR-3), so an
+// interruption resumes from proven work; re-listed boundary minutes
+// are no-ops under the staging natural key.
 func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 	client := jira.New(job.BaseURL, w.politeEmail)
-	// Copilot round on PR #193, C2: NEVER walk bare offsets over
-	// ORDER BY updated ASC — the window's membership MUTATES during the
-	// scan (an issue touched mid-walk moves later, shifting every offset
-	// left), so offset paging can skip an unseen issue while the
-	// per-page checkpoint advances past it: a PERMANENT skip (the next
-	// cycle's `updated >=` never re-lists it). The drift-safe walk:
-	//   - advance the WINDOW (a jql `updated >=` cursor at Jira's minute
-	//     precision) with startAt=0 after every page whose max updated
-	//     moved the cursor forward — the boundary minute re-lists, which
-	//     the staging natural key makes a no-op;
-	//   - hold a fixed CEILING (`updated <=` the scan-claim minute) so a
-	//     busy project cannot chase its own tail — later updates belong
-	//     to the next cycle via the checkpoint;
-	//   - fall back to in-window offsets ONLY for a same-minute cohort
-	//     wider than a page (cursor cannot advance). Drift inside that
-	//     one minute carries a documented residual — see the fallback
-	//     branch below.
-	const jqlMinute = "2006-01-02 15:04"
-	ceiling := time.Now().UTC().Truncate(time.Minute)
-	var cursor time.Time
+	var since time.Time
 	if job.LastUpdated != nil {
-		cursor = job.LastUpdated.UTC().Truncate(time.Minute)
+		since = *job.LastUpdated
 	}
-	buildJQL := func() string {
-		if cursor.IsZero() {
-			return fmt.Sprintf("project = %s AND updated <= '%s' ORDER BY updated ASC",
-				job.ProjectKey, ceiling.Format(jqlMinute))
-		}
-		return fmt.Sprintf("project = %s AND updated >= '%s' AND updated <= '%s' ORDER BY updated ASC",
-			job.ProjectKey, cursor.Format(jqlMinute), ceiling.Format(jqlMinute))
-	}
-	startAt := 0 // offset WITHIN the current window (tie-minute fallback only)
-	staged := 0
-	// Defensive termination bound (L10 review, F2 — the first version
-	// keyed on an unchanged (cursor, startAt) pair, which every
-	// non-empty page strictly advances: an unfireable gate, while the
-	// rewrite had dropped the old `startAt < total` bound entirely, so a
-	// server re-serving one page regardless of startAt held the claim
-	// forever — 8,779 requests in the reviewer's probe). The signal the
-	// loop cannot self-satisfy is NEWNESS: a page whose every
-	// (key, updated) pair was already seen this scan contributes
-	// nothing; boundary-minute re-lists legally repeat one page, so
-	// only CONSECUTIVE all-stale pages fail the scan.
-	seenThisScan := map[string]struct{}{}
-	stalePages := 0
-	for {
-		jql := buildJQL()
-		if ctx.Err() != nil {
+	stageCalls := 0
+	distinct := map[string]struct{}{}
+	err := client.WalkProjectByUpdated(ctx, job.ProjectKey, jiraSearchFields, w.pageSize, w.pageSleep, since,
+		func(issues []jira.Issue, updated []time.Time) error {
+			var pageMax time.Time
+			for i, is := range issues {
+				// Copilot round 2 on PR #193 (#2): Jira caps the inline
+				// comment block independently of the search page size.
+				// An envelope staged with a truncated block loses the
+				// tail FOREVER (the envelope is immutable and the
+				// incremental JQL never re-serves an unchanged issue),
+				// so completeness is enforced HERE — the worker is the
+				// only layer with a client. The re-fetch walks the
+				// comment endpoint from startAt=0 and REPLACES the
+				// block (never an offset splice of the tail; the
+				// comment upsert dedups by id, so overlap is a no-op).
+				if is.Fields.Comment != nil && is.Fields.Comment.Total > len(is.Fields.Comment.Comments) {
+					all, cerr := fetchAllJiraComments(ctx, client, is.Key, w.pageSleep)
+					if cerr != nil {
+						// SR-3 shape: an issue that cannot stage
+						// COMPLETE must fail the scan — skipping it
+						// would let later issues push the checkpoint
+						// past it.
+						return fmt.Errorf("comment tail fetch for %s (inline %d of %d): %w",
+							is.Key, len(is.Fields.Comment.Comments), is.Fields.Comment.Total, cerr)
+					}
+					is.Fields.Comment.Comments = all
+					is.Fields.Comment.Total = len(all)
+				}
+				envelope, merr := json.Marshal(is)
+				if merr != nil {
+					return fmt.Errorf("envelope marshal for %s: %w", is.Key, merr)
+				}
+				if serr := w.store.StageJiraIssue(ctx, job.JpsID, job.ProjectKey, is.Key, updated[i], job.RepoID, envelope); serr != nil {
+					return fmt.Errorf("stage %s: %w", is.Key, serr)
+				}
+				stageCalls++
+				distinct[is.Key+"@"+is.Fields.Updated] = struct{}{}
+				if updated[i].After(pageMax) {
+					pageMax = updated[i]
+				}
+			}
+			// SR-3: the checkpoint stamps only over rows proven staged.
+			if !pageMax.IsZero() {
+				if cerr := w.store.CheckpointJiraProject(ctx, job.JpsID, pageMax); cerr != nil && !errors.Is(cerr, context.Canceled) {
+					w.logger.Warn("jira: checkpoint failed", "project", job.ProjectKey, "error", cerr)
+				}
+			}
+			return nil
+		})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
 			// Shutdown mid-sync: pages already staged are checkpointed;
 			// no failure recorded (v0.27.28 — cancellation is terminal,
 			// not a strike).
 			return
 		}
-		page, err := client.SearchPage(ctx, jql, jiraSearchFields, startAt, w.pageSize)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return // shutdown, not a failure (v0.27.28)
-			}
-			if platform.ClassifyError(err) == platform.ClassSkip {
-				// Dead project key — disable, never retry (the 5 dead
-				// James sub-keys of the pilot's 191).
-				if !errors.Is(err, context.Canceled) {
-					w.logger.Warn("jira: dead project key — disabling", "project", job.ProjectKey, "error", err)
-				}
-				if derr := w.store.DisableJiraProject(ctx, job.JpsID); derr != nil && !errors.Is(derr, context.Canceled) {
-					w.logger.Warn("jira: disable failed", "project", job.ProjectKey, "error", derr)
-				}
-				return
-			}
-			if !errors.Is(err, context.Canceled) {
-				w.logger.Warn("jira: sync page failed", "project", job.ProjectKey, "start_at", startAt, "error", err)
-			}
-			if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
-				w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
+		if platform.ClassifyError(err) == platform.ClassSkip {
+			// Dead project key — disable, never retry (the 5 dead
+			// James sub-keys of the pilot's 191).
+			w.logger.Warn("jira: dead project key — disabling", "project", job.ProjectKey, "error", err)
+			if derr := w.store.DisableJiraProject(ctx, job.JpsID); derr != nil && !errors.Is(derr, context.Canceled) {
+				w.logger.Warn("jira: disable failed", "project", job.ProjectKey, "error", derr)
 			}
 			return
 		}
-		if len(page.Issues) == 0 {
-			break // window exhausted — the walk is done
+		w.logger.Warn("jira: sync failed", "project", job.ProjectKey, "error", err)
+		if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
+			w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
 		}
-		var pageMax time.Time
-		pageNew := 0
-		for _, is := range page.Issues {
-			// Review 2026-08-30 #7 (SR-3): a skipped issue must FAIL the
-			// scan, never `continue` — later issues in the ASC page would
-			// push pageMax past it and the checkpoint would stamp over
-			// work never staged. Jira's timestamp format is fixed, so a
-			// parse failure is a defect signal; backoff-retry is the
-			// honest arm.
-			updated, perr := time.Parse(jiraTimeLayout, is.Fields.Updated)
-			if perr != nil {
-				w.logger.Warn("jira: unparseable updated timestamp — failing scan", "issue", is.Key, "raw", is.Fields.Updated)
-				if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
-					w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
-				}
-				return
-			}
-			// Copilot round 2 on PR #193 (#2): Jira caps the inline
-			// comment block independently of the search page size. An
-			// envelope staged with a truncated block loses the tail
-			// FOREVER (the envelope is immutable and the incremental JQL
-			// never re-serves an unchanged issue), so completeness is
-			// enforced HERE — the worker is the only layer with a client.
-			// The re-fetch walks the comment endpoint from startAt=0 and
-			// REPLACES the block (never offset-splices the tail — the C2
-			// lesson: offsets over a mutable list drift; the comment
-			// upsert dedups by comment id, so overlap is a no-op).
-			if is.Fields.Comment != nil && is.Fields.Comment.Total > len(is.Fields.Comment.Comments) {
-				all, cerr := fetchAllJiraComments(ctx, client, is.Key, w.pageSleep)
-				if cerr != nil {
-					if errors.Is(cerr, context.Canceled) {
-						return
-					}
-					// SR-3 shape: an issue that cannot stage COMPLETE must
-					// fail the scan — skipping it would let later issues
-					// push the checkpoint past it.
-					w.logger.Warn("jira: comment tail fetch failed — failing scan",
-						"issue", is.Key, "inline", len(is.Fields.Comment.Comments),
-						"total", is.Fields.Comment.Total, "error", cerr)
-					if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
-						w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
-					}
-					return
-				}
-				is.Fields.Comment.Comments = all
-				is.Fields.Comment.Total = len(all)
-			}
-			envelope, merr := json.Marshal(is)
-			if merr != nil {
-				w.logger.Warn("jira: envelope marshal failed — failing scan", "issue", is.Key, "error", merr)
-				if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
-					w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
-				}
-				return
-			}
-			if serr := w.store.StageJiraIssue(ctx, job.JpsID, job.ProjectKey, is.Key, updated, job.RepoID, envelope); serr != nil {
-				if errors.Is(serr, context.Canceled) {
-					return
-				}
-				w.logger.Warn("jira: stage failed", "issue", is.Key, "error", serr)
-				if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
-					w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
-				}
-				return
-			}
-			staged++
-			nk := is.Key + "@" + is.Fields.Updated
-			if _, dup := seenThisScan[nk]; !dup {
-				seenThisScan[nk] = struct{}{}
-				pageNew++
-			}
-			if updated.After(pageMax) {
-				pageMax = updated
-			}
-		}
-		if pageNew == 0 {
-			stalePages++
-			if stalePages >= jiraMaxStalePages {
-				w.logger.Warn("jira: consecutive pages contributed nothing new — failing scan (misbehaving server?)",
-					"project", job.ProjectKey, "stale_pages", stalePages, "cursor", cursor, "start_at", startAt)
-				if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
-					w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
-				}
-				return
-			}
-		} else {
-			stalePages = 0
-		}
-		// SR-3: the checkpoint stamps only over rows proven staged.
-		if !pageMax.IsZero() {
-			if cerr := w.store.CheckpointJiraProject(ctx, job.JpsID, pageMax); cerr != nil && !errors.Is(cerr, context.Canceled) {
-				w.logger.Warn("jira: checkpoint failed", "project", job.ProjectKey, "error", cerr)
-			}
-		}
-		// Advance the window; offsets only within an unmovable minute.
-		pageMaxMinute := pageMax.UTC().Truncate(time.Minute)
-		if pageMaxMinute.After(cursor) {
-			cursor = pageMaxMinute
-			// TRUE startAt=0 (L10 review on this fix, F1): the next
-			// window RE-LISTS the whole boundary minute and the staging
-			// natural key no-ops the duplicates. The first version
-			// "optimized" this to skip the boundary issues already
-			// staged — an offset ASSUMPTION that mid-walk drift defeats
-			// (an issue touched between pages shifts the window left and
-			// the skip count lands past an unseen sibling: a permanent
-			// skip, empirically reproduced by the reviewer).
-			startAt = 0
-		} else {
-			// Same-minute cohort wider than a page: the cursor cannot
-			// advance at minute precision, so offsets within the fixed
-			// window are the only walk. RESIDUAL (documented, accepted):
-			// drift INSIDE this one minute between its pages can skip a
-			// sibling, and once a later minute advances the checkpoint
-			// the skip is permanent — the exposure is a touch landing in
-			// the page gap of an over-a-page same-minute cohort, orders
-			// of magnitude rarer than the page-boundary hole above.
-			startAt += len(page.Issues)
-		}
-		if w.pageSleep > 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(w.pageSleep):
-			}
-		}
+		return
 	}
 	if err := w.store.CompleteJiraScan(ctx, job.JpsID); err != nil && !errors.Is(err, context.Canceled) {
 		w.logger.Warn("jira: complete failed", "project", job.ProjectKey, "error", err)
@@ -353,12 +217,8 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 	// "staged" = distinct issues this scan; "stage_calls" includes the
 	// deliberate boundary-minute re-lists (natural-key no-ops).
 	w.logger.Info("jira: project synced", "project", job.ProjectKey,
-		"staged", len(seenThisScan), "stage_calls", staged)
+		"staged", len(distinct), "stage_calls", stageCalls)
 }
-
-// fetchAllJiraComments walks an issue's FULL comment list off the
-// dedicated endpoint. Termination: a short or empty page ends the walk
-// (the standard pagination terminator — never the mutable Total alone).
 func fetchAllJiraComments(ctx context.Context, client *jira.Client, issueKey string, sleep time.Duration) ([]jira.Comment, error) {
 	const commentPageSize = 100
 	var all []jira.Comment
@@ -368,7 +228,17 @@ func fetchAllJiraComments(ctx context.Context, client *jira.Client, issueKey str
 			return nil, err
 		}
 		all = append(all, page.Comments...)
-		if len(page.Comments) < commentPageSize {
+		if len(page.Comments) == 0 {
+			return all, nil
+		}
+		eff := page.MaxResults
+		if eff <= 0 || eff > commentPageSize {
+			eff = commentPageSize
+		}
+		if len(page.Comments) < eff {
+			return all, nil
+		}
+		if page.Total > 0 && len(all) >= page.Total {
 			return all, nil
 		}
 		start += len(page.Comments)

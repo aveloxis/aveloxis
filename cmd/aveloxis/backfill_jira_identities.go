@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -92,93 +93,120 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 					continue
 				}
 				client := jira.New(c.BaseURL, cfg.Collection.JiraPoliteEmail)
-				jql := fmt.Sprintf("project = %s ORDER BY updated ASC", c.ProjectKey)
-				startAt, total := 0, 1
-				for startAt < total {
-					if ctx.Err() != nil {
-						return fmt.Errorf("interrupted after %d issues — rerun; completed work is idempotent", processed)
-					}
-					page, err := client.SearchPage(ctx, jql, fields, startAt, pageSize)
-					if err != nil {
-						if platform.ClassifyError(err) == platform.ClassSkip {
+				if dryRun {
+					total, terr := client.ProjectTotal(ctx, c.ProjectKey)
+					if terr != nil {
+						if platform.ClassifyError(terr) == platform.ClassSkip {
 							logger.Warn("jira backfill: dead project key skipped", "project", c.ProjectKey)
-							break
+							continue
 						}
-						logger.Warn("jira backfill: project failed — continuing", "project", c.ProjectKey, "error", err)
+						logger.Warn("jira backfill: project failed — continuing", "project", c.ProjectKey, "error", terr)
 						failedProjects++
-						break
+						continue
 					}
-					total = page.Total
-					if dryRun {
-						fmt.Printf("%-16s total=%d\n", c.ProjectKey, total)
-						break
-					}
-					if len(page.Issues) == 0 {
-						break
-					}
-					for _, is := range page.Issues {
-						in := db.JiraAPIIssue{RepoID: *c.RepoID, ExternalKey: is.Key, Title: is.Fields.Summary}
-						in.JiraIssueID, _ = strconv.ParseInt(is.ID, 10, 64)
-						if is.Fields.Status != nil {
-							in.Status = is.Fields.Status.Name
+					fmt.Printf("%-16s total=%d\n", c.ProjectKey, total)
+					continue
+				}
+				// Copilot round 3 on PR #193 (#2): the full-history pass
+				// walks jira.WalkProjectByUpdated — the ONE drift-safe
+				// walk the incremental worker uses (SR-17) — never bare
+				// offsets over `ORDER BY updated ASC`, whose membership
+				// mutates under the walk and can permanently skip an
+				// issue while the command exits 0. Boundary-minute
+				// re-lists are deduped below so counters stay honest.
+				seen := map[string]struct{}{}
+				walkErr := client.WalkProjectByUpdated(ctx, c.ProjectKey, fields, pageSize, pageSleep, time.Time{},
+					func(issues []jira.Issue, updated []time.Time) error {
+						for _, is := range issues {
+							nk := is.Key + "@" + is.Fields.Updated
+							if _, dup := seen[nk]; dup {
+								continue // a re-listed boundary-minute issue
+							}
+							seen[nk] = struct{}{}
+							in := db.JiraAPIIssue{RepoID: *c.RepoID, ExternalKey: is.Key, Title: is.Fields.Summary}
+							in.JiraIssueID, _ = strconv.ParseInt(is.ID, 10, 64)
+							if is.Fields.Status != nil {
+								in.Status = is.Fields.Status.Name
+							}
+							if is.Fields.Resolution != nil {
+								in.Resolution = is.Fields.Resolution.Name
+							}
+							in.Created = jiraParse(is.Fields.Created)
+							in.Updated = jiraParse(is.Fields.Updated)
+							in.ResolutionDate = jiraParse(is.Fields.ResolutionDate)
+							// Copilot round 2 on PR #193 (#4): a resolve/mint
+							// ERROR is not "unresolved" — swallowing it made a
+							// transient DB failure report success while
+							// attribution stayed permanently missing. Failed
+							// issues are skipped (no partial write that a rerun
+							// would then skip re-attributing) and counted; the
+							// command exits nonzero so the operator reruns from
+							// a truthful state. Ambiguity remains the
+							// intentional no-link case.
+							reporter, reporterMinted, rerr := backfillResolveIdentity(ctx, store, is.Fields.Reporter)
+							if rerr != nil {
+								if errors.Is(rerr, context.Canceled) {
+									return rerr // interrupt, not an issue failure
+								}
+								logger.Warn("jira backfill: reporter identity failed — issue skipped", "key", is.Key, "error", rerr)
+								failedIssues++
+								continue
+							}
+							// Suppressed #1: bank the ASSIGNEE identity too —
+							// the Server-era username is the perishable half,
+							// and this one-shot is the banking vehicle. The id
+							// is not written anywhere yet (issues has no
+							// assignee column); the banking is the point.
+							if _, am, aerr := backfillResolveIdentity(ctx, store, is.Fields.Assignee); aerr != nil {
+								if errors.Is(aerr, context.Canceled) {
+									return aerr // interrupt, not an issue failure
+								}
+								logger.Warn("jira backfill: assignee identity failed — issue skipped", "key", is.Key, "error", aerr)
+								failedIssues++
+								continue
+							} else if am {
+								minted++
+							}
+							if reporterMinted {
+								minted++
+							}
+							if reporter != "" {
+								in.ReporterCntrb = reporter
+								linked++
+							}
+							if _, uerr := store.UpsertJiraIssueFromAPI(ctx, in); uerr != nil {
+								if errors.Is(uerr, context.Canceled) {
+									return uerr // interrupt, not an issue failure
+								}
+								logger.Warn("jira backfill: issue upsert failed", "key", is.Key, "error", uerr)
+								failedIssues++
+								continue
+							}
+							processed++
+							if limit > 0 && processed >= limit {
+								return errBackfillLimitHit
+							}
 						}
-						if is.Fields.Resolution != nil {
-							in.Resolution = is.Fields.Resolution.Name
-						}
-						in.Created = jiraParse(is.Fields.Created)
-						in.Updated = jiraParse(is.Fields.Updated)
-						in.ResolutionDate = jiraParse(is.Fields.ResolutionDate)
-						// Copilot round 2 on PR #193 (#4): a resolve/mint
-						// ERROR is not "unresolved" — swallowing it made a
-						// transient DB failure report success while
-						// attribution stayed permanently missing. Failed
-						// issues are skipped (no partial write that a rerun
-						// would then skip re-attributing) and counted; the
-						// command exits nonzero so the operator reruns from
-						// a truthful state. Ambiguity remains the
-						// intentional no-link case.
-						reporter, reporterMinted, rerr := backfillResolveIdentity(ctx, store, is.Fields.Reporter)
-						if rerr != nil {
-							logger.Warn("jira backfill: reporter identity failed — issue skipped", "key", is.Key, "error", rerr)
-							failedIssues++
-							continue
-						}
-						// Suppressed #1: bank the ASSIGNEE identity too —
-						// the Server-era username is the perishable half,
-						// and this one-shot is the banking vehicle. The id
-						// is not written anywhere yet (issues has no
-						// assignee column); the banking is the point.
-						if _, am, aerr := backfillResolveIdentity(ctx, store, is.Fields.Assignee); aerr != nil {
-							logger.Warn("jira backfill: assignee identity failed — issue skipped", "key", is.Key, "error", aerr)
-							failedIssues++
-							continue
-						} else if am {
-							minted++
-						}
-						if reporterMinted {
-							minted++
-						}
-						if reporter != "" {
-							in.ReporterCntrb = reporter
-							linked++
-						}
-						if _, uerr := store.UpsertJiraIssueFromAPI(ctx, in); uerr != nil {
-							logger.Warn("jira backfill: issue upsert failed", "key", is.Key, "error", uerr)
-							failedIssues++
-							continue
-						}
-						processed++
-						if limit > 0 && processed >= limit {
-							fmt.Printf("hit --limit after %d issues (linked=%d minted=%d); rerun to continue\n", processed, linked, minted)
-							return nil
-						}
-					}
-					startAt += len(page.Issues)
-					if startAt < total {
-						select {
-						case <-ctx.Done():
-						case <-time.After(pageSleep):
-						}
+						return nil
+					})
+				if walkErr != nil {
+					switch {
+					case errors.Is(walkErr, errBackfillLimitHit):
+						// Copilot round 3 on PR #193 (#3): there is NO
+						// persisted resume marker — a rerun starts from
+						// the beginning, so "rerun to continue" was a lie
+						// (the same --limit reprocesses the same N and
+						// stops at the same point). Say what is true.
+						fmt.Printf("hit --limit after %d issues (linked=%d minted=%d) — canary complete. Rerun WITHOUT --limit for the full pass; it restarts from the beginning and every write is idempotent.\n",
+							processed, linked, minted)
+						return nil
+					case errors.Is(walkErr, context.Canceled):
+						return fmt.Errorf("interrupted after %d issues — rerun; completed work is idempotent", processed)
+					case platform.ClassifyError(walkErr) == platform.ClassSkip:
+						logger.Warn("jira backfill: dead project key skipped", "project", c.ProjectKey)
+					default:
+						logger.Warn("jira backfill: project failed — continuing", "project", c.ProjectKey, "error", walkErr)
+						failedProjects++
 					}
 				}
 			}
@@ -196,11 +224,14 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 	return cmd
 }
 
+// errBackfillLimitHit aborts the walk cleanly when --limit is reached.
+var errBackfillLimitHit = errors.New("backfill limit hit")
+
 func jiraParse(raw string) time.Time {
 	if raw == "" {
 		return time.Time{}
 	}
-	t, err := time.Parse("2006-01-02T15:04:05.000-0700", raw)
+	t, err := time.Parse(jira.TimeLayout, raw)
 	if err != nil {
 		return time.Time{}
 	}

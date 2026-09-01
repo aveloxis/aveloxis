@@ -80,3 +80,31 @@ func TestBackfillJiraIdentitiesShape(t *testing.T) {
 		t.Error("backfill-jira-identities must NOT carry a command-wide base-url flag — each registration's base_url wins")
 	}
 }
+
+// TestBackfillJiraIdentitiesUsesTheSharedDriftSafeWalk (Copilot round
+// 3 on PR #193, #2): the full-history pass walks
+// jira.WalkProjectByUpdated — the ONE drift-safe walk (SR-17). A
+// hand-spelled offset walk over `ORDER BY updated ASC` is the
+// permanent-skip class the round-2 C2 fix removed from the worker;
+// this round found the CLI re-spelling it.
+func TestBackfillJiraIdentitiesUsesTheSharedDriftSafeWalk(t *testing.T) {
+	src := srctest.Read(t, "cmd/aveloxis/backfill_jira_identities.go")
+	code := srctest.StripGoComments(src)
+	if !strings.Contains(code, "WalkProjectByUpdated(") {
+		t.Error("backfill-jira-identities must walk jira.WalkProjectByUpdated")
+	}
+	for _, banned := range []string{
+		"startAt +=",           // the offset walk
+		"ORDER BY updated ASC", // a hand-built jql (the walk owns it)
+		".SearchPage(",         // raw paging (ProjectTotal covers dry-run)
+	} {
+		if strings.Contains(code, banned) {
+			t.Errorf("backfill_jira_identities.go must not contain %q — the shared walk owns the paging", banned)
+		}
+	}
+	// Round 3 #3: the --limit message must tell the truth — there is
+	// no persisted cursor, so a rerun restarts from the beginning.
+	if !strings.Contains(src, "WITHOUT --limit") {
+		t.Error("the --limit message must direct the operator to rerun WITHOUT --limit (no resume marker exists; 'rerun to continue' was a lie)")
+	}
+}

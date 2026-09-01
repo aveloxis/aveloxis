@@ -1347,7 +1347,11 @@ command refuses to run before `aveloxis register-jira-projects` has
 created them. Assignee identities are banked into `jira_identities`
 alongside reporters (the username is the perishable half). A
 resolve/mint failure skips that issue and the command exits nonzero —
-rerun to retry; all writes are idempotent.
+rerun to retry; all writes are idempotent. The full-history pass uses
+the same drift-safe walk as the incremental worker (window cursor +
+fixed ceiling — never bare offsets over a mutable ordering), and
+carries NO resume marker: `--limit` is a canary only, and a rerun
+restarts from the beginning (harmless — every write is idempotent).
 Measured cost: ~2–3 polite hours for the full 844,401-issue ASF
 corpus at 1,000 issues per search call.
 

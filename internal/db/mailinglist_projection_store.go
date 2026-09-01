@@ -241,14 +241,39 @@ func (s *PostgresStore) BridgeEmailToIssue(ctx context.Context, issueID, repoID,
 	}); err != nil {
 		return fmt.Errorf("bridge email to issue: %w", err)
 	}
+	if err := s.recountIssueComments(ctx, issueID); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// recountIssueComments recomputes issues.comment_count as the LOGICAL
+// comment count (SR-17: the one spelling; BridgeEmailToIssue and both
+// notification-link writers call it). Copilot round 6 on PR #193
+// (suppressed #1): the raw issue_message_ref count double-counted
+// every matched native/notification pair — the native Jira comment
+// AND its [Commented] notification are both bridged (mail lineage is
+// kept forever), so refs whose message is a notification SUPERSEDED
+// by a link (its email_message row carries linked_msg_id) are
+// excluded from the count. Probes ride idx_email_message_ref_msg_id.
+func (s *PostgresStore) recountIssueComments(ctx context.Context, issueID int64) error {
 	if err := s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `
 			UPDATE aveloxis_data.issues
-			SET comment_count = (SELECT count(*) FROM aveloxis_data.issue_message_ref WHERE issue_id = $1)
+			SET comment_count = (
+				SELECT count(*) FROM aveloxis_data.issue_message_ref imr
+				WHERE imr.issue_id = $1
+				  AND NOT EXISTS (
+					SELECT 1 FROM aveloxis_data.email_message_ref emr
+					JOIN aveloxis_data.email_message em
+					  ON em.email_message_id = emr.email_message_id
+					WHERE emr.msg_id = imr.msg_id
+					  AND em.linked_msg_id IS NOT NULL))
 			WHERE issue_id = $1`, issueID)
 		return err
 	}); err != nil {
-		return fmt.Errorf("bridge email to issue: recount: %w", err)
+		return fmt.Errorf("recount issue comments: %w", err)
 	}
 	return nil
 }

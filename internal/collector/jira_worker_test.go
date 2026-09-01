@@ -80,7 +80,7 @@ func (f *fakeJiraStore) CheckpointJiraProject(_ context.Context, _ int64, at tim
 	f.checkpts = append(f.checkpts, at)
 	return nil
 }
-func (f *fakeJiraStore) CompleteJiraScan(_ context.Context, _ int64) error {
+func (f *fakeJiraStore) CompleteJiraScan(_ context.Context, _ int64, _ time.Time) error {
 	if f.completeErr != nil {
 		err := f.completeErr
 		f.completeErr = nil
@@ -89,7 +89,10 @@ func (f *fakeJiraStore) CompleteJiraScan(_ context.Context, _ int64) error {
 	f.completed = true
 	return nil
 }
-func (f *fakeJiraStore) RecordJiraFailure(context.Context, int64) error { f.failures++; return nil }
+func (f *fakeJiraStore) RecordJiraFailure(context.Context, int64, time.Time) error {
+	f.failures++
+	return nil
+}
 func (f *fakeJiraStore) DisableJiraProject(context.Context, int64) error {
 	f.disabled = true
 	return nil

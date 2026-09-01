@@ -438,3 +438,39 @@ func TestJiraCompletionFailureRecordsFailureNotSuccess(t *testing.T) {
 		t.Fatalf("released = %v — the failure record already cleared the lock; release is the fallback only", store.released)
 	}
 }
+
+// TestCommentedNotificationTriggersReverseLink (Copilot round 6 on
+// PR #193, suppressed #2): when the mailing-list processor projects a
+// [Commented] notification, it must attempt the reverse comment link
+// (the native twin may already be collected — nothing else ever
+// revisits the pair).
+func TestCommentedNotificationTriggersReverseLink(t *testing.T) {
+	rg := int64(3)
+	store := &fakeProcStore{
+		primaryRepoID: 42, primaryRepoOK: true,
+		rows: []db.StagedMailingListRow{{MlsID: 1, RepoGroupID: &rg, Message: model.MailingListStagedMessage{
+			MessageID: "m-cmt@x", ListAddress: "dev@arrow.apache.org", SenderEmail: "jira@apache.org",
+			Subject:  "[jira] [Commented] (ARROW-88) note",
+			MsgClass: mailinglist.ClassIssueEvent, ExternalKey: "ARROW-88", Body: "n",
+		}}},
+	}
+	p := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := p.DrainList(context.Background(), 7); err != nil {
+		t.Fatalf("DrainList: %v", err)
+	}
+	if len(store.reverseLinks) != 1 {
+		t.Fatalf("reverseLinks = %v, want exactly one attempt for the [Commented] projection", store.reverseLinks)
+	}
+	// A non-Commented action must NOT probe.
+	store2 := &fakeProcStore{
+		primaryRepoID: 42, primaryRepoOK: true,
+		rows: []db.StagedMailingListRow{mlRetryRow(1)}, // [Resolved]
+	}
+	p2 := NewMailingListProcessor(store2, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := p2.DrainList(context.Background(), 7); err != nil {
+		t.Fatalf("DrainList: %v", err)
+	}
+	if len(store2.reverseLinks) != 0 {
+		t.Fatalf("reverseLinks = %v for a [Resolved] notification, want none", store2.reverseLinks)
+	}
+}

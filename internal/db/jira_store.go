@@ -142,30 +142,52 @@ func (s *PostgresStore) CheckpointJiraProject(ctx context.Context, jpsID int64, 
 	return nil
 }
 
-// CompleteJiraScan releases the claim and stamps the run.
-func (s *PostgresStore) CompleteJiraScan(ctx context.Context, jpsID int64) error {
-	_, err := s.pool.Exec(ctx, `
+// ErrJiraClaimLost means a claim-owned write matched zero rows: the
+// scan outlived the 2-hour stale window and another worker re-claimed
+// the project. The outcome belongs to the NEW holder — the stale
+// owner must record nothing (Copilot round 6 on PR #193).
+var ErrJiraClaimLost = errors.New("jira claim ownership lost (re-claimed after the stale window)")
+
+// CompleteJiraScan releases the claim and stamps the run,
+// OWNERSHIP-QUALIFIED by the claim's own jps_locked_at (round 6): an
+// unqualified write from a >2h stale owner would clear the
+// replacement worker's lock and stamp a run the new holder is still
+// earning. CheckpointJiraProject stays deliberately UNQUALIFIED (a
+// monotonic GREATEST over staged work — valid from any holder;
+// qualifying it would discard the stale owner's genuinely-staged
+// pages), as does DisableJiraProject (a dead key is a property of the
+// project, not of the claim).
+func (s *PostgresStore) CompleteJiraScan(ctx context.Context, jpsID int64, lockedAt time.Time) error {
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.jira_project_serve
 		SET jps_locked_at = NULL, jps_last_run = NOW(),
 		    jps_failed_attempts = 0, jps_last_failed_at = NULL
-		WHERE jps_id = $1`, jpsID)
+		WHERE jps_id = $1 AND jps_locked_at = $2`, jpsID, lockedAt)
 	if err != nil {
 		return fmt.Errorf("complete jira scan %d: %w", jpsID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrJiraClaimLost
 	}
 	return nil
 }
 
 // RecordJiraFailure releases the claim and advances the quadratic
-// backoff counter.
-func (s *PostgresStore) RecordJiraFailure(ctx context.Context, jpsID int64) error {
-	_, err := s.pool.Exec(ctx, `
+// backoff counter — ownership-qualified like CompleteJiraScan (a
+// stale owner must neither clear the new holder's lock nor strike
+// the project for a scan it no longer owns).
+func (s *PostgresStore) RecordJiraFailure(ctx context.Context, jpsID int64, lockedAt time.Time) error {
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.jira_project_serve
 		SET jps_locked_at = NULL,
 		    jps_failed_attempts = COALESCE(jps_failed_attempts, 0) + 1,
 		    jps_last_failed_at = NOW()
-		WHERE jps_id = $1`, jpsID)
+		WHERE jps_id = $1 AND jps_locked_at = $2`, jpsID, lockedAt)
 	if err != nil {
 		return fmt.Errorf("record jira failure %d: %w", jpsID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrJiraClaimLost
 	}
 	return nil
 }
@@ -721,11 +743,12 @@ func (s *PostgresStore) UpsertJiraComment(ctx context.Context, in JiraAPIComment
 	if err != nil {
 		return 0, fmt.Errorf("upsert jira comment %d: %w", in.CommentID, err)
 	}
-	if err := s.BridgeEmailToIssue(ctx, in.IssueID, in.RepoID, msgID); err != nil {
-		return 0, fmt.Errorf("bridge jira comment %d: %w", in.CommentID, err)
-	}
-	// Collection-time notification link: nearest unlinked [Commented]
-	// notification for the same issue within ±2 minutes.
+	// Collection-time notification link RUNS BEFORE the bridge
+	// (Copilot round 6, suppressed #1): the bridge recounts
+	// comment_count with superseded notifications excluded, so the
+	// link must land first or the count reads one high until the
+	// issue's next recount. Nearest unlinked [Commented] notification
+	// for the same issue within ±2 minutes.
 	// Replay-idempotent (Copilot round on PR #193, C5): once ANY
 	// notification is linked to this comment's msg_id, the step is a
 	// no-op — a re-drained envelope must not consume a NEIGHBORING
@@ -749,5 +772,52 @@ func (s *PostgresStore) UpsertJiraComment(ctx context.Context, in JiraAPIComment
 	if lerr != nil {
 		return 0, fmt.Errorf("link notification for comment %d: %w", in.CommentID, lerr)
 	}
+	if err := s.BridgeEmailToIssue(ctx, in.IssueID, in.RepoID, msgID); err != nil {
+		return 0, fmt.Errorf("bridge jira comment %d: %w", in.CommentID, err)
+	}
 	return msgID, nil
+}
+
+// LinkCommentNotificationToNative is the REVERSE arrival order of
+// UpsertJiraComment's collection-time link (Copilot round 6 on
+// PR #193, suppressed #2): when a [Commented] notification is
+// projected AFTER Jira collection already stored the native comment,
+// nothing used to revisit the pair — linked_msg_id stayed NULL
+// forever and both records counted. This stamps the notification's
+// linked_msg_id from the nearest UNCLAIMED native Jira comment on the
+// same issue within ±2 minutes, then recounts the issue so the
+// superseded notification leaves comment_count. Both orders now
+// converge (C3a's promise at the comment level). Idempotent: fires
+// only while the notification is unlinked, and never claims a native
+// comment another notification already linked.
+func (s *PostgresStore) LinkCommentNotificationToNative(ctx context.Context, emailMessageID, issueID int64, sentAt time.Time) error {
+	var tag pgconn.CommandTag
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		var werr error
+		tag, werr = s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.email_message em SET linked_msg_id = native.msg_id
+		FROM (
+			SELECT m.msg_id FROM aveloxis_data.messages m
+			JOIN aveloxis_data.issue_message_ref imr
+			  ON imr.msg_id = m.msg_id AND imr.issue_id = $2
+			WHERE m.platform_id = $4
+			  AND m.msg_kind = $5
+			  AND m.msg_timestamp BETWEEN $3::timestamptz - INTERVAL '2 minutes'
+			                          AND $3::timestamptz + INTERVAL '2 minutes'
+			  AND NOT EXISTS (
+				SELECT 1 FROM aveloxis_data.email_message claimed
+				WHERE claimed.linked_msg_id = m.msg_id)
+			ORDER BY abs(extract(epoch FROM (m.msg_timestamp - $3::timestamptz)))
+			LIMIT 1) native
+		WHERE em.email_message_id = $1 AND em.linked_msg_id IS NULL`,
+			emailMessageID, issueID, sentAt, JiraPlatformID, MsgKindComment)
+		return werr
+	})
+	if err != nil {
+		return fmt.Errorf("reverse-link comment notification %d: %w", emailMessageID, err)
+	}
+	if tag.RowsAffected() > 0 {
+		return s.recountIssueComments(ctx, issueID)
+	}
+	return nil
 }

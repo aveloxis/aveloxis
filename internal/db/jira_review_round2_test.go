@@ -8,6 +8,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -407,5 +408,193 @@ func TestReleaseJiraClaimOwnershipAndReclaim(t *testing.T) {
 	again, err := store.ClaimNextJiraProject(ctx, 24*time.Hour, "_AVJRC1")
 	if err != nil || again == nil {
 		t.Fatalf("released project must be immediately reclaimable, got %v (err=%v)", again, err)
+	}
+}
+
+// TestCommentCountConvergesBothArrivalOrders (Copilot round 6 on
+// PR #193, suppressed #1 + #2): a matched native/notification pair is
+// ONE logical comment. The recount excludes superseded notifications
+// (refs whose email_message carries linked_msg_id), and BOTH arrival
+// orders converge — notification-first links at UpsertJiraComment
+// (which now links BEFORE bridging so its own recount sees the
+// supersession), native-first links via
+// LinkCommentNotificationToNative when the notification is projected
+// later.
+func TestCommentCountConvergesBothArrivalOrders(t *testing.T) {
+	store, ctx := emConnect(t)
+	t.Cleanup(store.Close)
+	repoID := jr2Repo(t, store, "ccount")
+	rgls := xsRegisterList(t, store, "_avjr2_cc", "dev@avjr2cc.apache.org", "apache_ponymail")
+	// This test creates email_message_ref rows, which jr2Repo's cleanup
+	// does not know about — without deleting them first, the RESTRICT
+	// FK silently blocks the email_message delete and the surviving
+	// row's PRESERVED linked_msg_id poisons the next run's order-A arm
+	// (the v0.27.76 residue class; t.Cleanup LIFO runs this before
+	// jr2Repo's chain).
+	t.Cleanup(func() {
+		ctx := context.Background()
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.email_message_ref WHERE email_message_id IN
+			(SELECT email_message_id FROM aveloxis_data.email_message WHERE repo_id = $1)`, repoID)
+	})
+
+	created := time.Date(2026, 5, 1, 10, 0, 30, 0, time.UTC)
+	commentCount := func(issueID int64) int {
+		t.Helper()
+		var n int
+		if err := store.pool.QueryRow(ctx, `SELECT COALESCE(comment_count, 0)
+			FROM aveloxis_data.issues WHERE issue_id = $1`, issueID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	projectNotification := func(key, mid string, issueID int64) int64 {
+		t.Helper()
+		em := &model.EmailMessage{
+			RglsID: &rgls, RepoID: &repoID, PlatformID: model.Platform(MailingListPlatformID),
+			MLSystem: "apache_ponymail", ListAddress: "dev@avjr2cc.apache.org",
+			MessageIDHeader: mid, Subject: "[jira] [Commented] (" + key + ") t",
+			SenderEmail: "jira@apache.org", SentAt: created.Truncate(time.Minute),
+			MsgClass: "issue_event", LinkedExternalKey: key,
+			ProjectedKind: "mailing_list_only", DataSource: "dev@avjr2cc.apache.org",
+		}
+		emID, err := store.UpsertEmailMessage(ctx, em)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msgID, err := store.UpsertMailingListMessageBody(ctx, repoID, mid, "dev@avjr2cc.apache.org",
+			"jira@apache.org", "notification body", created.Truncate(time.Minute), nil, "clean", "qs-v1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.InsertEmailMessageRef(ctx, emID, msgID, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.BridgeEmailToIssue(ctx, issueID, repoID, msgID); err != nil {
+			t.Fatal(err)
+		}
+		return emID
+	}
+
+	// ORDER A: notification first, native second.
+	issueA, err := store.UpsertJiraIssueFromAPI(ctx, JiraAPIIssue{RepoID: repoID,
+		ExternalKey: "AVJRCC-1", JiraIssueID: 441, Title: "t", Status: "Open",
+		Created: created, Updated: created})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectNotification("AVJRCC-1", "<cc-a1@example>", issueA)
+	if n := commentCount(issueA); n != 1 {
+		t.Fatalf("order A after notification: comment_count = %d, want 1", n)
+	}
+	if _, err := store.UpsertJiraComment(ctx, JiraAPIComment{RepoID: repoID, IssueID: issueA,
+		ExternalKey: "AVJRCC-1", CommentID: 988001, Body: "hello",
+		Created: created, Updated: created}); err != nil {
+		t.Fatal(err)
+	}
+	if n := commentCount(issueA); n != 1 {
+		t.Fatalf("order A after native twin: comment_count = %d, want 1 — the matched pair is ONE logical comment", n)
+	}
+
+	// ORDER B: native first, notification second.
+	issueB, err := store.UpsertJiraIssueFromAPI(ctx, JiraAPIIssue{RepoID: repoID,
+		ExternalKey: "AVJRCC-2", JiraIssueID: 442, Title: "t", Status: "Open",
+		Created: created, Updated: created})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertJiraComment(ctx, JiraAPIComment{RepoID: repoID, IssueID: issueB,
+		ExternalKey: "AVJRCC-2", CommentID: 988002, Body: "hello",
+		Created: created, Updated: created}); err != nil {
+		t.Fatal(err)
+	}
+	emB := projectNotification("AVJRCC-2", "<cc-b1@example>", issueB)
+	if n := commentCount(issueB); n != 2 {
+		t.Fatalf("order B pre-link: comment_count = %d, want 2 (nothing linked yet)", n)
+	}
+	if err := store.LinkCommentNotificationToNative(ctx, emB, issueB, created.Truncate(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	var linked *int64
+	if err := store.pool.QueryRow(ctx, `SELECT linked_msg_id FROM aveloxis_data.email_message
+		WHERE email_message_id = $1`, emB).Scan(&linked); err != nil {
+		t.Fatal(err)
+	}
+	if linked == nil {
+		t.Fatal("order B: the reverse link must claim the already-collected native comment")
+	}
+	if n := commentCount(issueB); n != 1 {
+		t.Fatalf("order B after reverse link: comment_count = %d, want 1", n)
+	}
+	// Idempotent replay of the reverse link.
+	if err := store.LinkCommentNotificationToNative(ctx, emB, issueB, created.Truncate(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if n := commentCount(issueB); n != 1 {
+		t.Fatalf("reverse-link replay changed comment_count to %d", n)
+	}
+}
+
+// TestJiraClaimOwnedWritesRefuseStaleOwner (Copilot round 6 on
+// PR #193, active): after the 2h stale window a claim can be STOLEN;
+// the original worker's completion/failure writes must then match
+// zero rows and surface ErrJiraClaimLost instead of clearing the
+// replacement's lock or stamping outcomes it no longer owns.
+func TestJiraClaimOwnedWritesRefuseStaleOwner(t *testing.T) {
+	store, ctx := emConnect(t)
+	t.Cleanup(store.Close)
+	repoID := jr2Repo(t, store, "steal")
+
+	base := "https://issues.example.org/jira"
+	var existingBase string
+	_ = store.pool.QueryRow(ctx, `SELECT base_url FROM aveloxis_ops.jira_project_serve LIMIT 1`).Scan(&existingBase)
+	if existingBase != "" {
+		base = existingBase
+	}
+	cleanup := func() {
+		store.pool.Exec(context.Background(),
+			`DELETE FROM aveloxis_ops.jira_project_serve WHERE project_key = '_AVJRO1'`)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	if err := store.RegisterJiraProject(ctx, "_AVJRO1", base, &repoID); err != nil {
+		t.Fatal(err)
+	}
+	job1, err := store.ClaimNextJiraProject(ctx, 24*time.Hour, "_AVJRO1")
+	if err != nil || job1 == nil {
+		t.Fatalf("claim1: %v %v", job1, err)
+	}
+	// The scan outlives the stale window; a second worker steals it.
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_ops.jira_project_serve
+		SET jps_locked_at = NOW() - INTERVAL '3 hours' WHERE jps_id = $1`, job1.JpsID); err != nil {
+		t.Fatal(err)
+	}
+	job2, err := store.ClaimNextJiraProject(ctx, 24*time.Hour, "_AVJRO1")
+	if err != nil || job2 == nil {
+		t.Fatalf("steal claim: %v %v", job2, err)
+	}
+
+	if err := store.CompleteJiraScan(ctx, job1.JpsID, job1.LockedAt); !errors.Is(err, ErrJiraClaimLost) {
+		t.Fatalf("stale owner's completion = %v, want ErrJiraClaimLost", err)
+	}
+	if err := store.RecordJiraFailure(ctx, job1.JpsID, job1.LockedAt); !errors.Is(err, ErrJiraClaimLost) {
+		t.Fatalf("stale owner's failure record = %v, want ErrJiraClaimLost", err)
+	}
+	var locked *time.Time
+	var lastRun *time.Time
+	var fails int
+	if err := store.pool.QueryRow(ctx, `SELECT jps_locked_at, jps_last_run, COALESCE(jps_failed_attempts, 0)
+		FROM aveloxis_ops.jira_project_serve WHERE jps_id = $1`, job1.JpsID).Scan(&locked, &lastRun, &fails); err != nil {
+		t.Fatal(err)
+	}
+	if locked == nil || !locked.Equal(job2.LockedAt) {
+		t.Fatalf("lock = %v, want the REPLACEMENT holder's stamp %v intact", locked, job2.LockedAt)
+	}
+	if lastRun != nil || fails != 0 {
+		t.Fatalf("stale owner recorded outcomes (last_run=%v fails=%d) — it owns nothing", lastRun, fails)
+	}
+	// The rightful holder's writes work.
+	if err := store.CompleteJiraScan(ctx, job2.JpsID, job2.LockedAt); err != nil {
+		t.Fatalf("rightful completion: %v", err)
 	}
 }

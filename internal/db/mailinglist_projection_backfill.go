@@ -154,6 +154,14 @@ func (s *PostgresStore) BackfillKeyedIssueProjection(ctx context.Context, batch 
 				return n, fmt.Errorf("backfill keyed: bridge: %w", err)
 			}
 		}
+		// Round 6 (suppressed #2): the heal path converges the reverse
+		// arrival order too — a re-projected [Commented] notification
+		// claims its already-collected native twin.
+		if trackerActionFromSubject(r.subject) == "Commented" {
+			if err := s.LinkCommentNotificationToNative(ctx, r.emID, issueID, r.sentAt); err != nil {
+				return n, fmt.Errorf("backfill keyed: reverse comment link: %w", err)
+			}
+		}
 		if _, err := s.pool.Exec(ctx, `
 			UPDATE aveloxis_data.email_message
 			SET linked_issue_id = $2, projected_kind = 'issue'

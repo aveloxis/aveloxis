@@ -426,3 +426,47 @@ func TestMarkCoreExhaustedZeroesAndSetsProbeWindow(t *testing.T) {
 		t.Fatalf("ResetAt = %v, want a short future probe window", key.ResetAt)
 	}
 }
+
+// TestHTTPRateLimitExhaustionClassifiesRateLimit (Copilot round 6 on
+// PR #193, suppressed #3): a retry budget exhausted by PERSISTENT
+// HTTP throttling (429, or 403 + Retry-After) must classify
+// ClassRateLimit like an in-body RATE_LIMITED exhaustion does —
+// downstream deferral/subdivision keys on the class, and the
+// pre-fix return wore ErrTransient because only the in-body branch
+// recorded attempt state.
+func TestHTTPRateLimitExhaustionClassifiesRateLimit(t *testing.T) {
+	restore := SetGraphQLSleepForTest(func(context.Context, time.Duration) error { return nil })
+	defer restore()
+
+	for _, tc := range []struct {
+		name  string
+		serve func(w http.ResponseWriter)
+	}{
+		{"429", func(w http.ResponseWriter) {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+		}},
+		{"403-retry-after", func(w http.ResponseWriter) {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusForbidden)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				tc.serve(w)
+			}))
+			defer server.Close()
+
+			keys := NewKeyPool([]string{"k"}, rlTestLogger())
+			c := NewHTTPClient(server.URL, keys, rlTestLogger(), AuthGitHub)
+			var got map[string]any
+			err := c.GraphQL(WithGraphQLFastFail(context.Background()), "{ hello }", nil, &got)
+			if err == nil {
+				t.Fatal("persistent throttling must exhaust to an error")
+			}
+			if ClassifyError(err) != ClassRateLimit {
+				t.Fatalf("ClassifyError = %v (%v), want ClassRateLimit — deferral/subdivision keys on the class", ClassifyError(err), err)
+			}
+		})
+	}
+}

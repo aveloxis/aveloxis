@@ -51,6 +51,7 @@ type fakeProcStore struct {
 	cleanBodies    []string
 	cleanRules     []string
 	appliedActions []string
+	reverseLinks   []string // "emailMessageID->issueID" — round-6 reverse comment links
 	listedSystems  []string // systems DrainOnce asked ListsWithStaging for
 
 	// Round-3 deferral knobs: fail the first N calls of the
@@ -167,6 +168,11 @@ func (f *fakeProcStore) LinkOrCreateIssueFromEmail(_ context.Context, _ int64, e
 	f.createdIssues = append(f.createdIssues, externalKey)
 	return f.nextIssueID, true, nil // CREATE
 }
+func (f *fakeProcStore) LinkCommentNotificationToNative(_ context.Context, emailMessageID, issueID int64, _ time.Time) error {
+	f.reverseLinks = append(f.reverseLinks, fmt.Sprintf("%d->%d", emailMessageID, issueID))
+	return nil
+}
+
 func (f *fakeProcStore) BridgeEmailToIssue(_ context.Context, issueID, _, _ int64) error {
 	f.bridgedIssues = append(f.bridgedIssues, issueID)
 	return nil

@@ -84,10 +84,17 @@ Email-row specifics:
 GitBox mirror mail's native twin is on `email_message.linked_*`
 (v0.28.20); a Jira notification's native comment twin is on
 `email_message.linked_msg_id` (v0.29.0, stamped at collection time by
-the pilot-validated ±2-minute match). Read-time precedence is always
-`native > notification`, keyed off those stamps — never off fuzzy
-matching at query time. The ~7% of notifications with no native match
-are the sole record and still count.
+the pilot-validated ±2-minute match — in EITHER arrival order: the
+Jira collector links the nearest unlinked notification when it stores
+a native comment, and the mailing-list projection reverse-links the
+nearest unclaimed native comment when a `[Commented]` notification
+arrives after Jira collection already ran). Read-time precedence is
+always `native > notification`, keyed off those stamps — never off
+fuzzy matching at query time. `issues.comment_count` counts LOGICAL
+comments: refs whose message is a superseded notification (its
+`email_message` row carries `linked_msg_id`) are excluded from the
+recount, so a matched pair counts once. The ~7% of notifications
+with no native match are the sole record and still count.
 
 ## jira_identities — the banked usernames
 

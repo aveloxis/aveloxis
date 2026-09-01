@@ -348,6 +348,14 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
 				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait)
+				// Copilot round 6 on PR #193 (suppressed #3): HTTP
+				// throttling must feed the same final-attempt state as
+				// in-body RATE_LIMITED, or a persistently-throttled
+				// exhaustion wears ErrTransient and downstream
+				// deferral/subdivision never sees ClassRateLimit.
+				lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
+					message: "graphql secondary rate limit (403 + Retry-After) persisted through the retry budget"}
+				rateLimitAttempt = attempt
 				if err := retrySleep(ctx, wait, attempt, budget); err != nil {
 					return err
 				}
@@ -355,6 +363,9 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			}
 			if resp.Header.Get("X-RateLimit-Remaining") == "0" {
 				c.logger.Info("graphql rate limit exhausted", "url", url)
+				lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
+					message: "graphql rate limit exhausted (403 + X-RateLimit-Remaining: 0) persisted through the retry budget"}
+				rateLimitAttempt = attempt
 				continue
 			}
 			return fmt.Errorf("%w: %s (graphql 403, not a rate limit)", ErrForbidden, url)
@@ -363,6 +374,12 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			_ = resp.Body.Close()
 			wait := parseRetryAfter(resp)
 			c.logger.Info("graphql 429 rate limited", "url", url, "wait", wait)
+			// Round 6 suppressed #3: see the 403 branch — HTTP 429 is
+			// explicit throttling and must win the exhaustion class
+			// when it lands on the final attempt.
+			lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
+				message: "graphql 429 rate limited persisted through the retry budget"}
+			rateLimitAttempt = attempt
 			if err := retrySleep(ctx, wait, attempt, budget); err != nil {
 				return err
 			}

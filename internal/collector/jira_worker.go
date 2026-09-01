@@ -51,8 +51,8 @@ type jiraStore interface {
 	ClaimNextJiraProject(ctx context.Context, cadence time.Duration, keyFilter string) (*db.JiraProjectJob, error)
 	StageJiraIssue(ctx context.Context, jpsID int64, projectKey, issueKey string, issueUpdated time.Time, repoID *int64, envelope []byte) error
 	CheckpointJiraProject(ctx context.Context, jpsID int64, lastUpdated time.Time) error
-	CompleteJiraScan(ctx context.Context, jpsID int64) error
-	RecordJiraFailure(ctx context.Context, jpsID int64) error
+	CompleteJiraScan(ctx context.Context, jpsID int64, lockedAt time.Time) error
+	RecordJiraFailure(ctx context.Context, jpsID int64, lockedAt time.Time) error
 	DisableJiraProject(ctx context.Context, jpsID int64) error
 	ReleaseJiraClaim(ctx context.Context, jpsID int64, lockedAt time.Time) error
 }
@@ -236,7 +236,7 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 			return
 		}
 		w.logger.Warn("jira: sync failed", "project", job.ProjectKey, "error", err)
-		if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil {
+		if ferr := w.store.RecordJiraFailure(ctx, job.JpsID, job.LockedAt); ferr != nil {
 			if errors.Is(ferr, context.Canceled) {
 				// The failure record (which also clears the lock) was
 				// itself cut down by shutdown — release so the claim
@@ -244,11 +244,28 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 				w.releaseClaimBestEffort(job)
 				return
 			}
+			if errors.Is(ferr, db.ErrJiraClaimLost) {
+				// Round 6: the scan outlived the stale window and was
+				// re-claimed — the outcome belongs to the new holder;
+				// record nothing, release nothing.
+				w.logger.Info("jira: claim ownership lost mid-scan — outcomes belong to the new holder",
+					"project", job.ProjectKey)
+				return
+			}
 			w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
 		}
 		return
 	}
-	if err := w.store.CompleteJiraScan(ctx, job.JpsID); err != nil {
+	if err := w.store.CompleteJiraScan(ctx, job.JpsID, job.LockedAt); err != nil {
+		if errors.Is(err, db.ErrJiraClaimLost) {
+			// Round 6: a >2h scan whose claim was stolen must not stamp
+			// the run, clear the new holder's lock, or log success —
+			// the staged work stands (idempotent) and the new holder
+			// owns the outcome.
+			w.logger.Info("jira: claim ownership lost before completion — outcomes belong to the new holder",
+				"project", job.ProjectKey, "staged", len(distinct))
+			return
+		}
 		if errors.Is(err, context.Canceled) {
 			// A canceled completion write leaves the lock held AND must
 			// not log "synced" — release and stop; the checkpointed work
@@ -266,8 +283,12 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 		// way — the retried scan re-runs a cheap window.
 		w.logger.Warn("jira: complete failed — recording failure, nothing stamped as synced",
 			"project", job.ProjectKey, "error", err)
-		if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil {
-			w.releaseClaimBestEffort(job)
+		if ferr := w.store.RecordJiraFailure(ctx, job.JpsID, job.LockedAt); ferr != nil {
+			if !errors.Is(ferr, db.ErrJiraClaimLost) {
+				// Claim lost = the new holder owns the lock; anything
+				// else = free the claim best-effort.
+				w.releaseClaimBestEffort(job)
+			}
 		}
 		return
 	}

@@ -47,6 +47,7 @@ type mlProcessorStore interface {
 	// CREATE a synthetic one; bridge the email as a comment.
 	LinkOrCreateIssueFromEmail(ctx context.Context, repoID int64, externalKey, title, body, dataSource string, reporterID *string, createdAt time.Time) (int64, bool, error)
 	BridgeEmailToIssue(ctx context.Context, issueID, repoID, msgID int64) error
+	LinkCommentNotificationToNative(ctx context.Context, emailMessageID, issueID int64, sentAt time.Time) error
 	// #1 thread-inheritance: the issue a thread is already projected onto, so a
 	// non-keyed reply/discussion in that thread attaches to the same issue.
 	FindIssueForThread(ctx context.Context, threadRoot string, repoID int64) (int64, bool, error)
@@ -538,6 +539,22 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	if projectedIssueID > 0 {
 		if err := p.store.BridgeEmailToIssue(ctx, projectedIssueID, repoID, msgID); err != nil {
 			return err
+		}
+		// Copilot round 6 on PR #193 (suppressed #2): the reverse
+		// arrival order — when Jira collection stored the native
+		// comment FIRST, this notification must claim it now, or
+		// linked_msg_id stays NULL forever and both records count.
+		// Transient failure defers the row like the other
+		// projection-side writers (round 2, #3).
+		if mailinglist.TrackerActionFromSubject(m.Subject) == "Commented" {
+			if lerr := p.store.LinkCommentNotificationToNative(ctx, emID, projectedIssueID, m.SentAt); lerr != nil {
+				if errors.Is(lerr, context.Canceled) {
+					return lerr
+				}
+				p.logger.Warn("mailing-list processor: reverse comment link failed — row deferred for retry",
+					"issue_id", projectedIssueID, "error", lerr)
+				deferRetry = lerr
+			}
 		}
 	}
 	return deferRetryOutcome(deferRetry)

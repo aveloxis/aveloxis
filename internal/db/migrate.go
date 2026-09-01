@@ -1547,6 +1547,17 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_msg
 		ON aveloxis_data.email_message (linked_msg_id) WHERE linked_msg_id IS NOT NULL`)
 
+	// Copilot round 6 on PR #193 (suppressed #1): the comment_count
+	// recount excludes superseded notifications by probing
+	// email_message_ref BY msg_id — previously unindexed (flagged as a
+	// follow-up in v0.28.15; heal-messages' bridge-delete path is the
+	// other reader). NON-partial: the probe is a join variable
+	// (v0.27.54 — a partial predicate cannot serve it). Migration-only
+	// per SR-2 (1.7 GB table on the mailing-list deployment).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_email_message_ref_msg_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_ref_msg_id
+		ON aveloxis_data.email_message_ref (msg_id)`)
+
 	// v0.23.0: contributor_login_history table + backfill. Closes the
 	// rename-audit gap documented as a v0.22.13 limitation
 	// ("Intermediate login history is NOT stored"). The CREATE TABLE

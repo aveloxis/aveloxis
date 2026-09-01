@@ -458,6 +458,22 @@ type JiraAPIIssue struct {
 	ReporterCntrb  string // linked cntrb_id, "" = unresolved
 }
 
+// jiraAPISnapshotFreshSQL is the API-over-API freshness predicate used
+// by every state-writing arm of UpsertJiraIssueFromAPI's conflict
+// update (SR-17: one spelling). TRUE when the stored row may take this
+// snapshot's state: mail-owned rows always upgrade (rank 2 over 3);
+// API-owned rows advance only on equal-or-newer snapshots (equal keeps
+// idempotent same-snapshot replays; strictly-older replays are the C3
+// stale-regression shape). Deliberately NOT shared with
+// trackerActionEventGuardSQL: that guard arbitrates MAIL-rank writers
+// (strict < against API rows so minute-rounded ties cannot flip
+// API-owned state); this one arbitrates the API writer itself, where
+// equality must pass.
+const jiraAPISnapshotFreshSQL = `(aveloxis_data.issues.data_source <> '` +
+	JiraAPIDataSource + `'
+			                    OR aveloxis_data.issues.updated_at IS NULL
+			                    OR aveloxis_data.issues.updated_at <= EXCLUDED.updated_at)`
+
 // UpsertJiraIssueFromAPI is the C3a rank-2 writer. One logical ticket
 // = one issues row keyed (repo_id, external_key):
 //
@@ -513,13 +529,24 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 			-- guarded per column below. (This arm only ever fires for the
 			-- synthetic id: a native forge row has a different
 			-- platform_issue_id and is LINKed by the key probe instead.)
-			issue_title = CASE WHEN NULLIF(EXCLUDED.issue_title, '') IS NOT NULL
+			--
+			-- FRESHNESS guard on the state trio (Copilot round on
+			-- PR #193, C3): the drain continues past one failed envelope,
+			-- so a STALE staged snapshot can replay AFTER a newer one
+			-- already applied — an API-owned row only advances on
+			-- equal-or-newer API snapshots (equal keeps same-snapshot
+			-- replays idempotent); a mail-owned row is always upgraded.
+			issue_title = CASE WHEN `+jiraAPISnapshotFreshSQL+`
+			                    AND NULLIF(EXCLUDED.issue_title, '') IS NOT NULL
 			                   THEN EXCLUDED.issue_title ELSE aveloxis_data.issues.issue_title END,
-			issue_state = EXCLUDED.issue_state,
-			closed_at = EXCLUDED.closed_at,
+			issue_state = CASE WHEN `+jiraAPISnapshotFreshSQL+`
+			                   THEN EXCLUDED.issue_state ELSE aveloxis_data.issues.issue_state END,
+			closed_at = CASE WHEN `+jiraAPISnapshotFreshSQL+`
+			                 THEN EXCLUDED.closed_at ELSE aveloxis_data.issues.closed_at END,
 			jira_issue_id = COALESCE(EXCLUDED.jira_issue_id, aveloxis_data.issues.jira_issue_id),
 			reporter_id = COALESCE(EXCLUDED.reporter_id, aveloxis_data.issues.reporter_id),
-			updated_at = EXCLUDED.updated_at,
+			updated_at = CASE WHEN `+jiraAPISnapshotFreshSQL+`
+			                  THEN EXCLUDED.updated_at ELSE aveloxis_data.issues.updated_at END,
 			data_source = '`+JiraAPIDataSource+`',
 			data_collection_date = NOW()
 		RETURNING issue_id`,
@@ -616,6 +643,10 @@ func (s *PostgresStore) UpsertJiraComment(ctx context.Context, in JiraAPIComment
 	}
 	// Collection-time notification link: nearest unlinked [Commented]
 	// notification for the same issue within ±2 minutes.
+	// Replay-idempotent (Copilot round on PR #193, C5): once ANY
+	// notification is linked to this comment's msg_id, the step is a
+	// no-op — a re-drained envelope must not consume a NEIGHBORING
+	// unlinked notification in the same two-minute window.
 	_, lerr := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.email_message SET linked_msg_id = $1
 		WHERE email_message_id = (
@@ -627,7 +658,10 @@ func (s *PostgresStore) UpsertJiraComment(ctx context.Context, in JiraAPIComment
 			  AND sent_at BETWEEN $4::timestamptz - INTERVAL '2 minutes'
 			                  AND $4::timestamptz + INTERVAL '2 minutes'
 			ORDER BY abs(extract(epoch FROM (sent_at - $4::timestamptz)))
-			LIMIT 1)`,
+			LIMIT 1)
+		  AND NOT EXISTS (
+			SELECT 1 FROM aveloxis_data.email_message linkedem
+			WHERE linkedem.linked_msg_id = $1)`,
 		msgID, in.RepoID, in.ExternalKey, in.Created)
 	if lerr != nil {
 		return 0, fmt.Errorf("link notification for comment %d: %w", in.CommentID, lerr)

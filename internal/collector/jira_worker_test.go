@@ -11,7 +11,6 @@ package collector
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -59,30 +58,34 @@ func (f *fakeJiraStore) DisableJiraProject(context.Context, int64) error {
 	return nil
 }
 
-func jiraSearchPage(keys []string, total int, base time.Time) string {
-	var issues []string
-	for i, k := range keys {
-		up := base.Add(time.Duration(i) * time.Minute).Format("2006-01-02T15:04:05.000-0700")
-		issues = append(issues, fmt.Sprintf(
-			`{"id":"%d","key":"%s","fields":{"summary":"s","status":{"name":"Open"},"updated":"%s","created":"%s"}}`,
-			1000+i, k, up, up))
-	}
-	return fmt.Sprintf(`{"startAt":0,"maxResults":%d,"total":%d,"issues":[%s]}`,
-		len(keys), total, strings.Join(issues, ","))
-}
-
 // TestJiraWorkerSyncsProjectPages — two pages staged, checkpoint
 // advances per page, scan completes.
 func TestJiraWorkerSyncsProjectPages(t *testing.T) {
 	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	// Window-keyed server (the C2 drift-safe walk requests by jql cursor
+	// with startAt=0, not bare offsets): the full corpus is three issues
+	// across two minutes; each request serves the remaining set for its
+	// cursor, sliced by startAt like real Jira.
+	all := []string{"AVJW-1", "AVJW-2", "AVJW-3"}
+	ups := []time.Time{base, base.Add(time.Minute), base.Add(time.Hour)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
-		w.Header().Set("Content-Type", "application/json")
-		if start == 0 {
-			_, _ = io.WriteString(w, jiraSearchPage([]string{"AVJW-1", "AVJW-2"}, 3, base))
-			return
+		jql := r.URL.Query().Get("jql")
+		cursor := time.Time{}
+		if i := strings.Index(jql, "updated >= '"); i >= 0 {
+			rest := jql[i+len("updated >= '"):]
+			cursor, _ = time.Parse("2006-01-02 15:04", rest[:strings.Index(rest, "'")])
 		}
-		_, _ = io.WriteString(w, jiraSearchPage([]string{"AVJW-3"}, 3, base.Add(time.Hour)))
+		var keys []string
+		var when []time.Time
+		for i := range all {
+			if !ups[i].Before(cursor) {
+				keys = append(keys, all[i])
+				when = append(when, ups[i])
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, jiraSearchPageAt(keys, when, start))
 	}))
 	defer srv.Close()
 

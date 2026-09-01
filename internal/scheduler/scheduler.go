@@ -1255,16 +1255,16 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	if !outcome.success && forgetRepoETags != nil {
 		forgetRepoETags()
 	}
-	err = s.store.CompleteJob(ctx, job.RepoID, outcome.success, startAnchor, s.cfg.Collection.RecollectAfterDuration(),
+	err = s.completeJobWithShutdownRetry(ctx, job.RepoID, outcome.success, startAnchor,
 		outcome.issues, outcome.prs, outcome.messages, outcome.events,
 		outcome.releases, outcome.contributors, outcome.commits,
-		duration.Milliseconds(), outcome.errMsg,
-		s.cfg.Collection.ArchivedRecollectMultiplierValue())
+		duration.Milliseconds(), outcome.errMsg)
 	if errors.Is(err, context.Canceled) {
-		// The work is stored (idempotent upserts); only the completion
-		// stamp is lost — the row re-queues via the shutdown lock release and the next
-		// cycle re-walks its since window.
-		s.logger.Info("job interrupted by shutdown after its work was stored — only the completion stamp is lost; the row re-queues via the shutdown lock release",
+		// Shutdown cut down BOTH the write and its bounded background
+		// retry. The work is stored (idempotent upserts); only the
+		// completion stamp is lost — the row re-queues via the shutdown
+		// lock release and the next cycle re-walks its since window.
+		s.logger.Info("job interrupted by shutdown and the stamp retry also failed — the row re-queues via the shutdown lock release",
 			"repo_id", job.RepoID)
 		return
 	}
@@ -1302,16 +1302,54 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	)
 }
 
+// completeJobStampRetryTimeout bounds the background-context retry of a
+// completion stamp whose first write was cut down by shutdown. Must fit
+// comfortably inside ShutdownGrace (default 10s): the worker goroutine
+// still holds its semaphore slot during the retry, so the shutdown
+// drain waits for this bounded attempt before the pool closes.
+const completeJobStampRetryTimeout = 5 * time.Second
+
+// completeJobWithShutdownRetry writes a job's completion stamp, retrying
+// ONCE on a bounded background context when the job ctx was canceled —
+// the scancode completion-stamp pattern (pass 38). Production loss this
+// prevents (2026-08-22, found in the pytorch RCA): a 66h collection
+// FINISHED during a serve restart, the CompleteJob write raced the
+// shutdown, and the run went unrecorded — last_collected stayed at
+// June 6, and re-earning the stamp costs a multi-day re-run. The row
+// data (counts, last_error, the last_collected anchor) is exactly the
+// bookkeeping the whole run was for; the retry is cheap and covered by
+// the shutdown drain.
+func (s *Scheduler) completeJobWithShutdownRetry(ctx context.Context, repoID int64, success bool, startAnchor time.Time,
+	issues, prs, messages, events, releases, contributors, commits int, durationMS int64, errMsg string) error {
+	write := func(ctx context.Context) error {
+		return s.store.CompleteJob(ctx, repoID, success, startAnchor, s.cfg.Collection.RecollectAfterDuration(),
+			issues, prs, messages, events, releases, contributors, commits,
+			durationMS, errMsg,
+			s.cfg.Collection.ArchivedRecollectMultiplierValue())
+	}
+	err := write(ctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		return err
+	}
+	rctx, cancel := context.WithTimeout(context.Background(), completeJobStampRetryTimeout)
+	defer cancel()
+	if rerr := write(rctx); rerr != nil {
+		return fmt.Errorf("completion stamp lost to shutdown (bounded retry also failed): %w", rerr)
+	}
+	s.logger.Info("completion stamp saved on shutdown retry",
+		"repo_id", repoID, "success", success)
+	return nil
+}
+
 // failJob marks a job as failed with zero counts. Used for early exits
 // (repo lookup failure, unknown platform, etc.).
 func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
 	// v0.27.139: zero startedAt — a failed pass never advances
 	// last_collected (due_at still advances for retry pacing).
-	err := s.store.CompleteJob(ctx, repoID, false, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
-		0, 0, 0, 0, 0, 0, 0, 0, errMsg,
-		s.cfg.Collection.ArchivedRecollectMultiplierValue())
+	err := s.completeJobWithShutdownRetry(ctx, repoID, false, time.Time{},
+		0, 0, 0, 0, 0, 0, 0, 0, errMsg)
 	if errors.Is(err, context.Canceled) {
-		return // shutdown, not a failure: the row re-queues via the shutdown lock release
+		return // shutdown beat the bounded retry too: the row re-queues via the shutdown lock release
 	}
 	if err != nil {
 		s.logger.Warn("failed to record job failure", "repo_id", repoID, "error", err)
@@ -1346,11 +1384,10 @@ func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
 	// not stamp "successfully collected at T" (the cohort-A class:
 	// stamped-but-empty passes convert the next round to incremental
 	// over history that was never gathered).
-	err := s.store.CompleteJob(ctx, repoID, true, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
-		0, 0, 0, 0, 0, 0, 0, 0, reason,
-		s.cfg.Collection.ArchivedRecollectMultiplierValue())
+	err := s.completeJobWithShutdownRetry(ctx, repoID, true, time.Time{},
+		0, 0, 0, 0, 0, 0, 0, 0, reason)
 	if errors.Is(err, context.Canceled) {
-		return // shutdown, not a failure: the row re-queues via the shutdown lock release
+		return // shutdown beat the bounded retry too: the row re-queues via the shutdown lock release
 	}
 	if err != nil {
 		s.logger.Warn("failed to record job skip", "repo_id", repoID, "error", err)

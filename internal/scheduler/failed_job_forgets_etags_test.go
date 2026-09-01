@@ -18,7 +18,7 @@ import (
 func TestFailedJobForgetsTheRepoETags(t *testing.T) {
 	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/scheduler.go"), "func (s *Scheduler) runJob("))
 	call := strings.Index(body, "forgetRepoETags()")
-	complete := strings.Index(body, "s.store.CompleteJob(")
+	complete := strings.Index(body, "s.completeJobWithShutdownRetry(")
 	outcome := strings.Index(body, "outcome := s.buildOutcome(")
 	if call < 0 || complete < 0 || outcome < 0 || call > complete || call < outcome {
 		t.Fatalf("runJob must call forgetRepoETags() after the outcome is known and BEFORE CompleteJob (the row flips to queued there; a Boost claim in the window would walk the cached pages): outcome=%d call=%d complete=%d", outcome, call, complete)

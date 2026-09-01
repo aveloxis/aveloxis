@@ -360,8 +360,8 @@ func (s *PostgresStore) BackfillSyntheticJiraState(ctx context.Context, logger *
 		    updated_at = l.at
 		FROM (
 			SELECT em.repo_id, em.linked_external_key AS key,
-			       (array_agg(`+trackerActionSubjectSQL+` ORDER BY em.sent_at DESC))[1] AS action,
-			       (array_agg(em.sent_at ORDER BY em.sent_at DESC))[1] AS at
+			       (array_agg(`+trackerActionSubjectSQL+` ORDER BY em.sent_at DESC, em.email_message_id DESC))[1] AS action,
+			       (array_agg(em.sent_at ORDER BY em.sent_at DESC, em.email_message_id DESC))[1] AS at
 			FROM aveloxis_data.email_message em
 			WHERE em.email_message_id > $1 AND em.email_message_id <= $2
 			  AND em.msg_class = 'issue_event'

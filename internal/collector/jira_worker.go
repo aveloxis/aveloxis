@@ -131,16 +131,55 @@ func (w *JiraWorker) RunOnce(ctx context.Context) bool {
 // overlap a no-op.
 func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 	client := jira.New(job.BaseURL, w.politeEmail)
-	jql := fmt.Sprintf("project = %s ORDER BY updated ASC", job.ProjectKey)
+	// Copilot round on PR #193, C2: NEVER walk bare offsets over
+	// ORDER BY updated ASC — the window's membership MUTATES during the
+	// scan (an issue touched mid-walk moves later, shifting every offset
+	// left), so offset paging can skip an unseen issue while the
+	// per-page checkpoint advances past it: a PERMANENT skip (the next
+	// cycle's `updated >=` never re-lists it). The drift-safe walk:
+	//   - advance the WINDOW (a jql `updated >=` cursor at Jira's minute
+	//     precision) with startAt=0 after every page whose max updated
+	//     moved the cursor forward — the boundary minute re-lists, which
+	//     the staging natural key makes a no-op;
+	//   - hold a fixed CEILING (`updated <=` the scan-claim minute) so a
+	//     busy project cannot chase its own tail — later updates belong
+	//     to the next cycle via the checkpoint;
+	//   - fall back to in-window offsets ONLY for a same-minute cohort
+	//     wider than a page (cursor cannot advance). Drift inside that
+	//     one minute is recoverable, not permanent: the checkpoint
+	//     equals the minute, so the next cycle re-lists all of it.
+	const jqlMinute = "2006-01-02 15:04"
+	ceiling := time.Now().UTC().Truncate(time.Minute)
+	var cursor time.Time
 	if job.LastUpdated != nil {
-		// Jira JQL minute precision; the >= re-lists the checkpoint
-		// minute — idempotent under the staging natural key.
-		jql = fmt.Sprintf("project = %s AND updated >= '%s' ORDER BY updated ASC",
-			job.ProjectKey, job.LastUpdated.UTC().Format("2006-01-02 15:04"))
+		cursor = job.LastUpdated.UTC().Truncate(time.Minute)
 	}
-	startAt, total := 0, 1
+	buildJQL := func() string {
+		if cursor.IsZero() {
+			return fmt.Sprintf("project = %s AND updated <= '%s' ORDER BY updated ASC",
+				job.ProjectKey, ceiling.Format(jqlMinute))
+		}
+		return fmt.Sprintf("project = %s AND updated >= '%s' AND updated <= '%s' ORDER BY updated ASC",
+			job.ProjectKey, cursor.Format(jqlMinute), ceiling.Format(jqlMinute))
+	}
+	startAt := 0 // offset WITHIN the current window (tie-minute fallback only)
 	staged := 0
-	for startAt < total {
+	prevCursor, prevStart := time.Time{}, -1
+	for {
+		// Defensive progress bound: if neither the cursor nor the
+		// in-window offset moved since the last page, the server is
+		// misbehaving (re-serving the same page regardless of startAt) —
+		// fail the scan instead of looping forever.
+		if cursor.Equal(prevCursor) && startAt == prevStart {
+			w.logger.Warn("jira: sync made no progress — failing scan",
+				"project", job.ProjectKey, "cursor", cursor, "start_at", startAt)
+			if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil && !errors.Is(ferr, context.Canceled) {
+				w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
+			}
+			return
+		}
+		prevCursor, prevStart = cursor, startAt
+		jql := buildJQL()
 		if ctx.Err() != nil {
 			// Shutdown mid-sync: pages already staged are checkpointed;
 			// no failure recorded (v0.27.28 — cancellation is terminal,
@@ -171,9 +210,8 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 			}
 			return
 		}
-		total = page.Total
 		if len(page.Issues) == 0 {
-			break
+			break // window exhausted — the walk is done
 		}
 		var pageMax time.Time
 		for _, is := range page.Issues {
@@ -220,8 +258,23 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 				w.logger.Warn("jira: checkpoint failed", "project", job.ProjectKey, "error", cerr)
 			}
 		}
-		startAt += len(page.Issues)
-		if w.pageSleep > 0 && startAt < total {
+		// Advance the window; offsets only within an unmovable minute.
+		pageMaxMinute := pageMax.UTC().Truncate(time.Minute)
+		if pageMaxMinute.After(cursor) {
+			cursor = pageMaxMinute
+			// Skip the boundary-minute issues this page already staged:
+			// the next window's `updated >=` re-lists that minute.
+			startAt = 0
+			for _, is := range page.Issues {
+				if t, perr := time.Parse(jiraTimeLayout, is.Fields.Updated); perr == nil &&
+					t.UTC().Truncate(time.Minute).Equal(pageMaxMinute) {
+					startAt++
+				}
+			}
+		} else {
+			startAt += len(page.Issues)
+		}
+		if w.pageSleep > 0 {
 			select {
 			case <-ctx.Done():
 				return

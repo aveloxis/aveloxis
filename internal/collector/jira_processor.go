@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -116,30 +117,29 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (int, error) {
 }
 
 // resolveIdentity links or mints per the SR-6 matrix; "" = stays
-// unattributed (ambiguous, nameless, or a resolution error — logged,
-// never fatal to the envelope).
-func (p *JiraProcessor) resolveIdentity(ctx context.Context, u *jira.User) string {
+// unattributed (ambiguous or nameless — those are ANSWERS). A
+// resolve/mint ERROR fails the envelope (Copilot round on PR #193, C1;
+// SR-5): the pre-fix swallow let the issue/comment write succeed with
+// empty attribution and the staging row be marked processed — a
+// transient DB error permanently lost the attribution AND the raw Jira
+// identity the mint banks. Failing keeps the row staged for the next
+// drain.
+func (p *JiraProcessor) resolveIdentity(ctx context.Context, u *jira.User) (string, error) {
 	if u == nil || u.Name == "" {
-		return ""
+		return "", nil
 	}
 	cntrb, _, ambiguous, err := p.store.ResolveJiraIdentity(ctx, u.Name, u.Key, u.DisplayName)
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			p.logger.Warn("jira: identity resolve failed", "jira_name", u.Name, "error", err)
-		}
-		return ""
+		return "", fmt.Errorf("resolve jira identity %q: %w", u.Name, err)
 	}
 	if cntrb != "" || ambiguous {
-		return cntrb
+		return cntrb, nil
 	}
 	minted, err := p.store.MintJiraContributor(ctx, u.Name, u.DisplayName)
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			p.logger.Warn("jira: contributor mint failed", "jira_name", u.Name, "error", err)
-		}
-		return ""
+		return "", fmt.Errorf("mint jira contributor %q: %w", u.Name, err)
 	}
-	return minted
+	return minted, nil
 }
 
 func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envelope []byte) error {
@@ -158,12 +158,16 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 			jiraID = jiraID*10 + int64(ch-'0')
 		}
 	}
+	reporter, err := p.resolveIdentity(ctx, is.Fields.Reporter)
+	if err != nil {
+		return err // stays staged — a transient identity failure must retry (C1)
+	}
 	in := db.JiraAPIIssue{
 		RepoID:        repoID,
 		ExternalKey:   is.Key,
 		JiraIssueID:   jiraID,
 		Title:         is.Fields.Summary,
-		ReporterCntrb: p.resolveIdentity(ctx, is.Fields.Reporter),
+		ReporterCntrb: reporter,
 	}
 	if is.Fields.Status != nil {
 		in.Status = is.Fields.Status.Name
@@ -195,6 +199,10 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 			"returned", len(is.Fields.Comment.Comments))
 	}
 	for _, cm := range is.Fields.Comment.Comments {
+		author, aerr := p.resolveIdentity(ctx, cm.Author)
+		if aerr != nil {
+			return aerr // stays staged — retry the whole envelope (C1)
+		}
 		var commentID int64
 		for _, ch := range cm.ID {
 			if ch < '0' || ch > '9' {
@@ -213,7 +221,7 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 			ExternalKey:   is.Key,
 			CommentID:     commentID,
 			Body:          cm.Body,
-			AuthorCntrbID: p.resolveIdentity(ctx, cm.Author),
+			AuthorCntrbID: author,
 			Created:       jiraTime(cm.Created),
 			Updated:       jiraTime(cm.Updated),
 		})

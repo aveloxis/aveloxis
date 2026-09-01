@@ -72,7 +72,15 @@ func stripQuotedHistoryCmd(cfgPath *string) *cobra.Command {
 				if ctx.Err() != nil {
 					return fmt.Errorf("interrupted after %d rows — just rerun; completed rows never re-walk", total)
 				}
-				rows, err := store.GetMailingListBodiesForStrip(ctx, cursor, batch, rerunRule)
+				// Copilot round on PR #193, C4 (the v0.28.9 heal-messages
+				// class): clamp the batch to the REMAINING limit before
+				// reading — --limit 1 with the default batch used to
+				// process 5,000 rows before the post-batch check fired.
+				b := batch
+				if limit > 0 && limit-total < int64(b) {
+					b = int(limit - total)
+				}
+				rows, err := store.GetMailingListBodiesForStrip(ctx, cursor, b, rerunRule)
 				if err != nil {
 					return fmt.Errorf("strip batch after msg_id %d: %w", cursor, err)
 				}

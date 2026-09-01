@@ -13,6 +13,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -395,5 +396,45 @@ func TestJiraResumeFromCheckpointCompletes(t *testing.T) {
 	}
 	if !sawC {
 		t.Fatalf("staged = %v — the resumed scan never completed the tail", store.staged)
+	}
+}
+
+// TestJiraCompletionFailureRecordsFailureNotSuccess (Copilot round 5
+// on PR #193): a NON-cancel CompleteJiraScan failure used to warn and
+// fall through to the "project synced" log with jps_locked_at still
+// held — false success plus a 2h claim strand. It must instead record
+// a failure (which clears the lock and paces the retry) and stamp
+// nothing as synced.
+func TestJiraCompletionFailureRecordsFailureNotSuccess(t *testing.T) {
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if start, _ := strconv.Atoi(r.URL.Query().Get("startAt")); start >= 1 {
+			_, _ = io.WriteString(w, `{"startAt":1,"maxResults":50,"total":1,"issues":[]}`)
+			return
+		}
+		up := base.Format("2006-01-02T15:04:05.000-0700")
+		_, _ = io.WriteString(w, `{"startAt":0,"maxResults":50,"total":1,"issues":[
+			{"id":"801","key":"AVCF-1","fields":{"summary":"s","status":{"name":"Open"},
+			 "updated":"`+up+`","created":"`+up+`"}}]}`)
+	}))
+	defer srv.Close()
+
+	repoID := int64(42)
+	store := &fakeJiraStore{
+		job:         &db.JiraProjectJob{JpsID: 7, ProjectKey: "AVCF", BaseURL: srv.URL, RepoID: &repoID},
+		completeErr: fmt.Errorf("connection reset by peer"),
+	}
+	w := NewJiraWorker(store, 24*time.Hour, "", 50, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.RunOnce(context.Background())
+
+	if store.completed {
+		t.Fatal("a failed completion write must not read as synced")
+	}
+	if store.failures != 1 {
+		t.Fatalf("failures = %d, want 1 — the failure record clears the lock and paces the retry", store.failures)
+	}
+	if len(store.released) != 0 {
+		t.Fatalf("released = %v — the failure record already cleared the lock; release is the fallback only", store.released)
 	}
 }

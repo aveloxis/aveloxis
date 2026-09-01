@@ -522,7 +522,9 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 
 	// Part B: store the quote-stripped variant beside the raw body —
 	// 82.5% of list mail embeds the thread it replies to (64% of body
-	// chars measured); consumers read COALESCE(msg_text_clean, msg_text).
+	// chars measured). The COALESCE(msg_text_clean, msg_text) consumer
+	// lives in the aveloxis-analytics repo (messages_text_stats.sql);
+	// nothing in THIS repo serves message text (Copilot round 5).
 	cleanBody, cleanRule := mailinglist.StripQuotedHistory(m.Body)
 	msgID, err := p.store.UpsertMailingListMessageBody(ctx, repoID, m.MessageID, m.ListAddress, m.SenderEmail, m.Body, m.SentAt, cntrbPtr, cleanBody, cleanRule)
 	if err != nil {

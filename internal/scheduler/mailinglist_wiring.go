@@ -243,11 +243,22 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 // a parallel seq scan.
 const mailingListSenderBackfillWindow = int64(500_000)
 
-// mailingListSenderBackfillMaxWindowsPerTick bounds one tick's work so a
-// pathologically wide msg_id range cannot occupy the goroutine past its
-// interval. A full production pass is ~57 windows today; 200 is
-// headroom, not a target.
+// mailingListSenderBackfillMaxWindowsPerTick is the window-count
+// ceiling per tick; the LOAD-BEARING bound is elapsed time (below) —
+// Copilot round 5 on PR #193: 200 windows × ~6 s each is ~20 minutes,
+// while the interval knob accepts one minute, so a count-only budget
+// let a small knob value queue back-to-back ticks that ran the large
+// UPDATEs continuously. A full production pass is ~57 windows today;
+// 200 is headroom, not a target.
 const mailingListSenderBackfillMaxWindowsPerTick = 200
+
+// mailingListSenderBackfillTickFraction caps one tick's wall-clock at
+// this fraction of the configured interval, so lowering the knob
+// LOWERS per-tick work instead of monopolizing the database: at the
+// 60-minute default a full ~20-minute pass still fits in one tick; at
+// a 1-minute interval each tick does ~30 s of windows and the pass
+// cursor carries the rest to the next tick.
+const mailingListSenderBackfillTickFraction = 2 // interval / N
 
 // mailingListBackendFor builds the ArchiveSource for a system definition,
 // or nil for an unsupported backend.
@@ -289,9 +300,17 @@ func (s *Scheduler) runMailingListSenderBackfill(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			tickStart := time.Now()
+			tickBudget := interval / mailingListSenderBackfillTickFraction
 			for w := 0; w < mailingListSenderBackfillMaxWindowsPerTick; w++ {
 				if ctx.Err() != nil {
 					return
+				}
+				// The elapsed-time bound (never count alone): the first
+				// window always runs; later windows only while the tick
+				// is inside its share of the cadence.
+				if w > 0 && time.Since(tickStart) >= tickBudget {
+					break
 				}
 				if passCeil == 0 {
 					if floor == 0 {

@@ -63,3 +63,32 @@ func TestSenderBackfillTickerWalksKeysetWindows(t *testing.T) {
 		t.Errorf("pass cursor must be declared before the ticker loop so it persists across ticks (cursor@%d, loop@%d)", cursorAt, loopAt)
 	}
 }
+
+// TestSenderBackfillTickIsTimeBounded (Copilot round 5 on PR #193,
+// suppressed #1): the window-count cap alone does NOT keep a tick
+// inside the configured cadence — 200 windows × ~6 s is ~20 minutes,
+// while the interval knob accepts one minute, so a count-only budget
+// made a small knob value run the large UPDATEs continuously
+// (back-to-back queued ticks). The LOAD-BEARING bound is elapsed
+// time as a fraction of the interval; the count stays as headroom.
+func TestSenderBackfillTickIsTimeBounded(t *testing.T) {
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/mailinglist_wiring.go"),
+		"func (s *Scheduler) runMailingListSenderBackfill(")
+	code := srctest.StripGoComments(body)
+	for _, needle := range []string{
+		"tickStart := time.Now()",
+		"interval / mailingListSenderBackfillTickFraction",
+		"time.Since(tickStart) >= tickBudget",
+	} {
+		if !strings.Contains(code, needle) {
+			t.Errorf("runMailingListSenderBackfill must carry the elapsed-time tick bound: missing %q", needle)
+		}
+	}
+	// The bound must live INSIDE the window loop (a pre-loop check
+	// would be decorative — the whole point is stopping mid-pass).
+	loop := strings.Index(code, "for w := 0; w < mailingListSenderBackfillMaxWindowsPerTick")
+	bound := strings.Index(code, "time.Since(tickStart) >= tickBudget")
+	if loop < 0 || bound < loop {
+		t.Error("the elapsed-time bound must sit inside the per-window loop")
+	}
+}

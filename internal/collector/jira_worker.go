@@ -256,7 +256,20 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 			w.releaseClaimBestEffort(job)
 			return
 		}
-		w.logger.Warn("jira: complete failed", "project", job.ProjectKey, "error", err)
+		// Copilot round 5 on PR #193: the NON-cancel arm used to warn
+		// and fall through to the synced log with the lock still held —
+		// a transient completion-write failure suppressed collection
+		// for the 2h stale window while reporting false success. The
+		// failure record clears the lock AND paces the retry
+		// (quadratic backoff); if it too fails, the best-effort release
+		// at least frees the claim. The checkpointed work stands either
+		// way — the retried scan re-runs a cheap window.
+		w.logger.Warn("jira: complete failed — recording failure, nothing stamped as synced",
+			"project", job.ProjectKey, "error", err)
+		if ferr := w.store.RecordJiraFailure(ctx, job.JpsID); ferr != nil {
+			w.releaseClaimBestEffort(job)
+		}
+		return
 	}
 	// "staged" = distinct issues this scan; "stage_calls" includes the
 	// deliberate boundary-minute re-lists (natural-key no-ops).

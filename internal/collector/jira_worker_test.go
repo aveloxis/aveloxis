@@ -25,15 +25,16 @@ import (
 )
 
 type fakeJiraStore struct {
-	job        *db.JiraProjectJob
-	staged     []string          // issueKey@updated
-	envelopes  map[string][]byte // issueKey@updated → first-staged envelope
-	checkpts   []time.Time
-	completed  bool
-	failures   int
-	disabled   bool
-	claimCalls int
-	released   []string // "jpsID@lockedAt" — shutdown claim releases
+	job         *db.JiraProjectJob
+	staged      []string          // issueKey@updated
+	envelopes   map[string][]byte // issueKey@updated → first-staged envelope
+	checkpts    []time.Time
+	completed   bool
+	failures    int
+	disabled    bool
+	claimCalls  int
+	released    []string // "jpsID@lockedAt" — shutdown claim releases
+	completeErr error    // when set, CompleteJiraScan fails once with it
 
 	// cancelOnClaim, when set, fires as the claim returns — the
 	// "shutdown lands right after the claim" shape.
@@ -80,6 +81,11 @@ func (f *fakeJiraStore) CheckpointJiraProject(_ context.Context, _ int64, at tim
 	return nil
 }
 func (f *fakeJiraStore) CompleteJiraScan(_ context.Context, _ int64) error {
+	if f.completeErr != nil {
+		err := f.completeErr
+		f.completeErr = nil
+		return err
+	}
 	f.completed = true
 	return nil
 }

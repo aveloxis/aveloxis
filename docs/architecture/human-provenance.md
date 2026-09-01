@@ -150,4 +150,11 @@ documented contract for the identity chains above:
   (`trackerActionEventGuardSQL`).
 - **Analytics A/B** — network growth is connective (largest-component
   share 0.97–1.00 on both sides), and text features read the
-  quote-stripped bodies (`COALESCE(msg_text_clean, msg_text)`).
+  quote-stripped bodies via `COALESCE(msg_text_clean, msg_text)`.
+  That COALESCE consumer lives in the **aveloxis-analytics**
+  repository (`data/sql/features/static/messages_text_stats.sql`,
+  pinned by its own tests) — deliberately NOT in this repository:
+  no in-repo production surface serves message *text* (the
+  Augur-compat message endpoint is count-only, and the strip CLI's
+  worklist read is the stripper's raw INPUT). A future in-repo
+  text-serving endpoint must read the COALESCE.

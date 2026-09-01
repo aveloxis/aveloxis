@@ -19,13 +19,13 @@ func TestBackgroundSweepsCarryBackgroundBudget(t *testing.T) {
 	hist := srctest.Read(t, "internal/platform/github/contributor_history.go")
 	for _, fn := range []string{"FetchContributorHistoryMeta", "FetchContributorDailyHistory"} {
 		body := srctest.FuncBody(t, hist, "func (c *Client) "+fn+"(")
-		if !strings.Contains(body, "platform.WithGraphQLBackgroundBudget(ctx)") {
+		if !strings.Contains(body, "ctx = platform.WithGraphQLBackgroundBudget(ctx)") {
 			t.Errorf("%s must mark its ctx WithGraphQLBackgroundBudget — the history sweep's sustained load is what kept keys graphql-dry under pytorch's multi-day job", fn)
 		}
 	}
 	act := srctest.Read(t, "internal/platform/github/contributor_activity.go")
 	body := srctest.FuncBody(t, act, "func (c *Client) FetchContributorActivity(")
-	if !strings.Contains(body, "platform.WithGraphQLBackgroundBudget(ctx)") {
+	if !strings.Contains(body, "ctx = platform.WithGraphQLBackgroundBudget(ctx)") {
 		t.Error("FetchContributorActivity must mark its ctx WithGraphQLBackgroundBudget")
 	}
 }

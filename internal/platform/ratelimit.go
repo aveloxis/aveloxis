@@ -109,8 +109,8 @@ const graphQLPointsPerHour = 5000
 // child pagination burst ~30-60 queries/min at ~1-10 points each; 500
 // points per key x the fleet's keys reserves ~10% of the total graphql
 // budget for collection, while background work may consume the rest.
-// Background checkout (WithGraphQLBackgroundBudget) refuses keys below
-// this line; foreground checkout uses the ordinary buffer.
+// Background checkout (WithGraphQLBackgroundBudget) refuses keys AT or
+// below this line; foreground checkout uses the ordinary buffer.
 const GraphQLBackgroundReserve = 500
 
 // graphQLDepletedProbe is the fallback graphql reset window used by
@@ -347,7 +347,7 @@ func (kp *KeyPool) MarkGraphQLExhausted(key *APIKey) {
 // would defeat it. Classifies as ClassRateLimit.
 var ErrGraphQLBudgetExhausted = &classifiedGraphQLError{
 	class:   ClassRateLimit,
-	message: "graphql budget exhausted on every key (fast-fail checkout refuses to wait for the window reset)",
+	message: "no key clears the caller's minimum graphql budget (fast-fail checkout refuses to wait for the window reset)",
 }
 
 // GetGraphQLKey returns a key with GRAPHQL budget headroom, round-robin.

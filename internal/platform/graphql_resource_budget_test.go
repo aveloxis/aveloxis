@@ -147,7 +147,10 @@ func TestGetGraphQLKeyFastFailReturnsInsteadOfWaiting(t *testing.T) {
 // checkout still accepts the same key.
 func TestGraphQLBackgroundReserveKeepsHeadroom(t *testing.T) {
 	kp := NewKeyPool([]string{"low", "high"}, rlTestLogger())
-	kp.keys[0].GraphQLRemaining = GraphQLBackgroundReserve - 1 // above buffer, below reserve
+	// AT the reserve exactly: selection is strict (> minBudget), so a key
+	// holding precisely the reserve is refused for background work too
+	// (review F6 — the boundary the first test never probed).
+	kp.keys[0].GraphQLRemaining = GraphQLBackgroundReserve
 	kp.keys[1].GraphQLRemaining = GraphQLBackgroundReserve + 100
 
 	bg := WithGraphQLBackgroundBudget(context.Background())
@@ -252,5 +255,105 @@ func TestGraphQLRotatesOnInBodyRateLimit(t *testing.T) {
 		if k.Token == "dead-key" && k.GraphQLRemaining > 0 {
 			t.Errorf("dead key's GraphQLRemaining = %d, want 0 (marked from the in-body rate limit)", k.GraphQLRemaining)
 		}
+	}
+}
+
+// TestPerPathRateLimitErrorsAreGlobal (review F1 — MEDIUM): a rate-limit
+// error carrying a "path" must be hoisted to a whole-query failure like
+// RESOURCE_LIMITS_EXCEEDED is (v0.27.79: GitHub reported the global
+// condition as per-path entries and 216K contributors were mark-stamped
+// dataless from empty-but-successful results). Without the hoist, the
+// per-path arm WARNs, returns nil, and none of the mark/rotate machinery
+// engages.
+func TestPerPathRateLimitErrorsAreGlobal(t *testing.T) {
+	body := []byte(`{"data":{"u0":null},"errors":[{"type":"RATE_LIMIT","path":["u0"],"message":"API rate limit already exceeded for user ID 172139126."}]}`)
+	var dst map[string]any
+	err := parseGraphQLResponse(body, &dst, rlTestLogger())
+	if err == nil {
+		t.Fatal("a per-path rate-limit error must fail the query — an empty-but-successful result is the v0.27.79 incident shape")
+	}
+	if ClassifyError(err) != ClassRateLimit {
+		t.Errorf("ClassifyError = %v, want ClassRateLimit", ClassifyError(err))
+	}
+}
+
+// TestGitLabGraphQLChecksOutByUnifiedBudget (review F2): GitLab has ONE
+// unified rate limit (no X-RateLimit-Resource header — its RateLimit-*
+// headers route to the CORE bucket), so gating GitLab GraphQL checkout on
+// the never-updated graphql bucket would hand out core-exhausted keys.
+// A GitLab-auth client must check out by the core budget.
+func TestGitLabGraphQLChecksOutByUnifiedBudget(t *testing.T) {
+	var mu sync.Mutex
+	var tokens []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		// GraphQL sends "Authorization: bearer <key>" for BOTH forges.
+		tokens = append(tokens, strings.TrimPrefix(r.Header.Get("Authorization"), "bearer "))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"hello":"world"}}`))
+	}))
+	defer server.Close()
+
+	keys := NewKeyPool([]string{"core-dead", "core-alive"}, rlTestLogger())
+	keys.keys[0].Remaining = 0 // unified budget spent
+	keys.keys[0].ResetAt = time.Now().Add(time.Hour)
+	c := NewHTTPClient(server.URL, keys, rlTestLogger(), AuthGitLab)
+
+	var got struct {
+		Hello string `json:"hello"`
+	}
+	if err := c.GraphQL(context.Background(), "{ hello }", nil, &got); err != nil {
+		t.Fatalf("GraphQL: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, tok := range tokens {
+		if tok == "core-dead" {
+			t.Errorf("GitLab GraphQL checkout used a key whose UNIFIED budget is spent — GitLab must gate on the core bucket")
+		}
+	}
+}
+
+// TestMixedExhaustionClassifiesTransient (review F3): one in-body rate
+// limit followed by 5xxs to exhaustion must NOT wear the rate-limit
+// class — the stale cause would make deferring callers skip their
+// subdivision. Only a rate limit on the FINAL attempt wins the wrap.
+func TestMixedExhaustionClassifiesTransient(t *testing.T) {
+	restore := SetGraphQLSleepForTest(func(context.Context, time.Duration) error { return nil })
+	defer restore()
+
+	var mu sync.Mutex
+	n := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n++
+		first := n == 1
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if first {
+			w.Header().Set("X-RateLimit-Resource", "graphql")
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	// Two keys so the post-rate-limit rotation finds a fresh one and the
+	// remaining attempts burn on 502s.
+	keys := NewKeyPool([]string{"k1", "k2"}, rlTestLogger())
+	c := NewHTTPClient(server.URL, keys, rlTestLogger(), AuthGitHub)
+
+	var dst map[string]any
+	err := c.GraphQL(WithGraphQLFastFail(context.Background()), "{ x }", nil, &dst)
+	if err == nil {
+		t.Fatal("expected exhaustion error")
+	}
+	if got := ClassifyError(err); got != ClassTransient {
+		t.Errorf("mixed exhaustion (rate limit on attempt 1, 5xxs after) classified %v, want ClassTransient — the stale rate-limit cause must not win the wrap (err=%v)", got, err)
 	}
 }

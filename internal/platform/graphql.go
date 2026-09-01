@@ -176,15 +176,32 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 	// lastRateLimit remembers the most recent in-body RATE_LIMITED so the
 	// budget-exhausted error names the real condition (the bare "exhausted
 	// N retries" text hid the cause for the 2026-05-13 stuck-repo cohort).
+	// rateLimitAttempt records WHICH attempt it was: the rate-limit wrap
+	// applies only when the FINAL attempt was the rate limit — a mixed
+	// exhaustion (one rate limit then nine 5xxs) must classify Transient,
+	// or subdividing/deferring callers dispatch on a stale cause (review
+	// F3).
 	var lastRateLimit error
+	rateLimitAttempt := -1
 
 	for attempt := range budget {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		// GraphQL checkout gates on the key's GRAPHQL budget, not core —
-		// the two buckets are independent per user (2026-09-01 fix).
-		key, err := c.keys.GetGraphQLKey(ctx)
+		// GitHub checkout gates on the key's GRAPHQL budget — the two
+		// buckets are independent per user (2026-09-01 fix). GitLab has
+		// ONE unified rate limit (no X-RateLimit-Resource header; its
+		// RateLimit-* headers route to the CORE bucket), so its GraphQL
+		// checkout gates on core — the graphql bucket is never updated
+		// for GitLab and would hand out unified-exhausted keys (review
+		// F2).
+		var key *APIKey
+		var err error
+		if c.authStyle == AuthGitLab {
+			key, err = c.keys.GetKey(ctx)
+		} else {
+			key, err = c.keys.GetGraphQLKey(ctx)
+		}
 		if err != nil {
 			return fmt.Errorf("getting API key: %w", err)
 		}
@@ -298,6 +315,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				c.logger.Info("graphql in-body rate limit — rotating to a fresh key",
 					"url", url, "attempt", attempt+1, "error", parsed)
 				lastRateLimit = parsed
+				rateLimitAttempt = attempt
 				continue
 			}
 			return parsed
@@ -373,10 +391,11 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 	// subdivision never fires. Production diagnostic on
 	// 2026-05-13 traced 6 of 7 stuck repos to exactly this
 	// missing classification.
-	if lastRateLimit != nil {
-		// Every attempt burned on rate-limited keys: surface the rate-limit
-		// class (subdivision defers/halves on it; the ticker callers defer
-		// to their next claim) rather than the generic transient wrap.
+	if lastRateLimit != nil && rateLimitAttempt == budget-1 {
+		// The FINAL attempt burned on a rate-limited key: surface the
+		// rate-limit class (subdivision defers/halves on it; the ticker
+		// callers defer to their next claim) rather than the generic
+		// transient wrap.
 		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, lastRateLimit)
 	}
 	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, ErrTransient)
@@ -462,7 +481,13 @@ func parseGraphQLResponse(body []byte, dest any, logger interface {
 	var globalErrs []graphqlError
 	var partialErrs []graphqlError
 	for _, e := range env.Errors {
-		if len(e.Path) == 0 || e.Type == "RESOURCE_LIMITS_EXCEEDED" {
+		// Rate limits hoist like RESOURCE_LIMITS_EXCEEDED (review F1,
+		// 2026-09-01): the v0.27.79 incident proved GitHub reports
+		// GLOBAL budget conditions as per-path entries, and a per-path
+		// rate limit left in the partial arm returns an
+		// empty-but-successful result that bypasses the mark/rotate
+		// machinery entirely.
+		if len(e.Path) == 0 || e.Type == "RESOURCE_LIMITS_EXCEEDED" || isGraphQLRateLimitError(e) {
 			globalErrs = append(globalErrs, e)
 		} else {
 			partialErrs = append(partialErrs, e)
@@ -493,10 +518,18 @@ func parseGraphQLResponse(body []byte, dest any, logger interface {
 	return nil
 }
 
-// classifyGraphQLErrors turns GitHub's errors array into a single
-// classified error the caller can dispatch on. RATE_LIMITED → ClassRateLimit;
-// NOT_FOUND → ClassSkip (wraps ErrNotFound); FORBIDDEN → ClassSkip (wraps
-// ErrForbidden). Anything else becomes a generic ClassFatal.
+// isGraphQLRateLimitError is THE rate-limit recognizer (SR-17): one
+// spelling shared by classifyGraphQLErrors AND parseGraphQLResponse's
+// per-path hoist, so the two can never drift. GitHub's documented type
+// is RATE_LIMITED, production received RATE_LIMIT (2026-09-01, the
+// pytorch shard-41 failure), and a typeless message-only variant
+// exists; the defensive direction is cheap (a mis-classified rate
+// limit costs bounded retries), the miss cost is a multi-day job.
+func isGraphQLRateLimitError(e graphqlError) bool {
+	return e.Type == "RATE_LIMITED" || e.Type == "RATE_LIMIT" ||
+		strings.Contains(strings.ToLower(e.Message), "rate limit")
+}
+
 // rateLimitTypeOrDefault names the rate-limit error type in the message,
 // falling back to the documented spelling for typeless variants.
 func rateLimitTypeOrDefault(t string) string {
@@ -506,21 +539,17 @@ func rateLimitTypeOrDefault(t string) string {
 	return t
 }
 
+// classifyGraphQLErrors turns GitHub's errors array into a single
+// classified error the caller can dispatch on. Rate limits (any spelling
+// isGraphQLRateLimitError accepts) → ClassRateLimit; NOT_FOUND →
+// ClassSkip (wraps ErrNotFound); FORBIDDEN → ClassSkip (wraps
+// ErrForbidden). Anything else becomes a generic ClassFatal.
 func classifyGraphQLErrors(errs []graphqlError) error {
 	// If any single error is rate-limited, the whole query is — the
 	// remaining data is unreliable. Prefer RATE_LIMITED as the dominant
 	// class even if other error types are also in the array.
 	for _, e := range errs {
-		// GitHub's documented type is RATE_LIMITED, but production
-		// (2026-09-01, the pytorch shard-41 failure) received "RATE_LIMIT"
-		// — and a typeless variant exists too. An unrecognized spelling
-		// fell to the generic ClassFatal arm, so subdivision and the
-		// size-1 REST fallback never engaged and an 86h job died on one
-		// hit. Classify by type OR by the message shape; the defensive
-		// direction is cheap (a mis-classified rate limit costs bounded
-		// retries), the miss cost is a multi-day job.
-		if e.Type == "RATE_LIMITED" || e.Type == "RATE_LIMIT" ||
-			strings.Contains(strings.ToLower(e.Message), "rate limit") {
+		if isGraphQLRateLimitError(e) {
 			return &classifiedGraphQLError{
 				class:   ClassRateLimit,
 				message: "graphql " + rateLimitTypeOrDefault(e.Type) + ": " + e.Message,

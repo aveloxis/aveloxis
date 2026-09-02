@@ -483,11 +483,17 @@ func (s *PostgresStore) linkJiraIdentity(ctx context.Context, jiraName, cntrbID,
 	return nil
 }
 
-// MintJiraContributor creates a contributor row for a Jira-only person
-// (no forge identity anywhere — 32.3% of the pilot's issue-weighted
-// sample) so networks include them: the CreateEmailOnlyContributor
-// precedent, keyed here by the jira_identities row. Idempotent — an
-// already-linked identity returns its existing cntrb_id.
+// MintJiraContributor creates a contributor row for an unambiguous
+// Jira-only identity and links it in jira_identities — ATOMICALLY
+// (Copilot round 9 on PR #193): the pre-fix three-statement shape
+// committed the contributor before the identity write, so an identity
+// failure left an ACTIVE orphan (and every retry could mint another),
+// and the concurrent-double-mint loser's row was deliberately
+// abandoned. Those rows are NOT invisible — GetPublicFleetStats
+// publishes COUNT(*) of contributors on the landing page. Now one
+// transaction: an identity failure rolls the contributor back, and
+// the loser DELETEs its own row in-tx (safe — nothing can reference a
+// row that was never handed out) before returning the winner's id.
 func (s *PostgresStore) MintJiraContributor(ctx context.Context, jiraName, displayName string) (string, error) {
 	var existing *string
 	err := s.pool.QueryRow(ctx, `
@@ -499,32 +505,48 @@ func (s *PostgresStore) MintJiraContributor(ctx context.Context, jiraName, displ
 	if existing != nil {
 		return *existing, nil
 	}
-	var cntrb string
-	err = s.pool.QueryRow(ctx, `
-		INSERT INTO aveloxis_data.contributors (cntrb_login, cntrb_full_name, tool_source, data_source)
-		VALUES ('', $1, 'Aveloxis Jira Collector', '`+JiraAPIDataSource+`')
-		RETURNING cntrb_id::text`, displayName).Scan(&cntrb)
+	var winner string
+	err = s.withRetry(ctx, func(ctx context.Context) error {
+		tx, terr := s.pool.Begin(ctx)
+		if terr != nil {
+			return terr
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		var cntrb string
+		if qerr := tx.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.contributors (cntrb_login, cntrb_full_name, tool_source, data_source)
+			VALUES ('', $1, 'Aveloxis Jira Collector', '`+JiraAPIDataSource+`')
+			RETURNING cntrb_id::text`, displayName).Scan(&cntrb); qerr != nil {
+			return qerr
+		}
+		// RETURNING makes the identity upsert the single source of the
+		// returned id: under a concurrent double-mint the ON CONFLICT
+		// keeps the winner's link and the loser hands the WINNER's
+		// cntrb_id to its caller (review 2026-08-30 #9).
+		if qerr := tx.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.jira_identities (jira_name, display_name, cntrb_id, match_method, tool_version)
+			VALUES ($1, $2, $3::uuid, 'minted', $4)
+			ON CONFLICT (jira_name) DO UPDATE SET
+				cntrb_id = COALESCE(aveloxis_data.jira_identities.cntrb_id, EXCLUDED.cntrb_id),
+				match_method = CASE WHEN aveloxis_data.jira_identities.cntrb_id IS NULL THEN 'minted'
+				                    ELSE aveloxis_data.jira_identities.match_method END
+			RETURNING cntrb_id::text`,
+			jiraName, displayName, cntrb, ToolVersion).Scan(&winner); qerr != nil {
+			return qerr
+		}
+		if winner != cntrb {
+			// The loser of a concurrent double-mint: its just-created
+			// contributor row was never handed out, so deleting it here
+			// is safe and keeps the published contributor count honest.
+			if _, derr := tx.Exec(ctx, `
+				DELETE FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, cntrb); derr != nil {
+				return derr
+			}
+		}
+		return tx.Commit(ctx)
+	})
 	if err != nil {
 		return "", fmt.Errorf("mint jira contributor %q: %w", jiraName, err)
-	}
-	// RETURNING makes the identity upsert the single source of the
-	// returned id: under a concurrent double-mint the ON CONFLICT keeps
-	// the winner's link, and the loser must hand the WINNER's cntrb_id
-	// to its batch — never its own orphan contributor row (review
-	// 2026-08-30 #9; the orphan row stays, empty-login rows are legal
-	// under the partial unique and invisible to every read path).
-	var winner string
-	err = s.pool.QueryRow(ctx, `
-		INSERT INTO aveloxis_data.jira_identities (jira_name, display_name, cntrb_id, match_method, tool_version)
-		VALUES ($1, $2, $3::uuid, 'minted', $4)
-		ON CONFLICT (jira_name) DO UPDATE SET
-			cntrb_id = COALESCE(aveloxis_data.jira_identities.cntrb_id, EXCLUDED.cntrb_id),
-			match_method = CASE WHEN aveloxis_data.jira_identities.cntrb_id IS NULL THEN 'minted'
-			                    ELSE aveloxis_data.jira_identities.match_method END
-		RETURNING cntrb_id::text`,
-		jiraName, displayName, cntrb, ToolVersion).Scan(&winner)
-	if err != nil {
-		return "", fmt.Errorf("mint jira identity link %q: %w", jiraName, err)
 	}
 	return winner, nil
 }

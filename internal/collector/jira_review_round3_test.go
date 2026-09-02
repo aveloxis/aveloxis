@@ -56,11 +56,13 @@ func TestJiraWorkerCompletesTruncatedCommentBlocks(t *testing.T) {
 			return
 		}
 		// Search page: ONE issue whose inline block is TRUNCATED
-		// (total 3, one embedded comment). Honors startAt like real
-		// Jira — the drift-safe walk re-lists the boundary minute at
-		// startAt=0 and then offsets past it to find the window empty.
-		if start, _ := strconv.Atoi(r.URL.Query().Get("startAt")); start >= 1 {
-			_, _ = io.WriteString(w, `{"startAt":1,"maxResults":50,"total":1,"issues":[]}`)
+		// (total 3, one embedded comment). Honors the round-9 walk's
+		// jql pagination: a keyset clause or a window past the issue's
+		// minute serves empty (the tie drain re-lists the minute once,
+		// then its keyset finds it drained).
+		jql := r.URL.Query().Get("jql")
+		if strings.Contains(jql, "issuekey > '") || strings.Contains(jql, "updated >= '2026-05-01 10:01'") {
+			_, _ = io.WriteString(w, `{"startAt":0,"maxResults":50,"total":0,"issues":[]}`)
 			return
 		}
 		up := base.Format("2006-01-02T15:04:05.000-0700")
@@ -112,8 +114,9 @@ func TestJiraWorkerFailsScanWhenCommentTailFetchFails(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if start, _ := strconv.Atoi(r.URL.Query().Get("startAt")); start >= 1 {
-			_, _ = io.WriteString(w, `{"startAt":1,"maxResults":50,"total":1,"issues":[]}`)
+		jql := r.URL.Query().Get("jql")
+		if strings.Contains(jql, "issuekey > '") || strings.Contains(jql, "updated >= '2026-05-01 10:01'") {
+			_, _ = io.WriteString(w, `{"startAt":0,"maxResults":50,"total":0,"issues":[]}`)
 			return
 		}
 		up := base.Format("2006-01-02T15:04:05.000-0700")
@@ -344,26 +347,11 @@ func TestJiraShutdownReleasesTheClaim(t *testing.T) {
 // a killed scan would have left.
 func TestJiraResumeFromCheckpointCompletes(t *testing.T) {
 	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
-	all := []string{"AVRS2-A", "AVRS2-B", "AVRS2-C"}
+	all := []string{"AVRS2-1", "AVRS2-2", "AVRS2-3"}
 	ups := []time.Time{base, base.Add(time.Minute), base.Add(time.Hour)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
-		jql := r.URL.Query().Get("jql")
-		cursor := time.Time{}
-		if i := strings.Index(jql, "updated >= '"); i >= 0 {
-			rest := jql[i+len("updated >= '"):]
-			cursor, _ = time.Parse("2006-01-02 15:04", rest[:strings.Index(rest, "'")])
-		}
-		var keys []string
-		var when []time.Time
-		for i := range all {
-			if !ups[i].Before(cursor) {
-				keys = append(keys, all[i])
-				when = append(when, ups[i])
-			}
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, jiraSearchPageAt(keys, when, start))
+		_, _ = io.WriteString(w, jiraJQLServe(r.URL.Query().Get("jql"), all, ups, 2))
 	}))
 	defer srv.Close()
 
@@ -384,10 +372,10 @@ func TestJiraResumeFromCheckpointCompletes(t *testing.T) {
 	// re-list — the checkpoint's whole point is skipping drained work.
 	sawA, sawC := false, false
 	for _, s := range store.staged {
-		if strings.HasPrefix(s, "AVRS2-A@") {
+		if strings.HasPrefix(s, "AVRS2-1@") {
 			sawA = true
 		}
-		if strings.HasPrefix(s, "AVRS2-C@") {
+		if strings.HasPrefix(s, "AVRS2-3@") {
 			sawC = true
 		}
 	}
@@ -409,8 +397,9 @@ func TestJiraCompletionFailureRecordsFailureNotSuccess(t *testing.T) {
 	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if start, _ := strconv.Atoi(r.URL.Query().Get("startAt")); start >= 1 {
-			_, _ = io.WriteString(w, `{"startAt":1,"maxResults":50,"total":1,"issues":[]}`)
+		jql := r.URL.Query().Get("jql")
+		if strings.Contains(jql, "issuekey > '") || strings.Contains(jql, "updated >= '2026-05-01 10:01'") {
+			_, _ = io.WriteString(w, `{"startAt":0,"maxResults":50,"total":0,"issues":[]}`)
 			return
 		}
 		up := base.Format("2006-01-02T15:04:05.000-0700")

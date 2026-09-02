@@ -16,8 +16,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -102,30 +100,14 @@ func (f *fakeJiraStore) DisableJiraProject(context.Context, int64) error {
 // advances per page, scan completes.
 func TestJiraWorkerSyncsProjectPages(t *testing.T) {
 	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
-	// Window-keyed server (the C2 drift-safe walk requests by jql cursor
-	// with startAt=0, not bare offsets): the full corpus is three issues
-	// across two minutes; each request serves the remaining set for its
-	// cursor, sliced by startAt like real Jira.
+	// jql-honoring server (the round-9 walk paginates purely by
+	// cursor/keyset — startAt is always 0): three issues across two
+	// minutes plus a tie drain of the final minute.
 	all := []string{"AVJW-1", "AVJW-2", "AVJW-3"}
 	ups := []time.Time{base, base.Add(time.Minute), base.Add(time.Hour)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
-		jql := r.URL.Query().Get("jql")
-		cursor := time.Time{}
-		if i := strings.Index(jql, "updated >= '"); i >= 0 {
-			rest := jql[i+len("updated >= '"):]
-			cursor, _ = time.Parse("2006-01-02 15:04", rest[:strings.Index(rest, "'")])
-		}
-		var keys []string
-		var when []time.Time
-		for i := range all {
-			if !ups[i].Before(cursor) {
-				keys = append(keys, all[i])
-				when = append(when, ups[i])
-			}
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, jiraSearchPageAt(keys, when, start))
+		_, _ = io.WriteString(w, jiraJQLServe(r.URL.Query().Get("jql"), all, ups, 2))
 	}))
 	defer srv.Close()
 
@@ -137,12 +119,12 @@ func TestJiraWorkerSyncsProjectPages(t *testing.T) {
 	if len(store.staged) != 3 {
 		t.Fatalf("staged = %v, want 3 issues", store.staged)
 	}
-	// Three pages touch staging: the two data pages plus the boundary
-	// re-list of the final minute (all-duplicate, checkpointing the
-	// same value idempotently) before the offset fallback finds the
-	// window empty.
-	if len(store.checkpts) != 3 {
-		t.Fatalf("checkpoints = %v, want one per staged page incl. the boundary re-list (SR-3)", store.checkpts)
+	// Four pages touch staging: the two data pages, the boundary
+	// re-list of the final minute, and that minute's key-keyset tie
+	// drain page (all-duplicate, checkpointing the same value
+	// idempotently) before the drain finds the minute empty.
+	if len(store.checkpts) != 4 {
+		t.Fatalf("checkpoints = %v, want one per staged page incl. the boundary re-list + tie drain (SR-3)", store.checkpts)
 	}
 	if last := store.checkpts[len(store.checkpts)-1]; !last.Equal(base.Add(time.Hour)) {
 		t.Fatalf("final checkpoint = %v, want the corpus max %v", last, base.Add(time.Hour))

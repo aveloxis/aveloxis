@@ -9,6 +9,7 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -596,5 +597,62 @@ func TestJiraClaimOwnedWritesRefuseStaleOwner(t *testing.T) {
 	// The rightful holder's writes work.
 	if err := store.CompleteJiraScan(ctx, job2.JpsID, job2.LockedAt); err != nil {
 		t.Fatalf("rightful completion: %v", err)
+	}
+}
+
+// TestMintJiraContributorIsAtomic (Copilot round 9 on PR #193): the
+// pre-fix three-statement mint committed the contributor before the
+// identity link, so a concurrent double-mint's LOSER abandoned an
+// active contributor row — and those rows are NOT invisible:
+// GetPublicFleetStats publishes COUNT(*) of contributors on the
+// landing page. The mint is one transaction now: the loser deletes
+// its own never-handed-out row before returning the winner's id.
+// Raced 20 rounds with a start barrier; every round must end with
+// BOTH callers agreeing on one winner and exactly ONE contributor
+// row minted for the name.
+func TestMintJiraContributorIsAtomic(t *testing.T) {
+	store, ctx := emConnect(t)
+	t.Cleanup(store.Close)
+
+	cleanup := func() {
+		c := context.Background()
+		store.pool.Exec(c, `DELETE FROM aveloxis_data.jira_identities WHERE jira_name LIKE '_avjr2-race-%'`)
+		store.pool.Exec(c, `DELETE FROM aveloxis_data.contributors WHERE cntrb_full_name LIKE '_avjr2 Race %'`)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	for round := 0; round < 20; round++ {
+		name := fmt.Sprintf("_avjr2-race-%d", round)
+		display := fmt.Sprintf("_avjr2 Race %d", round)
+		start := make(chan struct{})
+		results := make(chan string, 2)
+		errs := make(chan error, 2)
+		for g := 0; g < 2; g++ {
+			go func() {
+				<-start
+				id, err := store.MintJiraContributor(ctx, name, display)
+				results <- id
+				errs <- err
+			}()
+		}
+		close(start)
+		a, b := <-results, <-results
+		for i := 0; i < 2; i++ {
+			if err := <-errs; err != nil {
+				t.Fatalf("round %d: mint: %v", round, err)
+			}
+		}
+		if a != b {
+			t.Fatalf("round %d: winners diverge (%s vs %s) — both callers must receive the identity row's winner", round, a, b)
+		}
+		var rows int
+		if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_data.contributors
+			WHERE cntrb_full_name = $1`, display).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 1 {
+			t.Fatalf("round %d: %d contributor rows for one identity — the loser's orphan inflates the PUBLISHED contributor count", round, rows)
+		}
 	}
 }

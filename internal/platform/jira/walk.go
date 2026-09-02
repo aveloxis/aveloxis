@@ -42,17 +42,24 @@ const maxStalePages = 3
 //   - holds a fixed CEILING (`updated <=` the walk-start minute) so a
 //     busy project cannot chase its own tail — later updates belong to
 //     the next cycle via the caller's checkpoint;
-//   - falls back to in-window offsets ONLY for a same-minute cohort
-//     wider than a page (the cursor cannot advance at minute
-//     precision). RESIDUAL (documented, accepted): drift inside that
-//     one minute between its pages can skip a sibling — the exposure
-//     is a touch landing in the page gap of an over-a-page same-minute
-//     cohort, orders of magnitude rarer than the page-boundary hole;
-//   - fails after maxStalePages consecutive pages whose every
-//     (key, updated) pair was already seen this walk — the termination
-//     bound a misbehaving server cannot satisfy (an unchanged
-//     (cursor, startAt) guard is UNFIREABLE: every non-empty page
-//     strictly advances one of the pair).
+//   - drains a same-minute cohort wider than a page (the cursor
+//     cannot advance at minute precision) by KEY KEYSET over the
+//     frozen minute window (`updated >= M AND updated < M+1m AND
+//     issuekey > K ORDER BY issuekey ASC`) — Copilot round 9 on
+//     PR #193 retired the offset fallback, whose page gaps drift
+//     could still permanently skip: issue keys NEVER change, so the
+//     key order is stable under any drift; cohort membership only
+//     SHRINKS (a touched issue leaves the minute), and departures
+//     land beyond the cursor where the outer walk lists them. The
+//     tie drain restarts the minute from the beginning (idempotent
+//     consumers no-op the re-listed items) and exits to
+//     cursor = M+1min on an empty page;
+//   - fails after maxStalePages consecutive NON-tie pages whose
+//     every (key, updated) pair was already seen this walk, and
+//     bounds the tie drain by its own first page's Total plus a
+//     key-progress guard (the last key of each tie page must
+//     advance) — the termination bounds a misbehaving server cannot
+//     satisfy.
 //
 // since zero = full history. visit receives each page's issues with
 // their PARSED updated times (aligned slices) — boundary re-lists ARE
@@ -66,7 +73,20 @@ func (c *Client) WalkProjectByUpdated(ctx context.Context, projectKey string, fi
 	if !since.IsZero() {
 		cursor = since.UTC().Truncate(time.Minute)
 	}
+	// Tie-drain state: non-zero tieMinute = draining that minute's
+	// cohort by key keyset (tieKey = last key served; "" = restart).
+	var tieMinute time.Time
+	tieKey := ""
+	tiePages, tieBudget := 0, 0
 	buildJQL := func() string {
+		if !tieMinute.IsZero() {
+			keyClause := ""
+			if tieKey != "" {
+				keyClause = fmt.Sprintf(" AND issuekey > '%s'", tieKey)
+			}
+			return fmt.Sprintf("project = %s AND updated >= '%s' AND updated < '%s'%s ORDER BY issuekey ASC",
+				projectKey, tieMinute.Format(jqlMinute), tieMinute.Add(time.Minute).Format(jqlMinute), keyClause)
+		}
 		if cursor.IsZero() {
 			return fmt.Sprintf("project = %s AND updated <= '%s' ORDER BY updated ASC",
 				projectKey, ceiling.Format(jqlMinute))
@@ -74,19 +94,41 @@ func (c *Client) WalkProjectByUpdated(ctx context.Context, projectKey string, fi
 		return fmt.Sprintf("project = %s AND updated >= '%s' AND updated <= '%s' ORDER BY updated ASC",
 			projectKey, cursor.Format(jqlMinute), ceiling.Format(jqlMinute))
 	}
-	startAt := 0 // offset WITHIN the current window (tie-minute fallback only)
 	seenThisWalk := map[string]struct{}{}
 	stalePages := 0
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		page, err := c.SearchPage(ctx, buildJQL(), fields, startAt, pageSize)
+		page, err := c.SearchPage(ctx, buildJQL(), fields, 0, pageSize)
 		if err != nil {
 			return err
 		}
 		if len(page.Issues) == 0 {
+			if !tieMinute.IsZero() {
+				// The frozen minute is DRAINED: resume the window just
+				// past it (nothing can re-enter a past minute — updated
+				// only moves forward).
+				cursor = tieMinute.Add(time.Minute)
+				tieMinute, tieKey, tiePages, tieBudget = time.Time{}, "", 0, 0
+				continue
+			}
 			return nil // window exhausted — the walk is done
+		}
+		if !tieMinute.IsZero() {
+			tiePages++
+			if tieBudget == 0 {
+				// First tie page: the response's Total is the cohort's
+				// remaining size — the page budget a well-behaved server
+				// cannot exceed (drift only shrinks the cohort).
+				tieBudget = page.Total/pageSize + maxStalePages + 2
+			}
+			last := page.Issues[len(page.Issues)-1].Key
+			if last == tieKey || tiePages > tieBudget {
+				return fmt.Errorf("project %s: tie-minute drain of %s made no key progress (last=%q pages=%d budget=%d) — misbehaving server?",
+					projectKey, tieMinute.Format(jqlMinute), last, tiePages, tieBudget)
+			}
+			tieKey = last
 		}
 		var pageMax time.Time
 		pageNew := 0
@@ -110,25 +152,34 @@ func (c *Client) WalkProjectByUpdated(ctx context.Context, projectKey string, fi
 				pageMax = t
 			}
 		}
-		if pageNew == 0 {
-			stalePages++
-			if stalePages >= maxStalePages {
-				return fmt.Errorf("project %s: %d consecutive pages contributed nothing new (misbehaving server?) cursor=%v start_at=%d",
-					projectKey, stalePages, cursor, startAt)
+		if tieMinute.IsZero() {
+			if pageNew == 0 {
+				stalePages++
+				if stalePages >= maxStalePages {
+					return fmt.Errorf("project %s: %d consecutive pages contributed nothing new (misbehaving server?) cursor=%v",
+						projectKey, stalePages, cursor)
+				}
+			} else {
+				stalePages = 0
 			}
-		} else {
-			stalePages = 0
 		}
 		if err := visit(page.Issues, updated); err != nil {
 			return err
 		}
-		// Advance the window; offsets only within an unmovable minute.
-		pageMaxMinute := pageMax.UTC().Truncate(time.Minute)
-		if pageMaxMinute.After(cursor) {
-			cursor = pageMaxMinute
-			startAt = 0
-		} else {
-			startAt += len(page.Issues)
+		// Advance the window. A page whose max cannot move the cursor
+		// (an unmovable minute) enters the KEY-KEYSET tie drain — with
+		// tieKey restarted to "" so the minute re-lists WHOLE in stable
+		// key order (the page just processed listed an arbitrary
+		// updated-order subset of the cohort; keysetting from its max
+		// key would skip unlisted members with smaller keys).
+		if tieMinute.IsZero() {
+			pageMaxMinute := pageMax.UTC().Truncate(time.Minute)
+			if pageMaxMinute.After(cursor) {
+				cursor = pageMaxMinute
+			} else {
+				tieMinute = cursor
+				tieKey = ""
+			}
 		}
 		if pageSleep > 0 {
 			select {

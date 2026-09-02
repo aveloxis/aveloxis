@@ -108,34 +108,23 @@ type jiraWindowServer struct {
 func (s *jiraWindowServer) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		jql := r.URL.Query().Get("jql")
-		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
 		cursor := ""
 		if i := strings.Index(jql, "updated >= '"); i >= 0 {
 			rest := jql[i+len("updated >= '"):]
 			cursor = rest[:strings.Index(rest, "'")]
 		}
 		s.mu.Lock()
-		s.requests = append(s.requests, fmt.Sprintf("%s|%d", cursor, start))
+		// Record the FULL jql: the round-9 tie drain legally revisits a
+		// (cursor, key) pair with a DIFFERENT jql shape (the frozen
+		// minute window + ORDER BY issuekey), so uniqueness holds at
+		// the jql level, not the coarse pair.
+		s.requests = append(s.requests, cursor+"|"+jql)
 		s.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		// Serve `updated >= cursor` (boundary minute INCLUSIVE — real
-		// Jira semantics), sliced by startAt and capped like real pages.
 		all := []string{"AVW2-1", "AVW2-2", "AVW2-3"}
 		ups := []time.Time{s.base, s.base.Add(time.Minute), s.base.Add(10 * time.Minute)}
-		var cur time.Time
-		if cursor != "" {
-			cur, _ = time.Parse("2006-01-02 15:04", cursor)
-		}
-		var keys []string
-		var when []time.Time
-		for i := range all {
-			if !ups[i].Before(cur) {
-				keys = append(keys, all[i])
-				when = append(when, ups[i])
-			}
-		}
-		_, _ = io.WriteString(w, jiraSearchPageAt(keys, when, start))
+		_, _ = io.WriteString(w, jiraJQLServe(jql, all, ups, 2))
 	}
 }
 
@@ -175,36 +164,74 @@ func TestJiraSyncAdvancesWindowNotOffset(t *testing.T) {
 			advanced = true
 		}
 	}
+	_ = seen
 	if !advanced {
 		t.Error("no request ever advanced the jql cursor — the walk is still bare offsets (the permanent-skip class)")
 	}
 }
 
-// jiraSearchPageAt renders a window's remaining issues with explicit
-// per-issue updated times, sliced by startAt and capped at maxResults
-// like real Jira.
-func jiraSearchPageAt(keys []string, updated []time.Time, startAt int) string {
-	return jiraSearchPageAtN(keys, updated, startAt, 2)
-}
-
-func jiraSearchPageAtN(keys []string, updated []time.Time, startAt, maxResults int) string {
-	total := len(keys)
-	if startAt > len(keys) {
-		startAt = len(keys)
+// jiraJQLServe emulates real Jira Server jql semantics for worker
+// fixtures: `updated >= 'X'`, `updated < 'Y'`, `issuekey > 'K'`
+// (numeric by issue number) and the two ORDER BY forms. The
+// drift-safe walk paginates purely by cursor/keyset (startAt is
+// always 0 — round 9 retired the offset fallback), so a fixture that
+// ignored these clauses would re-serve one page forever and trip the
+// walker's own termination bounds.
+func jiraJQLServe(jql string, keys []string, ups []time.Time, maxResults int) string {
+	type row struct {
+		key string
+		up  time.Time
 	}
-	keys, updated = keys[startAt:], updated[startAt:]
-	if len(keys) > maxResults {
-		keys, updated = keys[:maxResults], updated[:maxResults]
+	keyNum := func(k string) int {
+		i := strings.LastIndex(k, "-")
+		n, _ := strconv.Atoi(k[i+1:])
+		return n
+	}
+	var ge, lt time.Time
+	if i := strings.Index(jql, "updated >= '"); i >= 0 {
+		rest := jql[i+len("updated >= '"):]
+		ge, _ = time.Parse("2006-01-02 15:04", rest[:strings.Index(rest, "'")])
+	}
+	if i := strings.Index(jql, "updated < '"); i >= 0 {
+		rest := jql[i+len("updated < '"):]
+		lt, _ = time.Parse("2006-01-02 15:04", rest[:strings.Index(rest, "'")])
+	}
+	keyGT := ""
+	if i := strings.Index(jql, "issuekey > '"); i >= 0 {
+		rest := jql[i+len("issuekey > '"):]
+		keyGT = rest[:strings.Index(rest, "'")]
+	}
+	var rows []row
+	for i := range keys {
+		if !ge.IsZero() && ups[i].Before(ge) {
+			continue
+		}
+		if !lt.IsZero() && !ups[i].Before(lt) {
+			continue
+		}
+		if keyGT != "" && keyNum(keys[i]) <= keyNum(keyGT) {
+			continue
+		}
+		rows = append(rows, row{keys[i], ups[i]})
+	}
+	if strings.Contains(jql, "ORDER BY issuekey") {
+		sort.Slice(rows, func(i, j int) bool { return keyNum(rows[i].key) < keyNum(rows[j].key) })
+	} else {
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].up.Before(rows[j].up) })
+	}
+	total := len(rows)
+	if len(rows) > maxResults {
+		rows = rows[:maxResults]
 	}
 	var issues []string
-	for i, k := range keys {
-		up := updated[i].Format("2006-01-02T15:04:05.000-0700")
+	for _, r := range rows {
+		up := r.up.Format("2006-01-02T15:04:05.000-0700")
 		issues = append(issues, fmt.Sprintf(
 			`{"id":"%d","key":"%s","fields":{"summary":"s","status":{"name":"Open"},"updated":"%s","created":"%s"}}`,
-			2000+startAt+i, k, up, up))
+			2000+keyNum(r.key), r.key, up, up))
 	}
-	return fmt.Sprintf(`{"startAt":%d,"maxResults":%d,"total":%d,"issues":[%s]}`,
-		startAt, len(keys), total, strings.Join(issues, ","))
+	return fmt.Sprintf(`{"startAt":0,"maxResults":%d,"total":%d,"issues":[%s]}`,
+		len(rows), total, strings.Join(issues, ","))
 }
 
 func TestJiraSyncHoldsScanCeiling(t *testing.T) {
@@ -256,36 +283,16 @@ func TestJiraSyncBoundaryDriftStillStagesSibling(t *testing.T) {
 	requests := 0
 	bUpdated := base.Add(30 * time.Minute) // drifts to 10:45 after page 1
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
-		jql := r.URL.Query().Get("jql")
-		cursor := time.Time{}
-		if i := strings.Index(jql, "updated >= '"); i >= 0 {
-			rest := jql[i+len("updated >= '"):]
-			cursor, _ = time.Parse("2006-01-02 15:04", rest[:strings.Index(rest, "'")])
-		}
 		mu.Lock()
 		requests++
 		if requests == 2 {
 			bUpdated = base.Add(45 * time.Minute) // the mid-walk touch
 		}
-		type row struct {
-			key string
-			up  time.Time
-		}
-		all := []row{{"AVD3-A", base}, {"AVD3-B", bUpdated}, {"AVD3-C", base.Add(30 * time.Minute)}}
+		keys := []string{"AVD3-1", "AVD3-2", "AVD3-3"}
+		when := []time.Time{base, bUpdated, base.Add(30 * time.Minute)}
 		mu.Unlock()
-		// ORDER BY updated ASC over the live window.
-		sort.Slice(all, func(i, j int) bool { return all[i].up.Before(all[j].up) })
-		var keys []string
-		var when []time.Time
-		for _, rw := range all {
-			if !rw.up.Before(cursor) {
-				keys = append(keys, rw.key)
-				when = append(when, rw.up)
-			}
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, jiraSearchPageAt(keys, when, start))
+		_, _ = io.WriteString(w, jiraJQLServe(r.URL.Query().Get("jql"), keys, when, 2))
 	}))
 	defer srv.Close()
 
@@ -299,12 +306,12 @@ func TestJiraSyncBoundaryDriftStillStagesSibling(t *testing.T) {
 	}
 	sawC := false
 	for _, s := range store.staged {
-		if strings.HasPrefix(s, "AVD3-C@") {
+		if strings.HasPrefix(s, "AVD3-3@") {
 			sawC = true
 		}
 	}
 	if !sawC {
-		t.Fatalf("staged = %v — the boundary-minute sibling C was skipped (the F1 permanent-skip class)", store.staged)
+		t.Fatalf("staged = %v — the boundary-minute sibling AVD3-3 was skipped (the F1 permanent-skip class)", store.staged)
 	}
 }
 
@@ -326,8 +333,15 @@ func TestJiraSyncFailsOnReServingServer(t *testing.T) {
 		requests++
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, jiraSearchPageAt(
-			[]string{"AVRS-1", "AVRS-2"}, []time.Time{base, base.Add(time.Minute)}, 0))
+		// Deliberately jql-BLIND: the same full page regardless of
+		// cursor/keyset — the misbehaving-server shape the walk's
+		// termination bounds exist for (post-round-9 it trips the
+		// tie drain's key-progress guard).
+		u1 := base.Format("2006-01-02T15:04:05.000-0700")
+		u2 := base.Add(time.Minute).Format("2006-01-02T15:04:05.000-0700")
+		_, _ = io.WriteString(w, `{"startAt":0,"maxResults":2,"total":2,"issues":[`+
+			`{"id":"2001","key":"AVRS-1","fields":{"summary":"s","status":{"name":"Open"},"updated":"`+u1+`","created":"`+u1+`"}},`+
+			`{"id":"2002","key":"AVRS-2","fields":{"summary":"s","status":{"name":"Open"},"updated":"`+u2+`","created":"`+u2+`"}}]}`)
 	}))
 	defer srv.Close()
 

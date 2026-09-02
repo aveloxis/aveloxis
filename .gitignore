@@ -76,3 +76,6 @@ aveloxis-shadow-graphql.json
 aveloxis-shadow-rest.json
 aveloxis.nsa.json
 !internal/collector/testdata/sbom_schemas/*.json
+
+# compiled binary — was accidentally committed in 451b729; remove with git rm --cached aveloxis
+/aveloxis

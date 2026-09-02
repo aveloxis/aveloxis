@@ -448,7 +448,11 @@ func (s *PostgresStore) ResolveJiraIdentity(ctx context.Context, jiraName, jiraU
 		return "", "", false, fmt.Errorf("jira login match %q: %w", jiraName, err)
 	}
 	if n == 1 {
-		return cntrb, "login", false, s.linkJiraIdentity(ctx, jiraName, cntrb, "login")
+		winner, wmethod, lerr := s.linkJiraIdentity(ctx, jiraName, cntrb, "login")
+		if lerr != nil {
+			return "", "", false, lerr
+		}
+		return winner, wmethod, false, nil
 	}
 	if n > 1 {
 		return "", "", true, nil // ambiguous stays NULL (SR-6)
@@ -467,20 +471,55 @@ func (s *PostgresStore) ResolveJiraIdentity(ctx context.Context, jiraName, jiraU
 		return "", "", false, fmt.Errorf("jira display match %q: %w", displayName, err)
 	}
 	if n == 1 {
-		return cntrb, "display", false, s.linkJiraIdentity(ctx, jiraName, cntrb, "display")
+		winner, wmethod, lerr := s.linkJiraIdentity(ctx, jiraName, cntrb, "display")
+		if lerr != nil {
+			return "", "", false, lerr
+		}
+		return winner, wmethod, false, nil
 	}
 	return "", "", n > 1, nil
 }
 
-func (s *PostgresStore) linkJiraIdentity(ctx context.Context, jiraName, cntrbID, method string) error {
-	_, err := s.pool.Exec(ctx, `
+// linkJiraIdentity persists a match and returns the PERSISTED
+// (cntrb_id, match_method) pair — never the caller's locally selected
+// candidate (Copilot round 11 on PR #193). The fill-empty guard means
+// a concurrent resolver (live drain vs the identity backfill, or a
+// racing mint) can link first; the pre-fix void return then let the
+// LOSER attribute its issue/comment to its own candidate while the
+// table held the winner's, splitting attribution for one jira_name.
+// UPDATE ... RETURNING with a read fallback on zero rows is the
+// MintJiraContributor conflict pattern applied to the link path: the
+// persisted row is the single source of the returned pair.
+func (s *PostgresStore) linkJiraIdentity(ctx context.Context, jiraName, cntrbID, method string) (string, string, error) {
+	var winner, wmethod string
+	err := s.pool.QueryRow(ctx, `
 		UPDATE aveloxis_data.jira_identities
 		SET cntrb_id = $2::uuid, match_method = $3
-		WHERE jira_name = $1 AND cntrb_id IS NULL`, jiraName, cntrbID, method)
-	if err != nil {
-		return fmt.Errorf("link jira identity %q: %w", jiraName, err)
+		WHERE jira_name = $1 AND cntrb_id IS NULL
+		RETURNING cntrb_id::text, match_method`, jiraName, cntrbID, method).Scan(&winner, &wmethod)
+	if err == nil {
+		return winner, wmethod, nil
 	}
-	return nil
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", "", fmt.Errorf("link jira identity %q: %w", jiraName, err)
+	}
+	// Zero rows: the fill-empty guard held because a concurrent
+	// resolver already linked. Read the persisted winner and hand THAT
+	// to the caller.
+	var got *string
+	if rerr := s.pool.QueryRow(ctx, `
+		SELECT cntrb_id::text, match_method
+		FROM aveloxis_data.jira_identities WHERE jira_name = $1`,
+		jiraName).Scan(&got, &wmethod); rerr != nil {
+		return "", "", fmt.Errorf("link jira identity %q (winner read): %w", jiraName, rerr)
+	}
+	if got == nil {
+		// The guard only refuses when cntrb_id is non-NULL, and nothing
+		// ever unlinks — a NULL here is a state this code cannot
+		// explain. Fail rather than fabricate (SR-6).
+		return "", "", fmt.Errorf("link jira identity %q: update matched no row yet no winner is persisted", jiraName)
+	}
+	return *got, wmethod, nil
 }
 
 // MintJiraContributor creates a contributor row for an unambiguous

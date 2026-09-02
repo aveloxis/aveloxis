@@ -169,6 +169,16 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 								failedIssues++
 								continue
 							}
+							// Copilot round 19 (PR #193): count the reporter mint
+							// IMMEDIATELY — the contributor is already committed.
+							// If the assignee block below then `continue`s on a
+							// transient error, the mint is nonetheless real and
+							// must be counted; a rerun cannot re-count it (mint is
+							// idempotent, so reporterMinted would be false), so a
+							// late count permanently under-reports.
+							if reporterMinted {
+								minted++
+							}
 							// Suppressed #1: bank the ASSIGNEE identity too —
 							// the Server-era username is the perishable half,
 							// and this one-shot is the banking vehicle. The id
@@ -182,9 +192,6 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 								failedIssues++
 								continue
 							} else if am {
-								minted++
-							}
-							if reporterMinted {
 								minted++
 							}
 							if reporter != "" {

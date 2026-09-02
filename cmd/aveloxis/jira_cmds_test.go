@@ -81,6 +81,24 @@ func TestBackfillJiraIdentitiesShape(t *testing.T) {
 	}
 }
 
+// TestBackfillJiraReporterMintCountedBeforeAssignee (Copilot round 19
+// on PR #193): the reporter mint must be counted BEFORE the assignee
+// resolve — the assignee block `continue`s on a transient error, and
+// mint is idempotent, so a reporter mint counted after that continue
+// is lost forever (a rerun's reporterMinted is false). Position pin:
+// the `if reporterMinted {` increment precedes the assignee resolve.
+func TestBackfillJiraReporterMintCountedBeforeAssignee(t *testing.T) {
+	src := srctest.Read(t, "cmd/aveloxis/backfill_jira_identities.go")
+	mint := strings.Index(src, "if reporterMinted {")
+	assignee := strings.Index(src, "is.Fields.Assignee")
+	if mint < 0 || assignee < 0 {
+		t.Fatalf("anchors missing: reporterMinted=%d assignee=%d", mint, assignee)
+	}
+	if mint > assignee {
+		t.Error("the reporter mint (if reporterMinted { minted++ }) must be counted BEFORE the assignee resolve — else a transient assignee failure permanently under-reports the mint (Copilot round 19)")
+	}
+}
+
 // TestBackfillJiraIdentitiesUsesTheSharedDriftSafeWalk (Copilot round
 // 3 on PR #193, #2): the full-history pass walks
 // jira.WalkProjectByUpdated — the ONE drift-safe walk (SR-17). A

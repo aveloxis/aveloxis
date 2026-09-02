@@ -70,13 +70,17 @@ func (s *PostgresStore) RecordDeployAck(ctx context.Context, version, note strin
 }
 
 // FleetHasCollectedData reports whether this database is an EXISTING
-// fleet (has ever collected) vs a fresh install. The deploy gate only
-// applies to existing fleets — a fresh DB has nothing to heal. A
-// missing queue table (pathological) is treated as fresh.
+// fleet (has COMPLETED at least one collection) vs a fresh install.
+// The deploy gate only applies to existing fleets — a fresh DB has
+// nothing to heal. Copilot round 19 (PR #193): the probe requires a
+// non-NULL last_collected (only advanced by a successful pass), NOT
+// mere queue presence — a fresh install can add-repo and restart
+// before its first pass, and must not then be gated for legacy data
+// it does not hold. A missing queue table (pathological) is fresh.
 func (s *PostgresStore) FleetHasCollectedData(ctx context.Context) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM aveloxis_ops.collection_queue LIMIT 1)`).Scan(&exists)
+		`SELECT EXISTS(SELECT 1 FROM aveloxis_ops.collection_queue WHERE last_collected IS NOT NULL LIMIT 1)`).Scan(&exists)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {

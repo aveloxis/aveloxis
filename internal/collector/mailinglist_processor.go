@@ -32,6 +32,7 @@ type mlProcessorStore interface {
 	ListsWithStaging(ctx context.Context, system string, limit int) ([]int64, error)
 	GetMailingListStagingBatch(ctx context.Context, rglsID int64, limit int) ([]db.StagedMailingListRow, error)
 	MarkMailingListStagingProcessed(ctx context.Context, mlsIDs []int64) error
+	RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error
 
 	GetPrimaryRepoForGroup(ctx context.Context, repoGroupID int64) (int64, bool, error)
 	ResolveContributorIDByEmail(ctx context.Context, email string) (string, bool, error)
@@ -172,12 +173,23 @@ func (p *MailingListProcessor) DrainOnce(ctx context.Context, listLimit int) (in
 // messages is resolved once. If the list's repo_group has no repo yet
 // (messages.repo_id is NOT NULL), the rows are LEFT staged for a later drain
 // once load-foundation-orgs / DOAP-enrichment populates the group.
-func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (int, error) {
+func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (processed int, err error) {
 	cntrbCache := map[string]*string{}
 	threadIssue := map[string]int64{} // thread root → projected issue_id (#1 inheritance)
 	var repoID int64
 	repoResolved := false
-	processed := 0
+	// Copilot round 10 on PR #193: the home ranking reads the queue's
+	// cached last_activity_90d, which only CompleteJob and the gap
+	// healer refresh — issues this drain projects were invisible to it
+	// until the repo's next unrelated collection cycle. Refresh once
+	// per drained repo on every exit path (best-effort; skipped under
+	// a canceled ctx — the shutdown-window staleness self-heals on the
+	// next drain or collection cycle).
+	defer func() {
+		if processed > 0 && repoResolved {
+			refreshRepoActivity(ctx, p.store, p.logger, repoID, "mailing-list drain")
+		}
+	}()
 
 	for {
 		batch, err := p.store.GetMailingListStagingBatch(ctx, rglsID, mailingListDrainBatch)

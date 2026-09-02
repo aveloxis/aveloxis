@@ -42,6 +42,7 @@ type jiraProcStore interface {
 	UpsertJiraIssueFromAPI(ctx context.Context, in db.JiraAPIIssue) (int64, error)
 	UpsertJiraComment(ctx context.Context, in db.JiraAPIComment) (int64, error)
 	MarkJiraStagingProcessed(ctx context.Context, jsIDs []int64) error
+	RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error
 }
 
 const (
@@ -62,12 +63,23 @@ func NewJiraProcessor(store jiraProcStore, logger *slog.Logger) *JiraProcessor {
 
 // DrainOnce drains every project with staged rows once. Returns rows
 // processed.
-func (p *JiraProcessor) DrainOnce(ctx context.Context) (int, error) {
+func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 	projects, err := p.store.JiraProjectsWithStaging(ctx, jiraDrainProjectLimit)
 	if err != nil {
 		return 0, err
 	}
-	total := 0
+	// Copilot round 10 on PR #193: repos whose issues land via this
+	// drain need their queue activity cache refreshed, or the home
+	// ranking never sees the new rows (see refreshRepoActivity). The
+	// deferred sweep covers every exit path — envelopes that reached
+	// the set have already committed their writes even when a later
+	// batch's mark fails.
+	drainedRepos := map[int64]struct{}{}
+	defer func() {
+		for repoID := range drainedRepos {
+			refreshRepoActivity(ctx, p.store, p.logger, repoID, "jira drain")
+		}
+	}()
 	for _, jpsID := range projects {
 		for {
 			if ctx.Err() != nil {
@@ -99,6 +111,7 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (int, error) {
 					break // shutdown: rows drained so far still mark below
 				}
 				done = append(done, row.JsID)
+				drainedRepos[*row.RepoID] = struct{}{}
 			}
 			if len(done) > 0 {
 				if err := p.store.MarkJiraStagingProcessed(ctx, done); err != nil {

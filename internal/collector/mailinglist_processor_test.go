@@ -20,7 +20,9 @@ import (
 // fakeProcStore records the resolve+write decisions the MailingListProcessor
 // makes when draining staged messages.
 type fakeProcStore struct {
-	rows []db.StagedMailingListRow // staged input, returned in one batch then empty
+	refreshedRepos []int64
+	refreshErr     error
+	rows           []db.StagedMailingListRow // staged input, returned in one batch then empty
 
 	emails        []*model.EmailMessage
 	bodies        int
@@ -89,6 +91,11 @@ func (f *fakeProcStore) GetMailingListStagingBatch(_ context.Context, _ int64, l
 	f.rows = f.rows[n:]
 	return out, nil
 }
+func (f *fakeProcStore) RefreshQueueGatheredCounts(_ context.Context, repoID int64) error {
+	f.refreshedRepos = append(f.refreshedRepos, repoID)
+	return f.refreshErr
+}
+
 func (f *fakeProcStore) MarkMailingListStagingProcessed(_ context.Context, ids []int64) error {
 	f.processed = append(f.processed, ids...)
 	return nil

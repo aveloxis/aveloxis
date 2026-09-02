@@ -33,6 +33,7 @@ type fakeJiraStore struct {
 	claimCalls  int
 	released    []string // "jpsID@lockedAt" — shutdown claim releases
 	completeErr error    // when set, CompleteJiraScan fails once with it
+	checkptErr  error    // when set, CheckpointJiraProject fails once with it
 
 	// cancelOnClaim, when set, fires as the claim returns — the
 	// "shutdown lands right after the claim" shape.
@@ -75,6 +76,11 @@ func (f *fakeJiraStore) StageJiraIssue(_ context.Context, _ int64, _, issueKey s
 	return nil
 }
 func (f *fakeJiraStore) CheckpointJiraProject(_ context.Context, _ int64, at time.Time) error {
+	if f.checkptErr != nil {
+		err := f.checkptErr
+		f.checkptErr = nil
+		return err
+	}
 	f.checkpts = append(f.checkpts, at)
 	return nil
 }

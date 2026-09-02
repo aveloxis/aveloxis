@@ -299,29 +299,68 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 
 	switch resource {
 	case "", "core":
-		if remaining != "" {
-			if r, err := strconv.Atoi(remaining); err == nil {
-				key.Remaining = r
-			}
-		}
-		if reset != "" {
-			if epoch, err := strconv.ParseInt(reset, 10, 64); err == nil {
-				key.ResetAt = time.Unix(epoch, 0)
-			}
-		}
+		windowedBudgetUpdate(&key.Remaining, &key.ResetAt, remaining, reset)
 	case "graphql":
-		if remaining != "" {
-			if r, err := strconv.Atoi(remaining); err == nil {
-				key.GraphQLRemaining = r
-			}
-		}
-		if reset != "" {
-			if epoch, err := strconv.ParseInt(reset, 10, 64); err == nil {
-				key.GraphQLResetAt = time.Unix(epoch, 0)
-			}
-		}
+		windowedBudgetUpdate(&key.GraphQLRemaining, &key.GraphQLResetAt, remaining, reset)
 	default:
 		// search etc. — deliberately untracked (see above).
+	}
+}
+
+// windowedBudgetUpdate applies a response's absolute rate-limit
+// headers to a tracked bucket, WINDOW-GUARDED (Copilot round 10 on
+// PR #193): concurrent requests complete out of order, and blindly
+// assigning each response's absolute Remaining let an OLDER response
+// with a higher value arrive after a newer one and raise the tracked
+// budget back up — re-admitting an exhausted key or spending through
+// the background reserve. The reset epoch identifies the window:
+//
+//   - a NEWER window (reset > tracked) accepts both values — the
+//     refill is legitimate;
+//   - the SAME window (reset equal, or absent with a known window)
+//     accepts only DECREASES — within one window the true balance is
+//     monotonically non-increasing, so an increase is a stale
+//     response (this also preserves the round-8 optimistic checkout
+//     spend instead of letting a pre-spend response undo it);
+//   - an OLDER window is ignored outright.
+//
+// A zero tracked reset (first observation) accepts everything.
+// One spelling for both buckets (SR-17).
+func windowedBudgetUpdate(rem *int, resetAt *time.Time, remaining, reset string) {
+	haveRem, newRem := false, 0
+	if remaining != "" {
+		if r, err := strconv.Atoi(remaining); err == nil {
+			haveRem, newRem = true, r
+		}
+	}
+	haveReset, newReset := false, time.Time{}
+	if reset != "" {
+		if epoch, err := strconv.ParseInt(reset, 10, 64); err == nil {
+			haveReset, newReset = true, time.Unix(epoch, 0)
+		}
+	}
+	switch {
+	case resetAt.IsZero():
+		// First observation: accept whatever arrived.
+		if haveRem {
+			*rem = newRem
+		}
+		if haveReset {
+			*resetAt = newReset
+		}
+	case haveReset && newReset.After(*resetAt):
+		// Newer window: the refill is real.
+		if haveRem {
+			*rem = newRem
+		}
+		*resetAt = newReset
+	case !haveReset || newReset.Equal(*resetAt):
+		// Same (or unidentifiable) window: monotonic down only.
+		if haveRem && newRem < *rem {
+			*rem = newRem
+		}
+	default:
+		// Older window: stale response, ignore.
 	}
 }
 

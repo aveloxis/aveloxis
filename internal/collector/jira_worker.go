@@ -204,10 +204,19 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 					pageMax = updated[i]
 				}
 			}
-			// SR-3: the checkpoint stamps only over rows proven staged.
+			// SR-3: the checkpoint stamps only over rows proven staged —
+			// and a checkpoint FAILURE fails the scan (Copilot round 10
+			// on PR #193): warn-and-continue let CompleteJiraScan stamp
+			// success over a stale jps_last_updated, so a transient
+			// write failure on a late page silently converted the next
+			// cadence into a re-walk of everything past the last stamp
+			// (worst case the whole history on a first sync). Failing
+			// here records backoff instead; the checkpointed prefix is
+			// the resume state. A Canceled write flows to the worker's
+			// shutdown arm (%w keeps errors.Is intact).
 			if !pageMax.IsZero() {
-				if cerr := w.store.CheckpointJiraProject(ctx, job.JpsID, pageMax); cerr != nil && !errors.Is(cerr, context.Canceled) {
-					w.logger.Warn("jira: checkpoint failed", "project", job.ProjectKey, "error", cerr)
+				if cerr := w.store.CheckpointJiraProject(ctx, job.JpsID, pageMax); cerr != nil {
+					return fmt.Errorf("checkpoint at %s: %w", pageMax.Format(time.RFC3339), cerr)
 				}
 			}
 			return nil

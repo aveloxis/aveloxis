@@ -22,14 +22,16 @@ import (
 )
 
 type fakeJiraProcStore struct {
-	batches    [][]db.JiraStagingRow
-	batchCall  int
-	identities map[string][3]any // name -> {cntrb, method, ambiguous}
-	resolved   []string          // every name ResolveJiraIdentity was asked about (banking order)
-	minted     []string
-	issues     []db.JiraAPIIssue
-	comments   []db.JiraAPIComment
-	processed  []int64
+	refreshedRepos []int64
+	refreshErr     error
+	batches        [][]db.JiraStagingRow
+	batchCall      int
+	identities     map[string][3]any // name -> {cntrb, method, ambiguous}
+	resolved       []string          // every name ResolveJiraIdentity was asked about (banking order)
+	minted         []string
+	issues         []db.JiraAPIIssue
+	comments       []db.JiraAPIComment
+	processed      []int64
 }
 
 func (f *fakeJiraProcStore) JiraProjectsWithStaging(context.Context, int) ([]int64, error) {
@@ -62,6 +64,11 @@ func (f *fakeJiraProcStore) UpsertJiraComment(_ context.Context, in db.JiraAPICo
 	f.comments = append(f.comments, in)
 	return 5000 + int64(len(f.comments)), nil
 }
+func (f *fakeJiraProcStore) RefreshQueueGatheredCounts(_ context.Context, repoID int64) error {
+	f.refreshedRepos = append(f.refreshedRepos, repoID)
+	return f.refreshErr
+}
+
 func (f *fakeJiraProcStore) MarkJiraStagingProcessed(_ context.Context, ids []int64) error {
 	f.processed = append(f.processed, ids...)
 	return nil

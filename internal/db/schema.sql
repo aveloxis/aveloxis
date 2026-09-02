@@ -1022,6 +1022,12 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.messages (
     -- COALESCE(msg_text_clean, msg_text) read path.
     msg_text_clean   TEXT,
     msg_text_clean_rule TEXT DEFAULT '',
+    -- v0.29.0 round 14: the provider-side edit timestamp for message
+    -- kinds whose upstream serves one (Jira comment `updated`).
+    -- Nullable, NO default: NULL = "no provider edit time known"
+    -- (forge/mail rows) and the Jira comment upsert's freshness guard
+    -- treats a NULL stored value as always-upgradable.
+    msg_updated      TIMESTAMPTZ,
     msg_timestamp    TIMESTAMPTZ,
     msg_sender_email TEXT DEFAULT '',
     msg_header       TEXT DEFAULT '',

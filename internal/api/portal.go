@@ -838,6 +838,15 @@ func (s *Server) serveHomeRepos(w http.ResponseWriter, r *http.Request, userID, 
 	if limit <= 0 {
 		limit = 50 // mirror the store's clamp so the cache key is the EFFECTIVE limit
 	}
+	if limit > homeReposMaxLimit {
+		// Copilot round 14 on PR #193: with entries keyed (user, limit),
+		// an unbounded limit let an authenticated caller both force
+		// full-scope loads AND retain up to 10,000 distinct large
+		// payload variants in the cache. Clamp BEFORE the cache lookup
+		// and the loader so every oversized request shares one entry
+		// (bare comparison per the v0.27.65/66 rules).
+		limit = homeReposMaxLimit
+	}
 	body, state := s.homeCache.get(userID, limit)
 	switch state {
 	case homeCacheFresh:
@@ -921,6 +930,11 @@ type homeReposCache struct {
 
 // homeCacheKey scopes a cached body to the (user, effective limit)
 // pair it was built for.
+// homeReposMaxLimit caps ?limit on the home list (the collection-
+// detail page-size grammar: default 50, cap 100). The store clamps
+// too (v0.27.65: the backstop lives with the SQL LIMIT).
+const homeReposMaxLimit = 100
+
 type homeCacheKey struct {
 	user  int
 	limit int

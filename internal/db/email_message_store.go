@@ -576,19 +576,31 @@ func (s *PostgresStore) GetMailingListBodiesForStrip(ctx context.Context, afterM
 // produced them, one unnest UPDATE per batch. withRetry: the drain
 // loop's body upsert DO-UPDATEs the same rows (the 40P01 class,
 // v0.27.112/114).
-func (s *PostgresStore) UpdateMessageCleanBatch(ctx context.Context, msgIDs []int64, cleans []string, rule string) error {
+// UpdateMessageCleanBatch stamps clean text COMPARE-AND-SET on the raw
+// body's md5 (Copilot round 14 on PR #193): the CLI computes each strip
+// from a snapshot read in a previous statement, and a concurrent
+// mailing-list drain can re-ingest a corrected raw body (writing its
+// own fresh clean text) between the read and this write — the
+// unconditional form then overwrote that fresh clean with output
+// derived from the OLD body while stamping the current rule, so
+// --rule-rerun would never select the row for repair. The md5 guard
+// (hash, not the raw text: a 5,000-row batch of ~5KB bodies would be a
+// ~25MB parameter payload) makes a changed row a silent skip — correct,
+// because the ingest that changed it already wrote its own clean text.
+func (s *PostgresStore) UpdateMessageCleanBatch(ctx context.Context, msgIDs []int64, cleans, rawMD5s []string, rule string) error {
 	if len(msgIDs) == 0 {
 		return nil
 	}
-	if len(msgIDs) != len(cleans) {
-		return fmt.Errorf("update clean batch: %d ids vs %d cleans", len(msgIDs), len(cleans))
+	if len(msgIDs) != len(cleans) || len(msgIDs) != len(rawMD5s) {
+		return fmt.Errorf("update clean batch: %d ids vs %d cleans vs %d md5s", len(msgIDs), len(cleans), len(rawMD5s))
 	}
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.messages m
-		SET msg_text_clean = sub.clean, msg_text_clean_rule = $3
-		FROM (SELECT unnest($1::bigint[]) AS msg_id, unnest($2::text[]) AS clean) sub
-		WHERE m.msg_id = sub.msg_id`, msgIDs, cleans, rule)
+		SET msg_text_clean = sub.clean, msg_text_clean_rule = $4
+		FROM (SELECT unnest($1::bigint[]) AS msg_id, unnest($2::text[]) AS clean,
+		             unnest($3::text[]) AS raw_md5) sub
+		WHERE m.msg_id = sub.msg_id AND md5(m.msg_text) = sub.raw_md5`, msgIDs, cleans, rawMD5s, rule)
 		return err
 	})
 	if err != nil {

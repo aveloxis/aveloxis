@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"log/slog"
 	"os"
@@ -89,12 +90,17 @@ func stripQuotedHistoryCmd(cfgPath *string) *cobra.Command {
 				}
 				ids := make([]int64, len(rows))
 				cleans := make([]string, len(rows))
+				md5s := make([]string, len(rows))
 				for i, r := range rows {
 					ids[i] = r.MsgID
 					clean, _ := mailinglist.StripQuotedHistory(r.Text)
 					cleans[i] = clean
+					// Round 14 CAS: the write lands only where the raw
+					// body still matches this snapshot — a row the drain
+					// re-ingested mid-batch keeps ITS fresh clean text.
+					md5s[i] = fmt.Sprintf("%x", md5.Sum([]byte(r.Text)))
 				}
-				if err := store.UpdateMessageCleanBatch(ctx, ids, cleans, mailinglist.QuoteStripRuleVersion); err != nil {
+				if err := store.UpdateMessageCleanBatch(ctx, ids, cleans, md5s, mailinglist.QuoteStripRuleVersion); err != nil {
 					return fmt.Errorf("stamping batch after msg_id %d: %w", cursor, err)
 				}
 				cursor = rows[len(rows)-1].MsgID

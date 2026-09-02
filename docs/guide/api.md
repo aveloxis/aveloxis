@@ -925,7 +925,7 @@ Token semantics:
   list-shaped). Bearer required unconditionally, same posture as
   PUT/DELETE; starred state is caller-personal, so repo scope does
   not apply.
-- `GET /api/v1/home/repos?limit=50` — the home-tab list: the user's
+- `GET /api/v1/home/repos?limit=50` (max 100; oversized values clamp) — the home-tab list: the user's
   starred repos first (always included), then the most active repos
   from their own groups over the trailing 90 days (issues + change
   requests opened). Default limit is 50 (v0.27.14; was 20). There is

@@ -298,6 +298,9 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.email_message", "linked_msg_id", "BIGINT")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_text_clean", "TEXT")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_text_clean_rule", "TEXT DEFAULT ''")
+	// v0.29.0 round 14: provider edit timestamp — the Jira comment
+	// upsert's stale-replay freshness guard compares against it.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_updated", "TIMESTAMPTZ")
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.38 create message_heal_worklist", `
 		CREATE TABLE IF NOT EXISTS aveloxis_ops.message_heal_worklist (

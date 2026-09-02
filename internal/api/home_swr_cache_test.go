@@ -270,6 +270,50 @@ func TestHomeCacheLimitScopesTheEntry(t *testing.T) {
 	}
 }
 
+// TestHomeReposLimitIsClamped (Copilot round 14 on PR #193): with
+// entries keyed (user, limit), an UNBOUNDED limit let an
+// authenticated caller force full-scope loads and retain up to
+// 10,000 distinct large payload variants in the cache. The effective
+// limit is clamped to homeReposMaxLimit BEFORE both the cache lookup
+// and the loader — every oversized request shares one entry.
+func TestHomeReposLimitIsClamped(t *testing.T) {
+	var gotLimits []int
+	var mu sync.Mutex
+	s := swrTestServer(t, func(_ context.Context, _, limit int) ([]db.HomeRepo, error) {
+		mu.Lock()
+		gotLimits = append(gotLimits, limit)
+		mu.Unlock()
+		return []db.HomeRepo{{RepoID: int64(limit), Owner: "o", Name: "n"}}, nil
+	})
+	s.mux.HandleFunc("GET /api/v1/home/repos3", func(w http.ResponseWriter, r *http.Request) {
+		limit := 0
+		if v := r.URL.Query().Get("limit"); v != "" {
+			limit, _ = strconvAtoi(v)
+		}
+		s.serveHomeRepos(w, r, 7, limit)
+	})
+	get := func(q string) string {
+		req := httptest.NewRequest("GET", "/api/v1/home/repos3"+q, nil)
+		rec := httptest.NewRecorder()
+		s.mux.ServeHTTP(rec, req)
+		return rec.Header().Get("X-Cache")
+	}
+	if xc := get("?limit=999999"); xc != "miss" {
+		t.Fatalf("first oversized request: %q", xc)
+	}
+	// A DIFFERENT oversized limit must share the clamped entry — the
+	// pre-fix composite key minted one entry (and one full-scope
+	// load) per distinct value.
+	if xc := get("?limit=888888"); xc != "hit" {
+		t.Fatalf("second oversized request X-Cache=%q, want hit — distinct oversized limits must collapse onto the clamped entry", xc)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotLimits) != 1 || gotLimits[0] != homeReposMaxLimit {
+		t.Fatalf("loader limits = %v, want exactly one load at the clamp (%d)", gotLimits, homeReposMaxLimit)
+	}
+}
+
 // TestHomeCacheStaleAgeIsBounded (review 2026-08-31 #6): an entry past
 // TTL + homeReposStaleMax is a MISS — a returning user after hours away
 // gets fresh data, not an arbitrarily old body.

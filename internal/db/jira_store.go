@@ -35,6 +35,14 @@ import (
 // writers, the guard, and the rank-guard test all share this symbol.
 const JiraAPIDataSource = "JIRA API"
 
+// jiraCommentFreshSQL is the comment-level stale-replay guard (round
+// 14): true when the incoming snapshot is equal-or-newer than the
+// stored provider edit time (NULL stored = pre-guard row, always
+// upgradable; NULL incoming never beats a known stored time).
+const jiraCommentFreshSQL = `(aveloxis_data.messages.msg_updated IS NULL
+			                OR (EXCLUDED.msg_updated IS NOT NULL
+			                    AND EXCLUDED.msg_updated >= aveloxis_data.messages.msg_updated))`
+
 // JiraPlatformID stamps messages rows holding NATIVE Jira comment
 // bodies (platforms row 4). The platform-6 precedent: platform_id on
 // messages identifies the message's SOURCE system, never the repo's.
@@ -883,19 +891,42 @@ func (s *PostgresStore) UpsertJiraComment(ctx context.Context, in JiraAPIComment
 		author = &in.AuthorCntrbID
 	}
 	var msgID int64
+	// Freshness guard on the conflict arm (Copilot round 14 on
+	// PR #193): the drain deliberately continues past a failed
+	// envelope, so an OLDER staged snapshot can replay AFTER a newer
+	// edited comment already landed — the bare EXCLUDED overwrite
+	// regressed msg_text while the issue-level jiraAPISnapshotFreshSQL
+	// guard never covered comments. messages.msg_updated persists the
+	// provider's edit timestamp; text advances only on equal-or-newer
+	// snapshots (equality keeps same-snapshot replays idempotent; a
+	// NULL stored value — pre-fix rows — always upgrades). The author
+	// keeps fill-from-any semantics: a Jira comment's author is
+	// immutable across edits, so even a stale snapshot's author is
+	// correct, and a resolved author is preferred on fresh replays
+	// (the round-2 reporter rule's shape, immutability carve-out
+	// reasoned here). Deliberately NOT shared with
+	// jiraAPISnapshotFreshSQL: that predicate arbitrates data_source
+	// PROVIDER ranks on issues; comments are always Jira-owned.
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		return s.pool.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.messages
 			(repo_id, platform_msg_id, platform_id, msg_kind, msg_text, msg_timestamp,
-			 cntrb_id, tool_source, tool_version, data_source)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, 'Aveloxis Jira Collector', $8, '`+JiraAPIDataSource+`')
+			 msg_updated, cntrb_id, tool_source, tool_version, data_source)
+		VALUES ($1, $2, $3, $4, $5, $6, $9, $7::uuid, 'Aveloxis Jira Collector', $8, '`+JiraAPIDataSource+`')
 		ON CONFLICT (platform_msg_id, platform_id, msg_kind) DO UPDATE SET
-			msg_text = EXCLUDED.msg_text,
-			cntrb_id = COALESCE(EXCLUDED.cntrb_id, aveloxis_data.messages.cntrb_id),
+			msg_text = CASE WHEN `+jiraCommentFreshSQL+`
+			                THEN EXCLUDED.msg_text ELSE aveloxis_data.messages.msg_text END,
+			cntrb_id = CASE WHEN `+jiraCommentFreshSQL+` AND EXCLUDED.cntrb_id IS NOT NULL
+			                THEN EXCLUDED.cntrb_id
+			                ELSE COALESCE(aveloxis_data.messages.cntrb_id, EXCLUDED.cntrb_id) END,
+			msg_updated = GREATEST(
+				COALESCE(EXCLUDED.msg_updated, aveloxis_data.messages.msg_updated),
+				COALESCE(aveloxis_data.messages.msg_updated, EXCLUDED.msg_updated)),
 			data_collection_date = NOW()
 		RETURNING msg_id`,
 			in.RepoID, in.CommentID, JiraPlatformID, MsgKindComment,
-			SanitizeText(in.Body), NullTime(in.Created), author, ToolVersion).Scan(&msgID)
+			SanitizeText(in.Body), NullTime(in.Created), author, ToolVersion,
+			NullTime(in.Updated)).Scan(&msgID)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("upsert jira comment %d: %w", in.CommentID, err)

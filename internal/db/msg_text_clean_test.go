@@ -9,6 +9,8 @@ package db
 
 import (
 	"context"
+	"crypto/md5"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -137,7 +139,8 @@ func TestStripWalkerBatchAndResumeState(t *testing.T) {
 	if !found {
 		t.Fatal("unstripped row must appear in the strip batch")
 	}
-	if err := store.UpdateMessageCleanBatch(ctx, []int64{ids[0]}, []string{"body"}, "qs-v1"); err != nil {
+	rawMD5 := fmt.Sprintf("%x", md5.Sum([]byte("body")))
+	if err := store.UpdateMessageCleanBatch(ctx, []int64{ids[0]}, []string{"body"}, []string{rawMD5}, "qs-v1"); err != nil {
 		t.Fatal(err)
 	}
 	batch, err = store.GetMailingListBodiesForStrip(ctx, ids[0]-1, 10, "")

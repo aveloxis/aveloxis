@@ -69,6 +69,9 @@ func (s *PostgresStore) GetHomeRepos(ctx context.Context, userID int, limit int)
 	if limit <= 0 {
 		limit = 50 // v0.27.14: raised from 20 (operator ask — the home list capacity)
 	}
+	if limit > 100 {
+		limit = 100 // v0.27.65 backstop: the upper clamp lives with the SQL LIMIT (round 14)
+	}
 	// v0.29.0: the 90-day activity is READ from the queue's cached
 	// column (stamped by CompleteJob, backfilled once at migrate) —
 	// the per-render fleet-wide aggregation this replaced measured

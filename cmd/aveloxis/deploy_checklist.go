@@ -41,7 +41,7 @@ var v029DeployChecklist = []deployStep{
 	// Copilot round 21: the script REQUIRES a database positional
 	// argument (DB="${1:?}") — the bare form exits immediately. Show
 	// the usable dry-run-first invocation with the PG* env it reads.
-	{"PGHOST=<host> PGPORT=<port> PGUSER=<user> PGPASSWORD=<pw> scripts/heal_mirror_links.sh <database> --dry-run", "link the dark github_mirror MESSAGE rows to their PR/issue: read the dry-run's resolvable count, then rerun the SAME line WITHOUT --dry-run (deployment-specific — build the node_id indexes via migrate first; skip on very large fleets per the script's own note)"},
+	{"scripts/heal_mirror_links.sh <database> --dry-run", "link the dark github_mirror MESSAGE rows to their PR/issue: read the dry-run's resolvable count, then rerun the SAME line WITHOUT --dry-run (deployment-specific — build the node_id indexes via migrate first; skip on very large fleets per the script's own note)"},
 	{"aveloxis resolve-email-identities", "attribute mailing-list senders to contributors (the keyset backfill; ~minutes)"},
 	{"aveloxis strip-quoted-history --limit 50000", "canary the quote-strip, then rerun WITHOUT --limit to completion"},
 	{"aveloxis backfill-mailing-list-projection", "project historical mail onto issues (state + reporter from notifications)"},

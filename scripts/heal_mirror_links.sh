@@ -35,9 +35,17 @@
 #   - Read-only in --dry-run.
 #
 # USAGE
+#   # Connection is read from aveloxis.json (the same config the CLI uses,
+#   # -c/--config, default ./aveloxis.json). The positional <database>, if
+#   # given, overrides the config's dbname.
+#   ./scripts/heal_mirror_links.sh --dry-run                 # heals config's dbname
+#   ./scripts/heal_mirror_links.sh aveloxis_large --dry-run  # override the dbname
+#   ./scripts/heal_mirror_links.sh aveloxis_large            # write pass
+#   ./scripts/heal_mirror_links.sh -c /path/aveloxis.json aveloxis_large --dry-run
+#
+#   # PG* environment variables still work and OVERRIDE the config:
 #   PGHOST=chaoss.tv PGPORT=5434 PGUSER=aveloxis PGPASSWORD=... \
 #     ./scripts/heal_mirror_links.sh aveloxis --dry-run
-#   PGHOST=... ./scripts/heal_mirror_links.sh aveloxis
 #
 #   WINDOW=100000 ./scripts/heal_mirror_links.sh aveloxis_large
 #
@@ -50,17 +58,59 @@
 # in the tens of thousands.
 set -euo pipefail
 
-DB="${1:?usage: heal_mirror_links.sh <database> [--dry-run]}"
-DRY_RUN="${2:-}"
+# ---- arguments -------------------------------------------------------------
+# Connection comes from aveloxis.json (the same config the CLI reads via -c,
+# default ./aveloxis.json) so operators don't have to know the PG* dance. Any
+# PG* already set in the environment WINS (backward compatible with the old
+# usage). The positional <database>, if given, OVERRIDES the config's dbname —
+# so you can heal aveloxis_large from a config that points at aveloxis.
+CONFIG="${AVELOXIS_CONFIG:-aveloxis.json}"
+DRY_RUN=""
+DB=""
 WINDOW="${WINDOW:-50000}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -c|--config) CONFIG="${2:?--config needs a path}"; shift 2 ;;
+    --config=*)  CONFIG="${1#*=}"; shift ;;
+    --dry-run)   DRY_RUN="--dry-run"; shift ;;
+    -*)          echo "unknown argument: $1 (expected --config PATH, --dry-run, or a database name)" >&2; exit 2 ;;
+    *)           if [ -z "$DB" ]; then DB="$1"; shift; else echo "unexpected extra argument: $1" >&2; exit 2; fi ;;
+  esac
+done
 
-# Reject an unrecognised second argument rather than falling through to the
-# WRITE path: "--dryrun" / "--dry_run" / "-n" would otherwise silently update
-# hundreds of thousands of rows on a database the operator meant to inspect.
-case "$DRY_RUN" in
-  ""|--dry-run) ;;
-  *) echo "unknown argument: $DRY_RUN (expected --dry-run or nothing)" >&2; exit 2 ;;
-esac
+# Read the database block from aveloxis.json (best-effort — env still wins,
+# and a missing/unparseable config just leaves the PG* defaults in place).
+if [ -f "$CONFIG" ] && command -v python3 >/dev/null 2>&1; then
+  # Fixed field order, one per line; read via `read` (no eval, so passwords
+  # with shell metacharacters are safe). A password never contains a newline.
+  { read -r CFG_HOST; read -r CFG_PORT; read -r CFG_USER; read -r CFG_PASSWORD; read -r CFG_DBNAME; read -r CFG_SSLMODE; } < <(
+    python3 - "$CONFIG" <<'PYCFG'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1])).get("database", {})
+except Exception:
+    d = {}
+for k in ("host", "port", "user", "password", "dbname"):
+    print(d.get(k, "") if d.get(k) is not None else "")
+print(d.get("sslmode") or "prefer")
+PYCFG
+  )
+  export PGHOST="${PGHOST:-$CFG_HOST}"
+  export PGPORT="${PGPORT:-$CFG_PORT}"
+  export PGUSER="${PGUSER:-$CFG_USER}"
+  export PGPASSWORD="${PGPASSWORD:-$CFG_PASSWORD}"
+  export PGSSLMODE="${PGSSLMODE:-$CFG_SSLMODE}"
+  # dbname: explicit positional wins; else the config's dbname.
+  [ -z "$DB" ] && DB="$CFG_DBNAME"
+elif [ ! -f "$CONFIG" ]; then
+  echo "note: config $CONFIG not found — relying on PG* environment / psql defaults" >&2
+fi
+
+if [ -z "$DB" ]; then
+  echo "usage: heal_mirror_links.sh [--config aveloxis.json] [<database>] [--dry-run]" >&2
+  echo "  no database given and none in $CONFIG's database.dbname" >&2
+  exit 2
+fi
 
 # A zero or non-numeric WINDOW makes HI == LO, so the keyset loop never
 # advances and spins forever issuing a no-op UPDATE.
@@ -68,6 +118,8 @@ if ! [ "$WINDOW" -ge 1 ] 2>/dev/null; then
   echo "WINDOW must be a positive integer (got: $WINDOW)" >&2; exit 2
 fi
 
+# The positional <database> overrides the config's dbname; PG* (env or config)
+# supply host/port/user/password/sslmode. -d "$DB" wins over PGDATABASE.
 psql_q() { psql -d "$DB" -v ON_ERROR_STOP=1 -Atc "$1"; }
 
 # The node-ID extraction. SHARED with mailinglist.NodeIDFromMessageID: the

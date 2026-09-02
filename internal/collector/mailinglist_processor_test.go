@@ -20,6 +20,8 @@ import (
 // fakeProcStore records the resolve+write decisions the MailingListProcessor
 // makes when draining staged messages.
 type fakeProcStore struct {
+	stagedLists    []int64 // keyset source for ListsWithStaging (default [7])
+	drainedLists   []int64 // every rgls_id GetMailingListStagingBatch was asked for
 	refreshedRepos []int64
 	refreshErr     error
 	rows           []db.StagedMailingListRow // staged input, returned in one batch then empty
@@ -64,9 +66,22 @@ type fakeProcStore struct {
 	linkIssueCalls   int
 }
 
-func (f *fakeProcStore) ListsWithStaging(_ context.Context, system string, _ int) ([]int64, error) {
+func (f *fakeProcStore) ListsWithStaging(_ context.Context, system string, afterID int64, limit int) ([]int64, error) {
 	f.listedSystems = append(f.listedSystems, system)
-	return []int64{7}, nil
+	staged := f.stagedLists
+	if staged == nil {
+		staged = []int64{7}
+	}
+	out := []int64{}
+	for _, id := range staged {
+		if id > afterID {
+			out = append(out, id)
+		}
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // GetMailingListStagingBatch honors `chunk` when set, so a test can drive a
@@ -76,7 +91,8 @@ func (f *fakeProcStore) ListsWithStaging(_ context.Context, system string, _ int
 // The chunking matters: per-BATCH state (drainCounters) is indistinguishable
 // from per-DRAIN state when the fake can only ever produce one batch — a test
 // asserting "logged once per batch" would pass either way.
-func (f *fakeProcStore) GetMailingListStagingBatch(_ context.Context, _ int64, limit int) ([]db.StagedMailingListRow, error) {
+func (f *fakeProcStore) GetMailingListStagingBatch(_ context.Context, rglsID int64, limit int) ([]db.StagedMailingListRow, error) {
+	f.drainedLists = append(f.drainedLists, rglsID)
 	n := len(f.rows)
 	if n == 0 {
 		return nil, nil

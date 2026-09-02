@@ -22,6 +22,8 @@ import (
 )
 
 type fakeJiraProcStore struct {
+	stagedProjects []int64                       // keyset source for JiraProjectsWithStaging (default [7])
+	perProject     map[int64][]db.JiraStagingRow // when set, GetJiraStagingBatch serves per-project (once each)
 	refreshedRepos []int64
 	refreshErr     error
 	batches        [][]db.JiraStagingRow
@@ -34,10 +36,28 @@ type fakeJiraProcStore struct {
 	processed      []int64
 }
 
-func (f *fakeJiraProcStore) JiraProjectsWithStaging(context.Context, int) ([]int64, error) {
-	return []int64{7}, nil
+func (f *fakeJiraProcStore) JiraProjectsWithStaging(_ context.Context, afterID int64, limit int) ([]int64, error) {
+	staged := f.stagedProjects
+	if staged == nil {
+		staged = []int64{7}
+	}
+	out := []int64{}
+	for _, id := range staged {
+		if id > afterID {
+			out = append(out, id)
+		}
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
 }
-func (f *fakeJiraProcStore) GetJiraStagingBatch(context.Context, int64, int) ([]db.JiraStagingRow, error) {
+func (f *fakeJiraProcStore) GetJiraStagingBatch(_ context.Context, jpsID int64, _ int) ([]db.JiraStagingRow, error) {
+	if f.perProject != nil {
+		rows := f.perProject[jpsID]
+		delete(f.perProject, jpsID) // second ask per project: drained
+		return rows, nil
+	}
 	if f.batchCall >= len(f.batches) {
 		return nil, nil
 	}

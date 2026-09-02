@@ -35,7 +35,7 @@ import (
 
 // jiraProcStore is the processor's narrow store surface.
 type jiraProcStore interface {
-	JiraProjectsWithStaging(ctx context.Context, limit int) ([]int64, error)
+	JiraProjectsWithStaging(ctx context.Context, afterID int64, limit int) ([]int64, error)
 	GetJiraStagingBatch(ctx context.Context, jpsID int64, limit int) ([]db.JiraStagingRow, error)
 	ResolveJiraIdentity(ctx context.Context, jiraName, jiraUserKey, displayName string) (string, string, bool, error)
 	MintJiraContributor(ctx context.Context, jiraName, displayName string) (string, error)
@@ -52,6 +52,7 @@ const (
 
 // JiraProcessor drains staged Jira envelopes.
 type JiraProcessor struct {
+	cursor int64 // round-13 rotation cursor over jps_id (see DrainOnce)
 	store  jiraProcStore
 	logger *slog.Logger
 }
@@ -64,9 +65,24 @@ func NewJiraProcessor(store jiraProcStore, logger *slog.Logger) *JiraProcessor {
 // DrainOnce drains every project with staged rows once. Returns rows
 // processed.
 func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
-	projects, err := p.store.JiraProjectsWithStaging(ctx, jiraDrainProjectLimit)
+	// Round-13 rotation: continue from the previous drain's cursor so
+	// head-blocking projects (nil-repo, persistent failures) cost at
+	// most their own window slots per pass instead of starving the
+	// tail; wrap to the top when the tail is exhausted.
+	projects, err := p.store.JiraProjectsWithStaging(ctx, p.cursor, jiraDrainProjectLimit)
 	if err != nil {
 		return 0, err
+	}
+	if len(projects) == 0 && p.cursor > 0 {
+		p.cursor = 0
+		if projects, err = p.store.JiraProjectsWithStaging(ctx, 0, jiraDrainProjectLimit); err != nil {
+			return 0, err
+		}
+	}
+	if len(projects) < jiraDrainProjectLimit {
+		p.cursor = 0 // reached the end — next drain starts from the top
+	} else {
+		p.cursor = projects[len(projects)-1]
 	}
 	// Copilot round 10 on PR #193: repos whose issues land via this
 	// drain need their queue activity cache refreshed, or the home

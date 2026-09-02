@@ -876,13 +876,13 @@ func (s *Server) serveHomeRepos(w http.ResponseWriter, r *http.Request, userID, 
 // collection copy) wins — the refresh must never resurrect a
 // pre-mutation body past it (review 2026-08-31 #1).
 func (s *Server) refreshHomeRepos(userID, limit int) {
-	gen, ok := s.homeCache.tryBeginRefresh(userID)
+	gen, ok := s.homeCache.tryBeginRefresh(userID, limit)
 	if !ok {
 		return
 	}
 	go func() {
 		defer safego.Recover(s.logger, "home-repos-refresh")
-		defer s.homeCache.endRefresh(userID)
+		defer s.homeCache.endRefresh(userID, limit)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		repos, err := s.homeLoader(ctx, userID, limit)
@@ -902,18 +902,32 @@ func (s *Server) refreshHomeRepos(userID, limit int) {
 // paid it). Invalidated per-user on star/unstar so toggles reorder on
 // the very next (now-fast) blocking fetch.
 type homeReposCache struct {
-	mu         sync.Mutex
-	entries    map[int]homeCacheEntry
-	refreshing map[int]bool
+	mu sync.Mutex
+	// Entries and the refresh single-flight are keyed (userID, limit)
+	// (Copilot round 13 on PR #193): keying by user alone made a
+	// ?limit=5 store overwrite the same user's default-limit entry, so
+	// alternating valid limits turned EVERY request into a blocking
+	// miss — the SWR machinery held only the correctness half (a
+	// foreign-limit body was never served) while the caching half was
+	// defeated. gen stays per-USER: an invalidate must kill every
+	// limit's entry at once.
+	entries    map[homeCacheKey]homeCacheEntry
+	refreshing map[homeCacheKey]bool
 	// gen is bumped by invalidate(); a conditional set carrying an
 	// older generation is dropped, so no in-flight load can resurrect
 	// a pre-invalidate body (review 2026-08-31 #1).
 	gen map[int]uint64
 }
 
+// homeCacheKey scopes a cached body to the (user, effective limit)
+// pair it was built for.
+type homeCacheKey struct {
+	user  int
+	limit int
+}
+
 type homeCacheEntry struct {
 	body    []byte
-	limit   int // the EFFECTIVE limit the body was built with
 	expires time.Time
 }
 
@@ -942,8 +956,8 @@ const (
 func (c *homeReposCache) get(userID, limit int) ([]byte, homeCacheState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.entries[userID]
-	if !ok || e.limit != limit {
+	e, ok := c.entries[homeCacheKey{userID, limit}]
+	if !ok {
 		return nil, homeCacheMiss
 	}
 	now := time.Now()
@@ -973,40 +987,45 @@ func (c *homeReposCache) setIfGen(userID, limit int, body []byte, gen uint64) {
 		return // an invalidate won; the next request reloads
 	}
 	if c.entries == nil {
-		c.entries = map[int]homeCacheEntry{}
+		c.entries = map[homeCacheKey]homeCacheEntry{}
 	}
 	if len(c.entries) > 10000 {
-		c.entries = map[int]homeCacheEntry{}
+		c.entries = map[homeCacheKey]homeCacheEntry{}
 	}
-	c.entries[userID] = homeCacheEntry{body: body, limit: limit, expires: time.Now().Add(homeReposCacheTTL)}
+	c.entries[homeCacheKey{userID, limit}] = homeCacheEntry{body: body, expires: time.Now().Add(homeReposCacheTTL)}
 }
 
 // tryBeginRefresh claims the per-user refresh slot and returns the
 // generation the refresh is conditioned on; ok=false means a refresh
 // is already in flight.
-func (c *homeReposCache) tryBeginRefresh(userID int) (gen uint64, ok bool) {
+func (c *homeReposCache) tryBeginRefresh(userID, limit int) (gen uint64, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.refreshing == nil {
-		c.refreshing = map[int]bool{}
+		c.refreshing = map[homeCacheKey]bool{}
 	}
-	if c.refreshing[userID] {
+	k := homeCacheKey{userID, limit}
+	if c.refreshing[k] {
 		return 0, false
 	}
-	c.refreshing[userID] = true
+	c.refreshing[k] = true
 	return c.gen[userID], true
 }
 
-func (c *homeReposCache) endRefresh(userID int) {
+func (c *homeReposCache) endRefresh(userID, limit int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.refreshing, userID)
+	delete(c.refreshing, homeCacheKey{userID, limit})
 }
 
 func (c *homeReposCache) invalidate(userID int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, userID)
+	for k := range c.entries {
+		if k.user == userID {
+			delete(c.entries, k)
+		}
+	}
 	if c.gen == nil {
 		c.gen = map[int]uint64{}
 	}

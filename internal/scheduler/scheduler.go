@@ -1306,17 +1306,36 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	)
 }
 
-// completeJobStampRetryTimeout bounds the background-context retry of a
-// completion stamp whose first write was cut down by shutdown. Must fit
-// comfortably inside ShutdownGrace (default 10s): the worker goroutine
-// still holds its semaphore slot during the retry, so the shutdown
-// drain waits for this bounded attempt before the pool closes. A var
-// only as a test seam (the retry-failure path needs a born-expired
-// retry context to be reachable deterministically);
+// completeJobStampRetryTimeout is the CEILING on the background-context
+// retry of a completion stamp whose first write was cut down by
+// shutdown. The effective per-job bound is
+// min(this, ShutdownGraceDuration()/2) — computed at the wrap site
+// (Copilot round 13 on PR #193): shutdown_grace_seconds accepts any
+// positive value, so a valid 1–4s configuration used to let Run finish
+// its semaphore drain and close the pgx pool while this 5s retry still
+// owned a worker slot — recreating the lost-stamp case the helper
+// exists to prevent. Half the grace leaves the other half for the
+// drain itself and the pool close; at the 10s default the effective
+// bound is the full 5s, unchanged. A var only as a test seam (the
+// retry-failure path needs a born-expired retry context to be
+// reachable deterministically);
 // TestCompleteJobStampRetryTimeoutProductionValue pins the production
 // value so a shrunken seam can never ship (the pass-50 1ms-allowance
 // lesson).
 var completeJobStampRetryTimeout = 5 * time.Second
+
+// stampRetryBound derives the effective retry budget from the
+// operator's shutdown grace: min(ceiling, grace/2), so the retry can
+// never outlive the drain that waits for it (round 13). Half the
+// grace leaves the other half for the drain itself and the pool
+// close; at the 10s default grace the bound is the full 5s ceiling.
+func stampRetryBound(grace time.Duration) time.Duration {
+	b := completeJobStampRetryTimeout
+	if g := grace / 2; g < b {
+		b = g
+	}
+	return b
+}
 
 // completeJobWithShutdownRetry writes a job's completion stamp, retrying
 // ONCE on a bounded background context when the job ctx was canceled —
@@ -1340,7 +1359,8 @@ func (s *Scheduler) completeJobWithShutdownRetry(ctx context.Context, repoID int
 	if err == nil || !errors.Is(err, context.Canceled) {
 		return err
 	}
-	rctx, cancel := context.WithTimeout(context.Background(), completeJobStampRetryTimeout)
+	rctx, cancel := context.WithTimeout(context.Background(),
+		stampRetryBound(s.cfg.Collection.ShutdownGraceDuration()))
 	defer cancel()
 	if rerr := write(rctx); rerr != nil {
 		// Preserve the SHUTDOWN classification (L10 review, F3): the

@@ -29,7 +29,7 @@ const mailingListDrainBatch = 500
 // staging→batch boundary — drained one list at a time — is what stops the
 // mailing-list pipeline from reproducing Augur's contention on the hot tables.
 type mlProcessorStore interface {
-	ListsWithStaging(ctx context.Context, system string, limit int) ([]int64, error)
+	ListsWithStaging(ctx context.Context, system string, afterID int64, limit int) ([]int64, error)
 	GetMailingListStagingBatch(ctx context.Context, rglsID int64, limit int) ([]db.StagedMailingListRow, error)
 	MarkMailingListStagingProcessed(ctx context.Context, mlsIDs []int64) error
 	RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error
@@ -72,6 +72,7 @@ type MailingListProcessor struct {
 	// runs a single goroutine, so this is a no-op there.
 	mu       sync.Mutex
 	inflight map[int64]bool
+	cursor   int64 // round-13 rotation cursor over rgls_id (guarded by mu — DrainOnce runs on N goroutines)
 
 	// noRepoWarned rate-limits the "no repo for group, leaving staged" WARN
 	// to once per list per noRepoWarnInterval. A list whose repo_group has
@@ -141,10 +142,29 @@ func (p *MailingListProcessor) DrainOnce(ctx context.Context, listLimit int) (in
 	// Scoped to THIS processor's system: the drain pool must never touch a
 	// list registered under another system (its projection policy and
 	// ml_system stamp would be wrong — the Part G cross-system drain find).
-	lists, err := p.store.ListsWithStaging(ctx, p.system, listLimit)
+	// Round-13 rotation (the Jira DrainOnce fix's sibling): no-repo
+	// lists stay staged with old timestamps, so an oldest-first window
+	// starves the tail once head-blockers fill it. Rotate a keyset
+	// cursor instead; wrap to the top when the tail is exhausted.
+	p.mu.Lock()
+	after := p.cursor
+	p.mu.Unlock()
+	lists, err := p.store.ListsWithStaging(ctx, p.system, after, listLimit)
 	if err != nil {
 		return 0, err
 	}
+	if len(lists) == 0 && after > 0 {
+		if lists, err = p.store.ListsWithStaging(ctx, p.system, 0, listLimit); err != nil {
+			return 0, err
+		}
+	}
+	p.mu.Lock()
+	if len(lists) < listLimit {
+		p.cursor = 0 // reached the end — the next drain starts from the top
+	} else {
+		p.cursor = lists[len(lists)-1]
+	}
+	p.mu.Unlock()
 	total := 0
 	for _, rgls := range lists {
 		if ctx.Err() != nil {

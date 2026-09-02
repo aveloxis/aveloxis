@@ -53,14 +53,19 @@ func (s *PostgresStore) StageMailingListMessage(ctx context.Context, rglsID int6
 // drained by the lore processor: no issue projection, no tracker actions, no
 // thread inheritance, wrong ml_system stamp. A drain pool may only ever see
 // lists registered under ITS system.
-func (s *PostgresStore) ListsWithStaging(ctx context.Context, system string, limit int) ([]int64, error) {
+// ListsWithStaging pages staged lists by rgls_id KEYSET — the same
+// round-13 starvation fix as JiraProjectsWithStaging: no-repo lists
+// ("no repo for group, leaving staged") keep their old min(created_at)
+// and would permanently occupy an oldest-first head once a window
+// fills with them. afterID 0 starts from the top.
+func (s *PostgresStore) ListsWithStaging(ctx context.Context, system string, afterID int64, limit int) ([]int64, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT st.rgls_id FROM aveloxis_ops.mailing_list_staging st
 		JOIN aveloxis_data.repo_groups_list_serve r ON r.rgls_id = st.rgls_id
-		WHERE NOT st.processed AND r.mlls_system = $1
+		WHERE NOT st.processed AND r.mlls_system = $1 AND st.rgls_id > $3
 		GROUP BY st.rgls_id
-		ORDER BY min(st.created_at)
-		LIMIT $2`, system, limit)
+		ORDER BY st.rgls_id
+		LIMIT $2`, system, limit, afterID)
 	if err != nil {
 		return nil, fmt.Errorf("lists with staging: %w", err)
 	}

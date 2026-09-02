@@ -86,9 +86,9 @@ func TestHomeCacheServesStaleAndRefreshesInBackground(t *testing.T) {
 	swrGet(t, s) // prime
 	// Expire the entry in place.
 	s.homeCache.mu.Lock()
-	e := s.homeCache.entries[7]
+	e := s.homeCache.entries[homeCacheKey{7, 50}]
 	e.expires = time.Now().Add(-time.Minute)
-	s.homeCache.entries[7] = e
+	s.homeCache.entries[homeCacheKey{7, 50}] = e
 	s.homeCache.mu.Unlock()
 
 	rec, xc := swrGet(t, s)
@@ -128,9 +128,9 @@ func TestHomeCacheRefreshIsSingleFlight(t *testing.T) {
 	})
 	swrGet(t, s) // prime (call 1)
 	s.homeCache.mu.Lock()
-	e := s.homeCache.entries[7]
+	e := s.homeCache.entries[homeCacheKey{7, 50}]
 	e.expires = time.Now().Add(-time.Minute)
-	s.homeCache.entries[7] = e
+	s.homeCache.entries[homeCacheKey{7, 50}] = e
 	s.homeCache.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -179,9 +179,9 @@ func TestHomeCacheInvalidateDefeatsInflightRefresh(t *testing.T) {
 	})
 	swrGet(t, s) // prime (body RepoID=1)
 	s.homeCache.mu.Lock()
-	e := s.homeCache.entries[7]
+	e := s.homeCache.entries[homeCacheKey{7, 50}]
 	e.expires = time.Now().Add(-time.Minute)
-	s.homeCache.entries[7] = e
+	s.homeCache.entries[homeCacheKey{7, 50}] = e
 	s.homeCache.mu.Unlock()
 
 	if _, xc := swrGet(t, s); xc != "stale" {
@@ -193,8 +193,8 @@ func TestHomeCacheInvalidateDefeatsInflightRefresh(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		s.homeCache.mu.Lock()
-		inflight := s.homeCache.refreshing[7]
-		_, resurrected := s.homeCache.entries[7]
+		inflight := s.homeCache.refreshing[homeCacheKey{7, 50}]
+		_, resurrected := s.homeCache.entries[homeCacheKey{7, 50}]
 		s.homeCache.mu.Unlock()
 		if !inflight {
 			if resurrected {
@@ -248,10 +248,20 @@ func TestHomeCacheLimitScopesTheEntry(t *testing.T) {
 	if xc != "miss" || !jsonHasRepoID(t, body, 5) {
 		t.Fatalf("a different limit must MISS and load its own body, X-Cache=%q body=%s", xc, body)
 	}
-	// Default limit again: the 5-row entry must not serve it.
-	body, _ = get("")
+	// Default limit again: the 5-row entry must not serve it — AND the
+	// default entry must still be CACHED (Copilot round 13: keying by
+	// user alone made this a blocking miss, so alternating limits
+	// defeated the SWR cache entirely while the correctness half held).
+	body, xc = get("")
 	if !jsonHasRepoID(t, body, 50) {
 		t.Fatalf("default-limit request served a foreign-limit body: %s", body)
+	}
+	if xc != "hit" {
+		t.Fatalf("default-limit entry was clobbered by the ?limit=5 store: X-Cache=%q, want a fresh hit", xc)
+	}
+	// And the small-limit entry coexists.
+	if _, xc = get("?limit=5"); xc != "hit" {
+		t.Fatalf("limit=5 entry not retained beside the default: X-Cache=%q", xc)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -270,9 +280,9 @@ func TestHomeCacheStaleAgeIsBounded(t *testing.T) {
 	})
 	swrGet(t, s)
 	s.homeCache.mu.Lock()
-	e := s.homeCache.entries[7]
+	e := s.homeCache.entries[homeCacheKey{7, 50}]
 	e.expires = time.Now().Add(-homeReposStaleMax - time.Minute)
-	s.homeCache.entries[7] = e
+	s.homeCache.entries[homeCacheKey{7, 50}] = e
 	s.homeCache.mu.Unlock()
 	rec, xc := swrGet(t, s)
 	if xc != "miss" || !jsonHasRepoID(t, rec.Body.String(), 2) {

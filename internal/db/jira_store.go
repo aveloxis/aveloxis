@@ -67,11 +67,27 @@ func (s *PostgresStore) RegisterJiraProject(ctx context.Context, projectKey, bas
 	// correction — the probe cannot tell "new instance" from "the same
 	// instance moved". A whole-instance address change (same Jira, new
 	// URL — identity keys unaffected) is one hand UPDATE over every
-	// row; the error below says so. Check-then-act: concurrent
-	// registrations of distinct instances can both pass the probe —
-	// acceptable for the sequential operator CLI that owns this path.
+	// row; the error below says so. The probe and the insert run in ONE
+	// transaction under a registration-scoped advisory xact lock
+	// (Copilot round 13 on PR #193): the earlier check-then-act shape
+	// was documented as acceptable for a sequential operator CLI, but
+	// two concurrent register-jira-projects processes could both pass
+	// the probe and insert projects for DIFFERENT instances — after
+	// which the instance-blind username and comment-id collisions the
+	// guard exists to prevent become real. The xact lock serializes
+	// registrations only (never collection) and releases at
+	// commit/rollback; no CONCURRENTLY DDL runs under it, so the
+	// v0.27.20 blocking-lock/CIC deadlock class does not apply.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("register jira project %q: begin: %w", projectKey, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, JiraRegistrationAdvisoryLockID); err != nil {
+		return fmt.Errorf("register jira project %q: registration lock: %w", projectKey, err)
+	}
 	var other string
-	err := s.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT base_url FROM aveloxis_ops.jira_project_serve
 		WHERE base_url <> $1 AND project_key <> $2 LIMIT 1`, baseURL, projectKey).Scan(&other)
 	if err == nil {
@@ -80,7 +96,7 @@ func (s *PostgresStore) RegisterJiraProject(ctx context.Context, projectKey, bas
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("register jira project %q: instance probe: %w", projectKey, err)
 	}
-	_, err = s.pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		INSERT INTO aveloxis_ops.jira_project_serve (project_key, base_url, repo_id, tool_version)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (project_key) DO UPDATE SET
@@ -90,8 +106,17 @@ func (s *PostgresStore) RegisterJiraProject(ctx context.Context, projectKey, bas
 	if err != nil {
 		return fmt.Errorf("register jira project %q: %w", projectKey, err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("register jira project %q: commit: %w", projectKey, err)
+	}
 	return nil
 }
+
+// JiraRegistrationAdvisoryLockID serializes RegisterJiraProject's
+// one-instance probe with its insert ("AVLXJIRA" packed into 63 bits;
+// distinct from MigrateAdvisoryLockID). Transaction-scoped: released
+// automatically at commit/rollback.
+const JiraRegistrationAdvisoryLockID int64 = 0x41564C584A495241
 
 // ClaimNextJiraProject claims one enabled, cadence-due project under
 // FOR UPDATE SKIP LOCKED. keyFilter narrows to one project ("" = any) —
@@ -322,11 +347,19 @@ func (s *PostgresStore) StageJiraIssue(ctx context.Context, jpsID int64, project
 
 // JiraProjectsWithStaging lists jps_ids holding unprocessed staging,
 // oldest backlog first.
-func (s *PostgresStore) JiraProjectsWithStaging(ctx context.Context, limit int) ([]int64, error) {
+// JiraProjectsWithStaging pages staged projects by jps_id KEYSET
+// (Copilot round 13 on PR #193): the old oldest-first window meant
+// projects that never drain (nil-repo rows awaiting the operator's
+// registration heal, persistently failing envelopes) kept their old
+// min(created_at) and permanently occupied the head — once more than
+// one window's worth existed, newer healthy projects starved. The
+// drain rotates a cursor through id order instead (fairness beats age
+// priority); afterID 0 starts from the top.
+func (s *PostgresStore) JiraProjectsWithStaging(ctx context.Context, afterID int64, limit int) ([]int64, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT jps_id FROM aveloxis_ops.jira_staging
-		WHERE NOT processed
-		GROUP BY jps_id ORDER BY min(created_at) LIMIT $1`, limit)
+		WHERE NOT processed AND jps_id > $2
+		GROUP BY jps_id ORDER BY jps_id LIMIT $1`, limit, afterID)
 	if err != nil {
 		return nil, fmt.Errorf("jira projects with staging: %w", err)
 	}

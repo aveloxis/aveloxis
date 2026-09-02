@@ -91,7 +91,7 @@ func TestListsWithStagingFiltersBySystem(t *testing.T) {
 		return false
 	}
 
-	apacheLists, err := store.ListsWithStaging(ctx, "apache_ponymail", 1000)
+	apacheLists, err := store.ListsWithStaging(ctx, "apache_ponymail", 0, 1000)
 	if err != nil {
 		t.Fatalf("apache ListsWithStaging: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestListsWithStagingFiltersBySystem(t *testing.T) {
 		t.Errorf("apache pool must NOT see the lore list %d", loreRgls)
 	}
 
-	loreLists, err := store.ListsWithStaging(ctx, "lore_public_inbox", 1000)
+	loreLists, err := store.ListsWithStaging(ctx, "lore_public_inbox", 0, 1000)
 	if err != nil {
 		t.Fatalf("lore ListsWithStaging: %v", err)
 	}

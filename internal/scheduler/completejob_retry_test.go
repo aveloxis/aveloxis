@@ -16,6 +16,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // The 2026-08-22 production loss (found during the pytorch RCA): a 66h
@@ -97,6 +98,38 @@ func TestCompleteJobShutdownRetrySavesStamp(t *testing.T) {
 func TestCompleteJobStampRetryTimeoutProductionValue(t *testing.T) {
 	if completeJobStampRetryTimeout != 5*time.Second {
 		t.Fatalf("completeJobStampRetryTimeout = %v, want the production 5s", completeJobStampRetryTimeout)
+	}
+}
+
+// TestStampRetryBoundFitsInsideShutdownGrace (Copilot round 13 on
+// PR #193): shutdown_grace_seconds accepts any positive value, so a
+// valid 1-4s grace used to let the fixed 5s retry outlive Run's
+// semaphore drain — the pool closed mid-retry and the stamp was lost,
+// recreating the exact case the helper prevents. The effective bound
+// is min(ceiling, grace/2); the 10s default keeps the full 5s.
+func TestStampRetryBoundFitsInsideShutdownGrace(t *testing.T) {
+	cases := []struct {
+		grace time.Duration
+		want  time.Duration
+	}{
+		{10 * time.Second, 5 * time.Second}, // default grace: ceiling unchanged
+		{20 * time.Second, 5 * time.Second}, // ceiling caps, never grows
+		{4 * time.Second, 2 * time.Second},
+		{2 * time.Second, time.Second},
+		{time.Second, 500 * time.Millisecond},
+	}
+	for _, c := range cases {
+		if got := stampRetryBound(c.grace); got != c.want {
+			t.Errorf("stampRetryBound(%v) = %v, want %v", c.grace, got, c.want)
+		}
+	}
+	// Wiring: the wrap site must derive its bound from the effective
+	// grace, never use the bare ceiling (which is what stranded the
+	// retry past a short drain).
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/scheduler.go"),
+		"func (s *Scheduler) completeJobWithShutdownRetry(")
+	if !strings.Contains(body, "stampRetryBound(s.cfg.Collection.ShutdownGraceDuration())") {
+		t.Error("completeJobWithShutdownRetry must size its retry context via stampRetryBound(ShutdownGraceDuration()) — a bare completeJobStampRetryTimeout outlives a short shutdown grace")
 	}
 }
 

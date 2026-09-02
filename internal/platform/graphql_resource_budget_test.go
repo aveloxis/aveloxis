@@ -470,3 +470,50 @@ func TestHTTPRateLimitExhaustionClassifiesRateLimit(t *testing.T) {
 		})
 	}
 }
+
+// TestHeaderlessRateLimit403MarksTheCheckoutBudget (Copilot round 7
+// on PR #193): a 403 with X-RateLimit-Remaining: 0 but NO
+// X-RateLimit-Resource header (the older GitHub shape) routes the
+// zero into the CORE bucket, while GitHub's GraphQL checkout reads
+// GraphQLRemaining — pre-fix the exhausted key stayed eligible and
+// every retry reused it. The branch must mark the budget the
+// client's checkout dimension actually reads, so under fast-fail a
+// single-key pool stops after ONE request instead of burning the
+// whole budget on the same dead key.
+func TestHeaderlessRateLimit403MarksTheCheckoutBudget(t *testing.T) {
+	restore := SetGraphQLSleepForTest(func(context.Context, time.Duration) error { return nil })
+	defer restore()
+
+	var mu sync.Mutex
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		// Deliberately NO X-RateLimit-Resource header.
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	keys := NewKeyPool([]string{"only-key"}, rlTestLogger())
+	c := NewHTTPClient(server.URL, keys, rlTestLogger(), AuthGitHub)
+	var got map[string]any
+	err := c.GraphQL(WithGraphQLFastFail(context.Background()), "{ hello }", nil, &got)
+	if err == nil {
+		t.Fatal("an exhausted single-key pool must surface an error")
+	}
+	if ClassifyError(err) != ClassRateLimit {
+		t.Fatalf("ClassifyError = %v (%v), want ClassRateLimit", ClassifyError(err), err)
+	}
+	for _, k := range keys.keys {
+		if k.GraphQLRemaining > 0 {
+			t.Fatalf("GraphQLRemaining = %d, want 0 — header omission must not leave the key eligible for the graphql checkout", k.GraphQLRemaining)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1 — the marked key must not be re-served (pre-fix the whole retry budget burned on it)", requests)
+	}
+}

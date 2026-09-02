@@ -75,10 +75,14 @@ func TestMigrateCntrbIDsBatchEndToEnd(t *testing.T) {
 
 	// Cleanup any leftover state from a prior run. Order: children
 	// first, then identities, then repos, then contributors.
+	// v0.27.120 bounded-retry helpers: on 2026-09-01 a full-suite run's
+	// concurrent-migrate deadlock storm made THIS pre-clean a 40P01
+	// victim (logged non-fatally), and the seed then collided with the
+	// prior run's surviving residue (contributors_pkey 23505). The
+	// retry helper absorbs the deadlock so the pre-clean actually
+	// cleans.
 	cleanup := func(sql string, args ...any) {
-		if _, err := store.pool.Exec(ctx, sql, args...); err != nil {
-			t.Logf("pre-test cleanup (non-fatal): %v", err)
-		}
+		cleanupExecRetry(ctx, store, sql, args...)
 	}
 	for _, login := range []string{aliceLogin, bobLogin, alice2Login, collisionVictimLogin} {
 		cleanup(`DELETE FROM aveloxis_data.issues WHERE reporter_id IN (
@@ -132,18 +136,14 @@ func TestMigrateCntrbIDsBatchEndToEnd(t *testing.T) {
 		{alice2Login, alice2OldID, 99999},
 	}
 	for _, s := range seeds {
-		if _, err := store.pool.Exec(ctx, `
+		mustExecRetry(ctx, t, store, `
 			INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login)
-			VALUES ($1::uuid, $2)`, s.oldID, s.login); err != nil {
-			t.Fatalf("seed contributor %s: %v", s.login, err)
-		}
-		if _, err := store.pool.Exec(ctx, `
+			VALUES ($1::uuid, $2)`, s.oldID, s.login)
+		mustExecRetry(ctx, t, store, `
 			INSERT INTO aveloxis_data.contributor_identities
 				(cntrb_id, platform_id, platform_user_id, login, name, email, avatar_url, profile_url, node_id, user_type, is_admin)
 			VALUES ($1::uuid, 1, $2, $3, '', '', '', '', '', '', FALSE)`,
-			s.oldID, s.userID, s.login); err != nil {
-			t.Fatalf("seed identity %s: %v", s.login, err)
-		}
+			s.oldID, s.userID, s.login)
 	}
 
 	// Seed the collision victim with the SAME cntrb_id alice2's

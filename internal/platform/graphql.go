@@ -363,6 +363,22 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			}
 			if resp.Header.Get("X-RateLimit-Remaining") == "0" {
 				c.logger.Info("graphql rate limit exhausted", "url", url)
+				// Copilot round 7 on PR #193: a 403 carrying
+				// Remaining: 0 WITHOUT X-RateLimit-Resource (the older
+				// GitHub response shape the pool explicitly supports)
+				// routes the zero into the CORE bucket via
+				// UpdateFromResponse — but GitHub's GraphQL checkout
+				// reads GraphQLRemaining, so the exhausted key stayed
+				// eligible and the retry budget burned on immediate
+				// reuse. Mark the budget THIS client's checkout reads
+				// (the in-body branch's belt, same authStyle routing as
+				// round 2's GitLab fix); redundant when the resource
+				// header was present, and idempotent.
+				if c.authStyle == AuthGitLab {
+					c.keys.MarkCoreExhausted(key)
+				} else {
+					c.keys.MarkGraphQLExhausted(key)
+				}
 				lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
 					message: "graphql rate limit exhausted (403 + X-RateLimit-Remaining: 0) persisted through the retry budget"}
 				rateLimitAttempt = attempt

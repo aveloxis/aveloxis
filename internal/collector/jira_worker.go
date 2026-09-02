@@ -240,7 +240,14 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 					w.releaseClaimBestEffort(job)
 					return
 				}
+				// Copilot round 12 on PR #193: a transient disable
+				// failure used to return with the claim still held —
+				// the project could neither retry nor disable until the
+				// 2h stale window expired. Release so the next cadence
+				// re-claims, re-hits the dead key, and retries the
+				// disable.
 				w.logger.Warn("jira: disable failed", "project", job.ProjectKey, "error", derr)
+				w.releaseClaimBestEffort(job)
 			}
 			return
 		}
@@ -261,7 +268,14 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 					"project", job.ProjectKey)
 				return
 			}
+			// Copilot round 12 on PR #193 (suppressed): a generic
+			// RecordJiraFailure write error also left jps_locked_at
+			// held for the 2h stale window. ErrJiraClaimLost is already
+			// excluded above, so releasing with the claim's own stamp
+			// is safe — the completion arm below has done exactly this
+			// since round 5.
 			w.logger.Warn("jira: record failure failed", "project", job.ProjectKey, "error", ferr)
+			w.releaseClaimBestEffort(job)
 		}
 		return
 	}

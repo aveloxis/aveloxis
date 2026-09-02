@@ -672,6 +672,56 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 	}
 	pid := syntheticIssueID(in.ExternalKey)
 	num := issueNumberFromKey(in.ExternalKey)
+
+	// LINK-first probes (Copilot round 12 on PR #193): the 23505 arm
+	// below only converges with a native forge row that ALREADY
+	// carries external_key. A migrated repo's imported native issue
+	// (the ARROW shape) can hold the key ONLY in its title until
+	// backfill-issue-external-keys runs — the insert then succeeded
+	// under the synthetic id and minted exactly the missed-LINK
+	// duplicate LinkOrCreateIssueFromEmail prevents. Mirror its
+	// key-then-title lookup: the exact-key probe is an indexed point
+	// lookup on every envelope; the title probe (leading-wildcard
+	// LIKE, trgm-assisted) runs only when NO row holds the key — the
+	// first-ever sight of a ticket. A probe ERROR surfaces (SR-5):
+	// falling through to mint on bad information is the duplicate.
+	var probeID, probePID int64
+	perr := s.pool.QueryRow(ctx, `
+		SELECT issue_id, platform_issue_id FROM aveloxis_data.issues
+		WHERE repo_id = $1 AND external_key = $2 AND external_key <> ''
+		LIMIT 1`, in.RepoID, in.ExternalKey).Scan(&probeID, &probePID)
+	switch {
+	case perr == nil && probePID >= 0:
+		// Native row already keyed: LINK (rank-1 protection — the
+		// forge owns its state; we only enrich jira_issue_id).
+		return s.enrichNativeJiraIssue(ctx, probeID, in.JiraIssueID, "")
+	case perr == nil:
+		// The synthetic row: fall through — the upsert converges on
+		// (repo_id, platform_issue_id), and the 23505 arm still guards
+		// the anomalous foreign-negative-id case.
+	case errors.Is(perr, pgx.ErrNoRows):
+		// No row holds the key: first sight. Title fallback — a native
+		// row (positive id only; synthetics always carry their key, so
+		// a negative-id hit here is noise, never a LINK target) whose
+		// title embeds "[KEY]".
+		terr := s.pool.QueryRow(ctx, `
+			SELECT issue_id, platform_issue_id FROM aveloxis_data.issues
+			WHERE repo_id = $1 AND COALESCE(external_key, '') = ''
+			  AND platform_issue_id >= 0
+			  AND issue_title LIKE '%[' || $2 || ']%'
+			ORDER BY issue_id LIMIT 1`, in.RepoID, in.ExternalKey).Scan(&probeID, &probePID)
+		if terr == nil {
+			// Enrich the native row with the key it was imported
+			// without, plus the Jira internal id — then LINK.
+			return s.enrichNativeJiraIssue(ctx, probeID, in.JiraIssueID, in.ExternalKey)
+		}
+		if !errors.Is(terr, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("upsert jira issue %q: title probe: %w", in.ExternalKey, terr)
+		}
+	default:
+		return 0, fmt.Errorf("upsert jira issue %q: key probe: %w", in.ExternalKey, perr)
+	}
+
 	var id int64
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		return s.pool.QueryRow(ctx, `
@@ -751,14 +801,27 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 		return 0, fmt.Errorf("upsert jira issue %q: key held by non-native row issue_id=%d platform_issue_id=%d — refusing to LINK (%w)",
 			in.ExternalKey, linkedID, nativePID, err)
 	}
-	_, uerr := s.pool.Exec(ctx, `
+	return s.enrichNativeJiraIssue(ctx, linkedID, in.JiraIssueID, "")
+}
+
+// enrichNativeJiraIssue is the ONE LINK tail (SR-17) for a native
+// forge row that a Jira envelope resolved to: stamp jira_issue_id
+// (fill-empty) and — for the round-12 title-fallback case — the
+// external_key the row was imported without (fill-empty guard, so a
+// concurrent enrich or the key backfill is never overwritten). It
+// touches NOTHING forge-owned (rank-1 protection): state, title,
+// closed_at all stay the forge's.
+func (s *PostgresStore) enrichNativeJiraIssue(ctx context.Context, issueID, jiraIssueID int64, externalKey string) (int64, error) {
+	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.issues
-		SET jira_issue_id = COALESCE(jira_issue_id, NULLIF($2, 0))
-		WHERE issue_id = $1`, linkedID, in.JiraIssueID)
-	if uerr != nil {
-		return 0, fmt.Errorf("enrich native issue %d: %w", linkedID, uerr)
+		SET jira_issue_id = COALESCE(jira_issue_id, NULLIF($2, 0)),
+		    external_key = CASE WHEN COALESCE(external_key, '') = '' AND $3 <> ''
+		                        THEN $3 ELSE external_key END
+		WHERE issue_id = $1`, issueID, jiraIssueID, externalKey)
+	if err != nil {
+		return 0, fmt.Errorf("enrich native issue %d: %w", issueID, err)
 	}
-	return linkedID, nil
+	return issueID, nil
 }
 
 // JiraAPIComment is the typed input to the native-comment writer.

@@ -60,13 +60,22 @@ func TestUpsertJiraIssueSurfacesNonUniqueErrors(t *testing.T) {
 	}
 }
 
-// TestUpsertJiraIssueNonUniqueErrorNeverLinksNative is the L10 #1
-// variant that makes the 23505 GATE itself load-bearing: with a NATIVE
-// row holding the key, a deterministic non-unique error (22P02 bad
-// reporter UUID) must SURFACE — with the gate deleted, the fallback
-// probes the native holder, LINKs, and reports success while the API's
-// state write was dropped. (The synthetic-seed sibling above cannot see
-// this: its #1b refusal errors even without the gate.)
+// TestUpsertJiraIssueNonUniqueErrorNeverLinksNative — REWRITTEN by
+// Copilot round 12 on PR #193. The L10 original drove a 22P02 (bad
+// reporter UUID) beside a native key holder and required it to
+// SURFACE, because pre-round-12 the flow reached the INSERT first and
+// a deleted 23505 gate would have mis-LINKed on the failure. With
+// LINK-first probes the INSERT never runs for a native holder: the
+// key probe LINKs directly, and the columns that could 22P02
+// (reporter/state) are never sent — they are forge-owned on native
+// rows (rank 1) and were never applied by the LINK tail anyway. The
+// contract this pins now: a native holder absorbs ANY envelope —
+// malformed reporter included — as a clean LINK that enriches
+// jira_issue_id and touches nothing forge-owned (the envelope says
+// Resolved; the native row must stay open). The 23505 gate itself
+// remains in the source as the probe-to-insert race backstop; the
+// synthetic-seed sibling above still proves non-unique errors surface
+// wherever the INSERT actually runs.
 func TestUpsertJiraIssueNonUniqueErrorNeverLinksNative(t *testing.T) {
 	store, ctx := sbConnect(t)
 	jsSeedRepo(t, ctx, store)
@@ -78,22 +87,31 @@ func TestUpsertJiraIssueNonUniqueErrorNeverLinksNative(t *testing.T) {
 		VALUES ($1, 704001, 704, 'native', 'open', $2, 'GitHub API')
 		ON CONFLICT DO NOTHING`, jsRepoID, key)
 
-	_, err := store.UpsertJiraIssueFromAPI(ctx, JiraAPIIssue{
+	id, err := store.UpsertJiraIssueFromAPI(ctx, JiraAPIIssue{
 		RepoID: jsRepoID, ExternalKey: key, JiraIssueID: 9704,
 		Title: "t", Status: "Resolved", ResolutionDate: time.Now(),
 		Updated: time.Now(), ReporterCntrb: "not-a-uuid",
 	})
-	if err == nil {
-		t.Fatal("a non-23505 error beside a NATIVE key holder must surface — a silent LINK drops the API write forever")
+	if err != nil {
+		t.Fatalf("a native key holder must absorb the envelope as a LINK (reporter/state are never written to native rows): %v", err)
 	}
 	var jid *int64
+	var state string
+	var pid int64
 	if qerr := store.pool.QueryRow(ctx,
-		`SELECT jira_issue_id FROM aveloxis_data.issues WHERE repo_id=$1 AND external_key=$2`,
-		jsRepoID, key).Scan(&jid); qerr != nil {
+		`SELECT issue_id, platform_issue_id, issue_state, jira_issue_id
+		 FROM aveloxis_data.issues WHERE repo_id=$1 AND external_key=$2`,
+		jsRepoID, key).Scan(&id, &pid, &state, &jid); qerr != nil {
 		t.Fatal(qerr)
 	}
-	if jid != nil {
-		t.Fatalf("the failed write must not enrich the native row either, jira_issue_id=%v", *jid)
+	if pid != 704001 {
+		t.Fatalf("platform_issue_id = %d — the LINK must land on the native row, never mint a synthetic beside it", pid)
+	}
+	if jid == nil || *jid != 9704 {
+		t.Fatalf("jira_issue_id = %v, want the enriched 9704", jid)
+	}
+	if state != "open" {
+		t.Fatalf("issue_state = %q — the envelope's Resolved must not close a forge-owned row (rank 1)", state)
 	}
 }
 

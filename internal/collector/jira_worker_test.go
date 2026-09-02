@@ -34,6 +34,8 @@ type fakeJiraStore struct {
 	released    []string // "jpsID@lockedAt" — shutdown claim releases
 	completeErr error    // when set, CompleteJiraScan fails once with it
 	checkptErr  error    // when set, CheckpointJiraProject fails once with it
+	disableErr  error    // when set, DisableJiraProject fails once with it
+	recordErr   error    // when set, RecordJiraFailure fails once with it
 
 	// cancelOnClaim, when set, fires as the claim returns — the
 	// "shutdown lands right after the claim" shape.
@@ -94,10 +96,20 @@ func (f *fakeJiraStore) CompleteJiraScan(_ context.Context, _ int64, _ time.Time
 	return nil
 }
 func (f *fakeJiraStore) RecordJiraFailure(context.Context, int64, time.Time) error {
+	if f.recordErr != nil {
+		err := f.recordErr
+		f.recordErr = nil
+		return err
+	}
 	f.failures++
 	return nil
 }
 func (f *fakeJiraStore) DisableJiraProject(context.Context, int64) error {
+	if f.disableErr != nil {
+		err := f.disableErr
+		f.disableErr = nil
+		return err
+	}
 	f.disabled = true
 	return nil
 }

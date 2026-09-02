@@ -240,6 +240,23 @@ func (s *PostgresStore) BridgeEmailToIssue(ctx context.Context, issueID, repoID,
 	// into a DROPPED message (observed live 2026-08-20: "bridge email
 	// to issue: deadlock detected" → dropped=1). Both statements are
 	// idempotent (ON CONFLICT DO NOTHING; recount is a pure recompute).
+	if err := s.bridgeEmailToIssueNoRecount(ctx, issueID, repoID, msgID); err != nil {
+		return err
+	}
+	if err := s.recountIssueComments(ctx, issueID); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// bridgeEmailToIssueNoRecount is the ref insert alone — for callers
+// that bridge MANY messages onto one issue and recount ONCE afterward
+// (Copilot round 17, suppressed #2: the per-comment recount made a
+// full comment block quadratic — recount i for comment i — and every
+// later issue update repeated it). Per-message callers keep the
+// recounting BridgeEmailToIssue.
+func (s *PostgresStore) bridgeEmailToIssueNoRecount(ctx context.Context, issueID, repoID, msgID int64) error {
 	if err := s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `
 			INSERT INTO aveloxis_data.issue_message_ref (issue_id, repo_id, msg_id, data_source)
@@ -250,11 +267,13 @@ func (s *PostgresStore) BridgeEmailToIssue(ctx context.Context, issueID, repoID,
 	}); err != nil {
 		return fmt.Errorf("bridge email to issue: %w", err)
 	}
-	if err := s.recountIssueComments(ctx, issueID); err != nil {
-		return err
-	}
-
 	return nil
+}
+
+// RecountIssueComments recomputes the logical comment count once —
+// the batch caller's closing half of bridgeEmailToIssueNoRecount.
+func (s *PostgresStore) RecountIssueComments(ctx context.Context, issueID int64) error {
+	return s.recountIssueComments(ctx, issueID)
 }
 
 // recountIssueComments recomputes issues.comment_count as the LOGICAL

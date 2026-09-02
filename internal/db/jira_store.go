@@ -974,7 +974,12 @@ func (s *PostgresStore) UpsertJiraComment(ctx context.Context, in JiraAPIComment
 	if lerr != nil {
 		return 0, fmt.Errorf("link notification for comment %d: %w", in.CommentID, lerr)
 	}
-	if err := s.BridgeEmailToIssue(ctx, in.IssueID, in.RepoID, msgID); err != nil {
+	// Round 17 (suppressed #2): the bridge here is recount-FREE — the
+	// processor writes a whole comment block per envelope and recounts
+	// the issue ONCE after its loop (the per-comment recount was
+	// quadratic in the block size and repeated on every later issue
+	// update).
+	if err := s.bridgeEmailToIssueNoRecount(ctx, in.IssueID, in.RepoID, msgID); err != nil {
 		return 0, fmt.Errorf("bridge jira comment %d: %w", in.CommentID, err)
 	}
 	return msgID, nil

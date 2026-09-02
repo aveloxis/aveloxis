@@ -162,7 +162,7 @@ if [ "$DRY_RUN" = "--dry-run" ]; then
     SELECT count(*) FROM x
     WHERE (starts_with(x.node,'PR_') AND EXISTS (SELECT 1 FROM aveloxis_data.pull_requests p WHERE p.node_id = x.node))
        OR (starts_with(x.node,'I_')  AND EXISTS (SELECT 1 FROM aveloxis_data.issues i        WHERE i.node_id = x.node));")
-  echo "   resolvable against collected entities: $RESOLVABLE"
+  echo "   resolvable against collected entities: $RESOLVABLE (upper bound — the write pass additionally group-scopes each link)"
   echo "   (the remainder reference issues/PRs this database has not collected;"
   echo "    they are left NULL rather than guessed)"
   echo "== dry run, no writes."
@@ -189,15 +189,31 @@ while [ "$LO" -lt "$MAXID" ]; do
         SELECT DISTINCT ON (x.email_message_id)
                x.email_message_id, p.pull_request_id AS pr_id, i.issue_id AS issue_id
         FROM (
-          SELECT email_message_id, $NODE_EXPR AS node
+          SELECT email_message_id, $NODE_EXPR AS node, repo_id, rgls_id
           FROM aveloxis_data.email_message
           WHERE $CANDIDATE_FILTER
             AND email_message_id > $LO AND email_message_id <= $HI
         ) x
+        -- Round 17 #2 (PR #193): the node ID is sender-controlled, so
+        -- the heal applies the same repo-GROUP scope as the live
+        -- resolver — the entity must belong to the mail's PMC group
+        -- (rgls -> repo_group), else exactly the mail's own repo.
         LEFT JOIN aveloxis_data.pull_requests p
                ON starts_with(x.node,'PR_') AND p.node_id = x.node
+              AND ((x.rgls_id IS NOT NULL AND p.repo_id IN (
+                     SELECT rr.repo_id FROM aveloxis_data.repos rr
+                     WHERE rr.repo_group_id = (SELECT g.repo_group_id
+                            FROM aveloxis_data.repo_groups_list_serve g
+                            WHERE g.rgls_id = x.rgls_id)))
+                   OR (x.rgls_id IS NULL AND p.repo_id = x.repo_id))
         LEFT JOIN aveloxis_data.issues i
                ON starts_with(x.node,'I_')  AND i.node_id = x.node
+              AND ((x.rgls_id IS NOT NULL AND i.repo_id IN (
+                     SELECT rr.repo_id FROM aveloxis_data.repos rr
+                     WHERE rr.repo_group_id = (SELECT g.repo_group_id
+                            FROM aveloxis_data.repo_groups_list_serve g
+                            WHERE g.rgls_id = x.rgls_id)))
+                   OR (x.rgls_id IS NULL AND i.repo_id = x.repo_id))
         WHERE p.pull_request_id IS NOT NULL OR i.issue_id IS NOT NULL
         -- node_id carries no UNIQUE and duplicate repo rows are a real state
         -- until dedup-repos / reconcile-repos drain. A GitHub node ID is

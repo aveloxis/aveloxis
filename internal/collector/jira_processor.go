@@ -41,6 +41,7 @@ type jiraProcStore interface {
 	MintJiraContributor(ctx context.Context, jiraName, displayName string) (string, error)
 	UpsertJiraIssueFromAPI(ctx context.Context, in db.JiraAPIIssue) (int64, error)
 	UpsertJiraComment(ctx context.Context, in db.JiraAPIComment) (int64, error)
+	RecountIssueComments(ctx context.Context, issueID int64) error
 	MarkJiraStagingProcessed(ctx context.Context, jsIDs []int64) error
 	RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error
 }
@@ -249,6 +250,7 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 			"total", is.Fields.Comment.Total,
 			"returned", len(is.Fields.Comment.Comments))
 	}
+	wrote := 0
 	for _, cm := range is.Fields.Comment.Comments {
 		author, aerr := p.resolveIdentity(ctx, cm.Author)
 		if aerr != nil {
@@ -277,6 +279,14 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 			Updated:       jiraTime(cm.Updated),
 		})
 		if err != nil {
+			return err
+		}
+		wrote++
+	}
+	if wrote > 0 {
+		// One recount per issue per envelope (round 17, suppressed #2)
+		// — UpsertJiraComment's bridge is recount-free.
+		if err := p.store.RecountIssueComments(ctx, issueID); err != nil {
 			return err
 		}
 	}

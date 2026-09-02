@@ -132,7 +132,7 @@ func TestResolveMirrorLinkByNodeIDRoutesByPrefix(t *testing.T) {
 	})
 
 	t.Run("PR_ resolves to the pull request", func(t *testing.T) {
-		gotIssue, gotPR, err := store.ResolveMirrorLinkByNodeID(ctx, prNode)
+		gotIssue, gotPR, err := store.ResolveMirrorLinkByNodeID(ctx, prNode, repoID, nil)
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
@@ -144,7 +144,7 @@ func TestResolveMirrorLinkByNodeIDRoutesByPrefix(t *testing.T) {
 		}
 	})
 	t.Run("I_ resolves to the issue", func(t *testing.T) {
-		gotIssue, gotPR, err := store.ResolveMirrorLinkByNodeID(ctx, issueNode)
+		gotIssue, gotPR, err := store.ResolveMirrorLinkByNodeID(ctx, issueNode, repoID, nil)
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
@@ -162,7 +162,7 @@ func TestResolveMirrorLinkByNodeIDRoutesByPrefix(t *testing.T) {
 		{"empty", ""},
 	} {
 		t.Run(tc.name+" is a clean miss", func(t *testing.T) {
-			gotIssue, gotPR, err := store.ResolveMirrorLinkByNodeID(ctx, tc.node)
+			gotIssue, gotPR, err := store.ResolveMirrorLinkByNodeID(ctx, tc.node, repoID, nil)
 			if err != nil || gotIssue != nil || gotPR != nil {
 				t.Errorf("got (%v,%v,%v), want (nil,nil,nil)", gotIssue, gotPR, err)
 			}
@@ -178,7 +178,7 @@ func TestResolveMirrorLinkByNodeIDPropagatesQueryErrors(t *testing.T) {
 	store.Close() // every subsequent query fails
 
 	for _, node := range []string{"PR_avTESTclosed", "I_avTESTclosed"} {
-		gotIssue, gotPR, err := store.ResolveMirrorLinkByNodeID(ctx, node)
+		gotIssue, gotPR, err := store.ResolveMirrorLinkByNodeID(ctx, node, 1, nil)
 		if err == nil {
 			t.Errorf("%s: err = nil on a closed pool — SR-5: a lookup error is not 'no link'", node)
 		}

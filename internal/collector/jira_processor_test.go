@@ -34,6 +34,7 @@ type fakeJiraProcStore struct {
 	issues         []db.JiraAPIIssue
 	comments       []db.JiraAPIComment
 	processed      []int64
+	recounted      []int64 // issues RecountIssueComments was called for
 }
 
 func (f *fakeJiraProcStore) JiraProjectsWithStaging(_ context.Context, afterID int64, limit int) ([]int64, error) {
@@ -102,6 +103,11 @@ func (f *fakeJiraProcStore) UpsertJiraComment(_ context.Context, in db.JiraAPICo
 func (f *fakeJiraProcStore) RefreshQueueGatheredCounts(_ context.Context, repoID int64) error {
 	f.refreshedRepos = append(f.refreshedRepos, repoID)
 	return f.refreshErr
+}
+
+func (f *fakeJiraProcStore) RecountIssueComments(_ context.Context, issueID int64) error {
+	f.recounted = append(f.recounted, issueID)
+	return nil
 }
 
 func (f *fakeJiraProcStore) MarkJiraStagingProcessed(_ context.Context, ids []int64) error {

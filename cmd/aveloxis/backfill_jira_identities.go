@@ -76,6 +76,23 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 			if len(regs) == 0 {
 				return fmt.Errorf("no enabled Jira project registrations — run `aveloxis register-jira-projects` first (the registration's repo mapping and base URL are what this backfill writes against)")
 			}
+			// Copilot round 17 (suppressed): an unknown --project used to
+			// skip every registration and exit 0 with "backfilled 0
+			// issues" — a typo looked like a completed targeted
+			// backfill. Validate the key against the enabled
+			// registrations before entering the loop.
+			if project != "" {
+				found := false
+				for _, c := range regs {
+					if c.ProjectKey == project {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("--project %q matches no ENABLED Jira registration (%d registered) — check the key or run `aveloxis register-jira-projects`", project, len(regs))
+				}
+			}
 			processed, linked, minted, failedProjects, failedIssues, skippedNoRepo := 0, 0, 0, 0, 0, 0
 			for _, c := range regs {
 				if project != "" && c.ProjectKey != project {

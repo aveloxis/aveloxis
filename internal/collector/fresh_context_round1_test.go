@@ -111,3 +111,30 @@ func TestThreadInheritanceLookupFailureDefersRow(t *testing.T) {
 		t.Fatalf("processed = %v after replay, want the row marked", store.processed)
 	}
 }
+
+// TestJiraCommentBlockRecountsOnce (Copilot round 17 suppressed #2 at
+// the processor layer): a whole comment block on one envelope must
+// trigger exactly ONE RecountIssueComments, not one per comment.
+func TestJiraCommentBlockRecountsOnce(t *testing.T) {
+	repoID := int64(42)
+	env := `{"id":"777","key":"AVCB-1","fields":{"summary":"s","status":{"name":"Open"},
+		"updated":"2026-05-01T10:00:00.000+0000","created":"2026-05-01T10:00:00.000+0000",
+		"comment":{"comments":[
+			{"id":"1","body":"a","created":"2026-05-01T10:01:00.000+0000","updated":"2026-05-01T10:01:00.000+0000"},
+			{"id":"2","body":"b","created":"2026-05-01T10:02:00.000+0000","updated":"2026-05-01T10:02:00.000+0000"},
+			{"id":"3","body":"c","created":"2026-05-01T10:03:00.000+0000","updated":"2026-05-01T10:03:00.000+0000"}]}}}`
+	store := &fakeJiraProcStore{
+		batches:    [][]db.JiraStagingRow{{{JsID: 1, IssueKey: "AVCB-1", RepoID: &repoID, Envelope: []byte(env)}}},
+		identities: map[string][3]any{},
+	}
+	p := NewJiraProcessor(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := p.DrainOnce(context.Background()); err != nil {
+		t.Fatalf("DrainOnce: %v", err)
+	}
+	if len(store.comments) != 3 {
+		t.Fatalf("comments = %d, want 3", len(store.comments))
+	}
+	if len(store.recounted) != 1 {
+		t.Fatalf("RecountIssueComments called %d times for a 3-comment block, want exactly 1 (the per-comment recount is quadratic)", len(store.recounted))
+	}
+}

@@ -37,8 +37,8 @@ type mlProcessorStore interface {
 	GetPrimaryRepoForGroup(ctx context.Context, repoGroupID int64) (int64, bool, error)
 	ResolveContributorIDByEmail(ctx context.Context, email string) (string, bool, error)
 	ApplyTrackerAction(ctx context.Context, issueID int64, action string, sentAt time.Time, emailMessageID int64) error
-	ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int) (*int64, *int64, error)
-	ResolveMirrorLinkByNodeID(ctx context.Context, nodeID string) (*int64, *int64, error)
+	ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int, messageRepoID int64, repoGroupID *int64) (*int64, *int64, error)
+	ResolveMirrorLinkByNodeID(ctx context.Context, nodeID string, repoID int64, repoGroupID *int64) (*int64, *int64, error)
 	FindRepoByURL(ctx context.Context, gitURL string) (int64, error)
 	UpsertEmailMessage(ctx context.Context, em *model.EmailMessage) (int64, error)
 	UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string, cleanBody, cleanRule string) (int64, error)
@@ -395,7 +395,7 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		// works under mirror_handling="metadata_only" (no body stored).
 		var nodeErr error
 		if m.MirrorNodeID != "" {
-			linkedIssueID, linkedPRID, nodeErr = p.store.ResolveMirrorLinkByNodeID(ctx, m.MirrorNodeID)
+			linkedIssueID, linkedPRID, nodeErr = p.store.ResolveMirrorLinkByNodeID(ctx, m.MirrorNodeID, repoID, row.RepoGroupID)
 			if nodeErr != nil {
 				if errors.Is(nodeErr, context.Canceled) {
 					return nodeErr // shutdown, not a failure (pass 38)
@@ -420,7 +420,7 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 				owner = "apache"
 			}
 			var bodyErr error
-			linkedIssueID, linkedPRID, bodyErr = p.store.ResolveMirrorLink(ctx, owner, m.MirrorRepo, m.MirrorKind, m.MirrorNumber)
+			linkedIssueID, linkedPRID, bodyErr = p.store.ResolveMirrorLink(ctx, owner, m.MirrorRepo, m.MirrorKind, m.MirrorNumber, repoID, row.RepoGroupID)
 			if bodyErr != nil {
 				if errors.Is(bodyErr, context.Canceled) {
 					return bodyErr // shutdown, not a failure

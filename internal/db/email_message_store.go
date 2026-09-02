@@ -215,18 +215,34 @@ func (s *PostgresStore) GetPrimaryRepoForGroup(ctx context.Context, repoGroupID 
 // propagates: a lookup ERROR is not "not found" (SR-5), and silently
 // treating one as a miss would leave the row permanently unlinked while
 // reporting success.
-func (s *PostgresStore) ResolveMirrorLinkByNodeID(ctx context.Context, nodeID string) (issueID, prID *int64, err error) {
+// ResolveMirrorLinkByNodeID is SCOPED to the message's repo GROUP
+// (Copilot round 17 #2): a Message-ID is entirely sender-controlled —
+// the round-16 host gate raised nothing an attacker cannot type — so
+// the containment is a cross-check the sender does NOT control: the
+// resolved entity must belong to the same PMC's repo group as the
+// list the message arrived on (nil group falls back to the message's
+// own repo). Legitimate GitBox mail can reference any of the PMC's
+// repos (many repos mirror to one dev@ list), so group scope keeps
+// those links while a foreign project's public node ID becomes a
+// clean miss. Residual, stated honestly: a list participant can
+// still name entities WITHIN their own project's group — the same
+// exposure the body-URL fallback always had.
+func (s *PostgresStore) ResolveMirrorLinkByNodeID(ctx context.Context, nodeID string, repoID int64, repoGroupID *int64) (issueID, prID *int64, err error) {
 	if nodeID == "" {
 		return nil, nil, nil
 	}
+	const scope = ` AND (($3::bigint IS NOT NULL AND r.repo_group_id = $3)
+			        OR ($3::bigint IS NULL AND r.repo_id = $2))`
 	switch {
 	case strings.HasPrefix(nodeID, "PR_"):
 		var id int64
 		e := s.pool.QueryRow(ctx,
-			`SELECT pull_request_id FROM aveloxis_data.pull_requests WHERE node_id = $1 LIMIT 1`,
-			nodeID).Scan(&id)
+			`SELECT p.pull_request_id FROM aveloxis_data.pull_requests p
+			 JOIN aveloxis_data.repos r ON r.repo_id = p.repo_id
+			 WHERE p.node_id = $1`+scope+` LIMIT 1`,
+			nodeID, repoID, repoGroupID).Scan(&id)
 		if errors.Is(e, pgx.ErrNoRows) {
-			return nil, nil, nil // not collected — clean miss
+			return nil, nil, nil // not collected in scope — clean miss
 		}
 		if e != nil {
 			return nil, nil, fmt.Errorf("resolve mirror PR by node_id %q: %w", nodeID, e)
@@ -235,8 +251,10 @@ func (s *PostgresStore) ResolveMirrorLinkByNodeID(ctx context.Context, nodeID st
 	case strings.HasPrefix(nodeID, "I_"):
 		var id int64
 		e := s.pool.QueryRow(ctx,
-			`SELECT issue_id FROM aveloxis_data.issues WHERE node_id = $1 LIMIT 1`,
-			nodeID).Scan(&id)
+			`SELECT i.issue_id FROM aveloxis_data.issues i
+			 JOIN aveloxis_data.repos r ON r.repo_id = i.repo_id
+			 WHERE i.node_id = $1`+scope+` LIMIT 1`,
+			nodeID, repoID, repoGroupID).Scan(&id)
 		if errors.Is(e, pgx.ErrNoRows) {
 			return nil, nil, nil
 		}
@@ -253,19 +271,24 @@ func (s *PostgresStore) ResolveMirrorLinkByNodeID(ctx context.Context, nodeID st
 // already collected, so a mirror message links to its parent instead of
 // duplicating it (§5b). kind is "pull" or "issues". Returns (nil, nil, nil)
 // when the repo or the issue/PR isn't in the catalog yet.
-func (s *PostgresStore) ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int) (issueID, prID *int64, err error) {
+func (s *PostgresStore) ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int, messageRepoID int64, repoGroupID *int64) (issueID, prID *int64, err error) {
 	// SR-5 throughout: ErrNoRows is a clean miss (we have not collected the
 	// entity); any other failure is an ERROR. Before v0.28.20 every failure
 	// here collapsed to a miss, which became load-bearing once the caller
 	// started branching on error-vs-miss to decide whether to fall back to
 	// this guessed-owner path at all.
+	// Round 17 #2: the claimed owner/repo is sender-controlled too, so
+	// the same group scope applies — a claim outside the message's
+	// repo group is a clean miss, never a link.
 	var repoID int64
 	e := s.pool.QueryRow(ctx, `
 		SELECT repo_id FROM aveloxis_data.repos
 		WHERE lower(repo_owner) = lower($1) AND lower(repo_name) = lower($2)
-		LIMIT 1`, owner, repo).Scan(&repoID)
+		  AND (($4::bigint IS NOT NULL AND repo_group_id = $4)
+		       OR ($4::bigint IS NULL AND repo_id = $3))
+		LIMIT 1`, owner, repo, messageRepoID, repoGroupID).Scan(&repoID)
 	if errors.Is(e, pgx.ErrNoRows) {
-		return nil, nil, nil // repo not collected — clean miss
+		return nil, nil, nil // repo not collected in scope — clean miss
 	}
 	if e != nil {
 		return nil, nil, fmt.Errorf("resolve mirror repo %s/%s: %w", owner, repo, e)

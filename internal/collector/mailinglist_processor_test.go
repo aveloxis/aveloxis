@@ -139,14 +139,14 @@ func (f *fakeProcStore) ResolveContributorIDByEmail(_ context.Context, email str
 	}
 	return "", false, nil
 }
-func (f *fakeProcStore) ResolveMirrorLink(context.Context, string, string, string, int) (*int64, *int64, error) {
+func (f *fakeProcStore) ResolveMirrorLink(_ context.Context, _, _, _ string, _ int, _ int64, _ *int64) (*int64, *int64, error) {
 	return f.mirrorIssueID, f.mirrorPRID, nil
 }
 
 // ResolveMirrorLinkByNodeID records the node IDs the processor asked about so
 // tests can pin that the node-ID path is tried, and returns the configured
 // node-keyed result (v0.28.20).
-func (f *fakeProcStore) ResolveMirrorLinkByNodeID(_ context.Context, nodeID string) (*int64, *int64, error) {
+func (f *fakeProcStore) ResolveMirrorLinkByNodeID(_ context.Context, nodeID string, _ int64, _ *int64) (*int64, *int64, error) {
 	f.nodeIDsAsked = append(f.nodeIDsAsked, nodeID)
 	if f.nodeErrUntil > 0 {
 		if len(f.nodeIDsAsked) <= f.nodeErrUntil {

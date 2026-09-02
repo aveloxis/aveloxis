@@ -177,10 +177,19 @@ func (c *Client) WalkProjectByUpdated(ctx context.Context, projectKey string, fi
 			}
 			tieKey = last
 		}
-		if serverLoc == nil && len(page.Issues) > 0 {
-			// Learn the server's zone from its own timestamps (the
-			// TimeLayout offset); every later literal renders exactly.
-			if t, perr := time.Parse(TimeLayout, page.Issues[0].Fields.Updated); perr == nil {
+		if len(page.Issues) > 0 {
+			// Re-learn the server's UTC offset from EVERY page's newest
+			// issue (Copilot round 17 #1): one frozen sample is not a
+			// timezone — a DST-observing server changes offset across a
+			// multi-year walk, and bounds rendered with the stale
+			// offset shift by the DST delta (the tie drain then queries
+			// the adjacent minute and trips its own stale-page bound).
+			// The page's LAST issue is the max-updated sample, i.e. the
+			// date closest to the next bound the walk renders, so the
+			// offset is correct on both sides of a transition except
+			// within the transition gap itself — where the next page's
+			// sample re-corrects it.
+			if t, perr := time.Parse(TimeLayout, page.Issues[len(page.Issues)-1].Fields.Updated); perr == nil {
 				_, off := t.Zone()
 				serverLoc = time.FixedZone("jira-server", off)
 			}

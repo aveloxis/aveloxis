@@ -403,3 +403,57 @@ func TestWalkTieDrainSurvivesServerCappedPages(t *testing.T) {
 		t.Fatalf("staged %d of %d — the capped tie drain lost issues", len(staged), n)
 	}
 }
+
+// TestWalkRelearnsOffsetAcrossDST (Copilot round 17 #1): a UTC offset
+// observed on ONE issue is not the server's timezone — a DST-observing
+// server changes offset across a multi-year walk, and freezing the
+// first page's offset shifts every later bound by the DST delta (the
+// tie drain then queries the adjacent minute and trips its own bound).
+// A two-offset server (a page in −08:00, a later page in −07:00) must
+// list every issue; freezing offset #1 loses the ones straddling the
+// change. Uses a per-page offset table to model the transition.
+func TestWalkRelearnsOffsetAcrossDST(t *testing.T) {
+	winter := time.FixedZone("PST", -8*3600)
+	summer := time.FixedZone("PDT", -7*3600)
+	// Two issues far apart in time; the later one is served in the
+	// summer offset (the server crossed a DST boundary between them).
+	keys := []string{"AVDST-1", "AVDST-2"}
+	upsWinter := time.Date(2026, 1, 15, 12, 0, 0, 0, winter)
+	upsSummer := time.Date(2026, 7, 15, 12, 0, 0, 0, summer)
+	served := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		jql := r.URL.Query().Get("jql")
+		// Serve one issue per page in its own offset — the walk must
+		// re-learn between them or the second bound shifts by an hour.
+		loc := winter
+		ups := []time.Time{upsWinter}
+		k := []string{"AVDST-1"}
+		if served > 0 {
+			loc = summer
+			ups = []time.Time{upsSummer}
+			k = []string{"AVDST-2"}
+		}
+		served++
+		_ = jql
+		_, _ = io.WriteString(w, jqlServeLoc(jql, k, ups, 50, loc))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	staged := map[string]bool{}
+	err := c.WalkProjectByUpdated(context.Background(), "AVDST", nil, 50, 0,
+		upsWinter.Add(-time.Hour), func(issues []Issue, _ []time.Time) error {
+			for _, is := range issues {
+				staged[is.Key] = true
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	_ = keys
+	if !staged["AVDST-1"] || !staged["AVDST-2"] {
+		t.Fatalf("staged = %v — an issue after a DST offset change was missed (the frozen first-page offset)", staged)
+	}
+}

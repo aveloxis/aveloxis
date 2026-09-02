@@ -5,6 +5,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -515,5 +516,61 @@ func TestHeaderlessRateLimit403MarksTheCheckoutBudget(t *testing.T) {
 	defer mu.Unlock()
 	if requests != 1 {
 		t.Fatalf("requests = %d, want 1 — the marked key must not be re-served (pre-fix the whole retry budget burned on it)", requests)
+	}
+}
+
+// TestBackgroundReserveActuallyBinds (Copilot round 8 on PR #193,
+// active): checkout must RESERVE the query's cost — pre-fix it only
+// gated on the pre-request balance, so concurrent background windows
+// all saw the same number and collectively spent through
+// GraphQLBackgroundReserve. With the optimistic 1-point spend, a key
+// holding reserve+3 admits exactly 3 background checkouts before the
+// gate closes (the response headers later overwrite with the
+// authoritative absolute, so an underestimate reconciles itself).
+func TestBackgroundReserveActuallyBinds(t *testing.T) {
+	kp := NewKeyPool([]string{"k"}, rlTestLogger())
+	kp.keys[0].GraphQLRemaining = GraphQLBackgroundReserve + 3
+	ctx := WithGraphQLFastFail(WithGraphQLBackgroundBudget(context.Background()))
+
+	got := 0
+	for i := 0; i < 10; i++ {
+		if _, err := kp.GetGraphQLKey(ctx); err != nil {
+			if !errors.Is(err, ErrGraphQLBudgetExhausted) {
+				t.Fatalf("checkout %d: %v", i, err)
+			}
+			break
+		}
+		got++
+	}
+	if got != 3 {
+		t.Fatalf("background checkouts admitted = %d, want exactly 3 — the reserve must BIND, not just gate on a never-decremented balance", got)
+	}
+}
+
+// TestBackgroundReserveBindsUnderConcurrency — the same contract with
+// 32 goroutines racing the checkout (run under -race): total
+// admissions never exceed the excess above the reserve.
+func TestBackgroundReserveBindsUnderConcurrency(t *testing.T) {
+	kp := NewKeyPool([]string{"k"}, rlTestLogger())
+	kp.keys[0].GraphQLRemaining = GraphQLBackgroundReserve + 5
+	ctx := WithGraphQLFastFail(WithGraphQLBackgroundBudget(context.Background()))
+
+	var mu sync.Mutex
+	admitted := 0
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := kp.GetGraphQLKey(ctx); err == nil {
+				mu.Lock()
+				admitted++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if admitted != 5 {
+		t.Fatalf("admitted = %d, want exactly 5 — concurrent checkouts must not spend through the reserve", admitted)
 	}
 }

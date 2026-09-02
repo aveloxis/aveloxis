@@ -16,6 +16,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func TestParsePortalPage(t *testing.T) {
@@ -100,5 +102,28 @@ func TestHomeReposDefaultLimit50(t *testing.T) {
 	docs := mustReadFile(t, "../../docs/guide/api.md")
 	if !strings.Contains(docs, "limit=50") {
 		t.Error("docs/guide/api.md must show the home/repos default limit as 50")
+	}
+}
+
+// TestMonitorQueueEchoFallsBackBothValues (Copilot round 8 on
+// PR #193, suppressed #1): when the sort key is invalid the store
+// used the collecting-first COMPOSITE and ignored dir entirely — the
+// envelope must echo BOTH values as empty, never parrot a "desc" that
+// was not applied (the effective-value contract).
+func TestMonitorQueueEchoFallsBackBothValues(t *testing.T) {
+	src := srctest.Read(t, "internal/api/portal.go")
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Server) handleAdminMonitorQueue("))
+	i := strings.Index(body, "if !db.QueueSortValid(sortKey) {")
+	if i < 0 {
+		t.Fatal("handleAdminMonitorQueue must gate the echo on db.QueueSortValid")
+	}
+	arm := body[i:]
+	if j := strings.Index(arm, "}"); j >= 0 {
+		arm = arm[:j]
+	}
+	for _, needle := range []string{`sortKey = ""`, `sortDir = ""`} {
+		if !strings.Contains(arm, needle) {
+			t.Errorf("the invalid-key fallback must reset %s — the composite order has no direction to echo", needle)
+		}
 	}
 }

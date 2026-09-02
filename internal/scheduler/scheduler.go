@@ -1310,9 +1310,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 // completion stamp whose first write was cut down by shutdown. Must fit
 // comfortably inside ShutdownGrace (default 10s): the worker goroutine
 // still holds its semaphore slot during the retry, so the shutdown
-// drain waits for this bounded attempt before the pool closes.
-// completeJobStampRetryTimeout bounds the background-context retry of a
-// completion stamp whose first write was cut down by shutdown. A var
+// drain waits for this bounded attempt before the pool closes. A var
 // only as a test seam (the retry-failure path needs a born-expired
 // retry context to be reachable deterministically);
 // TestCompleteJobStampRetryTimeoutProductionValue pins the production

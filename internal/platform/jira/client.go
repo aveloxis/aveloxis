@@ -83,9 +83,11 @@ type Comment struct {
 }
 
 // CommentBlock is the inline comments connection. The pilot measured
-// zero truncation on 200 issues / 718 comments; the processor still
-// compares Total against len(Comments) and WARNs when Jira truncates
-// (the tail would otherwise vanish silently).
+// zero truncation on 200 issues / 718 comments. When Jira DOES cap
+// the block (Total > len(Comments)), the WORKER completes it before
+// staging — it re-walks IssueCommentsPage and REPLACES the block
+// (Copilot round 2 on PR #193, #2); the processor's Total-vs-len WARN
+// is only the backstop for envelopes staged before that fix.
 type CommentBlock struct {
 	Total    int       `json:"total"`
 	Comments []Comment `json:"comments"`

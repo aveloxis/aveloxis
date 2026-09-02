@@ -1099,8 +1099,9 @@ Admin-only:
   `commits`, `meta_issues`, `meta_prs`, `meta_commits` — resolved
   through a server-side allowlist (unknown keys keep the default
   collecting-first composite ordering); the envelope echoes the
-  EFFECTIVE `sort`/`dir` (an unknown key echoes as `""` = the default
-  ordering). The `meta_*` keys order by the latest repo_info snapshot
+  EFFECTIVE `sort`/`dir` (an unknown key echoes BOTH as `""` — the
+  composite ordering has no single direction, so a caller's `dir` is
+  never parroted when it was not applied). The `meta_*` keys order by the latest repo_info snapshot
   and are API-only — the SPA's paired "(ours / meta)" headers sort the
   gathered half.
 - `POST /api/v1/admin/monitor/queue/{repoID}/prioritize` — the SPA

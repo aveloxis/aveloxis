@@ -410,6 +410,18 @@ func (kp *KeyPool) GetGraphQLKey(ctx context.Context) (*APIKey, error) {
 			k := kp.keys[idx]
 			if !k.Invalid && now.After(k.quarantineUntil) && k.GraphQLRemaining > minBudget {
 				kp.rrIndexGQL = (idx + 1) % n
+				// Copilot round 8 on PR #193: RESERVE the query's cost at
+				// checkout. Without this, concurrent background windows
+				// all observed the same pre-request balance and could
+				// collectively spend through GraphQLBackgroundReserve —
+				// checkout gated but never consumed. One point is the
+				// measured cost of a history window query (v0.27.58);
+				// the response's X-RateLimit-Remaining OVERWRITES with
+				// the authoritative absolute in UpdateFromResponse, so
+				// an underestimate reconciles within one round-trip and
+				// a request that never gets a response leaves the
+				// conservative decrement in place (refilled at reset).
+				k.GraphQLRemaining--
 				kp.mu.Unlock()
 				return k, nil
 			}

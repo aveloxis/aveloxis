@@ -648,9 +648,13 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 	// an unknown key means the store used the default composite, and
 	// the envelope must say so, never parrot the caller's input.
 	if !db.QueueSortValid(sortKey) {
+		// Copilot round 8 on PR #193 (suppressed #1): when the key
+		// falls back, the store used the collecting-first COMPOSITE and
+		// ignored dir entirely — echoing the caller's "desc" would
+		// claim a direction that was never applied. Both echo empty.
 		sortKey = ""
-	}
-	if strings.EqualFold(sortDir, "desc") {
+		sortDir = ""
+	} else if strings.EqualFold(sortDir, "desc") {
 		sortDir = "desc"
 	} else {
 		sortDir = "asc"

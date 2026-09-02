@@ -48,7 +48,7 @@ This creates:
 
 - **`aveloxis_data`** -- 101 tables + 20 materialized views for collected data
 - **`aveloxis_scan`** — 4 tables (ScanCode per-file license/copyright results + history)
-- **`aveloxis_ops`** -- 41 tables for operational state (queue, staging, credentials, etc.)
+- **`aveloxis_ops`** -- 42 tables for operational state (queue, staging, credentials, etc.)
 
 The migration uses `CREATE ... IF NOT EXISTS` throughout, so it is safe to run repeatedly. It never modifies or reads from `augur_data` or `augur_operations` schemas.
 
@@ -99,7 +99,7 @@ Aveloxis and Augur use completely separate schemas in the same PostgreSQL databa
 | `augur_data` | Augur | Augur's collected data |
 | `augur_operations` | Augur | Augur's operational tables |
 | `aveloxis_data` | Aveloxis | Aveloxis collected data (101 tables + 20 matviews) |
-| `aveloxis_ops` | Aveloxis | Aveloxis operational tables (41 tables) |
+| `aveloxis_ops` | Aveloxis | Aveloxis operational tables (42 tables) |
 
 Key points:
 

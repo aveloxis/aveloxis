@@ -898,21 +898,44 @@ func (c *CollectionConfig) JiraWorkersOrDefault() int {
 
 // JiraCadenceDuration returns the per-project sync cadence
 // (default 24h). SR-10: the accessor is the single default layer.
+// jiraCadenceMaxHours bounds jira_cadence_hours before the multiply
+// (Copilot round 18 on PR #193): a large positive value overflows
+// time.Duration(h)*time.Hour into a NEGATIVE duration, and a negative
+// cadence makes ClaimNextJiraProject treat every completed project as
+// immediately due — continuous resyncs instead of the configured
+// delay. ~10 years is far beyond any real cadence and leaves headroom
+// under time.Duration's ~292-year max.
+const jiraCadenceMaxHours = 24 * 365 * 10
+
 func (c *CollectionConfig) JiraCadenceDuration() time.Duration {
 	if c.JiraCadenceHours <= 0 {
 		return 24 * time.Hour
 	}
-	return time.Duration(c.JiraCadenceHours) * time.Hour
+	h := c.JiraCadenceHours
+	if h > jiraCadenceMaxHours {
+		h = jiraCadenceMaxHours
+	}
+	return time.Duration(h) * time.Hour
 }
 
 // MailingListSenderBackfillInterval returns the sender-backfill ticker
 // cadence. SR-10: this accessor is the SINGLE default layer — zero or
 // negative falls back to 60 minutes; no downstream re-clamp.
+// senderBackfillMaxMinutes bounds mailing_list_sender_backfill_interval_minutes
+// before the multiply (Copilot round 18): an overflow to a
+// NON-POSITIVE duration is passed straight to time.NewTicker, which
+// PANICS and terminates serve. ~10 years of minutes is the clamp.
+const senderBackfillMaxMinutes = 60 * 24 * 365 * 10
+
 func (c *CollectionConfig) MailingListSenderBackfillInterval() time.Duration {
 	if c.MailingListSenderBackfillMinutes <= 0 {
 		return 60 * time.Minute
 	}
-	return time.Duration(c.MailingListSenderBackfillMinutes) * time.Minute
+	m := c.MailingListSenderBackfillMinutes
+	if m > senderBackfillMaxMinutes {
+		m = senderBackfillMaxMinutes
+	}
+	return time.Duration(m) * time.Minute
 }
 
 // MailingListMirrorHandlingOrDefault falls back to "metadata_only".

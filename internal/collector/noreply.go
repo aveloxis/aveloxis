@@ -83,6 +83,18 @@ func IsAutomationEmail(email string) bool {
 		(lower == "jira@apache.org" || strings.HasPrefix(lower, "jira+")) {
 		return true
 	}
+	// Bugzilla relays (v0.29.0 pre-release, summary/27 B0): ASF's
+	// bugzilla@ / bugzilla-daemon@ (+ per-list daemon variants) send
+	// ~193K notifications already in the corpus — IsBotEmail did not
+	// know them, so the sender-resolve ticker was minting phantom
+	// contributor rows for them exactly like the jira@ phantom. Kept
+	// in lockstep with the SQL twin (TestAutomationEmailSQLParity).
+	if strings.HasSuffix(lower, "@apache.org") &&
+		(lower == "bugzilla@apache.org" ||
+			strings.HasPrefix(lower, "bugzilla-") ||
+			strings.HasPrefix(lower, "bugzilla+")) {
+		return true
+	}
 	return false
 }
 

@@ -138,3 +138,53 @@ func TestJiraCommentBlockRecountsOnce(t *testing.T) {
 		t.Fatalf("RecountIssueComments called %d times for a 3-comment block, want exactly 1 (the per-comment recount is quadratic)", len(store.recounted))
 	}
 }
+
+// TestJiraDrainRefreshesOnPartialCommit (Copilot round 18 on PR #193):
+// processEnvelope commits the issue before upserting comments, so a
+// later comment failure leaves the issue committed while the repo used
+// to be added to drainedRepos only AFTER full success — the activity
+// cache never refreshed. The repo is marked BEFORE processing now.
+func TestJiraDrainRefreshesOnPartialCommit(t *testing.T) {
+	repoID := int64(42)
+	// An envelope whose comment block has a non-numeric id path is
+	// fine; drive a hard failure via a comment upsert error instead.
+	env := `{"id":"555","key":"AVPC-1","fields":{"summary":"s","status":{"name":"Open"},
+		"updated":"2026-05-01T10:00:00.000+0000","created":"2026-05-01T10:00:00.000+0000",
+		"comment":{"comments":[{"id":"1","body":"a","created":"2026-05-01T10:01:00.000+0000","updated":"2026-05-01T10:01:00.000+0000"}]}}}`
+	store := &fakeJiraProcStore{
+		batches:    [][]db.JiraStagingRow{{{JsID: 1, IssueKey: "AVPC-1", RepoID: &repoID, Envelope: []byte(env)}}},
+		identities: map[string][3]any{},
+		commentErr: errors.New("transient comment failure"),
+	}
+	p := NewJiraProcessor(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// The drain surfaces the envelope error; the deferred sweep must
+	// still have refreshed the repo whose issue committed.
+	_, _ = p.DrainOnce(context.Background())
+	if len(store.refreshedRepos) != 1 || store.refreshedRepos[0] != repoID {
+		t.Fatalf("refreshedRepos = %v — a repo whose issue committed before a comment failure must still refresh the activity cache", store.refreshedRepos)
+	}
+}
+
+// TestMailingListDrainRefreshesOnAllDeferredBatch (Copilot round 18):
+// processRow commits an issue via LinkOrCreateIssueFromEmail BEFORE a
+// later tracker-action write can defer the row, so an all-deferred
+// batch (processed==0) can still have committed issues. The refresh
+// now gates on repoResolved, not processed>0.
+func TestMailingListDrainRefreshesOnAllDeferredBatch(t *testing.T) {
+	store := &fakeProcStore{
+		primaryRepoID: 42, primaryRepoOK: true,
+		rows:             []db.StagedMailingListRow{mlRetryRow(1)}, // [Resolved], commits then defers
+		applyActionFails: 1,
+	}
+	p := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	n, err := p.DrainList(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("DrainList: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("processed = %d, want 0 (the row deferred)", n)
+	}
+	if len(store.refreshedRepos) != 1 || store.refreshedRepos[0] != 42 {
+		t.Fatalf("refreshedRepos = %v — an all-deferred batch that committed an issue must still refresh the activity cache", store.refreshedRepos)
+	}
+}

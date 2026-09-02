@@ -370,10 +370,10 @@ Creates or updates the database schema.
 aveloxis migrate
 ```
 
-Creates 146 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 147 tables and 20 materialized views across three PostgreSQL schemas:
 
 - **`aveloxis_data`** (101 tables + 20 materialized views) -- all collected data
-- **`aveloxis_ops`** (41 tables) -- operational state
+- **`aveloxis_ops`** (42 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.
@@ -1310,6 +1310,35 @@ steady-state operation once the linked repos' GitHub data is collected and
 the periodic backfills run. See
 [Mailing-list ingestion §12](../architecture/mailing-list.md) for the
 collection-ordering caveat.
+
+---
+
+## `aveloxis deploy-checklist`
+
+Prints the current release's manual deploy/heal steps (read-only).
+Releases that heal data a plain restart does not touch — v0.29.0 is
+one — register a checklist here.
+
+```bash
+aveloxis deploy-checklist
+```
+
+## `aveloxis ack-deploy`
+
+Records that the current binary version's deploy/heal steps were run,
+so `aveloxis start serve` / `aveloxis start all` stops prompting for
+them. Run it AFTER completing the `deploy-checklist` steps.
+
+```bash
+aveloxis ack-deploy [--note "..."]
+```
+
+**The start gate:** on an EXISTING fleet, `aveloxis start serve` and
+`aveloxis start all` refuse to start (or, in an interactive terminal,
+prompt) when the current release has un-acknowledged deploy steps —
+the release's data-side healing must not be silently skipped. Fresh
+installs and already-acknowledged releases start silently. Automation
+can bypass with `--skip-deploy-check`.
 
 ---
 

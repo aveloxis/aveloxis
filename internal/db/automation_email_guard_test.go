@@ -65,6 +65,11 @@ func TestAutomationEmailSQLParity(t *testing.T) {
 		{"jira+amqnet@apache.org", true},
 		{"git@apache.org", true},
 		{"gitbox@apache.org", true},
+		{"bugzilla@apache.org", true}, // summary/27 B0
+		{"bugzilla-daemon@apache.org", true},
+		{"bugzilla+tomcat@apache.org", true},
+		{"bugzillafan@example.org", false},    // not a relay, not apache
+		{"bugzilla-lover@example.org", false}, // apache suffix required
 		{"notifications@github.com", true},
 		{"x[bot]@users.noreply.github.com", true},
 		{"noreply@example.org", true},

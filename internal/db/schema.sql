@@ -2153,6 +2153,15 @@ INSERT INTO aveloxis_ops.schema_meta (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
 -- keep healing hand-dropped objects. Operator replay: DELETE the
 -- step's row, then run `aveloxis migrate` (see migration_ledger.go).
 -- ============================================================
+-- deploy_ack: per binary version, records that an operator confirmed
+-- the release's manual deploy/heal steps ran (the `aveloxis start
+-- serve`/`start all` deploy gate consults it — v0.29.0).
+CREATE TABLE IF NOT EXISTS aveloxis_ops.deploy_ack (
+    tool_version    TEXT PRIMARY KEY,
+    acknowledged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    note            TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS aveloxis_ops.migration_ledger (
     step_label   TEXT PRIMARY KEY,
     completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -3037,6 +3046,13 @@ AS $$
         WHEN lower(addr) LIKE '%@github.com' AND lower(addr) NOT LIKE '%users.noreply%' THEN TRUE
         WHEN lower(addr) IN ('jira@apache.org', 'git@apache.org', 'gitbox@apache.org') THEN TRUE
         WHEN lower(addr) LIKE 'jira+%@apache.org' THEN TRUE
+        -- Bugzilla relays (v0.29.0 pre-release, summary/27 B0): the
+        -- Go twin is collector.IsAutomationEmail; the ledgered phantom
+        -- heal reads THIS function, so adding them here catches the
+        -- ~4 live bugzilla@ phantoms on the first v0.29.0 migrate.
+        WHEN lower(addr) = 'bugzilla@apache.org' THEN TRUE
+        WHEN lower(addr) LIKE 'bugzilla-%@apache.org' THEN TRUE
+        WHEN lower(addr) LIKE 'bugzilla+%@apache.org' THEN TRUE
         WHEN EXISTS (
             SELECT 1 FROM aveloxis_data.repo_groups_list_serve
             WHERE lower(rgls_email) = lower(addr)

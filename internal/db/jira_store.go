@@ -94,10 +94,17 @@ func (s *PostgresStore) RegisterJiraProject(ctx context.Context, projectKey, bas
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, JiraRegistrationAdvisoryLockID); err != nil {
 		return fmt.Errorf("register jira project %q: registration lock: %w", projectKey, err)
 	}
+	// Copilot round 18: probe EVERY registration whose URL differs
+	// from the incoming one — the old `project_key <> $2` exclusion
+	// let a same-key re-register with a DIFFERENT base_url slip past
+	// the guard when it was the only registration, overwriting the URL
+	// while instance-blind identities/comment ids from the old server
+	// remained. A same-URL re-register (base_url = $1) is still
+	// excluded, so it stays idempotent.
 	var other string
 	err = tx.QueryRow(ctx, `
 		SELECT base_url FROM aveloxis_ops.jira_project_serve
-		WHERE base_url <> $1 AND project_key <> $2 LIMIT 1`, baseURL, projectKey).Scan(&other)
+		WHERE base_url <> $1 LIMIT 1`, baseURL).Scan(&other)
 	if err == nil {
 		return fmt.Errorf("register jira project %q: a different Jira instance %q is already registered — identity and comment keys are instance-blind, one instance per deployment until they are scoped (same instance at a new address: UPDATE aveloxis_ops.jira_project_serve SET base_url = ... for every row by hand)", projectKey, other)
 	}

@@ -123,6 +123,15 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 					// Rows drained so far still mark below via done.
 					break
 				}
+				if row.RepoID != nil {
+					// Copilot round 18: mark for the deferred refresh
+					// BEFORE processEnvelope — it commits the issue
+					// before resolving/upserting comments, so a later
+					// comment failure leaves the issue committed with
+					// the activity cache never refreshed. Marking here
+					// covers the partial-commit case (the map dedups).
+					drainedRepos[*row.RepoID] = struct{}{}
+				}
 				if row.RepoID == nil {
 					skipped++ // no repo mapping — stays staged (operator heals the registration)
 					continue
@@ -135,7 +144,6 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 					break // shutdown: rows drained so far still mark below
 				}
 				done = append(done, row.JsID)
-				drainedRepos[*row.RepoID] = struct{}{}
 			}
 			if len(done) > 0 {
 				if err := p.store.MarkJiraStagingProcessed(ctx, done); err != nil {

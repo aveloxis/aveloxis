@@ -206,7 +206,13 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 	// a canceled ctx — the shutdown-window staleness self-heals on the
 	// next drain or collection cycle).
 	defer func() {
-		if processed > 0 && repoResolved {
+		// Copilot round 18: refresh once a repo was RESOLVED (rows were
+		// attempted), not only when processed>0 — processRow commits
+		// an issue via LinkOrCreateIssueFromEmail BEFORE a later
+		// tracker-action/link write can return the retry sentinel, so
+		// an all-deferred batch (processed==0) can still have committed
+		// issues whose activity the home ranking must see.
+		if repoResolved {
 			refreshRepoActivity(ctx, p.store, p.logger, repoID, "mailing-list drain")
 		}
 	}()

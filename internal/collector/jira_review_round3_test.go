@@ -348,7 +348,12 @@ func TestJiraShutdownReleasesTheClaim(t *testing.T) {
 func TestJiraResumeFromCheckpointCompletes(t *testing.T) {
 	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
 	all := []string{"AVRS2-1", "AVRS2-2", "AVRS2-3"}
-	ups := []time.Time{base, base.Add(time.Minute), base.Add(time.Hour)}
+	// A sits OUTSIDE the walk's first-page timezone-skew margin
+	// (jiraMaxWestTZSkew = 12h before the checkpoint): the margin
+	// legitimately re-lists up to 12h of drained work as natural-key
+	// no-ops (fresh-context round 2026-09-02 #3), so the
+	// "pre-checkpoint work skipped" discriminator must live beyond it.
+	ups := []time.Time{base.Add(-13 * time.Hour), base.Add(time.Minute), base.Add(time.Hour)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, jiraJQLServe(r.URL.Query().Get("jql"), all, ups, 2))
@@ -367,9 +372,11 @@ func TestJiraResumeFromCheckpointCompletes(t *testing.T) {
 	if !store.completed {
 		t.Fatal("the resumed scan must run to done")
 	}
-	// The resume window is `updated >= checkpoint`: B re-lists (no-op
-	// under the natural key) and the tail C is collected. A must NOT
-	// re-list — the checkpoint's whole point is skipping drained work.
+	// The resume window is `updated >= checkpoint` (minus the bounded
+	// first-page skew margin): B re-lists (no-op under the natural
+	// key) and the tail C is collected. A — beyond the margin — must
+	// NOT re-list: the checkpoint's whole point is skipping drained
+	// work.
 	sawA, sawC := false, false
 	for _, s := range store.staged {
 		if strings.HasPrefix(s, "AVRS2-1@") {

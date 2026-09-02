@@ -30,13 +30,13 @@ const mailingListDrainBatch = 500
 // mailing-list pipeline from reproducing Augur's contention on the hot tables.
 type mlProcessorStore interface {
 	ListsWithStaging(ctx context.Context, system string, afterID int64, limit int) ([]int64, error)
-	GetMailingListStagingBatch(ctx context.Context, rglsID int64, limit int) ([]db.StagedMailingListRow, error)
+	GetMailingListStagingBatch(ctx context.Context, rglsID, afterID int64, limit int) ([]db.StagedMailingListRow, error)
 	MarkMailingListStagingProcessed(ctx context.Context, mlsIDs []int64) error
 	RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error
 
 	GetPrimaryRepoForGroup(ctx context.Context, repoGroupID int64) (int64, bool, error)
 	ResolveContributorIDByEmail(ctx context.Context, email string) (string, bool, error)
-	ApplyTrackerAction(ctx context.Context, issueID int64, action string, sentAt time.Time) error
+	ApplyTrackerAction(ctx context.Context, issueID int64, action string, sentAt time.Time, emailMessageID int64) error
 	ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int) (*int64, *int64, error)
 	ResolveMirrorLinkByNodeID(ctx context.Context, nodeID string) (*int64, *int64, error)
 	FindRepoByURL(ctx context.Context, gitURL string) (int64, error)
@@ -211,14 +211,16 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 		}
 	}()
 
+	rowCursor := int64(0) // intra-list keyset (fresh-context round 2026-09-02 #4)
 	for {
-		batch, err := p.store.GetMailingListStagingBatch(ctx, rglsID, mailingListDrainBatch)
+		batch, err := p.store.GetMailingListStagingBatch(ctx, rglsID, rowCursor, mailingListDrainBatch)
 		if err != nil {
 			return processed, err
 		}
 		if len(batch) == 0 {
 			return processed, nil
 		}
+		rowCursor = batch[len(batch)-1].MlsID
 
 		if !repoResolved {
 			rid, ok, rerr := p.resolveRepo(ctx, batch[0])
@@ -304,13 +306,10 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 			return processed, err
 		}
 		processed += len(done)
-		if len(done) == 0 {
-			// Every row in the batch deferred for retry: the next
-			// GetMailingListStagingBatch would re-select the SAME rows —
-			// return instead of spinning within this drain; the next
-			// drain cycle retries them.
-			return processed, nil
-		}
+		// An all-deferred batch no longer returns: the row cursor has
+		// advanced past it, so the loop reaches the list's tail; the
+		// deferred rows replay on the NEXT drain cycle (round-13 one
+		// level down).
 	}
 }
 
@@ -457,22 +456,6 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		} else if id > 0 {
 			projectedIssueID = id
 			linkedIssueID = &id
-			// C1: apply the notification's ACTION to the issue's state.
-			// Must be an explicit call on the LINK path — for an
-			// already-existing issue LinkOrCreateIssueFromEmail returns
-			// before its INSERT, so a DO UPDATE clause can never see a
-			// [Resolved]. Synthetic-gating + event-time ordering are
-			// enforced inside ApplyTrackerAction (SR-18).
-			if action := mailinglist.TrackerActionFromSubject(m.Subject); action != "" {
-				if aerr := p.store.ApplyTrackerAction(ctx, id, action, m.SentAt); aerr != nil {
-					if errors.Is(aerr, context.Canceled) {
-						return aerr
-					}
-					p.logger.Warn("mailing-list processor: tracker action apply failed — row deferred for retry",
-						"issue_id", id, "action", action, "error", aerr)
-					deferRetry = aerr
-				}
-			}
 		}
 	}
 
@@ -491,7 +474,19 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		if id, ok := threadIssue[m.ThreadRoot]; ok && id > 0 {
 			projectedIssueID = id
 			linkedIssueID = &id
-		} else if id, ok, _ := p.store.FindIssueForThread(ctx, m.ThreadRoot, repoID); ok {
+		} else if id, ok, terr := p.store.FindIssueForThread(ctx, m.ThreadRoot, repoID); terr != nil {
+			// Fresh-context round 2026-09-02 #6: the fourth
+			// projection-side call gets the same deferral contract as
+			// the other three — a transient lookup failure must not
+			// mark the row processed with the thread bridge
+			// permanently missing.
+			if errors.Is(terr, context.Canceled) {
+				return terr
+			}
+			p.logger.Warn("mailing-list processor: thread-inheritance lookup failed — row deferred for retry",
+				"rgls_id", rglsID, "thread_root", m.ThreadRoot, "error", terr)
+			deferRetry = terr
+		} else if ok {
 			projectedIssueID = id
 			linkedIssueID = &id
 			threadIssue[m.ThreadRoot] = id
@@ -544,6 +539,28 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	emID, err := p.store.UpsertEmailMessage(ctx, em)
 	if err != nil {
 		return err
+	}
+
+	// C1: apply the notification's ACTION to the issue's state. Must be
+	// an explicit call on the LINK path — for an already-existing issue
+	// LinkOrCreateIssueFromEmail returns before its INSERT, so a
+	// DO UPDATE clause can never see a [Resolved]. Synthetic-gating +
+	// event-time ordering are enforced inside ApplyTrackerAction
+	// (SR-18). Runs AFTER the email_message upsert (round 15): the
+	// row's email_message_id is the same-minute tie-breaker the guard
+	// persists, and the upsert is idempotent on its natural key so a
+	// deferred replay hands the SAME id back.
+	if projectedIssueID > 0 {
+		if action := mailinglist.TrackerActionFromSubject(m.Subject); action != "" {
+			if aerr := p.store.ApplyTrackerAction(ctx, projectedIssueID, action, m.SentAt, emID); aerr != nil {
+				if errors.Is(aerr, context.Canceled) {
+					return aerr
+				}
+				p.logger.Warn("mailing-list processor: tracker action apply failed — row deferred for retry",
+					"issue_id", projectedIssueID, "action", action, "error", aerr)
+				deferRetry = aerr
+			}
+		}
 	}
 
 	// Mirror classes: by default (metadata_only) record provenance + link only,

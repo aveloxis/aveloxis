@@ -61,6 +61,7 @@ type fakeProcStore struct {
 	// Round-3 deferral knobs: fail the first N calls of the
 	// projection-side writers (0 = never fail).
 	applyActionFails int
+	findThreadErr    error // when set, FindIssueForThread fails once with it
 	applyActionCalls int
 	linkIssueFails   int
 	linkIssueCalls   int
@@ -91,8 +92,17 @@ func (f *fakeProcStore) ListsWithStaging(_ context.Context, system string, after
 // The chunking matters: per-BATCH state (drainCounters) is indistinguishable
 // from per-DRAIN state when the fake can only ever produce one batch — a test
 // asserting "logged once per batch" would pass either way.
-func (f *fakeProcStore) GetMailingListStagingBatch(_ context.Context, rglsID int64, limit int) ([]db.StagedMailingListRow, error) {
+func (f *fakeProcStore) GetMailingListStagingBatch(_ context.Context, rglsID, afterID int64, limit int) ([]db.StagedMailingListRow, error) {
 	f.drainedLists = append(f.drainedLists, rglsID)
+	// Keyset like the real store: only rows past the cursor (the
+	// fake-honors-the-boundary rule).
+	rows := make([]db.StagedMailingListRow, 0, len(f.rows))
+	for _, r := range f.rows {
+		if r.MlsID > afterID {
+			rows = append(rows, r)
+		}
+	}
+	f.rows = rows
 	n := len(f.rows)
 	if n == 0 {
 		return nil, nil
@@ -162,7 +172,7 @@ func (f *fakeProcStore) UpsertMailingListMessageBody(_ context.Context, _ int64,
 	f.cleanRules = append(f.cleanRules, cleanRule)
 	return f.nextBodyID, nil
 }
-func (f *fakeProcStore) ApplyTrackerAction(_ context.Context, issueID int64, action string, _ time.Time) error {
+func (f *fakeProcStore) ApplyTrackerAction(_ context.Context, issueID int64, action string, _ time.Time, _ int64) error {
 	f.applyActionCalls++
 	if f.applyActionCalls <= f.applyActionFails {
 		return errors.New("deadlock detected")
@@ -201,6 +211,11 @@ func (f *fakeProcStore) BridgeEmailToIssue(_ context.Context, issueID, _, _ int6
 	return nil
 }
 func (f *fakeProcStore) FindIssueForThread(_ context.Context, threadRoot string, _ int64) (int64, bool, error) {
+	if f.findThreadErr != nil {
+		err := f.findThreadErr
+		f.findThreadErr = nil
+		return 0, false, err
+	}
 	if id, ok := f.threadIssues[threadRoot]; ok {
 		return id, true, nil
 	}

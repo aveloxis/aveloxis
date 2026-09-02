@@ -18,6 +18,12 @@ const TimeLayout = "2006-01-02T15:04:05.000-0700"
 // repeats up to one full page; two would need a pathological cohort;
 // three consecutive means the server is re-serving content regardless
 // of the cursor/offset.
+// jiraMaxWestTZSkew bounds the first-page lower-bound margin: legal
+// IANA offsets span UTC−12..+14, and only WESTERN offsets shift a
+// zone-less lower bound forward (the permanent-skip direction), so
+// 12h is the exact worst case.
+const jiraMaxWestTZSkew = 12 * time.Hour
+
 const maxStalePages = 3
 
 // WalkProjectByUpdated is THE drift-safe project walk (SR-17: one
@@ -73,6 +79,34 @@ func (c *Client) WalkProjectByUpdated(ctx context.Context, projectKey string, fi
 	if !since.IsZero() {
 		cursor = since.UTC().Truncate(time.Minute)
 	}
+	// CLOCK DOMAIN (fresh-context round 2026-09-02 #3): Jira evaluates
+	// zone-less jql date literals in the SERVER's default timezone,
+	// while our cursor/ceiling are absolute instants — rendering them
+	// as UTC wall-clock on a server west of UTC shifts the lower bound
+	// FORWARD by the offset, permanently skipping every issue updated
+	// inside it (the checkpoint then advances past them). The server
+	// tells us its zone on every page (the parsed `updated` offsets),
+	// so the walk self-calibrates: literals render in the learned zone
+	// once the first page arrives; before that, LOWER bounds carry a
+	// west-max safety margin (legal IANA offsets span UTC−12..+14, so
+	// −12h guarantees the rendered lower bound never lands past the
+	// true instant; the over-listed margin re-stages as natural-key
+	// no-ops). The CEILING never takes the margin — an east-of-UTC
+	// under-read there only defers fresh issues to the next scan,
+	// while a margin would not tighten anything.
+	var serverLoc *time.Location
+	renderLower := func(t time.Time) string {
+		if serverLoc != nil {
+			return t.In(serverLoc).Format(jqlMinute)
+		}
+		return t.Add(-jiraMaxWestTZSkew).UTC().Format(jqlMinute)
+	}
+	renderUpper := func(t time.Time) string {
+		if serverLoc != nil {
+			return t.In(serverLoc).Format(jqlMinute)
+		}
+		return t.UTC().Format(jqlMinute)
+	}
 	// Tie-drain state: non-zero tieMinute = draining that minute's
 	// cohort by key keyset (tieKey = last key served; "" = restart).
 	var tieMinute time.Time
@@ -85,14 +119,14 @@ func (c *Client) WalkProjectByUpdated(ctx context.Context, projectKey string, fi
 				keyClause = fmt.Sprintf(" AND issuekey > '%s'", tieKey)
 			}
 			return fmt.Sprintf("project = %s AND updated >= '%s' AND updated < '%s'%s ORDER BY issuekey ASC",
-				projectKey, tieMinute.Format(jqlMinute), tieMinute.Add(time.Minute).Format(jqlMinute), keyClause)
+				projectKey, renderLower(tieMinute), renderUpper(tieMinute.Add(time.Minute)), keyClause)
 		}
 		if cursor.IsZero() {
 			return fmt.Sprintf("project = %s AND updated <= '%s' ORDER BY updated ASC",
-				projectKey, ceiling.Format(jqlMinute))
+				projectKey, renderUpper(ceiling))
 		}
 		return fmt.Sprintf("project = %s AND updated >= '%s' AND updated <= '%s' ORDER BY updated ASC",
-			projectKey, cursor.Format(jqlMinute), ceiling.Format(jqlMinute))
+			projectKey, renderLower(cursor), renderUpper(ceiling))
 	}
 	seenThisWalk := map[string]struct{}{}
 	stalePages := 0
@@ -120,8 +154,21 @@ func (c *Client) WalkProjectByUpdated(ctx context.Context, projectKey string, fi
 			if tieBudget == 0 {
 				// First tie page: the response's Total is the cohort's
 				// remaining size — the page budget a well-behaved server
-				// cannot exceed (drift only shrinks the cohort).
-				tieBudget = page.Total/pageSize + maxStalePages + 2
+				// cannot exceed (drift only shrinks the cohort). The
+				// divisor is the OBSERVED page size, never the requested
+				// one (fresh-context round 2026-09-02 #2 — the round-3
+				// server-cap class at its sibling: Jira Server echoes an
+				// EFFECTIVE maxResults admins can set lower, so a
+				// capped server serving 100-row pages against a
+				// 1000-row request would compute a budget the drain
+				// needs 10x of and fail the walk on a well-behaved
+				// server — permanently, since the rerun re-enters the
+				// same minute).
+				per := len(page.Issues)
+				if per < 1 {
+					per = 1
+				}
+				tieBudget = page.Total/per + maxStalePages + 2
 			}
 			last := page.Issues[len(page.Issues)-1].Key
 			if last == tieKey || tiePages > tieBudget {
@@ -129,6 +176,14 @@ func (c *Client) WalkProjectByUpdated(ctx context.Context, projectKey string, fi
 					projectKey, tieMinute.Format(jqlMinute), last, tiePages, tieBudget)
 			}
 			tieKey = last
+		}
+		if serverLoc == nil && len(page.Issues) > 0 {
+			// Learn the server's zone from its own timestamps (the
+			// TimeLayout offset); every later literal renders exactly.
+			if t, perr := time.Parse(TimeLayout, page.Issues[0].Fields.Updated); perr == nil {
+				_, off := t.Zone()
+				serverLoc = time.FixedZone("jira-server", off)
+			}
 		}
 		var pageMax time.Time
 		pageNew := 0

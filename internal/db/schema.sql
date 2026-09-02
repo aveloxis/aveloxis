@@ -689,6 +689,12 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.issues (
     -- sign. Enrichment fills this without changing row identity.
     jira_issue_id    BIGINT,
     external_key     TEXT DEFAULT '',
+    -- v0.29.0 round 15: the email_message_id of the LAST mail tracker
+    -- action applied to a synthetic row — the deterministic
+    -- tie-breaker for Pony Mail's minute-rounded sent_at (a deferred
+    -- older action replaying at the same timestamp must not regress
+    -- the newer one). NULL = no mail action applied yet.
+    last_mail_event_id BIGINT,
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',

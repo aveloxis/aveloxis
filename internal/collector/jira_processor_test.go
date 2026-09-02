@@ -52,18 +52,33 @@ func (f *fakeJiraProcStore) JiraProjectsWithStaging(_ context.Context, afterID i
 	}
 	return out, nil
 }
-func (f *fakeJiraProcStore) GetJiraStagingBatch(_ context.Context, jpsID int64, _ int) ([]db.JiraStagingRow, error) {
+func (f *fakeJiraProcStore) GetJiraStagingBatch(_ context.Context, jpsID, afterID int64, limit int) ([]db.JiraStagingRow, error) {
 	if f.perProject != nil {
-		rows := f.perProject[jpsID]
-		delete(f.perProject, jpsID) // second ask per project: drained
+		var rows []db.JiraStagingRow
+		for _, r := range f.perProject[jpsID] {
+			if r.JsID > afterID { // keyset, like the real store
+				rows = append(rows, r)
+			}
+			if len(rows) == limit { // honor the limit (the fake-honors-the-boundary rule)
+				break
+			}
+		}
 		return rows, nil
 	}
 	if f.batchCall >= len(f.batches) {
 		return nil, nil
 	}
+	// The flat-batches path serves each batch once; rows must carry
+	// ASCENDING JsID above the cursor or the keyset filters them.
 	b := f.batches[f.batchCall]
 	f.batchCall++
-	return b, nil
+	var rows []db.JiraStagingRow
+	for _, r := range b {
+		if r.JsID > afterID {
+			rows = append(rows, r)
+		}
+	}
+	return rows, nil
 }
 func (f *fakeJiraProcStore) ResolveJiraIdentity(_ context.Context, name, _, _ string) (string, string, bool, error) {
 	f.resolved = append(f.resolved, name)

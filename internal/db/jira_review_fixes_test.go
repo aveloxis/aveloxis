@@ -164,7 +164,7 @@ func TestJiraStagingBatchReadsLiveRegistrationRepo(t *testing.T) {
 	if err := store.RegisterJiraProject(ctx, "AVJR", "https://jira.example.org", &rid); err != nil {
 		t.Fatal(err)
 	}
-	batch, err := store.GetJiraStagingBatch(ctx, jpsID, 10)
+	batch, err := store.GetJiraStagingBatch(ctx, jpsID, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestJiraStagingBatchReadsLiveRegistrationRepo(t *testing.T) {
 	if err := store.StageJiraIssue(ctx, jpsID, "AVJR", "AVJR-802", time.Now(), &wrong, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	batch, err = store.GetJiraStagingBatch(ctx, jpsID, 10)
+	batch, err = store.GetJiraStagingBatch(ctx, jpsID, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

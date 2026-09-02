@@ -48,6 +48,13 @@ type GapHealCandidate struct {
 // candidates" convergence. The LATERAL picks the latest snapshot per
 // repo (indexed via idx_repo_info_repo_id; repo_info_id DESC breaks
 // same-timestamp ties toward the newer insert).
+// nativeGatheredIssuesSQL derives the NATIVE gathered-issue count from
+// the queue cache minus the live synthetic population, clamped at zero
+// (round 15): the cache is refreshed best-effort by the drains, so
+// synthetics can transiently outnumber it. Shared by the candidate
+// predicate and the reported gap size so they can never disagree.
+const nativeGatheredIssuesSQL = `GREATEST(COALESCE(q.last_issues, 0) - sy.synth, 0)`
+
 func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID int64, limit int, all bool) ([]GapHealCandidate, error) {
 	// Review 2026-08-30 #3: q.last_issues is COUNT(*) INCLUDING the
 	// mail-projected Jira synthetics (negative platform_issue_id), so an
@@ -55,7 +62,14 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 	// genuine NATIVE gap is masked. The sy lateral subtracts the live
 	// synthetic count (cheap via the partial idx_issues_synthetic_repo);
 	// PRs have no synthetic population and stay as-is.
-	gapPredicate := `AND (COALESCE(ri.issues_count, 0) > q.last_issues - sy.synth OR COALESCE(ri.pr_count, 0) > q.last_prs)`
+	// Round 15 (Copilot, suppressed ×2): the drain-side activity
+	// refresh is best-effort (round 10), so the cached count can LAG
+	// the live synthetic population — an unclamped subtraction went
+	// negative and made even a zero-issue forge repo a candidate (and
+	// the reported gap size counted phantom missing issues). Clamp
+	// the derived native count at zero and coalesce the cache; ONE
+	// spelling for the predicate and the size (SR-17).
+	gapPredicate := `AND (COALESCE(ri.issues_count, 0) > ` + nativeGatheredIssuesSQL + ` OR COALESCE(ri.pr_count, 0) > COALESCE(q.last_prs, 0))`
 	if all {
 		gapPredicate = ""
 	}
@@ -67,7 +81,7 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 	rows, err := s.pool.Query(ctx, `
 		SELECT q.repo_id, r.repo_owner, r.repo_name, r.platform_id,
 		       COALESCE(ri.issues_count, 0), COALESCE(ri.pr_count, 0),
-		       GREATEST(COALESCE(ri.issues_count, 0) - (q.last_issues - sy.synth), 0) + GREATEST(COALESCE(ri.pr_count, 0) - q.last_prs, 0)
+		       GREATEST(COALESCE(ri.issues_count, 0) - `+nativeGatheredIssuesSQL+`, 0) + GREATEST(COALESCE(ri.pr_count, 0) - COALESCE(q.last_prs, 0), 0)
 		FROM aveloxis_ops.collection_queue q
 		JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id
 		LEFT JOIN LATERAL (

@@ -306,21 +306,21 @@ func TestTrackerActionRankGuard(t *testing.T) {
 	}
 
 	// TIE on an API-owned row: mail must NOT flip it.
-	if err := store.ApplyTrackerAction(ctx, apiOwned, "Reopened", at); err != nil {
+	if err := store.ApplyTrackerAction(ctx, apiOwned, "Reopened", at, 1); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if got := state(apiOwned); got != "closed" {
 		t.Errorf("equal-timestamp mail action flipped an API-owned row to %q — rank guard missing", got)
 	}
 	// STRICTLY newer mail event on an API-owned row: freshness wins.
-	if err := store.ApplyTrackerAction(ctx, apiOwned, "Reopened", at.Add(time.Minute)); err != nil {
+	if err := store.ApplyTrackerAction(ctx, apiOwned, "Reopened", at.Add(time.Minute), 2); err != nil {
 		t.Fatalf("apply newer: %v", err)
 	}
 	if got := state(apiOwned); got != "open" {
 		t.Errorf("strictly-newer mail action must still advance an API-owned row, got %q", got)
 	}
 	// TIE on a mail-owned row: <= preserved (replay safety unchanged).
-	if err := store.ApplyTrackerAction(ctx, mailOwned, "Reopened", at); err != nil {
+	if err := store.ApplyTrackerAction(ctx, mailOwned, "Reopened", at, 3); err != nil {
 		t.Fatalf("apply mail-owned: %v", err)
 	}
 	if got := state(mailOwned); got != "open" {

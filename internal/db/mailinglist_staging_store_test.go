@@ -72,7 +72,7 @@ func TestMailingListStagingRoundTrip(t *testing.T) {
 		t.Fatalf("ListsWithStaging should include %d", rgls)
 	}
 
-	batch, err := store.GetMailingListStagingBatch(ctx, rgls, 100)
+	batch, err := store.GetMailingListStagingBatch(ctx, rgls, 0, 100)
 	if err != nil {
 		t.Fatalf("GetMailingListStagingBatch: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestMailingListStagingRoundTrip(t *testing.T) {
 	if containsInt64(lists2, rgls) {
 		t.Error("processed list must not appear in ListsWithStaging")
 	}
-	batch2, _ := store.GetMailingListStagingBatch(ctx, rgls, 100)
+	batch2, _ := store.GetMailingListStagingBatch(ctx, rgls, 0, 100)
 	if len(batch2) != 0 {
 		t.Errorf("processed rows must not be returned; got %d", len(batch2))
 	}

@@ -511,27 +511,15 @@ func (kp *KeyPool) GetGraphQLKey(ctx context.Context) (*APIKey, error) {
 	}
 }
 
-// MarkDepleted reduces a key's remaining count to account for external API
-// usage that bypasses the normal UpdateFromResponse tracking. Called after
-// scorecard (or similar external tools) use a token's GITHUB_TOKEN to make
-// their own API calls. Without this, the pool thinks the key still has ~5000
-// remaining and hands it to other workers, who then get 403 rate-limit errors.
-//
-// The reduction is an estimate — scorecard typically makes 100-300 API calls
-// per repo. We conservatively subtract 500 to force the pool to rotate past
-// this key until its next rate-limit window reset.
-func (kp *KeyPool) MarkDepleted(key *APIKey, estimatedCalls int) {
-	kp.mu.Lock()
-	defer kp.mu.Unlock()
-	key.Remaining -= estimatedCalls
-	if key.Remaining < 0 {
-		key.Remaining = 0
-	}
-	if key.ResetAt.IsZero() {
-		// Set a reset time if we don't have one — GitHub resets hourly.
-		key.ResetAt = time.Now().Add(1 * time.Hour)
-	}
-}
+// MarkDepleted was DELETED (fresh-context round 2026-09-02 #5): it
+// had zero production callers since v0.27.5 retired the scorecard
+// GetKey checkout, and its fabricated ResetAt = now+1h would have
+// poisoned the round-10 windowedBudgetUpdate for any future caller —
+// the fabricated epoch upper-bounds every real reset, so the window
+// guard would discard every subsequent header update on the key as an
+// "older window" for up to an hour (frozen Remaining, real 403s).
+// Remove-don't-deprecate; a future external-tool depletion signal
+// should follow MarkCoreExhausted's short probe-window shape instead.
 
 // InvalidateKey marks a key as permanently invalid (bad credentials).
 // Escalates to ERROR when this was the last valid key — all collection

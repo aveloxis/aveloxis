@@ -25,7 +25,13 @@ func TestNodeIDFromMessageID(t *testing.T) {
 			"PR_kwDOBCyuKc8AAAABBMldbw"},
 		{"issue root", "I_kwDOBCyuKc6XYZabc@gitbox.apache.org", "I_kwDOBCyuKc6XYZabc"},
 		{"angle brackets stripped", "<PR_kwDOAQXtWs5nynym@gitbox.apache.org>", "PR_kwDOAQXtWs5nynym"},
-		{"no at sign", "PR_kwDOBCyuKc8AAAABBMldbw", "PR_kwDOBCyuKc8AAAABBMldbw"},
+		// Round 15 (Copilot): the host is part of the trust decision —
+		// a Message-ID is SENDER-controlled, and without the GitBox
+		// domain gate any list participant could link their message to
+		// an arbitrary stored PR/issue by pasting a public node ID.
+		{"no at sign is untrusted", "PR_kwDOBCyuKc8AAAABBMldbw", ""},
+		{"attacker host is untrusted", "PR_kwDOBCyuKc8AAAABBMldbw@evil.example.org", ""},
+		{"host case-insensitive", "PR_kwDOBCyuKc8AAAABBMldbw@GitBox.Apache.ORG", "PR_kwDOBCyuKc8AAAABBMldbw"},
 
 		// Node IDs are base64url: a trailing '-' segment that is NOT a UUID
 		// must survive, or we would truncate a legitimate identifier.

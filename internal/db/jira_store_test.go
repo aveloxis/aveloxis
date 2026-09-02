@@ -113,7 +113,7 @@ func TestJiraStagingNaturalKeyNoOp(t *testing.T) {
 	if err := store.StageJiraIssue(ctx, jpsID, "AVJR", jsKey, up.Add(time.Hour), nil, []byte(`{"key":"AVJR-5","v":2}`)); err != nil {
 		t.Fatal(err)
 	}
-	batch, err := store.GetJiraStagingBatch(ctx, jpsID, 10)
+	batch, err := store.GetJiraStagingBatch(ctx, jpsID, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestJiraStagingNaturalKeyNoOp(t *testing.T) {
 	if err := store.MarkJiraStagingProcessed(ctx, []int64{batch[0].JsID, batch[1].JsID}); err != nil {
 		t.Fatal(err)
 	}
-	batch, err = store.GetJiraStagingBatch(ctx, jpsID, 10)
+	batch, err = store.GetJiraStagingBatch(ctx, jpsID, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

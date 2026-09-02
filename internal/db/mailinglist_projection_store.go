@@ -216,8 +216,17 @@ func (s *PostgresStore) FindIssueForThread(ctx context.Context, threadRoot strin
 		  AND repo_id = $2
 		  AND ((thread_root_id = $1 AND thread_root_id <> '') OR message_id_header = $1)
 		LIMIT 1`, threadRoot, repoID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil // genuinely no projected sibling yet
+	}
 	if err != nil {
-		return 0, false, nil //nolint:nilerr // no projected sibling yet is not an error
+		// Fresh-context round 2026-09-02 #6 (SR-5/L11): the fourth
+		// projection-side call in processRow — the other three defer
+		// the row on transient failure, but this one swallowed EVERY
+		// error as "no sibling", so a transient DB failure marked the
+		// row processed with the thread bridge permanently missing
+		// (recoverable only by the operator-run projection backfill).
+		return 0, false, fmt.Errorf("find issue for thread %q: %w", threadRoot, err)
 	}
 	return id, id > 0, nil
 }
@@ -300,6 +309,17 @@ func trackerActionFromSubject(subject string) string {
 	return ""
 }
 
+// CLOCK DOMAINS (fresh-context round, 2026-09-02 #1): last_mail_event_id
+// IS NOT NULL means the stored updated_at was MAIL-authored (a prior
+// tracker action stamped it); NULL means it is the provider's own
+// stamp. The API-owned arm therefore accepts an equal-timestamp mail
+// event ONLY when the stored stamp is itself mail-authored — a
+// same-minute pair arriving strictly after an API sync resolves by
+// emid instead of landing on the pair's FIRST action, while a tie
+// against a genuine API stamp still refuses (the pinned rank rule).
+// UpsertJiraIssueFromAPI clears the marker whenever its own freshness
+// guard passes, re-establishing the API clock domain.
+//
 // trackerActionEventGuardSQL is the ONE spelling of the mail-rank
 // event-time guard (SR-17), shared by ApplyTrackerAction and
 // BackfillSyntheticJiraState. Column references are unqualified — both
@@ -313,8 +333,15 @@ func trackerActionFromSubject(subject string) string {
 //   - a mail-owned row keeps <= (replay safety: re-draining an old
 //     archive month re-applies the same latest action, a no-op).
 const trackerActionEventGuardSQL = `(%[1]s.updated_at IS NULL
-		OR (%[1]s.data_source = '%[3]s' AND %[1]s.updated_at < %[2]s)
-		OR (%[1]s.data_source <> '%[3]s' AND %[1]s.updated_at <= %[2]s))`
+		OR (%[1]s.data_source = '%[3]s'
+		    AND (%[1]s.updated_at < %[2]s
+		         OR (%[1]s.updated_at = %[2]s
+		             AND %[1]s.last_mail_event_id IS NOT NULL
+		             AND %[1]s.last_mail_event_id <= %[4]s)))
+		OR (%[1]s.data_source <> '%[3]s'
+		    AND (%[1]s.updated_at < %[2]s
+		         OR (%[1]s.updated_at = %[2]s
+		             AND COALESCE(%[1]s.last_mail_event_id, 0) <= %[4]s))))`
 
 // ApplyTrackerAction applies a Jira-notification action to a projected
 // issue: Resolved/Closed -> closed (+closed_at = the notification's
@@ -332,7 +359,7 @@ const trackerActionEventGuardSQL = `(%[1]s.updated_at IS NULL
 //     is what keeps replays from adding to that.
 //
 // State-neutral actions ("Commented", "Work logged", "") are no-ops.
-func (s *PostgresStore) ApplyTrackerAction(ctx context.Context, issueID int64, action string, sentAt time.Time) error {
+func (s *PostgresStore) ApplyTrackerAction(ctx context.Context, issueID int64, action string, sentAt time.Time, emailMessageID int64) error {
 	var newState string
 	switch action {
 	case "Resolved", "Closed":
@@ -342,16 +369,25 @@ func (s *PostgresStore) ApplyTrackerAction(ctx context.Context, issueID int64, a
 	default:
 		return nil
 	}
+	// Round 15 (Copilot, suppressed): the bare mail-owned <= arm let a
+	// DEFERRED older action replay at Pony Mail's minute-rounded
+	// timestamp and regress the newer one (Reopened@T applied,
+	// Resolved@T wins the tie, the deferred Reopened row retries →
+	// <= accepted it again). last_mail_event_id is the deterministic
+	// tie-breaker: at equal sent_at only an equal-or-higher
+	// email_message_id applies (mbox ingest order preserves send order
+	// within the minute — the C6 rule, now persisted).
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.issues
 		SET issue_state = $2,
 		    closed_at = CASE WHEN $2 = 'closed' THEN $3 ELSE NULL END,
-		    updated_at = $3
+		    updated_at = $3,
+		    last_mail_event_id = $4
 		WHERE issue_id = $1
 		  AND platform_issue_id < 0
-		  AND `+fmt.Sprintf(trackerActionEventGuardSQL, "issues", "$3", JiraAPIDataSource),
-			issueID, newState, NullTime(sentAt))
+		  AND `+fmt.Sprintf(trackerActionEventGuardSQL, "issues", "$3", JiraAPIDataSource, "$4"),
+			issueID, newState, NullTime(sentAt), emailMessageID)
 		return err
 	})
 	if err != nil {
@@ -382,11 +418,13 @@ func (s *PostgresStore) BackfillSyntheticJiraState(ctx context.Context, logger *
 		UPDATE aveloxis_data.issues i
 		SET issue_state = CASE WHEN l.action IN ('Resolved','Closed') THEN 'closed' ELSE 'open' END,
 		    closed_at = CASE WHEN l.action IN ('Resolved','Closed') THEN l.at ELSE NULL END,
-		    updated_at = l.at
+		    updated_at = l.at,
+		    last_mail_event_id = l.emid
 		FROM (
 			SELECT em.repo_id, em.linked_external_key AS key,
 			       (array_agg(`+trackerActionSubjectSQL+` ORDER BY em.sent_at DESC, em.email_message_id DESC))[1] AS action,
-			       (array_agg(em.sent_at ORDER BY em.sent_at DESC, em.email_message_id DESC))[1] AS at
+			       (array_agg(em.sent_at ORDER BY em.sent_at DESC, em.email_message_id DESC))[1] AS at,
+			       (array_agg(em.email_message_id ORDER BY em.sent_at DESC, em.email_message_id DESC))[1] AS emid
 			FROM aveloxis_data.email_message em
 			WHERE em.email_message_id > $1 AND em.email_message_id <= $2
 			  AND em.msg_class = 'issue_event'
@@ -400,5 +438,5 @@ func (s *PostgresStore) BackfillSyntheticJiraState(ctx context.Context, logger *
 		  AND i.external_key = l.key
 		  AND i.external_key <> ''
 		  AND i.platform_issue_id < 0
-		  AND `+fmt.Sprintf(trackerActionEventGuardSQL, "i", "l.at", JiraAPIDataSource))
+		  AND `+fmt.Sprintf(trackerActionEventGuardSQL, "i", "l.at", JiraAPIDataSource, "l.emid"))
 }

@@ -265,3 +265,141 @@ func TestWalkProjectByUpdatedDrainsWideTieMinute(t *testing.T) {
 		t.Fatalf("requests = %d — the tie drain must be bounded", requests)
 	}
 }
+
+// jqlServeLoc is jqlServe with the SERVER's clock domain made explicit
+// (fresh-context round 2026-09-02 #3): zone-less jql literals are
+// interpreted in loc — exactly what a real Jira Server does with its
+// default timezone — and `updated` strings are rendered with loc's
+// offset. jqlServe == jqlServeLoc(..., time.UTC).
+func jqlServeLoc(jql string, keys []string, ups []time.Time, maxResults int, loc *time.Location) string {
+	type row struct {
+		key string
+		up  time.Time
+	}
+	keyNum := func(k string) int {
+		i := strings.LastIndex(k, "-")
+		n, _ := strconv.Atoi(k[i+1:])
+		return n
+	}
+	var ge, lt time.Time
+	if i := strings.Index(jql, "updated >= '"); i >= 0 {
+		rest := jql[i+len("updated >= '"):]
+		ge, _ = time.ParseInLocation("2006-01-02 15:04", rest[:strings.Index(rest, "'")], loc)
+	}
+	if i := strings.Index(jql, "updated < '"); i >= 0 {
+		rest := jql[i+len("updated < '"):]
+		lt, _ = time.ParseInLocation("2006-01-02 15:04", rest[:strings.Index(rest, "'")], loc)
+	}
+	keyGT := ""
+	if i := strings.Index(jql, "issuekey > '"); i >= 0 {
+		rest := jql[i+len("issuekey > '"):]
+		keyGT = rest[:strings.Index(rest, "'")]
+	}
+	var rows []row
+	for i := range keys {
+		if !ge.IsZero() && ups[i].Before(ge) {
+			continue
+		}
+		if !lt.IsZero() && !ups[i].Before(lt) {
+			continue
+		}
+		if keyGT != "" && keyNum(keys[i]) <= keyNum(keyGT) {
+			continue
+		}
+		rows = append(rows, row{keys[i], ups[i]})
+	}
+	if strings.Contains(jql, "ORDER BY issuekey") {
+		sort.Slice(rows, func(i, j int) bool { return keyNum(rows[i].key) < keyNum(rows[j].key) })
+	} else {
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].up.Before(rows[j].up) })
+	}
+	total := len(rows)
+	if len(rows) > maxResults {
+		rows = rows[:maxResults]
+	}
+	var issues []string
+	for _, r := range rows {
+		up := r.up.In(loc).Format(TimeLayout)
+		issues = append(issues, fmt.Sprintf(
+			`{"id":"%d","key":"%s","fields":{"summary":"s","updated":"%s","created":"%s"}}`,
+			4000+keyNum(r.key), r.key, up, up))
+	}
+	return fmt.Sprintf(`{"startAt":0,"maxResults":%d,"total":%d,"issues":[%s]}`,
+		len(rows), total, strings.Join(issues, ","))
+}
+
+// TestWalkSurvivesWestOfUTCServer (fresh-context round 2026-09-02
+// #3): Jira interprets zone-less jql date literals in the SERVER's
+// default timezone. Rendering the cursor as UTC wall-clock on a
+// UTC−7 server shifted the lower bound 7h forward — every issue
+// updated inside the shift was silently, PERMANENTLY skipped (the
+// checkpoint advances past them). The walk now self-calibrates: a
+// west-max margin on the first page, then the zone learned from the
+// server's own `updated` offsets.
+func TestWalkSurvivesWestOfUTCServer(t *testing.T) {
+	loc := time.FixedZone("UTC-7", -7*3600)
+	since := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	keys := []string{"AVTZ-1", "AVTZ-2"}
+	ups := []time.Time{since.Add(2 * time.Hour), since.Add(8 * time.Hour)}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, jqlServeLoc(r.URL.Query().Get("jql"), keys, ups, 50, loc))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	staged := map[string]bool{}
+	err := c.WalkProjectByUpdated(context.Background(), "AVTZ", nil, 50, 0, since,
+		func(issues []Issue, _ []time.Time) error {
+			for _, is := range issues {
+				staged[is.Key] = true
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if !staged["AVTZ-1"] || !staged["AVTZ-2"] {
+		t.Fatalf("staged = %v — the issue inside the server's UTC offset was permanently skipped (the clock-domain bug)", staged)
+	}
+}
+
+// TestWalkTieDrainSurvivesServerCappedPages (fresh-context round
+// 2026-09-02 #2 — the round-3 server-cap class at its walk sibling):
+// the tie-drain budget divided the cohort Total by the REQUESTED page
+// size, so a server whose effective maxResults is admin-capped lower
+// computed a budget the drain needs many times over and failed a
+// well-behaved server — permanently, since the rerun re-enters the
+// same minute. The divisor is the OBSERVED page size now.
+func TestWalkTieDrainSurvivesServerCappedPages(t *testing.T) {
+	minute := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	n := 800
+	keys := make([]string, n)
+	ups := make([]time.Time, n)
+	for i := range n {
+		keys[i] = fmt.Sprintf("AVCAP-%d", i+1)
+		ups[i] = minute.Add(time.Duration(i) * time.Millisecond) // same MINUTE cohort
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// The server CAPS at 100 regardless of the requested 1000.
+		_, _ = io.WriteString(w, jqlServe(r.URL.Query().Get("jql"), keys, ups, 100))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	staged := map[string]bool{}
+	err := c.WalkProjectByUpdated(context.Background(), "AVCAP", nil, 1000, 0, time.Time{},
+		func(issues []Issue, _ []time.Time) error {
+			for _, is := range issues {
+				staged[is.Key] = true
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("walk over a capped server: %v (the pre-fix budget failed here with 'no key progress')", err)
+	}
+	if len(staged) != n {
+		t.Fatalf("staged %d of %d — the capped tie drain lost issues", len(staged), n)
+	}
+}

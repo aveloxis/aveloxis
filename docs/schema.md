@@ -361,6 +361,7 @@ Issue tracker records from GitHub Issues or GitLab Issues. Each row represents o
 | `due_on` | TIMESTAMPTZ | GitHub REST: `/repos/{o}/{r}/issues`, GitLab: `/projects/{id}/issues` | Due date from milestone. |
 | `comment_count` | INT | GitHub REST: `/repos/{o}/{r}/issues`, GitLab: `/projects/{id}/issues` | Number of comments on the issue. |
 | `external_key` | TEXT | `backfill-issue-external-keys` | Bracketed `[KEY-N]` Jira/Bugzilla key from the title (Apache Jira → GitHub imports). Lets mailing-list `issue_event` mail bridge to the imported issue. Partial unique `(repo_id, external_key) WHERE external_key <> ''`. v0.25.7. |
+| `last_mail_event_id` | BIGINT | Computed (`ApplyTrackerAction` / `BackfillSyntheticJiraState`) | v0.29.0: the `email_message_id` of the last mail tracker action applied to a synthetic row — the same-minute tie-breaker in `trackerActionEventGuardSQL` (Pony Mail rounds `sent_at` to the minute; a deferred older action replaying at an equal timestamp must not regress the newer one). NULL on native rows and untouched synthetics. |
 | `jira_issue_id` | BIGINT | Jira API (v0.29.0) | The REAL Jira internal id, in its own column. Synthetic rows keep their deterministic NEGATIVE `platform_issue_id` forever — one logical ticket is one row keyed `(repo_id, external_key)` across all three providers (forge > Jira API > mail); see [Human provenance](architecture/human-provenance.md). |
 | | | | *Standard metadata columns* |
 

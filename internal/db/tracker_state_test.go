@@ -109,7 +109,7 @@ func tsSeedIssue(t *testing.T, ctx context.Context, store *PostgresStore, platfo
 	err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.issues
 		(repo_id, platform_issue_id, issue_number, issue_title, issue_state, external_key, data_source)
 		VALUES ($1, $2, 77, '[AVTS-77] t', $3, $4, 'JIRA')
-		ON CONFLICT (repo_id, platform_issue_id) DO UPDATE SET issue_state = EXCLUDED.issue_state, closed_at = NULL, updated_at = NULL
+		ON CONFLICT (repo_id, platform_issue_id) DO UPDATE SET issue_state = EXCLUDED.issue_state, closed_at = NULL, updated_at = NULL, last_mail_event_id = NULL
 		RETURNING issue_id`, tsRepoID, platformIssueID, state, tsKey).Scan(&id)
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestApplyTrackerActionLifecycle(t *testing.T) {
 	t1 := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	t2 := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
 
-	if err := store.ApplyTrackerAction(ctx, id, "Resolved", t2); err != nil {
+	if err := store.ApplyTrackerAction(ctx, id, "Resolved", t2, 10); err != nil {
 		t.Fatal(err)
 	}
 	state, closedAt := tsState(t, ctx, store, id)
@@ -151,7 +151,7 @@ func TestApplyTrackerActionLifecycle(t *testing.T) {
 		t.Fatalf("after Resolved: state=%q closed_at=%v", state, closedAt)
 	}
 	// Replayed OLDER month: a Reopened from BEFORE the close must not regress.
-	if err := store.ApplyTrackerAction(ctx, id, "Reopened", t1); err != nil {
+	if err := store.ApplyTrackerAction(ctx, id, "Reopened", t1, 11); err != nil {
 		t.Fatal(err)
 	}
 	if state, _ := tsState(t, ctx, store, id); state != "closed" {
@@ -159,7 +159,7 @@ func TestApplyTrackerActionLifecycle(t *testing.T) {
 	}
 	// A genuinely newer Reopened reopens.
 	t3 := t2.Add(48 * time.Hour)
-	if err := store.ApplyTrackerAction(ctx, id, "Reopened", t3); err != nil {
+	if err := store.ApplyTrackerAction(ctx, id, "Reopened", t3, 12); err != nil {
 		t.Fatal(err)
 	}
 	state, closedAt = tsState(t, ctx, store, id)
@@ -167,7 +167,7 @@ func TestApplyTrackerActionLifecycle(t *testing.T) {
 		t.Fatalf("after newer Reopened: state=%q closed_at=%v", state, closedAt)
 	}
 	// Non-state actions (Commented, Work logged) change nothing.
-	if err := store.ApplyTrackerAction(ctx, id, "Commented", t3.Add(time.Hour)); err != nil {
+	if err := store.ApplyTrackerAction(ctx, id, "Commented", t3.Add(time.Hour), 13); err != nil {
 		t.Fatal(err)
 	}
 	if state, _ := tsState(t, ctx, store, id); state != "open" {
@@ -181,7 +181,7 @@ func TestApplyTrackerActionLifecycle(t *testing.T) {
 func TestApplyTrackerActionNeverTouchesNativeIssues(t *testing.T) {
 	store, ctx := sbConnect(t)
 	id := tsSeedIssue(t, ctx, store, 944_148_200, "open") // POSITIVE = native
-	if err := store.ApplyTrackerAction(ctx, id, "Resolved", time.Now()); err != nil {
+	if err := store.ApplyTrackerAction(ctx, id, "Resolved", time.Now(), 14); err != nil {
 		t.Fatal(err)
 	}
 	if state, _ := tsState(t, ctx, store, id); state != "open" {

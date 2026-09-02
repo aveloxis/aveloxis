@@ -36,7 +36,7 @@ import (
 // jiraProcStore is the processor's narrow store surface.
 type jiraProcStore interface {
 	JiraProjectsWithStaging(ctx context.Context, afterID int64, limit int) ([]int64, error)
-	GetJiraStagingBatch(ctx context.Context, jpsID int64, limit int) ([]db.JiraStagingRow, error)
+	GetJiraStagingBatch(ctx context.Context, jpsID, afterID int64, limit int) ([]db.JiraStagingRow, error)
 	ResolveJiraIdentity(ctx context.Context, jiraName, jiraUserKey, displayName string) (string, string, bool, error)
 	MintJiraContributor(ctx context.Context, jiraName, displayName string) (string, error)
 	UpsertJiraIssueFromAPI(ctx context.Context, in db.JiraAPIIssue) (int64, error)
@@ -97,17 +97,24 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 		}
 	}()
 	for _, jpsID := range projects {
+		// Intra-project row keyset (fresh-context round 2026-09-02 #4):
+		// failed envelopes stay staged, and re-selecting the same
+		// window head-blocked the project's own tail once a window's
+		// worth failed persistently. The cursor skips them THIS drain;
+		// the next drain retries from the top.
+		rowCursor := int64(0)
 		for {
 			if ctx.Err() != nil {
 				return total, ctx.Err()
 			}
-			batch, err := p.store.GetJiraStagingBatch(ctx, jpsID, jiraDrainBatchSize)
+			batch, err := p.store.GetJiraStagingBatch(ctx, jpsID, rowCursor, jiraDrainBatchSize)
 			if err != nil {
 				return total, err
 			}
 			if len(batch) == 0 {
 				break
 			}
+			rowCursor = batch[len(batch)-1].JsID
 			done := make([]int64, 0, len(batch))
 			skipped := 0
 			for _, row := range batch {
@@ -135,11 +142,10 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 				}
 				total += len(done)
 			}
-			if len(done) == 0 {
-				// Nothing in this batch could drain (all skipped/failed)
-				// — move on rather than spinning on the same rows.
-				break
-			}
+			// A fully skipped/failed batch no longer breaks: the row
+			// cursor already advanced past it, so the loop reaches the
+			// project's tail instead of abandoning it (round-13 one
+			// level down).
 		}
 	}
 	return total, nil

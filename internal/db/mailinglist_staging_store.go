@@ -84,13 +84,18 @@ func (s *PostgresStore) ListsWithStaging(ctx context.Context, system string, aft
 // GetMailingListStagingBatch returns up to limit unprocessed rows for one list,
 // oldest first, decoding each envelope. The Processor drains a list in these
 // batches.
-func (s *PostgresStore) GetMailingListStagingBatch(ctx context.Context, rglsID int64, limit int) ([]StagedMailingListRow, error) {
+// GetMailingListStagingBatch pages a list's staged rows by mls_id
+// keyset (the round-13 rotation one level down; fresh-context round
+// 2026-09-02 #4): deferred/dropped-candidate rows stay unprocessed,
+// and re-serving the same window head-blocked the list's tail.
+// afterID 0 starts from the top; deferred rows retry next drain.
+func (s *PostgresStore) GetMailingListStagingBatch(ctx context.Context, rglsID, afterID int64, limit int) ([]StagedMailingListRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT mls_id, repo_group_id, repo_id, envelope
 		FROM aveloxis_ops.mailing_list_staging
-		WHERE rgls_id = $1 AND NOT processed
+		WHERE rgls_id = $1 AND NOT processed AND mls_id > $3
 		ORDER BY mls_id
-		LIMIT $2`, rglsID, limit)
+		LIMIT $2`, rglsID, limit, afterID)
 	if err != nil {
 		return nil, fmt.Errorf("get mailing-list staging batch: %w", err)
 	}

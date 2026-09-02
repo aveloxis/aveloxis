@@ -392,15 +392,22 @@ func (s *PostgresStore) JiraProjectsWithStaging(ctx context.Context, afterID int
 // nil-repo rows can no longer head-block the project's drain. The
 // staged copy is the fallback only for rows whose registration row
 // somehow lost its mapping.
-func (s *PostgresStore) GetJiraStagingBatch(ctx context.Context, jpsID int64, limit int) ([]JiraStagingRow, error) {
+// GetJiraStagingBatch pages a project's staged rows by js_id keyset
+// (fresh-context round 2026-09-02 #4 — the round-13 rotation one
+// level down): rows that never drain (persistent envelope failures,
+// the refusing-to-LINK anomaly) stay unprocessed, and a bare
+// `ORDER BY js_id LIMIT n` re-served the same failing window forever,
+// head-blocking the project's own tail. afterID 0 starts from the
+// top; failed rows retry on the NEXT drain instead of every batch.
+func (s *PostgresStore) GetJiraStagingBatch(ctx context.Context, jpsID, afterID int64, limit int) ([]JiraStagingRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT js.js_id, js.issue_key,
 		       COALESCE(jps.repo_id, js.repo_id) AS repo_id,
 		       js.envelope
 		FROM aveloxis_ops.jira_staging js
 		JOIN aveloxis_ops.jira_project_serve jps ON jps.jps_id = js.jps_id
-		WHERE js.jps_id = $1 AND NOT js.processed
-		ORDER BY js.js_id LIMIT $2`, jpsID, limit)
+		WHERE js.jps_id = $1 AND NOT js.processed AND js.js_id > $3
+		ORDER BY js.js_id LIMIT $2`, jpsID, limit, afterID)
 	if err != nil {
 		return nil, fmt.Errorf("jira staging batch: %w", err)
 	}
@@ -670,7 +677,8 @@ type JiraAPIIssue struct {
 const jiraAPISnapshotFreshSQL = `(aveloxis_data.issues.data_source <> '` +
 	JiraAPIDataSource + `'
 			                    OR aveloxis_data.issues.updated_at IS NULL
-			                    OR aveloxis_data.issues.updated_at <= EXCLUDED.updated_at)`
+			                    OR aveloxis_data.issues.updated_at <= EXCLUDED.updated_at
+			                    OR aveloxis_data.issues.last_mail_event_id IS NOT NULL)`
 
 // UpsertJiraIssueFromAPI is the C3a rank-2 writer. One logical ticket
 // = one issues row keyed (repo_id, external_key):
@@ -804,6 +812,12 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 			                   THEN EXCLUDED.reporter_id ELSE aveloxis_data.issues.reporter_id END,
 			updated_at = CASE WHEN `+jiraAPISnapshotFreshSQL+`
 			                  THEN EXCLUDED.updated_at ELSE aveloxis_data.issues.updated_at END,
+			-- Fresh-context round 2026-09-02 #1: an applying API write
+			-- re-establishes the API clock domain — clear the
+			-- mail-authored marker so the tracker guard's API arm goes
+			-- back to strict-< against this genuine API stamp.
+			last_mail_event_id = CASE WHEN `+jiraAPISnapshotFreshSQL+`
+			                          THEN NULL ELSE aveloxis_data.issues.last_mail_event_id END,
 			data_source = '`+JiraAPIDataSource+`',
 			data_collection_date = NOW()
 		RETURNING issue_id`,

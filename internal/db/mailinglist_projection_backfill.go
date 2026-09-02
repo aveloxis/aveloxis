@@ -145,7 +145,7 @@ func (s *PostgresStore) BackfillKeyedIssueProjection(ctx context.Context, batch 
 		// C1: the notification's action reaches issue state on this
 		// path too (the second caller; same SR-18 gates inside).
 		if action := trackerActionFromSubject(r.subject); action != "" {
-			if aerr := s.ApplyTrackerAction(ctx, issueID, action, r.sentAt); aerr != nil {
+			if aerr := s.ApplyTrackerAction(ctx, issueID, action, r.sentAt, r.emID); aerr != nil {
 				return n, fmt.Errorf("backfill keyed: apply action %q: %w", action, aerr)
 			}
 		}

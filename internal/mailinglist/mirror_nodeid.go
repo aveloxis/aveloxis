@@ -50,20 +50,25 @@ var replyUUIDSuffix = regexp.MustCompile(`-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-f
 // an unrelated entity.
 var nodeIDShape = regexp.MustCompile(`^(?:PR|I)_[A-Za-z0-9_-]+$`)
 
+// GitBoxMessageIDHost is the ONE domain whose Message-IDs carry a
+// trusted GraphQL node ID as the local part (Apache's GitBox relay).
+const GitBoxMessageIDHost = "gitbox.apache.org"
+
 // NodeIDFromMessageID returns the GitHub GraphQL node ID encoded in a GitBox
 // mirror Message-ID, or "" when the header is not of that shape (human mail,
 // Jira notifications, legacy node IDs). A "" result means "no exact link
 // available" and must be treated as an honest absence, never as a fallback
 // key — the caller leaves linked_* NULL rather than guessing.
 //
-// The HOST half of the Message-ID is deliberately not checked. It costs
-// nothing to be permissive here: the extracted id has to equal a stored
-// issues.node_id / pull_requests.node_id to link anything, and those only
-// ever come from the forge we collected. A foreign "PR_…@example.org"
-// therefore misses rather than mis-links. The one case that would need a
-// host check is a GitHub Enterprise instance whose node IDs share github.com's
-// prefix space AND whose repos are collected into the same database; no such
-// deployment exists today, and adding the check then is a one-line change.
+// The HOST half of the Message-ID IS checked (Copilot round 15 on
+// PR #193, reversing the earlier permissive-host rationale): "the id
+// has to equal a stored node_id to link anything" was the ATTACK, not
+// the defense — node IDs of collected PRs/issues are public, and a
+// Message-ID is sender-controlled, so any list participant could mail
+// a mirror-shaped subject carrying a real node ID and link their
+// message to that stored row as the "exact" primary link. Only
+// GitBoxMessageIDHost qualifies; everything else falls to the
+// body-URL fallback path.
 func NodeIDFromMessageID(messageID string) string {
 	s := strings.TrimSpace(messageID)
 	s = strings.TrimPrefix(s, "<")
@@ -71,10 +76,20 @@ func NodeIDFromMessageID(messageID string) string {
 	if s == "" {
 		return ""
 	}
-	// Local part only: everything left of the first '@'.
-	if i := strings.Index(s, "@"); i >= 0 {
-		s = s[:i]
+	// Round 15 (Copilot, active): the host is part of the trust
+	// decision. This node ID is the PRIMARY, "exact" mirror link — a
+	// Message-ID is sender-controlled, and without the host gate any
+	// list participant could mail a mirror-shaped subject with a
+	// public PR_/I_ node ID as the local part and link their message
+	// to an arbitrary stored issue/PR. Only Apache's GitBox relay
+	// mints these Message-IDs, so only its domain qualifies; every
+	// other host (or a host-less ID) falls through to the body-URL
+	// fallback path.
+	i := strings.Index(s, "@")
+	if i < 0 || !strings.EqualFold(s[i+1:], GitBoxMessageIDHost) {
+		return ""
 	}
+	s = s[:i]
 	s = replyUUIDSuffix.ReplaceAllString(s, "")
 	if !nodeIDShape.MatchString(s) {
 		return ""

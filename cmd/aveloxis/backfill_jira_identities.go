@@ -93,7 +93,7 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 					return fmt.Errorf("--project %q matches no ENABLED Jira registration (%d registered) — check the key or run `aveloxis register-jira-projects`", project, len(regs))
 				}
 			}
-			processed, linked, minted, failedProjects, failedIssues, skippedNoRepo := 0, 0, 0, 0, 0, 0
+			attempted, processed, linked, minted, failedProjects, failedIssues, skippedNoRepo := 0, 0, 0, 0, 0, 0, 0
 			for _, c := range regs {
 				if project != "" && c.ProjectKey != project {
 					continue
@@ -140,6 +140,23 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 								continue // a re-listed boundary-minute issue
 							}
 							seen[nk] = struct{}{}
+							// Copilot round 21 (PR #193): --limit must bound
+							// IDENTITY MUTATIONS, not successful upserts. The
+							// reporter/assignee resolve+mint below commit
+							// contributor + jira_identities rows BEFORE the
+							// issue upsert, and a failed issue
+							// (failedIssues++/continue) never increments
+							// `processed` — so a failure-heavy `--limit N`
+							// canary would walk the WHOLE corpus, mutating
+							// identities for every issue, while `processed`
+							// never reached N. Stop BEFORE this issue's first
+							// identity write once N issues have been attempted;
+							// `processed` stays the successful count for the
+							// report.
+							if limit > 0 && attempted >= limit {
+								return errBackfillLimitHit
+							}
+							attempted++
 							in := db.JiraAPIIssue{RepoID: *c.RepoID, ExternalKey: is.Key, Title: is.Fields.Summary}
 							in.JiraIssueID, _ = strconv.ParseInt(is.ID, 10, 64)
 							if is.Fields.Status != nil {
@@ -207,9 +224,6 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 								continue
 							}
 							processed++
-							if limit > 0 && processed >= limit {
-								return errBackfillLimitHit
-							}
 						}
 						return nil
 					})
@@ -221,8 +235,8 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 						// the beginning, so "rerun to continue" was a lie
 						// (the same --limit reprocesses the same N and
 						// stops at the same point). Say what is true.
-						fmt.Printf("hit --limit after %d issues (linked=%d minted=%d) — canary complete. Rerun WITHOUT --limit for the full pass; it restarts from the beginning and every write is idempotent.\n",
-							processed, linked, minted)
+						fmt.Printf("hit --limit after %d issues attempted (%d fully processed, linked=%d minted=%d) — canary complete. Rerun WITHOUT --limit for the full pass; it restarts from the beginning and every write is idempotent.\n",
+							attempted, processed, linked, minted)
 						return nil
 					case errors.Is(walkErr, context.Canceled):
 						return fmt.Errorf("interrupted after %d issues — rerun; completed work is idempotent", processed)

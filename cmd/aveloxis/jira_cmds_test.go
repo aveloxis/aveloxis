@@ -87,6 +87,30 @@ func TestBackfillJiraIdentitiesShape(t *testing.T) {
 // mint is idempotent, so a reporter mint counted after that continue
 // is lost forever (a rerun's reporterMinted is false). Position pin:
 // the `if reporterMinted {` increment precedes the assignee resolve.
+// TestBackfillJiraLimitBoundsAttemptsNotSuccesses (Copilot round 21 on
+// PR #193): --limit must bound IDENTITY MUTATIONS, not successful
+// upserts. Reporter/assignee resolve+mint commit contributor rows
+// BEFORE the issue upsert, and a failed issue never increments the
+// success count — so a failure-heavy canary would mutate the whole
+// corpus while `processed` never hit the limit. The `attempted >= limit`
+// break must precede the reporter identity write, and the old
+// success-based `processed >= limit` check must be gone.
+func TestBackfillJiraLimitBoundsAttemptsNotSuccesses(t *testing.T) {
+	src := srctest.Read(t, "cmd/aveloxis/backfill_jira_identities.go")
+	stripped := srctest.StripGoComments(src)
+	limitCheck := strings.Index(stripped, "attempted >= limit")
+	reporter := strings.Index(stripped, "is.Fields.Reporter")
+	if limitCheck < 0 || reporter < 0 {
+		t.Fatalf("anchors missing: attempted-limit=%d reporter=%d", limitCheck, reporter)
+	}
+	if limitCheck > reporter {
+		t.Error("the `attempted >= limit` break must precede the reporter identity write — --limit bounds attempts, not successes (round 21)")
+	}
+	if strings.Contains(stripped, "processed >= limit") {
+		t.Error("the post-success `processed >= limit` check must be removed — it never bounds a failure-heavy canary (round 21)")
+	}
+}
+
 func TestBackfillJiraReporterMintCountedBeforeAssignee(t *testing.T) {
 	src := srctest.Read(t, "cmd/aveloxis/backfill_jira_identities.go")
 	mint := strings.Index(src, "if reporterMinted {")

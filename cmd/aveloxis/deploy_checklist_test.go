@@ -120,3 +120,39 @@ func TestStartCmdGatesOnDeploySteps(t *testing.T) {
 		}
 	}
 }
+
+// TestDeployChecklistStartsWithStopAndHealIsUsable (Copilot round 21 on
+// PR #193): the gated checklist IS the ordered deploy procedure, so it
+// must (a) run `aveloxis stop all` before any schema change — never
+// migrate under a live serve — and (b) print a USABLE mirror-link heal
+// command: the script exits immediately at DB="${1:?}" without a
+// database positional argument, so the bare form cannot be run.
+func TestDeployChecklistStartsWithStopAndHealIsUsable(t *testing.T) {
+	steps, ok := deployChecklistFor("0.29.0")
+	if !ok || len(steps) == 0 {
+		t.Fatal("0.29.0 checklist missing")
+	}
+	var buf bytes.Buffer
+	printChecklist(&buf, "0.29.0", steps)
+	out := buf.String()
+
+	stopIdx := strings.Index(out, "aveloxis stop all")
+	migrateIdx := strings.Index(out, "aveloxis migrate")
+	if stopIdx < 0 || migrateIdx < 0 || stopIdx > migrateIdx {
+		t.Errorf("checklist must run `aveloxis stop all` BEFORE `aveloxis migrate` — never migrate under a live serve (round 21)")
+	}
+
+	var sawHeal bool
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "heal_mirror_links.sh") {
+			continue
+		}
+		sawHeal = true
+		if !strings.Contains(line, "<database>") || !strings.Contains(line, "--dry-run") {
+			t.Errorf("mirror-link heal command must carry a database argument AND --dry-run (the bare form exits at DB=\"${1:?}\"); got: %s", strings.TrimSpace(line))
+		}
+	}
+	if !sawHeal {
+		t.Fatal("mirror-link heal step missing from the checklist")
+	}
+}

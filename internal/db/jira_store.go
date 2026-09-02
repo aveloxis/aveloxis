@@ -284,16 +284,21 @@ func (s *PostgresStore) DisableJiraProject(ctx context.Context, jpsID int64) err
 type JiraProjectCandidate struct {
 	ProjectKey string
 	RepoID     int64
+	RepoCount  int // Copilot round 23: distinct repos this key's synthetics span; >1 = ambiguous, needs an explicit operator mapping
 }
 
 // DeriveJiraProjectsFromSynthetics enumerates the distinct Jira
 // project keys already present as synthetic issues (data_source =
 // 'JIRA', keyed external_key) with each key's repo. 191 keys on the
 // production aveloxis DB; 5 of them are dead upstream — the worker
-// disables those on their first 400.
+// disables those on their first 400. RepoCount is the number of
+// DISTINCT repos the key's synthetics span: >1 means a single Jira
+// project key was projected onto multiple repos, and the register
+// command must NOT auto-pick one (Copilot round 23) — the operator
+// maps it explicitly.
 func (s *PostgresStore) DeriveJiraProjectsFromSynthetics(ctx context.Context) ([]JiraProjectCandidate, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT split_part(external_key, '-', 1) AS proj, min(repo_id)
+		SELECT split_part(external_key, '-', 1) AS proj, min(repo_id), count(DISTINCT repo_id)
 		FROM aveloxis_data.issues
 		WHERE data_source = 'JIRA' AND external_key <> ''
 		GROUP BY 1 ORDER BY count(*) DESC`)
@@ -304,7 +309,7 @@ func (s *PostgresStore) DeriveJiraProjectsFromSynthetics(ctx context.Context) ([
 	var out []JiraProjectCandidate
 	for rows.Next() {
 		var c JiraProjectCandidate
-		if err := rows.Scan(&c.ProjectKey, &c.RepoID); err != nil {
+		if err := rows.Scan(&c.ProjectKey, &c.RepoID, &c.RepoCount); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

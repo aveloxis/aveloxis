@@ -26,8 +26,10 @@ import (
 // Only serve and the migrate subcommand run migrations.
 func registerJiraProjectsCmd(cfgPath *string) *cobra.Command {
 	var (
-		dryRun  bool
-		baseURL string
+		dryRun       bool
+		baseURL      string
+		projectKey   string
+		explicitRepo int64
 	)
 	cmd := &cobra.Command{
 		Use:   "register-jira-projects",
@@ -46,6 +48,21 @@ func registerJiraProjectsCmd(cfgPath *string) *cobra.Command {
 			}
 			defer store.Close()
 
+			// Copilot round 23 (PR #193): explicit single-key mapping —
+			// the operator's escape hatch for a key whose synthetics span
+			// multiple repos (auto-derivation refuses to guess one).
+			if projectKey != "" {
+				if explicitRepo <= 0 {
+					return fmt.Errorf("--project requires a valid --repo-id")
+				}
+				repoID := explicitRepo
+				if err := store.RegisterJiraProject(ctx, projectKey, baseURL, &repoID); err != nil {
+					return fmt.Errorf("register %s: %w", projectKey, err)
+				}
+				fmt.Printf("registered %s -> repo_id=%d (base %s)\n", projectKey, explicitRepo, baseURL)
+				return nil
+			}
+
 			cands, err := store.DeriveJiraProjectsFromSynthetics(ctx)
 			if err != nil {
 				return err
@@ -57,23 +74,39 @@ func registerJiraProjectsCmd(cfgPath *string) *cobra.Command {
 						fmt.Printf("  ... and %d more\n", len(cands)-20)
 						break
 					}
-					fmt.Printf("  %-16s repo_id=%d\n", c.ProjectKey, c.RepoID)
+					if c.RepoCount > 1 {
+						fmt.Printf("  %-16s AMBIGUOUS: spans %d repos (min repo_id=%d) — will be SKIPPED; map it with --project %s --repo-id <repo>\n", c.ProjectKey, c.RepoCount, c.RepoID, c.ProjectKey)
+					} else {
+						fmt.Printf("  %-16s repo_id=%d\n", c.ProjectKey, c.RepoID)
+					}
 				}
 				return nil
 			}
-			registered := 0
+			registered, skipped := 0, 0
 			for _, c := range cands {
+				// Copilot round 23: never auto-pick a repo for a key whose
+				// synthetics span multiple repos — min(repo_id) would
+				// silently persist a guess and write every API issue for
+				// the project to the wrong repo. Require an explicit
+				// operator mapping instead.
+				if c.RepoCount > 1 {
+					fmt.Fprintf(os.Stderr, "skipping %s: its synthetic issues span %d repos — register it explicitly with `register-jira-projects --project %s --repo-id <repo> --base-url %s`\n", c.ProjectKey, c.RepoCount, c.ProjectKey, baseURL)
+					skipped++
+					continue
+				}
 				repoID := c.RepoID
 				if err := store.RegisterJiraProject(ctx, c.ProjectKey, baseURL, &repoID); err != nil {
 					return fmt.Errorf("register %s: %w", c.ProjectKey, err)
 				}
 				registered++
 			}
-			fmt.Printf("registered %d Jira projects (base %s)\n", registered, baseURL)
+			fmt.Printf("registered %d Jira projects (base %s); %d skipped as ambiguous (map them with --project/--repo-id)\n", registered, baseURL, skipped)
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "list derivable projects without registering")
 	cmd.Flags().StringVar(&baseURL, "base-url", "https://issues.apache.org/jira", "Jira Server base URL for the registrations")
+	cmd.Flags().StringVar(&projectKey, "project", "", "register ONE project key explicitly (requires --repo-id); the operator mapping for a key whose synthetics span multiple repos")
+	cmd.Flags().Int64Var(&explicitRepo, "repo-id", 0, "repo_id for the explicit --project mapping")
 	return cmd
 }

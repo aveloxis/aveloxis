@@ -95,6 +95,11 @@ func TestSearchPageClassifiesErrors(t *testing.T) {
 	status := 429
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
+		if status == 400 {
+			// Round 23: a DEAD project key returns this body; the client
+			// only classifies THIS shape as a disable-worthy skip.
+			_, _ = w.Write([]byte(`{"errorMessages":["The value 'X' does not exist for the field 'project'."]}`))
+		}
 	}))
 	defer srv.Close()
 	c := New(srv.URL, "")

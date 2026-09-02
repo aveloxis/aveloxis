@@ -45,7 +45,11 @@ func (s *PostgresStore) DeployAckExists(ctx context.Context, version string) (bo
 		version).Scan(&exists)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "42P01" { // undefined_table
+		// Copilot round 23 (PR #193): a completely fresh DB has no
+		// aveloxis_ops schema yet, so the reference fails at schema
+		// resolution with 3F000 (invalid_schema_name) BEFORE it can report
+		// 42P01 (undefined_table). Both mean "fresh / unacknowledged".
+		if errors.As(err, &pgErr) && (pgErr.Code == "42P01" || pgErr.Code == "3F000") {
 			return false, nil
 		}
 		return false, fmt.Errorf("deploy ack lookup %q: %w", version, err)
@@ -83,7 +87,10 @@ func (s *PostgresStore) FleetHasCollectedData(ctx context.Context) (bool, error)
 		`SELECT EXISTS(SELECT 1 FROM aveloxis_ops.collection_queue WHERE last_collected IS NOT NULL LIMIT 1)`).Scan(&exists)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		// Copilot round 23: 3F000 (missing schema on a fresh DB) is also
+		// "fresh" — the collection_queue reference fails at schema
+		// resolution before 42P01 can fire.
+		if errors.As(err, &pgErr) && (pgErr.Code == "42P01" || pgErr.Code == "3F000") {
 			return false, nil
 		}
 		return false, fmt.Errorf("fleet-has-data probe: %w", err)

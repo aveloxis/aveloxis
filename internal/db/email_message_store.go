@@ -384,11 +384,20 @@ func (s *PostgresStore) ResolveContributorIDByEmail(ctx context.Context, email s
 		return "", false, nil
 	}
 	var id string
+	// Copilot round 23 (PR #193, SR-6): the DIRECT arm must resolve only an
+	// UNAMBIGUOUS match — an address shared by two active contributors was
+	// assigned arbitrarily by LIMIT 1, and this ingest-time resolver is the
+	// path the bulk backfill's SR-6 guard never revisits (cntrb_id is
+	// already non-NULL). Exactly-one distinct match, else fall through to
+	// the alias arm (alias_email is UNIQUE, so it cannot be ambiguous).
 	err := s.pool.QueryRow(ctx, `
-		SELECT cntrb_id::text FROM aveloxis_data.contributors
-		WHERE (cntrb_email = $1 OR cntrb_canonical = $1)
-		  AND COALESCE(cntrb_deleted, 0) = 0
-		LIMIT 1`, email).Scan(&id)
+		SELECT t.cntrb_id FROM (
+			SELECT (array_agg(DISTINCT cntrb_id::text))[1] AS cntrb_id,
+			       count(DISTINCT cntrb_id) AS n
+			FROM aveloxis_data.contributors
+			WHERE (cntrb_email = $1 OR cntrb_canonical = $1)
+			  AND COALESCE(cntrb_deleted, 0) = 0
+		) t WHERE t.n = 1`, email).Scan(&id)
 	if err == nil && id != "" {
 		return id, true, nil
 	}
@@ -516,9 +525,9 @@ func (s *PostgresStore) CountResolvableMailingListSenders(ctx context.Context) (
 		JOIN aveloxis_data.email_message em ON em.message_id_header = m.node_id
 		WHERE m.platform_id = 6 AND m.cntrb_id IS NULL AND em.sender_email <> ''
 		  AND NOT aveloxis_data.is_automation_email(em.sender_email)
-		  AND (EXISTS (SELECT 1 FROM aveloxis_data.contributors c
+		  AND ((SELECT count(DISTINCT c.cntrb_id) FROM aveloxis_data.contributors c
 				WHERE (c.cntrb_email = em.sender_email OR c.cntrb_canonical = em.sender_email)
-				  AND COALESCE(c.cntrb_deleted, 0) = 0)
+				  AND COALESCE(c.cntrb_deleted, 0) = 0) = 1
 		    OR EXISTS (SELECT 1 FROM aveloxis_data.contributors_aliases ca
 				JOIN aveloxis_data.contributors c2 ON c2.cntrb_id = ca.cntrb_id
 				WHERE ca.alias_email = em.sender_email AND COALESCE(c2.cntrb_deleted, 0) = 0))`,

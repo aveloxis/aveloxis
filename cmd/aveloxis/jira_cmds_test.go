@@ -150,3 +150,20 @@ func TestBackfillJiraIdentitiesUsesTheSharedDriftSafeWalk(t *testing.T) {
 		t.Error("the --limit message must direct the operator to rerun WITHOUT --limit (no resume marker exists; 'rerun to continue' was a lie)")
 	}
 }
+
+// TestRegisterJiraProjectsRefusesAmbiguousKeys (Copilot round 23): the
+// register command must NOT auto-register a key whose synthetics span
+// multiple repos (RepoCount>1) — it skips them and offers an explicit
+// --project/--repo-id mapping.
+func TestRegisterJiraProjectsRefusesAmbiguousKeys(t *testing.T) {
+	src := srctest.Read(t, "cmd/aveloxis/register_jira_projects.go")
+	code := srctest.StripGoComments(src)
+	if !strings.Contains(code, "c.RepoCount > 1") {
+		t.Error("register-jira-projects must skip keys whose synthetics span >1 repo (round 23)")
+	}
+	for _, needle := range []string{`"project"`, `"repo-id"`, "explicitRepo"} {
+		if !strings.Contains(src, needle) {
+			t.Errorf("register-jira-projects must offer the explicit mapping flag %s (round 23)", needle)
+		}
+	}
+}

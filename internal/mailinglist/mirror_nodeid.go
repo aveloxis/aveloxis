@@ -85,6 +85,28 @@ func NodeIDFromMessageID(messageID string) string {
 	// mints these Message-IDs, so only its domain qualifies; every
 	// other host (or a host-less ID) falls through to the body-URL
 	// fallback path.
+	//
+	// Round 23 (Copilot, suppressed) — DECLINED with reasoning: the HOST
+	// is also sender-controlled (a participant can put @gitbox.apache.org
+	// in their own Message-ID), so the host gate is NOT an authentication
+	// signal by itself. The requested fix (only set this primary link from
+	// an authenticated relay signal such as DKIM) is not taken here, for
+	// two reasons. (1) The residual is already BOUNDED, not open: round 17
+	// scopes ResolveMirrorLinkByNodeID to the message's own PMC repo group
+	// (the resolved entity must belong to the sender's group, or the
+	// message's own repo when there is none), so a forger can only link to
+	// entities in their OWN project — the exact exposure the body-URL
+	// fallback has always had, and the impact is within-group analytics
+	// pollution (a message falsely recorded as a mirror notification), not
+	// any privilege or data exposure. (2) The proposed fix is
+	// disproportionate to that bounded risk and likely infeasible with the
+	// archived corpus: Pony Mail and public-inbox may not preserve a
+	// verifiable DKIM-Signature (and verifying one needs the signing
+	// domain's key + crypto per message). A verified-relay signal is the
+	// right upgrade IF one becomes available in the stored headers; until
+	// then the group scope is the mitigation and this link stays PRIMARY
+	// within it. (An authenticated Received-path check is the cheaper
+	// future option if the archives preserve the relay's Received header.)
 	i := strings.Index(s, "@")
 	if i < 0 || !strings.EqualFold(s[i+1:], GitBoxMessageIDHost) {
 		return ""

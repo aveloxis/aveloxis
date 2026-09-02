@@ -26,7 +26,8 @@ import (
 // expired.
 func TestJiraDisableFailureReleasesClaim(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(400) // dead key → ClassSkip → disable arm
+		w.WriteHeader(400)                                                                                    // dead key → ClassSkip → disable arm
+		_, _ = w.Write([]byte(`{"errorMessages":["The value 'X' does not exist for the field 'project'."]}`)) // round 23: project-not-found body
 	}))
 	defer srv.Close()
 	store := &fakeJiraStore{

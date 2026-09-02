@@ -163,6 +163,7 @@ func TestJiraWorkerSyncsProjectPages(t *testing.T) {
 func TestJiraWorkerDisablesDeadProject(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"errorMessages":["The value 'X' does not exist for the field 'project'."]}`)) // round 23: project-not-found = dead key
 	}))
 	defer srv.Close()
 	store := &fakeJiraStore{job: &db.JiraProjectJob{JpsID: 8, ProjectKey: "DEADKEY", BaseURL: srv.URL}}
@@ -222,5 +223,26 @@ func TestJiraWorkerPageSkipFailsScanNotCheckpoint(t *testing.T) {
 	}
 	if store.completed {
 		t.Fatal("a failed scan must not complete")
+	}
+}
+
+// TestJiraWorkerDoesNotDisableOnFieldError (Copilot round 23): a 400 that
+// is NOT "project does not exist" (a JQL field/compat error) must NOT
+// disable the project — that would nuke every registered project on a
+// single field issue. It records a failure (backoff) instead.
+func TestJiraWorkerDoesNotDisableOnFieldError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"errorMessages":["Field 'customfield_1' does not exist or you do not have permission to view it."]}`))
+	}))
+	defer srv.Close()
+	store := &fakeJiraStore{job: &db.JiraProjectJob{JpsID: 9, ProjectKey: "GOODKEY", BaseURL: srv.URL}}
+	w := NewJiraWorker(store, 24*time.Hour, "", 100, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.RunOnce(context.Background())
+	if store.disabled {
+		t.Fatal("a JQL field-error 400 must NOT disable the project — that would nuke the whole fleet (round 23)")
+	}
+	if store.failures != 1 {
+		t.Fatalf("a non-dead 400 must record a failure (backoff), got failures=%d", store.failures)
 	}
 }

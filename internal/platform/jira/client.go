@@ -31,13 +31,19 @@ import (
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
-// ErrInvalidQuery marks a 400 from the search endpoint — an invalid
-// JQL or a dead project key (5 of the 191 pilot keys). Definitive:
-// classifies ClassSkip so callers disable the project rather than
-// retrying forever.
+// ErrInvalidQuery is the TYPE sentinel for a 400 from the search
+// endpoint (`errors.Is` matches any *invalidQueryError regardless of
+// kind). Copilot round 23: a 400 is NOT automatically a dead key — only
+// a "project does not exist" 400 (deadKey) classifies ClassSkip and
+// disables the project (the 5 dead pilot keys); a JQL field/compat 400
+// classifies ClassFatal so the worker records a failure without
+// disabling every registered project.
 var ErrInvalidQuery = &invalidQueryError{}
 
-type invalidQueryError struct{ detail string }
+type invalidQueryError struct {
+	detail  string
+	deadKey bool // Copilot round 23: only a "project does not exist" 400 disables
+}
 
 func (e *invalidQueryError) Error() string {
 	if e.detail == "" {
@@ -49,7 +55,26 @@ func (e *invalidQueryError) Is(target error) bool {
 	_, ok := target.(*invalidQueryError)
 	return ok
 }
-func (e *invalidQueryError) Class() platform.ErrorClass { return platform.ClassSkip }
+func (e *invalidQueryError) Class() platform.ErrorClass {
+	// Copilot round 23 (PR #193): ONLY a "project does not exist" 400 is a
+	// dead key the worker should DISABLE. Jira also returns 400 for
+	// malformed/unsupported JQL fields and other request errors — a field
+	// compatibility issue must NOT disable every registered project.
+	// Non-dead 400s classify ClassFatal: the worker records a failure
+	// (surfacing it for the operator) without disabling.
+	if e.deadKey {
+		return platform.ClassSkip
+	}
+	return platform.ClassFatal
+}
+
+// jiraProjectNotFound reports whether a Jira 400 body is the
+// project-does-not-exist error (Server 8.20: "The value 'X' does not
+// exist for the field 'project'."), as opposed to a JQL field or other
+// request error.
+func jiraProjectNotFound(detail string) bool {
+	return strings.Contains(strings.ToLower(detail), "does not exist for the field 'project'")
+}
 
 // rateLimitError classifies a 429 for the subdividing/pacing callers.
 type rateLimitError struct{}
@@ -181,7 +206,8 @@ func (c *Client) SearchPage(ctx context.Context, jql string, fields []string, st
 		return nil, fmt.Errorf("jira search: %w", rateLimitError{})
 	case resp.StatusCode == http.StatusBadRequest:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("jira search: %w", &invalidQueryError{detail: string(body)})
+		detail := string(body)
+		return nil, fmt.Errorf("jira search: %w", &invalidQueryError{detail: detail, deadKey: jiraProjectNotFound(detail)})
 	case resp.StatusCode >= 500:
 		return nil, fmt.Errorf("jira search: status %d: %w", resp.StatusCode, platform.ErrTransient)
 	default:
@@ -247,7 +273,7 @@ func (c *Client) IssueCommentsPage(ctx context.Context, issueKey string, startAt
 }
 
 // ProjectTotal returns the issue count of a project (one maxResults=0
-// search — ~0.4s measured). ErrInvalidQuery = dead project key.
+// search — ~0.4s measured). A project-not-found 400 = dead project key (disable); other 400s surface without disabling (round 23).
 func (c *Client) ProjectTotal(ctx context.Context, projectKey string) (int, error) {
 	res, err := c.SearchPage(ctx, "project = "+projectKey, nil, 0, 0)
 	if err != nil {

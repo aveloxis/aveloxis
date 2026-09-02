@@ -38,19 +38,27 @@ func TestReverseLinkExhaustionReturnsErrorForDeferral(t *testing.T) {
 	}
 }
 
-// TestBackfillContinuesOnLinkContention (Copilot round 22): the re-runnable
-// keyed-projection backfill must treat errLinkContentionExhausted as
-// "leave the comment link for a future pass and continue" — NOT abort the
-// whole window on transient concurrent-drain contention.
-func TestBackfillContinuesOnLinkContention(t *testing.T) {
+// TestBackfillSkipsUnstampedOnLinkContention (Copilot round 23, reversing
+// round 22): on errLinkContentionExhausted the backfill must `continue`
+// WITHOUT stamping projected_kind — the candidate query selects only
+// rows whose projected_kind is empty, so stamping would exclude the row
+// from every future pass and the comment-native link would never happen. The
+// `continue` must therefore come BEFORE the projected_kind='issue' stamp.
+func TestBackfillSkipsUnstampedOnLinkContention(t *testing.T) {
 	body := srctest.FuncBody(t, srctest.Read(t, "internal/db/mailinglist_projection_backfill.go"),
 		"func (s *PostgresStore) BackfillKeyedIssueProjection(")
-	if body == "" {
-		// function name differs — scan the whole file for the guard.
-		body = srctest.Read(t, "internal/db/mailinglist_projection_backfill.go")
-	}
 	if !strings.Contains(body, "errors.Is(err, errLinkContentionExhausted)") {
-		t.Error("the backfill must let errLinkContentionExhausted continue (re-runnable heal), not abort the window (round 22)")
+		t.Fatal("the backfill must recognize errLinkContentionExhausted")
+	}
+	ci := strings.Index(body, "errLinkContentionExhausted")
+	tail := body[ci:]
+	contIdx := strings.Index(tail, "continue")
+	stampIdx := strings.Index(tail, "projected_kind = 'issue'")
+	if contIdx < 0 {
+		t.Fatal("the contention branch must `continue` (skip the row unstamped)")
+	}
+	if stampIdx >= 0 && contIdx > stampIdx {
+		t.Error("on contention the backfill must `continue` BEFORE the projected_kind='issue' stamp — else the row is excluded from every future pass and the comment link never retries (round 23)")
 	}
 }
 

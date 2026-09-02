@@ -77,7 +77,7 @@ func (f *fakeJiraStore) StageJiraIssue(_ context.Context, _ int64, _, issueKey s
 	f.envelopes[nk] = envelope
 	return nil
 }
-func (f *fakeJiraStore) CheckpointJiraProject(_ context.Context, _ int64, at time.Time) error {
+func (f *fakeJiraStore) CheckpointJiraProject(_ context.Context, _ int64, _ time.Time, at time.Time) error {
 	if f.checkptErr != nil {
 		err := f.checkptErr
 		f.checkptErr = nil

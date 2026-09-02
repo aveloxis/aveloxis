@@ -27,22 +27,30 @@ type deployStep struct {
 // versions with data-side healing appear here; a version absent from
 // the map has no gate. Keep entries here for at least the two releases
 // following the one that introduced them (operators skip versions).
+// v029DeployChecklist is shared by the whole v0.29.x train (Copilot
+// round 22 → v0.29.1 adds two columns via migrate + runtime-only fixes
+// — heartbeat lease, API-freshness guard — with no new operator heal, so
+// it inherits the v0.29.0 ladder; the mirror/email/strip/projection heals
+// stay re-runnable and idempotent).
+var v029DeployChecklist = []deployStep{
+	// Copilot round 21 (PR #193): the canonical ladder starts by
+	// stopping the running services — never run schema changes under
+	// a live serve (matches docs/getting-started/upgrading.md).
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "schema + ledgered backfills (node_id indexes build CONCURRENTLY — the long pole on a large fleet)"},
+	// Copilot round 21: the script REQUIRES a database positional
+	// argument (DB="${1:?}") — the bare form exits immediately. Show
+	// the usable dry-run-first invocation with the PG* env it reads.
+	{"PGHOST=<host> PGPORT=<port> PGUSER=<user> PGPASSWORD=<pw> scripts/heal_mirror_links.sh <database> --dry-run", "link the dark github_mirror MESSAGE rows to their PR/issue: read the dry-run's resolvable count, then rerun the SAME line WITHOUT --dry-run (deployment-specific — build the node_id indexes via migrate first; skip on very large fleets per the script's own note)"},
+	{"aveloxis resolve-email-identities", "attribute mailing-list senders to contributors (the keyset backfill; ~minutes)"},
+	{"aveloxis strip-quoted-history --limit 50000", "canary the quote-strip, then rerun WITHOUT --limit to completion"},
+	{"aveloxis backfill-mailing-list-projection", "project historical mail onto issues (state + reporter from notifications)"},
+	{"aveloxis refresh-views", "rebuild the materialized views the heals fed"},
+}
+
 var deployChecklists = map[string][]deployStep{
-	"0.29.0": {
-		// Copilot round 21 (PR #193): the canonical ladder starts by
-		// stopping the running services — never run schema changes under
-		// a live serve (matches docs/getting-started/upgrading.md).
-		{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
-		{"aveloxis migrate --skip-views", "schema + ledgered backfills (node_id indexes build CONCURRENTLY — the long pole on a large fleet)"},
-		// Copilot round 21: the script REQUIRES a database positional
-		// argument (DB="${1:?}") — the bare form exits immediately. Show
-		// the usable dry-run-first invocation with the PG* env it reads.
-		{"PGHOST=<host> PGPORT=<port> PGUSER=<user> PGPASSWORD=<pw> scripts/heal_mirror_links.sh <database> --dry-run", "link the dark github_mirror MESSAGE rows to their PR/issue: read the dry-run's resolvable count, then rerun the SAME line WITHOUT --dry-run (deployment-specific — build the node_id indexes via migrate first; skip on very large fleets per the script's own note)"},
-		{"aveloxis resolve-email-identities", "attribute mailing-list senders to contributors (the keyset backfill; ~minutes)"},
-		{"aveloxis strip-quoted-history --limit 50000", "canary the quote-strip, then rerun WITHOUT --limit to completion"},
-		{"aveloxis backfill-mailing-list-projection", "project historical mail onto issues (state + reporter from notifications)"},
-		{"aveloxis refresh-views", "rebuild the materialized views the heals fed"},
-	},
+	"0.29.0": v029DeployChecklist,
+	"0.29.1": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

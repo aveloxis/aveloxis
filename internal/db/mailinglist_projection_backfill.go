@@ -159,7 +159,13 @@ func (s *PostgresStore) BackfillKeyedIssueProjection(ctx context.Context, batch 
 		// claims its already-collected native twin.
 		if trackerActionFromSubject(r.subject) == "Commented" {
 			if err := s.LinkCommentNotificationToNative(ctx, r.emID, issueID, r.sentAt); err != nil {
-				return n, fmt.Errorf("backfill keyed: reverse comment link: %w", err)
+				// Copilot round 22 (PR #193): transient concurrent-drain
+				// contention leaves the comment-native link for a future
+				// pass — this heal is re-runnable, so continue (still do the
+				// issue stamp below) instead of aborting the whole window.
+				if !errors.Is(err, errLinkContentionExhausted) {
+					return n, fmt.Errorf("backfill keyed: reverse comment link: %w", err)
+				}
 			}
 		}
 		if _, err := s.pool.Exec(ctx, `

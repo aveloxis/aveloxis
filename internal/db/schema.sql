@@ -695,6 +695,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.issues (
     -- older action replaying at the same timestamp must not regress
     -- the newer one). NULL = no mail action applied yet.
     last_mail_event_id BIGINT,
+    jira_api_updated_at TIMESTAMPTZ,  -- v0.29.1: the last-applied Jira-API update timestamp; the reliable API clock the freshness guard compares (immune to mail events clobbering updated_at).
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
@@ -2267,6 +2268,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.jira_project_serve (
     jps_last_failed_at TIMESTAMPTZ,
     jps_last_run      TIMESTAMPTZ,
     jps_locked_at     TIMESTAMPTZ,
+    jps_heartbeat_at  TIMESTAMPTZ,  -- v0.29.1: ownership-qualified heartbeat; the stale window measures INACTIVITY (time since last checkpoint), not total scan duration. jps_locked_at stays the immutable ownership key.
     tool_version      TEXT DEFAULT '',
     data_collection_date TIMESTAMPTZ DEFAULT NOW()
 );

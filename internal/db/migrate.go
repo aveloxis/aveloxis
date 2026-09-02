@@ -303,6 +303,14 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_updated", "TIMESTAMPTZ")
 	// v0.29.0 round 15: same-minute tracker-action tie-breaker.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.issues", "last_mail_event_id", "BIGINT")
+	// v0.29.1 (Copilot round 22 suppressed #2): the last-applied Jira-API
+	// update timestamp — the reliable API clock the freshness guard
+	// compares against, immune to mail events clobbering updated_at.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.issues", "jira_api_updated_at", "TIMESTAMPTZ")
+	// v0.29.1 (Copilot round 22 suppressed #1): ownership-qualified
+	// heartbeat so the Jira project lease measures inactivity, not total
+	// scan duration.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.jira_project_serve", "jps_heartbeat_at", "TIMESTAMPTZ")
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.38 create message_heal_worklist", `
 		CREATE TABLE IF NOT EXISTS aveloxis_ops.message_heal_worklist (

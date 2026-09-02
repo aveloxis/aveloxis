@@ -50,7 +50,7 @@ const jiraTimeLayout = jira.TimeLayout
 type jiraStore interface {
 	ClaimNextJiraProject(ctx context.Context, cadence time.Duration, keyFilter string) (*db.JiraProjectJob, error)
 	StageJiraIssue(ctx context.Context, jpsID int64, projectKey, issueKey string, issueUpdated time.Time, repoID *int64, envelope []byte) error
-	CheckpointJiraProject(ctx context.Context, jpsID int64, lastUpdated time.Time) error
+	CheckpointJiraProject(ctx context.Context, jpsID int64, lockedAt, lastUpdated time.Time) error
 	CompleteJiraScan(ctx context.Context, jpsID int64, lockedAt time.Time) error
 	RecordJiraFailure(ctx context.Context, jpsID int64, lockedAt time.Time) error
 	DisableJiraProject(ctx context.Context, jpsID int64) error
@@ -215,7 +215,7 @@ func (w *JiraWorker) syncProject(ctx context.Context, job *db.JiraProjectJob) {
 			// the resume state. A Canceled write flows to the worker's
 			// shutdown arm (%w keeps errors.Is intact).
 			if !pageMax.IsZero() {
-				if cerr := w.store.CheckpointJiraProject(ctx, job.JpsID, pageMax); cerr != nil {
+				if cerr := w.store.CheckpointJiraProject(ctx, job.JpsID, job.LockedAt, pageMax); cerr != nil {
 					return fmt.Errorf("checkpoint at %s: %w", pageMax.Format(time.RFC3339), cerr)
 				}
 			}

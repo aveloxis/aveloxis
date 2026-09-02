@@ -141,12 +141,12 @@ func (s *PostgresStore) ClaimNextJiraProject(ctx context.Context, cadence time.D
 	var job JiraProjectJob
 	err := s.pool.QueryRow(ctx, `
 		UPDATE aveloxis_ops.jira_project_serve j
-		SET jps_locked_at = NOW()
+		SET jps_locked_at = NOW(), jps_heartbeat_at = NOW()
 		WHERE j.jps_id = (
 			SELECT jps_id FROM aveloxis_ops.jira_project_serve
 			WHERE jps_enabled
 			  AND ($2 = '' OR project_key = $2)
-			  AND (jps_locked_at IS NULL OR jps_locked_at < NOW() - INTERVAL '2 hours')
+			  AND (jps_locked_at IS NULL OR COALESCE(jps_heartbeat_at, jps_locked_at) < NOW() - INTERVAL '2 hours')
 			  AND (jps_last_run IS NULL
 			       OR jps_last_run < NOW() - make_interval(secs => $1))
 			  AND (jps_last_failed_at IS NULL
@@ -171,11 +171,22 @@ func (s *PostgresStore) ClaimNextJiraProject(ctx context.Context, cadence time.D
 // issue-updated timestamp STAGED so far (SR-3: the marker stamps only
 // over work proven staged — callers checkpoint after StageJiraIssue
 // succeeds for the page).
-func (s *PostgresStore) CheckpointJiraProject(ctx context.Context, jpsID int64, lastUpdated time.Time) error {
+func (s *PostgresStore) CheckpointJiraProject(ctx context.Context, jpsID int64, lockedAt, lastUpdated time.Time) error {
+	// v0.29.1 (Copilot round 22 suppressed #1): renew jps_heartbeat_at so
+	// the claim's stale window measures INACTIVITY, not total scan
+	// duration — a legitimately long sync (SPARK/FLINK scale) that keeps
+	// checkpointing is never reclaimed mid-scan. The heartbeat renewal is
+	// OWNERSHIP-QUALIFIED on the claim's own jps_locked_at ($3): a stale
+	// worker that already lost its lease (jps_locked_at moved on) cannot
+	// extend the successor's lease. jps_last_updated stays UNqualified —
+	// it is a monotonic GREATEST over genuinely staged work, valid from
+	// any holder (Copilot round 6), and jps_locked_at is immutable during
+	// a scan, so the ownership key never changes under the heartbeat.
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.jira_project_serve
-		SET jps_last_updated = GREATEST(COALESCE(jps_last_updated, '-infinity'), $2)
-		WHERE jps_id = $1`, jpsID, lastUpdated)
+		SET jps_last_updated = GREATEST(COALESCE(jps_last_updated, '-infinity'), $2),
+		    jps_heartbeat_at = CASE WHEN jps_locked_at = $3 THEN NOW() ELSE jps_heartbeat_at END
+		WHERE jps_id = $1`, jpsID, lastUpdated, lockedAt)
 	if err != nil {
 		return fmt.Errorf("checkpoint jira project %d: %w", jpsID, err)
 	}
@@ -192,11 +203,13 @@ var ErrJiraClaimLost = errors.New("jira claim ownership lost (re-claimed after t
 // OWNERSHIP-QUALIFIED by the claim's own jps_locked_at (round 6): an
 // unqualified write from a >2h stale owner would clear the
 // replacement worker's lock and stamp a run the new holder is still
-// earning. CheckpointJiraProject stays deliberately UNQUALIFIED (a
-// monotonic GREATEST over staged work — valid from any holder;
-// qualifying it would discard the stale owner's genuinely-staged
-// pages), as does DisableJiraProject (a dead key is a property of the
-// project, not of the claim).
+// earning. CheckpointJiraProject's jps_last_updated stays deliberately
+// UNQUALIFIED (a monotonic GREATEST over staged work — valid from any
+// holder; qualifying it would discard the stale owner's
+// genuinely-staged pages), while its v0.29.1 jps_heartbeat_at renewal
+// IS ownership-qualified (only the current holder extends the lease).
+// DisableJiraProject stays unqualified too (a dead key is a property of
+// the project, not of the claim).
 func (s *PostgresStore) CompleteJiraScan(ctx context.Context, jpsID int64, lockedAt time.Time) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.jira_project_serve
@@ -672,20 +685,25 @@ type JiraAPIIssue struct {
 // API-owned state); this one arbitrates the API writer itself, where
 // equality must pass.
 //
-// Known skew (L10 review, F4): a mail-owned row's updated_at is the
-// notification's sent_at (Pony Mail minute-rounds it, and relay
-// latency runs ahead of Jira's own clock), so it can EXCEED the API
-// snapshot's `updated` for the very change the mail announced. The
-// mail-owned arm above deliberately ignores updated_at entirely
-// (data_source <> 'JIRA API' upgrades unconditionally), so the skew
-// costs nothing here — it only means updated_at on a mail-owned row is
-// a sent_at stamp, not a Jira timestamp, until the first API snapshot
-// rewrites it.
+// v0.29.1 (Copilot round 22 suppressed #2): the API-over-API comparison
+// keys on jira_api_updated_at — the last-APPLIED Jira-API `updated`,
+// written ONLY by an applying API snapshot — NOT on updated_at, which a
+// mail event (ApplyTrackerAction) clobbers with a relay stamp and
+// re-marks mail-authored. The old arm 4 (`last_mail_event_id IS NOT
+// NULL`) bypassed the API-vs-API check entirely, so a STALE API replay
+// landing after a newer API snapshot + an intervening mail event
+// regressed title/state/reporter. Using jira_api_updated_at closes that:
+// a mail-owned row (data_source <> API) still upgrades unconditionally
+// (rank 2 > rank 3), a never-API-written row (jira_api_updated_at IS
+// NULL) accepts the first API write, and an API-owned row advances only
+// on an `updated` at least as new as the last API write — regardless of
+// any mail marker. The F4 clock skew is thus irrelevant here: updated_at
+// on a mail-owned row may be a sent_at stamp, but freshness no longer
+// reads it.
 const jiraAPISnapshotFreshSQL = `(aveloxis_data.issues.data_source <> '` +
 	JiraAPIDataSource + `'
-			                    OR aveloxis_data.issues.updated_at IS NULL
-			                    OR aveloxis_data.issues.updated_at <= EXCLUDED.updated_at
-			                    OR aveloxis_data.issues.last_mail_event_id IS NOT NULL)`
+			                    OR aveloxis_data.issues.jira_api_updated_at IS NULL
+			                    OR aveloxis_data.issues.jira_api_updated_at <= EXCLUDED.updated_at)`
 
 // UpsertJiraIssueFromAPI is the C3a rank-2 writer. One logical ticket
 // = one issues row keyed (repo_id, external_key):
@@ -784,8 +802,10 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 		INSERT INTO aveloxis_data.issues
 			(repo_id, platform_issue_id, issue_number, issue_title, issue_state,
 			 closed_at, external_key, jira_issue_id, reporter_id, created_at, updated_at,
+			 jira_api_updated_at,
 			 data_source, tool_source, tool_version, data_collection_date)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, 0), $9, $10, $11,
+			$11,
 			'`+JiraAPIDataSource+`', 'Aveloxis Jira Collector', $12, NOW())
 		ON CONFLICT (repo_id, platform_issue_id) DO UPDATE SET
 			-- rank 2 overwrites rank 3 — but ONLY on synthetic rows;
@@ -819,6 +839,11 @@ func (s *PostgresStore) UpsertJiraIssueFromAPI(ctx context.Context, in JiraAPIIs
 			                   THEN EXCLUDED.reporter_id ELSE aveloxis_data.issues.reporter_id END,
 			updated_at = CASE WHEN `+jiraAPISnapshotFreshSQL+`
 			                  THEN EXCLUDED.updated_at ELSE aveloxis_data.issues.updated_at END,
+			-- v0.29.1 (round 22 suppressed #2): record the API's OWN
+			-- updated timestamp — the reliable clock the freshness guard
+			-- reads, unaffected by later mail events that clobber updated_at.
+			jira_api_updated_at = CASE WHEN `+jiraAPISnapshotFreshSQL+`
+			                           THEN EXCLUDED.updated_at ELSE aveloxis_data.issues.jira_api_updated_at END,
 			-- Fresh-context round 2026-09-02 #1: an applying API write
 			-- re-establishes the API clock domain — clear the
 			-- mail-authored marker so the tracker guard's API arm goes
@@ -907,6 +932,17 @@ type JiraAPIComment struct {
 // uq_email_message_linked_msg). Candidates in a ±2-minute window are
 // finite; a few retries drain them.
 const maxLinkClaimRetries = 5
+
+// errLinkContentionExhausted (Copilot round 22 on PR #193):
+// LinkCommentNotificationToNative returns this wrapped when every native
+// candidate in the ±2min window was claimed by a concurrent drain across
+// maxLinkClaimRetries — the notification is genuinely still UNLINKED. The
+// processor caller treats it (like any error) as a row deferral so the
+// next drain retries; the re-runnable backfill leaves it for a later pass
+// and continues (never aborts the window on transient contention). This is
+// DISTINCT from RowsAffected()==0, which is a genuine surplus notification
+// (no native to pair) and correctly returns nil.
+var errLinkContentionExhausted = errors.New("reverse-link retries exhausted under concurrent-drain contention")
 
 // email_message.linked_msg_id — collection-time linking (the v0.28.20
 // GitBox mirror-link precedent; pilot-validated (issue, ±2 min) match,
@@ -1065,7 +1101,11 @@ func (s *PostgresStore) LinkCommentNotificationToNative(ctx context.Context, ema
 		}
 		return fmt.Errorf("reverse-link comment notification %d: %w", emailMessageID, err)
 	}
-	// Every candidate was claimed by a concurrent drain within the bound;
-	// leave the notification unlinked — the next drain/backfill converges.
-	return nil
+	// Every candidate was claimed by a concurrent drain within the bound:
+	// the notification is STILL UNLINKED. Copilot round 22 (PR #193):
+	// returning nil here reported success, so the caller marked the
+	// staging row processed and the "next drain" never retried — the
+	// comment stayed double-counted. Surface the contention so the caller
+	// defers the row (the contention is transient; the next drain links it).
+	return fmt.Errorf("reverse-link comment notification %d: %w", emailMessageID, errLinkContentionExhausted)
 }

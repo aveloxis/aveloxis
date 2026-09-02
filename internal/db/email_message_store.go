@@ -430,16 +430,21 @@ func (s *PostgresStore) ResolveContributorIDByEmail(ctx context.Context, email s
 // (v0.27.112/114).
 func (s *PostgresStore) BackfillMailingListSenderIDs(ctx context.Context, afterMsgID, window int64) (int64, error) {
 	var total int64
-	// Arm 1: direct cntrb_email / cntrb_canonical match. DISTINCT ON
-	// makes a multi-contributor email (two rows sharing cntrb_email —
-	// none observed, but the schema permits it) a deterministic pick
-	// instead of a planner-dependent one.
+	// Arm 1: direct cntrb_email / cntrb_canonical match. Copilot round 22
+	// on PR #193: a DISTINCT ON pick over a multi-contributor email (two
+	// active rows sharing cntrb_email/cntrb_canonical — none observed, but
+	// the schema permits it) would FABRICATE an attribution, violating
+	// SR-6 (ambiguous identities stay NULL). GROUP BY the message and
+	// update only when exactly ONE distinct contributor matches;
+	// (array_agg(DISTINCT ...))[1] returns that single id (no min() for
+	// uuid). An ambiguous email matches >1 distinct cntrb_id → no group
+	// row → the message keeps its NULL.
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.messages m
 		SET cntrb_id = sub.cntrb_id
 		FROM (
-			SELECT DISTINCT ON (m2.msg_id) m2.msg_id, c.cntrb_id
+			SELECT m2.msg_id, (array_agg(DISTINCT c.cntrb_id))[1] AS cntrb_id
 			FROM aveloxis_data.messages m2
 			JOIN aveloxis_data.email_message em ON em.message_id_header = m2.node_id
 			JOIN aveloxis_data.contributors c
@@ -450,7 +455,8 @@ func (s *PostgresStore) BackfillMailingListSenderIDs(ctx context.Context, afterM
 			  AND em.sender_email <> ''
 			  AND NOT aveloxis_data.is_automation_email(em.sender_email)
 			  AND m2.msg_id > $1 AND m2.msg_id <= $1 + $2
-			ORDER BY m2.msg_id, c.cntrb_id
+			GROUP BY m2.msg_id
+			HAVING COUNT(DISTINCT c.cntrb_id) = 1
 		) sub
 		WHERE m.msg_id = sub.msg_id`, afterMsgID, window)
 		if err != nil {

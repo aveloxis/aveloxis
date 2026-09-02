@@ -565,9 +565,12 @@ func TestJiraClaimOwnedWritesRefuseStaleOwner(t *testing.T) {
 	if err != nil || job1 == nil {
 		t.Fatalf("claim1: %v %v", job1, err)
 	}
-	// The scan outlives the stale window; a second worker steals it.
+	// The scan STALLS past the stale window (v0.29.1: staleness measures
+	// inactivity, so both the lock and the heartbeat must be aged); a
+	// second worker steals it.
 	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_ops.jira_project_serve
-		SET jps_locked_at = NOW() - INTERVAL '3 hours' WHERE jps_id = $1`, job1.JpsID); err != nil {
+		SET jps_locked_at = NOW() - INTERVAL '3 hours',
+		    jps_heartbeat_at = NOW() - INTERVAL '3 hours' WHERE jps_id = $1`, job1.JpsID); err != nil {
 		t.Fatal(err)
 	}
 	job2, err := store.ClaimNextJiraProject(ctx, 24*time.Hour, "_AVJRO1")

@@ -479,6 +479,18 @@ func (kp *KeyPool) GetGraphQLKey(ctx context.Context) (*APIKey, error) {
 			if k.quarantineUntil.After(wake) {
 				wake = k.quarantineUntil
 			}
+			if wake.IsZero() {
+				// Copilot round 22 on PR #193: an exhausted key whose
+				// successful responses carried Remaining but NO Reset has
+				// GraphQLResetAt==0 and no quarantine — the scan would skip
+				// its zero wake, the 30s fallback below never persists a
+				// deadline, and a non-fast-fail caller polls forever without
+				// ever checking out a key to LEARN a reset. Stamp the same
+				// bounded probe window MarkGraphQLExhausted uses so the key
+				// becomes re-probeable and the refill guard can fire.
+				k.GraphQLResetAt = now.Add(graphQLDepletedProbe)
+				wake = k.GraphQLResetAt
+			}
 			if earliestWake.IsZero() || (!wake.IsZero() && wake.Before(earliestWake)) {
 				earliestWake = wake
 			}

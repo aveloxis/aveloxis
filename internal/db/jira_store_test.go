@@ -62,7 +62,7 @@ func TestJiraProjectServeLifecycle(t *testing.T) {
 		t.Fatalf("claim: %+v", job)
 	}
 	cp := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	if err := store.CheckpointJiraProject(ctx, job.JpsID, cp); err != nil {
+	if err := store.CheckpointJiraProject(ctx, job.JpsID, job.LockedAt, cp); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CompleteJiraScan(ctx, job.JpsID, job.LockedAt); err != nil {

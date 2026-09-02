@@ -362,6 +362,7 @@ Issue tracker records from GitHub Issues or GitLab Issues. Each row represents o
 | `comment_count` | INT | GitHub REST: `/repos/{o}/{r}/issues`, GitLab: `/projects/{id}/issues` | Number of comments on the issue. |
 | `external_key` | TEXT | `backfill-issue-external-keys` | Bracketed `[KEY-N]` Jira/Bugzilla key from the title (Apache Jira → GitHub imports). Lets mailing-list `issue_event` mail bridge to the imported issue. Partial unique `(repo_id, external_key) WHERE external_key <> ''`. v0.25.7. |
 | `last_mail_event_id` | BIGINT | Computed (`ApplyTrackerAction` / `BackfillSyntheticJiraState`) | v0.29.0: the `email_message_id` of the last mail tracker action applied to a synthetic row — the same-minute tie-breaker in `trackerActionEventGuardSQL` (Pony Mail rounds `sent_at` to the minute; a deferred older action replaying at an equal timestamp must not regress the newer one). NULL on native rows and untouched synthetics. |
+| `jira_api_updated_at` | TIMESTAMPTZ | Jira API (v0.29.1) | The last-APPLIED Jira-API `updated` timestamp — the reliable clock `jiraAPISnapshotFreshSQL` compares against, written ONLY by an applying API snapshot. A mail event clobbers `updated_at` with a relay stamp and re-marks the row mail-authored, so freshness must NOT read `updated_at`; keying on this column blocks a stale API replay from regressing an API-owned row (Copilot round 22). NULL until the first API write. |
 | `jira_issue_id` | BIGINT | Jira API (v0.29.0) | The REAL Jira internal id, in its own column. Synthetic rows keep their deterministic NEGATIVE `platform_issue_id` forever — one logical ticket is one row keyed `(repo_id, external_key)` across all three providers (forge > Jira API > mail); see [Human provenance](architecture/human-provenance.md). |
 | | | | *Standard metadata columns* |
 
@@ -1800,6 +1801,7 @@ incremental-sync cursor (`updated >= <checkpoint>` JQL). `repo_id` is
 nullable and un-FK'd: a project can register before its repo mapping
 exists. Seeded by `aveloxis register-jira-projects`; dead upstream
 keys are disabled by the worker on their first 400.
+(v0.29.1: `jps_heartbeat_at`, renewed ownership-qualified on every checkpoint, makes the 2-hour stale window measure INACTIVITY rather than total scan duration — `jps_locked_at` stays the immutable ownership key, so a long-but-active sync is never reclaimed mid-scan.)
 
 #### jira_staging
 

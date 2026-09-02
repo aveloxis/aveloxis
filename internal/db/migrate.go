@@ -1539,18 +1539,19 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_review
 		ON aveloxis_data.email_message (linked_pr_review_id) WHERE linked_pr_review_id IS NOT NULL`)
 
-	// v0.29.0: fourth sibling — the Part D native>notification dedup in
-	// aveloxis-analytics enumerates notifications whose native twin was
-	// collected (linked_msg_id IS NOT NULL, stamped by the Jira comment
-	// ingester) to exclude their body rows from edge/text queries. The
-	// query predicate matches the index predicate verbatim, so partial is
-	// usable here (unlike the v0.27.54 join-variable class). Migration-only
-	// per SR-2 — deliberately NOT in schema.sql (13M-row email_message on
-	// the mailing-list deployment would block-build in base DDL; the
-	// v0.25.34 trio above is grandfathered).
-	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_email_message_linked_msg",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_msg
-		ON aveloxis_data.email_message (linked_msg_id) WHERE linked_msg_id IS NOT NULL`)
+	// v0.29.0: email_message.linked_msg_id serves the Part D
+	// native>notification dedup in aveloxis-analytics (enumerate
+	// notifications whose native twin was collected — linked_msg_id IS
+	// NOT NULL — to exclude their body rows) AND enforces the
+	// one-notification-per-native-comment invariant. Copilot round 20 on
+	// PR #193: that invariant needs a partial UNIQUE index as the hard
+	// backstop — the two writers' anti-join is check-then-act and races
+	// under concurrent mailing_list_processor drains. ensureLinkedMsgIDUnique
+	// RETIRES the earlier non-unique idx_email_message_linked_msg (SR-4:
+	// dropped, never recreated) and builds the unique replacement after
+	// draining any existing duplicate claims (SR-1). Migration-only per
+	// SR-2 (the v0.28.20 precedent on this 13M-row table).
+	ensureLinkedMsgIDUnique(ctx, pg, logger, errs)
 
 	// Copilot round 6 on PR #193 (suppressed #1): the comment_count
 	// recount excludes superseded notifications by probing
@@ -2771,6 +2772,83 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 // resolution in FindRepoByURL/resolveCaseVariantURL keeps prevention
 // best-effort until the index lands; the next migrate run after
 // dedup-repos drains creates it.
+// ensureLinkedMsgIDUnique (Copilot round 20 on PR #193): enforces
+// one-notification-per-native-comment via a partial UNIQUE index on
+// email_message.linked_msg_id. The two writers (UpsertJiraComment,
+// LinkCommentNotificationToNative) use a NOT EXISTS anti-join to pick an
+// unclaimed native comment, but that is check-then-act: two concurrent
+// drains can both see the same native unclaimed and update DIFFERENT
+// email_message rows toward it, then both commit under a non-unique index
+// (duplicate provenance links, the recount then double-excludes). The
+// unique index rejects the second commit with 23505, which the writers
+// handle (skip / re-pick the next candidate). This REPLACES the earlier
+// non-unique idx_email_message_linked_msg (retired; SR-4). SR-1: any
+// existing duplicate claims are drained (keep the lowest email_message_id,
+// NULL the rest) and their issues recounted BEFORE the unique build, or
+// the CONCURRENTLY create would fail on duplicate data.
+func ensureLinkedMsgIDUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	// 1. Capture the issues whose comment_count changes: a loser
+	//    notification's body row was excluded from its issue's count
+	//    (its email_message carried linked_msg_id); NULLing it
+	//    un-supersedes the notification, so it counts again.
+	var affected []int64
+	if rows, err := pg.pool.Query(ctx, `
+		SELECT DISTINCT imr.issue_id
+		FROM (
+			SELECT email_message_id FROM (
+				SELECT email_message_id,
+				       ROW_NUMBER() OVER (PARTITION BY linked_msg_id ORDER BY email_message_id) AS rn
+				FROM aveloxis_data.email_message WHERE linked_msg_id IS NOT NULL) r
+			WHERE r.rn > 1) losers
+		JOIN aveloxis_data.email_message_ref emr ON emr.email_message_id = losers.email_message_id
+		JOIN aveloxis_data.issue_message_ref imr ON imr.msg_id = emr.msg_id`); err != nil {
+		// A capture failure only loses the recount (self-heals on the
+		// issue's next sync); the dedup + unique build below still matter.
+		*errs = append(*errs, fmt.Errorf("linked_msg dedup: capture affected issues: %w", err))
+	} else {
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err == nil {
+				affected = append(affected, id)
+			}
+		}
+		rows.Close()
+	}
+	// 2. Drain the duplicate claims: keep the lowest email_message_id per
+	//    linked_msg_id value, NULL the rest.
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.29.0 dedup duplicate email_message.linked_msg_id before unique index", `
+		UPDATE aveloxis_data.email_message SET linked_msg_id = NULL
+		WHERE email_message_id IN (
+			SELECT email_message_id FROM (
+				SELECT email_message_id,
+				       ROW_NUMBER() OVER (PARTITION BY linked_msg_id ORDER BY email_message_id) AS rn
+				FROM aveloxis_data.email_message WHERE linked_msg_id IS NOT NULL) r
+			WHERE r.rn > 1)`)
+	// 3. Recount the affected issues (freed notifications count again).
+	if len(affected) > 0 {
+		if _, err := pg.pool.Exec(ctx, `
+			UPDATE aveloxis_data.issues i SET comment_count = (
+				SELECT count(*) FROM aveloxis_data.issue_message_ref imr
+				WHERE imr.issue_id = i.issue_id
+				  AND NOT EXISTS (
+					SELECT 1 FROM aveloxis_data.email_message_ref emr
+					JOIN aveloxis_data.email_message em ON em.email_message_id = emr.email_message_id
+					WHERE emr.msg_id = imr.msg_id AND em.linked_msg_id IS NOT NULL))
+			WHERE i.issue_id = ANY($1)`, affected); err != nil {
+			*errs = append(*errs, fmt.Errorf("linked_msg dedup: recount affected issues: %w", err))
+		}
+	}
+	// 4. Retire the non-unique index (SR-4: dropped, never recreated).
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.29.0 drop non-unique idx_email_message_linked_msg (replaced by unique backstop)",
+		`DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.idx_email_message_linked_msg`)
+	// 5. The hard backstop: one notification per native comment.
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "uq_email_message_linked_msg",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_email_message_linked_msg
+		ON aveloxis_data.email_message (linked_msg_id) WHERE linked_msg_id IS NOT NULL`)
+}
+
 func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
 	// Fast path: a VALID index already exists — nothing to do.
 	// ErrNoRows = the index doesn't exist yet; other errors are logged

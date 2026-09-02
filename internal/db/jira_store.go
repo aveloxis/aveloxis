@@ -901,6 +901,13 @@ type JiraAPIComment struct {
 // UpsertJiraComment stores a NATIVE Jira comment (platform 4,
 // MsgKindComment, platform_msg_id = Jira's comment id), bridges it via
 // issue_message_ref, and stamps the matching [Commented] notification's
+// maxLinkClaimRetries bounds LinkCommentNotificationToNative's
+// re-pick loop when a concurrent drain claims the native comment it
+// selected between the anti-join SELECT and the UPDATE (23505 on
+// uq_email_message_linked_msg). Candidates in a ±2-minute window are
+// finite; a few retries drain them.
+const maxLinkClaimRetries = 5
+
 // email_message.linked_msg_id — collection-time linking (the v0.28.20
 // GitBox mirror-link precedent; pilot-validated (issue, ±2 min) match,
 // 94.4% within 2 minutes, median 37 s). Read-time precedence
@@ -979,7 +986,17 @@ func (s *PostgresStore) UpsertJiraComment(ctx context.Context, in JiraAPIComment
 			WHERE linkedem.linked_msg_id = $1)`,
 		msgID, in.RepoID, in.ExternalKey, in.Created)
 	if lerr != nil {
-		return 0, fmt.Errorf("link notification for comment %d: %w", in.CommentID, lerr)
+		// Copilot round 20 on PR #193: the uq_email_message_linked_msg
+		// backstop makes this anti-join's check-then-act race-safe. A
+		// 23505 here means a concurrent drain already linked a
+		// notification to THIS native comment's msg_id — the
+		// "one notification superseded by this native" intent is
+		// already satisfied, so it is a no-op, never a failure that
+		// would defer the whole envelope.
+		var pgErr *pgconn.PgError
+		if !(errors.As(lerr, &pgErr) && pgErr.Code == "23505") {
+			return 0, fmt.Errorf("link notification for comment %d: %w", in.CommentID, lerr)
+		}
 	}
 	// Round 17 (suppressed #2): the bridge here is recount-FREE — the
 	// processor writes a whole comment block per envelope and recounts
@@ -1005,10 +1022,19 @@ func (s *PostgresStore) UpsertJiraComment(ctx context.Context, in JiraAPIComment
 // only while the notification is unlinked, and never claims a native
 // comment another notification already linked.
 func (s *PostgresStore) LinkCommentNotificationToNative(ctx context.Context, emailMessageID, issueID int64, sentAt time.Time) error {
+	// Copilot round 20 on PR #193: the anti-join picks the nearest
+	// UNCLAIMED native comment, but concurrent mailing_list_processor
+	// drains can both see the same native unclaimed and update DIFFERENT
+	// email_message rows toward it — the uq_email_message_linked_msg
+	// backstop rejects the duplicate with 23505. Re-run to pick the NEXT
+	// unclaimed candidate (the committed claim is now visible to the
+	// anti-join); bounded, since candidates in the window are finite.
+	// withRetry handles 40P01 inside each attempt.
 	var tag pgconn.CommandTag
-	err := s.withRetry(ctx, func(ctx context.Context) error {
-		var werr error
-		tag, werr = s.pool.Exec(ctx, `
+	for attempt := 0; attempt < maxLinkClaimRetries; attempt++ {
+		err := s.withRetry(ctx, func(ctx context.Context) error {
+			var werr error
+			tag, werr = s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.email_message em SET linked_msg_id = native.msg_id
 		FROM (
 			SELECT m.msg_id FROM aveloxis_data.messages m
@@ -1024,14 +1050,22 @@ func (s *PostgresStore) LinkCommentNotificationToNative(ctx context.Context, ema
 			ORDER BY abs(extract(epoch FROM (m.msg_timestamp - $3::timestamptz)))
 			LIMIT 1) native
 		WHERE em.email_message_id = $1 AND em.linked_msg_id IS NULL`,
-			emailMessageID, issueID, sentAt, JiraPlatformID, MsgKindComment)
-		return werr
-	})
-	if err != nil {
+				emailMessageID, issueID, sentAt, JiraPlatformID, MsgKindComment)
+			return werr
+		})
+		if err == nil {
+			if tag.RowsAffected() > 0 {
+				return s.recountIssueComments(ctx, issueID)
+			}
+			return nil // no unclaimed native in the window — done
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			continue // candidate claimed concurrently — re-evaluate
+		}
 		return fmt.Errorf("reverse-link comment notification %d: %w", emailMessageID, err)
 	}
-	if tag.RowsAffected() > 0 {
-		return s.recountIssueComments(ctx, issueID)
-	}
+	// Every candidate was claimed by a concurrent drain within the bound;
+	// leave the notification unlinked — the next drain/backfill converges.
 	return nil
 }

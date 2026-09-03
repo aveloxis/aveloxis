@@ -682,6 +682,16 @@ func (kp *KeyPool) IsEmpty() bool {
 	return len(kp.keys) == 0
 }
 
+// Len returns the number of configured keys (invalid ones included).
+// Copilot round 24 (PR #193): the GraphQL retry loop bounds its
+// rate-limit KEY rotations by this so every key is considered before the
+// error escapes.
+func (kp *KeyPool) Len() int {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	return len(kp.keys)
+}
+
 // AliveCount returns the number of non-invalidated keys.
 func (kp *KeyPool) AliveCount() int {
 	kp.mu.Lock()

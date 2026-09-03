@@ -36,11 +36,19 @@ const QuoteStripRuleVersion = "qs-v1"
 var (
 	// 77.5% — classic `>` quotation.
 	qsQuoted = regexp.MustCompile(`^\s*>`)
-	// 69.1% — "On <date> ... <someone> wrote:" attribution, single-line
-	// form. The wrapped two/three-line form is handled by qsAttrStart +
-	// qsWroteTail lookahead.
-	qsAttrOne   = regexp.MustCompile(`^On .*wrote:\s*$`)
-	qsAttrStart = regexp.MustCompile(`^On \S`)
+	// 69.1% — "On <date> ... <someone> wrote:" attribution. Copilot
+	// round 24 (PR #193): the start line must carry a DATE shape (a
+	// digit — day/year/time), not merely begin with "On ". The cleaned
+	// body feeds analytics across the historical corpus, and authored
+	// prose like "On Windows" followed within two lines by "...what
+	// Alice wrote:" must NOT be deleted as quoted history. Real
+	// attributions ("On Mon, Jan 5, 2026 at 3:14 PM, Alice wrote:")
+	// always carry a digit; a digit-less "On ..." falls through to the
+	// default arm and is kept. Single-line form requires the digit
+	// before the "wrote:" tail; the wrapped two/three-line form pairs
+	// qsAttrStart (digit) with the qsWroteTail lookahead.
+	qsAttrOne   = regexp.MustCompile(`^On .*[0-9].*wrote:\s*$`)
+	qsAttrStart = regexp.MustCompile(`^On .*[0-9]`)
 	qsWroteTail = regexp.MustCompile(`wrote:\s*$`)
 	// 16.8% — the RFC 3676 signature delimiter ("-- ", tolerating the
 	// space-stripped "--" variant mailers emit).

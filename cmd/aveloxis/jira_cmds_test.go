@@ -43,6 +43,25 @@ func TestRegisterJiraProjectsShape(t *testing.T) {
 	}
 }
 
+// Copilot round 24 (PR #193): --dry-run must be honored on the explicit
+// --project/--repo-id path, not just the derive path. Pin that a dry-run
+// guard precedes the FIRST RegisterJiraProject call (the explicit path)
+// so a "list only" command can never perform a real registration.
+func TestRegisterJiraProjectsExplicitPathHonorsDryRun(t *testing.T) {
+	code := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/register_jira_projects.go"))
+	firstGuard := strings.Index(code, "if dryRun {")
+	firstRegister := strings.Index(code, "RegisterJiraProject(")
+	if firstGuard < 0 {
+		t.Fatal("no `if dryRun {` guard found in register_jira_projects.go")
+	}
+	if firstRegister < 0 {
+		t.Fatal("no RegisterJiraProject call found")
+	}
+	if firstGuard > firstRegister {
+		t.Error("the explicit path performs a RegisterJiraProject before any dry-run guard — --dry-run is not honored there")
+	}
+}
+
 func TestBackfillJiraIdentitiesShape(t *testing.T) {
 	src := srctest.Read(t, "cmd/aveloxis/backfill_jira_identities.go")
 	for _, needle := range []string{

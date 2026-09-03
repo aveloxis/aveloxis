@@ -55,6 +55,13 @@ func registerJiraProjectsCmd(cfgPath *string) *cobra.Command {
 				if explicitRepo <= 0 {
 					return fmt.Errorf("--project requires a valid --repo-id")
 				}
+				// Copilot round 24 (PR #193): honor --dry-run on the
+				// explicit path too — a command advertised as
+				// side-effect-free must not perform a real registration.
+				if dryRun {
+					fmt.Printf("dry run: would register %s -> repo_id=%d (base %s)\n", projectKey, explicitRepo, baseURL)
+					return nil
+				}
 				repoID := explicitRepo
 				if err := store.RegisterJiraProject(ctx, projectKey, baseURL, &repoID); err != nil {
 					return fmt.Errorf("register %s: %w", projectKey, err)

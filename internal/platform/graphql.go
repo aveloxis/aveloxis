@@ -184,7 +184,20 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 	var lastRateLimit error
 	rateLimitAttempt := -1
 
-	for attempt := range budget {
+	// Copilot round 24 (PR #193): an in-body rate-limit rotation swaps to a
+	// FRESH key — it is not a transport retry and must not spend the fixed
+	// transport `budget`, or a pool with more keys than `budget` would give
+	// up before trying them all (contradicting "the error escapes only after
+	// every key is spent"). Bound rotations by the key count so every key is
+	// considered; under fast-fail the caller owns recovery, so keep the tight
+	// budget (rotations spend it as before).
+	maxRotations := 0
+	if !graphqlFastFailEnabled(ctx) {
+		maxRotations = c.keys.Len()
+	}
+	rotations := 0
+
+	for attempt := 0; attempt < budget; attempt++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -327,6 +340,13 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 					"url", url, "attempt", attempt+1, "error", parsed)
 				lastRateLimit = parsed
 				rateLimitAttempt = attempt
+				if rotations < maxRotations {
+					// A key rotation, not a transport retry — undo this
+					// iteration's budget spend (the loop post-increment
+					// re-adds it) so all keys get a shot.
+					rotations++
+					attempt--
+				}
 				continue
 			}
 			return parsed

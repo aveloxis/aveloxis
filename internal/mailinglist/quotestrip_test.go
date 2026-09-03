@@ -33,6 +33,14 @@ func TestStripQuotedHistoryTable(t *testing.T) {
 		{"wrapped two-line attribution dropped",
 			"Sounds right.\nOn Mon, Jan 5, 2026 at 3:14 PM Alice Smith\n<alice@example.org> wrote:\n> earlier",
 			"Sounds right."},
+		// Copilot round 24 (PR #193): authored prose beginning "On " with
+		// NO date shape must be kept, even when a later line ends "wrote:".
+		{"authored On-prose with a later wrote: is NOT stripped (round 24)",
+			"On Windows the path separator differs.\nwe should document what Alice wrote:\nlet's add a note.",
+			"On Windows the path separator differs.\nwe should document what Alice wrote:\nlet's add a note."},
+		{"single-line On-prose ending wrote: without a date is kept (round 24)",
+			"On second thought, here is what she wrote:",
+			"On second thought, here is what she wrote:"},
 		{"signature delimiter drops to end (16.8%)",
 			"Thanks for the review.\n-- \nAlice Smith\nApache Something PMC",
 			"Thanks for the review."},

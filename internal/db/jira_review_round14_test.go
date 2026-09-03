@@ -58,20 +58,37 @@ func TestJiraCommentStaleReplayNeverRegressesText(t *testing.T) {
 		t.Fatalf("msg_updated = %v, want the newer edit time retained", updated)
 	}
 
-	// Equal-timestamp replay stays idempotent AND can still FILL an
-	// unresolved author (author is immutable across edits, so even a
-	// stale snapshot's author is correct — reasoned at the guard).
+	// Equal-timestamp replay stays idempotent AND FILLS an unresolved
+	// author (author is immutable across edits, so even a stale
+	// snapshot's author is correct — reasoned at the guard). Copilot
+	// round 24 (PR #193): the previous version seeded AuthorCntrbID="",
+	// which maps to SQL NULL and only asserted msg_text — a regression
+	// in the COALESCE(..., EXCLUDED.cntrb_id) author arm would still
+	// pass. Seed a real contributor, replay its id, and assert the
+	// stored cntrb_id actually filled.
+	var authorID string
+	mustQueryRowRetry(ctx, t, store, `INSERT INTO aveloxis_data.contributors
+		(cntrb_id, cntrb_login, cntrb_email, cntrb_deleted)
+		VALUES (gen_random_uuid(), $1, '', 0) RETURNING cntrb_id::text`,
+		&authorID, "r14-author-"+fmt.Sprintf("%d", time.Now().UnixNano()))
+	t.Cleanup(func() {
+		cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_data.contributors WHERE cntrb_id::text = $1`, authorID)
+	})
 	fill := newCm
-	fill.AuthorCntrbID = ""
+	fill.AuthorCntrbID = authorID
 	if _, err := store.UpsertJiraComment(ctx, fill); err != nil {
 		t.Fatal(err)
 	}
+	var gotAuthor *string
 	if err := store.pool.QueryRow(ctx, `
-		SELECT msg_text FROM aveloxis_data.messages WHERE msg_id = $1`, msgID).Scan(&text); err != nil {
+		SELECT msg_text, cntrb_id::text FROM aveloxis_data.messages WHERE msg_id = $1`, msgID).Scan(&text, &gotAuthor); err != nil {
 		t.Fatal(err)
 	}
 	if text != "edited body" {
 		t.Fatalf("equal-timestamp replay changed text to %q", text)
+	}
+	if gotAuthor == nil || *gotAuthor != authorID {
+		t.Fatalf("equal-timestamp replay must FILL the unresolved author to %s, got %v", authorID, gotAuthor)
 	}
 }
 

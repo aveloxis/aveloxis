@@ -388,6 +388,19 @@ func (s *PostgresStore) ApplyTrackerAction(ctx context.Context, issueID int64, a
 	default:
 		return nil
 	}
+	// Copilot round 25 (PR #193, suppressed): a state action with no
+	// usable event timestamp cannot be ORDERED. sentAt.IsZero() (a
+	// missing/invalid Date header) writes updated_at = NULL, and the
+	// guard's `updated_at IS NULL` arm then lets EVERY later replay
+	// overwrite state with no event ordering — breaking the freshness
+	// contract this method documents. Mail is rank-3 and lossy, so drop
+	// the un-orderable action; the Jira API completeness path (or a later
+	// timestamped notification of the same issue) corrects it.
+	// BackfillSyntheticJiraState already filters sent_at IS NOT NULL, so
+	// this runtime path is the only exposure.
+	if sentAt.IsZero() {
+		return nil
+	}
 	// Round 15 (Copilot, suppressed): the bare mail-owned <= arm let a
 	// DEFERRED older action replay at Pony Mail's minute-rounded
 	// timestamp and regress the newer one (Reopened@T applied,

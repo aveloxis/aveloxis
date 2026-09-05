@@ -162,15 +162,19 @@ func (s *PostgresStore) BackfillKeyedIssueProjection(ctx context.Context, batch 
 				if !errors.Is(err, errLinkContentionExhausted) {
 					return n, fmt.Errorf("backfill keyed: reverse comment link: %w", err)
 				}
-				// Copilot round 23 (PR #193): do NOT stamp projected_kind on
-				// contention. The candidate query selects only
-				// projected_kind='' rows, so stamping would EXCLUDE this row
-				// from every future pass and the comment-native link would
-				// NEVER happen (the double-count persists) — the round-22
-				// "leave it for a future pass" comment was false, since the
-				// stamp below closes the row. Skip it unstamped so a rerun
-				// retries the whole row once the contention clears.
-				continue
+				// Copilot round 25 (PR #193, finding #4, reverses round
+				// 23's `continue`): leaving the row unstamped is correct
+				// (round 23 — the candidate query is projected_kind='' only,
+				// so a stamp would close the row forever and the link would
+				// never happen), BUT `continue` makes an all-contention
+				// batch return n=0, which the CLI reads as "done" and then
+				// runs BackfillMarkRemainingProjected — permanently stamping
+				// this row AND every candidate beyond the batch
+				// mailing_list_only. Return the contention instead: the CLI
+				// stops before the final mark, the n rows already stamped in
+				// THIS batch are committed, and a rerun (after the concurrent
+				// drain settles) resumes with the row still projected_kind=''.
+				return n, fmt.Errorf("backfill keyed: reverse comment link contention (transient — rerun after the concurrent drain settles): %w", errLinkContentionExhausted)
 			}
 		}
 		if _, err := s.pool.Exec(ctx, `

@@ -1017,6 +1017,12 @@ func (s *PostgresStore) UpsertJiraComment(ctx context.Context, in JiraAPIComment
 			WHERE repo_id = $2 AND linked_external_key = $3
 			  AND msg_class = 'issue_event'
 			  AND subject LIKE '[jira] [Commented]%'
+			  -- Copilot round 25 (PR #193, finding #1): the issue_event
+			  -- class matches on SUBJECT ONLY, so a human message with a
+			  -- "[jira] [Commented]" subject in the window would be claimed
+			  -- (superseded) here — leaving the genuine notification
+			  -- uncounted. Only an automation notification qualifies.
+			  AND aveloxis_data.is_automation_email(sender_email)
 			  AND linked_msg_id IS NULL
 			  AND sent_at BETWEEN $4::timestamptz - INTERVAL '2 minutes'
 			                  AND $4::timestamptz + INTERVAL '2 minutes'
@@ -1090,7 +1096,17 @@ func (s *PostgresStore) LinkCommentNotificationToNative(ctx context.Context, ema
 				WHERE claimed.linked_msg_id = m.msg_id)
 			ORDER BY abs(extract(epoch FROM (m.msg_timestamp - $3::timestamptz)))
 			LIMIT 1) native
-		WHERE em.email_message_id = $1 AND em.linked_msg_id IS NULL`,
+		WHERE em.email_message_id = $1 AND em.linked_msg_id IS NULL
+		  -- Copilot round 25 (PR #193, findings #3+#5, SR-18): only an
+		  -- AUTOMATION notification (jira@apache.org / list relay) may
+		  -- supersede a native comment. The issue_event class is matched
+		  -- on SUBJECT ONLY (systems.yaml), so a human list message with
+		  -- a "[jira] [Commented] (KEY-N)" subject reaches this reverse
+		  -- link; without the gate it would claim the native comment's
+		  -- msg_id, leaving the genuine notification unsuperseded and
+		  -- skewing comment_count. Enforced HERE so BOTH callers (the
+		  -- mailing-list processor and the keyed backfill) are covered.
+		  AND aveloxis_data.is_automation_email(em.sender_email)`,
 				emailMessageID, issueID, sentAt, JiraPlatformID, MsgKindComment)
 			return werr
 		})

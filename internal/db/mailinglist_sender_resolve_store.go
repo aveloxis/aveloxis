@@ -100,6 +100,15 @@ func (s *PostgresStore) CreateEmailOnlyContributor(ctx context.Context, email st
 		SELECT cntrb_id::text FROM aveloxis_data.contributors
 		WHERE COALESCE(cntrb_deleted, 0) = 0 AND (cntrb_email = $1 OR cntrb_canonical = $1)
 		LIMIT 1`, email).Scan(&id); err == nil && id != "" {
+		// Copilot round 26 (PR #193): ensure the convergence alias even for
+		// an EXISTING contributor — a prior run may have created the row but
+		// lost its alias (the pre-fix best-effort write), and the by-email
+		// probe above would otherwise return early forever without repairing
+		// it. EnsureContributorAlias is idempotent; propagate its failure so
+		// the caller keeps the sender retryable.
+		if aerr := s.EnsureContributorAlias(ctx, id, email, MailingListToolSource, "Mailing List"); aerr != nil {
+			return "", fmt.Errorf("ensure alias for existing contributor %q: %w", email, aerr)
+		}
 		return id, nil
 	}
 	if err := s.pool.QueryRow(ctx,
@@ -115,8 +124,14 @@ func (s *PostgresStore) CreateEmailOnlyContributor(ctx context.Context, email st
 		RETURNING cntrb_id::text`, email).Scan(&id); err != nil {
 		return "", fmt.Errorf("create email-only contributor %q: %w", email, err)
 	}
-	// Alias for commit-email convergence (best-effort).
-	_ = s.EnsureContributorAlias(ctx, id, email, MailingListToolSource, "Mailing List")
+	// Alias for commit-email convergence (Copilot round 26 on PR #193):
+	// PROPAGATE the failure. A silently-lost alias would never be repaired —
+	// the caller marks the sender terminally resolved, and a retry hits the
+	// by-email probe above and returns early. Returning the error keeps the
+	// sender retryable (the caller stamps resolved=false on any error).
+	if aerr := s.EnsureContributorAlias(ctx, id, email, MailingListToolSource, "Mailing List"); aerr != nil {
+		return "", fmt.Errorf("ensure alias for new contributor %q: %w", email, aerr)
+	}
 	return id, nil
 }
 

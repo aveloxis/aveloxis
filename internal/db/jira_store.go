@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -66,6 +67,13 @@ type JiraProjectJob struct {
 // collection. Idempotent on project_key; repoID fills only when
 // currently NULL (re-registration never clobbers an operator fix).
 func (s *PostgresStore) RegisterJiraProject(ctx context.Context, projectKey, baseURL string, repoID *int64) error {
+	// Copilot round 26 (PR #193): canonicalize the URL the SAME way
+	// jira.New does (strings.TrimRight(baseURL, "/")) before comparing or
+	// storing — otherwise the SAME instance spelled with vs without a
+	// trailing slash reads as two different Jira instances and the second
+	// registration is wrongly refused. The probe below also canonicalizes
+	// the stored side (rtrim) so legacy non-canonical rows compare correctly.
+	baseURL = strings.TrimRight(baseURL, "/")
 	// Review 2026-08-30 #10: jira_identities (UNIQUE jira_name) and the
 	// comment arbiter (platform_msg_id = Jira comment id) are
 	// INSTANCE-BLIND — usernames and comment ids are unique only per
@@ -104,7 +112,7 @@ func (s *PostgresStore) RegisterJiraProject(ctx context.Context, projectKey, bas
 	var other string
 	err = tx.QueryRow(ctx, `
 		SELECT base_url FROM aveloxis_ops.jira_project_serve
-		WHERE base_url <> $1 LIMIT 1`, baseURL).Scan(&other)
+		WHERE rtrim(base_url, '/') <> $1 LIMIT 1`, baseURL).Scan(&other)
 	if err == nil {
 		return fmt.Errorf("register jira project %q: a different Jira instance %q is already registered — identity and comment keys are instance-blind, one instance per deployment until they are scoped (same instance at a new address: UPDATE aveloxis_ops.jira_project_serve SET base_url = ... for every row by hand)", projectKey, other)
 	}

@@ -33,22 +33,29 @@ const QuoteStripRuleVersion = "qs-v1"
 // Rule prevalence on the measured 20,000-message corpus is noted per
 // pattern; ordering inside StripQuotedHistory is drop-to-end markers
 // first (they end the message), then per-line drops.
+// qsDateShape matches an actual date/time token in an attribution line
+// (Copilot round 26 on PR #193): a clock time, an ISO date, a slash
+// date, or a month abbreviation — anchored so "maybe"/"issue 123" prose
+// never matches. Used to build qsAttrOne / qsAttrStart.
+const qsDateShape = `([0-9]{1,2}:[0-9]{2}|[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}|(?i:\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
+
 var (
 	// 77.5% — classic `>` quotation.
 	qsQuoted = regexp.MustCompile(`^\s*>`)
 	// 69.1% — "On <date> ... <someone> wrote:" attribution. Copilot
-	// round 24 (PR #193): the start line must carry a DATE shape (a
-	// digit — day/year/time), not merely begin with "On ". The cleaned
-	// body feeds analytics across the historical corpus, and authored
-	// prose like "On Windows" followed within two lines by "...what
-	// Alice wrote:" must NOT be deleted as quoted history. Real
-	// attributions ("On Mon, Jan 5, 2026 at 3:14 PM, Alice wrote:")
-	// always carry a digit; a digit-less "On ..." falls through to the
-	// default arm and is kept. Single-line form requires the digit
-	// before the "wrote:" tail; the wrapped two/three-line form pairs
-	// qsAttrStart (digit) with the qsWroteTail lookahead.
-	qsAttrOne   = regexp.MustCompile(`^On .*[0-9].*wrote:\s*$`)
-	qsAttrStart = regexp.MustCompile(`^On .*[0-9]`)
+	// round 24/25/26 (PR #193): the start line must carry an actual
+	// DATE/TIME shape, not merely a digit. A bare digit falsely stripped
+	// authored prose like "On issue 123, here is what Alice wrote:" (the
+	// wrapped form discarded up to three authored lines). qsDateShape
+	// requires a clock time (HH:MM), an ISO date, a slash date, or a
+	// month abbreviation — every real Gmail/Outlook/RFC-5322 attribution
+	// ("On Mon, Jan 5, 2026 at 3:14 PM, Alice wrote:") carries at least
+	// one; "On issue 123" / "On Windows" / "On second thought" carry
+	// none and fall through to the default arm (kept). Single-line form
+	// requires the shape before the "wrote:" tail; the wrapped
+	// two/three-line form pairs qsAttrStart with the qsWroteTail lookahead.
+	qsAttrOne   = regexp.MustCompile(`^On .*` + qsDateShape + `.*wrote:\s*$`)
+	qsAttrStart = regexp.MustCompile(`^On .*` + qsDateShape)
 	qsWroteTail = regexp.MustCompile(`wrote:\s*$`)
 	// 16.8% — the RFC 3676 signature delimiter ("-- ", tolerating the
 	// space-stripped "--" variant mailers emit).

@@ -5,6 +5,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -268,6 +269,33 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 
 	var resp historyWindowResp
 	if err := c.http.GraphQL(ctx, query, nil, &resp); err != nil {
+		// chaoss.tv log (2026-09-03..05: 11,003 stuck history fetches):
+		// GitHub rejects a too-expensive window with
+		// RESOURCE_LIMITS_EXCEEDED — the same overload signal as a cap
+		// hit, but delivered as an ERROR (no data) rather than truncated
+		// data. Failing the contributor re-fetches the SAME expensive
+		// window on every next claim, so a prolific contributor's history
+		// sweep never advances. Subdivide instead (a shorter span
+		// aggregates fewer contributions and is cheap enough to compute),
+		// down to the 48h floor where the span is skipped rather than
+		// failing the whole contributor — mirroring the cap-hit path and
+		// the classification sweep's fetchActivityWithSubdivide (v0.27.81).
+		if errors.Is(err, platform.ErrResourceLimits) {
+			if w.To.Sub(w.From) >= historyMinWindow {
+				c.logger.Info("activity history: resource limit — subdividing window",
+					"login", login,
+					"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))
+				mid := w.From.Add(w.To.Sub(w.From) / 2)
+				if serr := c.fetchHistoryWindow(ctx, login, HistoryWindow{From: w.From, To: mid}, acc); serr != nil {
+					return serr
+				}
+				return c.fetchHistoryWindow(ctx, login, HistoryWindow{From: mid, To: w.To}, acc)
+			}
+			c.logger.Info("activity history: resource limit at minimum window — span skipped",
+				"login", login,
+				"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))
+			return nil
+		}
 		return fmt.Errorf("contributor history window %q %s→%s: %w", login, w.From.Format("2006-01-02"), w.To.Format("2006-01-02"), err)
 	}
 	cc := resp.User.ContributionsCollection

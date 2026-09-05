@@ -41,6 +41,21 @@ func TestStripQuotedHistoryTable(t *testing.T) {
 		{"single-line On-prose ending wrote: without a date is kept (round 24)",
 			"On second thought, here is what she wrote:",
 			"On second thought, here is what she wrote:"},
+		// Copilot round 26 (PR #193): a bare DIGIT is not a date — authored
+		// numeric prose beginning "On " must be kept (round 24's [0-9] gate
+		// stripped these).
+		{"single-line On-prose with a bare number ending wrote: is kept (round 26)",
+			"On issue 123, here is what Alice wrote:",
+			"On issue 123, here is what Alice wrote:"},
+		{"wrapped On-prose with a bare number is kept — no date shape (round 26)",
+			"On issue 123, here is the change\nthat Alice reviewed and\nfinally wrote:\nplease merge.",
+			"On issue 123, here is the change\nthat Alice reviewed and\nfinally wrote:\nplease merge."},
+		{"On-prose mentioning a 4-digit number that is not a date is kept (round 26)",
+			"On ticket 1234 we agreed on the API Bob wrote:",
+			"On ticket 1234 we agreed on the API Bob wrote:"},
+		{"slash-date attribution still strips (round 26 regression)",
+			"+1\nOn 9/3/26, Carol <carol@x.org> wrote:\n> earlier",
+			"+1"},
 		{"signature delimiter drops to end (16.8%)",
 			"Thanks for the review.\n-- \nAlice Smith\nApache Something PMC",
 			"Thanks for the review."},

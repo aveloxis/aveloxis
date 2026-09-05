@@ -223,6 +223,57 @@ func TestFetchContributorDailyHistoryMinWindowLossIsLogged(t *testing.T) {
 	}
 }
 
+// TestFetchContributorDailyHistorySubdividesOnResourceLimit (chaoss.tv
+// log, 2026-09-03..05: 11,003 stuck history fetches): GitHub rejects a
+// too-expensive window with RESOURCE_LIMITS_EXCEEDED (an error, no data)
+// — the same overload as a cap hit. The window must SUBDIVIDE, not fail
+// the whole contributor (which re-fetched the same expensive window on
+// every next claim, forever).
+func TestFetchContributorDailyHistorySubdividesOnResourceLimit(t *testing.T) {
+	var queries int
+	client, logBuf := newHistoryTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		queries++
+		if queries == 1 {
+			// The wide window is too expensive to compute.
+			fmt.Fprint(w, `{"errors":[{"type":"RESOURCE_LIMITS_EXCEEDED","message":"Resource limits for this query exceeded."}]}`)
+			return
+		}
+		fmt.Fprint(w, historyResponse(false, false)) // the narrower halves succeed
+	})
+	wins := []HistoryWindow{{From: day("2026-01-01"), To: day("2026-06-30")}}
+	if _, _, err := client.FetchContributorDailyHistory(t.Context(), "prolific-user", wins); err != nil {
+		t.Fatalf("a resource-limited window must SUBDIVIDE, not fail the contributor: %v", err)
+	}
+	if queries < 3 {
+		t.Errorf("resource-limited window must subdivide into halves (>=3 queries), got %d", queries)
+	}
+	if !strings.Contains(logBuf.String(), "resource limit") {
+		t.Errorf("subdivision on a resource limit must log it: %s", logBuf.String())
+	}
+}
+
+// TestFetchContributorDailyHistoryResourceLimitAtFloorSkips: at the 48h
+// floor a persistent RESOURCE_LIMITS_EXCEEDED can no longer subdivide —
+// the span is SKIPPED (data lost), never a hard failure that strands the
+// contributor.
+func TestFetchContributorDailyHistoryResourceLimitAtFloorSkips(t *testing.T) {
+	var queries int
+	client, logBuf := newHistoryTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		queries++
+		fmt.Fprint(w, `{"errors":[{"type":"RESOURCE_LIMITS_EXCEEDED","message":"Resource limits for this query exceeded."}]}`)
+	})
+	wins := []HistoryWindow{{From: day("2026-03-05"), To: day("2026-03-06")}} // 1 day — cannot subdivide
+	if _, _, err := client.FetchContributorDailyHistory(t.Context(), "hyper-user", wins); err != nil {
+		t.Fatalf("an at-floor resource limit must be SKIPPED (span lost), not fail the contributor: %v", err)
+	}
+	if queries != 1 {
+		t.Errorf("minimum-width window must not recurse, got %d queries", queries)
+	}
+	if !strings.Contains(logBuf.String(), "minimum window") {
+		t.Errorf("skip at the floor must log 'minimum window': %s", logBuf.String())
+	}
+}
+
 func TestFetchContributorHistoryMeta(t *testing.T) {
 	client, _ := newHistoryTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":{"user":{"createdAt":"2010-08-29T16:25:48Z","contributionsCollection":{"contributionYears":[2026,2025,2010]}}}}`)

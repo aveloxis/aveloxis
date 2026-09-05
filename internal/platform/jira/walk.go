@@ -74,6 +74,12 @@ const maxStalePages = 3
 // (context.Canceled, ClassSkip, ...) at one site.
 func (c *Client) WalkProjectByUpdated(ctx context.Context, projectKey string, fields []string, pageSize int, pageSleep time.Duration, since time.Time, visit func(issues []Issue, updated []time.Time) error) error {
 	const jqlMinute = "2006-01-02 15:04"
+	// Copilot round 27 (PR #193): projectKey is interpolated into the JQL
+	// below — validate the shape (SR-18) so a value like "X OR project = Y"
+	// cannot widen the scan and stage another project's issues here.
+	if !ValidProjectKey(projectKey) {
+		return fmt.Errorf("refusing to walk malformed Jira project key %q (want [A-Z][A-Z0-9]+)", projectKey)
+	}
 	ceiling := time.Now().UTC().Truncate(time.Minute)
 	var cursor time.Time
 	if !since.IsZero() {
@@ -118,14 +124,14 @@ func (c *Client) WalkProjectByUpdated(ctx context.Context, projectKey string, fi
 			if tieKey != "" {
 				keyClause = fmt.Sprintf(" AND issuekey > '%s'", tieKey)
 			}
-			return fmt.Sprintf("project = %s AND updated >= '%s' AND updated < '%s'%s ORDER BY issuekey ASC",
+			return fmt.Sprintf("project = \"%s\" AND updated >= '%s' AND updated < '%s'%s ORDER BY issuekey ASC",
 				projectKey, renderLower(tieMinute), renderUpper(tieMinute.Add(time.Minute)), keyClause)
 		}
 		if cursor.IsZero() {
-			return fmt.Sprintf("project = %s AND updated <= '%s' ORDER BY updated ASC",
+			return fmt.Sprintf("project = \"%s\" AND updated <= '%s' ORDER BY updated ASC",
 				projectKey, renderUpper(ceiling))
 		}
-		return fmt.Sprintf("project = %s AND updated >= '%s' AND updated <= '%s' ORDER BY updated ASC",
+		return fmt.Sprintf("project = \"%s\" AND updated >= '%s' AND updated <= '%s' ORDER BY updated ASC",
 			projectKey, renderLower(cursor), renderUpper(ceiling))
 	}
 	seenThisWalk := map[string]struct{}{}

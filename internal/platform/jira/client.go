@@ -275,7 +275,11 @@ func (c *Client) IssueCommentsPage(ctx context.Context, issueKey string, startAt
 // ProjectTotal returns the issue count of a project (one maxResults=0
 // search — ~0.4s measured). A project-not-found 400 = dead project key (disable); other 400s surface without disabling (round 23).
 func (c *Client) ProjectTotal(ctx context.Context, projectKey string) (int, error) {
-	res, err := c.SearchPage(ctx, "project = "+projectKey, nil, 0, 0)
+	// Copilot round 27 (PR #193): same JQL-injection guard as the walk.
+	if !ValidProjectKey(projectKey) {
+		return 0, fmt.Errorf("refusing to count malformed Jira project key %q (want [A-Z][A-Z0-9]+)", projectKey)
+	}
+	res, err := c.SearchPage(ctx, `project = "`+projectKey+`"`, nil, 0, 0)
 	if err != nil {
 		return 0, err
 	}

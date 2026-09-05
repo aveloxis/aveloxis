@@ -47,6 +47,22 @@ func TestRegisterJiraProjectsShape(t *testing.T) {
 // --project/--repo-id path, not just the derive path. Pin that a dry-run
 // guard precedes the FIRST RegisterJiraProject call (the explicit path)
 // so a "list only" command can never perform a real registration.
+// TestRegisterJiraProjectsValidatesExplicitKey (Copilot round 27, PR #193):
+// the explicit --project value is interpolated into `project = …` JQL by the
+// walk, so it must be shape-validated before registration. Pin that the
+// validator is called before the first RegisterJiraProject.
+func TestRegisterJiraProjectsValidatesExplicitKey(t *testing.T) {
+	code := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/register_jira_projects.go"))
+	firstValidate := strings.Index(code, "jira.ValidProjectKey(")
+	firstRegister := strings.Index(code, "RegisterJiraProject(")
+	if firstValidate < 0 {
+		t.Fatal("the explicit --project path must validate the key with jira.ValidProjectKey (round 27 JQL-injection guard)")
+	}
+	if firstRegister >= 0 && firstValidate > firstRegister {
+		t.Error("the --project validation must precede the first RegisterJiraProject call")
+	}
+}
+
 func TestRegisterJiraProjectsExplicitPathHonorsDryRun(t *testing.T) {
 	code := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/register_jira_projects.go"))
 	firstGuard := strings.Index(code, "if dryRun {")

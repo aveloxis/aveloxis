@@ -5,8 +5,8 @@ package github
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -280,9 +280,18 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 		// down to the 48h floor where the span is skipped rather than
 		// failing the whole contributor — mirroring the cap-hit path and
 		// the classification sweep's fetchActivityWithSubdivide (v0.27.81).
-		if errors.Is(err, platform.ErrResourceLimits) {
+		// chaoss.tv log (2026-09-05): the too-expensive signal arrives in
+		// THREE shapes, all "subdivide" — a global RESOURCE_LIMITS_EXCEEDED
+		// (ErrResourceLimits → ClassTransient), a retry-budget exhaustion
+		// on repeated 500s (ErrTransient → ClassTransient), and a TRUNCATED
+		// body whose partial JSON carries RESOURCE_LIMITS_EXCEEDED (a decode
+		// error the classifier cannot see). ClassTransient covers the first
+		// two; the string check covers the truncated-body case. Same policy
+		// as the classification sweep's fetchActivityWithSubdivide (v0.27.81).
+		if platform.ClassifyError(err) == platform.ClassTransient ||
+			strings.Contains(err.Error(), "RESOURCE_LIMITS_EXCEEDED") {
 			if w.To.Sub(w.From) >= historyMinWindow {
-				c.logger.Info("activity history: resource limit — subdividing window",
+				c.logger.Info("activity history: query too expensive — subdividing window",
 					"login", login,
 					"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))
 				mid := w.From.Add(w.To.Sub(w.From) / 2)
@@ -291,7 +300,7 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 				}
 				return c.fetchHistoryWindow(ctx, login, HistoryWindow{From: mid, To: w.To}, acc)
 			}
-			c.logger.Info("activity history: resource limit at minimum window — span skipped",
+			c.logger.Info("activity history: query too expensive at minimum window — span skipped",
 				"login", login,
 				"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))
 			return nil

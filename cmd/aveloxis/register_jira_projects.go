@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/platform/jira"
 	"github.com/spf13/cobra"
 )
 
@@ -52,6 +53,14 @@ func registerJiraProjectsCmd(cfgPath *string) *cobra.Command {
 			// the operator's escape hatch for a key whose synthetics span
 			// multiple repos (auto-derivation refuses to guess one).
 			if projectKey != "" {
+				// Copilot round 27 (PR #193): the explicit --project value is
+				// interpolated into `project = …` JQL by the worker's walk —
+				// validate the shape here so an operator cannot register a
+				// key like "X OR project = Y" that widens the scan and stages
+				// another project's issues under this repo.
+				if !jira.ValidProjectKey(projectKey) {
+					return fmt.Errorf("invalid --project %q: a Jira project key must match [A-Z][A-Z0-9]+", projectKey)
+				}
 				if explicitRepo <= 0 {
 					return fmt.Errorf("--project requires a valid --repo-id")
 				}

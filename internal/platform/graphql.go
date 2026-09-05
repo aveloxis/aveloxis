@@ -558,13 +558,24 @@ func parseGraphQLResponse(body []byte, dest any, logger interface {
 		}
 	}
 
-	// Log partial errors but don't fail on them. These typically come
-	// from aliased-batch queries where one item was deleted/hidden.
-	for _, e := range partialErrs {
-		logger.Warn("graphql per-path error",
-			"type", e.Type,
-			"path", fmt.Sprint(e.Path),
-			"message", e.Message)
+	// Log partial errors but don't fail on them. These come from
+	// aliased-batch queries where one item was deleted/hidden AND from a
+	// too-expensive contributionsCollection where GitHub INTERNAL-errors
+	// on per-repo nodes. chaoss.tv log (2026-09-05): one such history
+	// window emitted ~187 per-path INTERNAL errors, and ~470 expensive
+	// queries produced 87,728 WARNs in 90 minutes (the v0.27.91 flood
+	// class). AGGREGATE to one line per response — the type histogram +
+	// first sample keeps the diagnostic without the flood.
+	if len(partialErrs) > 0 {
+		typeCounts := map[string]int{}
+		for _, e := range partialErrs {
+			typeCounts[e.Type]++
+		}
+		logger.Warn("graphql per-path errors",
+			"count", len(partialErrs),
+			"types", fmt.Sprint(typeCounts),
+			"first_path", fmt.Sprint(partialErrs[0].Path),
+			"first_message", partialErrs[0].Message)
 	}
 
 	// Global errors fail the whole query.

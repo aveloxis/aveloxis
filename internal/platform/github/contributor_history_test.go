@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -247,8 +248,8 @@ func TestFetchContributorDailyHistorySubdividesOnResourceLimit(t *testing.T) {
 	if queries < 3 {
 		t.Errorf("resource-limited window must subdivide into halves (>=3 queries), got %d", queries)
 	}
-	if !strings.Contains(logBuf.String(), "resource limit") {
-		t.Errorf("subdivision on a resource limit must log it: %s", logBuf.String())
+	if !strings.Contains(logBuf.String(), "too expensive") {
+		t.Errorf("subdivision on an over-cost window must log it: %s", logBuf.String())
 	}
 }
 
@@ -293,6 +294,64 @@ func TestFetchContributorHistoryMeta(t *testing.T) {
 // in flight: a serialized implementation times out at max=1 and
 // fails. Run under -race: the shared accumulator's merge is the
 // hazard the mutex exists for.
+// TestFetchContributorDailyHistorySubdividesOnTruncatedResourceLimit
+// (chaoss.tv log, 2026-09-05): GitHub sometimes rejects a too-expensive
+// window with a TRUNCATED body whose partial JSON carries
+// RESOURCE_LIMITS_EXCEEDED — the decode fails ("unexpected end of JSON
+// input") before the classifier can see the error type, so ClassTransient
+// alone misses it. The string check on the embedded body catches it and
+// subdivides.
+func TestFetchContributorDailyHistorySubdividesOnTruncatedResourceLimit(t *testing.T) {
+	var queries int
+	client, logBuf := newHistoryTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		queries++
+		if queries == 1 {
+			// A partial/truncated body — valid JSON start, cut off mid-array,
+			// carrying the RESOURCE_LIMITS_EXCEEDED marker.
+			fmt.Fprint(w, `{"data":{"user":null},"errors":[{"type":"RESOURCE_LIMITS_EXCEEDED","path":["user","contributionsCollection","issueContributionsByRepository",0,`)
+			return
+		}
+		fmt.Fprint(w, historyResponse(false, false))
+	})
+	wins := []HistoryWindow{{From: day("2026-01-01"), To: day("2026-06-30")}}
+	if _, _, err := client.FetchContributorDailyHistory(t.Context(), "truncated-user", wins); err != nil {
+		t.Fatalf("a truncated RESOURCE_LIMITS_EXCEEDED body must SUBDIVIDE, not fail: %v", err)
+	}
+	if queries < 3 {
+		t.Errorf("truncated resource-limit window must subdivide (>=3 queries), got %d", queries)
+	}
+	if !strings.Contains(logBuf.String(), "too expensive") {
+		t.Errorf("subdivision must log: %s", logBuf.String())
+	}
+}
+
+// TestFetchContributorDailyHistorySubdividesOnRetryExhaustion (chaoss.tv
+// log): a window so expensive GitHub returns repeated 500s exhausts the
+// retry budget (ErrTransient -> ClassTransient) — the sweep must subdivide,
+// not fail the whole contributor forever.
+func TestFetchContributorDailyHistorySubdividesOnRetryExhaustion(t *testing.T) {
+	restore := platform.SetGraphQLSleepForTest(func(context.Context, time.Duration) error { return nil })
+	defer restore()
+	client, logBuf := newHistoryTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		q := string(body)
+		// The wide window (both endpoints present) 500s on every attempt —
+		// exhausting the retry budget; the narrower halves succeed.
+		if strings.Contains(q, "2026-01-01") && strings.Contains(q, "2026-06-30") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprint(w, historyResponse(false, false))
+	})
+	wins := []HistoryWindow{{From: day("2026-01-01"), To: day("2026-06-30")}}
+	if _, _, err := client.FetchContributorDailyHistory(t.Context(), "flaky-user", wins); err != nil {
+		t.Fatalf("retry-exhaustion on a too-expensive window must SUBDIVIDE, not fail: %v", err)
+	}
+	if !strings.Contains(logBuf.String(), "too expensive") {
+		t.Errorf("subdivision must log: %s", logBuf.String())
+	}
+}
+
 func TestFetchContributorDailyHistoryWindowsConcurrently(t *testing.T) {
 	var mu sync.Mutex
 	cur, peak := 0, 0

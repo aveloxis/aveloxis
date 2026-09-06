@@ -478,6 +478,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 	if s.cfg.Collection.MailingListEnabled {
 		s.spawnMailingListWorker(ctx)
 	}
+	if s.cfg.Collection.JiraEnabled {
+		s.spawnJiraWorkers(ctx)
+	}
 
 	// Materialized view rebuild: check hourly, run on Saturdays.
 	// Collection is suspended during the rebuild.
@@ -713,6 +716,19 @@ func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 	}
 	if mlDeleted > 0 {
 		s.logger.Info("mailing-list staging cleanup complete", "rows_deleted", mlDeleted)
+	}
+
+	// v0.29.0: the Jira staging table rides the same retention knob.
+	jiraDeleted, err := s.store.PurgeJiraStagingProcessed(ctx, s.cfg.Collection.StagingRetentionDuration())
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		s.logger.Warn("jira staging cleanup failed", "error", err)
+		return
+	}
+	if jiraDeleted > 0 {
+		s.logger.Info("jira staging cleanup complete", "rows_deleted", jiraDeleted)
 	}
 }
 
@@ -1239,17 +1255,21 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	if !outcome.success && forgetRepoETags != nil {
 		forgetRepoETags()
 	}
-	err = s.store.CompleteJob(ctx, job.RepoID, outcome.success, startAnchor, s.cfg.Collection.RecollectAfterDuration(),
+	err = s.completeJobWithShutdownRetry(ctx, job.RepoID, outcome.success, startAnchor,
 		outcome.issues, outcome.prs, outcome.messages, outcome.events,
 		outcome.releases, outcome.contributors, outcome.commits,
-		duration.Milliseconds(), outcome.errMsg,
-		s.cfg.Collection.ArchivedRecollectMultiplierValue())
+		duration.Milliseconds(), outcome.errMsg)
 	if errors.Is(err, context.Canceled) {
-		// The work is stored (idempotent upserts); only the completion
-		// stamp is lost — the row re-queues via the shutdown lock release and the next
-		// cycle re-walks its since window.
-		s.logger.Info("job interrupted by shutdown after its work was stored — only the completion stamp is lost; the row re-queues via the shutdown lock release",
-			"repo_id", job.RepoID)
+		// Shutdown cut down BOTH the write and its bounded background
+		// retry (the wrapper folds the retry's own failure into a
+		// Canceled-classified wrap). The work is stored (idempotent
+		// upserts); only the completion stamp is lost — the row
+		// re-queues via the shutdown lock release and the next cycle
+		// re-walks its since window. "cause" carries the retry's own
+		// failure detail; deliberately not the "error" key — this is
+		// the classified-shutdown arm, not a failure log.
+		s.logger.Info("job interrupted by shutdown and the stamp retry also failed — the row re-queues via the shutdown lock release",
+			"repo_id", job.RepoID, "cause", err)
 		return
 	}
 	if err != nil {
@@ -1286,16 +1306,89 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	)
 }
 
+// completeJobStampRetryTimeout is the CEILING on the background-context
+// retry of a completion stamp whose first write was cut down by
+// shutdown. The effective per-job bound is
+// min(this, ShutdownGraceDuration()/2) — computed at the wrap site
+// (Copilot round 13 on PR #193): shutdown_grace_seconds accepts any
+// positive value, so a valid 1–4s configuration used to let Run finish
+// its semaphore drain and close the pgx pool while this 5s retry still
+// owned a worker slot — recreating the lost-stamp case the helper
+// exists to prevent. Half the grace leaves the other half for the
+// drain itself and the pool close; at the 10s default the effective
+// bound is the full 5s, unchanged. A var only as a test seam (the
+// retry-failure path needs a born-expired retry context to be
+// reachable deterministically);
+// TestCompleteJobStampRetryTimeoutProductionValue pins the production
+// value so a shrunken seam can never ship (the pass-50 1ms-allowance
+// lesson).
+var completeJobStampRetryTimeout = 5 * time.Second
+
+// stampRetryBound derives the effective retry budget from the
+// operator's shutdown grace: min(ceiling, grace/2), so the retry can
+// never outlive the drain that waits for it (round 13). Half the
+// grace leaves the other half for the drain itself and the pool
+// close; at the 10s default grace the bound is the full 5s ceiling.
+func stampRetryBound(grace time.Duration) time.Duration {
+	b := completeJobStampRetryTimeout
+	if g := grace / 2; g < b {
+		b = g
+	}
+	return b
+}
+
+// completeJobWithShutdownRetry writes a job's completion stamp, retrying
+// ONCE on a bounded background context when the job ctx was canceled —
+// the scancode completion-stamp pattern (pass 38). Production loss this
+// prevents (2026-08-22, found in the pytorch RCA): a 66h collection
+// FINISHED during a serve restart, the CompleteJob write raced the
+// shutdown, and the run went unrecorded — last_collected stayed at
+// June 6, and re-earning the stamp costs a multi-day re-run. The row
+// data (counts, last_error, the last_collected anchor) is exactly the
+// bookkeeping the whole run was for; the retry is cheap and covered by
+// the shutdown drain.
+func (s *Scheduler) completeJobWithShutdownRetry(ctx context.Context, repoID int64, success bool, startAnchor time.Time,
+	issues, prs, messages, events, releases, contributors, commits int, durationMS int64, errMsg string) error {
+	write := func(ctx context.Context) error {
+		return s.store.CompleteJob(ctx, repoID, success, startAnchor, s.cfg.Collection.RecollectAfterDuration(),
+			issues, prs, messages, events, releases, contributors, commits,
+			durationMS, errMsg,
+			s.cfg.Collection.ArchivedRecollectMultiplierValue())
+	}
+	err := write(ctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		return err
+	}
+	rctx, cancel := context.WithTimeout(context.Background(),
+		stampRetryBound(s.cfg.Collection.ShutdownGraceDuration()))
+	defer cancel()
+	if rerr := write(rctx); rerr != nil {
+		// Preserve the SHUTDOWN classification (L10 review, F3): the
+		// retry's own failure is DeadlineExceeded / pool-closed — never
+		// context.Canceled — so wrapping rerr alone left every call
+		// site's errors.Is(err, context.Canceled) arm dead. The cause
+		// of the whole path IS the shutdown, so the wrap carries
+		// context.Canceled as the sentinel and rerr's detail as text.
+		return fmt.Errorf("completion stamp lost to shutdown (bounded retry also failed: %v): %w", rerr, context.Canceled)
+	}
+	s.logger.Info("completion stamp saved on shutdown retry",
+		"repo_id", repoID, "success", success)
+	return nil
+}
+
 // failJob marks a job as failed with zero counts. Used for early exits
 // (repo lookup failure, unknown platform, etc.).
 func (s *Scheduler) failJob(ctx context.Context, repoID int64, errMsg string) {
 	// v0.27.139: zero startedAt — a failed pass never advances
 	// last_collected (due_at still advances for retry pacing).
-	err := s.store.CompleteJob(ctx, repoID, false, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
-		0, 0, 0, 0, 0, 0, 0, 0, errMsg,
-		s.cfg.Collection.ArchivedRecollectMultiplierValue())
+	err := s.completeJobWithShutdownRetry(ctx, repoID, false, time.Time{},
+		0, 0, 0, 0, 0, 0, 0, 0, errMsg)
 	if errors.Is(err, context.Canceled) {
-		return // shutdown, not a failure: the row re-queues via the shutdown lock release
+		// Shutdown beat the bounded retry too (the wrapper's wrap keeps
+		// the Canceled classification). Loss is cheap here: a failure
+		// stamp carries zero counts and the re-queued row's next cycle
+		// re-fails and stamps then.
+		return
 	}
 	if err != nil {
 		s.logger.Warn("failed to record job failure", "repo_id", repoID, "error", err)
@@ -1330,11 +1423,13 @@ func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
 	// not stamp "successfully collected at T" (the cohort-A class:
 	// stamped-but-empty passes convert the next round to incremental
 	// over history that was never gathered).
-	err := s.store.CompleteJob(ctx, repoID, true, time.Time{}, s.cfg.Collection.RecollectAfterDuration(),
-		0, 0, 0, 0, 0, 0, 0, 0, reason,
-		s.cfg.Collection.ArchivedRecollectMultiplierValue())
+	err := s.completeJobWithShutdownRetry(ctx, repoID, true, time.Time{},
+		0, 0, 0, 0, 0, 0, 0, 0, reason)
 	if errors.Is(err, context.Canceled) {
-		return // shutdown, not a failure: the row re-queues via the shutdown lock release
+		// Shutdown beat the bounded retry too (Canceled classification
+		// preserved by the wrapper's wrap). A skip stamp is cheap to
+		// lose: the re-queued row's next prelim re-derives the skip.
+		return
 	}
 	if err != nil {
 		s.logger.Warn("failed to record job skip", "repo_id", repoID, "error", err)

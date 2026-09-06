@@ -925,12 +925,23 @@ Token semantics:
   list-shaped). Bearer required unconditionally, same posture as
   PUT/DELETE; starred state is caller-personal, so repo scope does
   not apply.
-- `GET /api/v1/home/repos?limit=50` — the home-tab list: the user's
+- `GET /api/v1/home/repos?limit=50` (max 100; oversized values clamp) — the home-tab list: the user's
   starred repos first (always included), then the most active repos
   from their own groups over the trailing 90 days (issues + change
   requests opened). Default limit is 50 (v0.27.14; was 20). There is
   no cap on the number of repos a user may star — the limit only
   bounds how many rows the home list returns per request.
+  Freshness (v0.29.0): the activity ranking reads the queue's cached
+  `last_activity_90d`, stamped per completed collection cycle — the
+  same as-of-last-collected freshness as every gathered count. The
+  response is additionally cached per user for 5 minutes and served
+  **stale-while-revalidate** past that: an expired entry returns
+  immediately while one background refresh recomputes it (stale
+  serving is bounded at one hour past expiry — older entries block
+  on a fresh load, which the cached ranking keeps fast). The
+  `X-Cache` header reports `hit`, `stale`, or `miss`; starring a
+  repo invalidates the entry so the next request reorders
+  immediately.
 - `GET /api/v1/home/new-repos?days=30` — the "New Repositories" home
   feed (v0.27.62): `{"days", "fleet": [...], "mine": [...]}` where
   each row is `{repo_id, owner, name, org, added_at}`, newest-first,
@@ -1083,6 +1094,16 @@ Admin-only:
   the forge-reported meta counts (`meta_issues`, `meta_prs`,
   `meta_commits` from the latest repo_info snapshot) for
   gathered-vs-metadata comparison.
+  Sortable (v0.29.0): `?sort=<key>&dir=asc|desc` with keys `repo`,
+  `status`, `priority`, `due`, `last_run`, `issues`, `prs`,
+  `commits`, `meta_issues`, `meta_prs`, `meta_commits` — resolved
+  through a server-side allowlist (unknown keys keep the default
+  collecting-first composite ordering); the envelope echoes the
+  EFFECTIVE `sort`/`dir` (an unknown key echoes BOTH as `""` — the
+  composite ordering has no single direction, so a caller's `dir` is
+  never parroted when it was not applied). The `meta_*` keys order by the latest repo_info snapshot
+  and are API-only — the SPA's paired "(ours / meta)" headers sort the
+  gathered half.
 - `POST /api/v1/admin/monitor/queue/{repoID}/prioritize` — the SPA
   monitor's "Boost" button (v0.27.14). Pushes the repo to priority 0,
   makes it immediately due, and resets its status to `queued` — the

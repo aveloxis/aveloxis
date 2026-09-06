@@ -97,7 +97,7 @@ The other blocks (`github`, `gitlab`, `web`, `collection`, `log_level`) can stay
 go run ./cmd/aveloxis migrate
 ```
 
-Expect a short stream of `migration step ok` log lines. The full schema (143 tables, 20 materialized views, 50+ indexes) lands in two passes — DDL then matview creation.
+Expect a short stream of `migration step ok` log lines. The full schema (147 tables, 20 materialized views, 50+ indexes) lands in two passes — DDL then matview creation.
 
 If you want to skip the matview build for faster iteration (you typically do during development):
 

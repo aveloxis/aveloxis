@@ -66,6 +66,12 @@ func main() {
 		loadApacheListsCmd(&cfgPath),
 		backfillExternalKeysCmd(&cfgPath),
 		backfillMailingListProjectionCmd(&cfgPath),
+		resolveEmailIdentitiesCmd(&cfgPath),
+		stripQuotedHistoryCmd(&cfgPath),
+		registerJiraProjectsCmd(&cfgPath),
+		backfillJiraIdentitiesCmd(&cfgPath),
+		deployChecklistCmd(),
+		ackDeployCmd(&cfgPath),
 		mailingListStatsCmd(&cfgPath),
 		verifyMailingListCmd(&cfgPath),
 		registerMailingListCmd(&cfgPath),
@@ -1395,6 +1401,7 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 var validComponents = []string{"serve", "web", "api"}
 
 func startCmd(cfgPath *string) *cobra.Command {
+	var skipDeployCheck bool
 	cmd := &cobra.Command{
 		Use:   "start [serve|web|api|all]",
 		Short: "Start aveloxis components in the background",
@@ -1422,6 +1429,21 @@ Use 'aveloxis stop' to shut them down gracefully.`,
 				components = []string{target}
 			}
 
+			// v0.29.0: gate `start serve` / `start all` on the release's
+			// manual deploy/heal steps so they can't be silently skipped
+			// (there is enough data-side healing this release that a
+			// missed step would go unnoticed). Fresh installs and
+			// already-acknowledged releases pass through silently.
+			if slices.Contains(components, "serve") {
+				proceed, err := runDeployGate(*cfgPath, skipDeployCheck)
+				if err != nil {
+					return fmt.Errorf("deploy-readiness check: %w", err)
+				}
+				if !proceed {
+					return fmt.Errorf("start aborted: run this release's deploy steps (see `aveloxis deploy-checklist`) then `aveloxis ack-deploy`, or pass --skip-deploy-check")
+				}
+			}
+
 			for _, comp := range components {
 				if err := startComponent(comp, *cfgPath); err != nil {
 					fmt.Printf("Failed to start %s: %v\n", comp, err)
@@ -1430,6 +1452,7 @@ Use 'aveloxis stop' to shut them down gracefully.`,
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&skipDeployCheck, "skip-deploy-check", false, "bypass the release deploy-steps prompt (for automation)")
 	return cmd
 }
 

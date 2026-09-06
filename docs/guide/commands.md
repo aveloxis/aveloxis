@@ -370,10 +370,10 @@ Creates or updates the database schema.
 aveloxis migrate
 ```
 
-Creates 143 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 147 tables and 20 materialized views across three PostgreSQL schemas:
 
-- **`aveloxis_data`** (100 tables + 20 materialized views) -- all collected data
-- **`aveloxis_ops`** (39 tables) -- operational state
+- **`aveloxis_data`** (101 tables + 20 materialized views) -- all collected data
+- **`aveloxis_ops`** (42 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.
@@ -1310,6 +1310,164 @@ steady-state operation once the linked repos' GitHub data is collected and
 the periodic backfills run. See
 [Mailing-list ingestion §12](../architecture/mailing-list.md) for the
 collection-ordering caveat.
+
+---
+
+## `aveloxis deploy-checklist`
+
+Prints the current release's manual deploy/heal steps (read-only).
+Releases that heal data a plain restart does not touch — v0.29.0 is
+one — register a checklist here.
+
+```bash
+aveloxis deploy-checklist
+```
+
+## `aveloxis ack-deploy`
+
+Records that the current binary version's deploy/heal steps were run,
+so `aveloxis start serve` / `aveloxis start all` stops prompting for
+them. Run it AFTER completing the `deploy-checklist` steps.
+
+```bash
+aveloxis ack-deploy [--note "..."]
+```
+
+**The start gate:** on an EXISTING fleet, `aveloxis start serve` and
+`aveloxis start all` refuse to start (or, in an interactive terminal,
+prompt) when the current release has un-acknowledged deploy steps —
+the release's data-side healing must not be silently skipped. Fresh
+installs and already-acknowledged releases start silently. Automation
+can bypass with `--skip-deploy-check`.
+
+---
+
+## `aveloxis register-jira-projects`
+
+Seeds `aveloxis_ops.jira_project_serve` from the synthetic Jira issues
+the mailing-list projection already minted — one registration per
+distinct project key (191 on the production `aveloxis` DB), each
+mapped to its repo. Idempotent; re-running never clobbers an
+operator-fixed repo mapping. Makes no network calls: dead upstream
+keys are disabled by the collector on their first 400.
+
+```bash
+aveloxis register-jira-projects --dry-run
+aveloxis register-jira-projects
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | off | List derivable projects without registering. |
+| `--base-url` | `https://issues.apache.org/jira` | Jira Server base URL for the registrations. |
+
+---
+
+## `aveloxis backfill-jira-identities`
+
+The one-shot identity + state pass over every registered Jira
+project: bulk-searches each registration's Jira Server (identity and
+state fields; comments are the collector's job) and writes reporter
+and assignee identity + authoritative issue state onto the synthetic issues
+through the same provider-precedence writers the collector uses. The
+registrations in `jira_project_serve` are the ONLY project source —
+their repo mapping and `base_url` are operator-correctable, and the
+command refuses to run before `aveloxis register-jira-projects` has
+created them. Assignee identities are banked into `jira_identities`
+alongside reporters (the username is the perishable half). A
+resolve/mint failure skips that issue and the command exits nonzero —
+rerun to retry; all writes are idempotent. The full-history pass uses
+the same drift-safe walk as the incremental worker (window cursor +
+fixed ceiling — never bare offsets over a mutable ordering), and
+carries NO resume marker: `--limit` is a canary only, and a rerun
+restarts from the beginning (harmless — every write is idempotent).
+Measured cost: ~2–3 polite hours for the full 844,401-issue ASF
+corpus at 1,000 issues per search call.
+
+**Run it soon regardless of whether the collector is enabled**: the
+stable Server-era username this matches on (49.2% of issues
+unambiguous by login, +17.6% by display name) does not exist in Jira
+Cloud's API — if the ASF instance migrates to Atlassian Cloud, the
+whole corpus's usernames become unfetchable at once.
+
+Identity policy (SR-6): unambiguous matches link to existing
+contributors; pure Jira-only identities (zero candidates) mint a
+contributor so networks include the person; ambiguous identities
+stay recorded in `jira_identities` with a NULL link.
+
+```bash
+aveloxis register-jira-projects            # once, first
+aveloxis backfill-jira-identities --dry-run
+aveloxis backfill-jira-identities --project KAFKA --limit 2000   # canary
+aveloxis backfill-jira-identities          # the full pass
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | off | Report per-project issue totals without writing. |
+| `--project` | `""` | Restrict to one project key. |
+| `--limit` | `0` | Stop after N issues (canary). |
+
+---
+
+## `aveloxis strip-quoted-history`
+
+Fills `messages.msg_text_clean` — the quote-stripped body — on
+mailing-list messages ingested before the ingest-time stripper
+existed. Measured corpus facts that motivate it: 82.5% of Apache list
+mail embeds the thread it replies to (64% of body characters are
+quotation), so raw email bodies average ~4,800 characters against
+GitHub comments' ~274; stripping brings the email median to ~300.
+Consumers read `COALESCE(msg_text_clean, msg_text)` — until this walker
+completes, unstripped historical rows serve their raw text.
+
+Resumable: `msg_text_clean IS NULL` is the resume state, so rerunning
+after an interruption skips completed rows automatically. After a
+pattern-library version bump, run with `--rule-rerun` to re-strip rows
+stamped under the older rule.
+
+```bash
+aveloxis strip-quoted-history --limit 50000   # canary
+aveloxis strip-quoted-history                 # full history (~30-45 min on a 12.6M-body fleet)
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--limit` | `0` | Stop after N rows (canary); 0 = run to completion. |
+| `--rule-rerun` | off | Re-strip rows stamped under an older rule version. |
+| `--batch` | `5000` | Rows per read+stamp batch. |
+
+---
+
+## `aveloxis resolve-email-identities`
+
+Resolves mailing-list sender identities in one fast pass: every
+retained `sender_email` on an unattributed mailing-list message body is
+re-joined against the current `contributors` / `contributors_aliases`
+tables (email, canonical, and alias chains — the same chain commit
+resolution uses), walking `msg_id` keyset windows from floor to
+ceiling. A full pass over a 12.6M-body fleet measures ~5–10 minutes.
+
+The serve-side backfill ticker
+(`collection.mailing_list_sender_backfill_interval_minutes`, default
+hourly) does the same walk continuously; this command is for
+"converge NOW" — after `aveloxis migrate`, after
+`backfill-identities`, or on a freshly healed fleet. Safe beside a
+running serve (row-scoped UPDATEs on `cntrb_id IS NULL` rows, with
+deadlock retry). Rerun until it reports 0: unresolved rows stay
+pending, and an interrupted run resumes with `--after-msg-id` from the
+printed cursor.
+
+```bash
+aveloxis resolve-email-identities --dry-run   # count resolvable rows
+aveloxis resolve-email-identities             # the full pass
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | off | Count currently-resolvable rows and exit without writing. |
+| `--after-msg-id` | `0` | Resume cursor from an interrupted run. |
+| `--window` | `500000` | `msg_id` keyset-window width per statement. |
 
 ---
 

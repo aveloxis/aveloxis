@@ -212,6 +212,11 @@ func (w *MailingListWorker) buildStagedMessage(am mailinglist.ArchiveMessage) mo
 		ExternalKey:          cls.Captures["external_key"],
 	}
 	if cls.Class == mailinglist.ClassGitHubMirror {
+		// PRIMARY link key: the GitBox Message-ID carries the GitHub node ID
+		// exactly. Set independently of the body-URL captures below, which in
+		// production never fire for Apache (2026-08-29: 0 of 396,809 mirror
+		// rows carried a number, so linked_* was NULL on every one).
+		env.MirrorNodeID = mailinglist.NodeIDFromMessageID(am.MessageID)
 		if n, err := strconv.Atoi(cls.Captures["number"]); err == nil && cls.Captures["repo"] != "" {
 			owner := cls.Captures["owner"]
 			if owner == "" {

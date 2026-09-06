@@ -5,8 +5,12 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // mailinglist_sender_resolve_store.go is the store layer for Phase 2 of the
@@ -50,10 +54,24 @@ func (s *PostgresStore) GetMailingListSenderResolveCandidates(ctx context.Contex
 		        AND (c.cntrb_email = em.sender_email OR c.cntrb_canonical = em.sender_email)
 		  )
 		  AND NOT EXISTS (
-		      SELECT 1 FROM aveloxis_data.contributors_aliases a WHERE a.alias_email = em.sender_email
+		      -- Copilot round 29 (PR #193): only an alias owned by an ACTIVE
+		      -- contributor excludes the sender. The resolver's alias arm
+		      -- requires cntrb_deleted = 0, so an alias pointing at a
+		      -- soft-deleted merge loser resolves NOTHING — excluding on its
+		      -- mere existence removed the sender from the retry pool
+		      -- forever while their messages stayed unattributed.
+		      SELECT 1 `+fmt.Sprintf(activeAliasOwnerCoreSQL, "em.sender_email")+`
 		  )
 		GROUP BY em.sender_email, r.last_attempt_at, r.resolved
 		HAVING count(*) >= $2
+		   -- The SQL twin, NOT the Go-side predicate: only the DB knows
+		   -- "sender IS a registered list address" (DMARC-munged From headers
+		   -- put list addresses on human mail — the I5 phantom-mint find).
+		   -- In HAVING, not WHERE: the predicate depends only on the group
+		   -- key, and per-row evaluation would run its registered-list
+		   -- EXISTS ~13M times per hourly tick on the mailing-list
+		   -- deployment (the v0.27.53/54 CPU class; review find #1).
+		   AND NOT aveloxis_data.is_automation_email(em.sender_email)
 		ORDER BY count(*) DESC
 		LIMIT $3`, cooldownSeconds, minMessages, limit)
 	if err != nil {
@@ -69,6 +87,57 @@ func (s *PostgresStore) GetMailingListSenderResolveCandidates(ctx context.Contex
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// emailContributorLockClass is the advisory-lock NAMESPACE for
+// CreateEmailOnlyContributor. The two-arg pg_advisory_xact_lock(int,int)
+// uses a lock space DISTINCT from the int64 pg_advisory_xact_lock(bigint)
+// locks (migrate / Jira registration), so there is no cross-collision.
+const emailContributorLockClass int32 = 0x41564C45 // "AVLE"
+
+// emailContributorLockObj hashes the normalized email to the second lock
+// key. An objID collision merely serializes two unrelated emails — harmless.
+func emailContributorLockObj(email string) int32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strings.ToLower(email)))
+	return int32(h.Sum32())
+}
+
+// activeAliasOwnerCoreSQL is the ONE spelling (SR-17, code-review round
+// 2026-09-06) of "this alias is owned by an ACTIVE contributor" — the
+// predicate the candidate anti-join, the create-path probe, and the belt
+// re-read must all agree on (they were three inline spellings before; a
+// drift would make the retry pool disagree with the resolver about which
+// aliases count). %s is the alias-email expression (a parameter or a
+// correlated column).
+const activeAliasOwnerCoreSQL = `FROM aveloxis_data.contributors_aliases a
+		JOIN aveloxis_data.contributors c2 ON c2.cntrb_id = a.cntrb_id
+		WHERE a.alias_email = %s AND COALESCE(c2.cntrb_deleted, 0) = 0`
+
+// ensureAliasTx is the tx-scoped twin of EnsureContributorAlias — it must run
+// INSIDE CreateEmailOnlyContributor's transaction so the alias write is
+// covered by the same advisory lock.
+func ensureAliasTx(ctx context.Context, tx pgx.Tx, cntrbID, aliasEmail string) error {
+	// Round 29 + code-review round (2026-09-06): the shared two-statement
+	// spelling (SR-17 — see contributorAliasInsertSQL's rationale in
+	// commit_resolver_store.go). The repair reassigns a stale alias whose
+	// owner is a soft-deleted merge loser; within a transaction each
+	// statement still takes a fresh READ COMMITTED snapshot, so a rival
+	// creator committed while we blocked is visible to the repair's
+	// dead-owner guard and an ACTIVE owner is never stolen.
+	tag, err := tx.Exec(ctx, contributorAliasInsertSQL,
+		cntrbID, aliasEmail, MailingListToolSource, "Mailing List")
+	if err != nil {
+		return fmt.Errorf("ensure alias %q: %w", aliasEmail, err)
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, contributorAliasRepairSQL,
+		cntrbID, aliasEmail, MailingListToolSource, "Mailing List"); err != nil {
+		return fmt.Errorf("repair alias %q: %w", aliasEmail, err)
+	}
+	return nil
 }
 
 // CreateEmailOnlyContributor materializes a contributor for a mailing-list
@@ -88,27 +157,97 @@ func (s *PostgresStore) CreateEmailOnlyContributor(ctx context.Context, email st
 		return "", nil
 	}
 	var id string
-	if err := s.pool.QueryRow(ctx, `
-		SELECT cntrb_id::text FROM aveloxis_data.contributors
-		WHERE COALESCE(cntrb_deleted, 0) = 0 AND (cntrb_email = $1 OR cntrb_canonical = $1)
-		LIMIT 1`, email).Scan(&id); err == nil && id != "" {
-		return id, nil
+	// Copilot round 28 (PR #193): SERIALIZE all creators for this email.
+	// Without the lock two scheduler processes both miss the probes below,
+	// both INSERT a contributor, and EnsureContributorAlias's
+	// ON CONFLICT (alias_email) DO NOTHING then leaves a DUPLICATE active
+	// contributor for one email — the loser's row owns no alias, so the
+	// direct attribution arm is ambiguous. The whole probe-then-create runs
+	// in ONE transaction under a per-email advisory xact lock, and the
+	// returned id is the contributor the alias actually points at. withRetry
+	// handles a 40P01 on the insert; the advisory lock releases on rollback.
+	if err := s.withRetry(ctx, func(ctx context.Context) error {
+		id = ""
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`,
+			emailContributorLockClass, emailContributorLockObj(email)); err != nil {
+			return err
+		}
+
+		// Re-probe INSIDE the lock — a concurrent creator that already
+		// committed is now visible.
+		if e := tx.QueryRow(ctx, `
+			SELECT cntrb_id::text FROM aveloxis_data.contributors
+			WHERE COALESCE(cntrb_deleted, 0) = 0 AND (cntrb_email = $1 OR cntrb_canonical = $1)
+			LIMIT 1`, email).Scan(&id); e == nil && id != "" {
+			if aerr := ensureAliasTx(ctx, tx, id, email); aerr != nil {
+				return aerr
+			}
+			return tx.Commit(ctx)
+		}
+		// Round 29 (PR #193): the alias probe must require an ACTIVE owner —
+		// an alias pointing at a soft-deleted merge loser resolves nothing
+		// (the resolver's alias arm filters cntrb_deleted=0), so returning
+		// its dead owner here would hand back an unusable id; fall through
+		// to the create path, whose alias upsert REASSIGNS the stale row.
+		if e := tx.QueryRow(ctx,
+			`SELECT a.cntrb_id::text `+fmt.Sprintf(activeAliasOwnerCoreSQL, "$1")+` LIMIT 1`,
+			email).Scan(&id); e == nil && id != "" {
+			return tx.Commit(ctx)
+		}
+
+		// Create — the lock serializes CreateEmailOnlyContributor callers;
+		// UNLOCKED alias writers can still race us, which the belt below
+		// resolves (adopt the alias's actual owner, drop our insert).
+		if e := tx.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.contributors
+				(cntrb_id, cntrb_login, gh_login, cntrb_email, cntrb_canonical,
+				 tool_source, data_source, data_collection_date)
+			VALUES (gen_random_uuid(), '', '', $1, $1,
+				'Aveloxis Mailing List Collector', 'Mailing List', NOW())
+			RETURNING cntrb_id::text`, email).Scan(&id); e != nil {
+			return fmt.Errorf("create email-only contributor %q: %w", email, e)
+		}
+		if aerr := ensureAliasTx(ctx, tx, id, email); aerr != nil {
+			return aerr
+		}
+		// Code-review round (2026-09-06): the belt re-read is LOAD-BEARING,
+		// not best-effort. An UNLOCKED alias writer (the commit resolver,
+		// LinkMailingListSender) can commit this alias_email pointing at a
+		// DIFFERENT active contributor while we hold the per-email lock —
+		// the repair's dead-owner guard then correctly refuses to steal,
+		// and committing OUR insert anyway would leave a duplicate active
+		// email-only contributor owning no alias (permanently excluded
+		// from the repair pool by the candidates query's first anti-join).
+		// So: read who actually owns the alias; if it is not our insert,
+		// DELETE our own row (nothing references it yet — it was created
+		// in this transaction) and adopt the owner. Errors surface —
+		// a silently-aborted tx would defeat withRetry's 40P01
+		// classification (Commit reports ErrTxCommitRollback, not the
+		// PgError).
+		var owner string
+		berr := tx.QueryRow(ctx,
+			`SELECT a.cntrb_id::text `+fmt.Sprintf(activeAliasOwnerCoreSQL, "$1")+` LIMIT 1`,
+			email).Scan(&owner)
+		switch {
+		case berr == nil && owner != "" && owner != id:
+			if _, derr := tx.Exec(ctx,
+				`DELETE FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, id); derr != nil {
+				return fmt.Errorf("drop duplicate email-only contributor %q: %w", email, derr)
+			}
+			id = owner
+		case berr != nil && !errors.Is(berr, pgx.ErrNoRows):
+			return fmt.Errorf("belt re-read for %q: %w", email, berr)
+		}
+		return tx.Commit(ctx)
+	}); err != nil {
+		return "", err
 	}
-	if err := s.pool.QueryRow(ctx,
-		`SELECT cntrb_id::text FROM aveloxis_data.contributors_aliases WHERE alias_email = $1 LIMIT 1`, email).Scan(&id); err == nil && id != "" {
-		return id, nil
-	}
-	if err := s.pool.QueryRow(ctx, `
-		INSERT INTO aveloxis_data.contributors
-			(cntrb_id, cntrb_login, gh_login, cntrb_email, cntrb_canonical,
-			 tool_source, data_source, data_collection_date)
-		VALUES (gen_random_uuid(), '', '', $1, $1,
-			'Aveloxis Mailing List Collector', 'Mailing List', NOW())
-		RETURNING cntrb_id::text`, email).Scan(&id); err != nil {
-		return "", fmt.Errorf("create email-only contributor %q: %w", email, err)
-	}
-	// Alias for commit-email convergence (best-effort).
-	_ = s.EnsureContributorAlias(ctx, id, email)
 	return id, nil
 }
 
@@ -166,7 +305,7 @@ func (s *PostgresStore) LinkMailingListSender(ctx context.Context, senderEmail, 
 		return "", err
 	}
 	if senderEmail != "" {
-		if err := s.EnsureContributorAlias(ctx, actualID, senderEmail); err != nil {
+		if err := s.EnsureContributorAlias(ctx, actualID, senderEmail, MailingListToolSource, "Mailing List"); err != nil {
 			return actualID, err
 		}
 		// Best-effort canonical backfill (COALESCE-guarded inside the method).

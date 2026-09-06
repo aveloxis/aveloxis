@@ -246,6 +246,57 @@ deadline arm that checked only the function name while both operands
 appeared in the log line inside it (pass 48); the four legitimate
 refactors rejected with misdiagnosing messages (passes 47–48).
 
+## L17 — What the PR #193 rounds kept finding (the four blind spots)
+
+Distilled 2026-09-01 from fourteen Copilot rounds on PR #193 (49
+findings, 48 taken): the classes an author-adjacent lens pass kept
+missing while an outside reviewer did not. Each is a QUESTION to ask
+of the diff, not a shape to grep for.
+
+**(a) Sweep the config space against every constant.** A fix verified
+at the default knob values is unverified at the edges. For every
+constant the diff introduces or leans on, enumerate the config knobs
+that share its lifetime or budget and evaluate the constant at each
+knob's smallest and largest LEGAL value — not its default. Incidents:
+the 5s stamp-retry vs a legal 1–4s `shutdown_grace_seconds` (round
+13); the 200-window sender-backfill tick vs a 1-minute interval knob
+(round 5). The doc comment saying "must fit inside X" is a claim —
+L16's rule applies: make it executable or delete it.
+
+**(b) Two processes, always.** For every check-then-act that spans
+statements, assume a second process interleaves at the worst point —
+the operator CLI racing the worker, two CLIs racing each other, two
+drain goroutines. "This path is sequential in practice" is a reasoned
+decline that needs a barrier-race test proving the invariant, or the
+atomicity fix (xact advisory lock, single-statement RETURNING).
+Incidents: the registration one-instance probe (round 13, overturning
+a documented decline), the identity-link loser returning its local
+candidate (round 11), the three-statement mint (round 9).
+
+**(c) Liveness under a FULL window.** Correctness fixtures are
+minimal; starvation is only visible when the fixture EXCEEDS the
+window. For every `LIMIT`/window/cap over items that can fail-and-
+remain, ask: what happens when the window fills with items that never
+complete? Write the N+1 head-blocker fixture. Incidents: the
+oldest-first drain windows (round 13, both drains), the offset walk
+whose membership mutated mid-scan (round 1 C2).
+
+**(d) Pin the optimization, not just the output.** A cache, reserve,
+dedup or single-flight has TWO contracts: never serve the wrong thing
+(correctness) and actually save the work (the reason it exists). A
+test that asserts only response bodies lets the optimization be
+silently defeated. Pin the observable of the optimization itself —
+hit-rate via X-Cache, request counts, admitted-checkout counts.
+Incidents: the (user,limit) cache whose every request became a
+blocking miss while all bodies stayed correct (round 13); the
+background reserve that gated but never bound (round 8).
+
+Corollary for registries: a fixture-to-source registry cannot see a
+NEW artifact missing from the fixture — make every registry
+bidirectional at introduction time by deriving the full set from the
+dispatch site (the round-7 rule; the ledger-label registry gap in
+round 13 is the incident).
+
 ## Running the pass
 
 The brief, the verification protocol and the pre-launch checklist are

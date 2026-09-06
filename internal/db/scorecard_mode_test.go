@@ -216,9 +216,14 @@ func TestListScorecardBacklogOrdering(t *testing.T) {
 			t.Fatalf("seed queue %s: %v", name, err)
 		}
 		t.Cleanup(func() {
-			store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_deps_scorecard WHERE repo_id = $1`, id)
-			store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, id)
-			store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+			// Fresh bounded ctx + deadlock retry: raw Exec on the test
+			// ctx silently dropped rows when a 40P01 or cancellation hit
+			// (153 leaked _avscbacklog repos found 2026-08-31).
+			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repo_deps_scorecard WHERE repo_id = $1`, id)
+			cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, id)
+			cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
 		})
 		return id
 	}

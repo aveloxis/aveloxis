@@ -32,7 +32,7 @@ func TestSenderResolveTickerWiredAndUsesSharedChain(t *testing.T) {
 	for _, needle := range []string{
 		"GetMailingListSenderResolveCandidates(", // candidate selection (>= threshold, cooldown)
 		"collector.ResolveEmailToIdentity(",      // the SHARED chain, not a bespoke one
-		"collector.IsBotEmail(",                  // bots stamped terminal
+		"collector.IsAutomationEmail(",           // bots stamped terminal
 		"LinkMailingListSender(",                 // link/create on a hit
 		"MarkSenderResolveAttempt(",              // cooldown / outcome stamp
 		"mailingListSenderResolveMinMessages",    // the >=6 threshold constant
@@ -57,9 +57,9 @@ func TestSenderResolvePhase4CreatesEmailOnlyForHumans(t *testing.T) {
 	}
 	body := extractFuncBody(t, string(data), "func (s *Scheduler) runMailingListSenderResolve(")
 	for _, needle := range []string{
-		"c.HumanClass",                         // gate on direct-human
-		"!collector.IsBotEmail(c.SenderEmail)", // never a bot
-		"CreateEmailOnlyContributor(",          // the Phase 4 create
+		"c.HumanClass", // gate on direct-human
+		"!collector.IsAutomationEmail(c.SenderEmail)",                     // never a bot
+		"CreateEmailOnlyContributor(",                                     // the Phase 4 create
 		`MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "email-only"`, // terminal stamp
 	} {
 		if !strings.Contains(body, needle) {

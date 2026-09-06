@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 )
@@ -115,7 +116,7 @@ func (s *Server) handleCollectionDetail(w http.ResponseWriter, r *http.Request) 
 	if !db.CollectionRepoSortValid(sortKey) {
 		sortKey = "name"
 	}
-	if sortDir != "desc" {
+	if !strings.EqualFold(sortDir, "desc") {
 		sortDir = "asc"
 	}
 	jsonResponse(w, map[string]any{

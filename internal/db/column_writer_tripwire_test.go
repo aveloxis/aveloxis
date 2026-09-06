@@ -53,6 +53,13 @@ var auditedTables = []string{
 	"pull_request_meta", "pull_request_repo", "pull_request_commits",
 	"pull_request_files", "repo_deps_libyear", "repo_dependencies",
 	"contributor_identities", "repo_labor", "repo_lockfile_edges",
+	// v0.29.0 Part E: the identity-bearing mailing-list/Jira chain —
+	// found ABSENT from this audit while carrying the columns the
+	// whole attribution program hangs off (a dark column here is a
+	// dark identity).
+	"email_message", "email_message_ref", "issue_message_ref",
+	"pull_request_message_ref", "contributors_aliases",
+	"jira_identities",
 }
 
 // documentedEmpty: columns with NO writer, kept as Augur schema-parity
@@ -60,27 +67,29 @@ var auditedTables = []string{
 // list IS the documentation contract (mirrored in
 // docs/architecture/column-mapping.md "Known-empty columns").
 var documentedEmpty = map[string]string{
-	"issues.pull_request":                   "Augur-legacy: aveloxis stores PRs in their own table; the column is structurally always NULL",
-	"issues.pull_request_id":                "Augur-legacy twin of issues.pull_request",
-	"issues.due_on":                         "no writer; GitHub issues have no due date (GitLab due_date is a candidate if GitLab tracking grows)",
-	"commits.cmt_ght_committer_id":          "committer-identity resolution not implemented (documented follow-up; author twin IS resolved)",
-	"commits.cmt_ght_committed_at":          "Augur-legacy duplicate of cmt_committer_timestamp (which IS populated)",
-	"contributors.cntrb_type":               "Augur-legacy geo/classification field with no data source",
-	"contributors.cntrb_fake":               "Augur-legacy, no data source",
-	"contributors.cntrb_lat":                "Augur-legacy geolocation, no data source",
-	"contributors.cntrb_long":               "Augur-legacy geolocation, no data source",
-	"contributors.cntrb_country_code":       "Augur-legacy geolocation, no data source",
-	"contributors.cntrb_state":              "Augur-legacy geolocation, no data source",
-	"contributors.cntrb_city":               "Augur-legacy geolocation, no data source",
-	"contributors.cntrb_last_used":          "Augur-legacy, no data source",
-	"repos.repo_path":                       "Augur-legacy local-clone bookkeeping; aveloxis derives clone paths from repo_id",
-	"repo_labor.repo_url":                   "Augur-legacy denormalization; derivable via repos join",
-	"repo_info.issue_contributors_count":    "bound-but-never-set: no cheap forge source matches Augur's definition (documented follow-up)",
-	"repo_info.committer_count":             "bound-but-never-set: derivable from facade commits data (documented follow-up)",
-	"repo_info.security_audit_file":         "bound-but-never-set: no forge community-profile source exists for audit files",
-	"pull_requests.pr_augur_contributor_id": "Augur-legacy identity column; aveloxis uses author_id",
-	"messages.rgls_id":                      "mailing-list list linkage lives on email_message/email_message_ref; the shared message upsert never writes it (its name only appears in OTHER tables' SQL — the exact false-positive the v0.27.106 statement-scoped check exists to catch)",
-	"messages.msg_header":                   "mailing-list headers live on email_message; forge-sourced messages have no header material",
+	"contributors_aliases.cntrb_last_modified": "DEFAULT NOW() at insert; alias rows are insert-only (ON CONFLICT keeps or repoints, never edits in place), so no refresh writer exists by design",
+	"jira_identities.first_seen":               "DEFAULT NOW() at first insert and deliberately never refreshed — it records the FIRST observation; last_seen is the refreshed twin",
+	"issues.pull_request":                      "Augur-legacy: aveloxis stores PRs in their own table; the column is structurally always NULL",
+	"issues.pull_request_id":                   "Augur-legacy twin of issues.pull_request",
+	"issues.due_on":                            "no writer; GitHub issues have no due date (GitLab due_date is a candidate if GitLab tracking grows)",
+	"commits.cmt_ght_committer_id":             "committer-identity resolution not implemented (documented follow-up; author twin IS resolved)",
+	"commits.cmt_ght_committed_at":             "Augur-legacy duplicate of cmt_committer_timestamp (which IS populated)",
+	"contributors.cntrb_type":                  "Augur-legacy geo/classification field with no data source",
+	"contributors.cntrb_fake":                  "Augur-legacy, no data source",
+	"contributors.cntrb_lat":                   "Augur-legacy geolocation, no data source",
+	"contributors.cntrb_long":                  "Augur-legacy geolocation, no data source",
+	"contributors.cntrb_country_code":          "Augur-legacy geolocation, no data source",
+	"contributors.cntrb_state":                 "Augur-legacy geolocation, no data source",
+	"contributors.cntrb_city":                  "Augur-legacy geolocation, no data source",
+	"contributors.cntrb_last_used":             "Augur-legacy, no data source",
+	"repos.repo_path":                          "Augur-legacy local-clone bookkeeping; aveloxis derives clone paths from repo_id",
+	"repo_labor.repo_url":                      "Augur-legacy denormalization; derivable via repos join",
+	"repo_info.issue_contributors_count":       "bound-but-never-set: no cheap forge source matches Augur's definition (documented follow-up)",
+	"repo_info.committer_count":                "bound-but-never-set: derivable from facade commits data (documented follow-up)",
+	"repo_info.security_audit_file":            "bound-but-never-set: no forge community-profile source exists for audit files",
+	"pull_requests.pr_augur_contributor_id":    "Augur-legacy identity column; aveloxis uses author_id",
+	"messages.rgls_id":                         "mailing-list list linkage lives on email_message/email_message_ref; the shared message upsert never writes it (its name only appears in OTHER tables' SQL — the exact false-positive the v0.27.106 statement-scoped check exists to catch)",
+	"messages.msg_header":                      "mailing-list headers live on email_message; forge-sourced messages have no header material",
 }
 
 func TestEveryColumnHasWriterOrDocumentedEmpty(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"time"
@@ -215,8 +216,17 @@ func (s *PostgresStore) FindIssueForThread(ctx context.Context, threadRoot strin
 		  AND repo_id = $2
 		  AND ((thread_root_id = $1 AND thread_root_id <> '') OR message_id_header = $1)
 		LIMIT 1`, threadRoot, repoID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil // genuinely no projected sibling yet
+	}
 	if err != nil {
-		return 0, false, nil //nolint:nilerr // no projected sibling yet is not an error
+		// Fresh-context round 2026-09-02 #6 (SR-5/L11): the fourth
+		// projection-side call in processRow — the other three defer
+		// the row on transient failure, but this one swallowed EVERY
+		// error as "no sibling", so a transient DB failure marked the
+		// row processed with the thread bridge permanently missing
+		// (recoverable only by the operator-run projection backfill).
+		return 0, false, fmt.Errorf("find issue for thread %q: %w", threadRoot, err)
 	}
 	return id, id > 0, nil
 }
@@ -230,6 +240,23 @@ func (s *PostgresStore) BridgeEmailToIssue(ctx context.Context, issueID, repoID,
 	// into a DROPPED message (observed live 2026-08-20: "bridge email
 	// to issue: deadlock detected" → dropped=1). Both statements are
 	// idempotent (ON CONFLICT DO NOTHING; recount is a pure recompute).
+	if err := s.bridgeEmailToIssueNoRecount(ctx, issueID, repoID, msgID); err != nil {
+		return err
+	}
+	if err := s.recountIssueComments(ctx, issueID); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// bridgeEmailToIssueNoRecount is the ref insert alone — for callers
+// that bridge MANY messages onto one issue and recount ONCE afterward
+// (Copilot round 17, suppressed #2: the per-comment recount made a
+// full comment block quadratic — recount i for comment i — and every
+// later issue update repeated it). Per-message callers keep the
+// recounting BridgeEmailToIssue.
+func (s *PostgresStore) bridgeEmailToIssueNoRecount(ctx context.Context, issueID, repoID, msgID int64) error {
 	if err := s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `
 			INSERT INTO aveloxis_data.issue_message_ref (issue_id, repo_id, msg_id, data_source)
@@ -240,14 +267,208 @@ func (s *PostgresStore) BridgeEmailToIssue(ctx context.Context, issueID, repoID,
 	}); err != nil {
 		return fmt.Errorf("bridge email to issue: %w", err)
 	}
+	return nil
+}
+
+// RecountIssueComments recomputes the logical comment count once —
+// the batch caller's closing half of bridgeEmailToIssueNoRecount.
+func (s *PostgresStore) RecountIssueComments(ctx context.Context, issueID int64) error {
+	return s.recountIssueComments(ctx, issueID)
+}
+
+// recountIssueComments recomputes issues.comment_count as the LOGICAL
+// comment count (SR-17: the one spelling; BridgeEmailToIssue and both
+// notification-link writers call it). Copilot round 6 on PR #193
+// (suppressed #1): the raw issue_message_ref count double-counted
+// every matched native/notification pair — the native Jira comment
+// AND its [Commented] notification are both bridged (mail lineage is
+// kept forever), so refs whose message is a notification SUPERSEDED
+// by a link (its email_message row carries linked_msg_id) are
+// excluded from the count. Probes ride idx_email_message_ref_msg_id.
+func (s *PostgresStore) recountIssueComments(ctx context.Context, issueID int64) error {
 	if err := s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `
 			UPDATE aveloxis_data.issues
-			SET comment_count = (SELECT count(*) FROM aveloxis_data.issue_message_ref WHERE issue_id = $1)
+			SET comment_count = (
+				SELECT count(*) FROM aveloxis_data.issue_message_ref imr
+				WHERE imr.issue_id = $1
+				  AND NOT EXISTS (
+					SELECT 1 FROM aveloxis_data.email_message_ref emr
+					JOIN aveloxis_data.email_message em
+					  ON em.email_message_id = emr.email_message_id
+					WHERE emr.msg_id = imr.msg_id
+					  AND em.linked_msg_id IS NOT NULL))
 			WHERE issue_id = $1`, issueID)
 		return err
 	}); err != nil {
-		return fmt.Errorf("bridge email to issue: recount: %w", err)
+		return fmt.Errorf("recount issue comments: %w", err)
 	}
 	return nil
+}
+
+// trackerCloseActions is the SQL-side spelling of "this action closes
+// the ticket" — Resolved and Closed; Reopened reopens. Everything else
+// (Created, Commented, Work logged, ...) is state-neutral. The subject
+// regex below is the third spelling of the action vocabulary
+// (systems.yaml capture + mailinglist.TrackerActionFromSubject are the
+// others) — TestTrackerActionParityWithSystemsYAML and the fixtures in
+// tracker_state_test.go pin them together (SR-17).
+const trackerActionSubjectSQL = `substring(subject from '^\[jira\] \[([\w ]+)\] \([A-Z][A-Z0-9]+-[0-9]+\)')`
+
+// trackerActionRe is internal/db's Go spelling of the same extraction
+// (this package cannot import internal/mailinglist — no sibling
+// feature-package edges). TestTrackerActionDBSpellingParity pins it to
+// mailinglist.TrackerActionFromSubject on the shared fixtures.
+var trackerActionRe = regexp.MustCompile(`^\[jira\] \[([\w ]+)\] \([A-Z][A-Z0-9]+-[0-9]+\)`)
+
+func trackerActionFromSubject(subject string) string {
+	if m := trackerActionRe.FindStringSubmatch(subject); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// CLOCK DOMAINS (fresh-context round, 2026-09-02 #1): last_mail_event_id
+// IS NOT NULL means the stored updated_at was MAIL-authored (a prior
+// tracker action stamped it); NULL means it is the provider's own
+// stamp. The API-owned arm therefore accepts an equal-timestamp mail
+// event ONLY when the stored stamp is itself mail-authored — a
+// same-minute pair arriving strictly after an API sync resolves by
+// emid instead of landing on the pair's FIRST action, while a tie
+// against a genuine API stamp still refuses (the pinned rank rule).
+// UpsertJiraIssueFromAPI clears the marker whenever its own freshness
+// guard passes, re-establishing the API clock domain.
+//
+// trackerActionEventGuardSQL is the ONE spelling of the mail-rank
+// event-time guard (SR-17), shared by ApplyTrackerAction and
+// BackfillSyntheticJiraState. Column references are unqualified — both
+// writers alias-inject via format. Two arms (the C3a provider ranks):
+//   - a row the Jira API has written (data_source = 'JIRA API') only
+//     advances on a STRICTLY newer mail event. Pony Mail rounds sent_at
+//     to the minute, so a same-minute [Reopened]+[Resolved] pair TIES a
+//     <= guard and batch order picks the winner — Part G measured 53
+//     API-closed synthetics flipped open exactly that way. Rank beats
+//     tie-break luck: on equal times the higher-rank write stands.
+//   - a mail-owned row keeps <= (replay safety: re-draining an old
+//     archive month re-applies the same latest action, a no-op).
+const trackerActionEventGuardSQL = `(%[1]s.updated_at IS NULL
+		OR (%[1]s.data_source = '%[3]s'
+		    AND (%[1]s.updated_at < %[2]s
+		         OR (%[1]s.updated_at = %[2]s
+		             AND %[1]s.last_mail_event_id IS NOT NULL
+		             AND %[1]s.last_mail_event_id <= %[4]s)))
+		OR (%[1]s.data_source <> '%[3]s'
+		    AND (%[1]s.updated_at < %[2]s
+		         OR (%[1]s.updated_at = %[2]s
+		             AND COALESCE(%[1]s.last_mail_event_id, 0) <= %[4]s))))`
+
+// ApplyTrackerAction applies a Jira-notification action to a projected
+// issue: Resolved/Closed -> closed (+closed_at = the notification's
+// sent_at), Reopened -> open. Two hard rules (C3a provider
+// precedence, SR-18 — enforced HERE, not at call sites):
+//
+//   - SYNTHETIC rows only (platform_issue_id < 0). The LINK path can
+//     resolve a native GitHub issue (the Jira→GitHub migration case)
+//     whose state is API-owned; a notification must never touch it.
+//   - EVENT-TIME guarded: the write stamps updated_at with the
+//     action's sent_at and only applies when the stored updated_at is
+//     older — so a replayed old archive month can never regress a
+//     newer state, regardless of drain order. Pilot-measured (2026-08-31,
+//     6,000 keys): mail-derived state falsely closes 0.04%; the guard
+//     is what keeps replays from adding to that.
+//
+// State-neutral actions ("Commented", "Work logged", "") are no-ops.
+func (s *PostgresStore) ApplyTrackerAction(ctx context.Context, issueID int64, action string, sentAt time.Time, emailMessageID int64) error {
+	var newState string
+	switch action {
+	case "Resolved", "Closed":
+		newState = "closed"
+	case "Reopened":
+		newState = "open"
+	default:
+		return nil
+	}
+	// Copilot round 25 (PR #193, suppressed): a state action with no
+	// usable event timestamp cannot be ORDERED. sentAt.IsZero() (a
+	// missing/invalid Date header) writes updated_at = NULL, and the
+	// guard's `updated_at IS NULL` arm then lets EVERY later replay
+	// overwrite state with no event ordering — breaking the freshness
+	// contract this method documents. Mail is rank-3 and lossy, so drop
+	// the un-orderable action; the Jira API completeness path (or a later
+	// timestamped notification of the same issue) corrects it.
+	// BackfillSyntheticJiraState already filters sent_at IS NOT NULL, so
+	// this runtime path is the only exposure.
+	if sentAt.IsZero() {
+		return nil
+	}
+	// Round 15 (Copilot, suppressed): the bare mail-owned <= arm let a
+	// DEFERRED older action replay at Pony Mail's minute-rounded
+	// timestamp and regress the newer one (Reopened@T applied,
+	// Resolved@T wins the tie, the deferred Reopened row retries →
+	// <= accepted it again). last_mail_event_id is the deterministic
+	// tie-breaker: at equal sent_at only an equal-or-higher
+	// email_message_id applies (mbox ingest order preserves send order
+	// within the minute — the C6 rule, now persisted).
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.issues
+		SET issue_state = $2,
+		    closed_at = CASE WHEN $2 = 'closed' THEN $3 ELSE NULL END,
+		    updated_at = $3,
+		    last_mail_event_id = $4
+		WHERE issue_id = $1
+		  AND platform_issue_id < 0
+		  AND `+fmt.Sprintf(trackerActionEventGuardSQL, "issues", "$3", JiraAPIDataSource, "$4"),
+			issueID, newState, NullTime(sentAt), emailMessageID)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("apply tracker action %q on issue %d: %w", action, issueID, err)
+	}
+	return nil
+}
+
+// BackfillSyntheticJiraState is the ledgered history walk closing the
+// permanently-open synthetics: every keyed issue_event notification
+// already in email_message carries its action in the subject; the walk
+// derives each (repo, key)'s LATEST state-relevant action per window
+// and applies it under the same synthetic gate + event-time guard as
+// ApplyTrackerAction (window order cannot matter — the newest sent_at
+// wins whichever window lands last). Keyset windows over
+// email_message_id per the house rule; found 485,892 open synthetics
+// against 358,384 Resolved notifications on the aveloxis DB.
+// Idempotent: reruns re-derive the same latest actions, and under the
+// shared trackerActionEventGuardSQL (mail-owned rows re-apply the same
+// latest action on the tie — a no-op; API-owned rows require a strictly
+// newer event, which a re-derivation never produces) the result is
+// stable.
+func (s *PostgresStore) BackfillSyntheticJiraState(ctx context.Context, logger *slog.Logger) error {
+	return runKeysetWindows(ctx, s, logger,
+		"v0.29.0 synthetic Jira issue state from notification subjects",
+		`SELECT COALESCE(MAX(email_message_id), 0) FROM aveloxis_data.email_message`,
+		`
+		UPDATE aveloxis_data.issues i
+		SET issue_state = CASE WHEN l.action IN ('Resolved','Closed') THEN 'closed' ELSE 'open' END,
+		    closed_at = CASE WHEN l.action IN ('Resolved','Closed') THEN l.at ELSE NULL END,
+		    updated_at = l.at,
+		    last_mail_event_id = l.emid
+		FROM (
+			SELECT em.repo_id, em.linked_external_key AS key,
+			       (array_agg(`+trackerActionSubjectSQL+` ORDER BY em.sent_at DESC, em.email_message_id DESC))[1] AS action,
+			       (array_agg(em.sent_at ORDER BY em.sent_at DESC, em.email_message_id DESC))[1] AS at,
+			       (array_agg(em.email_message_id ORDER BY em.sent_at DESC, em.email_message_id DESC))[1] AS emid
+			FROM aveloxis_data.email_message em
+			WHERE em.email_message_id > $1 AND em.email_message_id <= $2
+			  AND em.msg_class = 'issue_event'
+			  AND em.repo_id IS NOT NULL
+			  AND em.linked_external_key <> ''
+			  AND em.sent_at IS NOT NULL
+			  AND `+trackerActionSubjectSQL+` IN ('Resolved','Closed','Reopened')
+			GROUP BY em.repo_id, em.linked_external_key
+		) l
+		WHERE i.repo_id = l.repo_id
+		  AND i.external_key = l.key
+		  AND i.external_key <> ''
+		  AND i.platform_issue_id < 0
+		  AND `+fmt.Sprintf(trackerActionEventGuardSQL, "i", "l.at", JiraAPIDataSource, "l.emid"))
 }

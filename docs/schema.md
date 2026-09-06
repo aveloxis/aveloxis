@@ -134,8 +134,10 @@ A mailing-list email as a first-class entity (v0.25.7) — peer to `issues` / `p
 | `is_mirror` / `mirrors_url` | BOOLEAN / TEXT | Classifier | Mirror-list mail that echoes GitHub activity. |
 | `signaled_repo_url` | TEXT | Classifier | Axis B: canonical repo URL the message signals (captured even if not in catalog). |
 | `signaled_repo_id` | BIGINT (FK -> repos, ON DELETE SET NULL) | Resolver | Resolved repo FK (NULL until the URL matches a loaded repo). |
-| `linked_issue_id` / `linked_pull_request_id` | BIGINT (FKs) | Router | Routed target when the message is an issue/PR event. |
-| `linked_external_key` / `linked_commit_hash` | TEXT | Router | Jira/Bugzilla key / commit the message references. |
+| `linked_issue_id` / `linked_pull_request_id` / `linked_pr_review_id` | BIGINT (FKs) | Router / mirror-link resolver | Routed target when the message is an issue/PR/review event. The GitBox-mirror half is keyed on the GraphQL node ID recovered from the Message-ID (v0.28.20). |
+| `linked_external_key` / `linked_commit_hash` | TEXT | Router | Jira/Bugzilla key / commit the message references. 100% populated on `issue_event` rows — the state backfill's join key. |
+| `projected_kind` | TEXT | Router | What this email became: `issue` / `pr` / `review` / `mailing_list_only` / empty = not yet projected. Derived from the post-COALESCE links so a failed resolver can never assert absence (v0.28.20). |
+| `linked_msg_id` | BIGINT (FK -> messages) | Jira collector | v0.29.0: the NATIVE message row that supersedes this notification (a Jira API comment collected directly; pilot-validated ±2-minute match). NULL = the notification is the sole record and still counts. Analytics precedence `native > notification` keys off this stamp. |
 | | | | *Standard metadata columns* (`tool_source` defaults to `Aveloxis Mailing List Collector`) |
 
 ---
@@ -205,7 +207,16 @@ Platform-agnostic contributor identity. Each unique person across GitHub and Git
 | `gl_full_name` | TEXT | GitLab API v4: `/projects/{id}/members/all` | GitLab display name. |
 | `gl_id` | BIGINT | GitLab API v4: `/projects/{id}/members/all` | GitLab numeric user ID. |
 | `cntrb_created_at` | TIMESTAMPTZ | GitHub REST: `/users/{login}`, GitLab API v4 | When the account was created on the forge. |
-| | | | *Standard metadata columns* |
+| `cntrb_last_search_attempted_at` | TIMESTAMPTZ | search-resolve ticker (v0.19.2) | Cooldown stamp: when email→user search was last attempted (success or miss). |
+| `cntrb_last_enriched_at` | TIMESTAMPTZ | enrichment ticker (v0.18.29) | Cooldown stamp: last `/users/{login}` profile enrichment. |
+| `cntrb_last_breadth_at` | TIMESTAMPTZ | breadth worker (v0.20.17) | Cooldown stamp: last `/users/{login}/events` breadth attempt — stamped unconditionally, even on empty/error, so the claim queue drains. |
+| `gh_state` | TEXT | placeholder backfill (v0.20.12) | `'unresolved'` = a login observed in commit data that never resolved via the API; empty = normal. NOT a claim the account was deleted. |
+| `gh_activity_class` | TEXT | activity classifier (v0.27.57) | `public-active` / `private-active` / `dormant` / `no-observable-activity`; empty = never checked OR unresolvable at any batch size (v0.27.81). |
+| `gh_public_contribs_year` / `gh_restricted_contribs_year` | INTEGER | activity classifier | Calendar-year public / private-disclosed contribution counts from contributionsCollection. |
+| `gh_last_contribution_year` | INTEGER | activity classifier | Max contribution year observed. |
+| `gh_activity_checked_at` | TIMESTAMPTZ | activity classifier | Cooldown stamp for the classifier. |
+| `gh_history_backfilled_at` | TIMESTAMPTZ | history backfill (v0.27.58) | NULL = daily-history backfill pending — consumers must render "history pending", never "active nowhere else". |
+| | | | *Standard metadata columns* (`tool_source` — note: `'Aveloxis Jira Collector'` marks a contributor MINTED for a Jira-only identity, v0.29.0; `'Aveloxis Mailing List Collector'` marks an email-only mint) |
 
 **Unique index:** `(cntrb_login) WHERE cntrb_login != ''`
 
@@ -236,16 +247,39 @@ Maps a contributor to per-platform identities. One `cntrb_id` may have identitie
 
 #### contributors_aliases
 
-Maps alternate email addresses to a contributor's canonical email. Used by the commit resolver to unify git commit emails with API identities.
+Maps alternate email addresses to a contributor. The identity bridge for everything that only knows an email: the commit resolver's git-email→API unification AND the mailing-list sender-attribution chain (163,236 email bodies on the production `aveloxis` DB were attributable ONLY through this table). FOUR writer families, each stamping its own provenance (v0.29.0 — `tool_source` was previously hardcoded to the commit resolver on every path, which misled provenance audits): the commit resolver's two alias paths, the mailing-list sender-resolve linker, and the v0.20.2 rename-merge loser-alias insert.
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `cntrb_alias_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
-| `cntrb_id` | UUID NOT NULL (FK -> contributors) | `aveloxis-commit-resolver` | The contributor this alias belongs to. |
-| `canonical_email` | TEXT NOT NULL | `aveloxis-commit-resolver` | The contributor's canonical email. |
-| `alias_email` | TEXT NOT NULL UNIQUE | `aveloxis-commit-resolver` | An alternate email that maps to this contributor. |
-| `cntrb_active` | SMALLINT NOT NULL | `aveloxis-commit-resolver` | Whether this alias is active. `1` = active. |
-| `cntrb_last_modified` | TIMESTAMPTZ | Auto-generated | Last modification timestamp. |
+| `cntrb_id` | UUID NOT NULL (FK -> contributors) | commit resolver / mailing-list resolve / rename merge | The contributor this alias belongs to. |
+| `canonical_email` | TEXT NOT NULL | writer (COALESCEd from the contributor's canonical) | The contributor's canonical email. |
+| `alias_email` | TEXT NOT NULL UNIQUE | writer | An alternate email that maps to this contributor. The UNIQUE is what bounds attribution fan-out to one contributor per address. |
+| `cntrb_active` | SMALLINT NOT NULL | writer | Whether this alias is active. `1` = active. |
+| `cntrb_last_modified` | TIMESTAMPTZ | Auto-generated (insert only) | Alias rows are insert-only — no refresh writer exists by design. |
+| | | | *Standard metadata columns* |
+
+---
+
+#### jira_identities
+
+Every Jira identity observed via the REST API, raw and permanent
+(v0.29.0). `jira_name` is the Server-era stable username — the field
+Atlassian Cloud's API no longer exposes, which is why these rows are
+banked early. `cntrb_id` links to a contributor ONLY on an unambiguous
+match or a deliberate mint; ambiguous stays NULL with the raw identity
+preserved (SR-6). See the identity chapter in
+[Human provenance](architecture/human-provenance.md).
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `jira_identity_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
+| `jira_name` | TEXT NOT NULL UNIQUE | Jira API | The stable Server-era username (the matching key). |
+| `jira_user_key` | TEXT | Jira API | The internal `JIRAUSERnnnn` key. |
+| `display_name` | TEXT | Jira API | Display name (the secondary matching arm). |
+| `cntrb_id` | UUID (FK -> contributors) | `ResolveJiraIdentity` / `MintJiraContributor` | NULL = unmatched or ambiguous — never a guess. |
+| `match_method` | TEXT NOT NULL | Resolver | `login` / `display` / `minted` / empty (unmatched). |
+| `first_seen` / `last_seen` | TIMESTAMPTZ | Auto / resolver | First observation (immutable) / refreshed per sighting. |
 | | | | *Standard metadata columns* |
 
 ---
@@ -327,6 +361,9 @@ Issue tracker records from GitHub Issues or GitLab Issues. Each row represents o
 | `due_on` | TIMESTAMPTZ | GitHub REST: `/repos/{o}/{r}/issues`, GitLab: `/projects/{id}/issues` | Due date from milestone. |
 | `comment_count` | INT | GitHub REST: `/repos/{o}/{r}/issues`, GitLab: `/projects/{id}/issues` | Number of comments on the issue. |
 | `external_key` | TEXT | `backfill-issue-external-keys` | Bracketed `[KEY-N]` Jira/Bugzilla key from the title (Apache Jira → GitHub imports). Lets mailing-list `issue_event` mail bridge to the imported issue. Partial unique `(repo_id, external_key) WHERE external_key <> ''`. v0.25.7. |
+| `last_mail_event_id` | BIGINT | Computed (`ApplyTrackerAction` / `BackfillSyntheticJiraState`) | v0.29.0: the `email_message_id` of the last mail tracker action applied to a synthetic row — the same-minute tie-breaker in `trackerActionEventGuardSQL` (Pony Mail rounds `sent_at` to the minute; a deferred older action replaying at an equal timestamp must not regress the newer one). NULL on native rows and untouched synthetics. |
+| `jira_api_updated_at` | TIMESTAMPTZ | Jira API (v0.29.1) | The last-APPLIED Jira-API `updated` timestamp — the reliable clock `jiraAPISnapshotFreshSQL` compares against, written ONLY by an applying API snapshot. A mail event clobbers `updated_at` with a relay stamp and re-marks the row mail-authored, so freshness must NOT read `updated_at`; keying on this column blocks a stale API replay from regressing an API-owned row (Copilot round 22). NULL until the first API write. |
+| `jira_issue_id` | BIGINT | Jira API (v0.29.0) | The REAL Jira internal id, in its own column. Synthetic rows keep their deterministic NEGATIVE `platform_issue_id` forever — one logical ticket is one row keyed `(repo_id, external_key)` across all three providers (forge > Jira API > mail); see [Human provenance](architecture/human-provenance.md). |
 | | | | *Standard metadata columns* |
 
 **Unique constraint:** `(repo_id, platform_issue_id)`
@@ -703,18 +740,22 @@ GitLab: all four kinds come from `/projects/{id}/merge_requests/{n}/notes` and `
 |--------|------|--------|-------------|
 | `msg_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
 | `repo_id` | BIGINT NOT NULL (FK -> repos) | Computed | Repository. |
-| `rgls_id` | BIGINT | Computed | Optional FK to `repo_groups_list_serve` for mailing list messages. |
+| `rgls_id` | BIGINT | *(no writer)* | Declared for mailing-list messages but written by NOTHING — list identity actually travels through `email_message.rgls_id`. Kept as schema-parity ballast (documentedEmpty in the column-writer tripwire). |
 | `platform_msg_id` | BIGINT NOT NULL | GitHub (REST or GraphQL inline, see modes above) ; GitLab `/merge_requests/{n}/notes`, `/merge_requests/{n}/discussions` | Platform's comment / review ID. For review bodies this is the platform review ID. |
-| `platform_id` | SMALLINT NOT NULL (FK -> platforms) | Computed | Platform. |
-| `node_id` | TEXT | GitHub (REST or GraphQL inline) | GitHub GraphQL node ID. |
-| `msg_text` | TEXT | GitHub (REST or GraphQL inline) ; GitLab `/merge_requests/{n}/notes` | Comment / review body text. |
+| `platform_id` | SMALLINT NOT NULL (FK -> platforms) | Computed | Platform of the message's SOURCE system: 1/2 = forge comment, 4 = native Jira comment, 6 = mailing-list body. |
+| `msg_kind` | SMALLINT NOT NULL | Computed | v0.27.38 entity-kind discriminator: 0 legacy, 1 conversation comment, 2 inline review comment, 3 review body, 4 email projection. Part of the unique arbiter — without it, GitHub's three independent id sequences collided cross-kind. |
+| `node_id` | TEXT | GitHub (REST or GraphQL inline) ; mailing-list worker | GitHub GraphQL node ID — EXCEPT on email rows (platform 6), where it holds the raw RFC-822 Message-ID header: the join key back to `email_message.message_id_header` and the sender-attribution backfill's pivot. |
+| `msg_text` | TEXT | GitHub (REST or GraphQL inline) ; GitLab `/merge_requests/{n}/notes` ; mailing-list worker ; Jira API | Comment / review / email body text — RAW, never mutated (provenance). |
+| `msg_text_clean` | TEXT | Computed (`mailinglist.StripQuotedHistory`) | v0.29.0: the quote-stripped body, email rows only (82.5% of list mail embeds the thread it replies to; median 4,774 → ~300 chars). NULL = no clean variant — read `COALESCE(msg_text_clean, msg_text)`. Deliberately NO empty-string default: a defaulted empty value would blank every forge row through the COALESCE. |
+| `msg_text_clean_rule` | TEXT | Computed | The pattern-library version (`qs-vN`) that produced `msg_text_clean`; drives `strip-quoted-history --rule-rerun`. |
+| `msg_updated` | TIMESTAMPTZ | Jira API comment `updated` | v0.29.0: the provider-side edit timestamp, Jira comments only (forge/mail rows stay NULL). Comparator for the comment upsert's stale-replay freshness guard: text advances only on equal-or-newer snapshots. |
 | `msg_timestamp` | TIMESTAMPTZ | GitHub (REST or GraphQL inline) ; GitLab `/merge_requests/{n}/notes` | When the message was posted (or review submitted). |
-| `msg_sender_email` | TEXT | Computed | Email of the comment author (resolved from contributor). |
+| `msg_sender_email` | TEXT | Mailing-list worker | The RAW sender email of a mailing-list body (written verbatim from the parsed From header; empty on forge rows). NOT resolved from the contributor — `cntrb_id` is the resolved identity. |
 | `msg_header` | TEXT | Not yet populated | Message header (for mailing list messages). |
-| `cntrb_id` | UUID (FK -> contributors) | Computed (resolved from platform user data) | Comment / review author. |
-| | | | *Standard metadata columns* |
+| `cntrb_id` | UUID (FK -> contributors) | Computed (resolved from platform user data; email rows: the sender-attribution chain — email/canonical/alias) | Comment / review / email author. NULL on an email row = sender not yet resolvable (the backfill re-tries as identities accrue). |
+| | | | *Standard metadata columns — NOTE: on email rows `data_source` holds the LIST ADDRESS (e.g. dev@kafka.apache.org); on Jira-native comments it is `JIRA API`.* |
 
-**Unique constraint:** `(platform_msg_id, platform_id)`
+**Unique constraint:** `(platform_msg_id, platform_id, msg_kind)` — the v0.27.38 three-column arbiter (kind included because the per-kind id sequences are independent).
 
 ---
 
@@ -1748,6 +1789,27 @@ Tracks the current working commit for facade processing per repository.
 ---
 
 ## aveloxis_ops Schema
+
+### Jira collection state (v0.29.0)
+
+#### jira_project_serve
+
+The Jira collector's registration/checkpoint row — the
+`repo_groups_list_serve` pattern applied to a tracker: per-project
+claim lock, quadratic failure backoff, and `jps_last_updated` as the
+incremental-sync cursor (`updated >= <checkpoint>` JQL). `repo_id` is
+nullable and un-FK'd: a project can register before its repo mapping
+exists. Seeded by `aveloxis register-jira-projects`; dead upstream
+keys are disabled by the worker on their first 400.
+(v0.29.1: `jps_heartbeat_at`, renewed ownership-qualified on every checkpoint, makes the 2-hour stale window measure INACTIVITY rather than total scan duration — `jps_locked_at` stays the immutable ownership key, so a long-but-active sync is never reclaimed mid-scan.)
+
+#### jira_staging
+
+The Jira fetch/classify → resolve/write boundary, cloned from
+`mailing_list_staging`: `UNIQUE (project_key, issue_key,
+issue_updated)` makes a replayed sync window a true no-op; `repo_id`
+is nullable and un-FK'd; `envelope` is the raw API issue JSON. Shares
+`staging_retention_hours` with the other staging tables.
 
 ### Subsystem health
 

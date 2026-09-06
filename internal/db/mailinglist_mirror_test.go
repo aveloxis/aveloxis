@@ -56,13 +56,13 @@ func TestResolveMirrorLinkAndExternalKeyBackfill(t *testing.T) {
 	}()
 
 	// Mirror link: pull #42 → prID; issues #7 → issueID; missing → nils.
-	if _, gotPR, _ := store.ResolveMirrorLink(ctx, "apache", "mirrortest", "pull", 42); gotPR == nil || *gotPR != prID {
+	if _, gotPR, _ := store.ResolveMirrorLink(ctx, "apache", "mirrortest", "pull", 42, repoID, nil); gotPR == nil || *gotPR != prID {
 		t.Errorf("ResolveMirrorLink pull = %v, want %d", gotPR, prID)
 	}
-	if gotIssue, _, _ := store.ResolveMirrorLink(ctx, "APACHE", "MirrorTest", "issues", 7); gotIssue == nil || *gotIssue != issueID {
+	if gotIssue, _, _ := store.ResolveMirrorLink(ctx, "APACHE", "MirrorTest", "issues", 7, repoID, nil); gotIssue == nil || *gotIssue != issueID {
 		t.Errorf("ResolveMirrorLink issues (case-insensitive) = %v, want %d", gotIssue, issueID)
 	}
-	if i, p, _ := store.ResolveMirrorLink(ctx, "apache", "mirrortest", "pull", 99999); i != nil || p != nil {
+	if i, p, _ := store.ResolveMirrorLink(ctx, "apache", "mirrortest", "pull", 99999, repoID, nil); i != nil || p != nil {
 		t.Error("missing PR must resolve to nils")
 	}
 

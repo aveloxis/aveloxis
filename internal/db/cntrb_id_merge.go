@@ -197,6 +197,14 @@ func mergeOnePair(ctx context.Context, store *PostgresStore, pair CntrbIDCollisi
 		return fmt.Errorf("insert alias: %w", err)
 	}
 
+	// Step 3b (code-review round 2026-09-06, finding 5): repoint the
+	// loser's OWN alias rows to the winner before soft-deleting — a
+	// dead-owned alias resolves nothing while blocking re-creation.
+	if _, err := tx.Exec(ctx, mergeLoserAliasRepointSQL,
+		pair.WinnerID, pair.LoserID); err != nil {
+		return fmt.Errorf("repoint loser aliases: %w", err)
+	}
+
 	// Step 4: soft-delete the loser. Row stays in place; every FK
 	// pointing at loser.cntrb_id remains valid; read-path queries
 	// filter via COALESCE(cntrb_deleted, 0) = 0.

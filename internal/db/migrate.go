@@ -254,10 +254,63 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 // migrateStage1CoreColumns — recent heals, msg_kind, tool_version defaults, libyear/users/queue/sbom columns, contributor cooldowns.
 // Split from the former 1,570-line RunMigrations (v0.27.42, summary/18
 // Phase 4); step ORDER across stages is load-bearing and unchanged.
+// homeActivityBackfillSQL seeds collection_queue.last_activity_90d —
+// ONE named spelling (SR-17) shared by the ledgered migrate step and
+// its behavioral test, so the test exercises the exact statement the
+// fleet runs. collection_queue.repo_id is the PRIMARY KEY, so the
+// q/q0 self-join matches exactly one row and both GROUP BY subqueries
+// are repo-unique: every NULL row fills exactly once (zero-activity
+// repos fill with 0, never stay NULL).
+const homeActivityBackfillSQL = `
+		UPDATE aveloxis_ops.collection_queue q
+		SET last_activity_90d = COALESCE(iss.c, 0) + COALESCE(prs.c, 0)
+		FROM aveloxis_ops.collection_queue q0
+		LEFT JOIN (
+		    SELECT repo_id, COUNT(*) AS c FROM aveloxis_data.issues
+		    WHERE created_at >= NOW() - INTERVAL '90 days' GROUP BY repo_id
+		) iss ON iss.repo_id = q0.repo_id
+		LEFT JOIN (
+		    SELECT repo_id, COUNT(*) AS c FROM aveloxis_data.pull_requests
+		    WHERE created_at >= NOW() - INTERVAL '90 days' GROUP BY repo_id
+		) prs ON prs.repo_id = q0.repo_id
+		WHERE q.repo_id = q0.repo_id
+		  AND q.last_activity_90d IS NULL`
+
 func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
 	// v0.27.38 (summary/18 Phase 1a): messages msg_kind — see
 	// msg_kind_migration.go for the full sequence + rationale.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_kind", "SMALLINT NOT NULL DEFAULT 0")
+	// v0.29.0 Part B: quote-stripped body + rule version. msg_text_clean
+	// carries NO DEFAULT on purpose (NULL = no clean variant; a DEFAULT
+	// the empty string would empty every forge row via the COALESCE read path). The
+	// 12.6M-row history strip is `aveloxis strip-quoted-history`, a
+	// resumable CLI — NEVER a migrate walker (the F13 class).
+	// v0.29.0 C3a: the real Jira internal id gets its OWN column —
+	// synthetics keep their negative platform_issue_id (id-space
+	// collision + sign-keyed detector class; see schema.sql).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.issues", "jira_issue_id", "BIGINT")
+	// v0.29.0 C3a: the notification→native-comment supersession link
+	// (see schema.sql). The FK is added only on fresh installs via the
+	// base DDL; existing fleets get the bare column — the stamp writer
+	// only ever writes ids RETURNING'd from messages in the same
+	// process, and a backfilled FK VALIDATE over 12.6M rows is not
+	// worth a migrate stall for a link column.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.email_message", "linked_msg_id", "BIGINT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_text_clean", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_text_clean_rule", "TEXT DEFAULT ''")
+	// v0.29.0 round 14: provider edit timestamp — the Jira comment
+	// upsert's stale-replay freshness guard compares against it.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_updated", "TIMESTAMPTZ")
+	// v0.29.0 round 15: same-minute tracker-action tie-breaker.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.issues", "last_mail_event_id", "BIGINT")
+	// v0.29.1 (Copilot round 22 suppressed #2): the last-applied Jira-API
+	// update timestamp — the reliable API clock the freshness guard
+	// compares against, immune to mail events clobbering updated_at.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.issues", "jira_api_updated_at", "TIMESTAMPTZ")
+	// v0.29.1 (Copilot round 22 suppressed #1): ownership-qualified
+	// heartbeat so the Jira project lease measures inactivity, not total
+	// scan duration.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.jira_project_serve", "jps_heartbeat_at", "TIMESTAMPTZ")
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.38 create message_heal_worklist", `
 		CREATE TABLE IF NOT EXISTS aveloxis_ops.message_heal_worklist (
@@ -289,6 +342,7 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 
 	// Collection queue: commits column (added in v0.5.4).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.collection_queue", "last_commits", "INT DEFAULT 0")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.collection_queue", "last_activity_90d", "INT")
 
 	// Collection queue: force-full-recollect flag (added in v0.18.24).
 	// Set automatically when a job ends with a GraphQL PR batch error
@@ -536,7 +590,7 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// liveness is only adjudicable on the machine that wrote it.
 	// scancode_skip_reason: why the last "run" was a no-scan skip
 	// ('generated-content' for the >5 GiB / >=90% HTML+CSS+JS
-	// policy); cleared back to '' by the next real successful scan.
+	// policy); cleared back to the empty string by the next real successful scan.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_locked_host", "TEXT")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_skip_reason", "TEXT DEFAULT ''")
 
@@ -686,12 +740,40 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// (2026-07-20), against a documented expectation of tens of
 	// minutes. v0.20.12's own comment named this index as "the next
 	// step" if the join profiled as a bottleneck. Same partial
-	// predicate as its sibling: the email-only cohort (gh_login = '')
-	// is excluded, matching the query's v0.27.25 `!= ''` guards.
+	// predicate as its sibling: the email-only cohort (empty gh_login)
+	// is excluded, matching the query's v0.27.25 non-empty guards.
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
 		"aveloxis_data", "idx_contributors_gh_login_lower",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_gh_login_lower
 		ON aveloxis_data.contributors (LOWER(gh_login)) WHERE gh_login != ''`)
+
+	// v0.29.0 (review 2026-08-30 #15) — the Jira identity probes.
+	// ResolveJiraIdentity matches each first-seen Jira username against
+	// lower(cntrb_login) and each display name against
+	// lower(cntrb_full_name); without these, every cold identity in the
+	// ASF backfill (tens of thousands) is 1-2 sequential scans of the
+	// 1.7M-row contributors table (the v0.27.53/54 email-lookup class).
+	// Partial, and USABLE because the query carries the literal
+	// non-empty guards (the v0.27.125 FindRepoByPlatformRepoID rule —
+	// a generic plan cannot prove $1 <> ''). Migration-only per SR-2.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_cntrb_login_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_cntrb_login_lower
+		ON aveloxis_data.contributors (LOWER(cntrb_login)) WHERE cntrb_login <> ''`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_full_name_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_full_name_lower
+		ON aveloxis_data.contributors (LOWER(cntrb_full_name)) WHERE cntrb_full_name <> ''`)
+
+	// v0.29.0 (review 2026-08-30 #3) — the gap healer's synthetic-count
+	// lateral (`platform_issue_id < 0` per repo) must not walk every
+	// repo's full issues index range. Partial, and usable because the
+	// lateral's predicate matches the index predicate verbatim.
+	// Synthetics are ~486K rows fleet-wide, so the index stays small.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_issues_synthetic_repo",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_synthetic_repo
+		ON aveloxis_data.issues (repo_id) WHERE platform_issue_id < 0`)
 
 	// v0.21.0 — ScancodeWorker claim-query index.
 	//
@@ -1405,10 +1487,25 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_repo_created
 			ON aveloxis_data.pull_requests (repo_id, created_at)`)
 
+	// v0.29.0: seed the home page's cached 90-day activity ranking so
+	// the page is fast on the first post-deploy render, not after a
+	// full recollect cycle (the v0.21.2 backfill precedent; the
+	// per-render aggregation this replaces measured mean 8.1s /
+	// max 48.2s on the production fleet for a 143K-repo admin scope —
+	// this pass pays it ONCE). Runs AFTER the two composite-index
+	// builds above so even a pre-v0.27.4 fleet's one-shot pass is
+	// index-served (review 2026-08-31 #4 — the v0.28.15 ordering
+	// class, index variant). Ledgered: CompleteJob keeps the column
+	// current afterwards; RefreshQueueGatheredCounts covers healed
+	// repos.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.0 backfill collection_queue.last_activity_90d from the 90-day window",
+		homeActivityBackfillSQL)
+
 	// v0.27.5 — scorecard execution-mode marker. 'remote' (--repo, ~18
 	// checks) vs 'local' (--local, ~11 checks) overall scores are NOT
 	// comparable, so every check row and the __overall__ row records
-	// which mode produced it. '' = pre-v0.27.5 scan. MUST be added to
+	// which mode produced it. the empty string = pre-v0.27.5 scan. MUST be added to
 	// BOTH the main table AND the history table: RotateScorecardToHistory
 	// does `INSERT INTO ..._history SELECT * FROM ...`, which requires
 	// identical column sets — adding the column to only one side breaks
@@ -1449,6 +1546,31 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_email_message_linked_review",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_review
 		ON aveloxis_data.email_message (linked_pr_review_id) WHERE linked_pr_review_id IS NOT NULL`)
+
+	// v0.29.0: email_message.linked_msg_id serves the Part D
+	// native>notification dedup in aveloxis-analytics (enumerate
+	// notifications whose native twin was collected — linked_msg_id IS
+	// NOT NULL — to exclude their body rows) AND enforces the
+	// one-notification-per-native-comment invariant. Copilot round 20 on
+	// PR #193: that invariant needs a partial UNIQUE index as the hard
+	// backstop — the two writers' anti-join is check-then-act and races
+	// under concurrent mailing_list_processor drains. ensureLinkedMsgIDUnique
+	// RETIRES the earlier non-unique idx_email_message_linked_msg (SR-4:
+	// dropped, never recreated) and builds the unique replacement after
+	// draining any existing duplicate claims (SR-1). Migration-only per
+	// SR-2 (the v0.28.20 precedent on this 13M-row table).
+	ensureLinkedMsgIDUnique(ctx, pg, logger, errs)
+
+	// Copilot round 6 on PR #193 (suppressed #1): the comment_count
+	// recount excludes superseded notifications by probing
+	// email_message_ref BY msg_id — previously unindexed (flagged as a
+	// follow-up in v0.28.15; heal-messages' bridge-delete path is the
+	// other reader). NON-partial: the probe is a join variable
+	// (v0.27.54 — a partial predicate cannot serve it). Migration-only
+	// per SR-2 (1.7 GB table on the mailing-list deployment).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_email_message_ref_msg_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_ref_msg_id
+		ON aveloxis_data.email_message_ref (msg_id)`)
 
 	// v0.23.0: contributor_login_history table + backfill. Closes the
 	// rename-audit gap documented as a v0.22.13 limitation
@@ -1735,6 +1857,51 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		func(errs *[]error) {
 			ensureMsgRefMetadata(ctx, pg, logger, errs)
 		})
+	// v0.29.0 C1: close the permanently-open synthetic Jira issues
+	// from the Resolved/Closed/Reopened notifications already in
+	// email_message (485,892 open synthetics vs 358,384 Resolved
+	// notifications on the aveloxis DB; the parsed action was captured
+	// and discarded until this release). Keyset-windowed, event-time
+	// guarded, synthetic-gated. Pure SQL — ledger-scoped.
+	runOnce(ctx, pg, logger, errs,
+		"v0.29.0 backfill synthetic Jira issue state from notification subjects",
+		func(errs *[]error) {
+			if err := pg.BackfillSyntheticJiraState(ctx, logger); err != nil {
+				*errs = append(*errs, err)
+			}
+		})
+
+	// v0.29.0 C1-pre: repair the automation-phantom identity
+	// fabrication (2026-08-31 find): the pre-guard sender-resolve
+	// ticker minted email-only contributor rows for relay addresses
+	// (jira@apache.org, gitbox@, a list address) and 83,746 messages
+	// were attributed to the jira@ phantom on the aveloxis DB.
+	// Soft-deletes the phantoms, drops their aliases, NULLs their
+	// attributions. Pure SQL, bounded, idempotent — ledger-scoped.
+	runOnce(ctx, pg, logger, errs,
+		"v0.29.0 heal automation-phantom contributors (relay identity fabrication)",
+		func(errs *[]error) {
+			if err := pg.HealAutomationPhantomContributors(ctx); err != nil {
+				*errs = append(*errs, err)
+			}
+		})
+
+	// Part G layer-3 find (2026-09-01): the pre-fix drain pools were
+	// system-blind — the lore processor (projectionClean=false) drained
+	// 90-92% of apache lists' staged rows, stamping ml_system wrong and
+	// skipping ALL Layer-2 projection. Restamp + reset those rows to the
+	// pending sentinel so `aveloxis backfill-mailing-list-projection`
+	// re-runs the keyed + thread passes over exactly that cohort (the
+	// operator step is documented in upgrading.md). Keyset-windowed
+	// (13M rows on the mailing-list deployment); ledgered — one-shot.
+	runOnce(ctx, pg, logger, errs,
+		"v0.29.0 heal cross-system mis-drained mailing-list rows",
+		func(errs *[]error) {
+			if err := pg.HealMisdrainedMailingListRows(ctx, logger); err != nil {
+				*errs = append(*errs, err)
+			}
+		})
+
 	// The uq_pr_review_msg_ref arbiter stays LIVE-healed regardless of
 	// the ledger (the plan's "CIC builds are never ledgered" rule): a
 	// hand-dropped unique must come back on the next explicit migrate.
@@ -1791,7 +1958,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// v0.27.11 — vulnerability version-resolution accuracy. Every
 	// finding carries the raw manifest requirement and how the scanned
 	// version was chosen ('locked'/'exact'/'bounded-range'/
-	// 'range-floor'/'unpinned'). Pre-v0.27.11 rows keep '' and heal on
+	// 'range-floor'/'unpinned'). Pre-v0.27.11 rows keep the empty string and heal on
 	// the repo's next scan — deliberately NO backfill: the
 	// classification must come from the current manifest, which only a
 	// scan can read.
@@ -1912,15 +2079,15 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		   AND COALESCE(r.repo_archived, FALSE) IS DISTINCT FROM (latest.status = 'Archived')`)
 
 	// v0.27.51: dependency_scope stores the WORD 'runtime' instead of
-	// '' (operator decision — '' was uninterpretable for direct table
-	// readers). Backfill every ''-scope direct/transitive finding:
-	// under the presentation contract '' already READ as runtime
+	// the empty string (operator decision — the empty string was uninterpretable for direct table
+	// readers). Backfill every empty-scope direct/transitive finding:
+	// under the presentation contract the empty string already READ as runtime
 	// everywhere (IsRuntimeScope), so this is a spelling change, not a
 	// semantic one — and it is SELF-CORRECTING for legacy rows whose
 	// dep is really non-runtime: the upsert refreshes scope
 	// unconditionally on each repo's next scan, overwriting the
 	// backfilled 'runtime' with the fine value. kind='self' rows
-	// deliberately stay '' — scope vocabulary does not apply to a
+	// deliberately stay the empty string — scope vocabulary does not apply to a
 	// project's own advisories. Idempotent by predicate.
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.51 backfill dependency_scope '' -> 'runtime' on dependency findings",
@@ -1979,6 +2146,51 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// legitimately-dataless rows (deleted users, mark-only) stamped by
 	// the fixed code never match. Broken-era deleted users get exactly
 	// one harmless re-check.
+	// Code-review round 2026-09-06 (finding 5/6 historical cohort): every
+	// pre-fix merge left the loser's OWN alias rows pointing at the
+	// soft-deleted cntrb_id — dead-owned aliases that resolve nothing
+	// (the resolver's alias arm filters to active owners) while blocking
+	// re-creation. Forward fixes repoint inside each merge tx; these two
+	// ledgered steps heal what already accumulated. Step 1 reassigns a
+	// dead-owned alias to the ONE active contributor whose
+	// cntrb_email/canonical matches the alias_email (SR-6: ambiguous
+	// stays — the sender-resolve ticker handles those). Step 2 must run
+	// AFTER step 1: it re-opens the TERMINAL resolved=TRUE stamp for
+	// senders whose alias is STILL dead-owned and who have no active
+	// email-match — without it the round-29 candidate-pool fix can never
+	// reach them (the resolved filter runs before the alias anti-join).
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.2 reassign dead-owned contributor aliases to their unambiguous active match",
+		`UPDATE aveloxis_data.contributors_aliases a
+		 SET cntrb_id = m.active_id, data_collection_date = NOW()
+		 FROM (
+		     SELECT a2.alias_email,
+		            (array_agg(DISTINCT c.cntrb_id))[1] AS active_id
+		     FROM aveloxis_data.contributors_aliases a2
+		     JOIN aveloxis_data.contributors dead ON dead.cntrb_id = a2.cntrb_id
+		         AND COALESCE(dead.cntrb_deleted, 0) <> 0
+		     JOIN aveloxis_data.contributors c
+		         ON (c.cntrb_email = a2.alias_email OR c.cntrb_canonical = a2.alias_email)
+		        AND COALESCE(c.cntrb_deleted, 0) = 0
+		     GROUP BY a2.alias_email
+		     HAVING count(DISTINCT c.cntrb_id) = 1
+		 ) m
+		 WHERE a.alias_email = m.alias_email`)
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.2 re-open terminal sender-resolve stamps stranded behind dead-owned aliases",
+		`UPDATE aveloxis_ops.mailing_list_sender_resolve r
+		 SET resolved = FALSE
+		 WHERE r.resolved = TRUE
+		   AND EXISTS (
+		       SELECT 1 FROM aveloxis_data.contributors_aliases a
+		       JOIN aveloxis_data.contributors dead ON dead.cntrb_id = a.cntrb_id
+		       WHERE a.alias_email = r.sender_email
+		         AND COALESCE(dead.cntrb_deleted, 0) <> 0)
+		   AND NOT EXISTS (
+		       SELECT 1 FROM aveloxis_data.contributors c
+		       WHERE (c.cntrb_email = r.sender_email OR c.cntrb_canonical = r.sender_email)
+		         AND COALESCE(c.cntrb_deleted, 0) = 0)`)
+
 	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.79 re-null activity-check stamps from the resource-limits incident",
 		`UPDATE aveloxis_data.contributors
@@ -1993,6 +2205,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// v0.27.58: daily contributor activity history (see schema.sql for
 	// the design rationale — TEXT repo names on purpose, no repos FK).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_history_backfilled_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_history_failed_at", "TIMESTAMPTZ")
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.58 create contributor_activity_days",
 		`CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_days (
@@ -2058,6 +2271,35 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"aveloxis_data", "idx_pull_request_review_message_ref_msg_id",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_request_review_message_ref_msg_id
 		 ON aveloxis_data.pull_request_review_message_ref (msg_id)`)
+
+	// v0.28.20: node_id probe indexes for GitHub-mirror mailing-list link
+	// resolution. ResolveMirrorLinkByNodeID looks an issue/PR up by its
+	// GraphQL node ID once per mirror message; the heal
+	// (scripts/heal_mirror_links.sh) joins the whole mirror cohort against
+	// the same columns. Neither column was indexed (2026-08-29 audit) — the
+	// v0.27.54 class exactly: a probe column no write-path audit sees, free
+	// until a reader arrives. Unindexed cost measured on `aveloxis`: the
+	// heal's node_id join over 396,809 mirrors did not finish in 5 minutes;
+	// indexed it returns in ~26s.
+	//
+	// NON-partial deliberately. A partial variant restricted to non-empty
+	// node_id is unusable for the heal, whose probe is a JOIN variable the
+	// planner cannot prove the predicate for (the v0.27.54 lesson, second
+	// half). Do not "optimize" these to partial in a future audit.
+	//
+	// Migration-only (SR-2): NOT declared in schema.sql, because the base
+	// DDL runs first and would block-build these on fleet-scale tables
+	// (aveloxis_large: 23.0M pull_requests, 9.6M issues) during startup
+	// migrate. Operators can pre-create by hand — the step then no-ops via
+	// IF NOT EXISTS.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_pull_requests_node_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_node_id
+		 ON aveloxis_data.pull_requests (node_id)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_issues_node_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_node_id
+		 ON aveloxis_data.issues (node_id)`)
 
 	// v0.27.115 (2026-08-20 schema-drift audit remediation, operator
 	// decisions on findings 3 + 4):
@@ -2584,6 +2826,121 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 // resolution in FindRepoByURL/resolveCaseVariantURL keeps prevention
 // best-effort until the index lands; the next migrate run after
 // dedup-repos drains creates it.
+// ensureLinkedMsgIDUnique (Copilot round 20 on PR #193): enforces
+// one-notification-per-native-comment via a partial UNIQUE index on
+// email_message.linked_msg_id. The two writers (UpsertJiraComment,
+// LinkCommentNotificationToNative) use a NOT EXISTS anti-join to pick an
+// unclaimed native comment, but that is check-then-act: two concurrent
+// drains can both see the same native unclaimed and update DIFFERENT
+// email_message rows toward it, then both commit under a non-unique index
+// (duplicate provenance links, the recount then double-excludes). The
+// unique index rejects the second commit with 23505, which the writers
+// handle (skip / re-pick the next candidate). This REPLACES the earlier
+// non-unique idx_email_message_linked_msg (retired; SR-4). SR-1: any
+// existing duplicate claims are drained (keep the lowest email_message_id,
+// NULL the rest) and their issues recounted BEFORE the unique build, or
+// the CONCURRENTLY create would fail on duplicate data.
+func ensureLinkedMsgIDUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	// Copilot round 24 (PR #193): capture + dedup + recount must be ATOMIC.
+	// The earlier best-effort form captured the affected-issue set, then
+	// unconditionally NULLed the duplicate links, then recounted — so a
+	// capture FAILURE/PARTIAL (query, Scan, or iteration error) followed by
+	// the destructive NULL lost the affected set forever (a rerun
+	// re-captures nothing, the losers are already NULLed), and a recount
+	// failure after the dedup was never retried. Jira collection is off by
+	// default, so no "next sync" self-heals a stale comment_count. One
+	// transaction now: any failure rolls back and the migration re-does the
+	// whole thing on the next run. The CONCURRENTLY index steps run only
+	// AFTER a successful dedup (they cannot run inside a transaction anyway,
+	// and must not build the unique backstop over un-deduped data).
+	if err := pg.withRetry(ctx, func(ctx context.Context) error {
+		return dedupLinkedMsgIDsTx(ctx, pg)
+	}); err != nil {
+		*errs = append(*errs, fmt.Errorf("linked_msg dedup: %w", err))
+		return
+	}
+	// Retire the non-unique index (SR-4: dropped, never recreated).
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.29.0 drop non-unique idx_email_message_linked_msg (replaced by unique backstop)",
+		`DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.idx_email_message_linked_msg`)
+	// The hard backstop: one notification per native comment.
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "uq_email_message_linked_msg",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_email_message_linked_msg
+		ON aveloxis_data.email_message (linked_msg_id) WHERE linked_msg_id IS NOT NULL`)
+}
+
+// dedupLinkedMsgIDsTx captures the affected issues, NULLs the duplicate
+// email_message.linked_msg_id claims, and recounts those issues' comment_count
+// in ONE transaction (Copilot round 24). Capture errors abort BEFORE the
+// destructive NULL; a recount failure rolls back the NULL too, so a rerun
+// re-captures and retries consistently.
+func dedupLinkedMsgIDsTx(ctx context.Context, pg *PostgresStore) error {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 1. Capture the issues whose comment_count changes (a loser
+	//    notification's body row was excluded from its issue's count; NULLing
+	//    it un-supersedes the notification). ANY error aborts before the NULL.
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT imr.issue_id
+		FROM (
+			SELECT email_message_id FROM (
+				SELECT email_message_id,
+				       ROW_NUMBER() OVER (PARTITION BY linked_msg_id ORDER BY email_message_id) AS rn
+				FROM aveloxis_data.email_message WHERE linked_msg_id IS NOT NULL) r
+			WHERE r.rn > 1) losers
+		JOIN aveloxis_data.email_message_ref emr ON emr.email_message_id = losers.email_message_id
+		JOIN aveloxis_data.issue_message_ref imr ON imr.msg_id = emr.msg_id`)
+	if err != nil {
+		return fmt.Errorf("capture affected issues: %w", err)
+	}
+	var affected []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("capture scan: %w", err)
+		}
+		affected = append(affected, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("capture iterate: %w", err)
+	}
+
+	// 2. Drain the duplicate claims: keep the lowest email_message_id per
+	//    linked_msg_id value, NULL the rest.
+	if _, err := tx.Exec(ctx, `
+		UPDATE aveloxis_data.email_message SET linked_msg_id = NULL
+		WHERE email_message_id IN (
+			SELECT email_message_id FROM (
+				SELECT email_message_id,
+				       ROW_NUMBER() OVER (PARTITION BY linked_msg_id ORDER BY email_message_id) AS rn
+				FROM aveloxis_data.email_message WHERE linked_msg_id IS NOT NULL) r
+			WHERE r.rn > 1)`); err != nil {
+		return fmt.Errorf("dedup: %w", err)
+	}
+
+	// 3. Recount the affected issues (freed notifications count again).
+	if len(affected) > 0 {
+		if _, err := tx.Exec(ctx, `
+			UPDATE aveloxis_data.issues i SET comment_count = (
+				SELECT count(*) FROM aveloxis_data.issue_message_ref imr
+				WHERE imr.issue_id = i.issue_id
+				  AND NOT EXISTS (
+					SELECT 1 FROM aveloxis_data.email_message_ref emr
+					JOIN aveloxis_data.email_message em ON em.email_message_id = emr.email_message_id
+					WHERE emr.msg_id = imr.msg_id AND em.linked_msg_id IS NOT NULL))
+			WHERE i.issue_id = ANY($1)`, affected); err != nil {
+			return fmt.Errorf("recount: %w", err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
 	// Fast path: a VALID index already exists — nothing to do.
 	// ErrNoRows = the index doesn't exist yet; other errors are logged

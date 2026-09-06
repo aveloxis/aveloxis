@@ -12,7 +12,7 @@ import (
 // sorted ascending. Used by gap detection to compare against API listing.
 func (s *PostgresStore) GetCollectedIssueNumbers(ctx context.Context, repoID int64) ([]int, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT issue_number FROM aveloxis_data.issues WHERE repo_id = $1 ORDER BY issue_number`,
+		`SELECT issue_number FROM aveloxis_data.issues WHERE repo_id = $1 AND platform_issue_id >= 0 ORDER BY issue_number`,
 		repoID)
 	if err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func (s *PostgresStore) GetRepoMetaCounts(ctx context.Context, repoID int64) (is
 // may have changed since last collection.
 func (s *PostgresStore) GetOpenIssueNumbers(ctx context.Context, repoID int64) ([]int, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT issue_number FROM aveloxis_data.issues WHERE repo_id = $1 AND issue_state = 'open' ORDER BY issue_number`,
+		`SELECT issue_number FROM aveloxis_data.issues WHERE repo_id = $1 AND issue_state = 'open' AND platform_issue_id >= 0 ORDER BY issue_number`,
 		repoID)
 	if err != nil {
 		return nil, err

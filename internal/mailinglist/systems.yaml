@@ -19,8 +19,11 @@ systems:
     # real entities, so project mail onto them where it's a clean fit (§2).
     projection_policy: clean_fit
     rules:
-      # Atlassian Jira bot: "[jira] [Created] (KAFKA-20652) summary"
-      - match: {subject: '^\[jira\] \[(\w+)\] \(([A-Z][A-Z0-9]+-\d+)\)'}
+      # Atlassian Jira bot: "[jira] [Created] (KAFKA-20652) summary".
+      # [\w ]+ not \w+: actions like "Work logged" / "Comment Edited"
+      # carry spaces — under \w+ those 300K+ notifications fell through
+      # to discuss and were treated as human text (C1 find, 2026-08-31).
+      - match: {subject: '^\[jira\] \[([\w ]+)\] \(([A-Z][A-Z0-9]+-\d+)\)'}
         class: issue_event
         capture: {action: 1, external_key: 2}
       # GitBox mirror with a canonical body URL (owner/repo/kind/number).

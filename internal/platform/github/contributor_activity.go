@@ -74,6 +74,10 @@ func (c *Client) FetchContributorActivity(ctx context.Context, logins []string) 
 	// dense-account query burning ~7 minutes of the full 10-retry
 	// backoff chain before subdivision could even start).
 	ctx = platform.WithGraphQLFastFail(ctx)
+	// Background sweep: reserve headroom for foreground collection (with
+	// fast-fail also set, an under-reserve pool returns the typed
+	// rate-limit error immediately and the ticker defers to its next tick).
+	ctx = platform.WithGraphQLBackgroundBudget(ctx)
 	out := make(map[string]model.ContributionActivity, len(logins))
 	flush := func(batch []string) error {
 		skipped, lastSkipErr, err := c.fetchActivityWithSubdivide(ctx, batch, out)

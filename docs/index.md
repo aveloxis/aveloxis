@@ -58,6 +58,7 @@ guide/troubleshooting
 architecture/overview
 architecture/staged-pipeline
 architecture/contributor-resolution
+architecture/human-provenance
 architecture/facade-commits
 architecture/analysis
 architecture/scancode

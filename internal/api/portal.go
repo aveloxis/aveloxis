@@ -192,7 +192,7 @@ func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 	if !db.CollectionRepoSortValid(sortKey) {
 		sortKey = "name"
 	}
-	if sortDir != "desc" {
+	if !strings.EqualFold(sortDir, "desc") {
 		sortDir = "asc"
 	}
 	jsonResponse(w, map[string]any{
@@ -640,7 +640,25 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		page = 1
 	}
 	const pageSize = 100
-	jobs, total, err := s.store.ListQueuePage(r.Context(), pageSize, (page-1)*pageSize, r.URL.Query().Get("q"))
+	sortKey := r.URL.Query().Get("sort")
+	sortDir := r.URL.Query().Get("dir")
+	jobs, total, err := s.store.ListQueuePage(r.Context(), pageSize, (page-1)*pageSize, r.URL.Query().Get("q"), sortKey, sortDir)
+	// Echo the EFFECTIVE sort values (the handleGroupRepos contract —
+	// the log-the-effective-value rule applied to response envelopes):
+	// an unknown key means the store used the default composite, and
+	// the envelope must say so, never parrot the caller's input.
+	if !db.QueueSortValid(sortKey) {
+		// Copilot round 8 on PR #193 (suppressed #1): when the key
+		// falls back, the store used the collecting-first COMPOSITE and
+		// ignored dir entirely — echoing the caller's "desc" would
+		// claim a direction that was never applied. Both echo empty.
+		sortKey = ""
+		sortDir = ""
+	} else if strings.EqualFold(sortDir, "desc") {
+		sortDir = "desc"
+	} else {
+		sortDir = "asc"
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -685,6 +703,7 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 	}
 	jsonResponse(w, map[string]any{
 		"jobs": out, "total": total, "page": page, "page_size": pageSize,
+		"sort": sortKey, "dir": sortDir,
 	})
 }
 
@@ -798,30 +817,127 @@ func (s *Server) handleHomeRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if body, ok := s.homeCache.get(info.UserID); ok {
+	s.serveHomeRepos(w, r, info.UserID, limit)
+}
+
+// serveHomeRepos implements the v0.29.0 stale-while-revalidate
+// contract: a fresh cache entry serves as a hit; an EXPIRED entry
+// serves immediately as stale while ONE background refresh (per user)
+// recomputes it; only a genuinely-empty cache blocks on the loader —
+// and the queue-cached activity ranking makes that path fast too.
+// A 90-day ranking does not meaningfully change inside the staleness
+// window, so serving the expired body costs nothing the user can see.
+func (s *Server) serveHomeRepos(w http.ResponseWriter, r *http.Request, userID, limit int) {
+	if s.homeLoader == nil {
+		// Fail CLOSED like the sharedWithMeStore precedent — a bare
+		// Server without the seam must never nil-panic (review
+		// 2026-08-31 #7).
+		http.Error(w, "home loader unavailable", http.StatusInternalServerError)
+		return
+	}
+	if limit <= 0 {
+		limit = 50 // mirror the store's clamp so the cache key is the EFFECTIVE limit
+	}
+	if limit > homeReposMaxLimit {
+		// Copilot round 14 on PR #193: with entries keyed (user, limit),
+		// an unbounded limit let an authenticated caller both force
+		// full-scope loads AND retain up to 10,000 distinct large
+		// payload variants in the cache. Clamp BEFORE the cache lookup
+		// and the loader so every oversized request shares one entry
+		// (bare comparison per the v0.27.65/66 rules).
+		limit = homeReposMaxLimit
+	}
+	body, state := s.homeCache.get(userID, limit)
+	switch state {
+	case homeCacheFresh:
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "hit")
 		_, _ = w.Write(body)
 		return
+	case homeCacheStale:
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "stale")
+		s.refreshHomeRepos(userID, limit)
+		_, _ = w.Write(body)
+		return
 	}
-	repos, err := s.store.GetHomeRepos(r.Context(), info.UserID, limit)
+	// Miss (empty, limit mismatch, or past the stale bound): blocking
+	// load — fast now that the ranking is the queue-cached column.
+	gen := s.homeCache.generation(userID)
+	repos, err := s.homeLoader(r.Context(), userID, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	body, _ := json.Marshal(map[string]any{"repos": repos})
-	s.homeCache.set(info.UserID, body)
+	body, _ = json.Marshal(map[string]any{"repos": repos})
+	s.homeCache.setIfGen(userID, limit, body, gen)
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "miss")
 	_, _ = w.Write(body)
 }
 
-// homeReposCache bounds the cost of GetHomeRepos: ~5s cold on a
-// fleet-scale admin group set (86,909 repos), so navigating back to
-// the home tab shouldn't re-run it. Invalidated per-user on
-// star/unstar so toggles survive a reload within the TTL.
+// refreshHomeRepos recomputes one user's cached payload in the
+// background. Single-flight per user: concurrent stale hits must not
+// stampede the loader. A failed refresh keeps serving the stale body
+// (stale beats an error page); the next stale hit retries. The
+// generation captured at begin makes the write conditional: an
+// invalidate() that lands mid-flight (star toggle, shared-with-me add,
+// collection copy) wins — the refresh must never resurrect a
+// pre-mutation body past it (review 2026-08-31 #1).
+func (s *Server) refreshHomeRepos(userID, limit int) {
+	gen, ok := s.homeCache.tryBeginRefresh(userID, limit)
+	if !ok {
+		return
+	}
+	go func() {
+		defer safego.Recover(s.logger, "home-repos-refresh")
+		defer s.homeCache.endRefresh(userID, limit)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		repos, err := s.homeLoader(ctx, userID, limit)
+		if err != nil {
+			s.logger.Warn("home repos background refresh failed — stale body keeps serving", "user_id", userID, "error", err)
+			return
+		}
+		body, _ := json.Marshal(map[string]any{"repos": repos})
+		s.homeCache.setIfGen(userID, limit, body, gen)
+	}()
+}
+
+// homeReposCache bounds the cost of GetHomeRepos. v0.29.0: entries
+// past the TTL are served STALE while a background refresh runs
+// (production measured the cold query at mean 8.1s / max 48.2s for a
+// fleet-scope admin — the 5-minute TTL meant nearly every human visit
+// paid it). Invalidated per-user on star/unstar so toggles reorder on
+// the very next (now-fast) blocking fetch.
 type homeReposCache struct {
-	mu      sync.Mutex
-	entries map[int]homeCacheEntry
+	mu sync.Mutex
+	// Entries and the refresh single-flight are keyed (userID, limit)
+	// (Copilot round 13 on PR #193): keying by user alone made a
+	// ?limit=5 store overwrite the same user's default-limit entry, so
+	// alternating valid limits turned EVERY request into a blocking
+	// miss — the SWR machinery held only the correctness half (a
+	// foreign-limit body was never served) while the caching half was
+	// defeated. gen stays per-USER: an invalidate must kill every
+	// limit's entry at once.
+	entries    map[homeCacheKey]homeCacheEntry
+	refreshing map[homeCacheKey]bool
+	// gen is bumped by invalidate(); a conditional set carrying an
+	// older generation is dropped, so no in-flight load can resurrect
+	// a pre-invalidate body (review 2026-08-31 #1).
+	gen map[int]uint64
+}
+
+// homeCacheKey scopes a cached body to the (user, effective limit)
+// pair it was built for.
+// homeReposMaxLimit caps ?limit on the home list (the collection-
+// detail page-size grammar: default 50, cap 100). The store clamps
+// too (v0.27.65: the backstop lives with the SQL LIMIT).
+const homeReposMaxLimit = 100
+
+type homeCacheKey struct {
+	user  int
+	limit int
 }
 
 type homeCacheEntry struct {
@@ -831,30 +947,101 @@ type homeCacheEntry struct {
 
 const homeReposCacheTTL = 5 * time.Minute
 
-func (c *homeReposCache) get(userID int) ([]byte, bool) {
+// homeReposStaleMax bounds how old a served-stale body may be past its
+// TTL: 12×TTL (one hour) keeps the "never block mid-session" property
+// while a returning user after hours away gets a genuinely fresh
+// blocking load — which the queue-cached ranking makes fast anyway
+// (review 2026-08-31 #6; the pre-SWR hard cap was the TTL itself).
+const homeReposStaleMax = 12 * homeReposCacheTTL
+
+type homeCacheState int
+
+const (
+	homeCacheMiss homeCacheState = iota
+	homeCacheFresh
+	homeCacheStale
+)
+
+// get returns the cached body for the EFFECTIVE limit. A body built
+// with a different limit is a miss (serving a 5-row body to the
+// default-limit page — or vice versa — would be wrong for 5 minutes;
+// review 2026-08-31 #2). Past homeReposStaleMax the entry is a miss
+// too.
+func (c *homeReposCache) get(userID, limit int) ([]byte, homeCacheState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.entries[userID]
-	if !ok || time.Now().After(e.expires) {
-		return nil, false
+	e, ok := c.entries[homeCacheKey{userID, limit}]
+	if !ok {
+		return nil, homeCacheMiss
 	}
-	return e.body, true
+	now := time.Now()
+	if !now.After(e.expires) {
+		return e.body, homeCacheFresh
+	}
+	if now.After(e.expires.Add(homeReposStaleMax)) {
+		return nil, homeCacheMiss
+	}
+	return e.body, homeCacheStale
 }
 
-func (c *homeReposCache) set(userID int, body []byte) {
+func (c *homeReposCache) generation(userID int) uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.gen[userID]
+}
+
+// setIfGen stores the body only when no invalidate() landed since gen
+// was captured. Both writers (blocking miss + background refresh) use
+// it, so the pre-existing miss-path arm of the resurrection race is
+// closed too.
+func (c *homeReposCache) setIfGen(userID, limit int, body []byte, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen[userID] != gen {
+		return // an invalidate won; the next request reloads
+	}
 	if c.entries == nil {
-		c.entries = map[int]homeCacheEntry{}
+		c.entries = map[homeCacheKey]homeCacheEntry{}
 	}
 	if len(c.entries) > 10000 {
-		c.entries = map[int]homeCacheEntry{}
+		c.entries = map[homeCacheKey]homeCacheEntry{}
 	}
-	c.entries[userID] = homeCacheEntry{body: body, expires: time.Now().Add(homeReposCacheTTL)}
+	c.entries[homeCacheKey{userID, limit}] = homeCacheEntry{body: body, expires: time.Now().Add(homeReposCacheTTL)}
+}
+
+// tryBeginRefresh claims the per-user refresh slot and returns the
+// generation the refresh is conditioned on; ok=false means a refresh
+// is already in flight.
+func (c *homeReposCache) tryBeginRefresh(userID, limit int) (gen uint64, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.refreshing == nil {
+		c.refreshing = map[homeCacheKey]bool{}
+	}
+	k := homeCacheKey{userID, limit}
+	if c.refreshing[k] {
+		return 0, false
+	}
+	c.refreshing[k] = true
+	return c.gen[userID], true
+}
+
+func (c *homeReposCache) endRefresh(userID, limit int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.refreshing, homeCacheKey{userID, limit})
 }
 
 func (c *homeReposCache) invalidate(userID int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, userID)
+	for k := range c.entries {
+		if k.user == userID {
+			delete(c.entries, k)
+		}
+	}
+	if c.gen == nil {
+		c.gen = map[int]uint64{}
+	}
+	c.gen[userID]++ // defeats any in-flight load's conditional set
 }

@@ -5,11 +5,14 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // SetHistoryWindowConcurrency bounds how many history windows fetch
@@ -101,6 +104,10 @@ func HistoryWindows(createdAt time.Time, years []int, now time.Time, windowDays 
 // FetchContributorHistoryMeta returns the account creation time and
 // contribution years — the inputs HistoryWindows needs. Cost: 1 point.
 func (c *Client) FetchContributorHistoryMeta(ctx context.Context, login string) (time.Time, []int, error) {
+	// Background sweep: leave GraphQLBackgroundReserve headroom per key for
+	// foreground collection (the 2026-09-01 pytorch diagnostic — the history
+	// sweep's sustained load kept keys graphql-dry under multi-day jobs).
+	ctx = platform.WithGraphQLBackgroundBudget(ctx)
 	query := fmt.Sprintf(`query { user(login: %q) { createdAt contributionsCollection { contributionYears } } }`, login)
 	var resp struct {
 		User struct {
@@ -192,6 +199,8 @@ type historyRepoEntry struct {
 // mutex. First error cancels the remaining windows and aborts the
 // contributor — unchanged failure semantics, reached faster.
 func (c *Client) FetchContributorDailyHistory(ctx context.Context, login string, windows []HistoryWindow) ([]model.ContributorDayActivity, []model.ContributorDayTotal, error) {
+	// Background sweep — same reserve rationale as FetchContributorHistoryMeta.
+	ctx = platform.WithGraphQLBackgroundBudget(ctx)
 	acc := newHistoryAccumulator()
 	conc := int(c.historyWindowConc.Load())
 	if conc < 1 {
@@ -261,6 +270,56 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 
 	var resp historyWindowResp
 	if err := c.http.GraphQL(ctx, query, nil, &resp); err != nil {
+		// Error-path policy (rounds 26/28/29 + code-review round
+		// 2026-09-06 — one narrative, superseding the earlier stacked
+		// comments; chaoss.tv logs 2026-09-03..05 are the evidence base):
+		//
+		// The "window is too expensive" signal arrives in three shapes —
+		//  (a) a global RESOURCE_LIMITS_EXCEEDED (the ErrResourceLimits
+		//      sentinel; gate with errors.Is, never the message text —
+		//      graphql.go's own contract, code-review finding 12);
+		//  (b) a TRUNCATED body whose partial JSON carries the marker (a
+		//      decode error the classifier cannot reach — the string
+		//      check exists ONLY for this shape, scoped to decode
+		//      failures so ordinary errors echoing the bytes don't
+		//      false-match);
+		//  (c) persistent 500s that exhaust the retry budget
+		//      (ErrTransient — QCADevProd/robinmordasiewicz presented
+		//      this way; v0.27.81's fetchActivityWithSubdivide subdivides
+		//      on ClassTransient for exactly that measured shape, which
+		//      is why the subdivision gate below is NOT narrowed to the
+		//      explicit marker: that would re-strand those windows).
+		//
+		// ABOVE the 48h floor all three subdivide — a shorter span
+		// aggregates fewer contributions, and a mid-window blip can
+		// recover too. AT the floor the arms split (round 28): only the
+		// EXPLICIT marker (a/b) is lossy — a 48h span GitHub still
+		// refuses is genuinely too big, so the span is skipped (data
+		// lost, logged) rather than stranding the contributor. A generic
+		// transient at the floor (outage / DNS / deadline) is NOT proof
+		// of cost: it BUBBLES, the contributor fails un-stamped, and the
+		// scheduler's failure cooldown retires it from the claim head
+		// (code-review finding 3) — nothing incomplete is ever stamped.
+		tooExpensive := errors.Is(err, platform.ErrResourceLimits) ||
+			(strings.Contains(err.Error(), "decode graphql envelope") &&
+				strings.Contains(err.Error(), "RESOURCE_LIMITS_EXCEEDED"))
+		if w.To.Sub(w.From) >= historyMinWindow &&
+			(tooExpensive || platform.ClassifyError(err) == platform.ClassTransient) {
+			c.logger.Info("activity history: query too expensive or transient — subdividing window",
+				"login", login,
+				"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))
+			mid := w.From.Add(w.To.Sub(w.From) / 2)
+			if serr := c.fetchHistoryWindow(ctx, login, HistoryWindow{From: w.From, To: mid}, acc); serr != nil {
+				return serr
+			}
+			return c.fetchHistoryWindow(ctx, login, HistoryWindow{From: mid, To: w.To}, acc)
+		}
+		if tooExpensive {
+			c.logger.Info("activity history: query too expensive at minimum window — span skipped",
+				"login", login,
+				"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))
+			return nil
+		}
 		return fmt.Errorf("contributor history window %q %s→%s: %w", login, w.From.Format("2006-01-02"), w.To.Format("2006-01-02"), err)
 	}
 	cc := resp.User.ContributionsCollection

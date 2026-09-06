@@ -69,6 +69,19 @@ var convergenceContracts = []convergenceContract{
 		// the shared scratch DB may carry residue); the e2e is the
 		// drop-out-of-candidate-set half.
 		DrivingTests: []string{"TestDedupBatchPagesPastCollectingHead", "TestDedupOnePairEndToEnd"}},
+	{File: "internal/collector/jira_worker.go",
+		// Copilot round 4 on PR #193: the shutdown claim release's
+		// contract — "the per-page checkpoint is the resume state". The
+		// driver runs the RESUMED scan (LastUpdated = the mid-corpus
+		// checkpoint a killed scan left) to completion: pre-checkpoint
+		// work is skipped, the tail is collected, the scan stamps done.
+		DrivingTests: []string{"TestJiraResumeFromCheckpointCompletes"}},
+	{File: "internal/db/jira_store.go",
+		// ReleaseJiraClaim's doc quotes the same contract; its own
+		// driver proves the released claim is IMMEDIATELY reclaimable
+		// (no stale-window wait) with the checkpoint untouched, and the
+		// worker-side driver completes the resumed scan.
+		DrivingTests: []string{"TestReleaseJiraClaimOwnershipAndReclaim", "TestJiraResumeFromCheckpointCompletes"}},
 	{File: "cmd/aveloxis/rewalk_whitespace.go",
 		// "the marker IS the resume state": stamping whitespace_head_hash
 		// drains the repo from GetReposForWhitespaceRewalk.
@@ -83,6 +96,26 @@ var convergenceContracts = []convergenceContract{
 		// from the bottom. Same drain driver as the command: stamping is
 		// what removes a row from GetMessageHealBatch.
 		DrivingTests: []string{"TestMessageHealWorklistDrainsOnStamp"}},
+	{File: "internal/db/email_message_store.go",
+		// Part A (email attribution): BackfillMailingListSenderIDs'
+		// doc states "cntrb_id IS NULL is the resume state" / "rerun
+		// until the cursor clears the ceiling". The driver walks
+		// floor→ceiling windows, proves every resolvable fixture row
+		// attributes, and reruns the pass proving idempotence (scoped
+		// to the fixture's rows — the shared scratch DB may carry
+		// residue).
+		DrivingTests: []string{"TestSenderBackfillFullPassConverges"}},
+	{File: "cmd/aveloxis/strip_quoted_history.go",
+		// Part B: "msg_text_clean IS NULL is the resume state" — the
+		// driver proves an unstripped row appears in the strip batch,
+		// stamping removes it, and --rule-rerun re-selects stale-rule
+		// rows.
+		DrivingTests: []string{"TestStripWalkerBatchAndResumeState"}},
+	{File: "cmd/aveloxis/resolve_email_identities.go",
+		// The one-shot CLI quotes the same contract ("rerun until it
+		// reports 0"); same driver — the command is a thin loop over
+		// the store method the driver exercises.
+		DrivingTests: []string{"TestSenderBackfillFullPassConverges"}},
 	{File: "cmd/aveloxis/heal_collection_gaps.go",
 		// "rerun until 0 candidates" — the flagship: candidate → fill →
 		// RefreshQueueGatheredCounts → candidate set empty.

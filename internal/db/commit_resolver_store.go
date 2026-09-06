@@ -261,24 +261,94 @@ func (s *PostgresStore) InsertUnresolvedEmail(ctx context.Context, email string)
 	}
 }
 
-// EnsureContributorAlias creates an alias linking a commit email to a contributor.
-// The canonical_email is looked up from the contributor row; alias_email is the
-// commit email that differs from the canonical.
-func (s *PostgresStore) EnsureContributorAlias(ctx context.Context, cntrbID, aliasEmail string) error {
-	_, err := s.pool.Exec(ctx, `
+// contributorAliasInsertSQL + contributorAliasRepairSQL are the ONE
+// alias-upsert spelling (SR-17), shared by EnsureContributorAlias (pool)
+// and ensureAliasTx (the CreateEmailOnlyContributor transaction twin).
+//
+// Copilot round 29 on PR #193: a bare ON CONFLICT DO NOTHING left a STALE
+// alias in place when its owner was a soft-deleted merge loser (the
+// v0.22.3 merge path used to never repoint the loser's own alias rows) —
+// the resolver's alias arm filters to active owners, so the alias resolved
+// nothing while its existence blocked the new contributor from ever
+// owning it.
+//
+// Code-review round (2026-09-06) — why this is TWO statements and not one
+// ON CONFLICT DO UPDATE ... WHERE:
+//  1. SNAPSHOT RACE (empirically reproduced): a DO UPDATE's correlated
+//     WHERE subquery evaluates under the STATEMENT snapshot, while the
+//     conflict arbitration re-reads the newest alias row. A rival that
+//     blocked on a concurrent creator's commit resumed, could not SEE the
+//     just-committed owner row, read "missing = dead", and STOLE the
+//     alias from an active owner. The repair below is a SEPARATE
+//     statement: it begins after any blocking commit, so its fresh
+//     READ COMMITTED snapshot sees the committed owner and the dead-owner
+//     guard evaluates correctly.
+//  2. HOT PATH: EnsureContributorAlias fires once per resolved commit
+//     email across up to 120 workers. DO UPDATE locks the conflicting
+//     row BEFORE evaluating its WHERE — a per-call tuple lock plus a
+//     contributors subselect that DO NOTHING never paid. The fast path
+//     is conflict-free again; the repair runs only when the insert
+//     conflicted, and its UPDATE locks nothing when the guard is false.
+//  3. NULL SEMANTICS: cntrb_deleted IS NULL means ACTIVE everywhere in
+//     this repo (the pre-v0.20.2 cohort; 46 sites spell
+//     COALESCE(cntrb_deleted, 0) = 0). The first spelling treated a
+//     NULL-deleted owner as DEAD and stole active legacy owners' aliases.
+//  4. canonical_email can never be DOWNGRADED to the empty string —
+//     the repair's NULLIF keeps the $2 fallback when the contributor's
+//     canonical is empty (a TEXT-defaulted-empty production cohort).
+const contributorAliasInsertSQL = `
 		INSERT INTO aveloxis_data.contributors_aliases
 			(cntrb_id, canonical_email, alias_email, cntrb_active,
 			 tool_source, data_source, data_collection_date)
 		VALUES (
 			$1::uuid,
 			COALESCE(
-				(SELECT cntrb_canonical FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid),
+				NULLIF((SELECT cntrb_canonical FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid), ''),
 				$2
 			),
 			$2, 1,
-			'aveloxis-commit-resolver', 'GitHub API', NOW())
-		ON CONFLICT (alias_email) DO NOTHING`,
-		cntrbID, aliasEmail)
+			$3, $4, NOW())
+		ON CONFLICT (alias_email) DO NOTHING`
+
+// contributorAliasRepairSQL reassigns the alias ONLY when its current
+// owner is soft-deleted (an ACTIVE owner is never stolen). Run as its
+// own statement AFTER a conflicted insert — see the rationale above.
+const contributorAliasRepairSQL = `
+		UPDATE aveloxis_data.contributors_aliases a
+		SET cntrb_id = $1::uuid,
+		    canonical_email = COALESCE(
+		        NULLIF((SELECT cntrb_canonical FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid), ''),
+		        $2),
+		    tool_source = $3,
+		    data_source = $4,
+		    data_collection_date = NOW()
+		FROM aveloxis_data.contributors dead
+		WHERE a.alias_email = $2
+		  AND dead.cntrb_id = a.cntrb_id
+		  AND COALESCE(dead.cntrb_deleted, 0) <> 0`
+
+// EnsureContributorAlias creates an alias linking a commit email to a contributor.
+// The canonical_email is looked up from the contributor row; alias_email is the
+// commit email that differs from the canonical.
+// v0.29.0 Part E: toolSource/dataSource are parameters now — the old
+// hardcoded 'aveloxis-commit-resolver'/'GitHub API' stamped
+// mailing-list-origin aliases with commit-resolver provenance, which
+// misled every provenance audit that trusted the columns.
+// Round 29 + code-review round: a stale alias (soft-deleted owner) is
+// REASSIGNED to the caller's contributor via the separate repair
+// statement; an active owner's alias is never touched.
+func (s *PostgresStore) EnsureContributorAlias(ctx context.Context, cntrbID, aliasEmail, toolSource, dataSource string) error {
+	tag, err := s.pool.Exec(ctx, contributorAliasInsertSQL,
+		cntrbID, aliasEmail, toolSource, dataSource)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		return nil // inserted fresh — nothing to repair
+	}
+	// Conflicted: repair iff the existing owner is soft-deleted.
+	_, err = s.pool.Exec(ctx, contributorAliasRepairSQL,
+		cntrbID, aliasEmail, toolSource, dataSource)
 	return err
 }
 

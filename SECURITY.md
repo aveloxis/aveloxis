@@ -4,17 +4,20 @@
 
 | Version | Supported          |      End of Life |
 |---------|--------------------|---------------------|
-| 1.0.0  | expected September, 2026    |   September 30, 2028    |
-| 0.26.x  | expected August, 2026    |   December 31, 2027    |
-| 0.25.x  | expected July, 2026    |   December 31, 2027    |
-| 0.24.x  | expected June, 2026    |   December 31, 2027    |
-| 0.23.x  | Yes    |   December 31, 2027    |
-| 0.22.x  | Yes    |   December 31, 2027    |
-| 0.21.x  | Yes    |   December 31, 2027    |
-| 0.20.x  | Yes    |   December 31, 2027    |
-| 0.19.x  | Yes    |   July 31, 2027    |
-| 0.18.x  | Yes                |   July 31, 2026    |
-| 0.17.x  | Yes                 |May 31, 2026    |
+| 1.0.0  | Yes    |   September 30, 2028    |
+| 0.29.x  | Yes    |   December 31, 2027    |
+| 0.28.x  | Yes    |   December 31, 2026    |
+| 0.27.x  | Yes    |   December 31, 2026   |
+| 0.26.x  | No    |   EOL    |
+| 0.25.x  | No   |   EOL    |
+| 0.24.x  | No    |   EOL    |
+| 0.23.x  | No    |   EOL    |
+| 0.22.x  | No    |   EOL    |
+| 0.21.x  | No    |   EOL   |
+| 0.20.x  | No    |  EOL    |
+| 0.19.x  | No    |   EOL    |
+| 0.18.x  | No                |  EOL    |
+| 0.17.x  | No                 | EOL   |
 | 0.16.x  | No                 |  EOL |
 | 0.15.x  | No                | EOL  |
 | 0.14.x  | No                 |  EOL |

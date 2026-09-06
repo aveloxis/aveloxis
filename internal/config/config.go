@@ -819,6 +819,34 @@ type CollectionConfig struct {
 	// same list). Keep at 1 unless a deep per-list backlog needs cross-list
 	// parallelism.
 	MailingListProcessorWorkers int `json:"mailing_list_processor_workers"` // drain goroutines per system (default 1)
+
+	// JiraEnabled turns on the Jira collector (C3): registered
+	// projects (aveloxis_ops.jira_project_serve) sync incrementally
+	// from their Jira Server instance — issues, state, reporter and
+	// comment-author identity, native comment bodies. OFF by default
+	// (the mailing-list posture).
+	JiraEnabled bool `json:"jira_enabled"`
+	// JiraWorkers is the number of concurrent project runners (default
+	// 1 — politeness first: issues.apache.org is a shared community
+	// server with no rate limiting of its own).
+	JiraWorkers int `json:"jira_workers"`
+	// JiraCadenceHours is the per-project incremental-sync cadence
+	// (default 24). The sync JQL is updated >= <checkpoint>, so a
+	// cycle costs one cheap search per quiet project.
+	JiraCadenceHours int `json:"jira_cadence_hours"`
+	// JiraPoliteEmail lands in the User-Agent so the Jira instance's
+	// admins can reach us (the ecosyste.ms polite-pool pattern).
+	JiraPoliteEmail string `json:"jira_polite_email"`
+
+	// MailingListSenderBackfillMinutes is the cadence of the DB-side
+	// sender→cntrb_id backfill ticker (runMailingListSenderBackfill),
+	// which re-joins retained sender emails against the ever-fuller
+	// contributors/aliases tables. Default 60. One full keyset pass over
+	// the production aveloxis DB measures ~5-10 minutes, so hourly full
+	// passes mean identities converge within the hour ("hours, not
+	// days"). Distinct from the API-side sender-RESOLVE ticker, which
+	// keeps its own interval.
+	MailingListSenderBackfillMinutes int `json:"mailing_list_sender_backfill_interval_minutes"`
 }
 
 // MailingListProcessorWorkersOrDefault falls back to 1 drain goroutine per
@@ -858,6 +886,56 @@ func (c *CollectionConfig) MailingListBackfillMonthsOrDefault() int {
 		return 6
 	}
 	return *c.MailingListBackfillMonths
+}
+
+// JiraWorkersOrDefault falls back to 1 concurrent project runner.
+func (c *CollectionConfig) JiraWorkersOrDefault() int {
+	if c.JiraWorkers <= 0 {
+		return 1
+	}
+	return c.JiraWorkers
+}
+
+// JiraCadenceDuration returns the per-project sync cadence
+// (default 24h). SR-10: the accessor is the single default layer.
+// jiraCadenceMaxHours bounds jira_cadence_hours before the multiply
+// (Copilot round 18 on PR #193): a large positive value overflows
+// time.Duration(h)*time.Hour into a NEGATIVE duration, and a negative
+// cadence makes ClaimNextJiraProject treat every completed project as
+// immediately due — continuous resyncs instead of the configured
+// delay. ~10 years is far beyond any real cadence and leaves headroom
+// under time.Duration's ~292-year max.
+const jiraCadenceMaxHours = 24 * 365 * 10
+
+func (c *CollectionConfig) JiraCadenceDuration() time.Duration {
+	if c.JiraCadenceHours <= 0 {
+		return 24 * time.Hour
+	}
+	h := c.JiraCadenceHours
+	if h > jiraCadenceMaxHours {
+		h = jiraCadenceMaxHours
+	}
+	return time.Duration(h) * time.Hour
+}
+
+// MailingListSenderBackfillInterval returns the sender-backfill ticker
+// cadence. SR-10: this accessor is the SINGLE default layer — zero or
+// negative falls back to 60 minutes; no downstream re-clamp.
+// senderBackfillMaxMinutes bounds mailing_list_sender_backfill_interval_minutes
+// before the multiply (Copilot round 18): an overflow to a
+// NON-POSITIVE duration is passed straight to time.NewTicker, which
+// PANICS and terminates serve. ~10 years of minutes is the clamp.
+const senderBackfillMaxMinutes = 60 * 24 * 365 * 10
+
+func (c *CollectionConfig) MailingListSenderBackfillInterval() time.Duration {
+	if c.MailingListSenderBackfillMinutes <= 0 {
+		return 60 * time.Minute
+	}
+	m := c.MailingListSenderBackfillMinutes
+	if m > senderBackfillMaxMinutes {
+		m = senderBackfillMaxMinutes
+	}
+	return time.Duration(m) * time.Minute
 }
 
 // MailingListMirrorHandlingOrDefault falls back to "metadata_only".
@@ -1467,8 +1545,13 @@ func DefaultConfig() *Config {
 			// MailingListBackfillMonths left nil → MailingListBackfillMonthsOrDefault()
 			// returns 6. Set it explicitly to 0 (or negative) in aveloxis.json for
 			// full-history collection from each list's first month.
-			MailingListMirrorHandling:   "metadata_only",
-			MailingListProcessorWorkers: 1, // single-threaded per list (summary/12 §11)
+			MailingListMirrorHandling:        "metadata_only",
+			MailingListProcessorWorkers:      1,
+			MailingListSenderBackfillMinutes: 60,
+			// v0.29.0 Jira collector. Off by default.
+			JiraEnabled:      false,
+			JiraWorkers:      1,
+			JiraCadenceHours: 24, // one incremental JQL sweep per project per day
 		},
 		LogLevel: "info",
 	}

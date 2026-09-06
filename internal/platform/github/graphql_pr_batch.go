@@ -329,7 +329,11 @@ func (c *Client) fetchPRBatchOne(ctx context.Context, owner, repo string, number
 		// it does — a 500-file refactor PR cannot silently become a
 		// 100-file record.
 		if err := c.paginateOversizedChildren(ctx, owner, repo, n, raw, &staged); err != nil {
-			return out, fmt.Errorf("paginating children for PR #%d: %w", n, err)
+			// "graphql PR batch" is the shouldForceFullRecollect needle
+			// (v0.18.24): without it a pagination-originated failure
+			// (pytorch shard 41, 2026-09-01) never armed force_full while
+			// its batch-fetch siblings did.
+			return out, fmt.Errorf("graphql PR batch: paginating children for PR #%d: %w", n, err)
 		}
 		out = append(out, staged)
 	}

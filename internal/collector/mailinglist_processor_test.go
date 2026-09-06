@@ -5,6 +5,8 @@ package collector
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -18,7 +20,11 @@ import (
 // fakeProcStore records the resolve+write decisions the MailingListProcessor
 // makes when draining staged messages.
 type fakeProcStore struct {
-	rows []db.StagedMailingListRow // staged input, returned in one batch then empty
+	stagedLists    []int64 // keyset source for ListsWithStaging (default [7])
+	drainedLists   []int64 // every rgls_id GetMailingListStagingBatch was asked for
+	refreshedRepos []int64
+	refreshErr     error
+	rows           []db.StagedMailingListRow // staged input, returned in one batch then empty
 
 	emails        []*model.EmailMessage
 	bodies        int
@@ -30,24 +36,92 @@ type fakeProcStore struct {
 	primaryRepoOK bool
 	mirrorIssueID *int64
 	mirrorPRID    *int64
-	nextBodyID    int64
+
+	// v0.28.20 node-ID mirror-link path.
+	chunk        int // >0 → hand out rows in batches of this size
+	nodeIssueID  *int64
+	nodePRID     *int64
+	nodeErr      error
+	nodeErrUntil int // fail only for the first N resolve calls (0 = use nodeErr for all)
+	nodeIDsAsked []string
+	nextBodyID   int64
 
 	// projection (Phase A)
-	issueByKey    map[string]int64 // external_key → issue_id (link-or-create)
-	createdIssues []string         // external_keys for which CREATE/LINK was called
-	bridgedIssues []int64          // issue_ids bridged
-	nextIssueID   int64
-	threadIssues  map[string]int64 // thread root → issue_id (FindIssueForThread fake)
+	issueByKey     map[string]int64 // external_key → issue_id (link-or-create)
+	createdIssues  []string         // external_keys for which CREATE/LINK was called
+	bridgedIssues  []int64          // issue_ids bridged
+	nextIssueID    int64
+	threadIssues   map[string]int64 // thread root → issue_id (FindIssueForThread fake)
+	cleanBodies    []string
+	cleanRules     []string
+	appliedActions []string
+	reverseLinks   []string // "emailMessageID->issueID" — round-6 reverse comment links
+	listedSystems  []string // systems DrainOnce asked ListsWithStaging for
+
+	// Round-3 deferral knobs: fail the first N calls of the
+	// projection-side writers (0 = never fail).
+	applyActionFails int
+	findThreadErr    error // when set, FindIssueForThread fails once with it
+	applyActionCalls int
+	linkIssueFails   int
+	linkIssueCalls   int
 }
 
-func (f *fakeProcStore) ListsWithStaging(context.Context, int) ([]int64, error) {
-	return []int64{7}, nil
-}
-func (f *fakeProcStore) GetMailingListStagingBatch(_ context.Context, _ int64, _ int) ([]db.StagedMailingListRow, error) {
-	out := f.rows
-	f.rows = nil // second call returns empty → drain terminates
+func (f *fakeProcStore) ListsWithStaging(_ context.Context, system string, afterID int64, limit int) ([]int64, error) {
+	f.listedSystems = append(f.listedSystems, system)
+	staged := f.stagedLists
+	if staged == nil {
+		staged = []int64{7}
+	}
+	out := []int64{}
+	for _, id := range staged {
+		if id > afterID {
+			out = append(out, id)
+		}
+		if len(out) == limit {
+			break
+		}
+	}
 	return out, nil
 }
+
+// GetMailingListStagingBatch honors `chunk` when set, so a test can drive a
+// MULTI-batch drain. With chunk == 0 it returns everything at once (the
+// original single-batch behavior every pre-existing test relies on).
+//
+// The chunking matters: per-BATCH state (drainCounters) is indistinguishable
+// from per-DRAIN state when the fake can only ever produce one batch — a test
+// asserting "logged once per batch" would pass either way.
+func (f *fakeProcStore) GetMailingListStagingBatch(_ context.Context, rglsID, afterID int64, limit int) ([]db.StagedMailingListRow, error) {
+	f.drainedLists = append(f.drainedLists, rglsID)
+	// Keyset like the real store: only rows past the cursor (the
+	// fake-honors-the-boundary rule).
+	rows := make([]db.StagedMailingListRow, 0, len(f.rows))
+	for _, r := range f.rows {
+		if r.MlsID > afterID {
+			rows = append(rows, r)
+		}
+	}
+	f.rows = rows
+	n := len(f.rows)
+	if n == 0 {
+		return nil, nil
+	}
+	if f.chunk > 0 && f.chunk < n {
+		n = f.chunk
+	}
+	if limit > 0 && limit < n {
+		n = limit
+	}
+	out := f.rows[:n]
+	f.rows = f.rows[n:]
+	return out, nil
+}
+func (f *fakeProcStore) RefreshQueueGatheredCounts(_ context.Context, repoID int64) error {
+	f.refreshedRepos = append(f.refreshedRepos, repoID)
+	return f.refreshErr
+}
+
 func (f *fakeProcStore) MarkMailingListStagingProcessed(_ context.Context, ids []int64) error {
 	f.processed = append(f.processed, ids...)
 	return nil
@@ -65,24 +139,56 @@ func (f *fakeProcStore) ResolveContributorIDByEmail(_ context.Context, email str
 	}
 	return "", false, nil
 }
-func (f *fakeProcStore) ResolveMirrorLink(context.Context, string, string, string, int) (*int64, *int64, error) {
+func (f *fakeProcStore) ResolveMirrorLink(_ context.Context, _, _, _ string, _ int, _ int64, _ *int64) (*int64, *int64, error) {
 	return f.mirrorIssueID, f.mirrorPRID, nil
 }
+
+// ResolveMirrorLinkByNodeID records the node IDs the processor asked about so
+// tests can pin that the node-ID path is tried, and returns the configured
+// node-keyed result (v0.28.20).
+func (f *fakeProcStore) ResolveMirrorLinkByNodeID(_ context.Context, nodeID string, _ int64, _ *int64) (*int64, *int64, error) {
+	f.nodeIDsAsked = append(f.nodeIDsAsked, nodeID)
+	if f.nodeErrUntil > 0 {
+		if len(f.nodeIDsAsked) <= f.nodeErrUntil {
+			return nil, nil, errors.New("connection reset")
+		}
+		return f.nodeIssueID, f.nodePRID, nil
+	}
+	if f.nodeErr != nil {
+		return nil, nil, f.nodeErr
+	}
+	return f.nodeIssueID, f.nodePRID, nil
+}
+
 func (f *fakeProcStore) FindRepoByURL(context.Context, string) (int64, error) { return 0, nil }
 func (f *fakeProcStore) UpsertEmailMessage(_ context.Context, em *model.EmailMessage) (int64, error) {
 	f.emails = append(f.emails, em)
 	return int64(len(f.emails)), nil
 }
-func (f *fakeProcStore) UpsertMailingListMessageBody(context.Context, int64, string, string, string, string, time.Time, *string) (int64, error) {
+func (f *fakeProcStore) UpsertMailingListMessageBody(_ context.Context, _ int64, _, _, _, _ string, _ time.Time, _ *string, cleanBody, cleanRule string) (int64, error) {
 	f.bodies++
 	f.nextBodyID++
+	f.cleanBodies = append(f.cleanBodies, cleanBody)
+	f.cleanRules = append(f.cleanRules, cleanRule)
 	return f.nextBodyID, nil
+}
+func (f *fakeProcStore) ApplyTrackerAction(_ context.Context, issueID int64, action string, _ time.Time, _ int64) error {
+	f.applyActionCalls++
+	if f.applyActionCalls <= f.applyActionFails {
+		return errors.New("deadlock detected")
+	}
+	f.appliedActions = append(f.appliedActions, fmt.Sprintf("%d:%s", issueID, action))
+	return nil
 }
 func (f *fakeProcStore) InsertEmailMessageRef(context.Context, int64, int64, *int64) error {
 	f.refs++
 	return nil
 }
 func (f *fakeProcStore) LinkOrCreateIssueFromEmail(_ context.Context, _ int64, externalKey, _, _, _ string, _ *string, _ time.Time) (int64, bool, error) {
+	f.linkIssueCalls++
+	if f.linkIssueCalls <= f.linkIssueFails {
+		return 0, false, errors.New("connection refused")
+	}
 	if f.issueByKey == nil {
 		f.issueByKey = map[string]int64{}
 	}
@@ -95,11 +201,21 @@ func (f *fakeProcStore) LinkOrCreateIssueFromEmail(_ context.Context, _ int64, e
 	f.createdIssues = append(f.createdIssues, externalKey)
 	return f.nextIssueID, true, nil // CREATE
 }
+func (f *fakeProcStore) LinkCommentNotificationToNative(_ context.Context, emailMessageID, issueID int64, _ time.Time) error {
+	f.reverseLinks = append(f.reverseLinks, fmt.Sprintf("%d->%d", emailMessageID, issueID))
+	return nil
+}
+
 func (f *fakeProcStore) BridgeEmailToIssue(_ context.Context, issueID, _, _ int64) error {
 	f.bridgedIssues = append(f.bridgedIssues, issueID)
 	return nil
 }
 func (f *fakeProcStore) FindIssueForThread(_ context.Context, threadRoot string, _ int64) (int64, bool, error) {
+	if f.findThreadErr != nil {
+		err := f.findThreadErr
+		f.findThreadErr = nil
+		return 0, false, err
+	}
 	if id, ok := f.threadIssues[threadRoot]; ok {
 		return id, true, nil
 	}
@@ -304,5 +420,23 @@ func TestProcessorLeavesStagedWhenNoRepo(t *testing.T) {
 	}
 	if len(store.emails) != 0 {
 		t.Errorf("no email_message rows should be written without a repo; got %d", len(store.emails))
+	}
+}
+
+// TestDrainOncePassesProcessorSystem pins the cross-system drain fix at the
+// collector layer: DrainOnce must scope its list claim to the processor's OWN
+// system. A hardcoded system name here would re-open the Part G find (the
+// lore pool draining apache lists with projectionClean=false).
+func TestDrainOncePassesProcessorSystem(t *testing.T) {
+	// A NONSENSE system name, deliberately: constructing with a real name
+	// would let a hardcoded "lore_public_inbox" in DrainOnce pass (review
+	// find #3) — no production system is ever spelled like this probe.
+	f := &fakeProcStore{}
+	proc := NewMailingListProcessor(f, "xsys_probe_system", "metadata_only", false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := proc.DrainOnce(context.Background(), 10); err != nil {
+		t.Fatalf("DrainOnce: %v", err)
+	}
+	if len(f.listedSystems) == 0 || f.listedSystems[0] != "xsys_probe_system" {
+		t.Fatalf("DrainOnce must claim lists for ITS system; asked for %v", f.listedSystems)
 	}
 }

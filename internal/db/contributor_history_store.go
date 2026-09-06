@@ -41,6 +41,19 @@ var githubSystemAccounts = []string{
 	"codecov", "codecov-io", "codecov-commenter",
 }
 
+// HistoryFailureCooldown retires a persistently-failing contributor from
+// the claim head between attempts (code-review round 2026-09-06, finding
+// 3): a floor-level window that keeps failing WITHOUT the explicit
+// resource-limits marker bubbles un-stamped, and the NULLS FIRST claim
+// order would re-pick the same contributor every tick — each claim
+// burning a depth-first subdivision chain (tens of minutes of GraphQL
+// budget), enough stuck accounts pinning the whole batch (the
+// failing-cohort-dominates-pool class). Derivation of one day: the
+// failure cost is tens of minutes; the success cadence is 90 days; a
+// daily retry bounds the waste to a sliver of one slot while converging
+// within days once GitHub's (diurnal) resolver load shifts.
+const HistoryFailureCooldown = 24 * time.Hour
+
 // GetContributorsForHistoryBackfill claims contributors for the daily
 // history sweep: never-backfilled first, then oldest — with
 // contributors whose trailing-year class shows activity
@@ -80,8 +93,11 @@ func (s *PostgresStore) GetContributorsForHistoryBackfill(ctx context.Context, l
 			  `+classFilter+`
 			  AND (gh_history_backfilled_at IS NULL
 			       OR gh_history_backfilled_at < NOW() - ($2::interval * (1.0 - $3::float8 + random() * 2.0 * $3::float8)))
+			  AND (gh_history_failed_at IS NULL
+			       OR gh_history_failed_at < NOW() - $5::interval)
 			ORDER BY gh_history_backfilled_at ASC NULLS FIRST
-			LIMIT $1`, n, cooldown.String(), BreadthCooldownJitterFrac, githubSystemAccounts)
+			LIMIT $1`, n, cooldown.String(), BreadthCooldownJitterFrac, githubSystemAccounts,
+			HistoryFailureCooldown.String())
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +172,7 @@ func (s *PostgresStore) StoreContributorActivityHistory(ctx context.Context, cnt
 				fetched_at          = NOW()`,
 			cntrbID, dt.Day, dt.Total)
 	}
-	b.Queue(`UPDATE aveloxis_data.contributors SET gh_history_backfilled_at = NOW() WHERE cntrb_id = $1::uuid`, cntrbID)
+	b.Queue(`UPDATE aveloxis_data.contributors SET gh_history_backfilled_at = NOW(), gh_history_failed_at = NULL WHERE cntrb_id = $1::uuid`, cntrbID)
 
 	br := tx.SendBatch(ctx, b)
 	for i := 0; i < len(days)+len(totals)+1; i++ {
@@ -177,8 +193,21 @@ func (s *PostgresStore) StoreContributorActivityHistory(ctx context.Context, cnt
 // NULLS-FIRST claim head (the v0.20.17 lesson).
 func (s *PostgresStore) MarkHistoryBackfilled(ctx context.Context, cntrbID string) error {
 	if _, err := s.pool.Exec(ctx, `
-		UPDATE aveloxis_data.contributors SET gh_history_backfilled_at = NOW() WHERE cntrb_id = $1::uuid`, cntrbID); err != nil {
+		UPDATE aveloxis_data.contributors SET gh_history_backfilled_at = NOW(), gh_history_failed_at = NULL WHERE cntrb_id = $1::uuid`, cntrbID); err != nil {
 		return fmt.Errorf("mark history backfilled: %w", err)
+	}
+	return nil
+}
+
+// MarkHistoryFetchFailed stamps gh_history_failed_at so the claim's
+// HistoryFailureCooldown retires a persistently-failing contributor from
+// the head of the queue between attempts (finding 3). Cleared by both
+// success stamps. Best-effort at the call site — a lost stamp just
+// means one extra retry.
+func (s *PostgresStore) MarkHistoryFetchFailed(ctx context.Context, cntrbID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.contributors SET gh_history_failed_at = NOW() WHERE cntrb_id = $1::uuid`, cntrbID); err != nil {
+		return fmt.Errorf("mark history fetch failed %s: %w", cntrbID, err)
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ package db
 // and the steps that must NEVER be ledgered.
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -92,6 +93,12 @@ func TestRunMigrationsCreatesLedgerBeforeLedgeredSteps(t *testing.T) {
 // so renames must be deliberate: update BOTH the call site and this
 // fixture in the same change.
 var ledgeredStepLabels = []string{
+	"v0.29.2 reassign dead-owned contributor aliases to their unambiguous active match",
+	"v0.29.2 re-open terminal sender-resolve stamps stranded behind dead-owned aliases",
+	"v0.29.0 backfill collection_queue.last_activity_90d from the 90-day window",
+	"v0.29.0 heal cross-system mis-drained mailing-list rows",
+	"v0.29.0 backfill synthetic Jira issue state from notification subjects",
+	"v0.29.0 heal automation-phantom contributors (relay identity fabrication)",
 	// Function-wrapped walkers.
 	"cleanup garbage timestamps from prior versions",
 	"v0.27.7 rotate non-latest repo_labor snapshots to repo_labor_history",
@@ -140,6 +147,32 @@ func TestLedgeredStepRegistry(t *testing.T) {
 		}
 		if !strings.Contains(src[lo:idx], "runOnce") {
 			t.Errorf("label %q is registered as ledgered but its call site is not gated through runOnce/runOnceStep", label)
+		}
+	}
+}
+
+// TestEveryLedgeredCallSiteIsRegistered is the REVERSE direction
+// (Copilot round 13 on PR #193): the fixture-to-source loop above
+// cannot see a NEW runOnce/runOnceStep call whose label was never
+// added to the fixture — which is exactly how the two v0.29.0 Jira/
+// phantom labels slipped past it. Derive every label from the
+// dispatch sites themselves (the round-7 rule: derive "every X" pins
+// from the dispatch site, never a hand list) and require each in the
+// fixture.
+func TestEveryLedgeredCallSiteIsRegistered(t *testing.T) {
+	src := srctest.StripGoComments(srctest.Read(t, "internal/db/migrate.go"))
+	registered := map[string]bool{}
+	for _, label := range ledgeredStepLabels {
+		registered[label] = true
+	}
+	re := regexp.MustCompile(`runOnce(?:Step)?\(ctx, pg, logger, [^,]+,\s*"([^"]*)"`)
+	matches := re.FindAllStringSubmatch(src, -1)
+	if len(matches) < 15 {
+		t.Fatalf("dispatch-site scan found only %d runOnce/runOnceStep labels — the regex rotted (guard the denominator)", len(matches))
+	}
+	for _, m := range matches {
+		if !registered[m[1]] {
+			t.Errorf("ledgered step %q is gated in migrate.go but ABSENT from ledgeredStepLabels — add it to the fixture so a rename or a dropped gate trips the registry", m[1])
 		}
 	}
 }

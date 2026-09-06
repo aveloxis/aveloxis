@@ -5,10 +5,15 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"math"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 )
@@ -80,7 +85,19 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 			linked_pr_review_id    = COALESCE(EXCLUDED.linked_pr_review_id, aveloxis_data.email_message.linked_pr_review_id),
 			linked_external_key    = EXCLUDED.linked_external_key,
 			linked_commit_hash     = EXCLUDED.linked_commit_hash,
-			projected_kind     = EXCLUDED.projected_kind,
+			-- v0.28.20: derive the kind from the POST-COALESCE links, not from
+			-- EXCLUDED alone. The three link columns above are preserve-on-
+			-- conflict, so a caller that failed to resolve (e.g. a transient
+			-- ResolveMirrorLinkByNodeID error) sends NULLs and would otherwise
+			-- assert 'mailing_list_only' over a link the row already holds --
+			-- permanently, since the heal only considers rows whose links are
+			-- both NULL. The owning layer enforces the invariant (SR-18) so a
+			-- caller cannot desynchronise kind from links.
+			projected_kind     = CASE
+				WHEN COALESCE(EXCLUDED.linked_pull_request_id, aveloxis_data.email_message.linked_pull_request_id) IS NOT NULL THEN 'pr'
+				WHEN COALESCE(EXCLUDED.linked_pr_review_id, aveloxis_data.email_message.linked_pr_review_id) IS NOT NULL THEN 'review'
+				WHEN COALESCE(EXCLUDED.linked_issue_id, aveloxis_data.email_message.linked_issue_id) IS NOT NULL THEN 'issue'
+				ELSE EXCLUDED.projected_kind END,
 			data_source        = EXCLUDED.data_source,
 			tool_version       = EXCLUDED.tool_version
 		RETURNING email_message_id`,
@@ -106,23 +123,30 @@ func (s *PostgresStore) UpsertEmailMessage(ctx context.Context, em *model.EmailM
 // Message-ID-derived synthetic platform_msg_id, so re-collecting a month is
 // idempotent. cntrbID may be nil (unresolved sender — sender_email is
 // retained for the §5d backfill). Returns the msg_id.
-func (s *PostgresStore) UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string) (int64, error) {
+// (Part B) cleanBody/cleanRule carry the quote-stripped variant + the
+// pattern-library version that produced it; both ALWAYS refresh on
+// conflict (recomputed from the incoming body — the AlwaysRefresh
+// policy), matching msg_text's own refresh.
+func (s *PostgresStore) UpsertMailingListMessageBody(ctx context.Context, repoID int64, messageID, listAddress, senderEmail, body string, sentAt time.Time, cntrbID *string, cleanBody, cleanRule string) (int64, error) {
 	var id int64
 	// v0.27.112: withRetry (40P01) — see UpsertEmailMessage.
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		return s.pool.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.messages
 			(repo_id, platform_msg_id, platform_id, msg_kind, node_id, cntrb_id,
-			 msg_text, msg_timestamp, msg_sender_email, tool_source, tool_version, data_source)
-		VALUES ($1, $2, $3, $12, $4, $5, $6, $7, $8, $9, $10, $11)
+			 msg_text, msg_text_clean, msg_text_clean_rule,
+			 msg_timestamp, msg_sender_email, tool_source, tool_version, data_source)
+		VALUES ($1, $2, $3, $12, $4, $5, $6, $13, $14, $7, $8, $9, $10, $11)
 		ON CONFLICT (platform_msg_id, platform_id, msg_kind) DO UPDATE SET
 			msg_text = EXCLUDED.msg_text,
+			msg_text_clean = EXCLUDED.msg_text_clean,
+			msg_text_clean_rule = EXCLUDED.msg_text_clean_rule,
 			cntrb_id = COALESCE(EXCLUDED.cntrb_id, aveloxis_data.messages.cntrb_id),
 			data_collection_date = NOW()
 		RETURNING msg_id`,
 			repoID, messageIDToPlatformMsgID(messageID), MailingListPlatformID, messageID, cntrbID,
 			body, NullTime(sentAt), senderEmail, MailingListToolSource, ToolVersion, listAddress,
-			MsgKindEmail,
+			MsgKindEmail, cleanBody, cleanRule,
 		).Scan(&id)
 	})
 	if err != nil {
@@ -175,34 +199,122 @@ func (s *PostgresStore) GetPrimaryRepoForGroup(ctx context.Context, repoGroupID 
 	return id, true, nil
 }
 
+// ResolveMirrorLinkByNodeID resolves a GitHub-mirror email to the issue or
+// pull request it mirrors, using the GitHub GraphQL node ID recovered from the
+// GitBox Message-ID (mailinglist.NodeIDFromMessageID).
+//
+// This is the PRIMARY mirror-link path. ResolveMirrorLink (below) resolves by
+// owner/repo/kind/number from the body URL and stays as the fallback for
+// systems whose mail carries one; on Apache it never fires, because the body
+// captures are absent (2026-08-29 production audit) AND the default
+// mirror_handling="metadata_only" does not retain bodies at all.
+//
+// Node IDs are globally unique on GitHub and type-prefixed, so the prefix
+// selects the table and no repo scoping is needed. Returns (nil, nil, nil)
+// for a clean miss — an entity we have not collected. A real query failure
+// propagates: a lookup ERROR is not "not found" (SR-5), and silently
+// treating one as a miss would leave the row permanently unlinked while
+// reporting success.
+// ResolveMirrorLinkByNodeID is SCOPED to the message's repo GROUP
+// (Copilot round 17 #2): a Message-ID is entirely sender-controlled —
+// the round-16 host gate raised nothing an attacker cannot type — so
+// the containment is a cross-check the sender does NOT control: the
+// resolved entity must belong to the same PMC's repo group as the
+// list the message arrived on (nil group falls back to the message's
+// own repo). Legitimate GitBox mail can reference any of the PMC's
+// repos (many repos mirror to one dev@ list), so group scope keeps
+// those links while a foreign project's public node ID becomes a
+// clean miss. Residual, stated honestly: a list participant can
+// still name entities WITHIN their own project's group — the same
+// exposure the body-URL fallback always had.
+func (s *PostgresStore) ResolveMirrorLinkByNodeID(ctx context.Context, nodeID string, repoID int64, repoGroupID *int64) (issueID, prID *int64, err error) {
+	if nodeID == "" {
+		return nil, nil, nil
+	}
+	const scope = ` AND (($3::bigint IS NOT NULL AND r.repo_group_id = $3)
+			        OR ($3::bigint IS NULL AND r.repo_id = $2))`
+	switch {
+	case strings.HasPrefix(nodeID, "PR_"):
+		var id int64
+		e := s.pool.QueryRow(ctx,
+			`SELECT p.pull_request_id FROM aveloxis_data.pull_requests p
+			 JOIN aveloxis_data.repos r ON r.repo_id = p.repo_id
+			 WHERE p.node_id = $1`+scope+` LIMIT 1`,
+			nodeID, repoID, repoGroupID).Scan(&id)
+		if errors.Is(e, pgx.ErrNoRows) {
+			return nil, nil, nil // not collected in scope — clean miss
+		}
+		if e != nil {
+			return nil, nil, fmt.Errorf("resolve mirror PR by node_id %q: %w", nodeID, e)
+		}
+		return nil, &id, nil
+	case strings.HasPrefix(nodeID, "I_"):
+		var id int64
+		e := s.pool.QueryRow(ctx,
+			`SELECT i.issue_id FROM aveloxis_data.issues i
+			 JOIN aveloxis_data.repos r ON r.repo_id = i.repo_id
+			 WHERE i.node_id = $1`+scope+` LIMIT 1`,
+			nodeID, repoID, repoGroupID).Scan(&id)
+		if errors.Is(e, pgx.ErrNoRows) {
+			return nil, nil, nil
+		}
+		if e != nil {
+			return nil, nil, fmt.Errorf("resolve mirror issue by node_id %q: %w", nodeID, e)
+		}
+		return &id, nil, nil
+	}
+	return nil, nil, nil
+}
+
 // ResolveMirrorLink resolves a GitHub-mirror email's body URL
 // (owner/repo/kind/number) to the existing issue or pull_request row we
 // already collected, so a mirror message links to its parent instead of
 // duplicating it (§5b). kind is "pull" or "issues". Returns (nil, nil, nil)
 // when the repo or the issue/PR isn't in the catalog yet.
-func (s *PostgresStore) ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int) (issueID, prID *int64, err error) {
+func (s *PostgresStore) ResolveMirrorLink(ctx context.Context, owner, repo, kind string, number int, messageRepoID int64, repoGroupID *int64) (issueID, prID *int64, err error) {
+	// SR-5 throughout: ErrNoRows is a clean miss (we have not collected the
+	// entity); any other failure is an ERROR. Before v0.28.20 every failure
+	// here collapsed to a miss, which became load-bearing once the caller
+	// started branching on error-vs-miss to decide whether to fall back to
+	// this guessed-owner path at all.
+	// Round 17 #2: the claimed owner/repo is sender-controlled too, so
+	// the same group scope applies — a claim outside the message's
+	// repo group is a clean miss, never a link.
 	var repoID int64
 	e := s.pool.QueryRow(ctx, `
 		SELECT repo_id FROM aveloxis_data.repos
 		WHERE lower(repo_owner) = lower($1) AND lower(repo_name) = lower($2)
-		LIMIT 1`, owner, repo).Scan(&repoID)
+		  AND (($4::bigint IS NOT NULL AND repo_group_id = $4)
+		       OR ($4::bigint IS NULL AND repo_id = $3))
+		LIMIT 1`, owner, repo, messageRepoID, repoGroupID).Scan(&repoID)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return nil, nil, nil // repo not collected in scope — clean miss
+	}
 	if e != nil {
-		return nil, nil, nil // repo not collected — clean miss
+		return nil, nil, fmt.Errorf("resolve mirror repo %s/%s: %w", owner, repo, e)
 	}
 	switch kind {
 	case "pull":
 		var id int64
-		if e := s.pool.QueryRow(ctx,
+		e := s.pool.QueryRow(ctx,
 			`SELECT pull_request_id FROM aveloxis_data.pull_requests WHERE repo_id = $1 AND pr_number = $2 LIMIT 1`,
-			repoID, number).Scan(&id); e == nil {
+			repoID, number).Scan(&id)
+		if e == nil {
 			return nil, &id, nil
+		}
+		if !errors.Is(e, pgx.ErrNoRows) {
+			return nil, nil, fmt.Errorf("resolve mirror PR %s/%s#%d: %w", owner, repo, number, e)
 		}
 	case "issues":
 		var id int64
-		if e := s.pool.QueryRow(ctx,
+		e := s.pool.QueryRow(ctx,
 			`SELECT issue_id FROM aveloxis_data.issues WHERE repo_id = $1 AND issue_number = $2 LIMIT 1`,
-			repoID, number).Scan(&id); e == nil {
+			repoID, number).Scan(&id)
+		if e == nil {
 			return &id, nil, nil
+		}
+		if !errors.Is(e, pgx.ErrNoRows) {
+			return nil, nil, fmt.Errorf("resolve mirror issue %s/%s#%d: %w", owner, repo, number, e)
 		}
 	}
 	return nil, nil, nil
@@ -272,11 +384,20 @@ func (s *PostgresStore) ResolveContributorIDByEmail(ctx context.Context, email s
 		return "", false, nil
 	}
 	var id string
+	// Copilot round 23 (PR #193, SR-6): the DIRECT arm must resolve only an
+	// UNAMBIGUOUS match — an address shared by two active contributors was
+	// assigned arbitrarily by LIMIT 1, and this ingest-time resolver is the
+	// path the bulk backfill's SR-6 guard never revisits (cntrb_id is
+	// already non-NULL). Exactly-one distinct match, else fall through to
+	// the alias arm (alias_email is UNIQUE, so it cannot be ambiguous).
 	err := s.pool.QueryRow(ctx, `
-		SELECT cntrb_id::text FROM aveloxis_data.contributors
-		WHERE (cntrb_email = $1 OR cntrb_canonical = $1)
-		  AND COALESCE(cntrb_deleted, 0) = 0
-		LIMIT 1`, email).Scan(&id)
+		SELECT t.cntrb_id FROM (
+			SELECT (array_agg(DISTINCT cntrb_id::text))[1] AS cntrb_id,
+			       count(DISTINCT cntrb_id) AS n
+			FROM aveloxis_data.contributors
+			WHERE (cntrb_email = $1 OR cntrb_canonical = $1)
+			  AND COALESCE(cntrb_deleted, 0) = 0
+		) t WHERE t.n = 1`, email).Scan(&id)
 	if err == nil && id != "" {
 		return id, true, nil
 	}
@@ -294,17 +415,45 @@ func (s *PostgresStore) ResolveContributorIDByEmail(ctx context.Context, email s
 }
 
 // BackfillMailingListSenderIDs re-resolves the cntrb_id of mailing-list
-// message bodies whose sender was unresolved at write time, matching the
-// retained email against the now-fuller contributors/aliases tables. This
-// is the "coverage improves over time" mechanism — run periodically. Only
-// touches messages bridged from email_message (platform_id = 6) with a NULL
-// cntrb_id and a known sender_email. Returns rows resolved.
-func (s *PostgresStore) BackfillMailingListSenderIDs(ctx context.Context, limit int) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `
+// message bodies whose sender was unresolved at write time, over ONE
+// keyset window (afterMsgID, afterMsgID+window] of messages.msg_id.
+// Two statements, deliberately: the email/canonical arm first (measured
+// 15,445 rows/s on the production aveloxis DB), then the
+// contributors_aliases arm over rows STILL NULL in the same window
+// (measured 87,848 rows/1.0s via the alias_email UNIQUE probe). The
+// split gives email-beats-alias priority for free — matching
+// ResolveContributorIDByEmail's own probe order — and keeps both index
+// plans (a 3-arm OR through a LEFT JOIN defeats the BitmapOr).
+//
+// Keyset windows, never LIMIT: the pre-Part-A LIMIT-rescan form re-paid
+// the full join per batch (measured 8.5:1 scan waste, ~31 days to
+// converge on 9.9M unattributed rows). Callers walk windows from
+// MailingListMsgIDFloor to MailingListMsgIDCeiling; sparse windows
+// legally resolve 0, so termination is cursor >= ceiling, NEVER
+// rows-affected. "cntrb_id IS NULL is the resume state": rerun until the
+// cursor clears the ceiling and only still-unresolvable rows remain.
+//
+// Both statements ride withRetry (40P01): the drain loop's
+// UpsertMailingListMessageBody DO-UPDATEs the same messages rows — the
+// deadlock class between these writers is observed history
+// (v0.27.112/114).
+func (s *PostgresStore) BackfillMailingListSenderIDs(ctx context.Context, afterMsgID, window int64) (int64, error) {
+	var total int64
+	// Arm 1: direct cntrb_email / cntrb_canonical match. Copilot round 22
+	// on PR #193: a DISTINCT ON pick over a multi-contributor email (two
+	// active rows sharing cntrb_email/cntrb_canonical — none observed, but
+	// the schema permits it) would FABRICATE an attribution, violating
+	// SR-6 (ambiguous identities stay NULL). GROUP BY the message and
+	// update only when exactly ONE distinct contributor matches;
+	// (array_agg(DISTINCT ...))[1] returns that single id (no min() for
+	// uuid). An ambiguous email matches >1 distinct cntrb_id → no group
+	// row → the message keeps its NULL.
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.messages m
 		SET cntrb_id = sub.cntrb_id
 		FROM (
-			SELECT m2.msg_id, c.cntrb_id
+			SELECT m2.msg_id, (array_agg(DISTINCT c.cntrb_id))[1] AS cntrb_id
 			FROM aveloxis_data.messages m2
 			JOIN aveloxis_data.email_message em ON em.message_id_header = m2.node_id
 			JOIN aveloxis_data.contributors c
@@ -313,13 +462,260 @@ func (s *PostgresStore) BackfillMailingListSenderIDs(ctx context.Context, limit 
 			WHERE m2.platform_id = 6
 			  AND m2.cntrb_id IS NULL
 			  AND em.sender_email <> ''
-			LIMIT $1
+			  AND NOT aveloxis_data.is_automation_email(em.sender_email)
+			  AND m2.msg_id > $1 AND m2.msg_id <= $1 + $2
+			GROUP BY m2.msg_id
+			HAVING COUNT(DISTINCT c.cntrb_id) = 1
 		) sub
-		WHERE m.msg_id = sub.msg_id`, limit)
+		WHERE m.msg_id = sub.msg_id`, afterMsgID, window)
+		if err != nil {
+			return err
+		}
+		total += tag.RowsAffected()
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("backfill mailing-list sender ids: %w", err)
+		return total, fmt.Errorf("backfill mailing-list sender ids (email arm, after %d): %w", afterMsgID, err)
 	}
-	return tag.RowsAffected(), nil
+	// Arm 2: the contributors_aliases bridge — a list sender who is a
+	// committer has their commit-email alias here even when no
+	// contributors row carries the address directly (163,236 messages on
+	// the production aveloxis DB were reachable ONLY this way). Runs
+	// over rows arm 1 left NULL, so a both-ways match keeps arm 1's
+	// answer. alias_email is UNIQUE, so there is no fan-out to pick from.
+	err = s.withRetry(ctx, func(ctx context.Context) error {
+		tag, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.messages m
+		SET cntrb_id = sub.cntrb_id
+		FROM (
+			SELECT m2.msg_id, ca.cntrb_id
+			FROM aveloxis_data.messages m2
+			JOIN aveloxis_data.email_message em ON em.message_id_header = m2.node_id
+			JOIN aveloxis_data.contributors_aliases ca ON ca.alias_email = em.sender_email
+			JOIN aveloxis_data.contributors c
+			  ON c.cntrb_id = ca.cntrb_id AND COALESCE(c.cntrb_deleted, 0) = 0
+			WHERE m2.platform_id = 6
+			  AND m2.cntrb_id IS NULL
+			  AND em.sender_email <> ''
+			  AND NOT aveloxis_data.is_automation_email(em.sender_email)
+			  AND m2.msg_id > $1 AND m2.msg_id <= $1 + $2
+		) sub
+		WHERE m.msg_id = sub.msg_id`, afterMsgID, window)
+		if err != nil {
+			return err
+		}
+		total += tag.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return total, fmt.Errorf("backfill mailing-list sender ids (alias arm, after %d): %w", afterMsgID, err)
+	}
+	return total, nil
+}
+
+// CountResolvableMailingListSenders reports how many unattributed
+// mailing-list bodies the backfill could resolve RIGHT NOW through
+// either identity arm — the resolve-email-identities --dry-run number.
+// Read-only; seconds-scale (one pass over the unattributed set with
+// indexed EXISTS probes).
+func (s *PostgresStore) CountResolvableMailingListSenders(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM aveloxis_data.messages m
+		JOIN aveloxis_data.email_message em ON em.message_id_header = m.node_id
+		WHERE m.platform_id = 6 AND m.cntrb_id IS NULL AND em.sender_email <> ''
+		  AND NOT aveloxis_data.is_automation_email(em.sender_email)
+		  AND ((SELECT count(DISTINCT c.cntrb_id) FROM aveloxis_data.contributors c
+				WHERE (c.cntrb_email = em.sender_email OR c.cntrb_canonical = em.sender_email)
+				  AND COALESCE(c.cntrb_deleted, 0) = 0) = 1
+		    OR EXISTS (SELECT 1 FROM aveloxis_data.contributors_aliases ca
+				JOIN aveloxis_data.contributors c2 ON c2.cntrb_id = ca.cntrb_id
+				WHERE ca.alias_email = em.sender_email AND COALESCE(c2.cntrb_deleted, 0) = 0))`,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count resolvable mailing-list senders: %w", err)
+	}
+	return n, nil
+}
+
+// MailingListMsgIDFloor returns the smallest messages.msg_id carrying a
+// mailing-list body (platform 6), or 0 when none exist. EXPENSIVE
+// (~17.5s measured: the MIN side walks messages_pkey forward through
+// every lower-id non-email row — there is no (platform_id, msg_id)
+// index, deliberately: one 17.5s read per process beats a permanent
+// index on a 68M-row table). Callers cache it for the process lifetime;
+// the floor never moves down.
+func (s *PostgresStore) MailingListMsgIDFloor(ctx context.Context) (int64, error) {
+	var floor int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(MIN(msg_id), 0) FROM aveloxis_data.messages WHERE platform_id = 6`).Scan(&floor)
+	if err != nil {
+		return 0, fmt.Errorf("mailing-list msg_id floor: %w", err)
+	}
+	return floor, nil
+}
+
+// MailingListMsgIDCeiling returns the largest messages.msg_id carrying a
+// mailing-list body, or 0 when none exist. Cheap (~26ms measured:
+// backward pkey scan — email rows are recent). Refresh per pass so rows
+// staged since the last pass are covered.
+func (s *PostgresStore) MailingListMsgIDCeiling(ctx context.Context) (int64, error) {
+	var ceil int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(MAX(msg_id), 0) FROM aveloxis_data.messages WHERE platform_id = 6`).Scan(&ceil)
+	if err != nil {
+		return 0, fmt.Errorf("mailing-list msg_id ceiling: %w", err)
+	}
+	return ceil, nil
+}
+
+// StripBatchRow is one unstripped (or stale-rule) mailing-list body
+// for the strip-quoted-history walker.
+type StripBatchRow struct {
+	MsgID int64
+	Text  string
+}
+
+// GetMailingListBodiesForStrip pages mailing-list bodies needing a
+// quote-strip, by keyset cursor. ruleRerun == "" selects never-stripped
+// rows (msg_text_clean IS NULL — the resume state); a non-empty
+// ruleRerun selects rows whose stored rule differs from it (the
+// --rule-rerun mode after a pattern-library bump).
+func (s *PostgresStore) GetMailingListBodiesForStrip(ctx context.Context, afterMsgID int64, limit int, ruleRerun string) ([]StripBatchRow, error) {
+	predicate := `msg_text_clean IS NULL`
+	args := []any{afterMsgID, limit}
+	if ruleRerun != "" {
+		predicate = `COALESCE(msg_text_clean_rule, '') <> $3`
+		args = append(args, ruleRerun)
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT msg_id, msg_text FROM aveloxis_data.messages
+		WHERE platform_id = 6 AND msg_text <> '' AND msg_id > $1 AND `+predicate+`
+		ORDER BY msg_id LIMIT $2`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("strip batch after %d: %w", afterMsgID, err)
+	}
+	defer rows.Close()
+	var out []StripBatchRow
+	for rows.Next() {
+		var r StripBatchRow
+		if err := rows.Scan(&r.MsgID, &r.Text); err != nil {
+			return nil, fmt.Errorf("strip batch scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("strip batch rows: %w", err)
+	}
+	return out, nil
+}
+
+// UpdateMessageCleanBatch stamps stripped bodies + the rule that
+// produced them, one unnest UPDATE per batch. withRetry: the drain
+// loop's body upsert DO-UPDATEs the same rows (the 40P01 class,
+// v0.27.112/114).
+// UpdateMessageCleanBatch stamps clean text COMPARE-AND-SET on the raw
+// body's md5 (Copilot round 14 on PR #193): the CLI computes each strip
+// from a snapshot read in a previous statement, and a concurrent
+// mailing-list drain can re-ingest a corrected raw body (writing its
+// own fresh clean text) between the read and this write — the
+// unconditional form then overwrote that fresh clean with output
+// derived from the OLD body while stamping the current rule, so
+// --rule-rerun would never select the row for repair. The md5 guard
+// (hash, not the raw text: a 5,000-row batch of ~5KB bodies would be a
+// ~25MB parameter payload) makes a changed row a silent skip — correct,
+// because the ingest that changed it already wrote its own clean text.
+func (s *PostgresStore) UpdateMessageCleanBatch(ctx context.Context, msgIDs []int64, cleans, rawMD5s []string, rule string) error {
+	if len(msgIDs) == 0 {
+		return nil
+	}
+	if len(msgIDs) != len(cleans) || len(msgIDs) != len(rawMD5s) {
+		return fmt.Errorf("update clean batch: %d ids vs %d cleans vs %d md5s", len(msgIDs), len(cleans), len(rawMD5s))
+	}
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.messages m
+		SET msg_text_clean = sub.clean, msg_text_clean_rule = $4
+		FROM (SELECT unnest($1::bigint[]) AS msg_id, unnest($2::text[]) AS clean,
+		             unnest($3::text[]) AS raw_md5) sub
+		WHERE m.msg_id = sub.msg_id AND md5(m.msg_text) = sub.raw_md5`, msgIDs, cleans, rawMD5s, rule)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("update clean batch (%d rows): %w", len(msgIDs), err)
+	}
+	return nil
+}
+
+// HealMisdrainedMailingListRows repairs the cross-system drain residue
+// (Part G layer-3 find, 2026-09-01): rows drained by ANOTHER system's
+// processor carry that system's ml_system stamp and — because
+// lore_public_inbox's projectionClean is false — were never projected.
+// Two repairs in ONE keyset-windowed statement per window:
+//   - restamp ml_system from the list's registered mlls_system (all
+//     mismatched rows, links or not);
+//   - reset projected_kind to the pending sentinel (empty string) for mismatched rows
+//     that are mailing_list_only AND carry no links, so
+//     backfill-mailing-list-projection re-runs the keyed + thread passes
+//     over exactly the mis-drained cohort. Rows the wrong-system drain
+//     still linked (the mirror path is not projection-gated) keep their
+//     kind — resetting them would discard a correct link.
+//
+// Idempotent: once restamped, ml_system matches and the row never matches
+// again. Keyset windows per the house bulk-backfill rule (production
+// email_message is 13M rows on the mailing-list deployment).
+func (s *PostgresStore) HealMisdrainedMailingListRows(ctx context.Context, logger *slog.Logger) error {
+	return runKeysetWindows(ctx, s, logger,
+		"heal cross-system mis-drained mailing-list rows",
+		`SELECT COALESCE(MAX(email_message_id), 0) FROM aveloxis_data.email_message`,
+		`UPDATE aveloxis_data.email_message em
+		 SET ml_system = r.mlls_system,
+		     projected_kind = CASE WHEN em.projected_kind = 'mailing_list_only'
+		                            AND em.linked_issue_id IS NULL
+		                            AND em.linked_pull_request_id IS NULL
+		                            AND em.linked_pr_review_id IS NULL
+		                           THEN '' ELSE em.projected_kind END
+		 FROM aveloxis_data.repo_groups_list_serve r
+		 WHERE em.rgls_id = r.rgls_id
+		   AND em.ml_system <> r.mlls_system
+		   AND em.email_message_id > $1 AND em.email_message_id <= $2`)
+}
+
+// HealAutomationPhantomContributors repairs the 2026-08-31 identity
+// fabrication: email-only contributor rows minted for AUTOMATION
+// addresses (jira@apache.org, gitbox@, list addresses) by the
+// pre-guard sender-resolve ticker. Phantoms are identified as rows
+// whose email classifies as automation AND that carry no platform
+// identity (empty cntrb_login/gh_login/gl_username — a real person who
+// merely also matches an automation pattern cannot look like this).
+// Repair: NULL every messages.cntrb_id and issues.reporter_id they
+// hold, drop their relay alias rows, and SOFT-delete the rows
+// (cntrb_deleted = 1 — R10: FK targets are never physically deleted).
+// Idempotent; ledgered in migrate.
+func (s *PostgresStore) HealAutomationPhantomContributors(ctx context.Context) error {
+	const phantoms = `
+		SELECT cntrb_id FROM aveloxis_data.contributors
+		WHERE aveloxis_data.is_automation_email(cntrb_email)
+		  AND COALESCE(cntrb_login, '') = ''
+		  AND COALESCE(gh_login, '') = ''
+		  AND COALESCE(gl_username, '') = ''`
+	steps := []struct{ label, sql string }{
+		{"null message attributions",
+			`UPDATE aveloxis_data.messages SET cntrb_id = NULL WHERE cntrb_id IN (` + phantoms + `)`},
+		{"null issue reporters",
+			`UPDATE aveloxis_data.issues SET reporter_id = NULL WHERE reporter_id IN (` + phantoms + `)`},
+		{"drop relay aliases",
+			`DELETE FROM aveloxis_data.contributors_aliases WHERE cntrb_id IN (` + phantoms + `)`},
+		{"soft-delete phantoms",
+			`UPDATE aveloxis_data.contributors SET cntrb_deleted = 1
+			 WHERE cntrb_id IN (` + phantoms + `) AND COALESCE(cntrb_deleted, 0) = 0`},
+	}
+	for _, st := range steps {
+		if _, err := s.pool.Exec(ctx, st.sql); err != nil {
+			return fmt.Errorf("heal automation phantoms (%s): %w", st.label, err)
+		}
+	}
+	return nil
 }
 
 // InsertEmailMessageRef links an email_message entity to its body row in

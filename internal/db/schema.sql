@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.platforms (
     platform_name TEXT NOT NULL UNIQUE
 );
 INSERT INTO aveloxis_data.platforms (platform_id, platform_name)
-VALUES (1, 'GitHub'), (2, 'GitLab'), (3, 'Git'), (6, 'Mailing List')
+VALUES (1, 'GitHub'), (2, 'GitLab'), (3, 'Git'), (4, 'Jira'), (6, 'Mailing List')
 ON CONFLICT DO NOTHING;
 
 -- ============================================================
@@ -133,14 +133,14 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- counter).
     scancode_timeout_attempts INTEGER DEFAULT 0,
     -- v0.27.6: why the last scancode "run" was skipped without a scan.
-    -- '' = not skipped (a real scan ran, or never attempted).
+    -- the empty string = not skipped (a real scan ran, or never attempted).
     -- 'generated-content' = the repo is overwhelmingly generated web
     -- artifacts (HTML+CSS+JS >= 90% of language bytes AND > 5 GiB
     -- total) — scanning it burns a multi-hour worker slot on
     -- documentation output with no license signal (the pytorch/docs
     -- / WHO/smart-html June 2026 spin loop). The skip stamps
     -- scancode_last_run so the cadence gate applies normally; a
-    -- later successful REAL scan clears the reason back to ''.
+    -- later successful REAL scan clears the reason back to the empty string.
     scancode_skip_reason      TEXT DEFAULT '',
     -- v0.24.0: DistributionWorker state. Separate from scancode
     -- columns because the two subsystems run independently with
@@ -182,7 +182,7 @@ ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ;
 
 -- v0.27.105: whitespace-walk marker — the default-branch head at the
 -- last completed whitespace walk (see internal/collector/whitespace.go).
--- '' / NULL = never walked; the facade's per-cycle phase is incremental
+-- the empty string / NULL = never walked; the facade's per-cycle phase is incremental
 -- past this hash, and `aveloxis rewalk-whitespace` is the bulk bootstrap.
 ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS whitespace_head_hash TEXT DEFAULT '';
 
@@ -283,6 +283,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributors (
     gh_activity_class           TEXT DEFAULT '',
     gh_activity_checked_at      TIMESTAMPTZ,
     gh_history_backfilled_at    TIMESTAMPTZ,
+    gh_history_failed_at        TIMESTAMPTZ,
     tool_source    TEXT DEFAULT 'aveloxis',
     tool_version   TEXT DEFAULT '',
     data_source    TEXT DEFAULT '',
@@ -352,6 +353,7 @@ ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_last_contribu
 ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_activity_class TEXT DEFAULT '';
 ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_activity_checked_at TIMESTAMPTZ;
 ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_history_backfilled_at TIMESTAMPTZ;
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_history_failed_at TIMESTAMPTZ;
 
 -- v0.27.57 — GitHub contribution-activity classification (GraphQL
 -- contributionsCollection). Distinguishes publicly-active /
@@ -477,6 +479,36 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributors_aliases (
     data_source    TEXT DEFAULT '',
     data_collection_date TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- jira_identities — C2: every Jira identity observed via the REST API,
+-- raw and permanent. jira_name is the STABLE Server-era username (the
+-- field Atlassian Cloud's API no longer exposes — the collection-window
+-- risk that motivates banking these rows early); jira_user_key is the
+-- internal JIRAUSERnnnn key. cntrb_id links to a contributor ONLY on an
+-- unambiguous match or a deliberate mint (match_method records which:
+-- 'login' | 'display' | 'minted'); ambiguous / unmatched stays NULL
+-- with the raw identity preserved (SR-6 — never fabricate identity).
+-- Pilot-measured ceiling (2026-08-31, 6,000 issues): 49.2% of issues
+-- match by login, +17.6% by display name, 32.3% are Jira-only people.
+CREATE TABLE IF NOT EXISTS aveloxis_data.jira_identities (
+    jira_identity_id BIGSERIAL PRIMARY KEY,
+    jira_name        TEXT NOT NULL UNIQUE,
+    jira_user_key    TEXT DEFAULT '',
+    display_name     TEXT DEFAULT '',
+    cntrb_id         UUID REFERENCES aveloxis_data.contributors(cntrb_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    match_method     TEXT NOT NULL DEFAULT '',
+    first_seen       TIMESTAMPTZ DEFAULT NOW(),
+    last_seen        TIMESTAMPTZ DEFAULT NOW(),
+    tool_source      TEXT DEFAULT 'aveloxis',
+    tool_version     TEXT DEFAULT '',
+    data_source      TEXT DEFAULT 'JIRA API',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW()
+);
+-- Born-empty table on every fleet → plain declaration is safe (the
+-- repo_lockfile_edges precedent); the cntrb_id child FK is indexed at
+-- birth per the v0.22.6 lesson.
+CREATE INDEX IF NOT EXISTS idx_jira_identities_cntrb_id ON aveloxis_data.jira_identities (cntrb_id);
+
 
 -- ============================================================
 -- Contributor affiliations (email domain -> org mapping)
@@ -651,7 +683,21 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.issues (
     closed_at        TIMESTAMPTZ,
     due_on           TIMESTAMPTZ,
     comment_count    INT DEFAULT 0,
+    -- v0.29.0 C3a: the REAL Jira internal id (~13M range), in its OWN
+    -- column. Synthetics keep their deterministic NEGATIVE
+    -- platform_issue_id forever — a real Jira id can collide with an
+    -- early GitHub databaseId under UNIQUE (repo_id, platform_issue_id),
+    -- and the projection-duplicate detector + shadow-diff key on the
+    -- sign. Enrichment fills this without changing row identity.
+    jira_issue_id    BIGINT,
     external_key     TEXT DEFAULT '',
+    -- v0.29.0 round 15: the email_message_id of the LAST mail tracker
+    -- action applied to a synthetic row — the deterministic
+    -- tie-breaker for Pony Mail's minute-rounded sent_at (a deferred
+    -- older action replaying at the same timestamp must not regress
+    -- the newer one). NULL = no mail action applied yet.
+    last_mail_event_id BIGINT,
+    jira_api_updated_at TIMESTAMPTZ,  -- v0.29.1: the last-applied Jira-API update timestamp; the reliable API clock the freshness guard compares (immune to mail events clobbering updated_at).
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
@@ -977,6 +1023,20 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.messages (
     msg_kind         SMALLINT NOT NULL DEFAULT 0,
     node_id          TEXT DEFAULT '',
     msg_text         TEXT DEFAULT '',
+    -- v0.29.0 Part B: the quote-stripped body (email rows only — GitHub/
+    -- GitLab comments measured 2% quoted and stay NULL) + the pattern-
+    -- library version that produced it. msg_text_clean deliberately has
+    -- NO DEFAULT: NULL means "no clean variant, read the raw text", and
+    -- an empty-string DEFAULT would empty every forge row through the
+    -- COALESCE(msg_text_clean, msg_text) read path.
+    msg_text_clean   TEXT,
+    msg_text_clean_rule TEXT DEFAULT '',
+    -- v0.29.0 round 14: the provider-side edit timestamp for message
+    -- kinds whose upstream serves one (Jira comment `updated`).
+    -- Nullable, NO default: NULL = "no provider edit time known"
+    -- (forge/mail rows) and the Jira comment upsert's freshness guard
+    -- treats a NULL stored value as always-upgradable.
+    msg_updated      TIMESTAMPTZ,
     msg_timestamp    TIMESTAMPTZ,
     msg_sender_email TEXT DEFAULT '',
     msg_header       TEXT DEFAULT '',
@@ -1026,6 +1086,13 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.email_message (
     -- Phase 3 (summary/12 §10a): what this email was projected onto, so
     -- "what did this become" is queryable without joins: issue|pr|review|mailing_list_only.
     projected_kind         TEXT DEFAULT '',
+    -- v0.29.0 C3a: collection-time link to the NATIVE message row that
+    -- supersedes this notification (a Jira API comment collected
+    -- directly). NULL = no native copy known — the notification is the
+    -- sole record and still counts. Read-time precedence
+    -- (native > notification) keys off this stamp, never off fuzzy
+    -- matching at query time (the v0.28.20 mirror-link pattern).
+    linked_msg_id          BIGINT REFERENCES aveloxis_data.messages(msg_id) DEFERRABLE INITIALLY DEFERRED,
     tool_source       TEXT DEFAULT 'Aveloxis Mailing List Collector',
     tool_version      TEXT DEFAULT '',
     data_source       TEXT DEFAULT '',
@@ -1377,7 +1444,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_scorecard (
     scorecard_check_details JSONB,
     -- v0.27.5: which execution mode produced this row. 'remote'
     -- (--repo, ~18 checks) and 'local' (--local, ~11 checks) overall
-    -- scores are NOT comparable — different check sets. '' = pre-v0.27.5
+    -- scores are NOT comparable — different check sets. the empty string = pre-v0.27.5
     -- scan (mode unrecorded; historically local-preferred).
     scorecard_mode   TEXT DEFAULT '',
     tool_source      TEXT DEFAULT 'aveloxis',
@@ -1429,12 +1496,12 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
     -- exact-by-construction), 'exact' (==X or bare version),
     -- 'bounded-range' (~=, ^, ~, or a compound with an upper bound —
     -- floor scanned), 'range-floor' (lower bound only — floor scanned),
-    -- 'unpinned' (no version). '' = pre-v0.27.11 row; heals on the
+    -- 'unpinned' (no version). the empty string = pre-v0.27.11 row; heals on the
     -- repo's next scan. Always refreshed on upsert (NOT prefer-nonempty:
     -- the classification must track the current manifest).
     declared_requirement TEXT DEFAULT '',
     version_resolution   TEXT DEFAULT '',
-    -- v0.27.21 C1: 'direct' | 'transitive' ('' = pre-C1 row) +
+    -- v0.27.21 C1: 'direct' | 'transitive' (the empty string = pre-C1 row) +
     -- 'dev'/'runtime'/'' scope from the lockfile.
     dependency_kind  TEXT NOT NULL DEFAULT '',
     dependency_scope TEXT NOT NULL DEFAULT '',
@@ -2089,6 +2156,15 @@ INSERT INTO aveloxis_ops.schema_meta (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
 -- keep healing hand-dropped objects. Operator replay: DELETE the
 -- step's row, then run `aveloxis migrate` (see migration_ledger.go).
 -- ============================================================
+-- deploy_ack: per binary version, records that an operator confirmed
+-- the release's manual deploy/heal steps ran (the `aveloxis start
+-- serve`/`start all` deploy gate consults it — v0.29.0).
+CREATE TABLE IF NOT EXISTS aveloxis_ops.deploy_ack (
+    tool_version    TEXT PRIMARY KEY,
+    acknowledged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    note            TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS aveloxis_ops.migration_ledger (
     step_label   TEXT PRIMARY KEY,
     completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -2175,6 +2251,51 @@ CREATE INDEX IF NOT EXISTS idx_mls_unprocessed
     ON aveloxis_ops.mailing_list_staging (rgls_id)
     WHERE NOT processed;
 
+-- jira_project_serve — C3: the Jira collector's registration/checkpoint
+-- row, cloned from the repo_groups_list_serve pattern (per-source claim
+-- lock + resume checkpoint, independent of repos). repo_id/repo_group_id
+-- are nullable and deliberately un-FK'd — a project can register before
+-- its repo mapping exists. jps_last_updated is the incremental-sync
+-- cursor (max issue.updated staged); the worker's JQL is
+-- "project = X AND updated >= <checkpoint> ORDER BY updated ASC".
+CREATE TABLE IF NOT EXISTS aveloxis_ops.jira_project_serve (
+    jps_id            BIGSERIAL PRIMARY KEY,
+    project_key       TEXT NOT NULL UNIQUE,
+    base_url          TEXT NOT NULL DEFAULT 'https://issues.apache.org/jira',
+    repo_id           BIGINT,
+    repo_group_id     BIGINT,
+    jps_enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    jps_last_updated  TIMESTAMPTZ,
+    jps_failed_attempts INTEGER NOT NULL DEFAULT 0,
+    jps_last_failed_at TIMESTAMPTZ,
+    jps_last_run      TIMESTAMPTZ,
+    jps_locked_at     TIMESTAMPTZ,
+    jps_heartbeat_at  TIMESTAMPTZ,  -- v0.29.1: ownership-qualified heartbeat; the stale window measures INACTIVITY (time since last checkpoint), not total scan duration. jps_locked_at stays the immutable ownership key.
+    tool_version      TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- jira_staging — C3: the fetch/classify → resolve/write boundary,
+-- cloned from mailing_list_staging (a third producer must NEVER reuse
+-- aveloxis_ops.staging: its repo_id NOT NULL FK and
+-- PurgeStagedForRepo's entity-blind delete are both real blockers).
+-- UNIQUE (project_key, issue_key, issue_updated) makes re-staging a
+-- replayed sync window a true no-op; repo_id is nullable and un-FK'd.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.jira_staging (
+    js_id         BIGSERIAL PRIMARY KEY,
+    jps_id        BIGINT NOT NULL,
+    project_key   TEXT NOT NULL,
+    issue_key     TEXT NOT NULL,
+    issue_updated TIMESTAMPTZ NOT NULL,
+    repo_id       BIGINT,
+    envelope      JSONB NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed     BOOLEAN NOT NULL DEFAULT FALSE,
+    UNIQUE (project_key, issue_key, issue_updated)
+);
+CREATE INDEX IF NOT EXISTS idx_js_unprocessed ON aveloxis_ops.jira_staging (jps_id) WHERE NOT processed;
+
+
 -- Phase 2 (summary/12 §5): per-sender cooldown + outcome for the
 -- runMailingListSenderResolve ticker. Senders with >= a message threshold that
 -- the DB can't resolve are run through the shared email->identity chain
@@ -2207,6 +2328,11 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.collection_queue (
     last_releases    INT DEFAULT 0,
     last_contributors INT DEFAULT 0,
     last_commits     INT DEFAULT 0,
+    -- v0.29.0: cached trailing-90-day activity (issues + PRs opened),
+    -- stamped by CompleteJob per completed job (success or failure) — the home page's
+    -- ranking column. Freshness = last_collected, like every other
+    -- cached count on this row (the v0.19.11/v0.21.2 pattern).
+    last_activity_90d INT,
     last_duration_ms BIGINT DEFAULT 0,
     -- Force a full (since=zero) re-collection on the next scheduler
     -- cycle. Auto-set by the scheduler when a collection ends with a
@@ -2900,6 +3026,45 @@ ALTER TABLE aveloxis_data.repo_distribution_manifest_history
 
 
 -- ============================================================
+-- is_automation_email — the SQL twin of collector.IsAutomationEmail
+-- (SR-17: one vocabulary, two enforced spellings, pinned together by
+-- TestAutomationEmailSQLParity). TRUE for automated senders: bots
+-- ([bot] / noreply / @github.com service addresses), the Apache
+-- notification relays (jira@ / jira+<project>@ / git@ / gitbox@
+-- apache.org), and any address that IS a registered mailing list
+-- (the dev@myfaces.apache.org phantom class — DB-side knowledge the
+-- Go predicate cannot carry). Used to gate identity attribution:
+-- automation senders must never acquire or match contributor rows
+-- (2026-08-31: ungated minting had attributed 83,746 messages to a
+-- jira@apache.org phantom contributor). Declared AFTER
+-- repo_groups_list_serve; CREATE OR REPLACE keeps every migrate
+-- idempotent.
+CREATE OR REPLACE FUNCTION aveloxis_data.is_automation_email(addr TEXT)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE
+AS $$
+    SELECT CASE
+        WHEN addr IS NULL OR addr = '' THEN FALSE
+        WHEN lower(addr) LIKE '%[bot]%' THEN TRUE
+        WHEN lower(addr) LIKE '%noreply%' AND lower(addr) NOT LIKE '%users.noreply.github.com%' THEN TRUE
+        WHEN lower(addr) LIKE '%@github.com' AND lower(addr) NOT LIKE '%users.noreply%' THEN TRUE
+        WHEN lower(addr) IN ('jira@apache.org', 'git@apache.org', 'gitbox@apache.org') THEN TRUE
+        WHEN lower(addr) LIKE 'jira+%@apache.org' THEN TRUE
+        -- Bugzilla relays (v0.29.0 pre-release, summary/27 B0): the
+        -- Go twin is collector.IsAutomationEmail; the ledgered phantom
+        -- heal reads THIS function, so adding them here catches the
+        -- ~4 live bugzilla@ phantoms on the first v0.29.0 migrate.
+        WHEN lower(addr) = 'bugzilla@apache.org' THEN TRUE
+        WHEN lower(addr) LIKE 'bugzilla-%@apache.org' THEN TRUE
+        WHEN lower(addr) LIKE 'bugzilla+%@apache.org' THEN TRUE
+        WHEN EXISTS (
+            SELECT 1 FROM aveloxis_data.repo_groups_list_serve
+            WHERE lower(rgls_email) = lower(addr)
+        ) THEN TRUE
+        ELSE FALSE
+    END
+$$;
+
 -- Augur compatibility schema: aveloxis_augur_data
 -- ============================================================
 -- MUST be at the END of schema.sql — these views reference tables defined above.

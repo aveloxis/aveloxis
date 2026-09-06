@@ -619,8 +619,8 @@ func TestMintJiraContributorIsAtomic(t *testing.T) {
 
 	cleanup := func() {
 		c := context.Background()
-		store.pool.Exec(c, `DELETE FROM aveloxis_data.jira_identities WHERE jira_name LIKE '_avjr2-race-%'`)
-		store.pool.Exec(c, `DELETE FROM aveloxis_data.contributors WHERE cntrb_full_name LIKE '_avjr2 Race %'`)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.jira_identities WHERE jira_name LIKE '_avjr2-race-%'`)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.contributors WHERE cntrb_full_name LIKE '_avjr2 Race %'`)
 	}
 	cleanup()
 	t.Cleanup(cleanup)

@@ -23,8 +23,8 @@ func TestLinkJiraIdentityReturnsPersistedWinner(t *testing.T) {
 
 	cleanup := func() {
 		c := context.Background()
-		store.pool.Exec(c, `DELETE FROM aveloxis_data.jira_identities WHERE jira_name LIKE '_avjr11-%'`)
-		store.pool.Exec(c, `DELETE FROM aveloxis_data.contributors WHERE cntrb_full_name LIKE '_avjr11 %'`)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.jira_identities WHERE jira_name LIKE '_avjr11-%'`)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.contributors WHERE cntrb_full_name LIKE '_avjr11 %'`)
 	}
 	cleanup()
 	t.Cleanup(cleanup)

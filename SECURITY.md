@@ -4,10 +4,10 @@
 
 | Version | Supported          |      End of Life |
 |---------|--------------------|---------------------|
-| 1.0.0  | expected September, 2026    |   September 30, 2028    |
-| 0.29.x  | September, 2026    |   December 31, 2027    |
-| 0.28.x  | July, 2026    |   December 31, 2026    |
-| 0.27.x  | July, 2026    |   December 31, 2026   |
+| 1.0.0  | Yes    |   September 30, 2028    |
+| 0.29.x  | Yes    |   December 31, 2027    |
+| 0.28.x  | Yes    |   December 31, 2026    |
+| 0.27.x  | Yes    |   December 31, 2026   |
 | 0.26.x  | No    |   EOL    |
 | 0.25.x  | No   |   EOL    |
 | 0.24.x  | No    |   EOL    |

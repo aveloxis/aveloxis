@@ -6,7 +6,10 @@ package db
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // mailinglist_sender_resolve_store.go is the store layer for Phase 2 of the
@@ -50,7 +53,16 @@ func (s *PostgresStore) GetMailingListSenderResolveCandidates(ctx context.Contex
 		        AND (c.cntrb_email = em.sender_email OR c.cntrb_canonical = em.sender_email)
 		  )
 		  AND NOT EXISTS (
-		      SELECT 1 FROM aveloxis_data.contributors_aliases a WHERE a.alias_email = em.sender_email
+		      -- Copilot round 29 (PR #193): only an alias owned by an ACTIVE
+		      -- contributor excludes the sender. The resolver's alias arm
+		      -- requires cntrb_deleted = 0, so an alias pointing at a
+		      -- soft-deleted merge loser resolves NOTHING — excluding on its
+		      -- mere existence removed the sender from the retry pool
+		      -- forever while their messages stayed unattributed.
+		      SELECT 1 FROM aveloxis_data.contributors_aliases a
+		      JOIN aveloxis_data.contributors c2 ON c2.cntrb_id = a.cntrb_id
+		      WHERE a.alias_email = em.sender_email
+		        AND COALESCE(c2.cntrb_deleted, 0) = 0
 		  )
 		GROUP BY em.sender_email, r.last_attempt_at, r.resolved
 		HAVING count(*) >= $2
@@ -90,47 +102,111 @@ func (s *PostgresStore) GetMailingListSenderResolveCandidates(ctx context.Contex
 // in place if the person's GitHub identity is found later). Idempotent: returns
 // an existing contributor when the email already resolves. Returns "" for an
 // empty/invalid email (caller skips).
+// emailContributorLockClass is the advisory-lock NAMESPACE for
+// CreateEmailOnlyContributor. The two-arg pg_advisory_xact_lock(int,int)
+// uses a lock space DISTINCT from the int64 pg_advisory_xact_lock(bigint)
+// locks (migrate / Jira registration), so there is no cross-collision.
+const emailContributorLockClass int32 = 0x41564C45 // "AVLE"
+
+// emailContributorLockObj hashes the normalized email to the second lock
+// key. An objID collision merely serializes two unrelated emails — harmless.
+func emailContributorLockObj(email string) int32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strings.ToLower(email)))
+	return int32(h.Sum32())
+}
+
+// ensureAliasTx is the tx-scoped twin of EnsureContributorAlias — it must run
+// INSIDE CreateEmailOnlyContributor's transaction so the alias write is
+// covered by the same advisory lock.
+func ensureAliasTx(ctx context.Context, tx pgx.Tx, cntrbID, aliasEmail string) error {
+	// Round 29 (PR #193): contributorAliasUpsertSQL (SR-17, one spelling)
+	// REASSIGNS a stale alias whose owner is a soft-deleted merge loser —
+	// without it the new contributor never owns the alias and the sender
+	// resolve-loops every cooldown.
+	if _, err := tx.Exec(ctx, contributorAliasUpsertSQL,
+		cntrbID, aliasEmail, MailingListToolSource, "Mailing List"); err != nil {
+		return fmt.Errorf("ensure alias %q: %w", aliasEmail, err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) CreateEmailOnlyContributor(ctx context.Context, email string) (string, error) {
 	email = strings.TrimSpace(email)
 	if email == "" || !strings.Contains(email, "@") {
 		return "", nil
 	}
 	var id string
-	if err := s.pool.QueryRow(ctx, `
-		SELECT cntrb_id::text FROM aveloxis_data.contributors
-		WHERE COALESCE(cntrb_deleted, 0) = 0 AND (cntrb_email = $1 OR cntrb_canonical = $1)
-		LIMIT 1`, email).Scan(&id); err == nil && id != "" {
-		// Copilot round 26 (PR #193): ensure the convergence alias even for
-		// an EXISTING contributor — a prior run may have created the row but
-		// lost its alias (the pre-fix best-effort write), and the by-email
-		// probe above would otherwise return early forever without repairing
-		// it. EnsureContributorAlias is idempotent; propagate its failure so
-		// the caller keeps the sender retryable.
-		if aerr := s.EnsureContributorAlias(ctx, id, email, MailingListToolSource, "Mailing List"); aerr != nil {
-			return "", fmt.Errorf("ensure alias for existing contributor %q: %w", email, aerr)
+	// Copilot round 28 (PR #193): SERIALIZE all creators for this email.
+	// Without the lock two scheduler processes both miss the probes below,
+	// both INSERT a contributor, and EnsureContributorAlias's
+	// ON CONFLICT (alias_email) DO NOTHING then leaves a DUPLICATE active
+	// contributor for one email — the loser's row owns no alias, so the
+	// direct attribution arm is ambiguous. The whole probe-then-create runs
+	// in ONE transaction under a per-email advisory xact lock, and the
+	// returned id is the contributor the alias actually points at. withRetry
+	// handles a 40P01 on the insert; the advisory lock releases on rollback.
+	if err := s.withRetry(ctx, func(ctx context.Context) error {
+		id = ""
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
 		}
-		return id, nil
-	}
-	if err := s.pool.QueryRow(ctx,
-		`SELECT cntrb_id::text FROM aveloxis_data.contributors_aliases WHERE alias_email = $1 LIMIT 1`, email).Scan(&id); err == nil && id != "" {
-		return id, nil
-	}
-	if err := s.pool.QueryRow(ctx, `
-		INSERT INTO aveloxis_data.contributors
-			(cntrb_id, cntrb_login, gh_login, cntrb_email, cntrb_canonical,
-			 tool_source, data_source, data_collection_date)
-		VALUES (gen_random_uuid(), '', '', $1, $1,
-			'Aveloxis Mailing List Collector', 'Mailing List', NOW())
-		RETURNING cntrb_id::text`, email).Scan(&id); err != nil {
-		return "", fmt.Errorf("create email-only contributor %q: %w", email, err)
-	}
-	// Alias for commit-email convergence (Copilot round 26 on PR #193):
-	// PROPAGATE the failure. A silently-lost alias would never be repaired —
-	// the caller marks the sender terminally resolved, and a retry hits the
-	// by-email probe above and returns early. Returning the error keeps the
-	// sender retryable (the caller stamps resolved=false on any error).
-	if aerr := s.EnsureContributorAlias(ctx, id, email, MailingListToolSource, "Mailing List"); aerr != nil {
-		return "", fmt.Errorf("ensure alias for new contributor %q: %w", email, aerr)
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`,
+			emailContributorLockClass, emailContributorLockObj(email)); err != nil {
+			return err
+		}
+
+		// Re-probe INSIDE the lock — a concurrent creator that already
+		// committed is now visible.
+		if e := tx.QueryRow(ctx, `
+			SELECT cntrb_id::text FROM aveloxis_data.contributors
+			WHERE COALESCE(cntrb_deleted, 0) = 0 AND (cntrb_email = $1 OR cntrb_canonical = $1)
+			LIMIT 1`, email).Scan(&id); e == nil && id != "" {
+			if aerr := ensureAliasTx(ctx, tx, id, email); aerr != nil {
+				return aerr
+			}
+			return tx.Commit(ctx)
+		}
+		// Round 29 (PR #193): the alias probe must require an ACTIVE owner —
+		// an alias pointing at a soft-deleted merge loser resolves nothing
+		// (the resolver's alias arm filters cntrb_deleted=0), so returning
+		// its dead owner here would hand back an unusable id; fall through
+		// to the create path, whose alias upsert REASSIGNS the stale row.
+		if e := tx.QueryRow(ctx, `
+			SELECT a.cntrb_id::text FROM aveloxis_data.contributors_aliases a
+			JOIN aveloxis_data.contributors c2 ON c2.cntrb_id = a.cntrb_id
+			WHERE a.alias_email = $1 AND COALESCE(c2.cntrb_deleted, 0) = 0
+			LIMIT 1`, email).Scan(&id); e == nil && id != "" {
+			return tx.Commit(ctx)
+		}
+
+		// Create — the lock guarantees we are the only creator.
+		if e := tx.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.contributors
+				(cntrb_id, cntrb_login, gh_login, cntrb_email, cntrb_canonical,
+				 tool_source, data_source, data_collection_date)
+			VALUES (gen_random_uuid(), '', '', $1, $1,
+				'Aveloxis Mailing List Collector', 'Mailing List', NOW())
+			RETURNING cntrb_id::text`, email).Scan(&id); e != nil {
+			return fmt.Errorf("create email-only contributor %q: %w", email, e)
+		}
+		if aerr := ensureAliasTx(ctx, tx, id, email); aerr != nil {
+			return aerr
+		}
+		// Return the ACTIVE contributor the alias points at (belt — under
+		// the lock this is the row we just inserted, and the alias upsert
+		// reassigned any stale row to it).
+		_ = tx.QueryRow(ctx, `
+			SELECT a.cntrb_id::text FROM aveloxis_data.contributors_aliases a
+			JOIN aveloxis_data.contributors c2 ON c2.cntrb_id = a.cntrb_id
+			WHERE a.alias_email = $1 AND COALESCE(c2.cntrb_deleted, 0) = 0
+			LIMIT 1`, email).Scan(&id)
+		return tx.Commit(ctx)
+	}); err != nil {
+		return "", err
 	}
 	return id, nil
 }

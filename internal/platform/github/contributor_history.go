@@ -288,18 +288,46 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 		// error the classifier cannot see). ClassTransient covers the first
 		// two; the string check covers the truncated-body case. Same policy
 		// as the classification sweep's fetchActivityWithSubdivide (v0.27.81).
-		if platform.ClassifyError(err) == platform.ClassTransient ||
-			strings.Contains(err.Error(), "RESOURCE_LIMITS_EXCEEDED") {
-			if w.To.Sub(w.From) >= historyMinWindow {
-				c.logger.Info("activity history: query too expensive — subdividing window",
-					"login", login,
-					"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))
-				mid := w.From.Add(w.To.Sub(w.From) / 2)
-				if serr := c.fetchHistoryWindow(ctx, login, HistoryWindow{From: w.From, To: mid}, acc); serr != nil {
-					return serr
-				}
-				return c.fetchHistoryWindow(ctx, login, HistoryWindow{From: mid, To: w.To}, acc)
+		// The explicit RESOURCE_LIMITS_EXCEEDED marker (global message OR a
+		// truncated body carrying it) is the ONLY reliable "too expensive"
+		// signal. ClassTransient is broader (it also covers outages, DNS
+		// failures, request deadlines — platform/errors.go).
+		tooExpensive := strings.Contains(err.Error(), "RESOURCE_LIMITS_EXCEEDED")
+		// Subdivide a too-expensive OR transiently-failing window above the
+		// floor: a shorter span aggregates fewer contributions (recovers the
+		// too-expensive-as-500 case) and can survive a mid-window blip.
+		// Copilot round 29 (PR #193) DECLINED narrowing this gate to the
+		// explicit marker only: the chaoss.tv log shows too-expensive
+		// windows presenting as PERSISTENT 500s with no in-body marker
+		// (QCADevProd/robinmordasiewicz — "exhausted 10 retries: transient"),
+		// and v0.27.81's fetchActivityWithSubdivide subdivides on
+		// ClassTransient for exactly that measured shape. Gating on the
+		// marker alone would re-strand those windows forever. The
+		// reviewer's real hazard — a generic outage recursing to the floor
+		// and being SKIPPED as lossy — is closed below: only the explicit
+		// marker is lossy at the floor; a generic transient BUBBLES, so an
+		// outage costs at most a bounded chain of subdivision attempts
+		// (~log2(span/48h) levels) before the contributor fails and
+		// retries. Nothing incomplete is ever stamped.
+		if w.To.Sub(w.From) >= historyMinWindow &&
+			(tooExpensive || platform.ClassifyError(err) == platform.ClassTransient) {
+			c.logger.Info("activity history: query too expensive or transient — subdividing window",
+				"login", login,
+				"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))
+			mid := w.From.Add(w.To.Sub(w.From) / 2)
+			if serr := c.fetchHistoryWindow(ctx, login, HistoryWindow{From: w.From, To: mid}, acc); serr != nil {
+				return serr
 			}
+			return c.fetchHistoryWindow(ctx, login, HistoryWindow{From: mid, To: w.To}, acc)
+		}
+		// At the 48h floor. Copilot round 28 (PR #193): ONLY an explicit
+		// RESOURCE_LIMITS_EXCEEDED is unrecoverable-and-lossy here — a 48h
+		// span GitHub still refuses is genuinely too big, so skip it (data
+		// lost) rather than stranding the contributor. A GENERIC transient
+		// at the floor (outage/DNS/deadline) is NOT proof the query is too
+		// expensive: BUBBLE it so the whole contributor fails and is retried
+		// on the next claim, never persisted with silently-incomplete history.
+		if tooExpensive {
 			c.logger.Info("activity history: query too expensive at minimum window — span skipped",
 				"login", login,
 				"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))

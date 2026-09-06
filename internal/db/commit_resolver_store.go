@@ -261,15 +261,17 @@ func (s *PostgresStore) InsertUnresolvedEmail(ctx context.Context, email string)
 	}
 }
 
-// EnsureContributorAlias creates an alias linking a commit email to a contributor.
-// The canonical_email is looked up from the contributor row; alias_email is the
-// commit email that differs from the canonical.
-// v0.29.0 Part E: toolSource/dataSource are parameters now — the old
-// hardcoded 'aveloxis-commit-resolver'/'GitHub API' stamped
-// mailing-list-origin aliases with commit-resolver provenance, which
-// misled every provenance audit that trusted the columns.
-func (s *PostgresStore) EnsureContributorAlias(ctx context.Context, cntrbID, aliasEmail, toolSource, dataSource string) error {
-	_, err := s.pool.Exec(ctx, `
+// contributorAliasUpsertSQL is the ONE alias-upsert spelling (SR-17),
+// shared by EnsureContributorAlias (pool) and ensureAliasTx (the
+// CreateEmailOnlyContributor transaction twin). Copilot round 29 on
+// PR #193: the old ON CONFLICT DO NOTHING left a STALE alias in place
+// when its owner was a soft-deleted merge loser (the v0.22.3 merge
+// path never repoints the loser's own alias rows) — the resolver's
+// alias arm filters to active owners, so the alias resolved nothing
+// while its existence blocked the new contributor from ever owning
+// it. The DO UPDATE reassigns ONLY when the current owner is
+// soft-deleted; an ACTIVE owner's alias is never stolen.
+const contributorAliasUpsertSQL = `
 		INSERT INTO aveloxis_data.contributors_aliases
 			(cntrb_id, canonical_email, alias_email, cntrb_active,
 			 tool_source, data_source, data_collection_date)
@@ -281,7 +283,26 @@ func (s *PostgresStore) EnsureContributorAlias(ctx context.Context, cntrbID, ali
 			),
 			$2, 1,
 			$3, $4, NOW())
-		ON CONFLICT (alias_email) DO NOTHING`,
+		ON CONFLICT (alias_email) DO UPDATE SET
+			cntrb_id = EXCLUDED.cntrb_id,
+			canonical_email = EXCLUDED.canonical_email,
+			tool_source = EXCLUDED.tool_source,
+			data_source = EXCLUDED.data_source,
+			data_collection_date = NOW()
+		WHERE COALESCE((SELECT dead.cntrb_deleted FROM aveloxis_data.contributors dead
+		                WHERE dead.cntrb_id = contributors_aliases.cntrb_id), 1) <> 0`
+
+// EnsureContributorAlias creates an alias linking a commit email to a contributor.
+// The canonical_email is looked up from the contributor row; alias_email is the
+// commit email that differs from the canonical.
+// v0.29.0 Part E: toolSource/dataSource are parameters now — the old
+// hardcoded 'aveloxis-commit-resolver'/'GitHub API' stamped
+// mailing-list-origin aliases with commit-resolver provenance, which
+// misled every provenance audit that trusted the columns.
+// Round 29: a stale alias (soft-deleted owner) is REASSIGNED to the
+// caller's contributor; see contributorAliasUpsertSQL.
+func (s *PostgresStore) EnsureContributorAlias(ctx context.Context, cntrbID, aliasEmail, toolSource, dataSource string) error {
+	_, err := s.pool.Exec(ctx, contributorAliasUpsertSQL,
 		cntrbID, aliasEmail, toolSource, dataSource)
 	return err
 }

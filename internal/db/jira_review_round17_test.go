@@ -47,10 +47,10 @@ func TestMirrorNodeLinkIsGroupScoped(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
-			c := t.Context()
-			store.pool.Exec(c, `DELETE FROM aveloxis_data.pull_requests WHERE repo_id = $1`, id)
-			store.pool.Exec(c, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, id)
-			store.pool.Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+			c := context.Background()
+			cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.pull_requests WHERE repo_id = $1`, id)
+			cleanupExecRetry(c, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, id)
+			cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
 		})
 		return id
 	}

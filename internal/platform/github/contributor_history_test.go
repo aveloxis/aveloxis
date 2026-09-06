@@ -352,6 +352,29 @@ func TestFetchContributorDailyHistorySubdividesOnRetryExhaustion(t *testing.T) {
 	}
 }
 
+// TestFetchContributorDailyHistoryGenericTransientAtFloorBubbles (Copilot
+// round 28, PR #193): ClassTransient covers outages/DNS/deadlines, not just
+// too-expensive queries. A GENERIC transient at the 48h floor (no
+// RESOURCE_LIMITS_EXCEEDED marker) must BUBBLE — fail the contributor for a
+// retry — never be treated as a lossy "too expensive" skip that persists
+// incomplete history.
+func TestFetchContributorDailyHistoryGenericTransientAtFloorBubbles(t *testing.T) {
+	restore := platform.SetGraphQLSleepForTest(func(context.Context, time.Duration) error { return nil })
+	defer restore()
+	client, _ := newHistoryTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError) // pure outage — never RLE
+	})
+	// A 1-day window is already at the floor: it cannot subdivide.
+	wins := []HistoryWindow{{From: day("2026-03-05"), To: day("2026-03-06")}}
+	_, _, err := client.FetchContributorDailyHistory(t.Context(), "outage-user", wins)
+	if err == nil {
+		t.Fatal("a generic transient at the floor must BUBBLE (contributor retried), not be skipped as lossy")
+	}
+	if strings.Contains(err.Error(), "RESOURCE_LIMITS_EXCEEDED") {
+		t.Errorf("this is an outage, not a resource limit: %v", err)
+	}
+}
+
 func TestFetchContributorDailyHistoryWindowsConcurrently(t *testing.T) {
 	var mu sync.Mutex
 	cur, peak := 0, 0

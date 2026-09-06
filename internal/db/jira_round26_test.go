@@ -112,10 +112,18 @@ func TestCreateEmailOnlyContributorPropagatesAliasError(t *testing.T) {
 	body := srctest.StripGoComments(srctest.FuncBody(t,
 		srctest.Read(t, "internal/db/mailinglist_sender_resolve_store.go"),
 		"func (s *PostgresStore) CreateEmailOnlyContributor("))
-	if strings.Contains(body, "_ = s.EnsureContributorAlias") {
-		t.Error("CreateEmailOnlyContributor must PROPAGATE the alias error, not discard it with `_ =` (round 26)")
+	// Round 28 (PR #193): the alias write moved into the transaction
+	// (ensureAliasTx) under a per-email advisory lock. It must still be
+	// error-propagating on both the existing-by-email and create paths, and
+	// the discard form must never return.
+	if strings.Contains(body, "_ = ensureAliasTx") || strings.Contains(body, "_ = s.EnsureContributorAlias") {
+		t.Error("CreateEmailOnlyContributor must PROPAGATE the alias error, not discard it (round 26/28)")
 	}
-	if strings.Count(body, "EnsureContributorAlias") < 2 {
-		t.Error("CreateEmailOnlyContributor must ensure the alias on BOTH the existing-by-email and the create paths (round 26)")
+	if strings.Count(body, "ensureAliasTx(ctx, tx") < 2 {
+		t.Error("CreateEmailOnlyContributor must ensure the alias on BOTH the existing-by-email and the create paths (round 26/28)")
+	}
+	// Round 28: the create must be serialized by a per-email advisory lock.
+	if !strings.Contains(body, "pg_advisory_xact_lock") {
+		t.Error("CreateEmailOnlyContributor must serialize concurrent creators with a per-email advisory lock (round 28)")
 	}
 }

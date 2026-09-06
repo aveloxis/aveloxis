@@ -1368,7 +1368,7 @@ aveloxis register-jira-projects
 The one-shot identity + state pass over every registered Jira
 project: bulk-searches each registration's Jira Server (identity and
 state fields; comments are the collector's job) and writes reporter
-identity + authoritative issue state onto the synthetic issues
+and assignee identity + authoritative issue state onto the synthetic issues
 through the same provider-precedence writers the collector uses. The
 registrations in `jira_project_serve` are the ONLY project source —
 their repo mapping and `base_url` are operator-correctable, and the

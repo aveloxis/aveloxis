@@ -51,6 +51,10 @@ var v029DeployChecklist = []deployStep{
 var deployChecklists = map[string][]deployStep{
 	"0.29.0": v029DeployChecklist,
 	"0.29.1": v029DeployChecklist,
+	// v0.29.2 (code-review round 2026-09-06): runtime fixes + two LEDGERED
+	// heals (dead-owned alias reassign + sender-stamp re-open) — both run
+	// automatically inside migrate; no new operator step, same ladder.
+	"0.29.2": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

@@ -125,6 +125,19 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 				case historyCanceled:
 				default:
 					failed.Add(1)
+					// Code-review round 2026-09-06 (finding 3): stamp the
+					// failure so HistoryFailureCooldown retires this
+					// contributor from the NULLS FIRST claim head instead
+					// of re-burning a subdivision chain every tick (the
+					// failing-cohort-dominates-pool class). Best-effort:
+					// a lost stamp is one extra retry, and shutdown
+					// (historyCanceled) never stamps.
+					if merr := s.store.MarkHistoryFetchFailed(ctx, c.ID); merr != nil {
+						if errors.Is(merr, context.Canceled) {
+							return // shutdown, not a failure — re-claims next tick
+						}
+						s.logger.Warn("activity history: failure stamp failed — contributor stays at the claim head", "login", c.Login, "error", merr)
+					}
 				}
 			}()
 			outcome = s.processHistoryContributor(ctx, fetcher, c, windowDays)

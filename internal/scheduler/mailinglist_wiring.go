@@ -201,13 +201,24 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 					// email-only contributor so they're attributed and ride the
 					// convergence ticker. Bot-relayed senders get no contributor.
 					if c.HumanClass && !collector.IsAutomationEmail(c.SenderEmail) {
-						_, cerr := s.store.CreateEmailOnlyContributor(ctx, c.SenderEmail)
+						createdID, cerr := s.store.CreateEmailOnlyContributor(ctx, c.SenderEmail)
 						if errors.Is(cerr, context.Canceled) {
 							return // shutdown, not a failure: no attempt stamped
 						}
 						if cerr != nil {
 							s.logger.Warn("mailing-list: email-only contributor create failed", "email", c.SenderEmail, "error", cerr)
 							_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+							continue
+						}
+						// Code-review round 2026-09-06 (finding 7): ("", nil) is
+						// the documented invalid-email outcome (no '@') — NOTHING
+						// was created. Stamping it "email-only" would lie about a
+						// contributor that does not exist and created++ would
+						// over-report. A malformed From header can never become
+						// valid, so the terminal stamp is right — but under its
+						// honest source, and never counted as a creation.
+						if createdID == "" {
+							_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "invalid-email", "")
 							continue
 						}
 						_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "email-only", "")

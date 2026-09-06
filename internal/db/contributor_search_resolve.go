@@ -47,6 +47,21 @@ const SearchResolveCooldown = "30 days"
 // past-cooldown last_search_attempted_at. Excludes noreply emails
 // (users.noreply.github.com et al.) — they're guaranteed search
 // misses and would waste the rate limit.
+// mergeLoserAliasRepointSQL (code-review round 2026-09-06, finding 5 —
+// the ROOT CAUSE of the stale-alias class): every merge soft-deletes the
+// loser but used to leave the loser's OWN contributors_aliases rows
+// pointing at the now-dead cntrb_id. The resolver's alias arm filters to
+// ACTIVE owners, so each merge manufactured aliases that resolved
+// nothing while blocking re-creation (round 29's symptom). Repointing
+// them to the winner INSIDE the merge transaction kills the class at
+// the source. ONE spelling (SR-17), shared by all three merge paths
+// (LinkContributorToGitHubUser, RenameContributorGhLogin, and
+// cntrb_id_merge.go's MergeCntrbIDCollisionsBatch).
+const mergeLoserAliasRepointSQL = `
+		UPDATE aveloxis_data.contributors_aliases
+		SET cntrb_id = $1::uuid, data_collection_date = NOW()
+		WHERE cntrb_id = $2::uuid`
+
 func (s *PostgresStore) GetContributorsNeedingSearch(ctx context.Context, limit int) ([]SearchResolveCandidate, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT cntrb_id::text, cntrb_email
@@ -172,6 +187,13 @@ func (s *PostgresStore) LinkContributorToGitHubUser(ctx context.Context, cntrbID
 			// Soft-delete the loser. R2 (identity-key immutability):
 			// cntrb_id is preserved. R10 (FK integrity): every child
 			// row that referenced this cntrb_id still resolves.
+			// Finding 5 (code-review round): repoint the loser's OWN alias
+			// rows to the winner BEFORE soft-deleting — otherwise this
+			// merge mints the stale dead-owned aliases round 29 repairs.
+			if _, err := tx.Exec(ctx, mergeLoserAliasRepointSQL,
+				winner.cntrbID, c.cntrbID); err != nil {
+				return fmt.Errorf("repoint loser %s aliases: %w", c.cntrbID, err)
+			}
 			if _, err := tx.Exec(ctx, `
 				UPDATE aveloxis_data.contributors
 				SET cntrb_deleted = 1, data_collection_date = NOW()
@@ -308,6 +330,13 @@ func (s *PostgresStore) RenameContributorGhLogin(ctx context.Context, cntrbID, n
 					winner.cntrbID, c.email); err != nil {
 					return fmt.Errorf("insert alias for loser %s: %w", c.cntrbID, err)
 				}
+			}
+			// Finding 5 (code-review round): repoint the loser's OWN alias
+			// rows to the winner BEFORE soft-deleting — otherwise this
+			// merge mints the stale dead-owned aliases round 29 repairs.
+			if _, err := tx.Exec(ctx, mergeLoserAliasRepointSQL,
+				winner.cntrbID, c.cntrbID); err != nil {
+				return fmt.Errorf("repoint loser %s aliases: %w", c.cntrbID, err)
 			}
 			if _, err := tx.Exec(ctx, `
 				UPDATE aveloxis_data.contributors

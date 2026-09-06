@@ -67,6 +67,21 @@ func TestMirrorNodeLinkIsGroupScoped(t *testing.T) {
 			`UPDATE aveloxis_data.repos SET repo_group_id = $2 WHERE repo_id = $1`, repoID, group)
 	}
 
+	// Code-review round 2026-09-06 (finding 15): the group cleanup is
+	// registered BEFORE the mk() calls so LIFO runs it LAST — after the
+	// repos referencing it are deleted. Registered after them, it ran
+	// FIRST while `foreign` still carried repo_group_id = otherGroup, the
+	// DELETE failed its FK silently (bare Exec), and one repo_groups row
+	// leaked per run (the residue-poisons-reruns class this file's other
+	// cleanups were converted for).
+	var otherGroup int64
+	t.Cleanup(func() {
+		if otherGroup != 0 {
+			cleanupExecRetry(context.Background(), store,
+				`DELETE FROM aveloxis_data.repo_groups WHERE repo_group_id = $1`, otherGroup)
+		}
+	})
+
 	listRepo := mk("_avr17", "arrow")      // the list's primary repo
 	sibling := mk("_avr17", "arrow-rs")    // same PMC group
 	foreign := mk("_avr17x", "kubernetes") // another project entir
@@ -75,14 +90,10 @@ func TestMirrorNodeLinkIsGroupScoped(t *testing.T) {
 	// foreign goes into a DIFFERENT group (UpsertRepo's default group
 	// is shared, so the foreign repo must be moved out of it or the
 	// scope test is vacuous).
-	var otherGroup int64
 	mustQueryRowRetry(ctx, t, store,
 		`INSERT INTO aveloxis_data.repo_groups (rg_name) VALUES ($1) RETURNING repo_group_id`,
 		&otherGroup, "_avr17-other-"+tag)
 	setGroup(foreign, otherGroup)
-	t.Cleanup(func() {
-		store.pool.Exec(context.Background(), `DELETE FROM aveloxis_data.repo_groups WHERE repo_group_id = $1`, otherGroup)
-	})
 
 	node := "PR_avR17scope" + tag
 	var prID int64

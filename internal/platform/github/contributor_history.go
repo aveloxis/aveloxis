@@ -5,6 +5,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -269,46 +270,39 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 
 	var resp historyWindowResp
 	if err := c.http.GraphQL(ctx, query, nil, &resp); err != nil {
-		// chaoss.tv log (2026-09-03..05: 11,003 stuck history fetches):
-		// GitHub rejects a too-expensive window with
-		// RESOURCE_LIMITS_EXCEEDED — the same overload signal as a cap
-		// hit, but delivered as an ERROR (no data) rather than truncated
-		// data. Failing the contributor re-fetches the SAME expensive
-		// window on every next claim, so a prolific contributor's history
-		// sweep never advances. Subdivide instead (a shorter span
-		// aggregates fewer contributions and is cheap enough to compute),
-		// down to the 48h floor where the span is skipped rather than
-		// failing the whole contributor — mirroring the cap-hit path and
-		// the classification sweep's fetchActivityWithSubdivide (v0.27.81).
-		// chaoss.tv log (2026-09-05): the too-expensive signal arrives in
-		// THREE shapes, all "subdivide" — a global RESOURCE_LIMITS_EXCEEDED
-		// (ErrResourceLimits → ClassTransient), a retry-budget exhaustion
-		// on repeated 500s (ErrTransient → ClassTransient), and a TRUNCATED
-		// body whose partial JSON carries RESOURCE_LIMITS_EXCEEDED (a decode
-		// error the classifier cannot see). ClassTransient covers the first
-		// two; the string check covers the truncated-body case. Same policy
-		// as the classification sweep's fetchActivityWithSubdivide (v0.27.81).
-		// The explicit RESOURCE_LIMITS_EXCEEDED marker (global message OR a
-		// truncated body carrying it) is the ONLY reliable "too expensive"
-		// signal. ClassTransient is broader (it also covers outages, DNS
-		// failures, request deadlines — platform/errors.go).
-		tooExpensive := strings.Contains(err.Error(), "RESOURCE_LIMITS_EXCEEDED")
-		// Subdivide a too-expensive OR transiently-failing window above the
-		// floor: a shorter span aggregates fewer contributions (recovers the
-		// too-expensive-as-500 case) and can survive a mid-window blip.
-		// Copilot round 29 (PR #193) DECLINED narrowing this gate to the
-		// explicit marker only: the chaoss.tv log shows too-expensive
-		// windows presenting as PERSISTENT 500s with no in-body marker
-		// (QCADevProd/robinmordasiewicz — "exhausted 10 retries: transient"),
-		// and v0.27.81's fetchActivityWithSubdivide subdivides on
-		// ClassTransient for exactly that measured shape. Gating on the
-		// marker alone would re-strand those windows forever. The
-		// reviewer's real hazard — a generic outage recursing to the floor
-		// and being SKIPPED as lossy — is closed below: only the explicit
-		// marker is lossy at the floor; a generic transient BUBBLES, so an
-		// outage costs at most a bounded chain of subdivision attempts
-		// (~log2(span/48h) levels) before the contributor fails and
-		// retries. Nothing incomplete is ever stamped.
+		// Error-path policy (rounds 26/28/29 + code-review round
+		// 2026-09-06 — one narrative, superseding the earlier stacked
+		// comments; chaoss.tv logs 2026-09-03..05 are the evidence base):
+		//
+		// The "window is too expensive" signal arrives in three shapes —
+		//  (a) a global RESOURCE_LIMITS_EXCEEDED (the ErrResourceLimits
+		//      sentinel; gate with errors.Is, never the message text —
+		//      graphql.go's own contract, code-review finding 12);
+		//  (b) a TRUNCATED body whose partial JSON carries the marker (a
+		//      decode error the classifier cannot reach — the string
+		//      check exists ONLY for this shape, scoped to decode
+		//      failures so ordinary errors echoing the bytes don't
+		//      false-match);
+		//  (c) persistent 500s that exhaust the retry budget
+		//      (ErrTransient — QCADevProd/robinmordasiewicz presented
+		//      this way; v0.27.81's fetchActivityWithSubdivide subdivides
+		//      on ClassTransient for exactly that measured shape, which
+		//      is why the subdivision gate below is NOT narrowed to the
+		//      explicit marker: that would re-strand those windows).
+		//
+		// ABOVE the 48h floor all three subdivide — a shorter span
+		// aggregates fewer contributions, and a mid-window blip can
+		// recover too. AT the floor the arms split (round 28): only the
+		// EXPLICIT marker (a/b) is lossy — a 48h span GitHub still
+		// refuses is genuinely too big, so the span is skipped (data
+		// lost, logged) rather than stranding the contributor. A generic
+		// transient at the floor (outage / DNS / deadline) is NOT proof
+		// of cost: it BUBBLES, the contributor fails un-stamped, and the
+		// scheduler's failure cooldown retires it from the claim head
+		// (code-review finding 3) — nothing incomplete is ever stamped.
+		tooExpensive := errors.Is(err, platform.ErrResourceLimits) ||
+			(strings.Contains(err.Error(), "decode graphql envelope") &&
+				strings.Contains(err.Error(), "RESOURCE_LIMITS_EXCEEDED"))
 		if w.To.Sub(w.From) >= historyMinWindow &&
 			(tooExpensive || platform.ClassifyError(err) == platform.ClassTransient) {
 			c.logger.Info("activity history: query too expensive or transient — subdividing window",
@@ -320,13 +314,6 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 			}
 			return c.fetchHistoryWindow(ctx, login, HistoryWindow{From: mid, To: w.To}, acc)
 		}
-		// At the 48h floor. Copilot round 28 (PR #193): ONLY an explicit
-		// RESOURCE_LIMITS_EXCEEDED is unrecoverable-and-lossy here — a 48h
-		// span GitHub still refuses is genuinely too big, so skip it (data
-		// lost) rather than stranding the contributor. A GENERIC transient
-		// at the floor (outage/DNS/deadline) is NOT proof the query is too
-		// expensive: BUBBLE it so the whole contributor fails and is retried
-		// on the next claim, never persisted with silently-incomplete history.
 		if tooExpensive {
 			c.logger.Info("activity history: query too expensive at minimum window — span skipped",
 				"login", login,

@@ -93,6 +93,8 @@ func TestRunMigrationsCreatesLedgerBeforeLedgeredSteps(t *testing.T) {
 // so renames must be deliberate: update BOTH the call site and this
 // fixture in the same change.
 var ledgeredStepLabels = []string{
+	"v0.29.2 reassign dead-owned contributor aliases to their unambiguous active match",
+	"v0.29.2 re-open terminal sender-resolve stamps stranded behind dead-owned aliases",
 	"v0.29.0 backfill collection_queue.last_activity_90d from the 90-day window",
 	"v0.29.0 heal cross-system mis-drained mailing-list rows",
 	"v0.29.0 backfill synthetic Jira issue state from notification subjects",

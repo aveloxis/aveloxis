@@ -2146,6 +2146,51 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// legitimately-dataless rows (deleted users, mark-only) stamped by
 	// the fixed code never match. Broken-era deleted users get exactly
 	// one harmless re-check.
+	// Code-review round 2026-09-06 (finding 5/6 historical cohort): every
+	// pre-fix merge left the loser's OWN alias rows pointing at the
+	// soft-deleted cntrb_id — dead-owned aliases that resolve nothing
+	// (the resolver's alias arm filters to active owners) while blocking
+	// re-creation. Forward fixes repoint inside each merge tx; these two
+	// ledgered steps heal what already accumulated. Step 1 reassigns a
+	// dead-owned alias to the ONE active contributor whose
+	// cntrb_email/canonical matches the alias_email (SR-6: ambiguous
+	// stays — the sender-resolve ticker handles those). Step 2 must run
+	// AFTER step 1: it re-opens the TERMINAL resolved=TRUE stamp for
+	// senders whose alias is STILL dead-owned and who have no active
+	// email-match — without it the round-29 candidate-pool fix can never
+	// reach them (the resolved filter runs before the alias anti-join).
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.2 reassign dead-owned contributor aliases to their unambiguous active match",
+		`UPDATE aveloxis_data.contributors_aliases a
+		 SET cntrb_id = m.active_id, data_collection_date = NOW()
+		 FROM (
+		     SELECT a2.alias_email,
+		            (array_agg(DISTINCT c.cntrb_id))[1] AS active_id
+		     FROM aveloxis_data.contributors_aliases a2
+		     JOIN aveloxis_data.contributors dead ON dead.cntrb_id = a2.cntrb_id
+		         AND COALESCE(dead.cntrb_deleted, 0) <> 0
+		     JOIN aveloxis_data.contributors c
+		         ON (c.cntrb_email = a2.alias_email OR c.cntrb_canonical = a2.alias_email)
+		        AND COALESCE(c.cntrb_deleted, 0) = 0
+		     GROUP BY a2.alias_email
+		     HAVING count(DISTINCT c.cntrb_id) = 1
+		 ) m
+		 WHERE a.alias_email = m.alias_email`)
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.2 re-open terminal sender-resolve stamps stranded behind dead-owned aliases",
+		`UPDATE aveloxis_ops.mailing_list_sender_resolve r
+		 SET resolved = FALSE
+		 WHERE r.resolved = TRUE
+		   AND EXISTS (
+		       SELECT 1 FROM aveloxis_data.contributors_aliases a
+		       JOIN aveloxis_data.contributors dead ON dead.cntrb_id = a.cntrb_id
+		       WHERE a.alias_email = r.sender_email
+		         AND COALESCE(dead.cntrb_deleted, 0) <> 0)
+		   AND NOT EXISTS (
+		       SELECT 1 FROM aveloxis_data.contributors c
+		       WHERE (c.cntrb_email = r.sender_email OR c.cntrb_canonical = r.sender_email)
+		         AND COALESCE(c.cntrb_deleted, 0) = 0)`)
+
 	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.79 re-null activity-check stamps from the resource-limits incident",
 		`UPDATE aveloxis_data.contributors
@@ -2160,6 +2205,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// v0.27.58: daily contributor activity history (see schema.sql for
 	// the design rationale — TEXT repo names on purpose, no repos FK).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_history_backfilled_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_history_failed_at", "TIMESTAMPTZ")
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.58 create contributor_activity_days",
 		`CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_days (

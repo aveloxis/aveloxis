@@ -283,6 +283,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.contributors (
     gh_activity_class           TEXT DEFAULT '',
     gh_activity_checked_at      TIMESTAMPTZ,
     gh_history_backfilled_at    TIMESTAMPTZ,
+    gh_history_failed_at        TIMESTAMPTZ,
     tool_source    TEXT DEFAULT 'aveloxis',
     tool_version   TEXT DEFAULT '',
     data_source    TEXT DEFAULT '',
@@ -352,6 +353,7 @@ ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_last_contribu
 ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_activity_class TEXT DEFAULT '';
 ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_activity_checked_at TIMESTAMPTZ;
 ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_history_backfilled_at TIMESTAMPTZ;
+ALTER TABLE aveloxis_data.contributors ADD COLUMN IF NOT EXISTS gh_history_failed_at TIMESTAMPTZ;
 
 -- v0.27.57 — GitHub contribution-activity classification (GraphQL
 -- contributionsCollection). Distinguishes publicly-active /

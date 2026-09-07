@@ -55,6 +55,10 @@ var deployChecklists = map[string][]deployStep{
 	// heals (dead-owned alias reassign + sender-stamp re-open) — both run
 	// automatically inside migrate; no new operator step, same ladder.
 	"0.29.2": v029DeployChecklist,
+	// v0.29.3 (docs formatting: table-scroll CSS + conf.py): no code or
+	// data change — inherits the shared v0.29.x ladder so operators
+	// jumping from pre-0.29 straight to 0.29.3 still see the heals.
+	"0.29.3": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

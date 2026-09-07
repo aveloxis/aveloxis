@@ -41,6 +41,13 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 html_theme = 'sphinx_rtd_theme'
 
+html_theme_options = {
+    "collapse_navigation": False,
+    "navigation_depth": 4,
+    "sticky_navigation": True,
+}
+
+
 # MyST-Parser settings for Markdown support
 myst_enable_extensions = [
     'colon_fence',
@@ -49,6 +56,9 @@ myst_enable_extensions = [
     'tasklist',
 ]
 myst_heading_anchors = 4
+
+html_static_path = ['_static']
+html_css_files = ['custom.css']
 
 # Pygments aliases. The docs build runs warnings-as-errors (docs.yml,
 # .readthedocs.yaml) and Sphinx wraps every lexer in Pygments'

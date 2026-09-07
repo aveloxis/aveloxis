@@ -42,10 +42,9 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 html_theme = 'sphinx_rtd_theme'
 
 html_theme_options = {
-    "features": [],
-    "palette": {},
-    # Sets fluid layout to expand with browser size
-    "toc_behavior": "scroll", 
+    "collapse_navigation": False,
+    "navigation_depth": 4,
+    "sticky_navigation": True,
 }
 
 

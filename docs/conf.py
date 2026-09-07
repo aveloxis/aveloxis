@@ -57,6 +57,9 @@ myst_enable_extensions = [
 ]
 myst_heading_anchors = 4
 
+html_static_path = ['_static']
+html_css_files = ['custom.css']
+
 # Pygments aliases. The docs build runs warnings-as-errors (docs.yml,
 # .readthedocs.yaml) and Sphinx wraps every lexer in Pygments'
 # raiseonerror filter, so a fence language must exist AND lex cleanly.

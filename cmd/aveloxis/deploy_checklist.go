@@ -59,6 +59,11 @@ var deployChecklists = map[string][]deployStep{
 	// data change — inherits the shared v0.29.x ladder so operators
 	// jumping from pre-0.29 straight to 0.29.3 still see the heals.
 	"0.29.3": v029DeployChecklist,
+	// v0.29.4 (the scancode-runner incident): host-scoped stop
+	// verifier, start/stop scancode-worker, the stamp-evidence gate
+	// here and the serve-startup other-serve refusal — no data change,
+	// same ladder.
+	"0.29.4": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.
@@ -101,21 +106,82 @@ type deployGate interface {
 	FleetHasCollectedData(ctx context.Context) (bool, error)
 	DeployAckExists(ctx context.Context, version string) (bool, error)
 	RecordDeployAck(ctx context.Context, version, note string) error
+	// SchemaVersion is the stamp with its error arm (SR-5) — the
+	// evidence the v0.29.4 gate reads before trusting the ledger.
+	SchemaVersion(ctx context.Context) (string, error)
+	// OtherServeConnected sights another aveloxis-serve on the database
+	// (own pool excluded) and where it connects from — a note at `start
+	// serve` time, never a refusal.
+	OtherServeConnected(ctx context.Context) (db.OtherServe, error)
+}
+
+// deployStepsProvablyUnrun reports whether the schema stamp proves this
+// binary's deploy steps have NOT completed: the stamp moves only when a
+// migration of this binary COMPLETES (step 2 of the ladder, `aveloxis
+// migrate --skip-views` after `stop all` — or a serve's own startup
+// migration), so a stamp behind the binary means no such migration has
+// completed here — whatever the ledger or an operator's "y" says (a
+// migrate that ran and failed closed leaves the stamp behind too; the
+// operator action is the same). An empty stamp is unknown (the prompt flow
+// decides); an unparseable one refuses (fail closed, --skip-deploy-check
+// remains). v0.29.4: a second host's `start serve` with a newer binary
+// was prompted and acknowledged 0.29.3 on production's ledger while the
+// stamp still read 0.29.2.
+func deployStepsProvablyUnrun(stamp, binary string) bool {
+	return stamp != "" && !db.SchemaVersionAtLeast(stamp, binary)
 }
 
 // checkDeployReadiness returns proceed=false when the operator must run
-// (or bypass) this release's deploy steps first. Interactive terminals
-// get a y/N prompt (yes records the ack and proceeds); non-interactive
-// invocations refuse unless skip is set. A version with no checklist,
-// a fresh fleet, or an already-acked version proceeds silently.
+// (or bypass) this release's deploy steps first. On an EXISTING fleet
+// (round-5 finding 1, L4 — independent of whether the version carries a
+// checklist): another connected aveloxis-serve is named (never a
+// refusal); a schema stamp behind the binary refuses, because no
+// migration of this binary has completed here (the ladder's step 2).
+// Then, for versions with a checklist, interactive terminals get a y/N
+// prompt (yes records the ack and proceeds) and non-interactive
+// invocations refuse unless skip is set. A fresh fleet, a version with
+// no checklist on a current stamp, and an already-acked version proceed
+// silently.
 func checkDeployReadiness(ctx context.Context, g deployGate, version string, skip bool, in *os.File, out io.Writer) (proceed bool, err error) {
-	steps, hasChecklist := deployChecklistFor(version)
-	if !hasChecklist {
-		return true, nil
-	}
 	fleetHasData, err := g.FleetHasCollectedData(ctx)
 	if err != nil {
 		return false, err
+	}
+	if !fleetHasData {
+		return true, nil
+	}
+	// Round-4 finding 3 (observation only): a same-version second serve
+	// passes the stamp refusal below AND serve's own startup gate — the
+	// dedicated-host mistake with the version drift removed — so say it
+	// here, where the operator is looking, with the address that tells
+	// the primary from a serve on this host — running or draining
+	// (round-5 finding 5, round-8 finding 4). Never blocks (two serves may be deliberate); a
+	// failed probe is said, never folded into "no other serve".
+	if sight, err := g.OtherServeConnected(ctx); err != nil {
+		fmt.Fprintf(out, "(could not check for another aveloxis-serve on this database: %v)\n", err)
+	} else if sight.Connected {
+		fmt.Fprintf(out, "Note: another aveloxis-serve is already connected to this database from %s. %s A second full scheduler competes with the first for the same queue and API keys.\n", sight.Describe(), sight.Advice())
+	}
+	// Evidence before trust (v0.29.4): read the stamp BEFORE the ledger
+	// or any prompt, so a foreign or mistaken ack cannot pass a binary
+	// whose migration has not completed here. A probe error fails closed.
+	stamp, err := g.SchemaVersion(ctx)
+	if err != nil {
+		return false, fmt.Errorf("reading the schema stamp for the deploy gate: %w", err)
+	}
+	if deployStepsProvablyUnrun(stamp, version) {
+		if skip {
+			fmt.Fprintf(out, "WARNING: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`aveloxis migrate --skip-views`) has not completed against this database. Proceeding anyway (--skip-deploy-check); serve will still refuse its own startup migration while another aveloxis-serve is connected (see any note above).\n", stamp, version, version)
+			return true, nil
+		}
+		fmt.Fprintf(out, "Refusing to start: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`aveloxis migrate --skip-views`) has not completed against this database.\n", stamp, version, version)
+		fmt.Fprintln(out, "Run them from the primary host (`aveloxis stop all`, `aveloxis migrate --skip-views`, the heals, `aveloxis ack-deploy`), or pass --skip-deploy-check.")
+		fmt.Fprintln(out, "If this host should only run scancode, use `aveloxis start scancode-worker` instead — `start serve` is the full scheduler regardless of the config's knobs.")
+		return false, nil
+	}
+	steps, hasChecklist := deployChecklistFor(version)
+	if !hasChecklist {
+		return true, nil
 	}
 	acked, err := g.DeployAckExists(ctx, version)
 	if err != nil {
@@ -147,11 +213,10 @@ func checkDeployReadiness(ctx context.Context, g deployGate, version string, ski
 }
 
 // runDeployGate wires checkDeployReadiness to the real store for the
-// start command. It never blocks a fresh install or an acked release.
+// start command. It never blocks a fresh install or an acked release on
+// a current stamp; the stamp evidence and the other-serve note run for
+// every version (round-5 finding 1).
 func runDeployGate(cfgPath string, skip bool) (bool, error) {
-	if _, ok := deployChecklistFor(db.ToolVersion); !ok {
-		return true, nil
-	}
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	cfg := loadConfig(cfgPath, bootLog)
 	ctx := context.Background()
@@ -161,6 +226,24 @@ func runDeployGate(cfgPath string, skip bool) (bool, error) {
 	}
 	defer store.Close()
 	return checkDeployReadiness(ctx, store, db.ToolVersion, skip, os.Stdin, os.Stdout)
+}
+
+// startAbortMessage is `start serve`'s abort line, worded for the
+// reasons that can ACTUALLY have refused THIS binary. Round 5 made the
+// stamp evidence fire independently of deployChecklists, so for a
+// version with no map entry checkDeployReadiness returns false only on
+// the stamp — and naming `aveloxis deploy-checklist` there sends the
+// operator to a command that answers "aveloxis <version> has no manual
+// deploy steps": a dead end at exactly the moment they need the way
+// out (round-8 finding 4). The map's own comment schedules entries to
+// age out two releases after the one that introduced them, so the
+// no-entry state is a planned state, not a slip.
+func startAbortMessage(version string) string {
+	const stamp = "a schema stamp behind this binary, which only a completed migration of this binary moves: the ladder's `aveloxis migrate --skip-views`"
+	if _, ok := deployChecklistFor(version); !ok {
+		return fmt.Sprintf("start aborted: see the reason printed above (%s); --skip-deploy-check bypasses", stamp)
+	}
+	return fmt.Sprintf("start aborted: see the reason printed above (un-acknowledged deploy steps — `aveloxis deploy-checklist` lists them, `aveloxis ack-deploy` records them — or %s); --skip-deploy-check bypasses", stamp)
 }
 
 func deployChecklistCmd() *cobra.Command {
@@ -186,7 +269,9 @@ func ackDeployCmd(cfgPath *string) *cobra.Command {
 		Short: "Record that this release's deploy/heal steps were run",
 		Long: `Marks the current binary version's deploy steps complete so
 ` + "`aveloxis start serve`" + ` / ` + "`start all`" + ` stops prompting for them.
-Run this AFTER completing the steps from ` + "`aveloxis deploy-checklist`" + `.`,
+Run this AFTER completing the steps ` + "`aveloxis deploy-checklist`" + ` prints.
+A version with no manual deploy steps has nothing to acknowledge; the
+record is written anyway (harmless) and the command says so.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)
@@ -201,6 +286,16 @@ Run this AFTER completing the steps from ` + "`aveloxis deploy-checklist`" + `.`
 			}
 			if err := store.RecordDeployAck(ctx, db.ToolVersion, note); err != nil {
 				return err
+			}
+			// Round-8 finding 4, same class: a version with no
+			// deployChecklists entry has no steps to have completed, so
+			// "deploy steps acknowledged" would name something
+			// `aveloxis deploy-checklist` denies exists. The record is
+			// still written — it is harmless and keeps a scripted ladder
+			// exiting zero across the release the entry ages out.
+			if _, ok := deployChecklistFor(db.ToolVersion); !ok {
+				fmt.Printf("aveloxis %s has no manual deploy steps; acknowledgement recorded anyway (nothing gates on it).\n", db.ToolVersion)
+				return nil
 			}
 			fmt.Printf("Deploy steps acknowledged for aveloxis %s.\n", db.ToolVersion)
 			return nil

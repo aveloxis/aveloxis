@@ -583,22 +583,24 @@ Tools that are already installed are skipped. The command verifies each tool is 
 ### `aveloxis start` — Start background processes
 
 ```bash
-aveloxis start serve   # scheduler + monitor → ~/.aveloxis/aveloxis.log
-aveloxis start web     # web GUI             → ~/.aveloxis/web.log
-aveloxis start api     # REST API            → ~/.aveloxis/api.log
-aveloxis start all     # all three at once
+aveloxis start serve            # scheduler + monitor       → ~/.aveloxis/aveloxis.log
+aveloxis start web              # web GUI                   → ~/.aveloxis/web.log
+aveloxis start api              # REST API                  → ~/.aveloxis/api.log
+aveloxis start scancode-worker  # dedicated scancode worker → ~/.aveloxis/scancode-worker.log
+aveloxis start all              # serve + web + api (never the scancode worker)
 ```
 
-Launches the specified component(s) as detached background processes. Output is appended to log files in `~/.aveloxis/`. PID files are written to `~/.aveloxis/aveloxis-{serve,web,api}.pid` for reliable process tracking. If a component is already running, the command reports it and skips the launch.
+Launches the specified component(s) as detached background processes. Output is appended to log files in `~/.aveloxis/`. PID files are written to `~/.aveloxis/aveloxis-{serve,web,api,scancode-worker}.pid` for reliable process tracking. If a component is already running, the command reports it and skips the launch.
 
 ### `aveloxis stop` — Stop background processes
 
 ```bash
-aveloxis stop serve    # stop only the scheduler
-aveloxis stop web      # stop only the web GUI
-aveloxis stop api      # stop only the REST API
-aveloxis stop all      # stop all three
-aveloxis stop          # (no args) same as 'all'
+aveloxis stop serve            # stop only the scheduler
+aveloxis stop web              # stop only the web GUI
+aveloxis stop api              # stop only the REST API
+aveloxis stop scancode-worker  # stop the dedicated scancode worker
+aveloxis stop all              # stop serve + web + api (never the scancode worker)
+aveloxis stop                  # (no args) same as 'all'
 ```
 
 Sends SIGTERM to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Package pidfile manages PID files for aveloxis background processes.
-// Each component (serve, web, api) writes its PID to a file at startup
+// Each component (serve, web, api, scancode-worker) writes its PID to a file at startup
 // and removes it on shutdown. The start/stop commands use these files
 // to reliably identify and manage background processes.
 package pidfile
@@ -31,7 +31,7 @@ func Dir() string {
 	return dir
 }
 
-// Path returns the PID file path for a component (serve, web, api).
+// Path returns the PID file path for a component (serve, web, api, scancode-worker).
 func Path(component string) string {
 	return filepath.Join(Dir(), "aveloxis-"+component+".pid")
 }

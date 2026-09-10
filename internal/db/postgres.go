@@ -187,27 +187,6 @@ func (s *PostgresStore) Close() {
 	s.pool.Close()
 }
 
-// PidsByAppName returns the postgres backend PIDs currently identified
-// by the given application_name. Used by `aveloxis stop` post-SIGTERM
-// to verify all aveloxis-component backends have disconnected before
-// returning. v0.20.0.
-func (s *PostgresStore) PidsByAppName(ctx context.Context, appName string) ([]int, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND application_name = $1`, appName)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var pids []int
-	for rows.Next() {
-		var pid int
-		if err := rows.Scan(&pid); err == nil {
-			pids = append(pids, pid)
-		}
-	}
-	return pids, rows.Err()
-}
-
 // SetMatviewOnStartup controls whether materialized views are refreshed during migration.
 func (s *PostgresStore) SetMatviewOnStartup(enabled bool) {
 	s.matviewOnStartup = enabled

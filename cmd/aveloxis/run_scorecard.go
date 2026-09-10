@@ -81,15 +81,13 @@ while another run-scorecard is in progress.`,
 // refuseIfServeRunning errors when an `aveloxis serve` process is alive
 // on this host, per its pidfile + process-liveness check.
 func refuseIfServeRunning() error {
-	path := pidfile.Path("serve")
-	pid, err := pidfile.Read(path)
-	if err != nil {
-		return nil // no pidfile = no serve
-	}
-	if pidfile.IsRunning(pid) {
+	// SR-17: the same liveness predicate `start` and `stop all` read,
+	// so this refusal and startComponent's can never disagree about
+	// whether serve is up on this host.
+	if pid, running := componentAlreadyRunning("serve"); running {
 		return fmt.Errorf("refusing to start: aveloxis serve is running on this host (pid %d, pidfile %s). "+
 			"run-scorecard would compete with the collection workers for the shared GitHub API budget; "+
-			"stop it first: aveloxis stop serve", pid, path)
+			"stop it first: aveloxis stop serve", pid, pidfile.Path("serve"))
 	}
 	return nil
 }
@@ -99,7 +97,7 @@ func refuseIfServeRunning() error {
 // run-scorecard already holds it.
 func acquireRunScorecardPidfile() (func(), error) {
 	path := pidfile.Path("run-scorecard")
-	if pid, err := pidfile.Read(path); err == nil && pidfile.IsRunning(pid) {
+	if pid, running := componentAlreadyRunning("run-scorecard"); running {
 		return nil, fmt.Errorf("refusing to start: another `aveloxis run-scorecard` is already running (pid %d, pidfile %s). "+
 			"Two bulk passes would double-scan the same backlog; wait for it to finish or stop it first", pid, path)
 	}

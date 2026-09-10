@@ -32,8 +32,8 @@ func TestSchemaVersionAtLeast(t *testing.T) {
 		{"0.27.37", "x", false},
 	}
 	for _, c := range cases {
-		if got := schemaVersionAtLeast(c.have, c.want); got != c.ok {
-			t.Errorf("schemaVersionAtLeast(%q, %q) = %v, want %v", c.have, c.want, got, c.ok)
+		if got := SchemaVersionAtLeast(c.have, c.want); got != c.ok {
+			t.Errorf("SchemaVersionAtLeast(%q, %q) = %v, want %v", c.have, c.want, got, c.ok)
 		}
 	}
 }
@@ -64,7 +64,7 @@ func TestGitLabForceFullStepIsSeededFromThePriorStamp(t *testing.T) {
 		t.Error("the v0.27.37 step must not be a plain execMigrationStep (it re-flags every GitLab repo on every migrate)")
 	}
 	body := srctest.FuncBody(t, readSourceFile(t, "migration_ledger.go"), "func runOnceSeedIfApplied(")
-	for _, needle := range []string{"schemaVersionProbe(ctx)", "schemaVersionAtLeast(prior, appliedSince)", "ON CONFLICT (step_label) DO NOTHING", "return false"} {
+	for _, needle := range []string{"schemaVersionProbe(ctx)", "SchemaVersionAtLeast(prior, appliedSince)", "ON CONFLICT (step_label) DO NOTHING", "return false"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("runOnceSeedIfApplied must contain %s", needle)
 		}
@@ -329,17 +329,29 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 		t.Error("listDedupPending must reuse dupListPartitionsSQL, not spell the partition itself")
 	}
 	// pg_stat_activity readers filter by database: the cluster hosts two
-	// aveloxis databases (the sixth-pass L11 sweep).
-	for _, site := range []struct{ file, fn string }{{"postgres.go", "func (s *PostgresStore) PidsByAppName("}, {"migrate.go", "func checkBlockers("}} {
-		fsrc := readSourceFile(t, site.file)
-		if !strings.Contains(fsrc, site.fn) {
-			t.Errorf("%s no longer defines %s — re-anchor the datname pin", site.file, site.fn)
-			continue
-		}
-		if !strings.Contains(srctest.FuncBody(t, fsrc, site.fn), "datname = current_database()") {
-			t.Errorf("%s %s reads pg_stat_activity without a datname filter — pg_stat_activity is cluster-wide", site.file, site.fn)
+	// aveloxis databases (the sixth-pass L11 sweep). v0.29.4 round 6:
+	// the reader set is DERIVED from every non-test function body that
+	// reads the view — a hand list missed the round-5 address listing.
+	readers := 0
+	for name, fsrc := range srctest.PackageFiles(t, "internal/db", 30) {
+		for _, sig := range pgStatActivityReaderSigs(fsrc) {
+			body := srctest.NormalizeWS(srctest.StripGoComments(srctest.FuncBody(t, fsrc, sig)))
+			reads := strings.Count(body, "FROM pg_stat_activity")
+			if reads == 0 {
+				continue // a mention in a message is not a read
+			}
+			readers++
+			// Round 7: a read of the session's OWN row is scoped by pid
+			// (cluster-unique) and needs no datname filter — the ONE
+			// probing-session subquery (probingSessionSQL). Every other
+			// read in the body must carry the filter.
+			selfScoped := strings.Count(body, "FROM pg_stat_activity WHERE pid = pg_backend_pid()")
+			if selfScoped < reads && !strings.Contains(body, "datname = current_database()") {
+				t.Errorf("%s %s reads pg_stat_activity without a datname filter — pg_stat_activity is cluster-wide", name, sig)
+			}
 		}
 	}
+	srctest.MinCount(t, "pg_stat_activity readers in internal/db", readers, 5)
 	// The consolidation repoints the staging table's repo_group_id too
 	// (list identity for DrainList); the dedup's step 2 does the same.
 	if !strings.Contains(readSourceFile(t, "migrate.go"), `"aveloxis_ops.mailing_list_staging",`) {
@@ -374,3 +386,19 @@ func TestEmailMessageIndexGateRejectsUnknownParent(t *testing.T) {
 		}
 	}
 }
+
+// pgStatActivityReaderSigs lists every top-level function signature
+// prefix (`func name(` / `func (recv) name(`) in a source file, for the
+// derived datname pin above.
+func pgStatActivityReaderSigs(src string) []string {
+	var sigs []string
+	for _, line := range strings.Split(src, "\n") {
+		m := funcSigRE.FindString(line)
+		if m != "" {
+			sigs = append(sigs, m)
+		}
+	}
+	return sigs
+}
+
+var funcSigRE = regexp.MustCompile(`^func (\([^)]*\) )?[A-Za-z0-9_]+\(`)

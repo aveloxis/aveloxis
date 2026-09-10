@@ -175,9 +175,23 @@ aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json
 - **Does NOT run schema migrations** (the v0.21.5 contract: only `serve`
   and `migrate` do). It checks the schema version at startup and logs an
   ERROR pointing at `aveloxis migrate` when the DB is behind.
-- Writes its PID to `~/.aveloxis/aveloxis-scancode-worker.pid`.
+- Writes its PID to `~/.aveloxis/aveloxis-scancode-worker.pid`, and is
+  managed like the other components: `aveloxis start scancode-worker` /
+  `aveloxis stop scancode-worker` (v0.29.4). It is never part of `all`
+  (a primary that still runs its in-serve pool would double up).
 - All `collection.scancode_*` knobs apply (workers, cadence, clone dir,
   adaptive timeouts, ignore globs, timeout-cap strikes).
+- **Do not run `aveloxis serve` on the dedicated host.** `serve` is the
+  full scheduler — it migrates and collects — whatever knobs the config
+  carries. Since v0.29.4 the incident's shape (a binary AHEAD of the
+  schema stamp) is refused twice: the `start serve` deploy gate refuses
+  when the stamp is behind the binary (no migration of that binary has
+  completed here — the ladder's step 2, `aveloxis migrate --skip-views`),
+  and serve's own startup migration refuses to run a full pass while
+  another `aveloxis-serve` is connected. A same-version `start serve`
+  is NOT refused — it would start a second full scheduler — so both the
+  gate and serve's log say when another `aveloxis-serve` is already
+  connected; `stop` scopes its backend check to this host.
 
 Full recipe — Postgres remote access, minimal config template, systemd
 unit, libmagic version-lock — in the
@@ -673,13 +687,14 @@ maintenance cron.
 Launches aveloxis components as detached background processes with log output redirected to files in `~/.aveloxis/`.
 
 ```bash
-aveloxis start serve   # scheduler + monitor → ~/.aveloxis/aveloxis.log
-aveloxis start web     # web GUI             → ~/.aveloxis/web.log
-aveloxis start api     # REST API            → ~/.aveloxis/api.log
-aveloxis start all     # all three at once
+aveloxis start serve            # scheduler + monitor        → ~/.aveloxis/aveloxis.log
+aveloxis start web              # web GUI                    → ~/.aveloxis/web.log
+aveloxis start api              # REST API                   → ~/.aveloxis/api.log
+aveloxis start scancode-worker  # dedicated scancode worker  → ~/.aveloxis/scancode-worker.log
+aveloxis start all              # serve + web + api (never the scancode worker)
 ```
 
-PID files are written to `~/.aveloxis/aveloxis-{serve,web,api}.pid`. If a component is already running, the command reports it and skips the launch.
+PID files are written to `~/.aveloxis/aveloxis-{serve,web,api,scancode-worker}.pid`. If a component is already running, the command reports it and skips the launch. `scancode-worker` (v0.29.4) is the dedicated-host process from [Dedicated Scancode Host](dedicated-scancode-host.md); `all` deliberately excludes it.
 
 Log files are opened in append mode — existing content is preserved across restarts.
 
@@ -696,14 +711,54 @@ Pick one manager per host: once the systemd units own the processes,
 Gracefully stops background aveloxis processes.
 
 ```bash
-aveloxis stop serve    # stop only the scheduler
-aveloxis stop web      # stop only the web GUI
-aveloxis stop api      # stop only the REST API
-aveloxis stop all      # stop all three
-aveloxis stop          # (no args) same as 'all'
+aveloxis stop serve            # stop only the scheduler
+aveloxis stop web              # stop only the web GUI
+aveloxis stop api              # stop only the REST API
+aveloxis stop scancode-worker  # stop the dedicated scancode worker
+aveloxis stop all              # stop serve + web + api (never the scancode worker)
+aveloxis stop                  # (no args) same as 'all'
 ```
 
-Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed.
+Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed. `stop all` names a scancode worker it left running.
+
+After SIGTERM the command watches `pg_stat_activity` for the component's
+backends and, past the shutdown budget, prints the persistent PIDs with a
+`pg_terminate_backend` recipe. Since v0.29.4 that recipe is offered for
+**this host's** backends only — the ones whose client address is this
+session's own, or local to the database host (a unix socket, or loopback
+in either address family). Every other backend carrying the same tag
+falls into one of two reported arms, is never waited on, and is never
+offered for termination:
+
+- **Another client address** — normally another machine running this
+  component against the same database (the primary's serve seen from a
+  dedicated scancode host, or the reverse). The check knows the address,
+  not the machine, so a serve on THIS host that dialed a different DSN
+  address reads the same way.
+- **Address not visible** — a backend of a database role whose privileges
+  this one does not hold. `pg_stat_activity` shows a session's
+  `client_addr` only to roles that HOLD that session's role's privileges
+  and to roles that hold `pg_read_all_stats`'s; everyone else reads NULL,
+  the same NULL a unix socket shows. `stop` prints a no-verdict note for
+  these — neither this host's nor another's.
+
+To get a verdict on the second arm, run `stop` as that role, or grant
+this one the stats privileges:
+
+```sql
+GRANT pg_read_all_stats TO <role>;
+```
+
+Holding is the test, not membership: a `NOINHERIT` role, or one granted
+`WITH INHERIT FALSE`, is a member of `pg_read_all_stats` with none of its
+privileges and still reads NULL. On PostgreSQL 16 and later a grant's
+inherit option is fixed at GRANT time, so if the grant already exists and
+does not inherit, re-grant it with
+`GRANT pg_read_all_stats TO <role> WITH INHERIT TRUE`. Check with
+`SELECT pg_has_role(current_user, 'pg_read_all_stats', 'USAGE')`.
+
+The check needs the config (`-c`) to reach the database; without it the
+command says the check was skipped.
 
 ```{note}
 `aveloxis stop` also works for processes started in the foreground (e.g., `aveloxis serve`), because all foreground processes write PID files on startup.
@@ -1327,7 +1382,11 @@ aveloxis deploy-checklist
 
 Records that the current binary version's deploy/heal steps were run,
 so `aveloxis start serve` / `aveloxis start all` stops prompting for
-them. Run it AFTER completing the `deploy-checklist` steps.
+them. Run it AFTER completing the `deploy-checklist` steps. It cannot
+stand in for step 2: while the schema stamp is behind the binary the
+start gate refuses regardless of the acknowledgement (v0.29.4) — only a
+completed migration of that binary (the ladder's `aveloxis migrate
+--skip-views`) moves the stamp.
 
 ```bash
 aveloxis ack-deploy [--note "..."]
@@ -1336,9 +1395,24 @@ aveloxis ack-deploy [--note "..."]
 **The start gate:** on an EXISTING fleet, `aveloxis start serve` and
 `aveloxis start all` refuse to start (or, in an interactive terminal,
 prompt) when the current release has un-acknowledged deploy steps —
-the release's data-side healing must not be silently skipped. Fresh
-installs and already-acknowledged releases start silently. Automation
-can bypass with `--skip-deploy-check`.
+the release's data-side healing must not be silently skipped. Since
+v0.29.4 the gate also reads the schema stamp, on EVERY release and
+BEFORE the ledger: a stamp behind the binary proves no migration of
+that binary has completed here (the ladder's step 2), so it refuses
+without a prompt and records nothing — an acknowledgement cannot clear
+it, only a completed migration of that binary (the ladder's `aveloxis
+migrate --skip-views`) can. Fresh installs, releases without deploy
+steps on a current stamp, and acknowledged releases whose stamp is
+current, start silently. When another `aveloxis-serve` is already
+connected to the database the gate prints a note (never a refusal)
+with the other serve's client addresses, each carrying the code's own
+verdict: an "(other address)" entry is normally the primary, so this
+host is running the wrong command (`aveloxis start scancode-worker` is
+the alternative); a "(this host)" entry is a serve on THIS host,
+either one still running or a backend of one just stopped here still
+draining (only `aveloxis start` refuses to double-start a component). Automation can bypass with
+`--skip-deploy-check`, which prints the evidence and proceeds (serve's
+own startup migration still refuses beside another serve).
 
 ---
 

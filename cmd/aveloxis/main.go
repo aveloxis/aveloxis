@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -360,7 +361,7 @@ func runAPI(cfgPath, addr string) error {
 		addr = cfg.API.AddrOrDefault()
 	}
 
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-api"), logger)
+	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(componentAppName("api")), logger)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
 	}
@@ -1358,7 +1359,7 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
-			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-web"), logger)
+			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(componentAppName("web")), logger)
 			if err != nil {
 				return err
 			}
@@ -1397,36 +1398,31 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 	}
 }
 
-// validComponents lists the background-manageable process types.
-var validComponents = []string{"serve", "web", "api"}
-
 func startCmd(cfgPath *string) *cobra.Command {
 	var skipDeployCheck bool
 	cmd := &cobra.Command{
-		Use:   "start [serve|web|api|all]",
+		Use:   "start [serve|web|api|scancode-worker|all]",
 		Short: "Start aveloxis components in the background",
 		Long: `Launches the specified component(s) as background processes, writing
 output to log files in ~/.aveloxis/:
 
-  aveloxis start serve   → aveloxis.log   (scheduler + monitor)
-  aveloxis start web     → web.log        (web GUI)
-  aveloxis start api     → api.log        (REST API)
-  aveloxis start all     → all three
+  aveloxis start serve            → aveloxis.log          (scheduler + monitor)
+  aveloxis start web              → web.log               (web GUI)
+  aveloxis start api              → api.log               (REST API)
+  aveloxis start scancode-worker  → scancode-worker.log   (dedicated scancode host, v0.27.6)
+  aveloxis start all              → serve + web + api (never the scancode worker)
 
-PID files are written to ~/.aveloxis/aveloxis-{serve,web,api}.pid.
-Use 'aveloxis stop' to shut them down gracefully.`,
+PID files are written to ~/.aveloxis/aveloxis-{serve,web,api,scancode-worker}.pid.
+Use 'aveloxis stop' to shut them down gracefully.
+
+A dedicated scancode host runs ONLY 'aveloxis start scancode-worker' —
+'start serve' there is the full scheduler (it migrates and collects)
+regardless of which knobs the config carries.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target := strings.ToLower(args[0])
-
-			var components []string
-			if target == "all" {
-				components = validComponents
-			} else {
-				if !slices.Contains(validComponents, target) {
-					return fmt.Errorf("unknown component %q (use serve, web, api, or all)", target)
-				}
-				components = []string{target}
+			components, err := resolveComponents(args[0])
+			if err != nil {
+				return err
 			}
 
 			// v0.29.0: gate `start serve` / `start all` on the release's
@@ -1434,13 +1430,27 @@ Use 'aveloxis stop' to shut them down gracefully.`,
 			// (there is enough data-side healing this release that a
 			// missed step would go unnoticed). Fresh installs and
 			// already-acknowledged releases pass through silently.
+			//
+			// Round-8 finding 3: the already-running check comes FIRST.
+			// The gate exists to stop a NEW serve from starting against
+			// an un-migrated or un-acknowledged fleet; when serve is
+			// already up on this host startComponent refuses the start
+			// anyway, so the gate can only produce noise — and the noise
+			// is misleading: its other-serve probe (a separate,
+			// untagged pool) sights the operator's OWN live serve, prints
+			// both readings of a "(this host)" entry, and then
+			// startComponent says "serve is already running (PID N)" two
+			// lines later. `start all` still starts web and api here;
+			// neither was ever gated.
 			if slices.Contains(components, "serve") {
-				proceed, err := runDeployGate(*cfgPath, skipDeployCheck)
-				if err != nil {
-					return fmt.Errorf("deploy-readiness check: %w", err)
-				}
-				if !proceed {
-					return fmt.Errorf("start aborted: run this release's deploy steps (see `aveloxis deploy-checklist`) then `aveloxis ack-deploy`, or pass --skip-deploy-check")
+				if _, serveUp := componentAlreadyRunning("serve"); !serveUp {
+					proceed, err := runDeployGate(*cfgPath, skipDeployCheck)
+					if err != nil {
+						return fmt.Errorf("deploy-readiness check: %w", err)
+					}
+					if !proceed {
+						return errors.New(startAbortMessage(db.ToolVersion))
+					}
 				}
 			}
 
@@ -1456,10 +1466,28 @@ Use 'aveloxis stop' to shut them down gracefully.`,
 	return cmd
 }
 
+// componentAlreadyRunning is the ONE spelling (SR-17) of "this host is
+// already running that component": a pidfile whose PID is live. It
+// returns the live PID so a caller that reports it needs no second
+// read, and a missing/unreadable pidfile is simply not-running. Four
+// readers depend on the same answer — startComponent's refusal to
+// double-start, `stop all`'s hint about the worker it left running,
+// run-scorecard's refusal to compete with a live serve for the API
+// budget, and (round-8 finding 3) `start serve`'s decision to skip the
+// deploy gate — and a start that is a no-op must look like a no-op to
+// all of them.
+func componentAlreadyRunning(component string) (int, bool) {
+	pid, err := pidfile.Read(pidfile.Path(component))
+	if err != nil || !pidfile.IsRunning(pid) {
+		return 0, false
+	}
+	return pid, true
+}
+
 func startComponent(component, cfgPath string) error {
 	// Check if already running.
 	pidPath := pidfile.Path(component)
-	if pid, err := pidfile.Read(pidPath); err == nil && pidfile.IsRunning(pid) {
+	if pid, running := componentAlreadyRunning(component); running {
 		fmt.Printf("%s is already running (PID %d)\n", component, pid)
 		return nil
 	}
@@ -1502,24 +1530,30 @@ func startComponent(component, cfgPath string) error {
 	return nil
 }
 
-// verifyBackendsDisconnected polls pg_stat_activity for backends with
-// the given application_name (e.g., "aveloxis-serve") and waits up to
-// the serve shutdown budget + margin for the count to drop to zero.
-// If any persist, prints the persistent PIDs paired with a
+// verifyBackendsDisconnected polls pg_stat_activity for THIS host's
+// backends with the given application_name (e.g., "aveloxis-serve")
+// and waits up to the serve shutdown budget + margin for them to
+// disappear. If any persist, prints the persistent PIDs paired with a
 // pg_terminate_backend recipe so the operator can act in seconds
 // rather than wait the full TCP keepalive timeout (tens of minutes).
+// Backends carrying the same tag from OTHER hosts are reported as such
+// and never offered for termination (v0.29.4 — the 2026-09-09
+// incident printed 64 recipes for the primary's pool from a dedicated
+// scancode host).
 //
 // v0.20.0 introduced this to close the gap that produced the
 // 2026-05-08 26-minute orphan: SIGTERM was sent successfully, but the
 // orphaned backend kept grinding a 26-minute UPDATE because the
 // operator had no signal it was happening.
-func verifyBackendsDisconnected(cfgPath, appName string) {
+func verifyBackendsDisconnected(out io.Writer, cfgPath, appName string) {
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		// No config means we can't check the DB. Operator gets the
-		// SIGTERM result but no verification. Acceptable for `stop` to
-		// degrade gracefully.
+		// SIGTERM result but no verification — said out loud (round-2
+		// finding 9: a `stop` run without -c on a dedicated host used
+		// to skip the check in silence).
+		fmt.Fprintf(out, "(config %s not loaded — backend verification skipped: %v)\n", cfgPath, err)
 		return
 	}
 	// The dial gets its own bound so a slow connect can never eat into
@@ -1529,7 +1563,7 @@ func verifyBackendsDisconnected(cfgPath, appName string) {
 	defer dialCancel()
 	store, err := db.NewPostgresStore(dialCtx, cfg.Database.ConnectionString(), bootLog)
 	if err != nil {
-		fmt.Printf("(could not verify %s backends disconnected: %v)\n", appName, err)
+		fmt.Fprintf(out, "(could not verify %s backends disconnected: %v)\n", appName, err)
 		return
 	}
 	defer store.Close()
@@ -1544,74 +1578,53 @@ func verifyBackendsDisconnected(cfgPath, appName string) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), budget+5*time.Second)
 	defer cancel()
-	deadline := start.Add(budget)
-	var lastPids []int
-	for time.Now().Before(deadline) {
-		pids, err := store.PidsByAppName(ctx, appName)
-		if err != nil {
-			// A failed poll is not "all clear" — but it is not the
-			// orphan verdict either: the pids from the last successful
-			// check may be a serve mid-graceful-shutdown, and printing
-			// the terminate recipes here would invite the operator to
-			// kill live backends mid-bookkeeping (pass 41). Hedge.
-			fmt.Printf("(backend verification aborted %s into the %s budget: %v)\n",
-				time.Since(start).Truncate(time.Second), budget.Truncate(time.Second), err)
-			if len(lastPids) > 0 {
-				fmt.Printf("%s backends still connected as of the last successful check: %v — re-check pg_stat_activity before terminating anything.\n",
-					appName, lastPids)
-			}
-			return
-		}
-		if len(pids) == 0 {
-			return
-		}
-		lastPids = pids
-		time.Sleep(1 * time.Second)
+	// v0.29.4: the poll is scoped to THIS host's backends and lives in
+	// pollBackends (its exit rule is pinned behaviorally). The
+	// 2026-09-09 incident: a stop on a second host matched the tag
+	// alone, waited the whole budget on the primary's 64 pool
+	// backends, and printed a terminate recipe for each of them.
+	last, render := pollBackends(
+		func() (db.AppNameBackends, error) { return store.BackendsByAppName(ctx, appName) },
+		budget,
+		func() time.Duration { return time.Since(start) },
+		func() { time.Sleep(1 * time.Second) },
+		out, appName)
+	if !render {
+		return
 	}
-	// Persistent backends past the FULL budget — surface PIDs and the
-	// actionable fix.
-	if len(lastPids) > 0 {
-		fmt.Printf("WARNING: %d %s backend(s) did not disconnect within %s after SIGTERM.\n",
-			len(lastPids), appName, budget.Truncate(time.Second))
-		fmt.Printf("Persistent PIDs: %v\n", lastPids)
-		fmt.Println("If you don't see a matching aveloxis process in `ps`, these are orphans.")
-		fmt.Println("Terminate them with:")
-		for _, pid := range lastPids {
-			fmt.Printf("  SELECT pg_terminate_backend(%d);\n", pid)
-		}
-	}
+	// Persistent local backends past the FULL budget get the PIDs and
+	// the actionable fix; other addresses' backends are only reported.
+	printBackendVerdict(out, appName, budget, last)
 }
 
 func stopCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "stop [serve|web|api|all]",
+		Use:   "stop [serve|web|api|scancode-worker|all]",
 		Short: "Stop running aveloxis background processes",
 		Long: `Sends SIGTERM to the specified component(s), triggering graceful shutdown.
 
-  aveloxis stop serve   — stop the scheduler
-  aveloxis stop web     — stop the web GUI
-  aveloxis stop api     — stop the REST API
-  aveloxis stop all     — stop all three
-  aveloxis stop         — (no args) same as 'all'
+  aveloxis stop serve            — stop the scheduler
+  aveloxis stop web              — stop the web GUI
+  aveloxis stop api              — stop the REST API
+  aveloxis stop scancode-worker  — stop the dedicated scancode worker
+  aveloxis stop all              — stop serve + web + api (never the scancode worker)
+  aveloxis stop                  — (no args) same as 'all'
 
 Active workers finish their current API call, queue locks are released,
 and any unprocessed staging data is preserved for the next startup.
-PID files are cleaned up automatically.`,
+PID files are cleaned up automatically. After SIGTERM, the command
+watches pg_stat_activity for THIS host's backends of the component;
+backends of the same component from other hosts (the primary, seen from
+a dedicated scancode host) are reported and left alone.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := "all"
 			if len(args) > 0 {
-				target = strings.ToLower(args[0])
+				target = args[0]
 			}
-
-			var components []string
-			if target == "all" {
-				components = validComponents
-			} else {
-				if !slices.Contains(validComponents, target) {
-					return fmt.Errorf("unknown component %q (use serve, web, api, or all)", target)
-				}
-				components = []string{target}
+			components, err := resolveComponents(target)
+			if err != nil {
+				return err
 			}
 
 			stopped := 0
@@ -1622,12 +1635,18 @@ PID files are cleaned up automatically.`,
 					// application_name and warn if backends linger past
 					// the shutdown budget + margin (pass 39). Surfaces
 					// orphans-after-stop without requiring the operator
-					// to know about pg_locks.
-					verifyBackendsDisconnected(*cfgPath, "aveloxis-"+comp)
+					// to know about pg_locks. v0.29.4: this host's only.
+					verifyBackendsDisconnected(os.Stdout, *cfgPath, componentAppName(comp))
 				}
 			}
 			if stopped == 0 {
 				fmt.Println("No running aveloxis processes found.")
+			}
+			if strings.EqualFold(strings.TrimSpace(target), "all") {
+				stopAllHint(os.Stdout, func(component string) bool {
+					_, running := componentAlreadyRunning(component)
+					return running
+				})
 			}
 			return nil
 		},

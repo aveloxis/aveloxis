@@ -44,10 +44,10 @@ func TestScancodeWorkerCmdShape(t *testing.T) {
 	if !strings.Contains(src, "func scancodeWorkerCmd") {
 		t.Error("must define scancodeWorkerCmd() so main.go has a stable wiring target")
 	}
-	if !strings.Contains(src, `pidfile.Path("scancode-worker")`) {
-		t.Error("the command must write its own pidfile (~/.aveloxis/aveloxis-scancode-worker.pid) so operators can manage it like serve/web/api")
+	if !strings.Contains(src, `pidfile.Path(scancodeWorkerComponent)`) {
+		t.Error("the command must write its own pidfile (~/.aveloxis/aveloxis-scancode-worker.pid) under the component name `aveloxis start/stop scancode-worker` manage (v0.29.4)")
 	}
-	if !strings.Contains(src, `ConnectionStringWithAppName("aveloxis-scancode-worker")`) {
+	if !strings.Contains(src, `ConnectionStringWithAppName(componentAppName(scancodeWorkerComponent))`) {
 		t.Error("the command must tag its pgx backends with a distinct application_name — the v0.20.0 pg_stat_activity diagnostics depend on it")
 	}
 }

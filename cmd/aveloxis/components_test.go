@@ -6,6 +6,8 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -58,12 +60,36 @@ func TestResolveComponents(t *testing.T) {
 
 // The application_name `stop` verifies against is derived the same way
 // the components tag their pools — serve through the shared db constant.
+//
+// Round 12 splits the pair: the TAG carries this host's marker after
+// '@' (so the verdict survives a pooler collapsing every client onto
+// one address), the PREFIX is what every reader matches on. The pin
+// that matters is that the tag's prefix half is EXACTLY the prefix the
+// readers are given — a drift there makes `stop` match nothing and
+// report an instant all-clear, which is the same silent failure the
+// original pin was written to prevent.
 func TestComponentAppNameMatchesTheTags(t *testing.T) {
-	if got := componentAppName("serve"); got != db.ServeApplicationName {
-		t.Errorf("componentAppName(serve) = %q, want db.ServeApplicationName %q", got, db.ServeApplicationName)
+	if got := componentAppNamePrefix("serve"); got != db.ServeApplicationName {
+		t.Errorf("componentAppNamePrefix(serve) = %q, want db.ServeApplicationName %q", got, db.ServeApplicationName)
 	}
-	if got := componentAppName(scancodeWorkerComponent); got != "aveloxis-scancode-worker" {
-		t.Errorf("the worker tag the docs and pg_stat_activity readers name is aveloxis-scancode-worker, got %q", got)
+	if got := componentAppNamePrefix(scancodeWorkerComponent); got != "aveloxis-scancode-worker" {
+		t.Errorf("the worker prefix the docs and pg_stat_activity readers name is aveloxis-scancode-worker, got %q", got)
+	}
+	// The tag/prefix contract, driven rather than described: whatever
+	// this host's marker is, splitting the tag on the separator must
+	// give back the prefix the readers match on. This is the Go half
+	// of appNamePrefixSQL — if the two ever disagree, `stop` verifies
+	// against a tag no backend carries.
+	for _, comp := range []string{"serve", "web", "api", scancodeWorkerComponent} {
+		tag, prefix := componentAppName(comp), componentAppNamePrefix(comp)
+		if got := strings.SplitN(tag, db.AppNameHostSep, 2)[0]; got != prefix {
+			t.Errorf("componentAppName(%q) = %q, whose prefix half %q must equal componentAppNamePrefix(%q) = %q",
+				comp, tag, got, comp, prefix)
+		}
+		if len(tag) > 63 {
+			t.Errorf("componentAppName(%q) = %q is %d bytes; PostgreSQL truncates application_name at 63 and a truncated marker makes two hosts read as one",
+				comp, tag, len(tag))
+		}
 	}
 	// Round-3 finding 7: web and api tag through the same derivation
 	// `stop web|api` verifies against — a literal there can drift and
@@ -95,8 +121,9 @@ func TestStartStopRouteThroughResolveComponents(t *testing.T) {
 		t.Error("the hand-listed validComponents must be gone — resolveComponents owns the component set")
 	}
 	stop := srctest.StripGoComments(srctest.FuncBody(t, src, "func stopCmd("))
-	if !strings.Contains(stop, "verifyBackendsDisconnected(os.Stdout, *cfgPath, componentAppName(comp))") {
-		t.Error("stop must verify against componentAppName(comp), the derivation the components tag with")
+	if !strings.Contains(stop, "verifier.verify(componentAppNamePrefix(comp))") {
+		t.Error("stop must verify against componentAppNamePrefix(comp) — the MATCH half of the derivation the components tag with. " +
+			"Passing the full tag would match only this host's own backends and silently drop the other-hosts count.")
 	}
 	if !strings.Contains(stop, "stopAllHint(") {
 		t.Error("`stop all` must tell the operator about a running scancode worker it did not stop")
@@ -298,8 +325,126 @@ func TestPollBackendsEndsOnThisHostOnly(t *testing.T) {
 // silence — the "watches pg_stat_activity" promise quietly not kept.
 func TestVerifyBackendsDisconnectedSaysWhenConfigIsMissing(t *testing.T) {
 	var out bytes.Buffer
-	verifyBackendsDisconnected(&out, "/nonexistent/aveloxis.json", "aveloxis-serve")
+	v := &backendVerifier{out: &out, cfgPath: "/nonexistent/aveloxis.json"}
+	defer v.Close()
+	v.verify("aveloxis-serve")
 	if !strings.Contains(out.String(), "backend verification skipped") || !strings.Contains(out.String(), "/nonexistent/aveloxis.json") {
 		t.Errorf("a config that cannot be loaded must be said out loud, got:\n%s", out.String())
+	}
+	// Round-11 finding 10: `stop all` verifies three components. The
+	// skip is said ONCE, not once per component — and the second
+	// component must not re-attempt the load.
+	before := out.Len()
+	v.verify("aveloxis-web")
+	if out.Len() != before {
+		t.Errorf("the load failure must be reported once, not per component:\n%s", out.String()[before:])
+	}
+}
+
+// Round-11 finding 10 (the dial-failure half): the config-missing branch
+// has had a pin since round 2; the dial branch had none. It is the branch
+// that matters most on the path this release exists for — an operator
+// stopping a component while the database is unreachable — and its
+// message is deliberately GENERIC: the verifier opens on the FIRST
+// component stopped and reports once, so naming that component would let
+// an operator running `stop all` read the other two as verified.
+func TestVerifyBackendsDisconnectedSaysWhenTheDialFails(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "aveloxis.json")
+	// Port 1 is the "never listening" convention; the dial is refused in
+	// milliseconds, so the 30s dial bound is never approached.
+	cfgJSON := `{"database":{"host":"127.0.0.1","port":1,"user":"nobody","password":"x","dbname":"nodb","sslmode":"disable"}}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var out bytes.Buffer
+	v := &backendVerifier{out: &out, cfgPath: cfgPath}
+	defer v.Close()
+	v.verify("aveloxis-serve")
+
+	got := out.String()
+	if !strings.Contains(got, "skipped") {
+		t.Errorf("a failed dial must say the verification was skipped:\n%s", got)
+	}
+	for _, banned := range []string{"aveloxis-serve", "aveloxis-web", "aveloxis-api"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("the dial-failure line must name NO component (it is reported once for the whole stop), found %q:\n%s", banned, got)
+		}
+	}
+	// Reported once: the second and third components of a `stop all`
+	// must add nothing, and must not re-attempt the dial.
+	before := out.Len()
+	v.verify("aveloxis-web")
+	v.verify("aveloxis-api")
+	if out.Len() != before {
+		t.Errorf("the dial failure must be reported once, not per component:\n%s", out.String()[before:])
+	}
+}
+
+// Round-11 finding 10: one store for the whole `stop`, opened lazily on
+// the first component actually stopped. Opening a pool per component
+// (MinConns=2, MaxConns=20, plus a Ping each) is the wrong shape on the
+// path most often run when the database is at max_connections.
+func TestStopOpensOneStoreForEveryComponent(t *testing.T) {
+	src := srctest.Read(t, "cmd/aveloxis/main.go")
+	stop := srctest.StripGoComments(srctest.FuncBody(t, src, "func stopCmd("))
+	if !strings.Contains(stop, "&backendVerifier{") || !strings.Contains(stop, "defer verifier.Close()") {
+		t.Error("stopCmd must build ONE backendVerifier for the whole run and close it")
+	}
+	if n := strings.Count(stop, "verifier.verify("); n != 1 {
+		t.Errorf("stopCmd must verify through the shared verifier exactly once per stopped component, found %d call sites", n)
+	}
+	if strings.Contains(stop, "db.NewPostgresStore(") || strings.Contains(stop, "config.Load(") {
+		t.Error("stopCmd must not dial or load config itself — backendVerifier owns both, lazily")
+	}
+	verify := srctest.StripGoComments(srctest.FuncBody(t, src, "func verifyBackendsDisconnected("))
+	if strings.Contains(verify, "db.NewPostgresStore(") || strings.Contains(verify, "config.Load(") {
+		t.Error("verifyBackendsDisconnected takes the already-open store and config — a dial per component is the round-11 finding 10 shape")
+	}
+	open_ := srctest.StripGoComments(srctest.FuncBody(t, src, "func (v *backendVerifier) verify("))
+	if n := strings.Count(open_, "db.NewPostgresStore("); n != 1 {
+		t.Errorf("backendVerifier must dial at most once, found %d NewPostgresStore calls", n)
+	}
+	if !strings.Contains(open_, "if !v.opened {") || !strings.Contains(open_, "v.opened = true") {
+		t.Error("the dial must be lazy and once — a stop that finds nothing running never touches the database")
+	}
+}
+
+// Round-11 finding 12: "does this target name every component" is ONE
+// spelling (SR-17). stopCmd asked strings.EqualFold while
+// resolveComponents asked strings.ToLower.
+func TestAllTargetHasOneSpelling(t *testing.T) {
+	for _, in := range []string{"all", "ALL", " All ", "\tall\n"} {
+		if !isAllTarget(in) {
+			t.Errorf("isAllTarget(%q) = false, want true", in)
+		}
+	}
+	for _, in := range []string{"serve", "", "alls", "scancode-worker"} {
+		if isAllTarget(in) {
+			t.Errorf("isAllTarget(%q) = true, want false", in)
+		}
+	}
+	// The negative half is scoped to stopCmd's BODY and bans the
+	// OPERATION, not one spelling of it: the first draft banned the
+	// literal `EqualFold(strings.TrimSpace(target), "all")` and a
+	// mutation to `EqualFold(target, "all")` — the same defect, one
+	// call shorter — walked straight past it (the counting-pins
+	// lesson). Every way to re-ask the question in this body reduces to
+	// a case-fold or an equality against the target, so both are
+	// banned; `Use:`/`Long:` carry "all" as help text and are left
+	// alone.
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/main.go"), "func stopCmd("))
+	if !strings.Contains(body, "isAllTarget(target)") {
+		t.Error("stopCmd must route the all-target test through isAllTarget (SR-17)")
+	}
+	for _, banned := range []string{"EqualFold(", "target ==", "ToLower(target)"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("stopCmd must not re-ask %q with %q — isAllTarget is the ONE spelling (SR-17); a second one is how the two drifted in the first place", "is this target all?", banned)
+		}
+	}
+	comp := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/components.go"))
+	if n := strings.Count(comp, `== "all"`); n != 1 {
+		t.Errorf(`"all" must be compared in exactly one place (isAllTarget), found %d`, n)
 	}
 }

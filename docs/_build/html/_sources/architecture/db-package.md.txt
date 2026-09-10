@@ -20,7 +20,7 @@ The `db` package is the PostgreSQL data access layer for Aveloxis. It provides u
 | `breadth_store.go` | Contributor breadth (cross-repo activity) storage |
 | `web_store.go` | OAuth users, user groups, org tracking |
 | `matviews.go` | Materialized view creation and refresh |
-| `migrate.go` | Schema migrations, timestamp cleanup, tool_version backfill |
+| `migrate.go` | Schema migrations, timestamp cleanup, tool_version backfill, schema version tracking |
 | `sanitize.go` | Text sanitization (null bytes, invalid UTF-8, control chars) |
 | `github_uuid.go` | Deterministic UUID generation from platform user IDs |
 | `keys.go` | API key loading with Augur fallback |

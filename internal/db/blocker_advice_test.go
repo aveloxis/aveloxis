@@ -28,7 +28,7 @@ import (
 // as orphans. Holders are now split by the same predicate `stop`
 // uses; only this host's get the recipe.
 func TestBlockerAdviceNeverTargetsOtherAddresses(t *testing.T) {
-	both := blockerAdvice([]int{11, 12}, []int{99}, nil, nil, nil)
+	both := blockerAdvice(holderBuckets{thisHost: []int{11, 12}, otherAddr: []int{99}})
 	if !strings.Contains(both, "pg_terminate_backend(<pid>)") || !strings.Contains(both, "[11 12]") {
 		t.Errorf("this host's holders get the recipe: %q", both)
 	}
@@ -41,7 +41,7 @@ func TestBlockerAdviceNeverTargetsOtherAddresses(t *testing.T) {
 	if !strings.Contains(both, "[99]") || !strings.Contains(both, "do not terminate") {
 		t.Errorf("other addresses' holders are named and protected: %q", both)
 	}
-	other := blockerAdvice(nil, []int{99, 100}, nil, nil, nil)
+	other := blockerAdvice(holderBuckets{otherAddr: []int{99, 100}})
 	if strings.Contains(other, "pg_terminate_backend") || strings.Contains(other, "orphan") {
 		t.Errorf("only other-address holders: no recipe, no orphan talk: %q", other)
 	}
@@ -55,14 +55,14 @@ func TestBlockerAdviceNeverTargetsOtherAddresses(t *testing.T) {
 	}
 	// Round-3 finding 6: a holder the activity snapshot could not show is
 	// neither ours nor another's — re-check, never a recipe.
-	unknown := blockerAdvice(nil, nil, nil, nil, []int{7})
+	unknown := blockerAdvice(holderBuckets{unseen: []int{7}})
 	if strings.Contains(unknown, "pg_terminate_backend") || !strings.Contains(unknown, "[7]") || !strings.Contains(unknown, "re-check") {
 		t.Errorf("an unseen holder is named and deferred, never offered for termination: %q", unknown)
 	}
 	// Round-7 finding 1: a holder of ANOTHER role, whose address this
 	// role cannot see — neither ours nor another's; the hint names the
 	// way to a verdict and never a recipe.
-	hidden := blockerAdvice(nil, nil, nil, []int{5}, nil)
+	hidden := blockerAdvice(holderBuckets{hidden: []int{5}})
 	if strings.Contains(hidden, "pg_terminate_backend") || strings.Contains(hidden, "orphan") {
 		t.Errorf("a hidden holder gets no recipe and no orphan talk: %q", hidden)
 	}
@@ -77,7 +77,7 @@ func TestBlockerAdviceNeverTargetsOtherAddresses(t *testing.T) {
 	// client address and no role, so it must never reach the this-host
 	// recipe, the other-machine reading, or the re-check-as-that-role
 	// advice.
-	bg := blockerAdvice(nil, nil, []int{4242}, nil, nil)
+	bg := blockerAdvice(holderBuckets{background: []int{4242}})
 	if strings.Contains(bg, "pg_terminate_backend") || strings.Contains(bg, "orphan") || strings.Contains(bg, "end it yourself") {
 		t.Errorf("a background worker is never offered for termination: %q", bg)
 	}
@@ -89,7 +89,7 @@ func TestBlockerAdviceNeverTargetsOtherAddresses(t *testing.T) {
 			t.Errorf("the background arm must carry %q: %q", want, bg)
 		}
 	}
-	if blockerAdvice(nil, nil, nil, nil, nil) != "" {
+	if blockerAdvice(holderBuckets{}) != "" {
 		t.Error("no holders, no advice")
 	}
 }
@@ -104,7 +104,7 @@ func TestCheckBlockersClassifiesHoldersByClientAddress(t *testing.T) {
 		t.Error("checkBlockers must classify from the migrate session's REAL address (nil override); only tests drive the seam")
 	}
 	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func checkBlockersFrom("))
-	for _, needle := range []string{`backendOnThisHostSQL("b")`, `clientAddrVisibleSQL("b")`, `probingSessionSQL("$1")`, "pg_blocking_pids(", "datname = current_database()", "blockerAdvice(", "b.pid IS NOT NULL", "b.application_name", `"holder_pids_hidden"`, `"holder_apps_hidden"`, `backgroundBackendSQL("b")`, `"holder_pids_background"`, `"holder_types_background"`} {
+	for _, needle := range []string{`backendOnThisHostSQL("b")`, `clientAddrVisibleSQL("b")`, `probingSessionSQL("$1", "$2")`, "pg_blocking_pids(", "datname = current_database()", "blockerAdvice(", "b.pid IS NOT NULL", "b.application_name", `"holder_pids_hidden"`, `"holder_apps_hidden"`, `backgroundBackendSQL("b")`, `"holder_pids_background"`, `"holder_types_background"`} {
 		if n := strings.Count(body, needle); n != 1 {
 			t.Errorf("checkBlockersFrom must carry %s exactly once, found %d", needle, n)
 		}

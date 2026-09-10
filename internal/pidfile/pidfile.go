@@ -65,8 +65,16 @@ func Read(path string) (int, error) {
 	return pid, nil
 }
 
-// Remove deletes a PID file. Best-effort by contract: a stale PID file
-// is handled by the liveness check on the next start.
+// Remove deletes a PID file. Best-effort by contract.
+//
+// A leftover pidfile whose PID is DEAD is resolved by the liveness check
+// on the next start (that is what IsRunning is for). A leftover pidfile
+// that cannot be READ — EACCES, EIO, corrupt or truncated content — is
+// neither stale nor live: it never reaches IsRunning at all, and since
+// round-11 finding 2 (SR-5) callers report that state as UNKNOWN and
+// REFUSE to start rather than risk a second scheduler on one host. So a
+// failed Remove here is not always self-healing; the operator may have
+// to delete the file by hand.
 func Remove(path string) {
 	_ = os.Remove(path)
 }

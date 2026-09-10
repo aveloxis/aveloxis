@@ -10,26 +10,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
-
-func TestDeployGateNeeded(t *testing.T) {
-	cases := []struct {
-		checklist, data, acked, want bool
-	}{
-		{true, true, false, true},   // existing fleet, not acked → gate
-		{true, true, true, false},   // acked → pass
-		{true, false, false, false}, // fresh install → pass
-		{false, true, false, false}, // no checklist for this version → pass
-	}
-	for _, c := range cases {
-		if got := deployGateNeeded(c.checklist, c.data, c.acked); got != c.want {
-			t.Errorf("deployGateNeeded(%v,%v,%v) = %v, want %v", c.checklist, c.data, c.acked, got, c.want)
-		}
-	}
-}
 
 // The current binary version must have a checklist (this release ships
 // data-side heals) so the gate is not dead for v0.29.0.
@@ -382,5 +367,90 @@ func TestCheckDeployReadinessStampGateIsIndependentOfTheChecklist(t *testing.T) 
 	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/deploy_checklist.go"), "func runDeployGate("))
 	if strings.Contains(body, "deployChecklistFor(") {
 		t.Error("runDeployGate must always consult checkDeployReadiness on the store — the checklist short-circuit belongs inside it, after the evidence")
+	}
+}
+
+// blockingGate blocks its FIRST query until the caller's context ends —
+// the shape a concurrent `aveloxis migrate` produces. addColumnIfMissing
+// issues its ALTERs unconditionally (server-side IF NOT EXISTS), so
+// Postgres takes ACCESS EXCLUSIVE on collection_queue on EVERY migrate,
+// and FleetHasCollectedData — the gate's FIRST call — queues behind it.
+type blockingGate struct{ fakeGate }
+
+func (b *blockingGate) FleetHasCollectedData(ctx context.Context) (bool, error) {
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+// L10 finding 2 (on round 11's own finding-4 fix). runDeployGate bounded
+// the DIAL and then handed checkDeployReadiness a fresh unbounded
+// context.Background(), so all four pre-prompt queries could block
+// `start all` forever — before web and api ever launch, which is
+// precisely what deployGateDialTimeout's own comment says the bound
+// prevents. Not a regression (there was no bound at all before round
+// 11) but the fix under-delivered against its own stated purpose.
+func TestDeployGateBoundsItsPrePromptQueries(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	var out bytes.Buffer
+	start := time.Now()
+	proceed, err := checkDeployReadiness(ctx, &blockingGate{}, "0.29.4", false, nil, &out)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Error("a pre-prompt query that outlives the bound must surface an error, not proceed silently")
+	}
+	if proceed {
+		t.Error("a gate that could not read the fleet state must not report proceed=true (fail closed)")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("checkDeployReadiness took %v — the pre-prompt queries must honor the caller's deadline so `start all` reaches web and api", elapsed)
+	}
+}
+
+// The counter-test, and the reason the bound cannot simply wrap the
+// whole call: checkDeployReadiness blocks on the interactive `[y/N]`,
+// and an operator who reads the checklist for longer than the query
+// bound must still get their acknowledgement RECORDED. The prompt needs
+// a real TTY (isInteractive is a char-device stat, so a pipe refuses
+// before the prompt), so the contract is pinned where it lives —
+// deployAckContext — rather than through a pty fixture.
+func TestDeployAckContextSurvivesAnExpiredCaller(t *testing.T) {
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	if expired.Err() == nil {
+		t.Fatal("fixture: the caller's context should be done")
+	}
+
+	ackCtx, ackCancel := deployAckContext(expired)
+	defer ackCancel()
+
+	if ackCtx.Err() != nil {
+		t.Error("deployAckContext must strip the caller's cancellation — an operator who reads the " +
+			"checklist for longer than the pre-prompt query bound would otherwise lose the " +
+			"acknowledgement they just gave")
+	}
+	if _, ok := ackCtx.Deadline(); !ok {
+		t.Error("deployAckContext must still BOUND the write — an unbounded ack is the same hang one " +
+			"statement later (the write takes its own locks)")
+	}
+}
+
+// The wiring pin: runDeployGate must not hand the readiness check a
+// fresh unbounded context.Background().
+func TestRunDeployGateDoesNotPassAnUnboundedContext(t *testing.T) {
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/deploy_checklist.go"), "func runDeployGate("))
+	if strings.Contains(body, "checkDeployReadiness(context.Background()") {
+		t.Error("runDeployGate must bound checkDeployReadiness's pre-prompt queries — an unbounded context " +
+			"lets a concurrent migrate's ACCESS EXCLUSIVE on collection_queue block `start all` forever, " +
+			"before web and api ever launch (L10 finding 2)")
+	}
+	if !strings.Contains(body, "deployGateDialTimeout") {
+		t.Error("runDeployGate must derive its query bound from the named timeout, not a fresh literal")
+	}
+	check := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/deploy_checklist.go"), "func checkDeployReadiness("))
+	if !strings.Contains(check, "deployAckContext(ctx)") {
+		t.Error("RecordDeployAck must run on deployAckContext(ctx) — the caller's bound belongs to the " +
+			"pre-prompt READS, and the operator's answer arrives after it has expired")
 	}
 }

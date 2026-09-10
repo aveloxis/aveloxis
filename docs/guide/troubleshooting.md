@@ -1460,6 +1460,50 @@ the server itself asks; `'MEMBER'` answers the weaker one and can read
 true while the address stays NULL. Aveloxis's own readers say "not
 visible" for such backends instead of guessing.
 
+```{note}
+**The host marker is what places a backend; the client address is the
+fallback.** Since v0.29.4 each component tags its pool
+`aveloxis-<component>@<hostname>`, and aveloxis compares the part after
+the `@` against its own machine. So the diagnostic above is best read
+with the marker in view:
+
+```sql
+SELECT pid,
+       split_part(application_name, '@', 1) AS component,
+       NULLIF(split_part(application_name, '@', 2), '') AS host,
+       client_addr, state,
+       age(now(), query_start) AS query_age
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND application_name LIKE 'aveloxis-%'
+ORDER BY host NULLS LAST, component, query_start;
+```
+
+A row whose `host` is NULL was tagged by a pre-round-12 binary, or by a
+host whose kernel would not name itself; those fall back to the
+client-address rule.
+```
+
+```{warning}
+**A transaction pooler defeats the client-address rule entirely — but
+not the host marker.** With pgbouncer in `transaction` or `statement`
+mode (or pgcat, or Odyssey) between aveloxis and PostgreSQL, every
+backend's `client_addr` is the *pooler's* address: this host's, the
+primary's, and any other client's alike. The address rule alone reads
+every backend as this host's, so a long-running backend with no matching
+local `ps` entry looks like an orphan even when it belongs to a live
+serve on another machine. The `@host` marker is immune — PostgreSQL
+stores the `application_name` the client sent and never rewrites it.
+
+**The residual is the upgrade window.** A backend with no marker (a
+pre-round-12 binary) still falls back to the address rule, and behind a
+pooler that rule places it here. Until every host on the database runs a
+build with the marker, confirm with `ps` on **every** host that runs the
+component before running `pg_terminate_backend` on a "this host" entry
+of a **pooled** deployment. Use the `host` column above to tell which
+rows are still un-marked.
+```
+
 **Show both sides of the contention** (helpful when you want to confirm the waiter is your migrate / new serve, not something else):
 
 ```sql

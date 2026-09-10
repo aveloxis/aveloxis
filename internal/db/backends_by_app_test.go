@@ -148,7 +148,7 @@ func TestBackendsByAppNameScopesToThisHost(t *testing.T) {
 	// session dialed in from a LAN address (the runner's shape) — the
 	// same tagged backend must now land in OtherHosts, never ThisHost.
 	lan := "192.168.99.99"
-	far, err := store.backendsByAppNameFrom(ctx, tag, &lan)
+	far, err := store.backendsByAppNameFrom(ctx, tag, &lan, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,19 +172,26 @@ func TestBackendsByAppNameSourceContract(t *testing.T) {
 	src := srctest.Read(t, "internal/db/backends_by_app.go")
 	// The production entry point takes the session's REAL address (a nil
 	// override); only the test drives the seam.
-	if !strings.Contains(srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) BackendsByAppName(")), "backendsByAppNameFrom(ctx, appName, nil)") {
+	if !strings.Contains(srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) BackendsByAppName(")), "backendsByAppNameFrom(ctx, appName, nil, nil)") {
 		t.Error("BackendsByAppName must probe from the session's own address (nil override)")
 	}
 	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) backendsByAppNameFrom("))
-	for _, needle := range []string{"datname = current_database()", "application_name = $1"} {
+	for _, needle := range []string{"datname = current_database()", `appNamePrefixSQL("a.application_name")`} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("backendsByAppNameFrom must carry %q", needle)
 		}
 	}
+	// Round 12: the tag carries this host's marker after '@', so the
+	// match is on the PREFIX. Bare equality would find only the backends
+	// of whatever host happens to share our exact tag — on the runner
+	// that is nothing at all, an instant silent all-clear.
+	if strings.Contains(body, "a.application_name = $1") {
+		t.Error("backendsByAppNameFrom must not match the tag by equality — the tag carries a host marker; match appNamePrefixSQL (round 12)")
+	}
 	// Round 7: the verdict is the ONE composed predicate (visible AND
 	// same host), the probing session the ONE subquery, and a hidden row
 	// is routed by its own column — never by a NULL address.
-	for _, needle := range []string{`backendOnThisHostSQL("a")`, `clientAddrVisibleSQL("a")`, `probingSessionSQL("$2")`} {
+	for _, needle := range []string{`backendOnThisHostSQL("a")`, `clientAddrVisibleSQL("a")`, `probingSessionSQL("$2", "$3")`} {
 		if n := strings.Count(body, needle); n != 1 {
 			t.Errorf("backendsByAppNameFrom must carry %s exactly once, found %d", needle, n)
 		}
@@ -198,11 +205,18 @@ func TestBackendsByAppNameSourceContract(t *testing.T) {
 	// the plausible refactor `err != nil { continue }` (the shape
 	// checkBlockers once had) would silently drop a lingering local
 	// orphan from ThisHost — a false all-clear.
-	if !srctest.ContainsNormalized(body, "if err := rows.Scan(&pid, &visible, &thisHost); err != nil { return out, fmt.Errorf(") {
+	if !srctest.ContainsNormalized(body, "if err := rows.Scan(&pid, &present, &visible, &thisHost); err != nil { return out, fmt.Errorf(") {
 		t.Error("a Scan error must be RETURNED from backendsByAppNameFrom (SR-5: a failed row read is not an absent backend)")
 	}
 	if strings.Contains(body, "continue") {
 		t.Error("no keep-going arm in backendsByAppNameFrom — every row is either counted or an error")
+	}
+	// Round-11 finding 9: with no pg_stat_activity row for this session
+	// the probing address is NULL, which localClientAddrSQL reads as
+	// "unix socket, therefore this host" — every backend would be
+	// offered for termination. Refuse the verdict instead.
+	if !srctest.ContainsNormalized(body, "if !present {") || !strings.Contains(body, "refusing to report a verdict") {
+		t.Error("backendsByAppNameFrom must refuse a verdict when the probing session has no pg_stat_activity row")
 	}
 	for _, f := range srctest.PackageFiles(t, "internal/db", 30) {
 		if strings.Contains(srctest.StripGoComments(f), "PidsByAppName(") {
@@ -224,8 +238,14 @@ func TestBackendsByAppNameSourceContract(t *testing.T) {
 // carries the visibility column and the ONE session subquery beside it.
 func TestThisHostVerdictHasOneSpelling(t *testing.T) {
 	owners := map[string][]string{
-		"sameClientHostSQL(": {"func sameClientHostSQL(", "func backendOnThisHostSQL("},
-		"pg_backend_pid()":   {"func probingSessionSQL("},
+		// Round 12 inserted sameHostAsProbeSQL between the two: the
+		// host MARKER decides when both sides carry one, and the
+		// address comparator is its fallback. The address rule keeps
+		// exactly one composer so no reader can reach it directly.
+		"sameClientHostSQL(":  {"func sameClientHostSQL(", "func sameHostAsProbeSQL("},
+		"sameHostAsProbeSQL(": {"func sameHostAsProbeSQL(", "func backendOnThisHostSQL("},
+		"appNameHostSQL(":     {"func appNameHostSQL(", "func sameHostAsProbeSQL("},
+		"pg_backend_pid()":    {"func probingSessionSQL("},
 	}
 	verdicts := 0
 	for name, fsrc := range srctest.PackageFiles(t, "internal/db", 30) {
@@ -276,5 +296,47 @@ func TestOperatorDocsDescribeAllThreeVerdictArms(t *testing.T) {
 				t.Errorf("%s: missing %q — %s", page, needle.text, needle.why)
 			}
 		}
+	}
+}
+
+// Round-11 finding 9: probingSessionSQL's `me` used to select FROM
+// pg_stat_activity directly, so a zero-row result would have silently
+// emptied every reader through the CROSS JOIN — `stop` reporting
+// all-clear while backends were live. The derived table has no FROM at
+// its top level, so it is always exactly one row, and it carries
+// `present` because a missing own row yields a NULL address, which
+// localClientAddrSQL reads as "unix socket, therefore this host" —
+// fail-open in the direction that produced the 2026-09-09 incident.
+func TestProbingSessionIsAlwaysOneRowAndSaysSo(t *testing.T) {
+	me := probingSessionSQL("$1", "$2")
+	norm := srctest.NormalizeWS(me)
+	if !strings.Contains(norm, "AS present)") {
+		t.Errorf("probingSessionSQL must expose `present`, got: %s", norm)
+	}
+	if !strings.Contains(norm, "EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = pg_backend_pid())") {
+		t.Errorf("`present` must be the EXISTS of the session's own row, got: %s", norm)
+	}
+	// The top-level derived table must have no FROM — the reads are
+	// scalar subqueries, so the row count is 1 by construction.
+	if strings.Contains(norm, "AS client_addr FROM pg_stat_activity") {
+		t.Errorf("the derived table must not select FROM pg_stat_activity at its top level (a zero-row `me` empties every CROSS JOIN), got: %s", norm)
+	}
+	// Every reader must refuse a verdict when present is false.
+	readers := map[string]string{
+		"internal/db/backends_by_app.go": "func (s *PostgresStore) backendsByAppNameFrom(",
+		"internal/db/migrate.go":         "func checkBlockersFrom(",
+	}
+	for file, sig := range readers {
+		body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, file), sig))
+		if !strings.Contains(body, "me.present") {
+			t.Errorf("%s must select me.present", sig)
+		}
+		if !srctest.ContainsNormalized(body, "if !present {") && !srctest.ContainsNormalized(body, "} else if !present {") {
+			t.Errorf("%s must refuse to render a verdict when the probing session has no pg_stat_activity row", sig)
+		}
+	}
+	listing := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/db/migrate.go"), "func (s *PostgresStore) otherServeAddressesFrom("))
+	if !strings.Contains(listing, "me.present") || !srctest.ContainsNormalized(listing, "if !present {") {
+		t.Error("otherServeAddressesFrom must carry and check me.present — a NULL probing address tags every entry (this host)")
 	}
 }

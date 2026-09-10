@@ -25,12 +25,26 @@ var allComponents = []string{"serve", "web", "api"}
 // primary that still runs its in-serve pool would double up.
 const scancodeWorkerComponent = "scancode-worker"
 
+// isAllTarget is the ONE spelling (SR-17) of "this start/stop target
+// names every component". Round-11 finding 12: stopCmd asked
+// strings.EqualFold while resolveComponents asked strings.ToLower —
+// two spellings of one decision, in the file whose four duplicate
+// liveness spellings v0.29.4 had just consolidated.
+func isAllTarget(target string) bool {
+	return normalizeComponentTarget(target) == "all"
+}
+
+// normalizeComponentTarget is how every component name is compared.
+func normalizeComponentTarget(target string) string {
+	return strings.ToLower(strings.TrimSpace(target))
+}
+
 // resolveComponents maps an operator's start/stop target to the
 // component list it names. The ONE place the component set lives.
 func resolveComponents(target string) ([]string, error) {
-	t := strings.ToLower(strings.TrimSpace(target))
+	t := normalizeComponentTarget(target)
 	switch {
-	case t == "all":
+	case isAllTarget(t):
 		return slices.Clone(allComponents), nil
 	case slices.Contains(allComponents, t) || t == scancodeWorkerComponent:
 		return []string{t}, nil
@@ -38,12 +52,29 @@ func resolveComponents(target string) ([]string, error) {
 	return nil, fmt.Errorf("unknown component %q (use serve, web, api, scancode-worker, or all)", target)
 }
 
-// componentAppName is the application_name a component tags its pool
-// with and `aveloxis stop` verifies against — one derivation for both
-// sides (SR-17); serve's spelling is also db.ServeApplicationName,
+// componentAppNamePrefix is the component half of the tag — what every
+// reader MATCHES on, and what `aveloxis stop` passes to
+// db.BackendsByAppName. serve's spelling is also db.ServeApplicationName,
 // which the migrate-time other-serve probe reads.
-func componentAppName(component string) string {
+func componentAppNamePrefix(component string) string {
 	return "aveloxis-" + component
+}
+
+// componentAppName is the application_name a component TAGS its pool
+// with: the match prefix plus this host's marker
+// (`aveloxis-scancode-worker@runner-01`). One derivation for both
+// sides (SR-17) — the reader half is db.appNamePrefixSQL /
+// db.appNameHostSQL, and db.AppNameForHost owns the separator both
+// halves agree on.
+//
+// Round 12 (Copilot #1, second raise): the host marker is what makes
+// the this-host verdict survive a transaction pooler, a database proxy
+// or shared NAT, where every client collapses onto one client_addr and
+// the address rule reads the primary's backends as this host's. A host
+// that cannot name itself tags un-suffixed and degrades to the address
+// rule — today's behavior, never a fabricated marker.
+func componentAppName(component string) string {
+	return db.AppNameForHost(componentAppNamePrefix(component))
 }
 
 // pollBackends is the poll behind `aveloxis stop`: probe once a second
@@ -99,6 +130,13 @@ func printBackendVerdict(out io.Writer, appName string, budget time.Duration, la
 			fmt.Fprintf(out, "  SELECT pg_terminate_backend(%d);\n", pid)
 		}
 	}
+	// DECLINED, round-11 finding 15 ("this note prints even when the
+	// local stop was clean, so it is noise"): on a clean stop it is the
+	// most INFORMATIVE line the command emits — it says the component is
+	// still running somewhere else against this database, which is
+	// exactly the two-serves state this release exists to surface. An
+	// operator who stops the primary and sees nothing would read the
+	// fleet as down. Kept on purpose.
 	if last.OtherHosts > 0 {
 		fmt.Fprintf(out, "Note: %d %s backend(s) are connected from other client addresses (normally another machine running this component against the same database); they are not this host's and were left alone.\n",
 			last.OtherHosts, appName)

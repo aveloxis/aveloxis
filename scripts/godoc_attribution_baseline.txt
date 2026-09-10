@@ -1,0 +1,41 @@
+# Frozen godoc-attribution debt — SHRINK ONLY.
+#
+# Each line is a declaration whose doc comment opens with the name of a
+# DIFFERENT declaration in the same file, where that declaration has no
+# doc of its own: the signature of a doc block that was fused onto its
+# successor by an insertion with no blank line between them. See
+# scripts/godoc_attribution_test.go for the full rationale and the three
+# incidents that earned the check.
+#
+# These 25 accumulated across the release history and are frozen so a
+# NEW fusion fails the build. To repair one: separate the two doc blocks
+# with a blank line, give each declaration a doc that opens with its own
+# name, and DELETE its line here in the same change — a stale line fails
+# the test as unreviewed permission.
+#
+# Format: <repo-relative file>::<declaration whose doc was stolen onto it>
+cmd/aveloxis/main.go::mailerConfigFrom
+cmd/aveloxis/shadow_diff.go::shadowTable
+internal/api/analytics.go::recordComparison
+internal/api/portal.go::homeReposMaxLimit
+internal/collector/distribution/manifest_parser.go::kvStringPattern
+internal/collector/prelim.go::ResolveRedirectTarget
+internal/collector/scancode_worker.go::checkOwnLocks
+internal/collector/vulnerability.go::stampVulnScanComplete
+internal/config/config.go::ActivityHistoryWindowDaysOrDefault
+internal/config/config.go::RecollectAfterDuration
+internal/config/config.go::jiraCadenceMaxHours
+internal/config/config.go::senderBackfillMaxMinutes
+internal/config/example_defaults_test.go::blockValueOpts
+internal/config/example_defaults_test.go::exampleBlockAllowlist
+internal/config/example_defaults_test.go::snippetAccessor
+internal/db/analytics_store.go::LastActivityAt
+internal/db/contributor_search_resolve.go::mergeLoserAliasRepointSQL
+internal/db/gap_heal_store.go::nativeGatheredIssuesSQL
+internal/db/queue.go::archivedStretchCaseSQL
+internal/db/scancode_worker_store.go::RecordScancodeTimeout
+internal/db/vulnerability_store.go::SetVulnScanLastRun
+internal/mailer/mailer.go::SiteURL
+internal/platform/jira/walk.go::jiraMaxWestTZSkew
+internal/scheduler/scheduler.go::largeRepoExclusions
+internal/scheduler/scheduler.go::singleFlight

@@ -178,10 +178,33 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 	if err := RunMigrations(ctx, store, slog.New(slog.NewTextHandler(&sameVersionLog, nil))); err != nil {
 		t.Fatalf("a current stamp beside another serve must fast-path, got %v", err)
 	}
-	for _, want := range []string{"another aveloxis-serve is connected", "aveloxis start scancode-worker", fakeAddr + " (this host)"} {
+	// Round-11 finding 1: the fake runs on THIS host, so every entry the
+	// listing renders is tagged "(this host)" and Advice() WITHDRAWS the
+	// "normally the primary, so this host is running the wrong command"
+	// reading — nothing in the list identifies a primary, and the
+	// reverse-chair case (a runner started serve first, the primary came
+	// back, and the PRIMARY is the entry tagged "(other address)") is
+	// exactly what that inference gets wrong. What the WARN must still
+	// carry: the sighting, the address as the SERVER renders it
+	// (round-6 finding 1 — `from=` alone was satisfied by an empty
+	// list), and the way to back out of a serve that is starting anyway
+	// (round-10 finding 2).
+	for _, want := range []string{
+		"another aveloxis-serve is connected",
+		"nothing here identifies the primary",
+		"aveloxis stop serve",
+		fakeAddr + " (this host)",
+	} {
 		if !strings.Contains(sameVersionLog.String(), want) {
 			t.Errorf("the fast path beside another serve must warn, name the way out, and report %q with the code's own verdict:\n%s", want, sameVersionLog.String())
 		}
+	}
+	// The counter-pin, live: with no "(other address)" entry the verdict
+	// and its command form must be ABSENT. This e2e is the only place
+	// the withdrawal is proven against a real listing rather than a
+	// hand-built OtherServe value.
+	if strings.Contains(sameVersionLog.String(), "aveloxis start scancode-worker") {
+		t.Errorf("with every entry tagged (this host) the wrong-command verdict must be withdrawn, not rendered:\n%s", sameVersionLog.String())
 	}
 	// Round-7 finding 3: the "(other address)" verdict — the datum every
 	// message tells the operator to act on — was never executed (one
@@ -455,7 +478,7 @@ func TestOtherServeConfirmationReSnapshotsOwnPIDs(t *testing.T) {
 		t.Errorf("the clear must land on the very next probe, got %d", probes)
 	}
 	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/db/migrate.go"), "func (s *PostgresStore) otherServeConnected("))
-	if !srctest.ContainsNormalized(body, "serveBackendsBeyondOwnPool(ctx, tx, s.ownBackendPIDs)") {
+	if !srctest.ContainsNormalized(body, "serveBackendsBeyondOwnPool(ctx, conn, s.ownBackendPIDs)") {
 		t.Error("the probe must pass s.ownBackendPIDs as a METHOD VALUE (re-read every probe), never a hoisted snapshot")
 	}
 }
@@ -634,7 +657,7 @@ func TestOtherServeCompositionHasOneOwner(t *testing.T) {
 	if !srctest.ContainsNormalized(listing, "if err := rows.Err(); err != nil { return nil, err }") || strings.Contains(listing, "return out, rows.Err()") {
 		t.Error("otherServeAddressesFrom must return NO list on rows.Err() — a partial listing is not a listing")
 	}
-	if strings.Count(listing, `backendOnThisHostSQL("a")`) != 1 || strings.Count(listing, `clientAddrVisibleSQL("a")`) != 1 || strings.Count(listing, `probingSessionSQL("$3")`) != 1 {
+	if strings.Count(listing, `backendOnThisHostSQL("a")`) != 1 || strings.Count(listing, `clientAddrVisibleSQL("a")`) != 1 || strings.Count(listing, `probingSessionSQL("$3", "$4")`) != 1 {
 		t.Error("otherServeAddressesFrom must render its verdict through the shared visibility + this-host predicates and the ONE probing-session subquery")
 	}
 	// Round-8 finding 5: the own-PID set must be snapshotted AFTER the
@@ -838,6 +861,9 @@ func TestFastPathWarnSaysTheServeIsStillStarting(t *testing.T) {
 	for _, c := range []struct{ name, got string }{
 		{"tagged", OtherServe{Connected: true, From: []string{"10.0.0.5 (other address)"}}.Advice()},
 		{"tagless", OtherServe{Connected: true, ListErr: errors.New("listing failed")}.Advice()},
+		// Round-11 finding 1 added a third branch; the tail must stay in
+		// the caller for it too.
+		{"all this-host", OtherServe{Connected: true, From: []string{"::1 (this host)"}}.Advice()},
 	} {
 		if strings.Contains(c.got, "aveloxis stop serve") {
 			t.Errorf("OtherServe.Advice (%s branch) must not tell the operator to `aveloxis stop serve` — that is true only where serve is still starting, which is the fast-path WARN's tail, not the shared verdict; got %q", c.name, c.got)
@@ -868,5 +894,20 @@ func TestOtherServeVerdictMatchesTheDocs(t *testing.T) {
 	// line breaks there and would never match byte-for-byte.
 	if !srctest.ContainsNormalized(srctest.Read(t, "docs/guide/commands.md"), chain) {
 		t.Errorf("docs/guide/commands.md must state the same verdict as OtherServe.Advice, chain %q — code and docs describing one operator decision differently is the drift SR-17 exists to prevent", chain)
+	}
+}
+
+// Round-11 finding 8: the confirmation loop runs ~1.75 s on a positive.
+// Holding a TRANSACTION across it sits idle-in-transaction pinning xmin
+// on every affected serve start, and a cancellation leaves
+// Rollback(dead ctx) failing so pgx destroys the pooled connection. The
+// probe needs one SESSION, not a transaction — Acquire gives that.
+func TestOtherServeProbeAcquiresRatherThanBegins(t *testing.T) {
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/db/migrate.go"), "func (s *PostgresStore) otherServeConnected("))
+	if !strings.Contains(body, "s.pool.Acquire(ctx)") || !strings.Contains(body, "conn.Release()") {
+		t.Error("otherServeConnected must Acquire a connection (and Release it) for the confirmation loop")
+	}
+	if strings.Contains(body, "s.pool.Begin(") || strings.Contains(body, "tx.Rollback(") {
+		t.Error("otherServeConnected must NOT hold a transaction across the ~1.75s confirmation loop (round-11 finding 8: idle-in-transaction pins xmin on every positive start)")
 	}
 }

@@ -215,6 +215,45 @@ curl -X POST http://localhost:5555/api/prioritize/42
 
 ---
 
+## Routine performance snapshot
+
+`scripts/perf_snapshot.sql` is the standing measurement ritual
+(summary/20-performance-review-plan.md Phase 5; first executed 2026-08-18 with
+findings in summary/21). Run it per release, or monthly, and diff against the
+previous snapshot — performance review becomes a diff, not archaeology:
+
+```bash
+psql -h <host> -p 5434 -U aveloxis -d aveloxis_large \
+     -f scripts/perf_snapshot.sql > perf-$(date +%Y%m%d).txt
+diff perf-<previous>.txt perf-$(date +%Y%m%d).txt | less
+```
+
+Prerequisites (one-time, superuser — full walkthrough in summary/20 Phase 0):
+
+- `pg_stat_statements` in `shared_preload_libraries` AND
+  `CREATE EXTENSION pg_stat_statements` **in the database you query**. If the
+  extension was created in a different database (collection is global; the view
+  is per-database), either create it in the app DB (no restart — the library is
+  already loaded) or run sections 1–3 connected to that database with
+  `JOIN pg_database d ON d.oid = s.dbid AND d.datname = '<appdb>'`.
+- `track_io_timing = on` (`ALTER SYSTEM` + `pg_reload_conf()`), or every
+  IO-time column reads 0 and the snapshot ranks by execution time only.
+
+Reading the snapshot:
+
+- Section 1 (total time) is "what the server spends its life on" — fix these
+  for throughput. Section 2 (mean time) is the per-call offenders — fix these
+  for latency and runaway-query risk.
+- Section 4 (seq scans × size) is the missing-index radar — the class that
+  produced the v0.27.54 30-minute email lookups and the v0.27.67 10.5-day
+  heal-messages SELECT.
+- Section 5 (unused indexes) is a CANDIDATE list, never a drop list: audit for
+  readers and planned readers first (v0.25.6 dropped a "dead" index whose
+  reader shipped weeks later and became v0.27.54). Documented-purpose indexes
+  (e.g. the incident-response `idx_lockfile_packages_pkg`) stay regardless.
+- Quarterly, optionally `SELECT pg_stat_statements_reset();` so totals reflect
+  the current binary — note the reset date in your snapshot archive.
+
 ## Next steps
 
 - [Configuration](../getting-started/configuration.md) -- set collection parameters

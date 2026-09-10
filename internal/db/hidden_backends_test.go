@@ -49,11 +49,16 @@ func TestHiddenBackendsNeverReadAsThisHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(admin.Close)
+	// Roles are CLUSTER objects and outlive the scratch database, so
+	// drain any left by a run that was killed before its cleanup ran
+	// (round-11 finding 6).
+	sweepStaleTestRoles(ctx, t, admin)
 
 	// A fresh least-privilege role (the scratch DBs run as a superuser; a
-	// test role without CREATEROLE skips, said).
-	role := fmt.Sprintf("avtest_viewer_%d", time.Now().UnixNano())
-	const pw = "avtest-viewer"
+	// test role without CREATEROLE skips, said). The password is
+	// generated per run — never a literal in the repository.
+	role := scratchRoleName("viewer")
+	pw := randomScratchPassword(t)
 	if _, err := admin.pool.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEROLE`, role, pw)); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "42501" {
@@ -63,13 +68,9 @@ func TestHiddenBackendsNeverReadAsThisHost(t *testing.T) {
 	}
 	// Registered FIRST so LIFO runs it after every pool of the role has
 	// closed; DROP OWNED revokes the grants below (a role that holds
-	// privileges cannot be dropped).
-	t.Cleanup(func() {
-		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer ccancel()
-		_, _ = admin.pool.Exec(cctx, `DROP OWNED BY `+role)
-		_, _ = admin.pool.Exec(cctx, `DROP ROLE IF EXISTS `+role)
-	})
+	// privileges cannot be dropped). The drop is CHECKED: a leak is a
+	// login-capable cluster object, so it fails the run that caused it.
+	t.Cleanup(func() { cleanupScratchRole(t, admin, role) })
 	vu := *u
 	vu.User = url.UserPassword(role, pw)
 	viewer, err := NewPostgresStore(ctx, vu.String(), quiet)
@@ -274,12 +275,13 @@ func TestNoninheritedStatsGrantStillReadsHidden(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(admin.Close)
+	sweepStaleTestRoles(ctx, t, admin)
 
 	// NOINHERIT is the shape that separates membership from privilege:
 	// the grant below makes the role a member of pg_read_all_stats
 	// without giving it those privileges in an ordinary session.
-	role := fmt.Sprintf("avtest_noinherit_%d", time.Now().UnixNano())
-	const pw = "avtest-noinherit"
+	role := scratchRoleName("noinherit")
+	pw := randomScratchPassword(t)
 	if _, err := admin.pool.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEROLE NOINHERIT`, role, pw)); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "42501" {
@@ -293,8 +295,7 @@ func TestNoninheritedStatsGrantStillReadsHidden(t *testing.T) {
 		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer ccancel()
 		_, _ = admin.pool.Exec(cctx, `REVOKE pg_read_all_stats FROM `+role)
-		_, _ = admin.pool.Exec(cctx, `DROP OWNED BY `+role)
-		_, _ = admin.pool.Exec(cctx, `DROP ROLE IF EXISTS `+role)
+		cleanupScratchRole(t, admin, role)
 	})
 	if _, err := admin.pool.Exec(ctx, `GRANT pg_read_all_stats TO `+role); err != nil {
 		var pgErr *pgconn.PgError
@@ -432,15 +433,17 @@ func TestInheritedRoleReadsBackendsOfThatRoleAsThisHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(admin.Close)
+	sweepStaleTestRoles(ctx, t, admin)
 
 	nonce := time.Now().UnixNano()
-	owner := fmt.Sprintf("avtest_owner_%d", nonce)
-	inh := fmt.Sprintf("avtest_inherit_%d", nonce)
-	noinh := fmt.Sprintf("avtest_noinherit2_%d", nonce)
-	const pw = "avtest-inherit"
+	owner := fmt.Sprintf("%sowner_%d", scratchRolePrefix, nonce)
+	inh := fmt.Sprintf("%sinherit_%d", scratchRolePrefix, nonce)
+	noinh := fmt.Sprintf("%snoinherit2_%d", scratchRolePrefix, nonce)
+	pw := randomScratchPassword(t)
 
 	// Cleanup registered FIRST so LIFO runs it after every pool has
 	// closed; the memberships must be revoked before the roles drop.
+	// Every drop is CHECKED (round-11 finding 6).
 	t.Cleanup(func() {
 		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer ccancel()
@@ -448,8 +451,7 @@ func TestInheritedRoleReadsBackendsOfThatRoleAsThisHost(t *testing.T) {
 			_, _ = admin.pool.Exec(cctx, fmt.Sprintf(`REVOKE %s FROM %s`, owner, r))
 		}
 		for _, r := range []string{inh, noinh, owner} {
-			_, _ = admin.pool.Exec(cctx, `DROP OWNED BY `+r)
-			_, _ = admin.pool.Exec(cctx, `DROP ROLE IF EXISTS `+r)
+			cleanupScratchRole(t, admin, r)
 		}
 	})
 	for _, spec := range []struct{ role, attrs string }{

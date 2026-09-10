@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/hostid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -45,6 +46,15 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		// starting; is another aveloxis-serve already on this database,
 		// and from where? Sighted BEFORE the stamp decision so both arms
 		// can use it (the ONE confirm-then-list composition, round 6).
+		//
+		// DECLINED, round-11 finding 13 ("`start serve` probes twice —
+		// the parent's deploy gate, then this): true as a fact, and left
+		// alone deliberately. The two go to DIFFERENT SINKS — the gate's
+		// note is stdout for the human at the terminal, this WARN is the
+		// serve log for whoever investigates later — and there is no
+		// channel from a parent to a spawned process to carry a result
+		// through. The cost is ~2 s of confirmation, paid only when a
+		// positive is already confirmed.
 		sight, oerr := pg.otherServeSighting(ctx)
 		// A shutdown landing inside the probes or the listing is an
 		// interruption, not a refusal or a failed probe (round-5 finding
@@ -56,6 +66,14 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 			return fmt.Errorf("serve startup migration interrupted: %w", cause)
 		}
 		if sight.ListErr != nil {
+			// DECLINED, round-11 finding 14 ("the listing error is
+			// rendered twice — here and inside Describe()'s '(listing
+			// failed: …)'"): the refusal text below is deliberately
+			// self-contained for a reader who sees only the returned
+			// error and never this log line, and this WARN is for a
+			// reader scanning the log who never sees the refusal (the
+			// fast path continues). Each rendering has a reader the
+			// other does not reach; the duplication is cosmetic.
 			logger.Warn("serve startup: could not list the other aveloxis-serve's client addresses", "error", sight.ListErr)
 		}
 		if verr == nil && v == ToolVersion {
@@ -308,9 +326,24 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	}
 
 	// Stamp schema version so non-migrating commands (web, api) can detect
-	// when the schema is behind the binary and warn the operator.
+	// when the schema is behind the binary and warn the operator, and so
+	// v0.29.4's `start serve` deploy gate can tell a fleet that has
+	// migrated this binary from one that has not.
 	// Only reached when ALL migration steps succeeded — see comment above.
-	stampSchemaVersion(ctx, pg, logger)
+	//
+	// The stamp is LOAD-BEARING since v0.29.4: deployStepsProvablyUnrun
+	// treats a stamp behind the binary as PROOF that no migration of this
+	// binary has completed here and refuses the start. So a failed stamp
+	// must fail the migration rather than let it report success over a row
+	// that still names the previous version. Every step above is
+	// idempotent, so the remedy is simply to re-run `aveloxis migrate` —
+	// the steps no-op and only the stamp lands.
+	if err := stampSchemaVersion(ctx, pg, logger); err != nil {
+		return fmt.Errorf("schema migration steps all succeeded but the version stamp failed — "+
+			"re-run `aveloxis migrate` (every step is idempotent, so they no-op and only the stamp lands); "+
+			"until it lands, `aveloxis start serve` reads the stamp as proof no migration of this binary "+
+			"completed here and refuses to start: %w", err)
+	}
 
 	logger.Info("schema migrations complete", "schema_version", ToolVersion)
 	return nil
@@ -319,6 +352,7 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 // migrateStage1CoreColumns — recent heals, msg_kind, tool_version defaults, libyear/users/queue/sbom columns, contributor cooldowns.
 // Split from the former 1,570-line RunMigrations (v0.27.42, summary/18
 // Phase 4); step ORDER across stages is load-bearing and unchanged.
+
 // homeActivityBackfillSQL seeds collection_queue.last_activity_90d —
 // ONE named spelling (SR-17) shared by the ledgered migrate step and
 // its behavioral test, so the test exercises the exact statement the
@@ -2450,6 +2484,7 @@ const MigrateAdvisoryLockID int64 = 0x4156454C4F584953
 // The schema and indexName are passed separately (rather than parsing
 // from the SQL) because the helper needs them for the indisvalid
 // query.
+
 // ginTrgmOpsSchema returns the name of the schema that contains the
 // gin_trgm_ops operator class (for access method gin), or "" if no such
 // opclass exists in any schema. The idx_repos_owner_name_trgm DDL
@@ -2546,6 +2581,24 @@ func watchBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger, 
 	}
 }
 
+// holderBuckets is one waiter's blocking holders, split by the verdict
+// each holder earned. NAMED (round-11 finding 5, SR-18): the five
+// buckets were five positional []int parameters, and `thisHost` is the
+// one that emits `pg_terminate_backend` recipes — a transposition with
+// `hidden` or `otherAddr` reproduces the 2026-09-09 incident's failure
+// mode (a terminate recipe for a backend that is not this host's), the
+// compiler cannot see it because all five have the same type, and a
+// consistent swap on both sides of the caller and the test stays green.
+// Named fields make the transposition unrepresentable.
+type holderBuckets struct {
+	// thisHost holders are the ONLY ones offered for termination.
+	thisHost   []int
+	otherAddr  []int
+	background []int
+	hidden     []int
+	unseen     []int
+}
+
 // blockerAdvice renders the operator hint for one blocked waiter:
 // holders on THIS host get the terminate recipe (an orphan is a backend
 // no local process owns); holders connected from a different client
@@ -2572,7 +2625,8 @@ func watchBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger, 
 // aveloxis"; for a restricted viewer, "another role's sessions", when
 // there is no role at all (measured on PG 18.4: an autovacuum worker
 // carries NULL usename and NULL usesysid).
-func blockerAdvice(local, other, background, hidden, unknown []int) string {
+func blockerAdvice(h holderBuckets) string {
+	local, other, background, hidden, unknown := h.thisHost, h.otherAddr, h.background, h.hidden, h.unseen
 	var parts []string
 	if len(local) > 0 {
 		parts = append(parts, fmt.Sprintf("holders on this host: %v — an `aveloxis-*` holder app (see holder_apps_this_host) with no such process running on this host is an orphan: run `SELECT pg_terminate_backend(<pid>)` to release the lock; a non-aveloxis app is another client on this host — let it finish or end it yourself", local))
@@ -2606,12 +2660,20 @@ func checkBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 // advice. Both predicates are total, so a holder absent from the
 // activity snapshot is routed by `b.pid IS NOT NULL`, not by a NULL
 // guard, and a holder of another role whose address this role cannot
-// see is routed by its own visibility column (round-7 finding 1). A
-// failed row read ends the cycle with a log — never a silent partial
-// report (SR-5).
+// see is routed by its own visibility column (round-7 finding 1).
+//
+// A failed row read FLAGS the cycle incomplete and still reports every
+// waiter accumulated so far, stamped `report_incomplete` (round-11
+// finding 3 — the arm used to `return`, throwing away exactly the
+// holder PIDs a blocked migration needs). SR-5 is what forbids the
+// other direction: a read error is never rendered as "no blockers".
+// Only a session with no pg_stat_activity row of its own ends the cycle
+// early, because without it no holder can be placed on this host
+// (round-11 finding 9).
 func checkBlockersFrom(ctx context.Context, pg *PostgresStore, logger *slog.Logger, asIfFrom *string) {
 	rows, err := pg.pool.Query(ctx, `
 		SELECT a.pid,
+		       me.present,
 		       LEFT(a.query, 200)  AS waiter_query,
 		       bp.pid              AS holder,
 		       b.pid IS NOT NULL   AS seen,
@@ -2621,14 +2683,14 @@ func checkBlockersFrom(ctx context.Context, pg *PostgresStore, logger *slog.Logg
 		       `+clientAddrVisibleSQL("b")+` AS visible,
 		       `+backendOnThisHostSQL("b")+` AS this_host
 		FROM pg_stat_activity a
-		CROSS JOIN `+probingSessionSQL("$1")+`
+		CROSS JOIN `+probingSessionSQL("$1", "$2")+`
 		CROSS JOIN LATERAL unnest(pg_blocking_pids(a.pid)) AS bp(pid)
 		LEFT JOIN pg_stat_activity b ON b.pid = bp.pid
 		WHERE a.datname = current_database()
 		  AND a.application_name LIKE 'aveloxis-%'
 		  AND a.wait_event_type = 'Lock'
 		  AND a.state = 'active'
-		ORDER BY a.pid, bp.pid`, asIfFrom)
+		ORDER BY a.pid, bp.pid`, asIfFrom, hostid.HostTag())
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			logger.Warn("migration blocker poll failed", "error", err)
@@ -2643,54 +2705,81 @@ func checkBlockersFrom(ctx context.Context, pg *PostgresStore, logger *slog.Logg
 		backgroundTypes                           []string
 	}
 	var order []int
+	// partial marks a cycle whose row set could not be read in full.
+	// Round-11 finding 3: the scan-failure arm used to `return`, which
+	// threw away every waiter already accumulated — while the log line
+	// promised an INCOMPLETE report, not no report, and the holder PIDs
+	// are exactly what an operator needs during a blocked migration.
+	// Flag-and-fall-through rather than a keep-going arm: `break` and
+	// `continue` are banned from this loop (round-3 finding 2 — a
+	// keep-going arm is how a failed read became "no blocker"), and a
+	// failed Scan leaves the pgx iterator in an error state, so
+	// rows.Next() ends the loop on its own and rows.Err() carries the
+	// cause.
+	partial := false
 	waiters := map[int]*waiter{}
 	for rows.Next() {
 		var waiterPid, holder int
 		var waiterQuery, holderApp, holderType string
-		var seen, background, visible, thisHost bool
-		if err := rows.Scan(&waiterPid, &waiterQuery, &holder, &seen, &holderApp, &holderType, &background, &visible, &thisHost); err != nil {
+		var present, seen, background, visible, thisHost bool
+		if err := rows.Scan(&waiterPid, &present, &waiterQuery, &holder, &seen, &holderApp, &holderType, &background, &visible, &thisHost); err != nil {
 			logger.Warn("migration blocker poll: row read failed — this cycle's report is incomplete", "error", err)
+			partial = true
+		} else if !present {
+			// Round-11 finding 9: with no row for this session every
+			// holder would be placed on THIS host and offered for
+			// termination — the incident's own shape. Say so; render
+			// nothing.
+			logger.Warn("migration blocker poll: this session has no pg_stat_activity row, so no holder can be placed on this host — reporting nothing this cycle")
 			return
-		}
-		w := waiters[waiterPid]
-		if w == nil {
-			w = &waiter{query: waiterQuery}
-			waiters[waiterPid] = w
-			order = append(order, waiterPid)
-		}
-		switch {
-		case !seen:
-			w.unknown = append(w.unknown, holder)
-		case background:
-			// Round-8 finding 3, BEFORE the visibility check: a
-			// background worker has no client address to compare and no
-			// role to re-check as, so it needs its own arm rather than
-			// the hidden bucket's "re-check as that role". The verdict is
-			// backgroundBackendSQL (SR-17) — backend_type decides
-			// whenever it is visible, usename only when it is not.
-			// usename alone would be wrong: a client backend in
-			// `state = 'starting'` carries a VISIBLE
-			// backend_type = 'client backend' with usename, usesysid and
-			// datname all NULL (measured), and the round-8 first draft
-			// labeled exactly that row a background worker.
-			w.background = append(w.background, holder)
-			w.backgroundTypes = append(w.backgroundTypes, holderType)
-		case !visible:
-			w.hidden = append(w.hidden, holder)
-			w.hiddenApps = append(w.hiddenApps, holderApp)
-		case thisHost:
-			w.local = append(w.local, holder)
-			w.localApps = append(w.localApps, holderApp)
-		default:
-			w.other = append(w.other, holder)
-			w.otherApps = append(w.otherApps, holderApp)
+		} else {
+			w := waiters[waiterPid]
+			if w == nil {
+				w = &waiter{query: waiterQuery}
+				waiters[waiterPid] = w
+				order = append(order, waiterPid)
+			}
+			switch {
+			case !seen:
+				w.unknown = append(w.unknown, holder)
+			case background:
+				// Round-8 finding 3, BEFORE the visibility check: a
+				// background worker has no client address to compare and no
+				// role to re-check as, so it needs its own arm rather than
+				// the hidden bucket's "re-check as that role". The verdict is
+				// backgroundBackendSQL (SR-17) — backend_type decides
+				// whenever it is visible, usename only when it is not.
+				// usename alone would be wrong: a client backend in
+				// `state = 'starting'` carries a VISIBLE
+				// backend_type = 'client backend' with usename, usesysid and
+				// datname all NULL (measured), and the round-8 first draft
+				// labeled exactly that row a background worker.
+				w.background = append(w.background, holder)
+				w.backgroundTypes = append(w.backgroundTypes, holderType)
+			case !visible:
+				w.hidden = append(w.hidden, holder)
+				w.hiddenApps = append(w.hiddenApps, holderApp)
+			case thisHost:
+				w.local = append(w.local, holder)
+				w.localApps = append(w.localApps, holderApp)
+			default:
+				w.other = append(w.other, holder)
+				w.otherApps = append(w.otherApps, holderApp)
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
-		if !errors.Is(err, context.Canceled) {
+		if errors.Is(err, context.Canceled) {
+			// Shutdown: nothing to report, and a WARN would be noise.
+			return
+		}
+		// A failed Scan above already logged this same error (it leaves
+		// the iterator in an error state, which is what ends the loop),
+		// so log only when the iteration is the FIRST thing to fail.
+		if !partial {
 			logger.Warn("migration blocker poll: iteration failed — this cycle's report is incomplete", "error", err)
 		}
-		return
+		partial = true
 	}
 	for _, pid := range order {
 		w := waiters[pid]
@@ -2706,7 +2795,14 @@ func checkBlockersFrom(ctx context.Context, pg *PostgresStore, logger *slog.Logg
 			"holder_apps_hidden", w.hiddenApps,
 			"holder_pids_unseen", w.unknown,
 			"waiter_query_prefix", w.query,
-			"hint", blockerAdvice(w.local, w.other, w.background, w.hidden, w.unknown))
+			"report_incomplete", partial,
+			"hint", blockerAdvice(holderBuckets{
+				thisHost:   w.local,
+				otherAddr:  w.other,
+				background: w.background,
+				hidden:     w.hidden,
+				unseen:     w.unknown,
+			}))
 	}
 }
 
@@ -2754,14 +2850,41 @@ retry:
 // stampSchemaVersion writes the current ToolVersion into schema_meta.
 // Called at the end of RunMigrations so the version reflects the latest
 // successful migration, not just a binary update.
-func stampSchemaVersion(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
-	_, err := pg.pool.Exec(ctx, `
+//
+// FAIL-CLOSED as of v0.29.4 (Copilot round 1 on PR #197, finding 2).
+// Through v0.29.3 a failed stamp was a WARN: the stamp's only consumers
+// were CheckSchemaVersion's advisory warning and the v0.27.131 fast
+// path, so a stale stamp cost one extra full (idempotent) migration run
+// and nothing else. v0.29.4 promoted the stamp to EVIDENCE —
+// deployStepsProvablyUnrun reads it as proof that a migration of THIS
+// binary completed here and refuses `start serve` when it is behind. A
+// swallowed stamp failure therefore makes the gate's premise false in
+// exactly the direction that hurts: a fleet that DID migrate is told
+// "no migration of this binary has completed here", and the operator's
+// visible remedy is a full re-run (hours at fleet scale).
+//
+// The zero-rows arm is the second silent-failure shape: `UPDATE ...
+// WHERE id = TRUE` against a missing row SUCCEEDS and stamps nothing.
+// The base schema DDL seeds that row (schema.sql, INSERT ... ON
+// CONFLICT DO NOTHING) and runs before every step here, so zero rows is
+// impossible on a healthy path — which is precisely why it must be an
+// error rather than a silent no-op.
+func stampSchemaVersion(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
+	tag, err := pg.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.schema_meta
 		SET schema_version = $1, migrated_at = NOW()
 		WHERE id = TRUE`, ToolVersion)
 	if err != nil {
-		logger.Warn("failed to stamp schema version", "error", err)
+		logger.Error("failed to stamp schema version — the deploy gate reads this stamp as proof a migration of this binary completed here",
+			"schema_version", ToolVersion, "error", err)
+		return fmt.Errorf("stamp schema version %s: %w", ToolVersion, err)
 	}
+	if tag.RowsAffected() == 0 {
+		logger.Error("schema version stamp matched no row in aveloxis_ops.schema_meta (id = TRUE) — nothing was stamped",
+			"schema_version", ToolVersion)
+		return fmt.Errorf("stamp schema version %s: no aveloxis_ops.schema_meta row (id = TRUE) to stamp", ToolVersion)
+	}
+	return nil
 }
 
 // GetSchemaVersion reads the schema version from the database. Returns an
@@ -2822,6 +2945,16 @@ func confirmOtherServe(probe func() (bool, error), attempts int, sleep func()) (
 // AfterConnect does for a MinConns connection mid-confirmation — and
 // prove the next probe excludes it.
 var otherServeProbeHook func(attempt int)
+
+// The address-tag vocabulary. ONE spelling (SR-17): the listing SQL in
+// otherServeAddressesFrom RENDERS these tags and OtherServe.Advice
+// BRANCHES on them (round-11 finding 1), so a change to one spelling
+// without the other would silently withdraw — or silently restore — the
+// wrong-command verdict.
+const (
+	thisHostTag     = " (this host)"
+	otherAddressTag = " (other address)"
+)
 
 // OtherServe is a sighting of another aveloxis-serve on this database:
 // whether one is connected (confirmed per confirmOtherServe), where
@@ -2886,6 +3019,22 @@ func (o OtherServe) Describe() string {
 // were never printed is advice about output the operator cannot see.
 // That branch states the same two readings without the tag framing.
 //
+// A THIRD branch (round-11 finding 1, the same class one branch over):
+// the verdict is warranted by an (other address) ENTRY, not by a
+// non-empty listing. otherServeAddressesFrom tags every address with
+// the code's own verdict, and a sighting whose entries are ALL
+// "(this host)" is reachable and documented — round-8 finding 4: a
+// "(this host)" entry is equally a serve STILL RUNNING here, and a
+// foreground `aveloxis serve` beside a running one is reachable. On a
+// primary restarting beside its own draining backends the len(From)>0
+// branch therefore led with "this host is running the wrong command"
+// for a tag that was never printed, and the fast-path WARN's tail then
+// added "`aveloxis stop serve` on this host is the way to back out" —
+// telling the operator to stop the primary. The same holds for an
+// all-HIDDEN sighting: a backend whose address this role cannot see
+// carries no verdict at all (round-7 finding 1), so reading it as the
+// primary is exactly the inference the hidden bucket exists to refuse.
+//
 // Callers own the tail: the fast-path WARN says the two schedulers
 // compete AND that this serve is starting anyway; the refusal says how
 // to clear the draining case and names the ladder. Neither tail belongs
@@ -2894,7 +3043,22 @@ func (o OtherServe) Advice() string {
 	if len(o.From) == 0 {
 		return "Another serve is normally the primary, so this host is running the wrong command (`aveloxis start scancode-worker` is the alternative); it may instead be a serve on THIS host — either one still running (check `ps` and the pidfile — only `aveloxis start` refuses to double-start) or a backend of one just stopped here, still draining (`aveloxis stop` reports those)."
 	}
+	if !hasOtherAddressEntry(o.From) {
+		return "Every listed entry is a serve on THIS host, or an address this role cannot see, so nothing here identifies the primary. A (this host) entry is a serve on THIS host: either one still running (check `ps` and the pidfile — only `aveloxis start` refuses to double-start) or a backend of one just stopped here, still draining (`aveloxis stop` reports those). An entry whose client address is not visible carries NO verdict — re-check as the role it names, or as a role holding pg_read_all_stats, before reading it as another host's."
+	}
 	return "An (other address) entry is normally the primary, so this host is running the wrong command (`aveloxis start scancode-worker` is the alternative). A (this host) entry is a serve on THIS host: either one still running (check `ps` and the pidfile — only `aveloxis start` refuses to double-start) or a backend of one just stopped here, still draining (`aveloxis stop` reports those)."
+}
+
+// hasOtherAddressEntry reports whether any listed address carries the
+// tag that identifies a DIFFERENT client address — the one datum in the
+// listing that can indicate the primary.
+func hasOtherAddressEntry(from []string) bool {
+	for _, a := range from {
+		if strings.Contains(a, otherAddressTag) {
+			return true
+		}
+	}
+	return false
 }
 
 // OtherServeConnected is otherServeSighting for callers outside the
@@ -2966,16 +3130,16 @@ func (s *PostgresStore) otherServeAddressesFrom(ctx context.Context, asIfFrom *s
 		own = []int32{}
 	}
 	rows, err := conn.Query(ctx, `
-		SELECT DISTINCT CASE
+		SELECT DISTINCT me.present, CASE
 		         WHEN NOT `+clientAddrVisibleSQL("a")+` THEN 'a backend of role ' || COALESCE(a.usename::text, '?') || ' (client address not visible to role ' || current_user::text || ': pg_stat_activity shows the address of a session only to roles that HOLD the privileges of that session owner role, and to roles that hold pg_read_all_stats privileges; connect as that role, or GRANT pg_read_all_stats TO this role — a plain grant to a role with INHERIT, since a NOINHERIT member holds none of its privileges and still reads NULL)'
-		         WHEN `+backendOnThisHostSQL("a")+` THEN COALESCE(host(a.client_addr), 'local socket') || ' (this host)'
-		         ELSE COALESCE(host(a.client_addr), 'local socket') || ' (other address)'
+		         WHEN `+backendOnThisHostSQL("a")+` THEN COALESCE(host(a.client_addr), 'local socket') || '`+thisHostTag+`'
+		         ELSE COALESCE(host(a.client_addr), 'local socket') || '`+otherAddressTag+`'
 		       END
 		FROM pg_stat_activity a
-		CROSS JOIN `+probingSessionSQL("$3")+`
-		WHERE a.datname = current_database() AND a.application_name = $1
+		CROSS JOIN `+probingSessionSQL("$3", "$4")+`
+		WHERE a.datname = current_database() AND `+appNamePrefixSQL("a.application_name")+` = $1
 		  AND a.pid <> ALL($2::int4[])
-		ORDER BY 1`, ServeApplicationName, own, asIfFrom)
+		ORDER BY 2`, ServeApplicationName, own, asIfFrom, hostid.HostTag())
 	if err != nil {
 		return nil, err
 	}
@@ -2983,8 +3147,12 @@ func (s *PostgresStore) otherServeAddressesFrom(ctx context.Context, asIfFrom *s
 	var out []string
 	for rows.Next() {
 		var a string
-		if err := rows.Scan(&a); err != nil {
+		var present bool
+		if err := rows.Scan(&present, &a); err != nil {
 			return nil, err
+		}
+		if !present {
+			return nil, fmt.Errorf("this session has no pg_stat_activity row, so no address can be tagged (this host)/(other address)")
 		}
 		out = append(out, a)
 	}
@@ -2996,21 +3164,30 @@ func (s *PostgresStore) otherServeAddressesFrom(ctx context.Context, asIfFrom *s
 
 // otherServeConnected runs the shared other-serve probe (SR-17 — the
 // list-dedup gate's serveBackendsBeyondOwnPool, own pool excluded by
-// server PID) on a transaction of its own, which the probe needs for
-// its snapshot-clear-then-read pair, confirming a positive per
-// confirmOtherServe. The own-PID set is passed as a METHOD VALUE and
-// re-read on every probe (round-3 finding 1): a snapshot hoisted out of
-// the loop would keep counting our own connection after it registered.
+// server PID) on an ACQUIRED CONNECTION of its own — the probe needs one
+// session for its snapshot-clear-then-read pair, not a transaction —
+// confirming a positive per confirmOtherServe. Acquire, not Begin
+// (round-11 finding 8): the confirmation loop runs ~1.75 s on a
+// positive, and a transaction held across it sits idle-in-transaction
+// pinning xmin on every affected serve start, while a cancellation
+// leaves Rollback(dead ctx) failing so pgx destroys the pooled
+// connection. In autocommit each statement gets a fresh activity view
+// anyway; the clear stays because the shared probe also runs inside the
+// dedup transaction, where it is load-bearing.
+//
+// The own-PID set is passed as a METHOD VALUE and re-read on every probe
+// (round-3 finding 1): a snapshot hoisted out of the loop would keep
+// counting our own connection after it registered.
 func (s *PostgresStore) otherServeConnected(ctx context.Context) (bool, error) {
-	tx, err := s.pool.Begin(ctx)
+	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
-		return false, fmt.Errorf("begin other-serve probe: %w", err)
+		return false, fmt.Errorf("acquire other-serve probe connection: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer conn.Release()
 	attempt := 0
 	return confirmOtherServe(
 		func() (bool, error) {
-			other, err := serveBackendsBeyondOwnPool(ctx, tx, s.ownBackendPIDs)
+			other, err := serveBackendsBeyondOwnPool(ctx, conn, s.ownBackendPIDs)
 			attempt++
 			if otherServeProbeHook != nil {
 				otherServeProbeHook(attempt)
@@ -3298,6 +3475,7 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 // resolution in FindRepoByURL/resolveCaseVariantURL keeps prevention
 // best-effort until the index lands; the next migrate run after
 // dedup-repos drains creates it.
+
 // ensureLinkedMsgIDUnique (Copilot round 20 on PR #193): enforces
 // one-notification-per-native-comment via a partial UNIQUE index on
 // email_message.linked_msg_id. The two writers (UpsertJiraComment,

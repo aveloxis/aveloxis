@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/spf13/cobra"
@@ -27,6 +28,9 @@ type deployStep struct {
 // versions with data-side healing appear here; a version absent from
 // the map has no gate. Keep entries here for at least the two releases
 // following the one that introduced them (operators skip versions).
+// The map itself is declared below, after the shared checklist it
+// refers to.
+
 // v029DeployChecklist is shared by the whole v0.29.x train (Copilot
 // round 22 → v0.29.1 adds two columns via migrate + runtime-only fixes
 // — heartbeat lease, API-freshness guard — with no new operator heal, so
@@ -70,13 +74,6 @@ var deployChecklists = map[string][]deployStep{
 func deployChecklistFor(version string) ([]deployStep, bool) {
 	steps, ok := deployChecklists[version]
 	return steps, ok && len(steps) > 0
-}
-
-// deployGateNeeded is the pure decision: gate only when this version
-// HAS a checklist, the fleet has data (existing, not fresh), and the
-// steps were not acknowledged.
-func deployGateNeeded(hasChecklist, fleetHasData, acked bool) bool {
-	return hasChecklist && fleetHasData && !acked
 }
 
 func printChecklist(out io.Writer, version string, steps []deployStep) {
@@ -172,6 +169,13 @@ func checkDeployReadiness(ctx context.Context, g deployGate, version string, ski
 	if deployStepsProvablyUnrun(stamp, version) {
 		if skip {
 			fmt.Fprintf(out, "WARNING: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`aveloxis migrate --skip-views`) has not completed against this database. Proceeding anyway (--skip-deploy-check); serve will still refuse its own startup migration while another aveloxis-serve is connected (see any note above).\n", stamp, version, version)
+			// Round-11 finding 7: this is the ONE path with EVIDENCE the
+			// steps did not run, so it is the last place to send the
+			// operator away without them. Every other bypass below prints
+			// the checklist before proceeding.
+			if steps, ok := deployChecklistFor(version); ok {
+				printChecklist(out, version, steps)
+			}
 			return true, nil
 		}
 		fmt.Fprintf(out, "Refusing to start: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`aveloxis migrate --skip-views`) has not completed against this database.\n", stamp, version, version)
@@ -187,7 +191,11 @@ func checkDeployReadiness(ctx context.Context, g deployGate, version string, ski
 	if err != nil {
 		return false, err
 	}
-	if !deployGateNeeded(hasChecklist, fleetHasData, acked) {
+	// Reduces to `acked`: fleetHasData is true (the !fleetHasData return
+	// above) and hasChecklist is true (the !hasChecklist return above).
+	// Round-11 finding 11 removed the three-argument deployGateNeeded
+	// that spelled this as a decision it never made.
+	if acked {
 		return true, nil
 	}
 	printChecklist(out, version, steps)
@@ -203,7 +211,9 @@ func checkDeployReadiness(ctx context.Context, g deployGate, version string, ski
 	fmt.Fprintf(out, "Have you completed these steps for %s? [y/N]: ", version)
 	line, _ := bufio.NewReader(in).ReadString('\n')
 	if a := strings.ToLower(strings.TrimSpace(line)); a == "y" || a == "yes" {
-		if err := g.RecordDeployAck(ctx, version, "confirmed at start"); err != nil {
+		ackCtx, ackCancel := deployAckContext(ctx)
+		defer ackCancel()
+		if err := g.RecordDeployAck(ackCtx, version, "confirmed at start"); err != nil {
 			fmt.Fprintf(out, "warning: could not record acknowledgement: %v\n", err)
 		}
 		return true, nil
@@ -212,6 +222,11 @@ func checkDeployReadiness(ctx context.Context, g deployGate, version string, ski
 	return false, nil
 }
 
+// deployGateDialTimeout bounds the deploy gate's database dial. Matches
+// verifyBackendsDisconnected's dial bound (pass 41) — long enough for a
+// slow LAN handshake, short enough that `start all` reaches web and api.
+const deployGateDialTimeout = 30 * time.Second
+
 // runDeployGate wires checkDeployReadiness to the real store for the
 // start command. It never blocks a fresh install or an acked release on
 // a current stamp; the stamp evidence and the other-serve note run for
@@ -219,13 +234,49 @@ func checkDeployReadiness(ctx context.Context, g deployGate, version string, ski
 func runDeployGate(cfgPath string, skip bool) (bool, error) {
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	cfg := loadConfig(cfgPath, bootLog)
-	ctx := context.Background()
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), newLogger(cfg))
+	// The DIAL gets its own bound (round-11 finding 4, the pass-41
+	// precedent in verifyBackendsDisconnected): NewPostgresStore pings the
+	// pool, and v0.29.4 made this gate run on EVERY `start serve` /
+	// `start all`, so a database that accepts TCP but stalls the
+	// handshake — a pgbouncer restart, a half-open NAT connection —
+	// would otherwise block `start all` forever, before web and api ever
+	// launch.
+	//
+	// The QUERIES get the same bound (L10 finding 2 on that fix). Round
+	// 11 bounded the dial and then handed the gate a fresh unbounded
+	// context, which left the shape the bound exists to prevent one
+	// statement further along: the gate's FIRST call,
+	// FleetHasCollectedData, reads aveloxis_ops.collection_queue, and a
+	// concurrent `aveloxis migrate` on the primary holds ACCESS EXCLUSIVE
+	// on that table (addColumnIfMissing issues its ALTERs unconditionally,
+	// relying on server-side IF NOT EXISTS, so this is EVERY migrate, not
+	// just a first run — the 2026-09-09 incident's base DDL held it long
+	// enough to deadlock three times). Queued behind that lock on an
+	// unbounded context, `start all` never reaches web and api.
+	//
+	// Only the ACK write escapes the bound, and it does so on its own
+	// derived context — see deployAckContext.
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), deployGateDialTimeout)
+	defer dialCancel()
+	store, err := db.NewPostgresStore(dialCtx, cfg.Database.ConnectionString(), newLogger(cfg))
 	if err != nil {
 		return false, err
 	}
 	defer store.Close()
-	return checkDeployReadiness(ctx, store, db.ToolVersion, skip, os.Stdin, os.Stdout)
+	queryCtx, queryCancel := context.WithTimeout(context.Background(), deployGateDialTimeout)
+	defer queryCancel()
+	return checkDeployReadiness(queryCtx, store, db.ToolVersion, skip, os.Stdin, os.Stdout)
+}
+
+// deployAckContext is the context RecordDeployAck runs on. The caller's
+// bound belongs to the pre-prompt READS; the operator's `[y/N]` answer
+// arrives after it has expired, and an acknowledgement lost because the
+// operator read the checklist carefully is the one failure this gate
+// must not produce. WithoutCancel keeps the values and drops the
+// deadline; the fresh timeout keeps the WRITE bounded, because an
+// unbounded ack is the same hang one statement later.
+func deployAckContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), deployGateDialTimeout)
 }
 
 // startAbortMessage is `start serve`'s abort line, worded for the

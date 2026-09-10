@@ -760,6 +760,55 @@ does not inherit, re-grant it with
 The check needs the config (`-c`) to reach the database; without it the
 command says the check was skipped.
 
+### How a backend is placed on a host
+
+Each component tags its connection pool with an `application_name` that
+carries the component and this machine's hostname, separated by `@`:
+
+```
+aveloxis-serve@kate
+aveloxis-scancode-worker@runner-01
+aveloxis-web@kate
+aveloxis-api@kate
+```
+
+`stop` matches on the part **before** the `@` (the component) and
+compares the part **after** it (the host) against its own machine. The
+host marker is what places a backend; `client_addr` is only the fallback
+when a marker is absent.
+
+Your own `pg_stat_activity` queries should match with `LIKE
+'aveloxis-%'` (which still works unchanged) or with
+`split_part(application_name, '@', 1) = 'aveloxis-serve'`. Matching the
+full tag by equality will find only the backends of one specific host.
+
+A host whose kernel will not report a hostname tags un-suffixed
+(`aveloxis-serve`) and falls back to the client-address rule.
+
+```{warning}
+**Behind a transaction pooler (pgbouncer in `transaction` or `statement`
+mode, pgcat, Odyssey), the client address is useless — the host marker
+is not.** Every client reaches PostgreSQL through the pooler, so
+`pg_stat_activity.client_addr` is the *pooler's* address for every
+backend, this host's and every other host's alike. The address rule
+alone would read them all as one host and offer a terminate recipe for
+another machine's serve. The `@host` marker survives the collapse
+because PostgreSQL stores the `application_name` the client sent and
+never rewrites it.
+
+**The residual is the upgrade window.** A backend tagged by a
+pre-v0.29.4-round-12 binary carries no marker, so it falls back to the
+address rule — and behind a pooler that rule reads it as this host's.
+Until every host on the database runs a build with the marker, treat a
+"Persistent PIDs (this host)" entry on a **pooled** deployment as
+unverified and confirm with `ps` on each host before terminating. Once
+every component is upgraded, the verdict holds through a pooler.
+
+A `session`-mode pooler is unaffected in principle only if it preserves
+the client address, which pgbouncer does not — but with markers in place
+that no longer matters for the host verdict.
+```
+
 ```{note}
 `aveloxis stop` also works for processes started in the foreground (e.g., `aveloxis serve`), because all foreground processes write PID files on startup.
 ```
@@ -1410,9 +1459,15 @@ verdict: an "(other address)" entry is normally the primary, so this
 host is running the wrong command (`aveloxis start scancode-worker` is
 the alternative); a "(this host)" entry is a serve on THIS host,
 either one still running or a backend of one just stopped here still
-draining (only `aveloxis start` refuses to double-start a component). Automation can bypass with
-`--skip-deploy-check`, which prints the evidence and proceeds (serve's
-own startup migration still refuses beside another serve).
+draining (only `aveloxis start` refuses to double-start a component).
+When NO "(other address)" entry appears — every listed entry is
+"(this host)", or an address this database role cannot see — the note
+withdraws the wrong-command reading, because nothing in the listing
+identifies the primary: on a primary restarting beside its own
+draining backends that verdict would be exactly backwards. Automation
+can bypass with `--skip-deploy-check`, which prints the evidence, then
+the release's deploy steps, and proceeds (serve's own startup
+migration still refuses beside another serve).
 
 ---
 

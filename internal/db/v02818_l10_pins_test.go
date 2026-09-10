@@ -285,15 +285,44 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	if strings.Count(body, "serveBackendsBeyondOwnPool(ctx, tx, ownPIDs)") != 2 {
 		t.Error("the serve probe must run before the FOR UPDATE and again on the locked set")
 	}
-	if strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), `ConnectionStringWithAppName("aveloxis-serve")`) || !strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), "ConnectionStringWithAppName(db.ServeApplicationName)") {
-		t.Error("runServe must tag its pool with db.ServeApplicationName (one shared spelling — the probe counts 0 forever if the literals drift)")
+	// Round 12: the tag is the shared constant PLUS this host's marker,
+	// composed by the one function that owns the separator both halves
+	// agree on. A literal here still counts 0 forever if it drifts; a
+	// tag that skipped AppNameForHost would collapse the host verdict
+	// back to client-address equality without saying so.
+	if strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), `ConnectionStringWithAppName("aveloxis-serve")`) || !strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), "ConnectionStringWithAppName(db.AppNameForHost(db.ServeApplicationName))") {
+		t.Error("runServe must tag its pool with db.AppNameForHost(db.ServeApplicationName) (one shared spelling — the probe counts 0 forever if the literals drift, and the host marker is what survives a pooler)")
 	}
-	if !strings.Contains(src, "func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs func() []int32)") {
-		t.Error("the probe must take pgx.Tx — its two statements (snapshot clear, then read) must run on ONE session")
+	// The probe's two statements (snapshot clear, then read) must run on
+	// ONE session, so the parameter is a session, never the pool.
+	// Round-11 finding 8 widened it from pgx.Tx to the pgSession
+	// interface: the dedup gate below runs inside the migrate
+	// transaction, while otherServeConnected holds an acquired
+	// connection in autocommit across its ~1.75 s confirmation loop.
+	if !strings.Contains(src, "func serveBackendsBeyondOwnPool(ctx context.Context, sess pgSession, ownPIDs func() []int32)") {
+		t.Error("the probe must take a pgSession — its two statements (snapshot clear, then read) must run on ONE session, and both a pgx.Tx and an acquired connection must be able to supply it")
+	}
+	if !strings.Contains(src, "type pgSession interface {") {
+		t.Error("pgSession must be declared with the two methods pgx.Tx and *pgxpool.Conn both satisfy")
+	}
+	// The two suppliers are asserted by the COMPILER, not by matching
+	// prose: a bare `*pgxpool.Conn` needle matched the interface's own
+	// doc comment, so rewording the comment would have failed the build
+	// while a genuinely narrowed interface would not.
+	for _, assertion := range []string{"_ pgSession = (*pgxpool.Conn)(nil)", "_ pgSession = pgx.Tx(nil)"} {
+		if !strings.Contains(srctest.StripGoComments(src), assertion) {
+			t.Errorf("email_message_fk_indexes.go must carry the compile-time assertion %q — both the acquired connection (serve startup) and the migrate transaction (list-dedup gate) must satisfy pgSession", assertion)
+		}
+	}
+	if strings.Contains(srctest.StripGoComments(src), "func serveBackendsBeyondOwnPool(ctx context.Context, pool") {
+		t.Error("the probe must never take the pool — the clear and the read would land on different connections")
 	}
 	probe := srctest.FuncBody(t, src, "func serveBackendsBeyondOwnPool(")
-	if !strings.Contains(probe, "a.datname = current_database() AND a.application_name = $1") {
-		t.Error("serveBackendsBeyondOwnPool must filter pg_stat_activity by THIS database and the serve application_name (pg_stat_activity is cluster-wide)")
+	if !strings.Contains(probe, "a.datname = current_database() AND ") || !strings.Contains(probe, `appNamePrefixSQL("a.application_name")`) {
+		t.Error("serveBackendsBeyondOwnPool must filter pg_stat_activity by THIS database and the serve application_name PREFIX (pg_stat_activity is cluster-wide; the tag carries a host marker, so equality would count only this host's own serve and read every other host's as absent — the direction that lets the dedup run beside a live serve)")
+	}
+	if strings.Contains(probe, "a.application_name = $1") {
+		t.Error("serveBackendsBeyondOwnPool must not match the tag by equality (round 12: the tag carries a host marker)")
 	}
 	clear := strings.Index(probe, "SELECT pg_stat_clear_snapshot()")
 	read := strings.Index(probe, "FROM pg_stat_activity")

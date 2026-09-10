@@ -6,6 +6,8 @@ package db
 import (
 	"context"
 	"fmt"
+
+	"github.com/aveloxis/aveloxis/internal/hostid"
 )
 
 // AppNameBackends is what `aveloxis stop` sees of one application_name
@@ -118,8 +120,27 @@ func sameClientHostSQL(a, b string) string {
 // behavioral tests, the only way one machine can drive the
 // other-address arm). Scoped by pid, which is cluster-unique, so it
 // needs no datname filter.
-func probingSessionSQL(param string) string {
-	return fmt.Sprintf(`(SELECT COALESCE(%s::inet, client_addr) AS client_addr FROM pg_stat_activity WHERE pid = pg_backend_pid()) me`, param)
+//
+// Round-11 finding 9: the derived table has NO FROM clause, so it is
+// always EXACTLY ONE ROW and the CROSS JOIN in each reader can never
+// empty the result. The pre-v0.29.4 form selected FROM
+// pg_stat_activity directly, and a zero-row `me` would have silently
+// emptied every reader — `stop` reporting all-clear while backends were
+// live, the blocker poll reporting no blockers mid-outage. Unreachable
+// in practice (a session always sees its own row) but a silent
+// fail-open in a release whose theme is fail-closed probes.
+//
+// `present` carries the other half. Without it a missing own row would
+// yield a NULL client address, which localClientAddrSQL reads as
+// "unix socket, therefore this host" — fail-open in the WORSE
+// direction: EVERY backend reads as local, which is the incident's own
+// shape. Every reader selects it and refuses to render a verdict when
+// it is false. With an override supplied the address IS the datum, so
+// present is trivially true.
+func probingSessionSQL(addrParam, hostParam string) string {
+	return fmt.Sprintf(`(SELECT COALESCE(%[1]s::inet, (SELECT client_addr FROM pg_stat_activity WHERE pid = pg_backend_pid())) AS client_addr,
+		       NULLIF(%[2]s::text, '') AS host_tag,
+		       (%[1]s::inet IS NOT NULL OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = pg_backend_pid())) AS present) me`, addrParam, hostParam)
 }
 
 // backendOnThisHostSQL is THE this-host verdict (SR-17, SR-18): row's
@@ -129,7 +150,42 @@ func probingSessionSQL(param string) string {
 // least-privilege runner role read every primary worker as local, and
 // the incident's 64 terminate recipes were back.
 func backendOnThisHostSQL(row string) string {
-	return fmt.Sprintf(`(%s AND %s)`, clientAddrVisibleSQL(row), sameClientHostSQL(row+".client_addr", "me.client_addr"))
+	return fmt.Sprintf(`(%s AND %s)`, clientAddrVisibleSQL(row), sameHostAsProbeSQL(row))
+}
+
+// sameHostAsProbeSQL is the ONE spelling (SR-17) of "this backend runs
+// on the probing session's host", and the round-12 answer to Copilot
+// #1: the HOST MARKER decides whenever both sides carry one; the
+// client-address rule decides only when one of them does not.
+//
+// The address rule is not host identity and never was. Behind a
+// transaction pooler, a database proxy or shared NAT every client
+// collapses onto a single client_addr, so `aveloxis stop` on a
+// scancode runner reads the PRIMARY's backends as this host's and
+// offers pg_terminate_backend recipes for production — the 2026-09-09
+// incident, through a topology no in-database signal can detect. A
+// marker carried in application_name is immune: the server stores what
+// the client sent and never rewrites it, so two hosts behind one
+// pooler still disagree.
+//
+// The fallback is what makes this additive rather than a flag day. A
+// row with no marker is a pre-round-12 binary, or a host whose kernel
+// would not name it (hostid.HostTag() == ""); either way the answer is
+// today's, so a mixed-version fleet keeps working and the ACTUAL
+// incident topology — a runner on a different LAN address — stays
+// covered by the address rule throughout the upgrade window. The
+// residual is a pooler topology during that window only.
+//
+// The marker is compared, NOT trusted as a privilege: the visibility
+// gate in backendOnThisHostSQL is unchanged and still runs first, so a
+// backend whose address this role cannot see is Hidden regardless of
+// what its marker says. Round 7/8 bought that gate with two
+// live-probed defects; a marker equal to ours must not be able to buy
+// a terminate recipe for another role's backend.
+func sameHostAsProbeSQL(row string) string {
+	return fmt.Sprintf(`(CASE WHEN %[1]s IS NOT NULL AND me.host_tag IS NOT NULL THEN %[1]s = me.host_tag ELSE %[2]s END)`,
+		appNameHostSQL(row+".application_name"),
+		sameClientHostSQL(row+".client_addr", "me.client_addr"))
 }
 
 // backgroundBackendSQL is the ONE spelling (SR-17) of "this
@@ -184,31 +240,45 @@ func backgroundBackendSQL(row string) string {
 // filter is load-bearing — two aveloxis databases share the cluster).
 // A row that fails to scan is an error, not an absent backend (SR-5).
 func (s *PostgresStore) BackendsByAppName(ctx context.Context, appName string) (AppNameBackends, error) {
-	return s.backendsByAppNameFrom(ctx, appName, nil)
+	return s.backendsByAppNameFrom(ctx, appName, nil, nil)
 }
 
 // backendsByAppNameFrom is BackendsByAppName with the probing session's
-// own address overridable: production passes nil (the real
-// client_addr of this session); the behavioral test passes a foreign
-// address so the other-host arm — which one machine cannot otherwise
-// produce — is driven through the real query.
-func (s *PostgresStore) backendsByAppNameFrom(ctx context.Context, appName string, asIfFrom *string) (AppNameBackends, error) {
+// own address AND host marker overridable: production passes nil for
+// both (the real client_addr of this session, and this machine's
+// hostid.HostTag()); the behavioral tests pass a foreign address or a
+// foreign marker so the other-host arm — which one machine cannot
+// otherwise produce — is driven through the real query.
+//
+// appName is the component's MATCH PREFIX (`aveloxis-serve`), not the
+// full tag: the tag carries this host's marker after '@' and every
+// host's differs, so the WHERE compares prefixes. split_part returns
+// the whole string when the separator is absent, so a backend tagged
+// by a pre-round-12 binary still matches.
+func (s *PostgresStore) backendsByAppNameFrom(ctx context.Context, appName string, asIfFrom, asIfHost *string) (AppNameBackends, error) {
 	var out AppNameBackends
+	host := hostid.HostTag()
+	if asIfHost != nil {
+		host = *asIfHost
+	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT a.pid, `+clientAddrVisibleSQL("a")+` AS visible, `+backendOnThisHostSQL("a")+` AS this_host
+		SELECT a.pid, me.present, `+clientAddrVisibleSQL("a")+` AS visible, `+backendOnThisHostSQL("a")+` AS this_host
 		FROM pg_stat_activity a
-		CROSS JOIN `+probingSessionSQL("$2")+`
-		WHERE a.datname = current_database() AND a.application_name = $1
-		ORDER BY a.pid`, appName, asIfFrom)
+		CROSS JOIN `+probingSessionSQL("$2", "$3")+`
+		WHERE a.datname = current_database() AND `+appNamePrefixSQL("a.application_name")+` = $1
+		ORDER BY a.pid`, appName, asIfFrom, host)
 	if err != nil {
 		return out, fmt.Errorf("backends tagged %q: %w", appName, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var pid int
-		var visible, thisHost bool
-		if err := rows.Scan(&pid, &visible, &thisHost); err != nil {
+		var present, visible, thisHost bool
+		if err := rows.Scan(&pid, &present, &visible, &thisHost); err != nil {
 			return out, fmt.Errorf("backends tagged %q: scan: %w", appName, err)
+		}
+		if !present {
+			return AppNameBackends{}, fmt.Errorf("backends tagged %q: this session has no pg_stat_activity row, so no backend can be placed on this host — refusing to report a verdict", appName)
 		}
 		switch {
 		case !visible:

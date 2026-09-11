@@ -954,11 +954,12 @@ Aveloxis creates 20 materialized views compatible with [8Knot](https://github.co
 
 ### Database Schema
 
-Three schemas in PostgreSQL with full parity to Augur's `augur_data` and `augur_operations`, plus a dedicated schema for ScanCode results:
+Four schemas in PostgreSQL with full parity to Augur's `augur_data` and `augur_operations`, plus a dedicated schema for ScanCode results and one carrying the Augur-compatibility views:
 
 - **`aveloxis_data`** (101 tables + 20 materialized views) — All collected data: repos, issues, PRs, commits (per-file), commit parents, commit messages, messages, events, releases, contributors, contributor identities/aliases/affiliations, dependencies/SBOM, sentiment/NLP analysis, LSTM anomaly detection, topic modeling, Facade aggregates (dm_repo_annual/monthly/weekly, dm_repo_group_annual/monthly/weekly), repo labor/complexity, DEI badging, CHAOSS metrics, network analysis, repo insights, and more. Plus 20 materialized views for 8Knot compatibility.
 - **`aveloxis_ops`** (42 tables) — Operational tables: collection queue, JSONB staging store, collection status (tracks core/secondary/facade/ML phases independently), API credentials, users/auth/sessions, config, worker history/jobs, network weighted tables.
 - **`aveloxis_scan`** (4 tables) — ScanCode per-file license and copyright detection: `scancode_scans` (scan metadata), `scancode_file_results` (per-file SPDX license, copyrights, holders, packages as JSONB), plus `_history` tables for both.
+- **`aveloxis_augur_data`** (views only, no tables) — Augur-compatibility views for 8Knot: `repo`, `repo_info`, `issues`, `pull_requests`, `releases`, `message`. Only the entities whose column names differ from Augur's need a view; 8Knot reads with `search_path = aveloxis_augur_data,aveloxis_data` so everything else resolves straight through to the real tables.
 
 Tables omitted from Augur (junk): `_transfer_testing`, `_transfer_training`, `akl;fjlk;a` (renamed to `dei_badging`), `analysis_log`, `all`, `github_users_2`, `worker_oauth_copy1`.
 

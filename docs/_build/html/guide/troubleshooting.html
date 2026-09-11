@@ -648,7 +648,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -2885,10 +2885,12 @@ true while the address stays NULL. Aveloxis’s own readers say “not
 visible” for such backends instead of guessing.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>The host marker is what places a backend; the client address is the
-fallback.</strong> Since v0.29.4 each component tags its pool
-<code class="docutils literal notranslate"><span class="pre">aveloxis-&lt;component&gt;&#64;&lt;hostname&gt;</span></code>, and aveloxis compares the part after
-the <code class="docutils literal notranslate"><span class="pre">&#64;</span></code> against its own machine. So the diagnostic above is best read
+<p><strong>The client address places a backend; the host marker can only veto
+it.</strong> Since v0.29.4 each component tags its pool
+<code class="docutils literal notranslate"><span class="pre">aveloxis-&lt;component&gt;&#64;&lt;hostname&gt;</span></code>. A backend is this host’s when its
+client address is this host’s <strong>and</strong> its marker does not contradict
+that — a marker can separate two hosts that share an address, but it
+can never merge two that do not. So the diagnostic above is best read
 with the marker in view:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">pid</span><span class="p">,</span>
 <span class="w">       </span><span class="n">split_part</span><span class="p">(</span><span class="n">application_name</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;@&#39;</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">component</span><span class="p">,</span>
@@ -2924,6 +2926,18 @@ build with the marker, confirm with `ps` on **every** host that runs the
 component before running `pg_terminate_backend` on a &quot;this host&quot; entry
 of a **pooled** deployment. Use the `host` column above to tell which
 rows are still un-marked.
+
+**The marker cannot rescue the opposite case, by design.** Because the
+address decides and the marker only vetoes, a component reached over a
+*different* address than the one `stop` dials — a LAN-address DSN on
+one side and `localhost` on the other — reads as another host even
+when its marker matches, and `stop` reports it under &quot;other hosts&quot;
+without waiting out its drain. From inside the database that is
+indistinguishable from two machines sharing a hostname (two container
+hosts running one compose file do exactly that), and only one of the
+two readings can print a terminate recipe for a machine you are not
+on. Run `stop` with the same `-c` config the component was started
+with.
 </pre></div>
 </div>
 <p><strong>Show both sides of the contention</strong> (helpful when you want to confirm the waiter is your migrate / new serve, not something else):</p>

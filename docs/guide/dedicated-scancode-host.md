@@ -158,7 +158,11 @@ already connected and from which client addresses, each tagged with the
 code's own verdict: an "(other address)" entry is normally the primary
 — "wrong command on this host"; a "(this host)" entry is a serve on
 THIS host, either one still running or a backend of one just stopped
-here still draining (`aveloxis stop` reports those). Only `aveloxis
+here still draining (`aveloxis stop` reports those). Both labels
+report the host **verdict**, not a comparison of the address text
+alone — behind a pooler the marker is what separates two hosts sharing
+one address, so an "(other address)" entry can carry an address string
+identical to your own. Only `aveloxis
 start` refuses to double-start a component, so check `ps` and the
 pidfile before waiting for a "(this host)" entry to clear.
 `stop` scopes its backend check to this host.
@@ -209,10 +213,18 @@ serve on THIS host, and `aveloxis stop` here wait on — and offer a
 
 This host is protected by the `@<hostname>` marker each component now
 puts in its `application_name`: it survives the collapse, because
-PostgreSQL never rewrites what the client sent. But the marker only
-helps when **both** sides carry one. A primary still running a
-pre-round-12 binary tags un-suffixed, and an un-marked backend falls
-back to the address rule — which behind a pooler places it here.
+PostgreSQL never rewrites what the client sent. The marker's job is
+narrow and one-directional — it can **separate** two hosts the address
+rule collapsed together, and it can never **merge** two the address
+rule kept apart. That is what makes it safe to rely on: a marker
+collision (two container hosts running one compose file report the
+same hostname) degrades to the address rule, never to a terminate
+recipe for the other machine.
+
+But the marker only helps when **both** sides carry one. A primary
+still running a pre-round-12 binary tags un-suffixed, and an un-marked
+backend falls back to the address rule — which behind a pooler places
+it here.
 
 So: upgrade the primary to the same build before relying on this host's
 verdicts on a pooled deployment, or point both hosts' DSNs at PostgreSQL

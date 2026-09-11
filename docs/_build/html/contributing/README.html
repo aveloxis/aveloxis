@@ -648,7 +648,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1640,7 +1640,7 @@ SPDX-License-Identifier: MIT
 <p>This is the contributor handbook. The root <a class="reference external" href="https://github.com/aveloxis/aveloxis/blob/main/CONTRIBUTING.md"><code class="docutils literal notranslate"><span class="pre">CONTRIBUTING.md</span></code></a> is a short orientation pointer; the chapters here are where the real material lives.</p>
 <section id="what-aveloxis-is">
 <h2>What Aveloxis is<a class="headerlink" href="#what-aveloxis-is" title="Link to this heading"></a></h2>
-<p>A Go reimplementation of <a class="reference external" href="https://github.com/chaoss/augur">Augur</a>, the community-health data collection pipeline used by CHAOSS metrics consumers like <a class="reference external" href="https://github.com/oss-aspen/8Knot">8Knot</a>. Aveloxis collects from GitHub and GitLab APIs, parses git logs, and stores everything in PostgreSQL with full Augur schema parity (147 tables across three schemas). It adds features Augur lacks: staged collection for 400K+ repo fleets, deterministic contributor IDs, dead-repo sidelining, SBOM generation, OpenSSF Scorecard integration, vulnerability scanning, interactive visualizations, and a web GUI with OAuth.</p>
+<p>A Go reimplementation of <a class="reference external" href="https://github.com/chaoss/augur">Augur</a>, the community-health data collection pipeline used by CHAOSS metrics consumers like <a class="reference external" href="https://github.com/oss-aspen/8Knot">8Knot</a>. Aveloxis collects from GitHub and GitLab APIs, parses git logs, and stores everything in PostgreSQL with full Augur schema parity (147 tables across four schemas). It adds features Augur lacks: staged collection for 400K+ repo fleets, deterministic contributor IDs, dead-repo sidelining, SBOM generation, OpenSSF Scorecard integration, vulnerability scanning, interactive visualizations, and a web GUI with OAuth.</p>
 <p>If you’re new to the codebase, read these in order before touching code:</p>
 <ol class="arabic simple">
 <li><p><a class="reference internal" href="../architecture/overview.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">docs/architecture/overview.md</span></code></span></a> — the architecture in one page</p></li>

@@ -44,6 +44,13 @@ const maxAppNameBytes = 63
 // see. A marker carried IN the tag survives every such collapse
 // because the server never rewrites application_name.
 //
+// The marker is NOT host identity either, and round 13 stopped
+// treating it as such: it can only VETO the address rule, never
+// override it (see sameHostAsProbeSQL). That is why the degradations
+// below are safe to reason about locally — a marker this composer got
+// wrong, or one two hosts happen to share, costs at worst the
+// pre-v0.29.4 verdict.
+//
 // Three degradations, all toward the pre-v0.29.4 verdict rather than
 // toward a wrong one:
 //
@@ -84,8 +91,17 @@ func appNamePrefixSQL(col string) string {
 
 // appNameHostSQL is the host marker half — NULL when the tag carries
 // none, so a missing marker composes as "unknown" rather than as the
-// empty string, which would make two un-suffixed backends on DIFFERENT
-// hosts compare equal and read as one host.
+// empty string.
+//
+// NULL is what makes the marker ABSTAIN in sameHostAsProbeSQL's veto
+// (round 13). Without it an un-suffixed backend would carry the empty
+// string, which no marked probe can equal, so every pre-round-12
+// backend on this host would be vetoed into OtherHosts — `aveloxis stop` would stop
+// reporting a pre-round-12 serve's orphans and stop waiting out their
+// drain. Under round 12's marker-DECIDES form the same mutation broke
+// the opposite way (two un-marked hosts comparing equal and reading as
+// one); the guard is load-bearing under both, for different reasons,
+// and TestHostMarkerBeatsCollapsedClientAddress catches it either way.
 func appNameHostSQL(col string) string {
 	return fmt.Sprintf(`NULLIF(split_part(%s, '%s', 2), '')`, col, AppNameHostSep)
 }

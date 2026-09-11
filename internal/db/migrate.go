@@ -2951,6 +2951,18 @@ var otherServeProbeHook func(attempt int)
 // BRANCHES on them (round-11 finding 1), so a change to one spelling
 // without the other would silently withdraw — or silently restore — the
 // wrong-command verdict.
+//
+// What the tags MEAN, since the host verdict stopped being a pure
+// address comparison (v0.29.4 rounds 12-13): they label
+// backendOnThisHostSQL's verdict, not a diff of the address text. The
+// verdict is the client-address rule vetoed by the `@host` marker, so
+// on a pooled deployment a backend can render as
+// `10.0.0.99 (other address)` beside an address string identical to
+// the reader's own — the marker is what separated them, and that is
+// the case the tag exists to surface. The strings are deliberately
+// unchanged: they are pinned against docs/guide/commands.md by
+// TestOtherServeVerdictMatchesTheDocs and quoted in two runbooks, and
+// both now say what the label reports.
 const (
 	thisHostTag     = " (this host)"
 	otherAddressTag = " (other address)"

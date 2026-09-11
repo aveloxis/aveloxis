@@ -183,3 +183,104 @@ func TestHostMarkerBeatsCollapsedClientAddress(t *testing.T) {
 			"(pre-round-12 behavior, not a stricter verdict it cannot justify): %+v", deg)
 	}
 }
+
+// THE round-13 test: Copilot round 3's finding, which is an L10 hit on
+// round 12's own fix.
+//
+// Round 12 made marker equality DECIDE — `CASE WHEN both markers
+// present THEN row_marker = me.host_tag ELSE address-rule END` — so a
+// matching marker did not merely fail to separate two hosts, it
+// actively OVERRODE a differing client address. os.Hostname() is not a
+// host identity: two Docker/Podman Compose stacks running the same
+// compose file on different machines both report the container
+// hostname the file names, and Compose is a documented aveloxis
+// deployment. Two distinct hosts, one marker, different addresses —
+// and round 12 promoted the remote backend to ThisHost, where
+// printBackendVerdict offers a pg_terminate_backend recipe for
+// production. That is the 2026-09-09 incident's exact shape, reachable
+// through a topology round 12 INTRODUCED: before it, the differing
+// addresses correctly said OTHER.
+//
+// The round-13 rule, driven here rather than described: a marker can
+// only SEPARATE hosts, never MERGE them. Both arms are asserted, so
+// the fix cannot be "always OTHER" (which would be a different defect —
+// `pollBackends` returns the moment ThisHost is empty, so a blanket
+// OTHER would make `aveloxis stop` skip the drain wait entirely).
+func TestSharedHostnameNeverPromotesARemoteBackend(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	if hostid.HostTag() == "" {
+		t.Skip("this host cannot name itself, so there is no marker to share")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	prefix := fmt.Sprintf("aveloxis-avtest-r13-%d", time.Now().UnixNano())
+
+	// A backend carrying OUR OWN marker. On one machine that is what a
+	// second Compose host looks like from here: same hostname, real
+	// address of its own.
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["application_name"] = AppNameForHost(prefix)
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	var pid int
+	if err := pool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+
+	has := func(pids []int, want int) bool {
+		for _, p := range pids {
+			if p == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Arm 1 (the red-first arm): probed from a DIFFERENT client
+	// address. Same marker, different address — indistinguishable from
+	// inside the database from "same host reached over two addresses",
+	// so the verdict has to choose. It chooses the direction that can
+	// never hand out a terminate recipe for a machine we are not on.
+	lan := "192.168.99.99"
+	far, err := store.backendsByAppNameFrom(ctx, prefix, &lan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has(far.ThisHost, pid) {
+		t.Errorf("a backend at a DIFFERENT client address must never be ThisHost's just because its marker matches "+
+			"(pid %d, seen from %s): two Compose hosts share a hostname, and round 12 handed the remote one a "+
+			"pg_terminate_backend recipe — the 2026-09-09 incident restored by the fix meant to prevent it: %+v",
+			pid, lan, far)
+	}
+	if far.OtherHosts < 1 {
+		t.Errorf("the remote same-marker backend must be counted under OtherHosts, got %+v", far)
+	}
+
+	// Arm 2: the same backend probed from its own address is still
+	// ours. Without this the fix could be "always OTHER", which empties
+	// ThisHost and makes pollBackends return before the drain finishes.
+	near, err := store.backendsByAppNameFrom(ctx, prefix, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has(near.ThisHost, pid) {
+		t.Errorf("a backend on this host's own address with this host's own marker must be ThisHost's (pid %d): "+
+			"an empty ThisHost makes `aveloxis stop` skip the drain wait entirely: %+v", pid, near)
+	}
+}

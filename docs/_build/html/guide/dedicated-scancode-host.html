@@ -648,7 +648,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1777,7 +1777,11 @@ already connected and from which client addresses, each tagged with the
 code’s own verdict: an “(other address)” entry is normally the primary
 — “wrong command on this host”; a “(this host)” entry is a serve on
 THIS host, either one still running or a backend of one just stopped
-here still draining (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span></code> reports those). Only <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span></code> refuses to double-start a component, so check <code class="docutils literal notranslate"><span class="pre">ps</span></code> and the
+here still draining (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span></code> reports those). Both labels
+report the host <strong>verdict</strong>, not a comparison of the address text
+alone — behind a pooler the marker is what separates two hosts sharing
+one address, so an “(other address)” entry can carry an address string
+identical to your own. Only <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span></code> refuses to double-start a component, so check <code class="docutils literal notranslate"><span class="pre">ps</span></code> and the
 pidfile before waiting for a “(this host)” entry to clear.
 <code class="docutils literal notranslate"><span class="pre">stop</span></code> scopes its backend check to this host.</p>
 <p>When NO “(other address)” entry appears — every listed entry is
@@ -1820,10 +1824,17 @@ serve on THIS host, and <code class="docutils literal notranslate"><span class="
 2026-09-09 incident’s shape.</p>
 <p>This host is protected by the <code class="docutils literal notranslate"><span class="pre">&#64;&lt;hostname&gt;</span></code> marker each component now
 puts in its <code class="docutils literal notranslate"><span class="pre">application_name</span></code>: it survives the collapse, because
-PostgreSQL never rewrites what the client sent. But the marker only
-helps when <strong>both</strong> sides carry one. A primary still running a
-pre-round-12 binary tags un-suffixed, and an un-marked backend falls
-back to the address rule — which behind a pooler places it here.</p>
+PostgreSQL never rewrites what the client sent. The marker’s job is
+narrow and one-directional — it can <strong>separate</strong> two hosts the address
+rule collapsed together, and it can never <strong>merge</strong> two the address
+rule kept apart. That is what makes it safe to rely on: a marker
+collision (two container hosts running one compose file report the
+same hostname) degrades to the address rule, never to a terminate
+recipe for the other machine.</p>
+<p>But the marker only helps when <strong>both</strong> sides carry one. A primary
+still running a pre-round-12 binary tags un-suffixed, and an un-marked
+backend falls back to the address rule — which behind a pooler places
+it here.</p>
 <p>So: upgrade the primary to the same build before relying on this host’s
 verdicts on a pooled deployment, or point both hosts’ DSNs at PostgreSQL
 directly.</p>

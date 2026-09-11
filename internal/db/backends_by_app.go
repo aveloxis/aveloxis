@@ -154,38 +154,65 @@ func backendOnThisHostSQL(row string) string {
 }
 
 // sameHostAsProbeSQL is the ONE spelling (SR-17) of "this backend runs
-// on the probing session's host", and the round-12 answer to Copilot
-// #1: the HOST MARKER decides whenever both sides carry one; the
-// client-address rule decides only when one of them does not.
+// on the probing session's host": the client-address rule decides, and
+// the host marker can only VETO it.
 //
-// The address rule is not host identity and never was. Behind a
-// transaction pooler, a database proxy or shared NAT every client
-// collapses onto a single client_addr, so `aveloxis stop` on a
-// scancode runner reads the PRIMARY's backends as this host's and
-// offers pg_terminate_backend recipes for production — the 2026-09-09
-// incident, through a topology no in-database signal can detect. A
-// marker carried in application_name is immune: the server stores what
-// the client sent and never rewrites it, so two hosts behind one
-// pooler still disagree.
+// THE RULE, in one sentence: a marker can only SEPARATE hosts, never
+// MERGE them.
 //
-// The fallback is what makes this additive rather than a flag day. A
-// row with no marker is a pre-round-12 binary, or a host whose kernel
-// would not name it (hostid.HostTag() == ""); either way the answer is
-// today's, so a mixed-version fleet keeps working and the ACTUAL
-// incident topology — a runner on a different LAN address — stays
-// covered by the address rule throughout the upgrade window. The
-// residual is a pooler topology during that window only.
+// Two failures, one predicate. The address rule alone is not host
+// identity — behind a transaction pooler, a database proxy or shared
+// NAT every client collapses onto a single client_addr, so `aveloxis
+// stop` on a scancode runner reads the PRIMARY's backends as this
+// host's and offers pg_terminate_backend recipes for production: the
+// 2026-09-09 incident, through a topology no in-database signal can
+// detect. A marker carried in application_name is immune to that
+// collapse, because the server stores what the client sent and never
+// rewrites it, so two hosts behind one pooler still disagree — and the
+// veto turns that disagreement into OTHER.
+//
+// But the marker alone is not host identity EITHER, which is what
+// round 12 got wrong (Copilot round 3; an L10 hit on round 12's own
+// fix). Round 12 made marker equality DECIDE, so a matching marker
+// overrode a differing address. os.Hostname() is not unique across
+// machines: two Docker/Podman Compose stacks running the same compose
+// file on different hosts report the same container hostname, and
+// Compose is a documented aveloxis deployment. Round 12 promoted the
+// remote backend to ThisHost and handed it a terminate recipe — the
+// incident restored by the fix meant to prevent it. Composing the two
+// with AND is monotonic in the safe direction: this predicate never
+// says THIS where the pre-round-12 address rule said OTHER, so marker
+// quality is a non-safety property. A collision (a shared hostname, a
+// sanitizer collision, anything) degrades to the address rule, never
+// to a terminate recipe.
+//
+// The fallback arms are what keep this additive. A row with no marker
+// is a pre-round-12 binary, or a host whose kernel would not name it
+// (hostid.HostTag() == ""); a probing session with no marker of its own
+// is the same on our side. Either way the veto abstains and the answer
+// is the pre-v0.29.4 one, so a mixed-version fleet keeps working.
+//
+// RESIDUAL, stated rather than hidden: one host reached over two
+// addresses now reads as two. A serve that dialed a non-loopback DSN
+// host while `stop` dials loopback (or a serve dialed direct while
+// `stop` goes through a pooler) is a false OTHER, and pollBackends
+// returns the moment ThisHost is empty — so `stop` skips the drain
+// wait. Round 12 fixed that case incidentally; round 13 gives it back,
+// because from inside the database it is INDISTINGUISHABLE from the
+// two-Compose-hosts case, and only one of the two directions can print
+// `pg_terminate_backend` for a machine we are not on. The operator rule
+// is already documented and unchanged: run `stop` with the same `-c`
+// config the component was started with.
 //
 // The marker is compared, NOT trusted as a privilege: the visibility
 // gate in backendOnThisHostSQL is unchanged and still runs first, so a
 // backend whose address this role cannot see is Hidden regardless of
 // what its marker says. Round 7/8 bought that gate with two
-// live-probed defects; a marker equal to ours must not be able to buy
-// a terminate recipe for another role's backend.
+// live-probed defects.
 func sameHostAsProbeSQL(row string) string {
-	return fmt.Sprintf(`(CASE WHEN %[1]s IS NOT NULL AND me.host_tag IS NOT NULL THEN %[1]s = me.host_tag ELSE %[2]s END)`,
-		appNameHostSQL(row+".application_name"),
-		sameClientHostSQL(row+".client_addr", "me.client_addr"))
+	marker := appNameHostSQL(row + ".application_name")
+	return fmt.Sprintf(`(%[1]s AND (%[2]s IS NULL OR me.host_tag IS NULL OR %[2]s = me.host_tag))`,
+		sameClientHostSQL(row+".client_addr", "me.client_addr"), marker)
 }
 
 // backgroundBackendSQL is the ONE spelling (SR-17) of "this

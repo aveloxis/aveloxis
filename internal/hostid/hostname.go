@@ -35,6 +35,18 @@ var (
 // hostname degrades to "" instead of to a run of dashes that every
 // such host would share.
 //
+// The rewrite is NOT injective — `user@host` and `user-host` both
+// become `user-host` — and that is tolerable rather than a defect,
+// because of how the marker is consumed. Since round 13 the marker can
+// only VETO the client-address rule, never override it
+// (db.sameHostAsProbeSQL), so two hosts whose markers collide fall
+// back to the address rule: the pre-v0.29.4 verdict, never a
+// pg_terminate_backend recipe for a machine we are not on. The same
+// tolerance covers the larger collision this cannot fix at all —
+// os.Hostname() is not unique across machines, and two container hosts
+// running one compose file report the same name. Marker quality is a
+// precision property here, not a safety one.
+//
 // Cached: a process's hostname does not change under it, and the tag
 // is read on every pool connection.
 func HostTag() string {

@@ -648,7 +648,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -2556,9 +2556,23 @@ carries the component and this machine’s hostname, separated by <code class="d
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">stop</span></code> matches on the part <strong>before</strong> the <code class="docutils literal notranslate"><span class="pre">&#64;</span></code> (the component) and
-compares the part <strong>after</strong> it (the host) against its own machine. The
-host marker is what places a backend; <code class="docutils literal notranslate"><span class="pre">client_addr</span></code> is only the fallback
-when a marker is absent.</p>
+compares the part <strong>after</strong> it (the host) against its own machine.</p>
+<p><strong>The rule in one sentence: a marker can only separate hosts, never
+merge them.</strong> The client address decides, and the marker can only
+<em>veto</em> it. A backend is placed on this host when its client address is
+this host’s <strong>and</strong> its marker does not contradict that — so a backend
+that reaches the database from a different address is never this
+host’s, whatever its marker says, and two backends sharing an address
+but carrying different markers are correctly separated. Either marker
+being absent means the marker abstains and the address rule alone
+decides.</p>
+<p>The composition is deliberately one-directional: it never places a
+backend <em>here</em> that the client-address rule alone would have placed
+elsewhere. That is what keeps marker quality out of the safety
+argument — <code class="docutils literal notranslate"><span class="pre">os.Hostname()</span></code> is not unique across machines (two
+container hosts running the same compose file report the same
+hostname), so a marker collision degrades to the address rule rather
+than to a <code class="docutils literal notranslate"><span class="pre">pg_terminate_backend</span></code> recipe for a machine you are not on.</p>
 <p>Your own <code class="docutils literal notranslate"><span class="pre">pg_stat_activity</span></code> queries should match with <code class="docutils literal notranslate"><span class="pre">LIKE</span> <span class="pre">'aveloxis-%'</span></code> (which still works unchanged) or with
 <code class="docutils literal notranslate"><span class="pre">split_part(application_name,</span> <span class="pre">'&#64;',</span> <span class="pre">1)</span> <span class="pre">=</span> <span class="pre">'aveloxis-serve'</span></code>. Matching the
 full tag by equality will find only the backends of one specific host.</p>
@@ -2582,6 +2596,18 @@ Until every host on the database runs a build with the marker, treat a
 “Persistent PIDs (this host)” entry on a <strong>pooled</strong> deployment as
 unverified and confirm with <code class="docutils literal notranslate"><span class="pre">ps</span></code> on each host before terminating. Once
 every component is upgraded, the verdict holds through a pooler.</p>
+<p><strong>The other residual: one host reached over two addresses reads as
+two.</strong> If a component was started against a DSN naming this machine’s
+LAN address while <code class="docutils literal notranslate"><span class="pre">stop</span></code> runs against a <code class="docutils literal notranslate"><span class="pre">localhost</span></code> DSN (or one side
+goes through a pooler and the other does not), the addresses differ,
+the address rule says “another host”, and the marker cannot overrule
+it. <code class="docutils literal notranslate"><span class="pre">stop</span></code> then reports the component’s own backends under “other
+hosts” and returns without waiting out their drain. From inside the
+database that case is indistinguishable from two machines that happen
+to share a hostname, and only one of the two readings can print a
+terminate recipe for a machine you are not on — so aveloxis takes the
+safe one. <strong>Run <code class="docutils literal notranslate"><span class="pre">stop</span></code> with the same <code class="docutils literal notranslate"><span class="pre">-c</span></code> config the component was
+started with</strong> and the addresses match.</p>
 <p>A <code class="docutils literal notranslate"><span class="pre">session</span></code>-mode pooler is unaffected in principle only if it preserves
 the client address, which pgbouncer does not — but with markers in place
 that no longer matters for the host verdict.</p>
@@ -2665,7 +2691,10 @@ under the GraphQL path while row counts match exactly). After the
 row-count diff, data-test therefore also compares per-column FILL
 COUNTS — how many rows carry a meaningful value, type-aware (<code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span> <span class="pre">''</span></code>
 for text, <code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span> <span class="pre">0</span></code> for numerics, <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> otherwise) — across every
-column of every base table in all three schemas.</p>
+column of every base table in <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> and
+<code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code>. The fourth schema, <code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code>, holds only
+the Augur-compatibility views — derived data with no base tables to
+diff — so it is deliberately out of scope.</p>
 <ul class="simple">
 <li><p><strong>FAIL</strong> (exit code 1): a column populated under the released binary
 is <em>completely</em> unpopulated under the new one — a dropped mapping or
@@ -3244,6 +3273,11 @@ host is running the wrong command (<code class="docutils literal notranslate"><s
 the alternative); a “(this host)” entry is a serve on THIS host,
 either one still running or a backend of one just stopped here still
 draining (only <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span></code> refuses to double-start a component).
+The two labels report the host <strong>verdict</strong>, not a comparison of the
+address text alone: since v0.29.4 the verdict also consults the
+<code class="docutils literal notranslate"><span class="pre">&#64;host</span></code> marker, so behind a pooler a backend can be tagged “(other
+address)” beside an address string identical to your own — the marker
+is what separated them.
 When NO “(other address)” entry appears — every listed entry is
 “(this host)”, or an address this database role cannot see — the note
 withdraws the wrong-command reading, because nothing in the listing

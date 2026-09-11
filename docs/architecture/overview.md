@@ -67,7 +67,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
 
 ---
 
-## Three schemas
+## Four schemas
 
 Aveloxis uses four PostgreSQL schemas to separate collected data, ScanCode results, operational state, and Augur compatibility.
 

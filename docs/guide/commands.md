@@ -773,9 +773,25 @@ aveloxis-api@kate
 ```
 
 `stop` matches on the part **before** the `@` (the component) and
-compares the part **after** it (the host) against its own machine. The
-host marker is what places a backend; `client_addr` is only the fallback
-when a marker is absent.
+compares the part **after** it (the host) against its own machine.
+
+**The rule in one sentence: a marker can only separate hosts, never
+merge them.** The client address decides, and the marker can only
+*veto* it. A backend is placed on this host when its client address is
+this host's **and** its marker does not contradict that — so a backend
+that reaches the database from a different address is never this
+host's, whatever its marker says, and two backends sharing an address
+but carrying different markers are correctly separated. Either marker
+being absent means the marker abstains and the address rule alone
+decides.
+
+The composition is deliberately one-directional: it never places a
+backend *here* that the client-address rule alone would have placed
+elsewhere. That is what keeps marker quality out of the safety
+argument — `os.Hostname()` is not unique across machines (two
+container hosts running the same compose file report the same
+hostname), so a marker collision degrades to the address rule rather
+than to a `pg_terminate_backend` recipe for a machine you are not on.
 
 Your own `pg_stat_activity` queries should match with `LIKE
 'aveloxis-%'` (which still works unchanged) or with
@@ -803,6 +819,19 @@ Until every host on the database runs a build with the marker, treat a
 "Persistent PIDs (this host)" entry on a **pooled** deployment as
 unverified and confirm with `ps` on each host before terminating. Once
 every component is upgraded, the verdict holds through a pooler.
+
+**The other residual: one host reached over two addresses reads as
+two.** If a component was started against a DSN naming this machine's
+LAN address while `stop` runs against a `localhost` DSN (or one side
+goes through a pooler and the other does not), the addresses differ,
+the address rule says "another host", and the marker cannot overrule
+it. `stop` then reports the component's own backends under "other
+hosts" and returns without waiting out their drain. From inside the
+database that case is indistinguishable from two machines that happen
+to share a hostname, and only one of the two readings can print a
+terminate recipe for a machine you are not on — so aveloxis takes the
+safe one. **Run `stop` with the same `-c` config the component was
+started with** and the addresses match.
 
 A `session`-mode pooler is unaffected in principle only if it preserves
 the client address, which pgbouncer does not — but with markers in place
@@ -887,7 +916,10 @@ under the GraphQL path while row counts match exactly). After the
 row-count diff, data-test therefore also compares per-column FILL
 COUNTS — how many rows carry a meaningful value, type-aware (`<> ''`
 for text, `<> 0` for numerics, `IS NOT NULL` otherwise) — across every
-column of every base table in all three schemas.
+column of every base table in `aveloxis_data`, `aveloxis_ops` and
+`aveloxis_scan`. The fourth schema, `aveloxis_augur_data`, holds only
+the Augur-compatibility views — derived data with no base tables to
+diff — so it is deliberately out of scope.
 
 - **FAIL** (exit code 1): a column populated under the released binary
   is *completely* unpopulated under the new one — a dropped mapping or
@@ -1460,6 +1492,11 @@ host is running the wrong command (`aveloxis start scancode-worker` is
 the alternative); a "(this host)" entry is a serve on THIS host,
 either one still running or a backend of one just stopped here still
 draining (only `aveloxis start` refuses to double-start a component).
+The two labels report the host **verdict**, not a comparison of the
+address text alone: since v0.29.4 the verdict also consults the
+`@host` marker, so behind a pooler a backend can be tagged "(other
+address)" beside an address string identical to your own — the marker
+is what separated them.
 When NO "(other address)" entry appears — every listed entry is
 "(this host)", or an address this database role cannot see — the note
 withdraws the wrong-command reading, because nothing in the listing

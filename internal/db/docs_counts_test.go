@@ -118,8 +118,8 @@ func TestDocsTableCountsMatchSchema(t *testing.T) {
 					"scan=%d total=%d) — stale table count.", path, m[0], data, ops, scan, total)
 			}
 		}
-		// The primary operator surfaces must also acknowledge all
-		// three schemas (not required of every docs page).
+		// The primary operator surfaces must also acknowledge the
+		// aveloxis_scan schema (not required of every docs page).
 		if path == "../../README.md" || path == "../../docs/guide/commands.md" {
 			if !strings.Contains(string(src), "aveloxis_scan") {
 				t.Errorf("%s never mentions the aveloxis_scan schema — table counts that "+
@@ -146,4 +146,89 @@ func TestDocsTableCountsMatchSchema(t *testing.T) {
 			"(aveloxis_data, aveloxis_ops, aveloxis_scan).")
 	}
 	_ = fmt.Sprintf // keep fmt imported for future use in failure messages
+}
+
+// schemaCountFromDDL counts the schemas schema.sql actually creates.
+// Deliberately independent of schemaCounts's table tallies: a schema
+// can exist with zero base tables (aveloxis_augur_data holds only the
+// Augur-compatibility views), which is exactly the schema the prose
+// kept forgetting.
+func schemaCountFromDDL(t *testing.T) int {
+	t.Helper()
+	src, err := os.ReadFile("schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := strings.Count(string(src), "CREATE SCHEMA IF NOT EXISTS aveloxis_")
+	if n < 3 {
+		t.Fatalf("schema scan broke: found %d CREATE SCHEMA statements", n)
+	}
+	return n
+}
+
+var schemaWordCount = map[string]int{
+	"two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+}
+
+// The leading group is the byte BEFORE the count, captured rather than
+// looked behind (RE2 has no lookbehind) so a version fragment cannot
+// masquerade as a count: "the v0.22.6 / v0.22.7 schemas" offered a
+// bare "7" to the first draft of this pin, which duly reported it.
+var schemaPhraseRe = regexp.MustCompile(`(?i)(^|[^.\w-])(two|three|four|five|six|\d+) schemas\b`)
+
+// v0.29.4 round 13, Copilot round 3 finding 2. docs/architecture/
+// overview.md carried the heading "## Three schemas" directly above a
+// line reading "Aveloxis uses four PostgreSQL schemas" — and the class
+// sweep found the same stale count in four more places, including a
+// README section that said "Three schemas ... plus a dedicated schema"
+// and then listed three, omitting aveloxis_augur_data entirely.
+//
+// The table- and matview-count tripwires above have kept those numbers
+// honest for releases; the schema count had no pin at all, which is
+// why it was the one that drifted. This closes the class the same way:
+// any prose count of schemas must match the DDL.
+//
+// Scoped to the count PHRASE on purpose. Prose that names a subset
+// explicitly ("across aveloxis_data, aveloxis_ops and aveloxis_scan" —
+// the data-test column-fill diff really does enumerate three of the
+// four) is unambiguous and stays legal; a bare "all three schemas" is
+// what reads as a typo once the database has four, so that is what is
+// banned.
+func TestDocsSchemaCountsMatchDDL(t *testing.T) {
+	want := schemaCountFromDDL(t)
+
+	check := func(path string, src []byte) {
+		for _, m := range schemaPhraseRe.FindAllStringSubmatch(string(src), -1) {
+			word := strings.ToLower(m[2])
+			got, ok := schemaWordCount[word]
+			if !ok {
+				got, _ = strconv.Atoi(word)
+			}
+			if got != want {
+				t.Errorf("%s says %q but schema.sql creates %d schemas — stale schema count. "+
+					"Name the subset explicitly if a passage really means fewer.", path, word+" schemas", want)
+			}
+		}
+	}
+
+	for _, path := range allDocsMarkdown(t) {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		check(path, src)
+	}
+
+	// CLAUDE.md is an internal dev doc that release builds exclude —
+	// its absence means "not a dev checkout", not a failure (same
+	// contract as TestDocsTableCountsMatchSchema).
+	claude, err := os.ReadFile("../../CLAUDE.md")
+	if os.IsNotExist(err) {
+		t.Log("CLAUDE.md not present (release build) — skipping the dev-tree-only pin")
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("CLAUDE.md", claude)
 }

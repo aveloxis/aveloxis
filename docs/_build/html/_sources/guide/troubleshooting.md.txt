@@ -1461,10 +1461,12 @@ true while the address stays NULL. Aveloxis's own readers say "not
 visible" for such backends instead of guessing.
 
 ```{note}
-**The host marker is what places a backend; the client address is the
-fallback.** Since v0.29.4 each component tags its pool
-`aveloxis-<component>@<hostname>`, and aveloxis compares the part after
-the `@` against its own machine. So the diagnostic above is best read
+**The client address places a backend; the host marker can only veto
+it.** Since v0.29.4 each component tags its pool
+`aveloxis-<component>@<hostname>`. A backend is this host's when its
+client address is this host's **and** its marker does not contradict
+that — a marker can separate two hosts that share an address, but it
+can never merge two that do not. So the diagnostic above is best read
 with the marker in view:
 
 ```sql
@@ -1502,6 +1504,18 @@ build with the marker, confirm with `ps` on **every** host that runs the
 component before running `pg_terminate_backend` on a "this host" entry
 of a **pooled** deployment. Use the `host` column above to tell which
 rows are still un-marked.
+
+**The marker cannot rescue the opposite case, by design.** Because the
+address decides and the marker only vetoes, a component reached over a
+*different* address than the one `stop` dials — a LAN-address DSN on
+one side and `localhost` on the other — reads as another host even
+when its marker matches, and `stop` reports it under "other hosts"
+without waiting out its drain. From inside the database that is
+indistinguishable from two machines sharing a hostname (two container
+hosts running one compose file do exactly that), and only one of the
+two readings can print a terminate recipe for a machine you are not
+on. Run `stop` with the same `-c` config the component was started
+with.
 ```
 
 **Show both sides of the contention** (helpful when you want to confirm the waiter is your migrate / new serve, not something else):

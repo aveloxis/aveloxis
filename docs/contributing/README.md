@@ -9,7 +9,7 @@ This is the contributor handbook. The root [`CONTRIBUTING.md`](https://github.co
 
 ## What Aveloxis is
 
-A Go reimplementation of [Augur](https://github.com/chaoss/augur), the community-health data collection pipeline used by CHAOSS metrics consumers like [8Knot](https://github.com/oss-aspen/8Knot). Aveloxis collects from GitHub and GitLab APIs, parses git logs, and stores everything in PostgreSQL with full Augur schema parity (147 tables across four schemas). It adds features Augur lacks: staged collection for 400K+ repo fleets, deterministic contributor IDs, dead-repo sidelining, SBOM generation, OpenSSF Scorecard integration, vulnerability scanning, interactive visualizations, and a web GUI with OAuth.
+A production, fleet level implementation of experiments conducted via the CHAOSS project in [Augur](https://github.com/augurlabs/augur). The community-health data collection pipeline used by Aveloxis CHAOSS co-founders. Aveloxis collects from GitHub and GitLab APIs, parses git logs, and stores everything in PostgreSQL with full Augur schema parity (147 tables across `aveloxis_data`, `aveloxis_ops` and `aveloxis_scan`, plus the views-only `aveloxis_augur_data` compatibility schema). It adds features Augur lacks: staged collection for 400K+ repo fleets, deterministic contributor IDs, dead-repo sidelining, SBOM generation, OpenSSF Scorecard integration, vulnerability scanning, interactive visualizations, and a web GUI with OAuth.
 
 If you're new to the codebase, read these in order before touching code:
 

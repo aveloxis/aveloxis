@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aveloxis/aveloxis/internal/hostid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -2690,7 +2689,7 @@ func checkBlockersFrom(ctx context.Context, pg *PostgresStore, logger *slog.Logg
 		  AND a.application_name LIKE 'aveloxis-%'
 		  AND a.wait_event_type = 'Lock'
 		  AND a.state = 'active'
-		ORDER BY a.pid, bp.pid`, asIfFrom, hostid.HostTag())
+		ORDER BY a.pid, bp.pid`, asIfFrom, HostMarker())
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			logger.Warn("migration blocker poll failed", "error", err)
@@ -3151,7 +3150,7 @@ func (s *PostgresStore) otherServeAddressesFrom(ctx context.Context, asIfFrom *s
 		CROSS JOIN `+probingSessionSQL("$3", "$4")+`
 		WHERE a.datname = current_database() AND `+appNamePrefixSQL("a.application_name")+` = $1
 		  AND a.pid <> ALL($2::int4[])
-		ORDER BY 2`, ServeApplicationName, own, asIfFrom, hostid.HostTag())
+		ORDER BY 2`, ServeApplicationName, own, asIfFrom, HostMarker())
 	if err != nil {
 		return nil, err
 	}

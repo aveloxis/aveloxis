@@ -6,8 +6,6 @@ package db
 import (
 	"context"
 	"fmt"
-
-	"github.com/aveloxis/aveloxis/internal/hostid"
 )
 
 // AppNameBackends is what `aveloxis stop` sees of one application_name
@@ -284,7 +282,7 @@ func (s *PostgresStore) BackendsByAppName(ctx context.Context, appName string) (
 // by a pre-round-12 binary still matches.
 func (s *PostgresStore) backendsByAppNameFrom(ctx context.Context, appName string, asIfFrom, asIfHost *string) (AppNameBackends, error) {
 	var out AppNameBackends
-	host := hostid.HostTag()
+	host := HostMarker()
 	if asIfHost != nil {
 		host = *asIfHost
 	}

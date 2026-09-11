@@ -648,7 +648,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1644,7 +1644,7 @@
 <li><p>Import your API keys</p></li>
 <li><p>Import your repos</p></li>
 </ol>
-<p>No data in Augur’s schemas is modified or deleted. Aveloxis creates its own schemas (<code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> and <code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code>) and operates independently.</p>
+<p>No data in Augur’s schemas is modified or deleted. Aveloxis creates its own schemas (<code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code>, and the views-only <code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code>) and operates independently.</p>
 </section>
 <hr class="docutils" />
 <section id="step-1-point-at-the-existing-augur-database">
@@ -1675,6 +1675,7 @@
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> – 101 tables + 20 materialized views for collected data</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></strong> — 4 tables (ScanCode per-file license/copyright results + history)</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> – 42 tables for operational state (queue, staging, credentials, etc.)</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code></strong> — the Augur-compatibility schema: no base tables of its own, just 6 views over <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> for the columns whose names differ from Augur’s (<code class="docutils literal notranslate"><span class="pre">repo</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_info</span></code>, <code class="docutils literal notranslate"><span class="pre">issues</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_requests</span></code>, <code class="docutils literal notranslate"><span class="pre">releases</span></code>, <code class="docutils literal notranslate"><span class="pre">message</span></code>). 8Knot reads through it with <code class="docutils literal notranslate"><span class="pre">search_path</span> <span class="pre">=</span> <span class="pre">aveloxis_augur_data,aveloxis_data</span></code>.</p></li>
 </ul>
 <p>The migration uses <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">...</span> <span class="pre">IF</span> <span class="pre">NOT</span> <span class="pre">EXISTS</span></code> throughout, so it is safe to run repeatedly. It never modifies or reads from <code class="docutils literal notranslate"><span class="pre">augur_data</span></code> or <code class="docutils literal notranslate"><span class="pre">augur_operations</span></code> schemas.</p>
 </section>
@@ -1736,6 +1737,14 @@
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></p></td>
 <td><p>Aveloxis</p></td>
 <td><p>Aveloxis operational tables (42 tables)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></p></td>
+<td><p>Aveloxis</p></td>
+<td><p>ScanCode per-file license/copyright results (4 tables)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code></p></td>
+<td><p>Aveloxis</p></td>
+<td><p>Augur-compatibility views (no base tables)</p></td>
 </tr>
 </tbody>
 </table>

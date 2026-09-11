@@ -647,7 +647,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1636,12 +1636,17 @@
 <hr class="docutils" />
 <section id="overview">
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading"></a></h2>
-<p>Aveloxis uses two PostgreSQL schemas to separate collected data from operational state:</p>
+<p>Aveloxis uses four PostgreSQL schemas. This reference documents the two that carry the bulk of the data model:</p>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> – Collected open source community health data. Contains tables for repositories, contributors, issues, pull requests, commits, releases, messages, dependency information, and aggregated data mart views. These tables hold the output of collection workers that talk to GitHub, GitLab, and local git clones.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> – Operational and orchestration tables. Contains the collection queue, staging area, API credentials, user accounts, worker state, and configuration. These tables drive the collection pipeline itself.</p></li>
 </ul>
-<p>Both schemas maintain full parity with Augur’s <code class="docutils literal notranslate"><span class="pre">augur_data</span></code> and <code class="docutils literal notranslate"><span class="pre">augur_operations</span></code> schemas. All <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">TABLE</span></code> statements use <code class="docutils literal notranslate"><span class="pre">IF</span> <span class="pre">NOT</span> <span class="pre">EXISTS</span></code> and inserts use <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">CONFLICT</span> <span class="pre">DO</span> <span class="pre">NOTHING</span></code> for idempotent migrations.</p>
+<p>The other two are described elsewhere:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></strong> – ScanCode per-file license and copyright results, plus their history. See <a class="reference internal" href="architecture/scancode.html"><span class="std std-doc">ScanCode worker</span></a>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code></strong> – The Augur-compatibility layer. It holds no base tables of its own: just views over <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> for the entities whose column names differ from Augur’s (<code class="docutils literal notranslate"><span class="pre">repo</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_info</span></code>, <code class="docutils literal notranslate"><span class="pre">issues</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_requests</span></code>, <code class="docutils literal notranslate"><span class="pre">releases</span></code>, <code class="docutils literal notranslate"><span class="pre">message</span></code>). 8Knot reads through it with <code class="docutils literal notranslate"><span class="pre">search_path</span> <span class="pre">=</span> <span class="pre">aveloxis_augur_data,aveloxis_data</span></code>. See <a class="reference internal" href="getting-started/augur-migration.html"><span class="std std-doc">Augur migration</span></a>.</p></li>
+</ul>
+<p>The data and ops schemas maintain full parity with Augur’s <code class="docutils literal notranslate"><span class="pre">augur_data</span></code> and <code class="docutils literal notranslate"><span class="pre">augur_operations</span></code> schemas. All <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">TABLE</span></code> statements use <code class="docutils literal notranslate"><span class="pre">IF</span> <span class="pre">NOT</span> <span class="pre">EXISTS</span></code> and inserts use <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">CONFLICT</span> <span class="pre">DO</span> <span class="pre">NOTHING</span></code> for idempotent migrations.</p>
 </section>
 <hr class="docutils" />
 <section id="metadata-columns">

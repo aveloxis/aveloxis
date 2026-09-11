@@ -174,7 +174,27 @@ var schemaWordCount = map[string]int{
 // looked behind (RE2 has no lookbehind) so a version fragment cannot
 // masquerade as a count: "the v0.22.6 / v0.22.7 schemas" offered a
 // bare "7" to the first draft of this pin, which duly reported it.
-var schemaPhraseRe = regexp.MustCompile(`(?i)(^|[^.\w-])(two|three|four|five|six|\d+) schemas\b`)
+//
+// v0.29.4 round 14 widened it by one optional qualifier word. The
+// round-13 form required the count to sit IMMEDIATELY before
+// "schemas", so "two PostgreSQL schemas" — which is how
+// docs/schema.md's overview had read ever since the aveloxis_scan and
+// aveloxis_augur_data schemas arrived — was invisible to the pin that
+// exists to catch exactly that. The qualifier list is CLOSED on
+// purpose: an arbitrary `\w+` between the two would start matching
+// prose like "four other schemas", where the count is not a claim
+// about the DDL.
+//
+// The separators stay LITERAL SPACES rather than `\s+`, which is the
+// round-13 behaviour and is load-bearing for two reasons. A count and
+// the word "schemas" split across a hard wrap is almost always a
+// CHANGELOG QUOTATION of an old wording — the round-13 entry says so
+// explicitly, having tripped this pin on its own citation — and
+// splitting the quote across lines is the escape hatch that entry
+// chose over teaching the pin an exemption a future stale count could
+// hide behind. Widening to `\s+` silently revoked it and flagged four
+// such citations.
+var schemaPhraseRe = regexp.MustCompile(`(?i)(^|[^.\w-])(two|three|four|five|six|\d+) (?:postgres |postgresql )?schemas\b`)
 
 // v0.29.4 round 13, Copilot round 3 finding 2. docs/architecture/
 // overview.md carried the heading "## Three schemas" directly above a
@@ -197,9 +217,28 @@ var schemaPhraseRe = regexp.MustCompile(`(?i)(^|[^.\w-])(two|three|four|five|six
 func TestDocsSchemaCountsMatchDDL(t *testing.T) {
 	want := schemaCountFromDDL(t)
 
+	// A phrase the COMPOUND pin governs is not also judged here. The
+	// two pins make different claims about the same sentence: "147
+	// tables across three schemas" is right about the table-bearing
+	// count (3) and would read as wrong about the DDL count (4). The
+	// compound claim is the more specific one, so it wins its own span
+	// and TestDocsDoNotAttributeTablesToNonTableSchemas checks it.
 	check := func(path string, src []byte) {
-		for _, m := range schemaPhraseRe.FindAllStringSubmatch(string(src), -1) {
-			word := strings.ToLower(m[2])
+		text := string(src)
+		governed := tableBearingSchemaPhraseRe.FindAllStringIndex(text, -1)
+		inCompound := func(i int) bool {
+			for _, loc := range governed {
+				if i >= loc[0] && i < loc[1] {
+					return true
+				}
+			}
+			return false
+		}
+		for _, m := range schemaPhraseRe.FindAllStringSubmatchIndex(text, -1) {
+			if inCompound(m[0]) {
+				continue
+			}
+			word := strings.ToLower(text[m[4]:m[5]])
 			got, ok := schemaWordCount[word]
 			if !ok {
 				got, _ = strconv.Atoi(word)
@@ -222,6 +261,92 @@ func TestDocsSchemaCountsMatchDDL(t *testing.T) {
 	// CLAUDE.md is an internal dev doc that release builds exclude —
 	// its absence means "not a dev checkout", not a failure (same
 	// contract as TestDocsTableCountsMatchSchema).
+	claude, err := os.ReadFile("../../CLAUDE.md")
+	if os.IsNotExist(err) {
+		t.Log("CLAUDE.md not present (release build) — skipping the dev-tree-only pin")
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("CLAUDE.md", claude)
+}
+
+// tableBearingSchemaPhraseRe matches the COMPOUND claim — a count of
+// tables attributed to a count of schemas — which is a different
+// statement from either count alone and was true of neither.
+// The interposition is bounded and may not cross a sentence or a line:
+// "147 tables and 20 materialized views across three PostgreSQL
+// schemas" is one claim, and both halves of it have to be reachable
+// from the same match.
+var tableBearingSchemaPhraseRe = regexp.MustCompile(`(?i)\btables\b[^.\n]{0,80}?\b(?:across|in|spread over|spanning) (two|three|four|five|six|\d+) (?:postgres |postgresql )?schemas\b`)
+
+// tableBearingSchemaCount is how many schemas schema.sql actually puts
+// base tables in. Deliberately derived from the CREATE TABLE
+// statements rather than from schemaCountFromDDL: the whole point is
+// that the two numbers DIFFER, because aveloxis_augur_data exists with
+// zero base tables.
+func tableBearingSchemaCount(t *testing.T) int {
+	t.Helper()
+	src, err := os.ReadFile("schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`CREATE TABLE IF NOT EXISTS (aveloxis_\w+)\.`)
+	seen := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
+		seen[m[1]] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("table-bearing schema scan broke: found %d schemas with base tables", len(seen))
+	}
+	return len(seen)
+}
+
+// v0.29.4 round 14, Copilot round 4 finding 5. "147 tables across four
+// schemas" led the contributor handbook and CLAUDE.md, and the
+// round-13 schema-count pin could not see it: the phrase says "four",
+// schema.sql creates four schemas, so it matched and passed. The
+// defect is the CONFLATION — four schemas exist, but the 147 tables
+// live in three of them (aveloxis_data 101 + aveloxis_ops 42 +
+// aveloxis_scan 4); aveloxis_augur_data holds only the six
+// Augur-compatibility views. A reader taking the sentence at face
+// value goes looking for a fourth table-bearing schema that does not
+// exist, which is exactly the confusion the schema-count pin exists to
+// prevent one level up.
+//
+// Two pins now cover the pair, and after this round's fix both pass
+// only when the prose NAMES the schemas rather than counting them:
+// schemaPhraseRe keeps "N schemas" honest against the DDL, and this
+// one bans attributing a table count to a schema count that is not the
+// table-bearing one.
+func TestDocsDoNotAttributeTablesToNonTableSchemas(t *testing.T) {
+	want := tableBearingSchemaCount(t)
+
+	check := func(path string, src []byte) {
+		for _, m := range tableBearingSchemaPhraseRe.FindAllStringSubmatch(string(src), -1) {
+			word := strings.ToLower(m[1])
+			got, ok := schemaWordCount[word]
+			if !ok {
+				got, _ = strconv.Atoi(word)
+			}
+			if got != want {
+				t.Errorf("%s says %q, but base tables live in only %d schemas (aveloxis_augur_data holds "+
+					"the Augur-compatibility views and no tables of its own). Name the table-bearing schemas "+
+					"explicitly rather than counting them — a count here reads as a promise that a fourth "+
+					"table-bearing schema exists.", path, m[0], want)
+			}
+		}
+	}
+
+	for _, path := range allDocsMarkdown(t) {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		check(path, src)
+	}
+
 	claude, err := os.ReadFile("../../CLAUDE.md")
 	if os.IsNotExist(err) {
 		t.Log("CLAUDE.md not present (release build) — skipping the dev-tree-only pin")

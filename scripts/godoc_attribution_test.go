@@ -184,7 +184,7 @@ func TestGodocIsAttachedToWhatItDocuments(t *testing.T) {
 	baselinePath := filepath.Join(root, "scripts", "godoc_attribution_baseline.txt")
 	baselineRaw, err := os.ReadFile(baselinePath)
 	if err != nil {
-		t.Fatalf("reading the godoc-attribution baseline: %v", err)
+		t.Fatalf("reading the godoc-attribution baseline (regenerate: AVELOXIS_UPDATE_BASELINE=1 go test ./scripts/ -run GodocIsAttached): %v", err)
 	}
 	baseline := map[string]bool{}
 	for _, line := range strings.Split(string(baselineRaw), "\n") {
@@ -193,6 +193,7 @@ func TestGodocIsAttachedToWhatItDocuments(t *testing.T) {
 		}
 	}
 	seen := map[string]bool{}
+	regen := os.Getenv("AVELOXIS_UPDATE_BASELINE") == "1"
 
 	isTestFunc := func(name string) bool {
 		return strings.HasPrefix(name, "Test") || strings.HasPrefix(name, "Benchmark") || strings.HasPrefix(name, "Fuzz")
@@ -208,9 +209,9 @@ func TestGodocIsAttachedToWhatItDocuments(t *testing.T) {
 			continue // the named declaration kept its own doc; nothing was stolen
 		}
 		rel, _ := filepath.Rel(root, d.file)
-		key := rel + "::" + d.name
+		key := attributionKey(rel, d.name, d.firstWord)
 		seen[key] = true
-		if baseline[key] {
+		if regen || baseline[key] {
 			continue // frozen legacy debt; repair it and delete its line
 		}
 		t.Errorf("%s:%d: the doc comment on %s opens with %q — the name of a DIFFERENT declaration in this package.\n"+
@@ -220,6 +221,20 @@ func TestGodocIsAttachedToWhatItDocuments(t *testing.T) {
 			"Verify with `go doc -u ./%s %s`. Fix by separating the two doc blocks with a blank line and giving\n"+
 			"each declaration a doc that opens with its own name.",
 			rel, d.line, d.name, d.firstWord, d.firstWord, d.name, d.firstWord, filepath.Dir(rel), d.name)
+	}
+
+	if regen {
+		var lines []string
+		for key := range seen {
+			lines = append(lines, key)
+		}
+		sort.Strings(lines)
+		content := godocBaselineHeader + strings.Join(lines, "\n") + "\n"
+		if err := os.WriteFile(baselinePath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("godoc-attribution baseline regenerated: %d frozen pairs", len(lines))
+		return
 	}
 
 	// The ratchet's other direction: a baseline line that no longer
@@ -237,4 +252,47 @@ func TestGodocIsAttachedToWhatItDocuments(t *testing.T) {
 		t.Errorf("scripts/godoc_attribution_baseline.txt lists %s, which no longer has a fused doc comment — "+
 			"delete the line in the change that repaired it; the baseline only shrinks", key)
 	}
+}
+
+// godocBaselineHeader is regenerated verbatim with the baseline, so
+// the file keeps explaining itself after AVELOXIS_UPDATE_BASELINE=1.
+const godocBaselineHeader = `# Frozen godoc-attribution debt — SHRINK ONLY.
+#
+# Each line is a PAIR: a declaration whose doc comment opens with the
+# name of a DIFFERENT declaration in the same file, and that
+# declaration, which has no doc of its own. That is the signature of a
+# doc block fused onto its successor by an insertion with no blank line
+# between them. See scripts/godoc_attribution_test.go for the full
+# rationale and the three incidents that earned the check.
+#
+# These accumulated across the release history and are frozen so a NEW
+# fusion fails the build. To repair one: separate the two doc blocks
+# with a blank line, give each declaration a doc that opens with its own
+# name, and DELETE its line here in the same change — a stale line fails
+# the test as unreviewed permission.
+#
+# Format: <repo-relative file>::<declaration carrying the doc><-<declaration the doc was stolen from>
+#
+# The stolen-from half is load-bearing (round 14): keyed on the carrier
+# alone, a frozen line exempted that declaration no matter which
+# neighbour it swallowed, so re-fusing a repaired site onto a different
+# undocumented sibling in the same file shipped green.
+#
+# Regenerate: AVELOXIS_UPDATE_BASELINE=1 go test ./scripts/ -run GodocIsAttached
+`
+
+// attributionKey is what the baseline freezes, and it names the PAIR —
+// the declaration whose doc block moved AND the declaration the block
+// was stolen from.
+//
+// Round 14 (Copilot round 4, finding 2): the key was the victim alone
+// (`file::name`), so a frozen line exempted that declaration from the
+// check no matter WHICH neighbour it swallowed. Re-fusing a repaired
+// site onto a different undocumented sibling in the same file — the
+// realistic drift, since the repair is "insert a blank line" and the
+// regression is "a later insertion lands somewhere else in the same
+// block" — matched the stale key and shipped green. Freezing the pair
+// makes the exemption as narrow as the debt it records.
+func attributionKey(rel, name, firstWord string) string {
+	return rel + "::" + name + "<-" + firstWord
 }

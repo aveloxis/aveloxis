@@ -106,7 +106,25 @@ sudo systemctl enable --now aveloxis.target
 systemctl status 'aveloxis@*'
 sudo systemctl restart aveloxis@serve      # one process
 sudo systemctl restart aveloxis.target     # all three
-sudo systemctl stop aveloxis.target        # graceful stop, survives reboot as "stopped"
+
+# Graceful stop until the next reboot. The units were enabled, and
+# aveloxis.target is WantedBy=multi-user.target, so a reboot starts
+# them again — `stop` does not persist:
+sudo systemctl stop aveloxis.target
+
+# Stop AND keep it stopped across reboots:
+sudo systemctl disable --now aveloxis.target
+```
+
+```{warning}
+`systemctl stop` is stop-until-reboot, not a persistent off switch. The
+enablement made by `systemctl enable --now aveloxis.target` above is what
+survives a reboot; stopping a unit does not undo it. If you are taking a
+host out of the fleet — a decommissioned collector, a machine being
+repurposed — use `disable --now`, or the next boot brings collection back
+up against a database you thought it had left.
+
+Re-enable with `sudo systemctl enable --now aveloxis.target`.
 ```
 
 Only `serve` (and `aveloxis migrate`) run schema migrations — the ordering

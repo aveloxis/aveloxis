@@ -159,11 +159,50 @@ func schemaCountFromDDL(t *testing.T) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := strings.Count(string(src), "CREATE SCHEMA IF NOT EXISTS aveloxis_")
+	n := distinctSchemasInDDL(string(src))
 	if n < 3 {
-		t.Fatalf("schema scan broke: found %d CREATE SCHEMA statements", n)
+		t.Fatalf("schema scan broke: found %d distinct CREATE SCHEMA names", n)
 	}
 	return n
+}
+
+// createSchemaRe captures the schema NAME of each CREATE SCHEMA
+// statement so the count is over distinct schemas, not statements.
+var createSchemaRe = regexp.MustCompile(`CREATE SCHEMA IF NOT EXISTS (aveloxis_\w+)`)
+
+// distinctSchemasInDDL counts the distinct schema names schema.sql
+// creates. Round 15 (Copilot round 5 on PR #197): the first draft
+// counted STATEMENTS with strings.Count, so a duplicated CREATE SCHEMA
+// line (a harmless idempotent repeat — the file already carries one
+// schema's statement far from the other three) would have raised the
+// "true" count and made every correct prose site read as stale. The
+// sibling tableBearingSchemaCount already dedups by name; this is the
+// same shape.
+func distinctSchemasInDDL(src string) int {
+	seen := map[string]bool{}
+	for _, m := range createSchemaRe.FindAllStringSubmatch(src, -1) {
+		seen[m[1]] = true
+	}
+	return len(seen)
+}
+
+// TestSchemaCountFromDDLCountsDistinctNames pins the dedup: the same
+// four schemas declared five times must still count as four. Under
+// the statement-counting draft this fixture reads 5.
+func TestSchemaCountFromDDLCountsDistinctNames(t *testing.T) {
+	fixture := `CREATE SCHEMA IF NOT EXISTS aveloxis_data;
+CREATE SCHEMA IF NOT EXISTS aveloxis_ops;
+CREATE SCHEMA IF NOT EXISTS aveloxis_scan;
+-- ... 3,000 lines later, the views-only schema plus an idempotent repeat:
+CREATE SCHEMA IF NOT EXISTS aveloxis_augur_data;
+CREATE SCHEMA IF NOT EXISTS aveloxis_data;
+`
+	if got := distinctSchemasInDDL(fixture); got != 4 {
+		t.Fatalf("distinctSchemasInDDL counted %d, want 4 — a repeated CREATE SCHEMA statement must not count twice", got)
+	}
+	if got := distinctSchemasInDDL(""); got != 0 {
+		t.Fatalf("empty DDL counted %d schemas, want 0", got)
+	}
 }
 
 var schemaWordCount = map[string]int{

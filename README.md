@@ -954,7 +954,7 @@ Aveloxis creates 20 materialized views compatible with [8Knot](https://github.co
 
 ### Database Schema
 
-Four schemas in PostgreSQL with full parity to Augur's `augur_data` and `augur_operations`, plus a dedicated schema for ScanCode results and one carrying the Augur-compatibility views:
+Four schemas in PostgreSQL: two with full parity to Augur's `augur_data` and `augur_operations`, a dedicated schema for ScanCode results, and one carrying the Augur-compatibility views:
 
 - **`aveloxis_data`** (101 tables + 20 materialized views) — All collected data: repos, issues, PRs, commits (per-file), commit parents, commit messages, messages, events, releases, contributors, contributor identities/aliases/affiliations, dependencies/SBOM, sentiment/NLP analysis, LSTM anomaly detection, topic modeling, Facade aggregates (dm_repo_annual/monthly/weekly, dm_repo_group_annual/monthly/weekly), repo labor/complexity, DEI badging, CHAOSS metrics, network analysis, repo insights, and more. Plus 20 materialized views for 8Knot compatibility.
 - **`aveloxis_ops`** (42 tables) — Operational tables: collection queue, JSONB staging store, collection status (tracks core/secondary/facade/ML phases independently), API credentials, users/auth/sessions, config, worker history/jobs, network weighted tables.

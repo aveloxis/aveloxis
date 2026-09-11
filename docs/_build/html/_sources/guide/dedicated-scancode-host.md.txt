@@ -48,11 +48,14 @@ psql "postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=prefer" -c "SEL
 ## 2. Install aveloxis + the scancode toolchain
 
 ```bash
-# aveloxis binary (Go 1.25+) — the SAME version the primary runs
-# (`aveloxis version` there), never @latest: the worker never migrates,
-# so a newer binary than the schema stamp logs a schema-version ERROR
-# at startup and may read columns the database does not have yet.
-go install github.com/aveloxis/aveloxis/cmd/aveloxis@v<primary version>
+# aveloxis binary (Go 1.25+) — the SAME version the primary runs,
+# never @latest: the worker never migrates, so a newer binary than the
+# schema stamp logs a schema-version ERROR at startup and may read
+# columns the database does not have yet. Release tags are v-prefixed
+# (v0.29.4), so set the bare number `aveloxis version` prints on the
+# primary and let the @v prefix supply the tag form:
+PRIMARY_VERSION=0.29.4   # what `aveloxis version` prints on the primary
+go install "github.com/aveloxis/aveloxis/cmd/aveloxis@v${PRIMARY_VERSION}"
 
 # git is required for the shallow clones; then the analysis tools
 # (scancode needs Python 3.10+ and pipx):

@@ -1676,11 +1676,14 @@ full restart). Verify from the scancode host:</p>
 </section>
 <section id="install-aveloxis-the-scancode-toolchain">
 <h2>2. Install aveloxis + the scancode toolchain<a class="headerlink" href="#install-aveloxis-the-scancode-toolchain" title="Link to this heading"></a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aveloxis binary (Go 1.25+) — the SAME version the primary runs</span>
-<span class="c1"># (`aveloxis version` there), never @latest: the worker never migrates,</span>
-<span class="c1"># so a newer binary than the schema stamp logs a schema-version ERROR</span>
-<span class="c1"># at startup and may read columns the database does not have yet.</span>
-go<span class="w"> </span>install<span class="w"> </span>github.com/aveloxis/aveloxis/cmd/aveloxis@v&lt;primary<span class="w"> </span>version&gt;
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aveloxis binary (Go 1.25+) — the SAME version the primary runs,</span>
+<span class="c1"># never @latest: the worker never migrates, so a newer binary than the</span>
+<span class="c1"># schema stamp logs a schema-version ERROR at startup and may read</span>
+<span class="c1"># columns the database does not have yet. Release tags are v-prefixed</span>
+<span class="c1"># (v0.29.4), so set the bare number `aveloxis version` prints on the</span>
+<span class="c1"># primary and let the @v prefix supply the tag form:</span>
+<span class="nv">PRIMARY_VERSION</span><span class="o">=</span><span class="m">0</span>.29.4<span class="w">   </span><span class="c1"># what `aveloxis version` prints on the primary</span>
+go<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;github.com/aveloxis/aveloxis/cmd/aveloxis@v</span><span class="si">${</span><span class="nv">PRIMARY_VERSION</span><span class="si">}</span><span class="s2">&quot;</span>
 
 <span class="c1"># git is required for the shallow clones; then the analysis tools</span>
 <span class="c1"># (scancode needs Python 3.10+ and pipx):</span>

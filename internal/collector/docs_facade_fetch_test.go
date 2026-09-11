@@ -166,16 +166,38 @@ func TestDocsFetchCommandMatchesTheFacade(t *testing.T) {
 // fence opener that follows it), and a problem is reported at the
 // command's FIRST physical line.
 //
-// RESIDUAL, stated rather than chased (round 17, the L16 exit). This is
-// textual judgment, not a shell tokenizer. A logical command is split
-// on `&&` `||` `;` `|`, an unquoted ` #…` tail is dropped, and flags are
-// matched as whole tokens. Operators or `#` inside `$(…)`, heredocs and
-// escaped newlines inside quotes are not parsed. Every such gap can
-// only produce a LOUD false fire that the doc author sees and fixes by
-// splitting the line. None can pass a stale-clone recipe silently,
-// because `--all` anywhere in a judged piece still fires. Further
-// hardening is a contract change, not a fix; widen it only for a
-// spelling a real facade doc uses.
+// RESIDUAL, pinned rather than described (round 17, the L16 exit). This
+// is textual judgment, not a shell tokenizer, and this paragraph no
+// longer tries to say in prose which spellings fall through it. FOUR
+// drafts tried; every one was wrong, and every one was caught the same
+// way — by running the real judge over the spellings it described:
+// (1) "every gap can only fire loudly, never pass a stale-clone
+// recipe" — false, several pass silently; (2) an operator inside `$(…)`
+// filed as loud, when the placement ahead of `fetch` is silent;
+// (3) "a separation between `git` and its `fetch` is never judged" —
+// false, a `.git` path token directly before `fetch` re-matches
+// `\bgit\b` and IS judged; (4) "quoting and escaped newlines are not
+// parsed" — false of both, and refuted by this file's own fixtures
+// (continuations ARE joined, and the comment strip DOES track quotes).
+//
+// So: the parsing steps are `judgeBareFetch` below, the regexes
+// declared above it, the fence pair shellFenceOpenRe /
+// shellFenceCloseRe in docs_shell_placeholders_test.go (which decides
+// what is a shell block AT ALL, and carries its own CommonMark
+// indentation contract), and the quote-aware comment strip
+// srctest.StripShellComment in internal/srctest/strip.go. Draft (4)
+// was wrong about one mechanism in each of two of those: continuations
+// are joined HERE, quotes are tracked in strip.go. Read all four, not
+// just the function under this comment. The shapes that fall through
+// them are executable fact in
+// TestFetchPinResidualShapes — some mis-parses fire, some drop a
+// command out of judgment entirely, a trailing `--all` included. That
+// test is an INVENTORY of current behaviour, not a wish list; a change
+// that moves a row is a contract change to be reviewed, not a fixture
+// to re-baseline.
+//
+// The tripwire guards the spellings the facade docs actually use;
+// widening it is a contract change, not a fix.
 func judgeBareFetch(src string, specs []string) (int, []string) {
 	lines := strings.Split(src, "\n")
 	// Pass 1: which shell blocks describe the bare clone. A block is
@@ -268,6 +290,82 @@ func judgeBareFetch(src string, specs []string) (int, []string) {
 		}
 	}
 	return judged, problems
+}
+
+// TestFetchPinResidualShapes is the executable half of judgeBareFetch's
+// RESIDUAL note: an INVENTORY of what the heuristic actually does with
+// the spellings its gaps touch. FOUR prose drafts were each wrong in a
+// new way (round 17 L10 passes 7-10 — every gap "fires loudly"; an
+// operator inside `$(…)` filed as loud; "a separation is never judged";
+// and a bare "what it parses" list that was wrong about both quoting
+// and escaped newlines), so the claims live here, where `go test`
+// checks them against the real judge instead of against a maintainer's
+// model of it.
+//
+// A row that MOVES is a contract change — the tripwire's reach grew or
+// shrank — and is reviewed as one (L16). Do not re-baseline a row to
+// make a run green. Rows that read "silent" are known gaps, kept
+// deliberately: this tripwire guards the spellings the facade docs use,
+// and a doc that spells a fetch this way is not a shape any facade page
+// has ever carried.
+func TestFetchPinResidualShapes(t *testing.T) {
+	specs := []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
+	fence := "```"
+
+	for _, c := range []struct {
+		name   string
+		cmd    string
+		judged int
+		fires  bool
+	}{
+		// Controls: the contract the tripwire exists to enforce.
+		{"the facade's own command passes",
+			`git -C "$CLONE_PATH" fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' --prune`, 1, false},
+		{"a plain stale fetch fires",
+			`git -C "$CLONE_PATH" fetch --all`, 1, true},
+
+		// Judged, and fires — the `\bgit\b` rescue. fetchLineRe is not
+		// anchored, so when an unrecognized global option breaks the match
+		// at the first `git`, a `<name>.git` path token directly before
+		// `fetch` re-matches and the command IS judged. Bare clones are
+		// conventionally named that way, and the corpus spells them so.
+		{"a .git path token before fetch re-matches",
+			`git --no-pager -C /data/aveloxis-repos/augurlabs-augur.git fetch --all`, 1, true},
+
+		// Judged, but SILENT — the refspec check is strings.Contains, so
+		// refspec TEXT that is not a real argument satisfies it while the
+		// fetch passes no refspec at all.
+		{"refspecs inside a quoted option value satisfy the substring check",
+			`git -C "$CLONE_PATH" fetch origin --upload-pack='+refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/*' --prune`, 1, false},
+
+		// Not judged at all — the `git` token is separated from its
+		// `fetch` and no later token rescues the match. Each of these is a
+		// stale-clone recipe that passes.
+		{"an unrecognized global option drops the command",
+			`git --bare fetch --all`, 0, false},
+		{"an unrecognized global option before a quoted path drops it",
+			`git --no-pager -C "$CLONE_PATH" fetch --all`, 0, false},
+		{"a space inside a quoted -C path drops it",
+			`git -C "$HOME/my repos/clone.git" fetch --all`, 0, false},
+		{"a command separator inside $() ahead of fetch drops it",
+			`git -C "$(cd "$X" && pwd)" fetch --all`, 0, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := fence + "bash\n" +
+				"git clone --bare \"$URL\" \"$CLONE_PATH\"\n" +
+				c.cmd + "\n" +
+				fence + "\n"
+			judged, problems := judgeBareFetch(src, specs)
+			if judged != c.judged {
+				t.Errorf("judged=%d, want %d — the tripwire's REACH moved; that is a contract change, not a fixture to update\ncmd: %s\nproblems: %v",
+					judged, c.judged, c.cmd, problems)
+			}
+			if fires := len(problems) > 0; fires != c.fires {
+				t.Errorf("fires=%v, want %v — the tripwire's VERDICT moved; that is a contract change, not a fixture to update\ncmd: %s\nproblems: %v",
+					fires, c.fires, c.cmd, problems)
+			}
+		})
+	}
 }
 
 // TestJudgeBareFetchJoinsContinuations pins the two wrap shapes the

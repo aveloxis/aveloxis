@@ -148,8 +148,11 @@ func TestStopComponentReportsASignalFailureAsAnError(t *testing.T) {
 
 // TestSendSignalProductionDefaultDeliversRealSignals pins the seam's
 // default: it must actually reach the kernel. Signal 0 to this process
-// is delivered (nil); a process that has already been reaped cannot be
-// signaled (an error) — both arms through the real os.Process path.
+// is delivered (nil), and SIGTERM to a live `sleep` child is delivered
+// and read back from the child's wait status — both through the real
+// os.Process path. An earlier reaped-child arm was dropped in round 17
+// L10: PID reuse made it a flake by construction, and a default that
+// special-cased signal 0 passed it anyway.
 func TestSendSignalProductionDefaultDeliversRealSignals(t *testing.T) {
 	// Source pins first: they fail in milliseconds, before the runtime
 	// arm below spends up to 30 s on a seam that does not deliver.

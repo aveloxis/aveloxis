@@ -130,13 +130,12 @@ func TestStripSQLComments(t *testing.T) {
 	}
 }
 
-// v0.27.125 (Copilot round 16, suppressed — real): removing an INLINE
-// block comment without replacing its whitespace merged the adjacent
-// tokens (`func/*note*/f` → `funcf`; `SELECT/*note*/FROM` →
-// `SELECTFROM`), so strip-then-match checks could miss valid
-// constructs. A newline-free block comment now leaves ONE space;
-// comments containing newlines keep emitting their newlines (already
-// token-separating).
+// TestStripShellComment pins StripShellComment (round 17 L10 pass 6):
+// an unquoted ` #…` tail is dropped, a backslash inside that comment is
+// not kept as a continuation, and quotes and backslash escapes decide
+// what counts as unquoted. The escaped-quote and single-quote-backslash
+// cases are the ones only the escape arm decides; each was added after
+// a mutation to that arm survived the rest of the table.
 func TestStripShellComment(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"unquoted tail", "git fetch --prune  # never --all", "git fetch --prune  "},
@@ -162,6 +161,13 @@ func TestStripShellComment(t *testing.T) {
 	}
 }
 
+// v0.27.125 (Copilot round 16, suppressed — real): removing an INLINE
+// block comment without replacing its whitespace merged the adjacent
+// tokens (`func/*note*/f` → `funcf`; `SELECT/*note*/FROM` →
+// `SELECTFROM`), so strip-then-match checks could miss valid
+// constructs. A newline-free block comment now leaves ONE space;
+// comments containing newlines keep emitting their newlines (already
+// token-separating).
 func TestStripCommentsPreservesTokenSeparation(t *testing.T) {
 	goOut := StripGoComments("func/*note*/f() {}\nx /*a\nb*/ y")
 	if strings.Contains(goOut, "funcf") {

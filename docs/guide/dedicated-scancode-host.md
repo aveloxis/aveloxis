@@ -219,10 +219,11 @@ puts in its `application_name`: it survives the collapse, because
 PostgreSQL never rewrites what the client sent. The marker's job is
 narrow and one-directional — it can **separate** two hosts the address
 rule collapsed together, and it can never **merge** two the address
-rule kept apart. That is what makes it safe to rely on: a marker
-collision (two container hosts running one compose file report the
-same hostname) degrades to the address rule, never to a terminate
-recipe for the other machine.
+rule kept apart. A marker collision (for example, two container hosts
+running one compose file with the same hostname) degrades to the address
+rule. Behind a transaction pooler that fallback can classify the other
+host as this host and offer a termination recipe, so assign unique hostnames
+(or connect directly to PostgreSQL) before relying on this verdict.
 
 But the marker only helps when **both** sides carry one. A primary
 still running a pre-round-12 binary tags un-suffixed, and an un-marked

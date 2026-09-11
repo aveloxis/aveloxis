@@ -130,10 +130,12 @@ func TestStripSQLComments(t *testing.T) {
 	}
 }
 
-// TestStripShellComment pins StripShellComment (round 17 L10 pass 6):
-// an unquoted ` #…` tail is dropped, a backslash inside that comment is
-// not kept as a continuation, and quotes and backslash escapes decide
-// what counts as unquoted. The escaped-quote and single-quote-backslash
+// TestStripShellComment pins StripShellComment (round 17 L10 pass 6;
+// the control-operator rows came from Copilot's PR #198): an unquoted
+// `#…` tail is dropped — at line start, after whitespace, OR after a
+// shell control operator — a backslash inside that comment is not kept
+// as a continuation, and quotes and backslash escapes decide what
+// counts as unquoted. The escaped-quote and single-quote-backslash
 // cases are the ones only the escape arm decides; each was added after
 // a mutation to that arm survived the rest of the table.
 func TestStripShellComment(t *testing.T) {
@@ -141,6 +143,17 @@ func TestStripShellComment(t *testing.T) {
 		{"unquoted tail", "git fetch --prune  # never --all", "git fetch --prune  "},
 		{"whole-line comment", "# just a note", ""},
 		{"backslash inside a comment is not kept", "cmd  # note \\", "cmd  "},
+		// Control-operator boundaries. `cmd;# note \` was a real
+		// bypass: the backslash survived the strip, the line was joined
+		// to the next one, the joined command began with `#`, and a
+		// `git fetch --all` on that next line was never judged.
+		// Verified against bash: `echo A;#c` prints A, and `echo A|#c`
+		// / `echo A >#c` are syntax errors precisely BECAUSE `#c` is
+		// eaten as a comment, leaving the pipeline/redirect unfinished.
+		{"comment after control operator", "cmd;# note", "cmd;"},
+		{"backslash in control-operator comment is not continuation", "true;# note \\", "true;"},
+		{"comment after pipe", "cmd |#note", "cmd |"},
+		{"comment after redirect", "cmd >#note", "cmd >"},
 		{"single-quoted hash", "x --opt='a # b' --prune", "x --opt='a # b' --prune"},
 		{"double-quoted hash", "x --opt=\"a # b\" --prune", "x --opt=\"a # b\" --prune"},
 		{"escaped hash", "echo \\# not a comment", "echo \\# not a comment"},

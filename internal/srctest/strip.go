@@ -167,15 +167,22 @@ func BacktickLiterals(src string) []string {
 	}
 }
 
-// StripShellComment drops an unquoted ` #…` tail from ONE physical
+// StripShellComment drops an unquoted `#…` tail from ONE physical
 // shell line and returns what precedes it. The shell ends a command at
-// an unquoted `#` that starts a word, and a backslash inside that
-// comment is not a line continuation, so callers judging docs shell
-// fences run this before the continuation check. Single and double
-// quotes, and a backslash escape outside single quotes, are tracked;
-// nothing else is parsed (no `$(…)`, no heredocs). A `#` glued to a
-// preceding word (`a#b`) is literal, as in the shell. Added for the
-// facade-fetch docs tripwire (round 17 L10 pass 6).
+// an unquoted `#` that starts a WORD — at line start, after a blank,
+// or after a control operator — and a backslash inside that comment is
+// not a line continuation, so callers judging docs shell fences run
+// this before the continuation check. Single and double quotes, and a
+// backslash escape outside single quotes, are tracked; nothing else is
+// parsed (no `$(…)`, no heredocs). A `#` glued to a preceding word
+// (`a#b`) is literal, as in the shell.
+//
+// Added for the facade-fetch docs tripwire (round 17 L10 pass 6). The
+// control-operator half came from Copilot's PR #198 and closes a real
+// bypass: `cmd;# note \` kept its trailing backslash, so the caller
+// joined the NEXT line onto it, the joined command began with `#`, and
+// a `git fetch --all` sitting on that next line was never judged at
+// all. Reproduced end-to-end against the docs corpus before the fix.
 func StripShellComment(line string) string {
 	inSingle, inDouble := false, false
 	for i := 0; i < len(line); i++ {
@@ -187,9 +194,27 @@ func StripShellComment(line string) string {
 			inSingle = !inSingle
 		case c == '"' && !inSingle:
 			inDouble = !inDouble
-		case c == '#' && !inSingle && !inDouble && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+		case c == '#' && !inSingle && !inDouble && (i == 0 || isShellWordBoundary(line[i-1])):
 			return line[:i]
 		}
 	}
 	return line
+}
+
+// isShellWordBoundary reports whether b can precede the `#` that opens
+// a comment. POSIX (Shell Command Language, 2.3 Token Recognition)
+// starts a comment at an unquoted `#` that begins a word, and a word
+// begins after a blank OR after an operator — so the set is the blanks
+// plus the control- and redirection-operator characters, and nothing
+// else. Verified against bash rather than reasoned about: `echo A;#c`
+// prints A, while `echo A|#c` and `echo A >#c` are syntax errors
+// PRECISELY BECAUSE `#c` is eaten as a comment, leaving the pipeline
+// and the redirect unfinished.
+func isShellWordBoundary(b byte) bool {
+	switch b {
+	case ' ', '\t', ';', '&', '|', '(', ')', '<', '>':
+		return true
+	default:
+		return false
+	}
 }

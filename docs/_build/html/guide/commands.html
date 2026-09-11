@@ -1950,7 +1950,7 @@ actually exercises the credentials.</p>
 <section id="aveloxis-collect">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code><a class="headerlink" href="#aveloxis-collect" title="Link to this heading"></a></h2>
 <p>One-shot collection of specific repos without the scheduler. Uses the <strong>direct collection pipeline</strong> (bypasses staging, writes directly to relational tables). Best for testing or collecting a small number of repos.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>collect<span class="w"> </span><span class="o">[</span>flags<span class="o">]</span><span class="w"> </span>&lt;url&gt;<span class="w"> </span><span class="o">[</span>&lt;url&gt;<span class="w"> </span>...<span class="o">]</span>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>aveloxis collect [flags] &lt;url&gt; [&lt;url&gt; ...]
 </pre></div>
 </div>
 <section id="id3">
@@ -1997,7 +1997,7 @@ aveloxis<span class="w"> </span>collect<span class="w"> </span><span class="se">
 <section id="aveloxis-add-repo">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-repo</span></code><a class="headerlink" href="#aveloxis-add-repo" title="Link to this heading"></a></h2>
 <p>Adds repositories to the collection queue. Platform is auto-detected from the URL.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>add-repo<span class="w"> </span><span class="o">[</span>flags<span class="o">]</span><span class="w"> </span>&lt;url&gt;<span class="w"> </span><span class="o">[</span>&lt;url&gt;<span class="w"> </span>...<span class="o">]</span>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>aveloxis add-repo [flags] &lt;url&gt; [&lt;url&gt; ...]
 </pre></div>
 </div>
 <section id="id5">
@@ -2061,7 +2061,7 @@ aveloxis<span class="w"> </span>add-repo<span class="w"> </span>--from-augur
 <section id="aveloxis-add-key">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-key</span></code><a class="headerlink" href="#aveloxis-add-key" title="Link to this heading"></a></h2>
 <p>Stores API keys in the database for use during collection.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>add-key<span class="w"> </span><span class="o">[</span>flags<span class="o">]</span><span class="w"> </span><span class="o">[</span>&lt;token&gt;<span class="o">]</span>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>aveloxis add-key [flags] [&lt;token&gt;]
 </pre></div>
 </div>
 <section id="id6">
@@ -2106,7 +2106,7 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>--from-augur
 <section id="aveloxis-prioritize">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">prioritize</span></code><a class="headerlink" href="#aveloxis-prioritize" title="Link to this heading"></a></h2>
 <p>Pushes a repository to the front of the collection queue.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>prioritize<span class="w"> </span>&lt;url&gt;
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>aveloxis prioritize &lt;url&gt;
 </pre></div>
 </div>
 <p>Sets the repo’s priority to 0 and due time to now. The scheduler will collect it next.</p>
@@ -2123,7 +2123,7 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>--from-augur
 <section id="aveloxis-recollect">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">recollect</span></code><a class="headerlink" href="#aveloxis-recollect" title="Link to this heading"></a></h2>
 <p>Flags one or more repositories for a <strong>full</strong> (<code class="docutils literal notranslate"><span class="pre">since=zero</span></code>) re-collection on their next scheduler cycle.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>recollect<span class="w"> </span>&lt;url&gt;...
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>aveloxis recollect &lt;url&gt;...
 </pre></div>
 </div>
 <p>Sets the <code class="docutils literal notranslate"><span class="pre">force_full_collect</span></code> flag on each named repo’s <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.collection_queue</span></code> row. When the scheduler dequeues a flagged repo, <code class="docutils literal notranslate"><span class="pre">determineSince()</span></code> returns zero time, triggering a full re-collection regardless of <code class="docutils literal notranslate"><span class="pre">last_collected</span></code>. The flag clears itself on the next successful completion.</p>
@@ -2490,6 +2490,13 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all<span class="w">
 </pre></div>
 </div>
 <p>PID files are written to <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/aveloxis-{serve,web,api,scancode-worker}.pid</span></code>. If a component is already running, the command reports it and skips the launch. <code class="docutils literal notranslate"><span class="pre">scancode-worker</span></code> (v0.29.4) is the dedicated-host process from <a class="reference internal" href="dedicated-scancode-host.html"><span class="std std-doc">Dedicated Scancode Host</span></a>; <code class="docutils literal notranslate"><span class="pre">all</span></code> deliberately excludes it.</p>
+<p>The exit status is the contract for scripts: a component that could not
+be started — a pidfile that cannot be read (the command refuses rather
+than risk a second scheduler on the host), a log file that cannot be
+opened, a failed exec — makes the command exit nonzero, naming each
+failure, after every requested component has been attempted. <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">all</span></code>
+therefore still brings up web and api beside a refused serve, and says
+so. An already-running component is a no-op and exits 0.</p>
 <p>Log files are opened in append mode — existing content is preserved across restarts.</p>
 <p>Note: <code class="docutils literal notranslate"><span class="pre">start</span></code> does NOT survive a reboot. For production hosts that should
 come back automatically after a restart, run the three processes under
@@ -2510,6 +2517,11 @@ aveloxis<span class="w"> </span>stop<span class="w">                  </span><sp
 </pre></div>
 </div>
 <p>Sends <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> to the specified component(s) using PID files in <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/</span></code>. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed. <code class="docutils literal notranslate"><span class="pre">stop</span> <span class="pre">all</span></code> names a scancode worker it left running.</p>
+<p>Nothing to stop is exit 0 — <code class="docutils literal notranslate"><span class="pre">stop</span></code> is idempotent. A process that was
+found but could not be signaled (typically <code class="docutils literal notranslate"><span class="pre">operation</span> <span class="pre">not</span> <span class="pre">permitted</span></code> on a
+process another user started) is a failure: its pidfile is left in place,
+every other requested component is still stopped, and the command exits
+nonzero naming the one it could not.</p>
 <p>After SIGTERM the command watches <code class="docutils literal notranslate"><span class="pre">pg_stat_activity</span></code> for the component’s
 backends and, past the shutdown budget, prints the persistent PIDs with a
 <code class="docutils literal notranslate"><span class="pre">pg_terminate_backend</span></code> recipe. Since v0.29.4 that recipe is offered for

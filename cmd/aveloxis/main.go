@@ -1460,16 +1460,36 @@ regardless of which knobs the config carries.`,
 				}
 			}
 
-			for _, comp := range components {
-				if err := startComponent(comp, *cfgPath); err != nil {
-					fmt.Printf("Failed to start %s: %v\n", comp, err)
-				}
-			}
-			return nil
+			return startComponents(components, *cfgPath, startComponent)
 		},
 	}
 	cmd.Flags().BoolVar(&skipDeployCheck, "skip-deploy-check", false, "bypass the release deploy-steps prompt (for automation)")
 	return cmd
+}
+
+// startComponents starts every component in order and returns the
+// failures JOINED, so the exit status is nonzero whenever any start was
+// refused while the components that CAN start still do.
+//
+// Round 16 (Copilot round 6, finding 1): the loop used to print
+// "Failed to start %s" and return nil, so `aveloxis start serve` with
+// an unreadable pidfile — the round-11 finding-2 refusal, the ONLY hard
+// double-start guard — exited 0 having started nothing, and a deploy
+// script read that as success. Every failure is reported (the
+// v0.27.106 nonzero-exit convention); every component is still
+// attempted, because `start all` starts web and api even when serve is
+// already up (round-8 finding 3) and a refused serve must not take
+// them down with it. A no-op start ("already running") returns nil from
+// the starter and stays exit 0. The starter is injected so the loop's
+// contract is driven by a test without spawning anything.
+func startComponents(components []string, cfgPath string, start func(component, cfgPath string) error) error {
+	var errs []error
+	for _, comp := range components {
+		if err := start(comp, cfgPath); err != nil {
+			errs = append(errs, fmt.Errorf("failed to start %s: %w", comp, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // componentAlreadyRunning is the ONE spelling (SR-17) of "this host is
@@ -1708,27 +1728,23 @@ a dedicated scancode host) are reported and left alone.`,
 			verifier := &backendVerifier{out: os.Stdout, cfgPath: *cfgPath}
 			defer verifier.Close()
 
-			stopped := 0
-			for _, comp := range components {
-				if ok := stopComponent(comp); ok {
-					stopped++
-					// v0.20.0: poll pg_stat_activity for the matching
-					// application_name and warn if backends linger past
-					// the shutdown budget + margin (pass 39). Surfaces
-					// orphans-after-stop without requiring the operator
-					// to know about pg_locks. v0.29.4: this host's only.
-					//
-					// The PREFIX, not the tag: since round 12 the tag
-					// carries this host's marker after '@' and every
-					// host's differs, so matching on the full tag would
-					// find only our own and silently drop the
-					// other-hosts count this command exists to report.
-					// The prefix is also what the operator-facing
-					// strings should name — it is the component.
-					verifier.verify(componentAppNamePrefix(comp))
-				}
-			}
-			if stopped == 0 {
+			stopped, stopErr := stopComponents(components, stopComponent, func(comp string) {
+				// v0.20.0: poll pg_stat_activity for the matching
+				// application_name and warn if backends linger past
+				// the shutdown budget + margin (pass 39). Surfaces
+				// orphans-after-stop without requiring the operator
+				// to know about pg_locks. v0.29.4: this host's only.
+				//
+				// The PREFIX, not the tag: since round 12 the tag
+				// carries this host's marker after '@' and every
+				// host's differs, so matching on the full tag would
+				// find only our own and silently drop the
+				// other-hosts count this command exists to report.
+				// The prefix is also what the operator-facing
+				// strings should name — it is the component.
+				verifier.verify(componentAppNamePrefix(comp))
+			})
+			if stopped == 0 && stopErr == nil {
 				fmt.Println("No running aveloxis processes found.")
 			}
 			if isAllTarget(target) {
@@ -1739,30 +1755,70 @@ a dedicated scancode host) are reported and left alone.`,
 					return err == nil && running
 				})
 			}
-			return nil
+			return stopErr
 		},
 	}
 	return cmd
 }
 
-func stopComponent(component string) bool {
+// stopComponents stops every component in order, runs onStopped for
+// each one that actually went down, and returns the count beside the
+// failures JOINED. The L11 class sweep of round 16 finding 1: a
+// SIGTERM that failed (EPERM on a process owned by another user is the
+// ordinary shape) printed "Failed to stop" and the command still exited
+// 0 — and, with nothing else stopped, printed "No running aveloxis
+// processes found." over a process it had just failed to signal. A
+// clean "nothing to stop" is still exit 0 (stop is idempotent); a
+// signal failure is not. Every component is still attempted.
+func stopComponents(components []string, stop func(component string) (bool, error), onStopped func(component string)) (int, error) {
+	stopped := 0
+	var errs []error
+	for _, comp := range components {
+		ok, err := stop(comp)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop %s: %w", comp, err))
+		}
+		if ok {
+			stopped++
+			onStopped(comp)
+		}
+	}
+	return stopped, errors.Join(errs...)
+}
+
+// stopComponent signals the component's process(es) and reports
+// (stopped, err). "Nothing running" is (false, nil) — stop is
+// idempotent; a process that was FOUND but could not be signaled is an
+// error (round 16, the L11 sweep of finding 1), and its pidfile is left
+// in place because the process is still there.
+func stopComponent(component string) (bool, error) {
+	var errs []error
 	// Strategy 1: PID file (preferred — reliable, written by start/serve/web/api).
 	pidPath := pidfile.Path(component)
 	if pid, err := pidfile.Read(pidPath); err == nil {
 		if !pidfile.IsRunning(pid) {
 			fmt.Printf("%s: stale PID file (PID %d not running), cleaning up\n", component, pid)
 			pidfile.Remove(pidPath)
-		} else if signalProcess(component, pid) {
+		} else if serr := signalProcess(component, pid); serr != nil {
+			errs = append(errs, serr)
+		} else {
 			pidfile.Remove(pidPath)
-			return true
+			return true, nil
 		}
 	}
 
 	// Strategy 2: pgrep fallback — finds processes started before PID file support
-	// was added, or started manually without 'aveloxis start'.
+	// was added, or started manually without 'aveloxis start'. pgrep's
+	// exit status 1 is its documented "no processes matched" — a
+	// definitive no; any other failure (2 = usage, 3 = fatal, or a
+	// missing binary) is not evidence of absence (SR-5).
 	out, err := exec.Command("pgrep", "-f", "aveloxis "+component).Output()
 	if err != nil {
-		return false
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			errs = append(errs, fmt.Errorf("pgrep for %s: %w", component, err))
+		}
+		return false, errors.Join(errs...)
 	}
 
 	myPID := os.Getpid()
@@ -1772,24 +1828,28 @@ func stopComponent(component string) bool {
 		if err != nil || pid == myPID {
 			continue
 		}
-		if signalProcess(component, pid) {
+		if serr := signalProcess(component, pid); serr != nil {
+			errs = append(errs, serr)
+		} else {
 			stopped = true
 		}
 	}
-	return stopped
+	return stopped, errors.Join(errs...)
 }
 
-func signalProcess(component string, pid int) bool {
+// signalProcess sends SIGTERM to one process. A failed signal is
+// returned, never swallowed: the process is still running and the
+// caller's exit status has to say so.
+func signalProcess(component string, pid int) error {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
-		return false
+		return fmt.Errorf("finding %s (PID %d): %w", component, pid, err)
 	}
 	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		fmt.Printf("Failed to stop %s (PID %d): %v\n", component, pid, err)
-		return false
+		return fmt.Errorf("signaling %s (PID %d): %w", component, pid, err)
 	}
 	fmt.Printf("Stopped %s (PID %d)\n", component, pid)
-	return true
+	return nil
 }
 
 // testMailCmd lets operators verify Gmail SMTP credentials

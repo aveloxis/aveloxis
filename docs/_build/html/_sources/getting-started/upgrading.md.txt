@@ -44,7 +44,8 @@ LIMIT 1;
 ## The standard ladder
 
 ```bash
-cd <checkout> && go install ./cmd/aveloxis
+AVELOXIS_SRC=/path/to/aveloxis   # the git checkout of this repository
+cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis
 aveloxis version                # confirm the new binary
 aveloxis stop all               # serve, web, api (also cleans stale pidfiles)
 aveloxis migrate --skip-views   # schema + ledgered backfills; matviews later

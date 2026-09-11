@@ -648,7 +648,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1775,8 +1775,10 @@ Phase 3: Messages (sequential, after parallel phase)
 <section id="bare-clone">
 <h3>Bare clone<a class="headerlink" href="#bare-clone" title="Link to this heading"></a></h3>
 <p>The repo is cloned as a bare repo (or fetched if a clone already exists):</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>--bare<span class="w"> </span>&lt;url&gt;<span class="w"> </span>&lt;path&gt;<span class="w">     </span><span class="c1"># first time</span>
-git<span class="w"> </span>fetch<span class="w"> </span>--all<span class="w">                   </span><span class="c1"># subsequent runs</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">REPO_URL</span><span class="o">=</span>https://github.com/augurlabs/augur
+<span class="nv">CLONE_PATH</span><span class="o">=</span>/data/aveloxis-repos/augurlabs-augur.git
+git<span class="w"> </span>clone<span class="w"> </span>--bare<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$REPO_URL</span><span class="s2">&quot;</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CLONE_PATH</span><span class="s2">&quot;</span><span class="w">   </span><span class="c1"># first time</span>
+git<span class="w"> </span>fetch<span class="w"> </span>--all<span class="w">                              </span><span class="c1"># subsequent runs</span>
 </pre></div>
 </div>
 <p>Bare clones are permanent and stored in the <code class="docutils literal notranslate"><span class="pre">repo_clone_dir</span></code> directory.</p>
@@ -1945,7 +1947,9 @@ git<span class="w"> </span>fetch<span class="w"> </span>--all<span class="w">   
 <h3>ScanCode Toolkit (license and copyright detection)<a class="headerlink" href="#scancode-toolkit-license-and-copyright-detection" title="Link to this heading"></a></h3>
 <p>After SCC, <a class="reference external" href="https://github.com/aboutcode-org/scancode-toolkit">ScanCode Toolkit</a> runs against the temporary checkout to detect per-file licenses, copyrights, and packages. ScanCode is a Python tool that provides precise, line-level attribution of licenses and copyright holders.</p>
 <p><strong>Invocation:</strong></p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<span class="w"> </span>--json<span class="w"> </span>&lt;output-file&gt;<span class="w"> </span>--quiet<span class="w"> </span>--timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span>&lt;path&gt;
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">OUTPUT</span><span class="o">=</span>/tmp/aveloxis-scancode/repo_123.json<span class="w">   </span><span class="c1"># the JSON the worker ingests</span>
+<span class="nv">CHECKOUT</span><span class="o">=</span>/tmp/aveloxis-scancode/repo_123<span class="w">      </span><span class="c1"># the temporary clone</span>
+scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<span class="w"> </span>--json<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OUTPUT</span><span class="s2">&quot;</span><span class="w"> </span>--quiet<span class="w"> </span>--timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CHECKOUT</span><span class="s2">&quot;</span>
 </pre></div>
 </div>
 <table class="docutils align-default">

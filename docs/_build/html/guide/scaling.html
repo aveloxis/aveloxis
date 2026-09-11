@@ -648,7 +648,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1951,9 +1951,11 @@ aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span clas
 (summary/20-performance-review-plan.md Phase 5; first executed 2026-08-18 with
 findings in summary/21). Run it per release, or monthly, and diff against the
 previous snapshot — performance review becomes a diff, not archaeology:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>psql<span class="w"> </span>-h<span class="w"> </span>&lt;host&gt;<span class="w"> </span>-p<span class="w"> </span><span class="m">5434</span><span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis_large<span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">DBHOST</span><span class="o">=</span>db.example.org<span class="w">        </span><span class="c1"># the PostgreSQL host</span>
+<span class="nv">PREVIOUS</span><span class="o">=</span><span class="m">20260818</span><span class="w">            </span><span class="c1"># the date stamp of the last snapshot</span>
+psql<span class="w"> </span>-h<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$DBHOST</span><span class="s2">&quot;</span><span class="w"> </span>-p<span class="w"> </span><span class="m">5434</span><span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis_large<span class="w"> </span><span class="se">\</span>
 <span class="w">     </span>-f<span class="w"> </span>scripts/perf_snapshot.sql<span class="w"> </span>&gt;<span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt
-diff<span class="w"> </span>perf-&lt;previous&gt;.txt<span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt<span class="w"> </span><span class="p">|</span><span class="w"> </span>less
+diff<span class="w"> </span><span class="s2">&quot;perf-</span><span class="nv">$PREVIOUS</span><span class="s2">.txt&quot;</span><span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt<span class="w"> </span><span class="p">|</span><span class="w"> </span>less
 </pre></div>
 </div>
 <p>Prerequisites (one-time, superuser — full walkthrough in summary/20 Phase 0):</p>

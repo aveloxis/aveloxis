@@ -648,7 +648,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1673,7 +1673,8 @@ binary that migrated the schema:</p>
 </section>
 <section id="the-standard-ladder">
 <h2>The standard ladder<a class="headerlink" href="#the-standard-ladder" title="Link to this heading"></a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>&lt;checkout&gt;<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/path/to/aveloxis<span class="w">   </span><span class="c1"># the git checkout of this repository</span>
+<span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis
 aveloxis<span class="w"> </span>version<span class="w">                </span><span class="c1"># confirm the new binary</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w">               </span><span class="c1"># serve, web, api (also cleans stale pidfiles)</span>
 aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">   </span><span class="c1"># schema + ledgered backfills; matviews later</span>

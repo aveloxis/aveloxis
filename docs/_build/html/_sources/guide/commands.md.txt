@@ -218,7 +218,7 @@ Use at deploy time so the first user signup isn't the first SMTP attempt.
 
 One-shot collection of specific repos without the scheduler. Uses the **direct collection pipeline** (bypasses staging, writes directly to relational tables). Best for testing or collecting a small number of repos.
 
-```bash
+```text
 aveloxis collect [flags] <url> [<url> ...]
 ```
 
@@ -250,7 +250,7 @@ aveloxis collect \
 
 Adds repositories to the collection queue. Platform is auto-detected from the URL.
 
-```bash
+```text
 aveloxis add-repo [flags] <url> [<url> ...]
 ```
 
@@ -297,7 +297,7 @@ aveloxis add-repo --from-augur
 
 Stores API keys in the database for use during collection.
 
-```bash
+```text
 aveloxis add-key [flags] [<token>]
 ```
 
@@ -327,7 +327,7 @@ aveloxis add-key --from-augur
 
 Pushes a repository to the front of the collection queue.
 
-```bash
+```text
 aveloxis prioritize <url>
 ```
 
@@ -351,7 +351,7 @@ Where `42` is the repo's `repo_id`.
 
 Flags one or more repositories for a **full** (`since=zero`) re-collection on their next scheduler cycle.
 
-```bash
+```text
 aveloxis recollect <url>...
 ```
 
@@ -696,6 +696,14 @@ aveloxis start all              # serve + web + api (never the scancode worker)
 
 PID files are written to `~/.aveloxis/aveloxis-{serve,web,api,scancode-worker}.pid`. If a component is already running, the command reports it and skips the launch. `scancode-worker` (v0.29.4) is the dedicated-host process from [Dedicated Scancode Host](dedicated-scancode-host.md); `all` deliberately excludes it.
 
+The exit status is the contract for scripts: a component that could not
+be started — a pidfile that cannot be read (the command refuses rather
+than risk a second scheduler on the host), a log file that cannot be
+opened, a failed exec — makes the command exit nonzero, naming each
+failure, after every requested component has been attempted. `start all`
+therefore still brings up web and api beside a refused serve, and says
+so. An already-running component is a no-op and exits 0.
+
 Log files are opened in append mode — existing content is preserved across restarts.
 
 Note: `start` does NOT survive a reboot. For production hosts that should
@@ -720,6 +728,12 @@ aveloxis stop                  # (no args) same as 'all'
 ```
 
 Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed. `stop all` names a scancode worker it left running.
+
+Nothing to stop is exit 0 — `stop` is idempotent. A process that was
+found but could not be signaled (typically `operation not permitted` on a
+process another user started) is a failure: its pidfile is left in place,
+every other requested component is still stopped, and the command exits
+nonzero naming the one it could not.
 
 After SIGTERM the command watches `pg_stat_activity` for the component's
 backends and, past the shutdown budget, prints the persistent PIDs with a

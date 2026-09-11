@@ -167,7 +167,7 @@ func BacktickLiterals(src string) []string {
 	}
 }
 
-// StripShellComment drops an unquoted ` #…` tail from ONE physical
+// StripShellComment drops an unquoted `#…` tail from ONE physical
 // shell line and returns what precedes it. The shell ends a command at
 // an unquoted `#` that starts a word, and a backslash inside that
 // comment is not a line continuation, so callers judging docs shell
@@ -187,9 +187,18 @@ func StripShellComment(line string) string {
 			inSingle = !inSingle
 		case c == '"' && !inSingle:
 			inDouble = !inDouble
-		case c == '#' && !inSingle && !inDouble && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+		case c == '#' && !inSingle && !inDouble && (i == 0 || isShellWordBoundary(line[i-1])):
 			return line[:i]
 		}
 	}
 	return line
+}
+
+func isShellWordBoundary(b byte) bool {
+	switch b {
+	case ' ', '\t', ';', '&', '|', '(', ')', '<', '>':
+		return true
+	default:
+		return false
+	}
 }

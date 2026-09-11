@@ -141,6 +141,8 @@ func TestStripShellComment(t *testing.T) {
 		{"unquoted tail", "git fetch --prune  # never --all", "git fetch --prune  "},
 		{"whole-line comment", "# just a note", ""},
 		{"backslash inside a comment is not kept", "cmd  # note \\", "cmd  "},
+		{"comment after control operator", "cmd;# note", "cmd;"},
+		{"backslash in control-operator comment is not continuation", "true;# note \\", "true;"},
 		{"single-quoted hash", "x --opt='a # b' --prune", "x --opt='a # b' --prune"},
 		{"double-quoted hash", "x --opt=\"a # b\" --prune", "x --opt=\"a # b\" --prune"},
 		{"escaped hash", "echo \\# not a comment", "echo \\# not a comment"},

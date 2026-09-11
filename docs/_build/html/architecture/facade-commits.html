@@ -648,7 +648,7 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1665,7 +1665,11 @@
 <ul class="simple">
 <li><p><strong>Smaller</strong> than full clones (no checked-out files)</p></li>
 <li><p><strong>Permanent</strong> – stored in <code class="docutils literal notranslate"><span class="pre">repo_clone_dir</span></code> and reused across collection cycles</p></li>
-<li><p><strong>Updated</strong> via <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--all</span></code> on subsequent runs</p></li>
+<li><p><strong>Updated</strong> on subsequent runs via <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">-C</span> <span class="pre">&lt;clone&gt;</span> <span class="pre">fetch</span> <span class="pre">origin</span></code> with explicit
+<code class="docutils literal notranslate"><span class="pre">+refs/heads/*:refs/heads/*</span></code> / <code class="docutils literal notranslate"><span class="pre">+refs/tags/*:refs/tags/*</span></code> refspecs and
+<code class="docutils literal notranslate"><span class="pre">--prune</span></code> – a bare clone carries no fetch refspec, so a plain
+<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--all</span></code> would download objects without ever advancing
+<code class="docutils literal notranslate"><span class="pre">refs/heads/*</span></code></p></li>
 </ul>
 </section>
 <section id="full-clones-temporary">
@@ -2021,7 +2025,7 @@
 <h2>Resilience<a class="headerlink" href="#resilience" title="Link to this heading"></a></h2>
 <section id="fetch-failure-recovery">
 <h3>Fetch failure recovery<a class="headerlink" href="#fetch-failure-recovery" title="Link to this heading"></a></h3>
-<p>If <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--all</span></code> fails on an existing bare clone (e.g., due to corruption):</p>
+<p>If the explicit-refspec fetch fails on an existing bare clone (e.g., due to corruption):</p>
 <ol class="arabic simple">
 <li><p>The existing bare clone is deleted</p></li>
 <li><p>A fresh <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">clone</span> <span class="pre">--bare</span></code> is attempted</p></li>
@@ -2030,7 +2034,7 @@
 </section>
 <section id="incremental-collection">
 <h3>Incremental collection<a class="headerlink" href="#incremental-collection" title="Link to this heading"></a></h3>
-<p>On subsequent collection cycles, <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--all</span></code> retrieves only new commits since the last fetch. The git log is re-parsed in full, but upserts with <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">CONFLICT</span></code> ensure only truly new data is inserted.</p>
+<p>On subsequent collection cycles, the explicit-refspec fetch retrieves only new commits since the last fetch. The git log is re-parsed in full, but upserts with <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">CONFLICT</span></code> ensure only truly new data is inserted.</p>
 </section>
 <section id="gitlab-repo-info-commit-count-backfill-v0-16-9">
 <h3>GitLab <code class="docutils literal notranslate"><span class="pre">repo_info.commit_count</span></code> backfill (v0.16.9+)<a class="headerlink" href="#gitlab-repo-info-commit-count-backfill-v0-16-9" title="Link to this heading"></a></h3>

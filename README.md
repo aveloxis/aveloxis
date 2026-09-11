@@ -603,7 +603,7 @@ aveloxis stop all              # stop serve + web + api (never the scancode work
 aveloxis stop                  # (no args) same as 'all'
 ```
 
-Sends SIGTERM to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed.
+Sends SIGTERM to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect.
 
 ### `aveloxis sbom` — Generate Software Bill of Materials
 

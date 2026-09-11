@@ -1513,19 +1513,39 @@ func startComponents(components []string, cfgPath string, start func(component, 
 // keys. A stale pidfile (readable, PID dead) stays a definitive
 // not-running: that is what the liveness check is for.
 func componentAlreadyRunning(component string) (int, bool, error) {
-	path := pidfile.Path(component)
-	pid, err := pidfile.Read(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return 0, false, nil
-		}
-		return 0, false, fmt.Errorf("cannot determine whether %s is running on this host from %s "+
-			"(an unreadable or corrupt pidfile is not evidence that it is stopped): %w", component, path, err)
+	_, pid, found, err := readComponentPID(component)
+	if err != nil || !found {
+		return 0, false, err
 	}
 	if !pidfile.IsRunning(pid) {
 		return 0, false, nil
 	}
 	return pid, true, nil
+}
+
+// readComponentPID is the ONE spelling (SR-17) of the three-valued
+// pidfile read every reader in this file depends on: (path, pid,
+// found, err). ENOENT is the only definitive "no pidfile" —
+// (path, 0, false, nil). Any other read error (EACCES, EIO, a corrupt
+// or truncated file) is UNKNOWN and comes back as the error so the
+// caller fails closed (SR-5). Round 17 (Copilot round 7, finding 2)
+// moved it here: stopComponent had kept its own `err == nil` spelling
+// after round 11 fixed componentAlreadyRunning, so a corrupt pidfile
+// was silently dropped — the pgrep fallback usually still found and
+// stopped the process, but the file was never reported and the next
+// `start` refused on it with nothing in the operator's history to say
+// why. The class fixed in round 11, one function down.
+func readComponentPID(component string) (string, int, bool, error) {
+	path := pidfile.Path(component)
+	pid, err := pidfile.Read(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return path, 0, false, nil
+		}
+		return path, 0, false, fmt.Errorf("cannot determine whether %s is running on this host from %s "+
+			"(an unreadable or corrupt pidfile is not evidence that it is stopped): %w", component, path, err)
+	}
+	return path, pid, true, nil
 }
 
 func startComponent(component, cfgPath string) error {
@@ -1710,7 +1730,9 @@ func stopCmd(cfgPath *string) *cobra.Command {
 
 Active workers finish their current API call, queue locks are released,
 and any unprocessed staging data is preserved for the next startup.
-PID files are cleaned up automatically. After SIGTERM, the command
+PID files are removed after a successful stop or when they are stale; a
+file the command could not read, or whose process it could not signal,
+is left in place for you to inspect. After SIGTERM, the command
 watches pg_stat_activity for THIS host's backends of the component;
 backends of the same component from other hosts (the primary, seen from
 a dedicated scancode host) are reported and left alone.`,
@@ -1744,7 +1766,7 @@ a dedicated scancode host) are reported and left alone.`,
 				// strings should name — it is the component.
 				verifier.verify(componentAppNamePrefix(comp))
 			})
-			if stopped == 0 && stopErr == nil {
+			if nothingRunning(stopped, stopErr) {
 				fmt.Println("No running aveloxis processes found.")
 			}
 			if isAllTarget(target) {
@@ -1775,8 +1797,21 @@ func stopComponents(components []string, stop func(component string) (bool, erro
 	var errs []error
 	for _, comp := range components {
 		ok, err := stop(comp)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop %s: %w", comp, err))
+		switch {
+		case err != nil && ok:
+			// Stopped (via the pgrep fallback, or one of several pids)
+			// but with something the operator must hear about — a
+			// corrupt pidfile left in place, a second pid refused. The
+			// exit is nonzero; the words must not contradict the
+			// "Stopped …" line printed a moment earlier (round 17 L10).
+			errs = append(errs, fmt.Errorf("%s stopped, but: %w", comp, err))
+		case err != nil:
+			// Nothing went down. The inner error already says what
+			// happened (a refused signal, an unreadable pidfile, a
+			// pgrep failure) — "failed to stop" would be the wrong verb
+			// for a corrupt pidfile with nothing else found, so the
+			// component name is the only prefix (round 17 L10 pass 2).
+			errs = append(errs, fmt.Errorf("%s: %w", comp, err))
 		}
 		if ok {
 			stopped++
@@ -1784,6 +1819,16 @@ func stopComponents(components []string, stop func(component string) (bool, erro
 		}
 	}
 	return stopped, errors.Join(errs...)
+}
+
+// nothingRunning is the ONE verdict behind "No running aveloxis
+// processes found.": nothing went down AND nothing went wrong. A
+// refused signal, an unreadable pidfile or a failed pgrep is not
+// "nothing running" — printing that line over a process the command
+// just failed to signal is the round-16 incident shape, and this
+// predicate is the pin the round-16 fix lacked (round 17 L10 pass 3).
+func nothingRunning(stopped int, err error) bool {
+	return stopped == 0 && err == nil
 }
 
 // stopComponent signals the component's process(es) and reports
@@ -1794,12 +1839,25 @@ func stopComponents(components []string, stop func(component string) (bool, erro
 func stopComponent(component string) (bool, error) {
 	var errs []error
 	// Strategy 1: PID file (preferred — reliable, written by start/serve/web/api).
-	pidPath := pidfile.Path(component)
-	if pid, err := pidfile.Read(pidPath); err == nil {
-		if !pidfile.IsRunning(pid) {
-			fmt.Printf("%s: stale PID file (PID %d not running), cleaning up\n", component, pid)
-			pidfile.Remove(pidPath)
-		} else if serr := signalProcess(component, pid); serr != nil {
+	// The read is three-valued (readComponentPID): an unreadable or
+	// corrupt pidfile is an ERROR that rides the return value — the
+	// pgrep fallback still runs (and usually finds the process, since
+	// startComponent execs `<binary> <component> --config …`), but the
+	// file is reported and left in place (it is neither stale nor live)
+	// so the operator knows why the next start will refuse on it.
+	pidPath, pid, found, err := readComponentPID(component)
+	attempted := 0 // the pidfile's pid, so the pgrep arm never signals it twice
+	switch {
+	case err != nil:
+		errs = append(errs, fmt.Errorf("pidfile left in place — inspect and delete it by hand before the next start: %w", err))
+	case !found:
+		// no pidfile — fall through to pgrep
+	case !pidfile.IsRunning(pid):
+		fmt.Printf("%s: stale PID file (PID %d not running), cleaning up\n", component, pid)
+		pidfile.Remove(pidPath)
+	default:
+		attempted = pid
+		if serr := signalProcess(component, pid); serr != nil {
 			errs = append(errs, serr)
 		} else {
 			pidfile.Remove(pidPath)
@@ -1825,7 +1883,7 @@ func stopComponent(component string) (bool, error) {
 	stopped := false
 	for field := range strings.FieldsSeq(strings.TrimSpace(string(out))) {
 		pid, err := strconv.Atoi(field)
-		if err != nil || pid == myPID {
+		if err != nil || pid == myPID || pid == attempted {
 			continue
 		}
 		if serr := signalProcess(component, pid); serr != nil {
@@ -1837,15 +1895,27 @@ func stopComponent(component string) (bool, error) {
 	return stopped, errors.Join(errs...)
 }
 
+// sendSignal delivers one signal to one PID. It is a seam so the
+// kernel's refusal (EPERM on another user's process) can be driven in
+// a test without signaling a real process — the round-16 test wrote a
+// pidfile naming PID 1, which in a rootless container is the
+// container's own init under the same uid (round 17, Copilot round 7,
+// finding 1). The production default is the real os.Process path and
+// is pinned by TestSendSignalProductionDefaultDeliversRealSignals;
+// nothing outside a test may reassign it.
+var sendSignal = func(pid int, sig syscall.Signal) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return proc.Signal(sig)
+}
+
 // signalProcess sends SIGTERM to one process. A failed signal is
 // returned, never swallowed: the process is still running and the
 // caller's exit status has to say so.
 func signalProcess(component string, pid int) error {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return fmt.Errorf("finding %s (PID %d): %w", component, pid, err)
-	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
+	if err := sendSignal(pid, syscall.SIGTERM); err != nil {
 		return fmt.Errorf("signaling %s (PID %d): %w", component, pid, err)
 	}
 	fmt.Printf("Stopped %s (PID %d)\n", component, pid)

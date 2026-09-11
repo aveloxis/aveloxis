@@ -166,3 +166,30 @@ func BacktickLiterals(src string) []string {
 		src = src[start+1+end+1:]
 	}
 }
+
+// StripShellComment drops an unquoted ` #…` tail from ONE physical
+// shell line and returns what precedes it. The shell ends a command at
+// an unquoted `#` that starts a word, and a backslash inside that
+// comment is not a line continuation, so callers judging docs shell
+// fences run this before the continuation check. Single and double
+// quotes, and a backslash escape outside single quotes, are tracked;
+// nothing else is parsed (no `$(…)`, no heredocs). A `#` glued to a
+// preceding word (`a#b`) is literal, as in the shell. Added for the
+// facade-fetch docs tripwire (round 17 L10 pass 6).
+func StripShellComment(line string) string {
+	inSingle, inDouble := false, false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && !inSingle:
+			i++ // the escaped character is literal
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case c == '#' && !inSingle && !inDouble && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			return line[:i]
+		}
+	}
+	return line
+}

@@ -62,6 +62,15 @@ func Read(path string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid PID in %s: %w", path, err)
 	}
+	// A pid is positive. kill(2) reads a negative pid as a PROCESS
+	// GROUP and 0 as the caller's own group, and Go's os.Process guards
+	// only -1 and 0 — so a file holding "-7010" would otherwise read as
+	// a live pid and `stop` would signal every process in that group
+	// (round 17 L10 finding 1). Rejected here, at the owning layer, so
+	// every reader inherits it (SR-18).
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid PID in %s: %d is not a process id", path, pid)
+	}
 	return pid, nil
 }
 
@@ -91,6 +100,9 @@ func Remove(path string) {
 // The documented intent was always "send signal 0"; this makes the code
 // do that.
 func IsRunning(pid int) bool {
+	if pid <= 0 {
+		return false // never a process; a negative value names a GROUP to kill(2)
+	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return false

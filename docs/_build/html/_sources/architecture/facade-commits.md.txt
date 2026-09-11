@@ -19,7 +19,11 @@ Bare clones contain only the git object database (no working tree). They are:
 
 - **Smaller** than full clones (no checked-out files)
 - **Permanent** -- stored in `repo_clone_dir` and reused across collection cycles
-- **Updated** via `git fetch --all` on subsequent runs
+- **Updated** on subsequent runs via `git -C <clone> fetch origin` with explicit
+  `+refs/heads/*:refs/heads/*` / `+refs/tags/*:refs/tags/*` refspecs and
+  `--prune` -- a bare clone carries no fetch refspec, so a plain
+  `git fetch --all` would download objects without ever advancing
+  `refs/heads/*`
 
 ### Full clones (temporary)
 
@@ -254,7 +258,7 @@ Aggregates are refreshed in one bulk pass on the configured matview-rebuild day 
 
 ### Fetch failure recovery
 
-If `git fetch --all` fails on an existing bare clone (e.g., due to corruption):
+If the explicit-refspec fetch fails on an existing bare clone (e.g., due to corruption):
 
 1. The existing bare clone is deleted
 2. A fresh `git clone --bare` is attempted
@@ -262,7 +266,7 @@ If `git fetch --all` fails on an existing bare clone (e.g., due to corruption):
 
 ### Incremental collection
 
-On subsequent collection cycles, `git fetch --all` retrieves only new commits since the last fetch. The git log is re-parsed in full, but upserts with `ON CONFLICT` ensure only truly new data is inserted.
+On subsequent collection cycles, the explicit-refspec fetch retrieves only new commits since the last fetch. The git log is re-parsed in full, but upserts with `ON CONFLICT` ensure only truly new data is inserted.
 
 ### GitLab `repo_info.commit_count` backfill (v0.16.9+)
 

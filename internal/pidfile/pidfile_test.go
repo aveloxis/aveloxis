@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -148,6 +150,39 @@ func TestLogPath_Components(t *testing.T) {
 		got := filepath.Base(LogPath(tt.component))
 		if got != tt.wantFile {
 			t.Errorf("LogPath(%q) file = %q, want %q", tt.component, got, tt.wantFile)
+		}
+	}
+}
+
+// Round 17 L10 finding 1: Read accepted ANY integer. kill(2) reads a
+// negative pid as a PROCESS GROUP, and Go's os.Process guards only -1
+// and 0 — so a pidfile holding "-7010" read as a live pid and `stop`
+// would have SIGTERMed the whole group, the operator's shell included.
+// A pid is positive; anything else is corrupt content (SR-18: rejected
+// at the owning layer, every reader inherits it).
+func TestRead_RejectsNonPositivePID(t *testing.T) {
+	for _, content := range []string{"-1", "0", "-7010", " -2 "} {
+		path := filepath.Join(t.TempDir(), "x.pid")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		pid, err := Read(path)
+		if err == nil {
+			t.Errorf("Read(%q) = %d, nil — a non-positive pid must be rejected as corrupt", content, pid)
+			continue
+		}
+		if !strings.Contains(err.Error(), "invalid PID") {
+			t.Errorf("Read(%q): error must classify as invalid content, got: %v", content, err)
+		}
+	}
+}
+
+// IsRunning is the belt: a non-positive pid is never "running", so no
+// caller that bypasses Read can turn it into a group signal either.
+func TestIsRunning_NonPositiveIsNeverRunning(t *testing.T) {
+	for _, pid := range []int{-1, 0, -syscall.Getpgrp()} {
+		if IsRunning(pid) {
+			t.Errorf("IsRunning(%d) = true — a non-positive pid is not a process", pid)
 		}
 	}
 }

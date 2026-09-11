@@ -137,6 +137,31 @@ func TestStripSQLComments(t *testing.T) {
 // constructs. A newline-free block comment now leaves ONE space;
 // comments containing newlines keep emitting their newlines (already
 // token-separating).
+func TestStripShellComment(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"unquoted tail", "git fetch --prune  # never --all", "git fetch --prune  "},
+		{"whole-line comment", "# just a note", ""},
+		{"backslash inside a comment is not kept", "cmd  # note \\", "cmd  "},
+		{"single-quoted hash", "x --opt='a # b' --prune", "x --opt='a # b' --prune"},
+		{"double-quoted hash", "x --opt=\"a # b\" --prune", "x --opt=\"a # b\" --prune"},
+		{"escaped hash", "echo \\# not a comment", "echo \\# not a comment"},
+		{"hash glued to a word", "url#frag --prune", "url#frag --prune"},
+		// An escaped quote must not open a quote that swallows the
+		// comment; these two are what the escape arm alone decides.
+		{"escaped single quote", "echo it\\'s  # tail", "echo it\\'s  "},
+		{"escaped double quote", "echo \\\"x  # tail", "echo \\\"x  "},
+		// Inside single quotes a backslash is literal, so this quote
+		// closes and the tail IS a comment.
+		{"backslash literal inside single quotes", "echo 'dir\\' # tail", "echo 'dir\\' "},
+		{"no comment", "git fetch origin", "git fetch origin"},
+	}
+	for _, c := range cases {
+		if got := StripShellComment(c.in); got != c.want {
+			t.Errorf("%s: StripShellComment(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
 func TestStripCommentsPreservesTokenSeparation(t *testing.T) {
 	goOut := StripGoComments("func/*note*/f() {}\nx /*a\nb*/ y")
 	if strings.Contains(goOut, "funcf") {

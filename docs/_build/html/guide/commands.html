@@ -2516,12 +2516,23 @@ aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w"> 
 aveloxis<span class="w"> </span>stop<span class="w">                  </span><span class="c1"># (no args) same as &#39;all&#39;</span>
 </pre></div>
 </div>
-<p>Sends <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> to the specified component(s) using PID files in <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/</span></code>. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed. <code class="docutils literal notranslate"><span class="pre">stop</span> <span class="pre">all</span></code> names a scancode worker it left running.</p>
+<p>Sends <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> to the specified component(s) using PID files in <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/</span></code>. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. <code class="docutils literal notranslate"><span class="pre">stop</span> <span class="pre">all</span></code> names a scancode worker it left running.</p>
 <p>Nothing to stop is exit 0 — <code class="docutils literal notranslate"><span class="pre">stop</span></code> is idempotent. A process that was
 found but could not be signaled (typically <code class="docutils literal notranslate"><span class="pre">operation</span> <span class="pre">not</span> <span class="pre">permitted</span></code> on a
 process another user started) is a failure: its pidfile is left in place,
 every other requested component is still stopped, and the command exits
-nonzero naming the one it could not.</p>
+nonzero naming the one it could not. A pidfile that exists but cannot be
+read — unreadable, or carrying something that is not a PID — is the third
+arm: it is not evidence that the component is stopped, so the command
+still tries the <code class="docutils literal notranslate"><span class="pre">pgrep</span></code> fallback — which normally finds a component that
+<code class="docutils literal notranslate"><span class="pre">start</span></code> launched, so you will see <code class="docutils literal notranslate"><span class="pre">Stopped</span> <span class="pre">serve</span> <span class="pre">(PID</span> <span class="pre">N)</span></code> AND a nonzero
+exit reading <code class="docutils literal notranslate"><span class="pre">serve</span> <span class="pre">stopped,</span> <span class="pre">but:</span> <span class="pre">pidfile</span> <span class="pre">left</span> <span class="pre">in</span> <span class="pre">place</span> <span class="pre">…</span></code>. The file is
+neither stale nor live, so it is left for you to inspect and delete by
+hand; the next <code class="docutils literal notranslate"><span class="pre">start</span></code> refuses on it until you do. If <code class="docutils literal notranslate"><span class="pre">pgrep</span></code> finds
+nothing either, the exit is still nonzero and reads <code class="docutils literal notranslate"><span class="pre">serve:</span> <span class="pre">pidfile</span> <span class="pre">left</span> <span class="pre">in</span> <span class="pre">place</span> <span class="pre">…</span></code> — nothing was stopped, and nothing could be confirmed. A
+<code class="docutils literal notranslate"><span class="pre">pgrep</span></code> that itself fails (not installed, or any exit other than its
+documented “no match”) is likewise not evidence of absence: the command
+exits nonzero reading <code class="docutils literal notranslate"><span class="pre">serve:</span> <span class="pre">pgrep</span> <span class="pre">for</span> <span class="pre">serve:</span> <span class="pre">…</span></code>.</p>
 <p>After SIGTERM the command watches <code class="docutils literal notranslate"><span class="pre">pg_stat_activity</span></code> for the component’s
 backends and, past the shutdown budget, prints the persistent PIDs with a
 <code class="docutils literal notranslate"><span class="pre">pg_terminate_backend</span></code> recipe. Since v0.29.4 that recipe is offered for

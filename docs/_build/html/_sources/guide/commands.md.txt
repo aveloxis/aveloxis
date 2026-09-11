@@ -727,13 +727,25 @@ aveloxis stop all              # stop serve + web + api (never the scancode work
 aveloxis stop                  # (no args) same as 'all'
 ```
 
-Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed. `stop all` names a scancode worker it left running.
+Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. `stop all` names a scancode worker it left running.
 
 Nothing to stop is exit 0 — `stop` is idempotent. A process that was
 found but could not be signaled (typically `operation not permitted` on a
 process another user started) is a failure: its pidfile is left in place,
 every other requested component is still stopped, and the command exits
-nonzero naming the one it could not.
+nonzero naming the one it could not. A pidfile that exists but cannot be
+read — unreadable, or carrying something that is not a PID — is the third
+arm: it is not evidence that the component is stopped, so the command
+still tries the `pgrep` fallback — which normally finds a component that
+`start` launched, so you will see `Stopped serve (PID N)` AND a nonzero
+exit reading `serve stopped, but: pidfile left in place …`. The file is
+neither stale nor live, so it is left for you to inspect and delete by
+hand; the next `start` refuses on it until you do. If `pgrep` finds
+nothing either, the exit is still nonzero and reads `serve: pidfile left
+in place …` — nothing was stopped, and nothing could be confirmed. A
+`pgrep` that itself fails (not installed, or any exit other than its
+documented "no match") is likewise not evidence of absence: the command
+exits nonzero reading `serve: pgrep for serve: …`.
 
 After SIGTERM the command watches `pg_stat_activity` for the component's
 backends and, past the shutdown budget, prints the persistent PIDs with a

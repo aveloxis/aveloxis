@@ -742,8 +742,9 @@ exchange:
 3. Copy the `token` value and send it on every request:
 
    ```bash
+   SITE=aveloxis.example.org
    curl -H "Authorization: Bearer $TOKEN" \
-        "https://<your-site>/api/v1/compare?entities=repo:42&metric=contributors"
+        "https://$SITE/api/v1/compare?entities=repo:42&metric=contributors"
    ```
 
 Token semantics:

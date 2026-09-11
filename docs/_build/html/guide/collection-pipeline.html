@@ -1778,7 +1778,10 @@ Phase 3: Messages (sequential, after parallel phase)
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">REPO_URL</span><span class="o">=</span>https://github.com/augurlabs/augur
 <span class="nv">CLONE_PATH</span><span class="o">=</span>/data/aveloxis-repos/augurlabs-augur.git
 git<span class="w"> </span>clone<span class="w"> </span>--bare<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$REPO_URL</span><span class="s2">&quot;</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CLONE_PATH</span><span class="s2">&quot;</span><span class="w">   </span><span class="c1"># first time</span>
-git<span class="w"> </span>fetch<span class="w"> </span>--all<span class="w">                              </span><span class="c1"># subsequent runs</span>
+<span class="c1"># subsequent runs — an explicit refspec, because `git clone --bare`</span>
+<span class="c1"># writes no fetch refspec: a bare `git fetch --all` downloads objects</span>
+<span class="c1"># but never advances refs/heads/*, leaving the clone permanently stale</span>
+git<span class="w"> </span>-C<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CLONE_PATH</span><span class="s2">&quot;</span><span class="w"> </span>fetch<span class="w"> </span>origin<span class="w"> </span><span class="s1">&#39;+refs/heads/*:refs/heads/*&#39;</span><span class="w"> </span><span class="s1">&#39;+refs/tags/*:refs/tags/*&#39;</span><span class="w"> </span>--prune
 </pre></div>
 </div>
 <p>Bare clones are permanent and stored in the <code class="docutils literal notranslate"><span class="pre">repo_clone_dir</span></code> directory.</p>

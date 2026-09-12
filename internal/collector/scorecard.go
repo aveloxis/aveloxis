@@ -254,13 +254,42 @@ func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, ra
 //
 // localPath selects the mode: non-empty = local (--local localPath),
 // empty = remote (--repo repoURL).
-func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, repoURL string, localPath string, timeout time.Duration, githubToken string, logger *slog.Logger) (*scorecardOutput, error) {
+func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, repoURL string, localPath string, timeout time.Duration, githubToken string, logger *slog.Logger) (out *scorecardOutput, invokeErr error) {
 	// Per-attempt wall-clock cap (v0.27.5). The pre-v0.27.5 remote
 	// mode could hang for DAYS: scorecard sleeps through rate-limit
 	// resets when its token is drained. On expiry cmd.Cancel SIGKILLs
 	// the whole process group.
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// Per-ATTEMPT outcome log (2026-09-11, F2). "scorecard complete"
+	// fires once, only on success, for the whole remote-then-local
+	// sequence — so a repo that burned a full remote timeout before
+	// succeeding locally looked identical to one that succeeded
+	// immediately, and a repo that failed both attempts logged no cost
+	// at all. Measured consequence: 4,608 repos hit the full 15-minute
+	// cap in 5.2 days (~1,152 worker-hours, ~18% of collection
+	// capacity) and the log could neither count nor attribute it.
+	//
+	// Named returns + one deferred site so every exit path reports,
+	// including the ones that return early. timed_out separates the
+	// wall-clock cohort from parse failures — different causes,
+	// different fixes.
+	attemptMode := "remote"
+	if localPath != "" {
+		attemptMode = "local"
+	}
+	attemptStart := time.Now()
+	defer func() {
+		logger.Info("scorecard attempt",
+			"repo_id", repoID,
+			"mode", attemptMode,
+			"ok", invokeErr == nil,
+			"timed_out", errors.Is(attemptCtx.Err(), context.DeadlineExceeded),
+			"duration", time.Since(attemptStart),
+			"timeout_cap", timeout,
+			"error", invokeErr)
+	}()
 
 	var cmd *exec.Cmd
 	if localPath != "" {
@@ -338,14 +367,48 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 	var raw scorecardOutput
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
-			return nil, fmt.Errorf("scorecard timed out after %v (wall-clock cap): %w", timeout, attemptCtx.Err())
+			// stderr often carries the reason a run went long (rate-limit
+			// waits, a check retrying) right up to the SIGKILL, so it is
+			// the cheapest evidence available for the 4,608-repo
+			// timeout cohort.
+			return nil, fmt.Errorf("scorecard timed out after %v (wall-clock cap): %w: %s",
+				timeout, attemptCtx.Err(), tailForError(stderr.String()))
 		}
 		if runErr != nil {
-			return nil, fmt.Errorf("scorecard failed: %w: %s", execErr(attemptCtx, runErr), stderr.String())
+			return nil, fmt.Errorf("scorecard failed: %w: %s", execErr(attemptCtx, runErr), tailForError(stderr.String()))
 		}
-		return nil, fmt.Errorf("parsing scorecard output: %w", err)
+		// Exit 0 with unparseable stdout — the 2,492-repo cohort of the
+		// 2026-09-11 analysis. This arm used to drop stderr on the
+		// floor while its sibling above appended it, so for those repos
+		// there was no evidence at all of what scorecard said. The
+		// subprocess exiting 0 is exactly what makes stderr the only
+		// remaining witness. stdout_bytes disambiguates "produced
+		// nothing" from "produced something malformed".
+		return nil, fmt.Errorf("parsing scorecard output (stdout_bytes=%d): %w: %s",
+			stdout.Len(), err, tailForError(stderr.String()))
 	}
 	return &raw, nil
+}
+
+// scorecardStderrTailBytes bounds how much of a failed attempt's stderr
+// rides along in the returned error. Scorecard is chatty when a run goes
+// wrong (one line per retried check), and these errors reach
+// collection_queue.last_error and the application log — an unbounded
+// tail would be a per-repo blob in both. The TAIL, not the head: the
+// operative message is the last thing written before the process gave
+// up or was killed.
+const scorecardStderrTailBytes = 2048
+
+// tailForError trims stderr to the last scorecardStderrTailBytes,
+// marking the truncation so a reader is never misled into thinking the
+// captured fragment is the whole story.
+func tailForError(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= scorecardStderrTailBytes {
+		return s
+	}
+	return "...[truncated " + strconv.Itoa(len(s)-scorecardStderrTailBytes) + " bytes]... " +
+		s[len(s)-scorecardStderrTailBytes:]
 }
 
 // persistScorecard is the PERSIST half of the v0.27.5 split: rotate the

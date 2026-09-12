@@ -547,7 +547,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -648,7 +656,7 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -2023,7 +2031,7 @@
 <h3>Slow refresh<a class="headerlink" href="#slow-refresh" title="Link to this heading"></a></h3>
 <p>Some views can take hours at fleet scale (especially <code class="docutils literal notranslate"><span class="pre">explorer_new_contributors</span></code>, <code class="docutils literal notranslate"><span class="pre">explorer_contributor_recent_actions</span></code>, <code class="docutils literal notranslate"><span class="pre">explorer_cntrb_per_file</span></code>, and <code class="docutils literal notranslate"><span class="pre">explorer_pr_response_times</span></code> on a 100K-repo / 474M-commit / 117M-PR-file deployment). When a refresh is taking too long:</p>
 <ul class="simple">
-<li><p>Check <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> and <code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code>. Increase to at least 256 MB and 1 GB respectively.</p></li>
+<li><p>Check <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> and <code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code> against the budget in <a class="reference internal" href="../guide/scaling.html#postgresql-server-tuning"><span class="std std-ref">PostgreSQL server tuning</span></a>. Resist raising <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> globally to speed up a refresh: it is a per-<strong>operation</strong> limit multiplied by every connection and parallel worker, so a value chosen for one overnight rebuild is a standing OOM risk for the whole fleet. If a single refresh genuinely needs more, raise it for that session only (<code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">work_mem</span> <span class="pre">=</span> <span class="pre">'1GB';</span></code> before the <code class="docutils literal notranslate"><span class="pre">REFRESH</span></code>), which affects nothing else. <code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code> is the one that legitimately helps here, and it multiplies only by <code class="docutils literal notranslate"><span class="pre">autovacuum_max_workers</span></code>.</p></li>
 <li><p>Verify the indexes documented in the 2026-05-26 matview audit (internal design archive) are present.</p></li>
 <li><p>A view’s underlying tables (especially <code class="docutils literal notranslate"><span class="pre">commits</span></code> and <code class="docutils literal notranslate"><span class="pre">messages</span></code>) growing dramatically since the last rebuild can extend refresh time super-linearly; consider whether the view’s defining query has the anti-patterns documented in that audit.</p></li>
 </ul>

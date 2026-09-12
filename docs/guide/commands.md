@@ -188,10 +188,12 @@ aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json
   when the stamp is behind the binary (no migration of that binary has
   completed here — the ladder's step 2, `aveloxis migrate --skip-views`),
   and serve's own startup migration refuses to run a full pass while
-  another `aveloxis-serve` is connected. A same-version `start serve`
-  is NOT refused — it would start a second full scheduler — so both the
-  gate and serve's log say when another `aveloxis-serve` is already
-  connected; `stop` scopes its backend check to this host.
+  another `aveloxis-serve` is connected. Since 2026-09-11 a
+  **same-version** `start serve` is refused too: serve will not start a
+  second full scheduler against a database that already has one, because
+  the two compete for the same queue and API keys. If you genuinely want
+  two, say so explicitly with `aveloxis serve --allow-second-serve`.
+  `stop` scopes its backend check to this host.
 
 Full recipe — Postgres remote access, minimal config template, systemd
 unit, libmagic version-lock — in the

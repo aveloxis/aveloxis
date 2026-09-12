@@ -547,7 +547,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -1772,9 +1780,17 @@ primary’s backends by application_name alone and printed terminate
 recipes for them. Since v0.29.4 that shape — a binary AHEAD of the
 stamp — is refused twice: by the <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">serve</span></code> deploy gate when the
 stamp is behind the binary, and by serve’s startup migration when
-another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is connected. A <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">serve</span></code> built at the
-primary’s version (which §2 asks for) is NOT refused: nothing needs
-migrating, so it would start a second full scheduler against the fleet.
+another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is connected. Since 2026-09-11 a <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">serve</span></code>
+built at the primary’s version (which §2 asks for) is refused as well:
+nothing needs migrating, but it would still start a second full
+scheduler against the fleet, and that is the objection. Until then it
+was only warned about — and a second machine consequently ran a full
+stack against the production database for ten days, deadlocking the
+primary’s staging inserts against its schema DDL, with the warning
+sitting in a log on the wrong host the whole time. A deliberate second
+serve is now explicit: <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span> <span class="pre">--allow-second-serve</span></code>. The flag is
+per-invocation and is deliberately NOT forwarded by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code>, so it cannot become a persistent setting that hides the
+condition again.
 The gate and serve’s log both say when another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is
 already connected and from which client addresses, each tagged with the
 code’s own verdict: an “(other address)” entry is normally the primary
@@ -1830,10 +1846,11 @@ puts in its <code class="docutils literal notranslate"><span class="pre">applica
 PostgreSQL never rewrites what the client sent. The marker’s job is
 narrow and one-directional — it can <strong>separate</strong> two hosts the address
 rule collapsed together, and it can never <strong>merge</strong> two the address
-rule kept apart. That is what makes it safe to rely on: a marker
-collision (two container hosts running one compose file report the
-same hostname) degrades to the address rule, never to a terminate
-recipe for the other machine.</p>
+rule kept apart. A marker collision (for example, two container hosts
+running one compose file with the same hostname) degrades to the address
+rule. Behind a transaction pooler that fallback can classify the other
+host as this host and offer a termination recipe, so assign unique hostnames
+(or connect directly to PostgreSQL) before relying on this verdict.</p>
 <p>But the marker only helps when <strong>both</strong> sides carry one. A primary
 still running a pre-round-12 binary tags un-suffixed, and an un-marked
 backend falls back to the address rule — which behind a pooler places

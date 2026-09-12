@@ -189,6 +189,54 @@ func TypeBody(t testing.TB, src, name string) string {
 	return ""
 }
 
+// ConstBody returns the source of the named top-level const, from its
+// `const` keyword through its end — the FuncBody/TypeBody sibling for
+// pinning the shape of a declared value, most often a SQL statement
+// held in a raw-string const (2026-09-11).
+//
+// The motivating case: a pin anchored on a fixed-size window after a
+// marker inside a function silently stopped covering its subject the
+// moment that statement was hoisted into a shared const so two call
+// paths could stop drifting. A named const is an EXACT region, so a pin
+// anchored here can neither over-reach into neighbouring SQL nor
+// under-reach past a refactor — the scan-window class (v0.28.18 pass
+// 43) cannot recur at such a site.
+//
+// Grouped `const (...)` declarations slice the matched ValueSpec alone,
+// for the same reason TypeBody does (v0.27.154 round 33): returning the
+// whole group would let a pin pass on a SIBLING const's text.
+func ConstBody(t testing.TB, src, name string) string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "src.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("srctest.ConstBody: source does not parse (%v)", err)
+	}
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, ident := range vs.Names {
+				if ident.Name != name {
+					continue
+				}
+				if gd.Lparen.IsValid() {
+					return src[fset.Position(vs.Pos()).Offset:fset.Position(vs.End()).Offset]
+				}
+				return src[fset.Position(gd.Pos()).Offset:fset.Position(gd.End()).Offset]
+			}
+		}
+	}
+	t.Fatalf("srctest.ConstBody: const %q not found", name)
+	return ""
+}
+
 // MinCount fatals when got < min, naming what was being counted — the
 // standard "my own scan broke" guard so corpus-walking tests fail
 // loudly instead of passing vacuously.

@@ -97,11 +97,14 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 	var created bool
 	actualID := cntrbID
 	err := s.withRetry(ctx, func(ctx context.Context) error {
-		// Check by cntrb_id first.
-		var existing int
+		// Check by cntrb_id first. The probe fetches cntrb_login rather
+		// than a bare 1 so the row-exists branch below can REPORT a
+		// rename without a second read — same one-row index lookup,
+		// zero extra cost.
+		var storedLogin string
 		err := s.pool.QueryRow(ctx,
-			`SELECT 1 FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, cntrbID,
-		).Scan(&existing)
+			`SELECT cntrb_login FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, cntrbID,
+		).Scan(&storedLogin)
 
 		if err != nil {
 			// Not found by ID. Check if login already exists (different cntrb_id).
@@ -126,6 +129,17 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 
 			// Truly new — insert. If another worker raced us and the login now
 			// exists, catch the error and look up their row instead.
+			//
+			// NOTE the argument order on cntrb_login in the conflict
+			// clause: STORED first, EXCLUDED second — fill-empty-only,
+			// the opposite of its siblings on purpose. cntrb_login is
+			// the login as FIRST observed (R2) and the only one of
+			// these columns under a unique index, so re-writing it both
+			// breaks the audit trail and collides with whatever row
+			// holds the new login. This arm fires only on a race to the
+			// same deterministic cntrb_id, where the logins are normally
+			// identical; when they differ, the stored one wins
+			// (2026-09-11, F4).
 			_, insertErr := s.pool.Exec(ctx, `
 				INSERT INTO aveloxis_data.contributors
 					(cntrb_id, cntrb_login, gh_login, gh_user_id, cntrb_canonical,
@@ -134,15 +148,33 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 					'aveloxis-commit-resolver', 'GitHub API', NOW())
 				ON CONFLICT (cntrb_id) DO UPDATE SET
 					gh_login = COALESCE(NULLIF(EXCLUDED.gh_login,''), contributors.gh_login),
-					cntrb_login = COALESCE(NULLIF(EXCLUDED.cntrb_login,''), contributors.cntrb_login),
+					cntrb_login = COALESCE(NULLIF(contributors.cntrb_login,''), EXCLUDED.cntrb_login),
 					gh_user_id = COALESCE(EXCLUDED.gh_user_id, contributors.gh_user_id)`,
 				cntrbID, login, ghUserID, commitEmail)
 			if insertErr != nil {
 				// Race: another worker inserted this login. Look it up.
+				//
+				// This arm absorbed the insert error SILENTLY for the
+				// product's whole life (F4 of the 2026-09-11 log
+				// analysis): on a successful lookup it returned nil
+				// with no record that anything had gone wrong, so a
+				// systemic insert failure that happened to coincide
+				// with a resolvable login was indistinguishable from a
+				// clean first insert. The lookup succeeding is genuine
+				// evidence of a race, so this stays non-fatal — but it
+				// is now observable.
 				var raceID string
 				if lookupErr := s.pool.QueryRow(ctx,
 					`SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login = $1`,
 					login).Scan(&raceID); lookupErr == nil {
+					var pgErr *pgconn.PgError
+					sqlState := ""
+					if errors.As(insertErr, &pgErr) {
+						sqlState = pgErr.Code
+					}
+					s.logger.Debug("commit resolver lost an insert race — adopting the winner's row",
+						"cntrb_login", login, "winner_cntrb_id", raceID,
+						"sqlstate", sqlState, "insert_error", insertErr)
 					actualID = raceID
 					created = false
 					return nil
@@ -154,46 +186,58 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 			return nil
 		}
 
-		// Row exists by ID — update login (may have changed) and backfill gh_user_id.
+		// Row exists by ID — the deterministic UUID makes this the same
+		// person by construction. Update gh_login (the current
+		// display-name mirror) and backfill gh_user_id / canonical.
+		//
+		// cntrb_login is deliberately NOT written. R2
+		// (docs/architecture/contributor-resolution.md): cntrb_login is
+		// the durable audit trail of the login as FIRST observed, and
+		// the other three rename paths already obey it — the v0.22.13
+		// batch recovery has a hard NEGATIVE pin against the write,
+		// v0.22.12's RenameContributorGhLogin documents leaving it
+		// alone, and the login-exists-under-a-different-id branch above
+		// touches only gh_login. This branch was the sole dissenter.
+		//
+		// It was also the sole source of ALL 555 idx_contributors_login
+		// unique violations in the 2026-09-06..09-11 production log
+		// (measured: 555 of 555; the ON CONFLICT arm above contributed
+		// zero). Writing cntrb_login collides whenever another row
+		// already holds the new login — routine after a rename, because
+		// a lazy-resolver row stamps the post-rename login under its
+		// own random UUID. Worse than the noise: the 23505 fallback
+		// that recovered those collisions omitted gh_login TOO, so for
+		// every one of those 555 events the rename was lost entirely
+		// and the display-name mirror stayed stale. Not writing
+		// cntrb_login means gh_login now lands on the first attempt.
+		//
+		// With cntrb_login out of the SET list this statement can no
+		// longer raise 23505 at all: contributors carries exactly two
+		// unique indexes — contributors_pkey (cntrb_id, not written
+		// here) and idx_contributors_login (cntrb_login) — and
+		// gh_login / gh_user_id / cntrb_canonical are indexed
+		// non-uniquely. So the v0.19.2 recovery branch that used to sit
+		// here is GONE rather than kept for a case it can no longer
+		// reach; a 23505 from this statement would be a genuine new
+		// defect and must surface instead of being silently absorbed.
 		_, err = s.pool.Exec(ctx, `
 			UPDATE aveloxis_data.contributors
 			SET gh_login = $2,
-			    cntrb_login = $2,
 			    gh_user_id = COALESCE(gh_user_id, $3),
 			    cntrb_canonical = COALESCE(NULLIF(cntrb_canonical,''), $4),
 			    data_collection_date = NOW()
 			WHERE cntrb_id = $1::uuid`,
 			cntrbID, login, ghUserID, commitEmail)
-		if err != nil {
-			// v0.19.2: catch SQLSTATE 23505 (unique_violation) on
-			// idx_contributors_login. Fires when another row already
-			// holds this login string under a different cntrb_id —
-			// most commonly because a lazy-resolver random-UUID row
-			// was created earlier with the new login (e.g., user
-			// renamed and a fresh issue stamped the new login with
-			// userID=0). We can't relabel cntrbID without violating
-			// the partial unique index, but the OTHER row already
-			// represents this person fine. Retry the UPDATE without
-			// touching cntrb_login — backfill gh_user_id and
-			// cntrb_canonical only. The two rows continue to coexist
-			// (suboptimal data quality, but no error and no orphan
-			// references).
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				_, retryErr := s.pool.Exec(ctx, `
-					UPDATE aveloxis_data.contributors
-					SET gh_user_id = COALESCE(gh_user_id, $2),
-					    cntrb_canonical = COALESCE(NULLIF(cntrb_canonical,''), $3),
-					    data_collection_date = NOW()
-					WHERE cntrb_id = $1::uuid`,
-					cntrbID, ghUserID, commitEmail)
-				if retryErr != nil {
-					return retryErr
-				}
-				s.logger.Debug("commit resolver login update skipped — login already held by a different row",
-					"cntrb_id", cntrbID, "target_login", login, "constraint", pgErr.ConstraintName)
-				err = nil
-			}
+		if err == nil && storedLogin != "" && storedLogin != login {
+			// The rename stays visible to operators — as one ordinary
+			// observation, not as a recovered Postgres ERROR logged at
+			// Debug. Mirrors the batch path's "contributor rename
+			// recovered in batch upsert" INFO.
+			s.logger.Info("contributor rename observed by commit resolver",
+				"cntrb_id", cntrbID,
+				"cntrb_login", storedLogin,
+				"new_gh_login", login,
+				"note", "cntrb_login preserved as the first-observed login (R2); gh_login carries the current name")
 		}
 		actualID = cntrbID
 		created = false

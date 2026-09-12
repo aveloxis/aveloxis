@@ -81,27 +81,59 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 				// Nothing is about to run, so a failed probe only costs the
 				// warning below — said, never folded into "no other serve".
 				logger.Warn("serve startup: could not probe for another aveloxis-serve", "error", oerr)
-			case sight.Connected:
-				// Observation only (round-4 finding 3): a same-version second
-				// serve passes every refusal — this is the dedicated-host
-				// mistake with the version drift removed — and whether two
-				// serves on one database is ever deliberate is the operator's
-				// call, so it is named, not blocked. The verdict that reads
-				// the address tags is OtherServe.Advice (SR-17, the ONE
-				// spelling) — restating it here would be a fourth rendering,
-				// which survived the round-9 pin only because its walk strips
-				// comments (round-10 finding 7).
+			case sight.Connected && !pg.allowSecondServe:
+				// 2026-09-11 (F3): REFUSE. v0.29.4 left this as
+				// observation only — a same-version second serve passed
+				// every refusal, and whether two serves on one database
+				// is ever deliberate was called the operator's decision,
+				// so it was named rather than blocked.
 				//
-				// This is the one verdict site where serve CONTINUES: the
-				// refusal exits and the deploy gate runs before serve starts,
-				// so only here is "stop this serve" both true and actionable
-				// (runServe writes the pidfile before store.Migrate, so
-				// `aveloxis stop serve` finds exactly this process). Round-10
-				// finding 2 (L9/L12): the word "stop" lived at this site alone
-				// before round 9 and the merge onto the shared renderer
-				// dropped it, leaving a WARN that named a mistake and no way
-				// to back out of it.
-				logger.Warn("another aveloxis-serve is connected to this database. "+sight.Advice()+" A second full scheduler competes with the first for the same queue and API keys — and this serve is STARTING anyway: nothing here has been stopped, so `aveloxis stop serve` on this host is the way to back out",
+				// The production log settled it. From 2026-08-30 to
+				// 09-09 a second machine ran a full stack against the
+				// live database — 2,733 serve authorizations plus api,
+				// web, psql and 13 migrate runs — and on 09-09 it
+				// deadlocked the primary serve's staging inserts against
+				// its schema DDL four times. Ten days of that, and the
+				// only thing between it and the fleet was this WARN, in
+				// a log on the wrong host. An operator decision that
+				// requires reading the second machine's log to discover
+				// is not a decision anyone gets to make.
+				//
+				// So the default flips and the deliberate case becomes
+				// explicit. The verdict that reads the address tags is
+				// still OtherServe.Advice (SR-17, the ONE spelling) —
+				// restating it here would be a fourth rendering, which
+				// survived the round-9 pin only because its walk strips
+				// comments (round-10 finding 7).
+				// A refusal BLOCKS, so unlike the warning it replaced it
+				// owes the operator every way forward — and there are two,
+				// because Advice() has just said a "(this host)" entry may
+				// be a draining backend rather than a live serve. The
+				// ordinary `stop serve` → `start serve` sequence is safe
+				// (stop polls until this host's backends are gone), but a
+				// serve that was KILLED rather than stopped leaves backends
+				// that linger on TCP keepalive for tens of minutes, and for
+				// those --allow-second-serve is the wrong remedy: it would
+				// start a second scheduler beside a corpse instead of
+				// clearing the corpse.
+				err := fmt.Errorf("%w: %s. %s A second full scheduler competes with the first for the same queue and API keys. "+
+					"If a serve here was killed rather than stopped, its backends can linger on TCP keepalive — terminate the orphan "+
+					"(the orphaned-backend runbook in docs/guide/troubleshooting.md) instead of starting a second scheduler beside it. "+
+					"If two serves are genuinely wanted, start this one with `aveloxis serve --allow-second-serve`",
+					ErrSecondServeRefused, sight.Describe(), sight.Advice())
+				logger.Error("serve startup refused — another aveloxis-serve is connected",
+					"schema_version", v, "from", sight.Describe(), "error", err)
+				return err
+			case sight.Connected:
+				// Override in force. Byte-identical to the pre-2026-09-11
+				// behaviour, including round-10 finding 2's tail: this is
+				// the one verdict site where serve CONTINUES (the other
+				// refusals exit, and the deploy gate runs before serve
+				// starts), so only here is "stop this serve" both true and
+				// actionable — runServe writes the pidfile before
+				// store.Migrate, so `aveloxis stop serve` finds exactly
+				// this process.
+				logger.Warn("another aveloxis-serve is connected to this database. "+sight.Advice()+" A second full scheduler competes with the first for the same queue and API keys — and this serve is STARTING anyway because --allow-second-serve was given: nothing here has been stopped, so `aveloxis stop serve` on this host is the way to back out",
 					"schema_version", v, "from", sight.Describe())
 			}
 			logger.Info("schema stamp matches binary — skipping migrations (F13 fast path); run `aveloxis migrate` for a full pass",
@@ -2904,6 +2936,20 @@ func (s *PostgresStore) SchemaVersion(ctx context.Context) (string, error) {
 // aveloxis-serve is connected to this database while this binary's
 // schema stamp is not in place. Wrapped by startupMigrateRefusal.
 var ErrOtherServeConnected = errors.New("another aveloxis-serve is connected to this database")
+
+// ErrSecondServeRefused is the 2026-09-11 (F3) refusal: another
+// aveloxis-serve is connected AND this binary's stamp is current, so
+// nothing needs migrating — the objection is to the second SCHEDULER
+// itself, not to a migration.
+//
+// A DISTINCT sentinel from ErrOtherServeConnected on purpose. That one
+// guards a serve that would run a FULL migration beside a live fleet,
+// which is the base-DDL deadlock of the 2026-09-09 incident; this one
+// guards two schedulers competing for one queue and key pool. They have
+// different overrides (--allow-second-serve reaches only this one) and
+// different remedies, and a shared sentinel would let a future caller's
+// errors.Is widen one into the other.
+var ErrSecondServeRefused = errors.New("another aveloxis-serve is already connected to this database")
 
 // A positive other-serve read is CONFIRMED by re-probing before it
 // refuses a serve start (round-2 finding 1, reproduced at 1-3 % per

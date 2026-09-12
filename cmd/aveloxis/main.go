@@ -118,9 +118,10 @@ func main() {
 
 func serveCmd(cfgPath *string) *cobra.Command {
 	var (
-		monitorAddr  string
-		workers      int
-		useAugurKeys bool
+		monitorAddr      string
+		workers          int
+		useAugurKeys     bool
+		allowSecondServe bool
 	)
 
 	cmd := &cobra.Command{
@@ -141,18 +142,28 @@ the same queue — each claims jobs via SELECT ... FOR UPDATE SKIP LOCKED.`,
 					workers = cfg.Collection.Workers
 				}
 			}
-			return runServe(*cfgPath, monitorAddr, workers, useAugurKeys)
+			return runServe(*cfgPath, monitorAddr, workers, useAugurKeys, allowSecondServe)
 		},
 	}
 
 	cmd.Flags().StringVar(&monitorAddr, "monitor", "127.0.0.1:5555", "address for the monitoring dashboard")
 	cmd.Flags().IntVar(&workers, "workers", 1, "number of concurrent collection workers")
 	cmd.Flags().BoolVar(&useAugurKeys, "augur-keys", false, "load API keys from Augur's augur_operations.worker_oauth table")
+	// 2026-09-11 (F3). Serve REFUSES to start when another
+	// aveloxis-serve is already connected to the same database; this is
+	// the deliberate override. A CLI flag rather than a config key on
+	// purpose: a config key persists silently and would make the second
+	// serve invisible again, which is the failure this refusal exists to
+	// prevent. `aveloxis start serve` does not forward it — a deliberate
+	// second serve is the foreground/systemd shape (see
+	// docs/guide/dedicated-scancode-host.md).
+	cmd.Flags().BoolVar(&allowSecondServe, "allow-second-serve", false,
+		"start even though another aveloxis-serve is connected to this database (competes for the same queue and API keys)")
 
 	return cmd
 }
 
-func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error {
+func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecondServe bool) error {
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
@@ -192,6 +203,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	// re-walking on kate with zero collection). `aveloxis migrate`
 	// remains the full-run self-heal path and never fast-paths.
 	store.SetMigrateFastPath(true)
+	store.SetAllowSecondServe(allowSecondServe)
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrating database: %w", err)
 	}

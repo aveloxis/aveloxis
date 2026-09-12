@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.22.13 — UpsertContributorBatch must handle the deterministic-
@@ -88,38 +90,57 @@ func TestUpsertContributorBatchRecoversFromPkeyRenameCollision(t *testing.T) {
 			"the rename-recovery path.")
 	}
 
-	// The recovery UPDATE itself: set gh_login to the new login,
-	// match on the existing cntrb_id (the deterministic UUID we tried
-	// to insert). Without these two signals the recovery cannot work.
-	// Anchor on the contributors_pkey marker so we test the recovery
-	// region specifically (not the unrelated gh_*/gl_* backfill UPDATE
-	// further down the same function).
-	pkeyIdx := strings.Index(body, "contributors_pkey")
-	if pkeyIdx < 0 {
-		t.Fatal("contributors_pkey marker not found in UpsertContributorBatch body")
-	}
-	end := pkeyIdx + 2400
-	if end > len(body) {
-		end = len(body)
-	}
-	recoveryRegion := body[pkeyIdx:end]
+	// The recovery UPDATE itself: set gh_login to the new login, match
+	// on the existing cntrb_id (the deterministic UUID we tried to
+	// insert). Without these two signals the recovery cannot work.
+	//
+	// Anchored on the named const rather than on a fixed-size window
+	// after the contributors_pkey marker. The window form (2400 chars)
+	// was the scan-window anti-pattern the house retired in v0.28.18:
+	// it silently stopped covering the statement the moment 2026-09-11
+	// (F5) hoisted it into renameRecoveryUpdateSQL so the pre-probe
+	// path and the 23505 backstop could share ONE spelling. A named
+	// const is an exact region, so this can neither over-reach into the
+	// unrelated gh_*/gl_* backfill UPDATE nor under-reach past a
+	// refactor.
+	recoverySQL := srctest.ConstBody(t, srctest.Read(t, "internal/db/postgres.go"), "renameRecoveryUpdateSQL")
 
-	if !regexp.MustCompile(`UPDATE\s+aveloxis_data\.contributors`).MatchString(recoveryRegion) {
-		t.Error("UpsertContributorBatch's rename-recovery branch must execute an " +
-			"UPDATE aveloxis_data.contributors ... — this is what actually records the " +
-			"rename on the existing row. Mirrors RenameContributorGhLogin (v0.22.12) " +
-			"but inlined to share the batch tx.")
+	if !regexp.MustCompile(`UPDATE\s+aveloxis_data\.contributors`).MatchString(recoverySQL) {
+		t.Error("renameRecoveryUpdateSQL must be an UPDATE aveloxis_data.contributors ... — " +
+			"this is what actually records the rename on the existing row. Mirrors " +
+			"RenameContributorGhLogin (v0.22.12) but expressed here so it runs in the batch tx.")
 	}
-	if !regexp.MustCompile(`gh_login\s*=\s*\$\d`).MatchString(recoveryRegion) {
-		t.Error("UpsertContributorBatch's rename-recovery UPDATE must set gh_login = $N " +
-			"unconditionally (no COALESCE), per the v0.22.12 RenameContributorGhLogin " +
-			"contract. The caller knows the existing gh_login is stale by definition — " +
-			"we just got a 23505 trying to insert with the new login.")
+	if !regexp.MustCompile(`gh_login\s*=\s*\$\d`).MatchString(recoverySQL) {
+		t.Error("renameRecoveryUpdateSQL must set gh_login = $N unconditionally (no COALESCE), " +
+			"per the v0.22.12 RenameContributorGhLogin contract. The caller knows the existing " +
+			"gh_login is stale by definition — that is what a rename means.")
 	}
-	if !regexp.MustCompile(`WHERE\s+cntrb_id\s*=\s*\$\d::uuid`).MatchString(recoveryRegion) {
-		t.Error("UpsertContributorBatch's rename-recovery UPDATE must target the existing " +
-			"row by cntrb_id (the deterministic UUID we computed and tried to insert with). " +
-			"That's the only join key guaranteed to identify the same person across renames.")
+	if !regexp.MustCompile(`WHERE\s+cntrb_id\s*=\s*\$\d::uuid`).MatchString(recoverySQL) {
+		t.Error("renameRecoveryUpdateSQL must target the existing row by cntrb_id (the " +
+			"deterministic UUID). That's the only join key guaranteed to identify the same " +
+			"person across renames.")
+	}
+
+	// Both paths that relabel a renamed row must go through that ONE
+	// const (SR-17). A second inline spelling is how the two paths
+	// drift into recording renames differently.
+	if n := strings.Count(body, "renameRecoveryUpdateSQL"); n < 2 {
+		t.Errorf("renameRecoveryUpdateSQL is referenced %d time(s) in the contributor-upsert unit, "+
+			"want at least 2 — the known-rename pre-probe path and the 23505 backstop must share "+
+			"one spelling of the relabel, or they can drift into doing different things to the "+
+			"same row.", n)
+	}
+	// An occurrence BUDGET, not a ban: extractContributorBatchBodies
+	// includes the const's own declaration, so the statement is
+	// EXPECTED to appear exactly once. Banning it outright would fire
+	// on the very const it is protecting (it did, on first run — the
+	// v0.27.145 carve-out lesson). Two or more means someone inlined a
+	// second copy beside the shared one.
+	relabelShape := regexp.MustCompile(`SET\s+gh_login\s*=\s*\$2,\s*\n\s*cntrb_email\s*=\s*COALESCE`)
+	if n := len(relabelShape.FindAllString(body, -1)); n != 1 {
+		t.Errorf("the rename-relabel UPDATE appears %d times in the contributor-upsert unit, want "+
+			"exactly 1 (the shared renameRecoveryUpdateSQL const). A second inline copy is how the "+
+			"pre-probe path and the 23505 backstop drift into relabelling the same row differently.", n)
 	}
 }
 

@@ -361,3 +361,54 @@ type (
 		t.Fatalf("TypeBody must NOT include grouped siblings — a pin would pass on a field that lives on a different type; got %q", body)
 	}
 }
+
+// TestConstBody pins the ConstBody contract, including the grouped-
+// declaration trap TypeBody learned the hard way in v0.27.154: a
+// grouped `const (...)` GenDecl spans every sibling, so returning it
+// would let a pin pass on a DIFFERENT const's text.
+func TestConstBody(t *testing.T) {
+	src := `package p
+
+// leading comment mentioning renameSQL should not confuse the anchor
+const renameSQL = ` + "`" + `
+	UPDATE t SET a = $1
+	WHERE id = $2` + "`" + `
+
+const otherSQL = ` + "`" + `DELETE FROM t` + "`" + `
+
+const (
+	groupedA = "alpha value"
+	groupedB = "beta value"
+)
+`
+
+	t.Run("ungrouped returns only that const", func(t *testing.T) {
+		got := ConstBody(t, src, "renameSQL")
+		if !strings.Contains(got, "UPDATE t SET a = $1") {
+			t.Errorf("ConstBody did not return the const's own text: %q", got)
+		}
+		if strings.Contains(got, "DELETE FROM t") {
+			t.Errorf("ConstBody over-reached into the next declaration: %q", got)
+		}
+	})
+
+	t.Run("grouped returns only the named spec", func(t *testing.T) {
+		got := ConstBody(t, src, "groupedA")
+		if !strings.Contains(got, "alpha value") {
+			t.Errorf("ConstBody did not return groupedA: %q", got)
+		}
+		// THE trap: without slicing the ValueSpec, the whole group
+		// comes back and a pin on groupedA passes on groupedB's text.
+		if strings.Contains(got, "beta value") {
+			t.Errorf("ConstBody returned the whole const group — a pin on one member would "+
+				"pass on a sibling's text (the v0.27.154 TypeBody trap): %q", got)
+		}
+	})
+
+	t.Run("comment mentioning the name does not anchor", func(t *testing.T) {
+		got := ConstBody(t, src, "otherSQL")
+		if !strings.Contains(got, "DELETE FROM t") {
+			t.Errorf("ConstBody(otherSQL) = %q", got)
+		}
+	})
+}

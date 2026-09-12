@@ -68,6 +68,15 @@ var deployChecklists = map[string][]deployStep{
 	// here and the serve-startup other-serve refusal — no data change,
 	// same ladder.
 	"0.29.4": v029DeployChecklist,
+	// v0.29.5 (the 2026-09-11 production log analysis): scorecard
+	// attempt diagnostics, the same-version second-serve refusal, the
+	// contributor rename pre-probe, the R2 cntrb_login fix and the
+	// staged-abort replay. No schema change and no new operator heal —
+	// same ladder. Operators on this version ALSO have Postgres-side
+	// work that no checklist can do for them (the OOM-era work_mem /
+	// max_connections / shared_buffers drift): see
+	// docs/guide/scaling.md, "PostgreSQL server tuning".
+	"0.29.5": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

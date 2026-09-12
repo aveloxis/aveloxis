@@ -547,7 +547,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -1925,10 +1933,12 @@ schema stamp) is refused twice: the <code class="docutils literal notranslate"><
 when the stamp is behind the binary (no migration of that binary has
 completed here — the ladder’s step 2, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code>),
 and serve’s own startup migration refuses to run a full pass while
-another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is connected. A same-version <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">serve</span></code>
-is NOT refused — it would start a second full scheduler — so both the
-gate and serve’s log say when another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is already
-connected; <code class="docutils literal notranslate"><span class="pre">stop</span></code> scopes its backend check to this host.</p></li>
+another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is connected. Since 2026-09-11 a
+<strong>same-version</strong> <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">serve</span></code> is refused too: serve will not start a
+second full scheduler against a database that already has one, because
+the two compete for the same queue and API keys. If you genuinely want
+two, say so explicitly with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span> <span class="pre">--allow-second-serve</span></code>.
+<code class="docutils literal notranslate"><span class="pre">stop</span></code> scopes its backend check to this host.</p></li>
 </ul>
 <p>Full recipe — Postgres remote access, minimal config template, systemd
 unit, libmagic version-lock — in the

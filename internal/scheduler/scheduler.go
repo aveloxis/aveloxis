@@ -1648,6 +1648,35 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 	token, instrumentToken := collector.ScorecardTokens(
 		s.ghKeys, s.cfg.Collection.ScorecardTokenCountOrDefault())
 
+	// Token-contention probe (2026-09-11, F2). ScorecardTokens hands
+	// EVERY non-invalidated pool token to EVERY concurrent scorecard
+	// subprocess: AllTokens deliberately ignores rate-limit state and
+	// performs no checkout. So ~N subprocesses and the collection
+	// workers spend the same key set with zero coordination, and
+	// scorecard — which sleeps through rate-limit resets rather than
+	// failing — is the component that pays for it in wall-clock. That
+	// is the leading hypothesis for the 4,608 full-cap timeouts
+	// measured over 5.2 days, and this line is how it gets confirmed
+	// or discarded: correlate token_count and pool_remaining at
+	// attempt start against the "scorecard attempt" outcomes.
+	//
+	// Deliberately NOT a fix. Gating scorecard on a real checkout, or
+	// shrinking the token slice, changes fleet behaviour on a
+	// hypothesis; a week of this pairing settles it on evidence first.
+	tokenCount := 0
+	if token != "" {
+		tokenCount = strings.Count(token, ",") + 1
+	}
+	poolRemaining, poolAlive := -1, -1
+	if s.ghKeys != nil {
+		poolRemaining, poolAlive = s.ghKeys.TotalRemaining(), s.ghKeys.AliveCount()
+	}
+	s.logger.Info("scorecard tokens",
+		"repo_id", repoID,
+		"token_count", tokenCount,
+		"pool_alive_keys", poolAlive,
+		"pool_remaining", poolRemaining)
+
 	// Clean up the retained temp clone once scorecard is done — on
 	// every exit, the shutdown one included.
 	defer func() {
@@ -1661,7 +1690,8 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 		}
 	}()
 
-	_, scErr := collector.RunScorecard(ctx, s.store, repoID, collector.ScorecardOptions{
+	phaseStart := time.Now()
+	scResult, scErr := collector.RunScorecard(ctx, s.store, repoID, collector.ScorecardOptions{
 		RepoURL:         repoURL,
 		LocalPath:       analysisClonePath,
 		RemotePrimary:   repo.Platform == model.PlatformGitHub,
@@ -1672,6 +1702,27 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 	if errors.Is(scErr, context.Canceled) {
 		return // shutdown, not a failure
 	}
+
+	// PHASE cost, as opposed to the per-attempt cost the collector
+	// logs. This is the number that answers "how long did scorecard
+	// hold this collection worker's slot" — remote attempt plus local
+	// fallback plus persistence — and it is what makes the 18%-of-
+	// capacity claim checkable per repo instead of by inference.
+	//
+	// The result was discarded before this (`_, scErr :=`), so mode
+	// and measured API spend never left the collector package even
+	// though ScorecardResult has carried them since v0.27.5.
+	mode, apiCalls := "none", int64(0)
+	if scResult != nil {
+		mode, apiCalls = scResult.Mode, scResult.APICalls
+	}
+	s.logger.Info("scorecard phase complete",
+		"repo_id", repoID,
+		"ok", scErr == nil,
+		"mode", mode,
+		"api_calls_used", apiCalls,
+		"phase_duration", time.Since(phaseStart))
+
 	if scErr != nil {
 		s.logger.Warn("scorecard failed", "repo_id", repoID, "error", scErr)
 	}

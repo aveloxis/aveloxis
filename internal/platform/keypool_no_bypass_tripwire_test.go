@@ -141,11 +141,15 @@ func TestKeyPoolIsTheOnlyPathToAForgeKey(t *testing.T) {
 			// literal only: adding them function-wide made a legal
 			// `c.keys` (the HTTPClient field) fire when a closure happened
 			// to name its *KeyPool parameter `c` (L10 pass 5). Each literal
-			// is walked with its own copy of the handle set.
+			// is walked with its own copy of the handle set, and resolves
+			// its own aliases over that copy (L10 pass 6). `root` is always
+			// a block, never a literal, so the literal check needs no
+			// self-guard; returning false hands the body to the recursive
+			// walk exactly once.
 			var walk func(n ast.Node, handles map[string]bool)
 			walk = func(root ast.Node, handles map[string]bool) {
 				ast.Inspect(root, func(n ast.Node) bool {
-					if lit, ok := n.(*ast.FuncLit); ok && n != root {
+					if lit, ok := n.(*ast.FuncLit); ok {
 						inner := map[string]bool{}
 						for k := range handles {
 							inner[k] = true
@@ -159,6 +163,7 @@ func TestKeyPoolIsTheOnlyPathToAForgeKey(t *testing.T) {
 								}
 							}
 						}
+						resolveAliases(lit.Body, inner, poolFields, poolReturners)
 						walk(lit.Body, inner)
 						return false
 					}
@@ -406,6 +411,17 @@ func poolHandles(fn *ast.FuncDecl, poolFields, poolReturners map[string]bool) ma
 	addFields(fn.Recv)
 	addFields(fn.Type.Params)
 	addFields(fn.Type.Results)
+	resolveAliases(fn.Body, h, poolFields, poolReturners)
+	return h
+}
+
+// resolveAliases adds to h every identifier in body that is bound to a
+// pool through `:=`, `=` or an untyped `var x = …`. It is run once over the
+// enclosing function's body (poolHandles) and once over EACH closure body
+// with that closure's pool-typed params seeded — an alias of a closure
+// parameter declared inside the literal walked past check 1 while the
+// resolution ran only function-wide (L10 pass 6).
+func resolveAliases(body ast.Node, h, poolFields, poolReturners map[string]bool) {
 	// yieldsPool reports whether rhs evaluates to a pool: a call to a
 	// pool-returning function or method, a pool-typed struct field, or
 	// another handle. Shared by `:=`/`=` and by untyped `var x = …` (L10
@@ -427,7 +443,7 @@ func poolHandles(fn *ast.FuncDecl, poolFields, poolReturners map[string]bool) ma
 		return false
 	}
 	for pass := 0; pass < 2; pass++ {
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
+		ast.Inspect(body, func(n ast.Node) bool {
 			switch v := n.(type) {
 			case *ast.ValueSpec:
 				if isKeyPoolType(v.Type) {
@@ -455,7 +471,6 @@ func poolHandles(fn *ast.FuncDecl, poolFields, poolReturners map[string]bool) ma
 			return true
 		})
 	}
-	return h
 }
 
 // returnsIdent reports whether any return statement in body hands back

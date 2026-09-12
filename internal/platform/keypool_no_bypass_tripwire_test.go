@@ -445,6 +445,13 @@ func resolveAliases(body ast.Node, h, poolFields, poolReturners map[string]bool)
 	for pass := 0; pass < 2; pass++ {
 		ast.Inspect(body, func(n ast.Node) bool {
 			switch v := n.(type) {
+			case *ast.FuncLit:
+				// A closure's aliases are scoped to the closure: `walk`
+				// re-resolves each literal over its own seeded copy, so
+				// descending here would add `q := kp` from inside a
+				// closure to the FUNCTION-wide set and false-fire on a
+				// same-named non-pool `q` outside it (L10 pass 7).
+				return false
 			case *ast.ValueSpec:
 				if isKeyPoolType(v.Type) {
 					for _, id := range v.Names {

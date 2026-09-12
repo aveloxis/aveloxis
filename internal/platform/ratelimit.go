@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -47,6 +48,52 @@ type APIKey struct {
 	// revoked). It is NOT reset on success — a flaky token earns progressively
 	// longer cooldowns.
 	quarantineCount int
+
+	// ── 2026-09-12 admission control ─────────────────────────────────
+	// inflight is the number of requests currently holding a lease on
+	// this key (Acquire..release). Bounded by KeyPool.maxInflightPerKey;
+	// selection prefers the least-loaded key. Before this field existed
+	// the same *APIKey could be handed to any number of concurrent callers
+	// — the chaoss.tv analysis measured up to ~96% of 192 concurrent
+	// history-sweep requests landing on ONE key, tripping GitHub's
+	// per-key secondary limit 46,612 times in five days.
+	inflight int
+	// secondaryUntil is the wall-clock time before which this key is
+	// resting after a 403 + Retry-After (GitHub's SECONDARY rate limit:
+	// concurrency / points-per-minute / CPU). Distinct from quarantineUntil
+	// (401s) and from Remaining/GraphQLRemaining = 0 (PRIMARY exhaustion)
+	// so the three causes stay distinguishable in logs and in selection.
+	// Pre-fix a secondary limit changed NO pool state: only the calling
+	// goroutine slept, and every other goroutine kept being handed the
+	// throttled key — the 179-rejections-in-one-second herd.
+	secondaryUntil time.Time
+	secondaryHits  int
+	// lent counts subprocesses currently borrowing this token via
+	// LendTokens (scorecard). A subprocess cannot hold a Go lease, so its
+	// use is ACCOUNTED rather than admitted: lending prefers the least-lent
+	// keys and the count is visible in Snapshot, replacing the old
+	// AllTokens bypass that handed every token to every subprocess
+	// invisibly.
+	lent int
+}
+
+// Resource is the rate-limit bucket a request spends from. GitHub keeps
+// separate per-user budgets for REST ("core") and GraphQL; the pool
+// tracks both per key and Acquire gates on the one the caller names.
+type Resource int
+
+const (
+	// ResourceCore is the REST bucket (also GitLab's single unified budget).
+	ResourceCore Resource = iota
+	// ResourceGraphQL is GitHub's separate GraphQL point budget.
+	ResourceGraphQL
+)
+
+func (r Resource) String() string {
+	if r == ResourceGraphQL {
+		return "graphql"
+	}
+	return "core"
 }
 
 // KeyPool manages a set of API keys with round-robin rotation.
@@ -76,7 +123,52 @@ type KeyPool struct {
 	consecutive5xx int
 	apiPauseUntil  time.Time
 	apiTripped     bool // for transition-only logging
+
+	// ── 2026-09-12 admission control ─────────────────────────────────
+	// cond parks Acquire callers that cannot be admitted right now (a
+	// ceiling is full, or every key is out of budget / resting); release
+	// and every state change that could admit a waiter Broadcast it.
+	cond *sync.Cond
+	// inflight is the pool-wide count of leases currently held. Bounded by
+	// maxInflight. Little's Law on the measured fleet: 54 keys x 5,000
+	// points/hr = 75 points/sec, at ~341 ms per GraphQL query ≈ 26 in
+	// flight saturates the ENTIRE budget — more concurrency cannot buy
+	// throughput, only rejections. Production ran ~264.
+	inflight          int
+	maxInflight       int // 0 = unbounded
+	maxInflightPerKey int // 0 = unbounded
+	// foregroundReservePct is the share of each resource's pool-wide
+	// budget that BACKGROUND callers (WithGraphQLBackgroundBudget) may
+	// not spend into — the pool-level replacement for the old per-key
+	// 500-point cliff (GraphQLBackgroundReserve). A per-key cliff SHRANK
+	// the background-eligible set as keys depleted, concentrating the
+	// whole sweep onto the few survivors (Bug A of the 2026-09-12
+	// analysis); a pool-level line has no such edge. Foreground callers
+	// are admitted while any budget remains.
+	foregroundReservePct int
 }
+
+// Admission defaults — derived from the 2026-09-12 chaoss.tv
+// measurements, not picked:
+//
+//   - DefaultMaxInflight 40: saturation is ~26 in flight (75 points/sec x
+//     341 ms); 40 is 1.5x headroom for latency spikes and 2.5x under
+//     GitHub's ~100-concurrent secondary ceiling. Since the binding limit
+//     is per KEY (below), this global line is a backstop.
+//   - DefaultMaxInflightPerKey 4: non-binding at 54 keys under a global
+//     40 (~0.7 per key); it exists so concentration can never reach a
+//     per-token limit however the pool is otherwise depleted. It also
+//     bounds per-key points/minute by construction: 4 in flight at
+//     >=120 ms latency is <= 2,000/min, GitHub's GraphQL secondary line.
+//   - DefaultForegroundReservePct 25: collection measured at ~9% of
+//     budget; x~3 safety. Background gets the rest and is self-limiting
+//     (a 90-day cooldown leaves ~1,453 contributors/hr eligible once the
+//     backlog clears).
+const (
+	DefaultMaxInflight          = 40
+	DefaultMaxInflightPerKey    = 4
+	DefaultForegroundReservePct = 25
+)
 
 // API-outage breaker tuning. Consecutive-without-success is the
 // deliberate signal: during the measured 2026-07-21 storm 58% of
@@ -103,15 +195,12 @@ const DefaultBuffer = 15
 // refill value when a key's graphql window resets.
 const graphQLPointsPerHour = 5000
 
-// GraphQLBackgroundReserve is the graphql-point headroom BACKGROUND
-// sweeps (contributor activity history / classification) must leave on a
-// key for foreground collection. Derivation: collection's PR batches and
-// child pagination burst ~30-60 queries/min at ~1-10 points each; 500
-// points per key x the fleet's keys reserves ~10% of the total graphql
-// budget for collection, while background work may consume the rest.
-// Background checkout (WithGraphQLBackgroundBudget) refuses keys AT or
-// below this line; foreground checkout uses the ordinary buffer.
-const GraphQLBackgroundReserve = 500
+// GraphQLBackgroundReserve (the per-key 500-point cliff, 2026-09-01 to
+// 2026-09-12) was REMOVED in favour of the pool-level
+// foregroundReservePct. It is not coming back: a per-key threshold is
+// exactly what shrank the background-eligible set as keys depleted and
+// funnelled 192 concurrent requests onto a handful of survivors (Bug A).
+// Remove-don't-deprecate.
 
 // graphQLDepletedProbe is the fallback graphql reset window used by
 // MarkGraphQLExhausted when no reset header was ever observed for the
@@ -158,100 +247,495 @@ func NewKeyPoolWithBuffer(tokens []string, buffer int, logger *slog.Logger) *Key
 	if buffer < 1 {
 		buffer = DefaultBuffer
 	}
-	return &KeyPool{
-		keys:   keys,
-		buffer: buffer,
-		logger: logger,
+	kp := &KeyPool{
+		keys:                 keys,
+		buffer:               buffer,
+		logger:               logger,
+		maxInflight:          DefaultMaxInflight,
+		maxInflightPerKey:    DefaultMaxInflightPerKey,
+		foregroundReservePct: DefaultForegroundReservePct,
+	}
+	kp.cond = sync.NewCond(&kp.mu)
+	return kp
+}
+
+// SetAdmission overrides the admission ceilings. 0 for either in-flight
+// ceiling means unbounded; 0 for the reserve means no foreground
+// reservation. The constructor installs the derived defaults; this exists
+// for the config wiring (cmd/aveloxis) and for tests that isolate one
+// dimension. Wakes waiters so a raised ceiling admits immediately.
+func (kp *KeyPool) SetAdmission(maxInflight, maxInflightPerKey, foregroundReservePct int) {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	kp.maxInflight = maxInflight
+	kp.maxInflightPerKey = maxInflightPerKey
+	kp.foregroundReservePct = foregroundReservePct
+	kp.cond.Broadcast()
+}
+
+// admissionVerdict is what selectLocked concluded about the pool right
+// now, which decides how Acquire waits.
+type admissionVerdict int
+
+const (
+	verdictAdmit          admissionVerdict = iota // a key was chosen
+	verdictSlotsFull                              // budget exists but every admissible key (or the pool) is at its in-flight ceiling — wait for a release, never fast-fail
+	verdictBudgetBlocked                          // nothing has budget / everything is resting or quarantined — wait for the earliest reset, or fast-fail
+	verdictReserveBlocked                         // some usable key is spendable but the usable total is at or below the foreground reserve — background waits for a window reset or a rest expiry, or fast-fails
+)
+
+// Acquire is the ONLY way to obtain a key. It admits the caller against
+// every constraint the pool knows — per-key primary budget for the named
+// resource, per-key secondary cooldown, 401 quarantine, the per-key and
+// pool-wide in-flight ceilings, and (for background callers) the
+// foreground budget reservation — then leases the least-loaded eligible
+// key. The returned release MUST be deferred by the caller; it is
+// idempotent.
+//
+// Class comes from the context: WithGraphQLBackgroundBudget marks a
+// background sweep (only meaningful for ResourceGraphQL); WithGraphQLFastFail
+// makes a BUDGET block return ErrGraphQLBudgetExhausted instead of waiting.
+// A fast-fail caller still waits on a full in-flight ceiling: fast-fail
+// means "my budget is spent — my subdivision is the retry", and a
+// momentarily full gate is not that (turning it into an error would make
+// subdividing callers halve healthy batches under ordinary contention).
+//
+// Selection: among eligible keys, minimum in-flight, then maximum
+// remaining budget, then the per-resource round-robin cursor. That is
+// what spreads load across all keys instead of funnelling it onto the
+// first eligible key after a shared cursor (Bug B of the 2026-09-12
+// analysis).
+func (kp *KeyPool) Acquire(ctx context.Context, res Resource) (*APIKey, func(), error) {
+	background := res == ResourceGraphQL && graphqlBackgroundBudgetEnabled(ctx)
+	fastFail := res == ResourceGraphQL && graphqlFastFailEnabled(ctx)
+
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+
+	var lastLoggedWake time.Time
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		if len(kp.keys) == 0 {
+			return nil, nil, fmt.Errorf("no API keys configured — add keys via 'aveloxis add-key' or the database")
+		}
+		now := time.Now()
+		kp.refillLocked(now, res)
+
+		key, verdict, wake, allInvalid := kp.selectLocked(now, res, background)
+		switch verdict {
+		case verdictAdmit:
+			key.inflight++
+			kp.inflight++
+			if res == ResourceGraphQL {
+				// Copilot round 8 on PR #193: RESERVE the query's cost at
+				// checkout so concurrent callers cannot all observe the same
+				// pre-request balance and collectively spend through the
+				// reserve. One point is the measured cost of a history
+				// window query (v0.27.58); the response's absolute header
+				// overwrites it within one round-trip (UpdateFromResponse).
+				key.GraphQLRemaining--
+			}
+			return key, kp.releaseFunc(key), nil
+
+		case verdictSlotsFull:
+			// Budget exists somewhere; only the in-flight ceilings are
+			// full. A release will Broadcast — no timer, no fast-fail.
+			kp.waitLocked(ctx, time.Time{})
+
+		case verdictBudgetBlocked, verdictReserveBlocked:
+			if allInvalid {
+				// Only reachable via the legacy permanent InvalidateKey
+				// path; the 401 quarantine path never sets Invalid.
+				return nil, nil, fmt.Errorf("%w: all API keys have been invalidated (bad credentials) — check your tokens", ErrAllKeysInvalidated)
+			}
+			if fastFail {
+				return nil, nil, ErrGraphQLBudgetExhausted
+			}
+			if wake.IsZero() {
+				wake = now.Add(graphQLDepletedProbe)
+			}
+			// Log once per distinct wake, not once per spurious wakeup: a
+			// Broadcast wakes every parked waiter and each re-evaluates.
+			if !wake.Equal(lastLoggedWake) {
+				lastLoggedWake = wake
+				// The exhaustion lines are ops-grepped as "every key is dry";
+				// a reserve block is the opposite state (keys hold budget,
+				// background is being paced), so it says so in its own words.
+				// Three states, three ops-grepped texts: every usable key is
+				// DRY ("exhausted"), every key is RESTING on a limit or a
+				// quarantine while holding budget ("unavailable"), or usable
+				// keys hold budget below the reserve line ("paced"). The
+				// exhausted line is chosen only when some key is usable and
+				// still nothing was admissible — i.e. the usable keys are
+				// dry — never for an all-resting pool with full windows (L10
+				// pass 2, finding 2).
+				usable, spendable, total, line := kp.reserveStateLocked(time.Now(), res)
+				msg := "all API keys unavailable (rate-limited or quarantined), waiting"
+				switch {
+				case verdict == verdictReserveBlocked:
+					msg = "GraphQL background sweep paced by the foreground reserve, waiting for the reserve to clear"
+				case res == ResourceGraphQL && usable > 0:
+					msg = "all API keys exhausted for GraphQL, waiting for window reset"
+				}
+				attrs := []any{
+					"keys", len(kp.keys), "buffer", kp.buffer, "background", background,
+					"reserve_pct", kp.foregroundReservePct,
+					"until", wake.Format(time.RFC3339), "wait", time.Until(wake).Truncate(time.Second)}
+				if verdict == verdictReserveBlocked {
+					attrs = append(attrs, "usable_keys", usable, "spendable_keys", spendable, "usable_total", total, "reserve_line", line)
+				}
+				kp.logger.Info(msg, attrs...)
+			}
+			// Jitter the wake so a fleet of waiters does not stampede the
+			// reset instant (the pre-existing 1-3 s spread).
+			kp.waitLocked(ctx, wake.Add(time.Duration(rand.IntN(3)+1)*time.Second))
+		}
 	}
 }
 
-// GetKey returns a usable API key using round-robin rotation.
-// All keys are rotated through evenly so every key's limit is utilized.
-// Blocks until a key is available (i.e., until a rate-limit window resets).
-func (kp *KeyPool) GetKey(ctx context.Context) (*APIKey, error) {
-	for {
-		kp.mu.Lock()
-
-		// Fast exit: no keys were ever configured.
-		if len(kp.keys) == 0 {
-			kp.mu.Unlock()
-			return nil, fmt.Errorf("no API keys configured — add keys via 'aveloxis add-key' or the database")
+// refillLocked restores keys whose window for res has reset. Caller holds kp.mu.
+//
+// A passed reset is authoritative for EVERY key, whatever its remaining
+// balance: GitHub has already refilled it. The first draft refilled only
+// keys at or below the buffer (the shape the retired GetGraphQLKey had,
+// where the refill guard and the per-key cliff agreed), and that left a
+// hole under the POOL-level reserve: with every key holding, say, 1,250
+// points the sweep is reserve-blocked, no key is at the buffer, nothing
+// refills when the windows roll, and the total stays stale until a
+// foreground response happens to refresh a header — on a quiet fleet,
+// never (review round on the 2026-09-12 change). After a real header
+// refresh the reset is in the future, so the balance guard was never
+// load-bearing for a live key; the probe stamp (below buffer, no header
+// reset known) refills exactly as before.
+func (kp *KeyPool) refillLocked(now time.Time, res Resource) {
+	for _, k := range kp.keys {
+		if k.Invalid {
+			continue
 		}
-
-		now := time.Now()
-
-		// Refill any keys whose rate-limit window has reset.
-		for _, k := range kp.keys {
-			if !k.Invalid && k.Remaining <= kp.buffer && !k.ResetAt.IsZero() && now.After(k.ResetAt) {
+		switch res {
+		case ResourceGraphQL:
+			if !k.GraphQLResetAt.IsZero() && now.After(k.GraphQLResetAt) {
+				k.GraphQLRemaining = graphQLPointsPerHour
+				k.GraphQLResetAt = time.Time{}
+			}
+		default:
+			if !k.ResetAt.IsZero() && now.After(k.ResetAt) {
 				k.Remaining = 5000
 				k.ResetAt = time.Time{}
 			}
 		}
+	}
+}
 
-		// Round-robin through all keys to find one that is usable now: not
-		// permanently invalid, not currently quarantined for auth failures,
-		// and with rate-limit headroom above the buffer.
-		n := len(kp.keys)
-		for i := 0; i < n; i++ {
-			idx := (kp.rrIndex + i) % n
-			k := kp.keys[idx]
-			if !k.Invalid && now.After(k.quarantineUntil) && k.Remaining > kp.buffer {
-				kp.rrIndex = (idx + 1) % n // advance past this key for next call
-				kp.mu.Unlock()
-				return k, nil
-			}
+func (k *APIKey) remaining(res Resource) int {
+	if res == ResourceGraphQL {
+		return k.GraphQLRemaining
+	}
+	return k.Remaining
+}
+
+func (k *APIKey) resetAt(res Resource) time.Time {
+	if res == ResourceGraphQL {
+		return k.GraphQLResetAt
+	}
+	return k.ResetAt
+}
+
+// selectLocked evaluates the pool for one Acquire attempt. Caller holds
+// kp.mu. Returns the chosen key on verdictAdmit; on verdictBudgetBlocked
+// the earliest instant any key could become eligible (zero if unknown —
+// the caller stamps the probe window). allInvalid is true only when every
+// key carries the legacy permanent Invalid flag.
+func (kp *KeyPool) selectLocked(now time.Time, res Resource, background bool) (*APIKey, admissionVerdict, time.Time, bool) {
+	// Pool-level foreground reservation: background is admitted only
+	// while the resource's usable total is ABOVE reservePct% of capacity
+	// (at or below the line blocks). Capacity is the per-key window
+	// budget x usable keys. "Usable" excludes keys resting on a
+	// secondary limit or a 401 quarantine: their budget is not
+	// spendable now, so counting it would admit a sweep that then
+	// drains the keys that ARE usable past the line's intent (review
+	// round on the 2026-09-12 change).
+	if background && kp.foregroundReservePct > 0 {
+		usable, spendable, total, line := kp.reserveStateLocked(now, res)
+		// With ZERO usable keys the line is 0 and "0 <= 0" would read as
+		// reserve pacing. That state is BUDGET-blocked (every key rests or
+		// is dry): selection below computes the right verdict and wake —
+		// the earliest rest/quarantine expiry, which is minutes, not the
+		// window reset, which is up to an hour (L10 pass on the
+		// review-round fixes: an all-resting pool logged "paced by the
+		// foreground reserve … wait=49m59s").
+		// A reserve block is "some usable key holds SPENDABLE budget, but
+		// the total is below the line". Spendability is PER KEY: no usable
+		// key above the buffer is exhaustion, not pacing, and falls through
+		// to selection (verdictBudgetBlocked, the probe stamp, the
+		// ops-grepped "exhausted" text for every caller class — the history
+		// sweep is a background caller and must log the incident line).
+		// The pass-3 draft tested the SUM against usable*buffer, which let
+		// one key holding the window's last points serve a background
+		// sweep below the line while its siblings were dry (L10 pass 4).
+		if usable > 0 && spendable > 0 && total <= line {
+			// A release cannot lift the total; a window reset can, and so
+			// can a resting key rejoining the usable set.
+			return nil, verdictReserveBlocked, kp.earliestReserveWakeLocked(now, res), false
 		}
+	}
 
-		// No key is usable right now. Find the soonest time ANY non-invalid key
-		// becomes usable again — the later of its rate-limit reset and its auth
-		// quarantine expiry — and wait for it. Quarantined keys recover here
-		// automatically; a transient 401 wave no longer ends collection.
-		var earliestWake time.Time
-		allInvalid := true
-		for _, k := range kp.keys {
-			if k.Invalid {
-				continue
+	var (
+		best         *APIKey
+		bestIdx      = -1
+		budgetSeen   bool // some key has budget and is not resting/quarantined
+		allInvalid   = true
+		cursor       = kp.rrIndex
+		earliestWake time.Time
+	)
+	if res == ResourceGraphQL {
+		cursor = kp.rrIndexGQL
+	}
+	n := len(kp.keys)
+	for i := 0; i < n; i++ {
+		idx := (cursor + i) % n // walk from the cursor so ties keep rotating
+		k := kp.keys[idx]
+		if k.Invalid {
+			continue
+		}
+		allInvalid = false
+		resting := k.restingAt(now)
+		if resting || !kp.spendable(k, res) {
+			// Not eligible now; remember when it might be.
+			wake := k.resetAt(res)
+			if kp.spendable(k, res) {
+				wake = time.Time{} // budget is fine; only the rest matters
+			} else if wake.IsZero() {
+				// Below buffer with no known reset (headers never carried
+				// one): stamp the probe window so the refill guard can fire
+				// (Copilot round 22 on PR #193).
+				wake = now.Add(graphQLDepletedProbe)
+				if res == ResourceGraphQL {
+					k.GraphQLResetAt = wake
+				} else {
+					k.ResetAt = wake
+				}
 			}
-			allInvalid = false
-			wake := k.ResetAt
 			if k.quarantineUntil.After(wake) {
 				wake = k.quarantineUntil
 			}
-			if earliestWake.IsZero() || (!wake.IsZero() && wake.Before(earliestWake)) {
+			if k.secondaryUntil.After(wake) {
+				wake = k.secondaryUntil
+			}
+			if !wake.IsZero() && (earliestWake.IsZero() || wake.Before(earliestWake)) {
 				earliestWake = wake
 			}
+			continue
 		}
-		kp.mu.Unlock()
-
-		if allInvalid {
-			// Only reachable via the legacy permanent InvalidateKey path; the
-			// 401 quarantine path never sets Invalid, so a transient incident
-			// can't land here.
-			return nil, fmt.Errorf("%w: all API keys have been invalidated (bad credentials) — check your tokens", ErrAllKeysInvalidated)
+		budgetSeen = true
+		if kp.maxInflightPerKey > 0 && k.inflight >= kp.maxInflightPerKey {
+			continue
 		}
-
-		// Wait for the earliest wake time.
-		if earliestWake.IsZero() {
-			// No wake time known — all keys were calibrated below buffer but
-			// no reset header was received yet. Wait briefly and retry.
-			earliestWake = now.Add(30 * time.Second)
-		}
-
-		wait := time.Until(earliestWake) + time.Duration(rand.IntN(3)+1)*time.Second
-		if wait < time.Second {
-			wait = time.Second
-		}
-		kp.logger.Info("all API keys unavailable (rate-limited or quarantined), waiting",
-			"keys", len(kp.keys), "buffer", kp.buffer,
-			"until", earliestWake.Format(time.RFC3339), "wait", wait.Truncate(time.Second))
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(wait):
-			// Retry after reset.
+		// Least in-flight, then most remaining, then cursor order (first seen).
+		if best == nil ||
+			k.inflight < best.inflight ||
+			(k.inflight == best.inflight && k.remaining(res) > best.remaining(res)) {
+			best, bestIdx = k, idx
 		}
 	}
+	if best == nil {
+		if budgetSeen {
+			return nil, verdictSlotsFull, time.Time{}, false
+		}
+		return nil, verdictBudgetBlocked, earliestWake, allInvalid
+	}
+	if kp.maxInflight > 0 && kp.inflight >= kp.maxInflight {
+		return nil, verdictSlotsFull, time.Time{}, false
+	}
+	next := (bestIdx + 1) % n
+	if res == ResourceGraphQL {
+		kp.rrIndexGQL = next
+	} else {
+		kp.rrIndex = next
+	}
+	return best, verdictAdmit, time.Time{}, false
+}
+
+// earliestResetLocked is the soonest window reset among alive keys for
+// res (zero if none is known). Caller holds kp.mu.
+func (kp *KeyPool) earliestResetLocked(now time.Time, res Resource) time.Time {
+	var earliest time.Time
+	for _, k := range kp.keys {
+		if k.Invalid {
+			continue
+		}
+		r := k.resetAt(res)
+		if r.IsZero() || !r.After(now) {
+			continue
+		}
+		if earliest.IsZero() || r.Before(earliest) {
+			earliest = r
+		}
+	}
+	return earliest
+}
+
+// earliestReserveWakeLocked is the soonest instant a reserve block could
+// clear: the earliest window reset (the total refills) or the earliest
+// rest/quarantine expiry (a key rejoins the usable set, lifting both the
+// total and the line). Zero if neither is known. Caller holds kp.mu.
+func (kp *KeyPool) earliestReserveWakeLocked(now time.Time, res Resource) time.Time {
+	wake := kp.earliestResetLocked(now, res)
+	for _, k := range kp.keys {
+		if k.Invalid || !k.restingAt(now) {
+			continue
+		}
+		for _, until := range []time.Time{k.quarantineUntil, k.secondaryUntil} {
+			if until.After(now) && (wake.IsZero() || until.Before(wake)) {
+				wake = until
+			}
+		}
+	}
+	if wake.IsZero() {
+		// No key knows its reset and none is resting: a usable key with an
+		// UNKNOWN reset is holding the sweep at the line (the round-22
+		// Remaining-only-header shape, one branch up). Selection never
+		// stamps such a key because it would ADMIT it; the reserve branch
+		// must, or refillLocked can never refill it and the sweep re-logs
+		// every probe window until a foreground response happens to
+		// carry a reset (L10 pass 2, finding 1).
+		wake = now.Add(graphQLDepletedProbe)
+		for _, k := range kp.keys {
+			if !k.usableAt(now) || !k.resetAt(res).IsZero() {
+				continue
+			}
+			if res == ResourceGraphQL {
+				k.GraphQLResetAt = wake
+			} else {
+				k.ResetAt = wake
+			}
+		}
+	}
+	return wake
+}
+
+// reserveStateLocked is the ONE spelling of the foreground-reserve
+// arithmetic (SR-17): the keys background could use right now, how many
+// of those hold spendable budget (above the buffer — the same per-key
+// test selection applies), their remaining total for res, and the line
+// that total must stay above. Caller holds kp.mu.
+func (kp *KeyPool) reserveStateLocked(now time.Time, res Resource) (usable, spendable, total, line int) {
+	for _, k := range kp.keys {
+		if !k.usableAt(now) {
+			continue
+		}
+		usable++
+		if kp.spendable(k, res) {
+			spendable++
+		}
+		total += k.remaining(res)
+	}
+	perKey := 5000
+	if res == ResourceGraphQL {
+		perKey = graphQLPointsPerHour
+	}
+	line = usable * perKey * kp.foregroundReservePct / 100
+	return usable, spendable, total, line
+}
+
+// spendable is the ONE per-key budget test (SR-17): a key can be handed
+// out for res only while its remaining balance is above the buffer.
+func (kp *KeyPool) spendable(k *APIKey, res Resource) bool {
+	return k.remaining(res) > kp.buffer
+}
+
+// restingAt reports whether k is sitting out a 401 quarantine or a
+// secondary-limit cooldown at now — the ONE spelling selection, the
+// reserve and usableLocked all consult (SR-17).
+func (k *APIKey) restingAt(now time.Time) bool {
+	return now.Before(k.quarantineUntil) || now.Before(k.secondaryUntil)
+}
+
+// usableAt reports whether background or foreground could be handed k at
+// now, ignoring budget: not permanently invalid and not resting.
+func (k *APIKey) usableAt(now time.Time) bool {
+	return !k.Invalid && !k.restingAt(now)
+}
+
+// waitLocked parks the caller on kp.cond until a Broadcast, until `until`
+// passes (when non-zero), or until ctx is done. Caller holds kp.mu; the
+// lock is released while parked and re-held on return, and the caller
+// re-evaluates the pool (spurious wakeups are expected and harmless).
+func (kp *KeyPool) waitLocked(ctx context.Context, until time.Time) {
+	done := make(chan struct{})
+	go func() {
+		var tc <-chan time.Time
+		if !until.IsZero() {
+			d := time.Until(until)
+			if d < 0 {
+				d = 0
+			}
+			tm := time.NewTimer(d)
+			defer tm.Stop()
+			tc = tm.C
+		}
+		select {
+		case <-ctx.Done():
+		case <-tc:
+		case <-done:
+			return
+		}
+		kp.mu.Lock()
+		kp.cond.Broadcast()
+		kp.mu.Unlock()
+	}()
+	kp.cond.Wait()
+	close(done)
+}
+
+// releaseFunc returns the idempotent lease release for key.
+func (kp *KeyPool) releaseFunc(key *APIKey) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			kp.mu.Lock()
+			key.inflight--
+			kp.inflight--
+			kp.cond.Broadcast()
+			kp.mu.Unlock()
+		})
+	}
+}
+
+// MarkSecondaryLimited rests key for retryAfter after a 403 + Retry-After
+// (GitHub's secondary rate limit). The pool's other keys keep serving —
+// that is the whole point: a throttled key sits out its Retry-After
+// while a healthy one carries the next request, instead of every
+// concurrent caller being handed the throttled key and each earning its
+// own 403 and its own 60-second sleep. Budget and auth state are NOT
+// touched; the three causes stay distinguishable.
+func (kp *KeyPool) MarkSecondaryLimited(key *APIKey, retryAfter time.Duration) {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	kp.markSecondaryLimitedLocked(key, retryAfter)
+}
+
+// markSecondaryLimitedLocked is MarkSecondaryLimited under kp.mu —
+// shared with UpdateFromResponse so the rest is applied in the same
+// critical section as the budget headers.
+func (kp *KeyPool) markSecondaryLimitedLocked(key *APIKey, retryAfter time.Duration) {
+	if retryAfter <= 0 {
+		retryAfter = time.Second
+	}
+	until := time.Now().Add(retryAfter)
+	if until.After(key.secondaryUntil) {
+		key.secondaryUntil = until
+	}
+	key.secondaryHits++
+	// Debug, not Info: the client that tripped the limit already logs the
+	// event with token_prefix, and the 5-minute pool summary carries the
+	// lifetime hit count — an Info here doubled the log volume in exactly
+	// the storm this cooldown exists to end.
+	kp.logger.Debug("API key secondary-rate-limited — resting it for Retry-After",
+		"token_prefix", tokenPrefix(key.Token), "retry_after", retryAfter,
+		"lifetime_hits", key.secondaryHits, "inflight_on_key", key.inflight)
 }
 
 // UpdateFromResponse reads rate-limit headers and updates the key's state.
@@ -304,6 +788,22 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 		windowedBudgetUpdate(&key.GraphQLRemaining, &key.GraphQLResetAt, remaining, reset)
 	default:
 		// search etc. — deliberately untracked (see above).
+	}
+
+	// Copilot review on PR #203: the SECONDARY-limit state rides the same
+	// call as the primary budget, so both are applied while the caller
+	// still holds the lease (the clients release right after this
+	// returns). Pre-fix the clients released first and marked the rest
+	// in their 403/429 branches afterwards, and a waiter woken by the
+	// release could reacquire the just-throttled key in that gap. A 429
+	// is a throttle by definition; a 403 is one only with Retry-After
+	// (without it, it is a permission error — ErrForbidden). Secondary
+	// limits are per token across resources, so a search 403 rests the
+	// key too. This is the ONE place the rest is recorded per response;
+	// the clients' branches keep only their logging and pacing.
+	if resp.StatusCode == http.StatusTooManyRequests ||
+		(resp.StatusCode == http.StatusForbidden && resp.Header.Get("Retry-After") != "") {
+		kp.markSecondaryLimitedLocked(key, parseRetryAfter(resp))
 	}
 }
 
@@ -397,131 +897,25 @@ func (kp *KeyPool) MarkCoreExhausted(key *APIKey) {
 	}
 }
 
-// ErrGraphQLBudgetExhausted is returned by GetGraphQLKey under
-// WithGraphQLFastFail when every key's graphql budget is spent — the
+// ErrGraphQLBudgetExhausted is returned by Acquire(ResourceGraphQL) under
+// WithGraphQLFastFail when no key has graphql budget (or, for a
+// background caller, the pool is at the foreground reservation) — the
 // fast-fail caller's own machinery (batch subdivision, deferred
 // re-claims) is the retry strategy, so blocking until a window reset
-// would defeat it. Classifies as ClassRateLimit.
+// would defeat it. NOT returned for a full in-flight ceiling: that is
+// contention, not exhaustion, and Acquire waits it out. Classifies as
+// ClassRateLimit.
 var ErrGraphQLBudgetExhausted = &classifiedGraphQLError{
 	class:   ClassRateLimit,
 	message: "no key clears the caller's minimum graphql budget (fast-fail checkout refuses to wait for the window reset)",
 }
 
-// GetGraphQLKey returns a key with GRAPHQL budget headroom, round-robin.
-// The graphql bucket is per-USER and independent of core (GetKey's
-// dimension) — a key can be graphql-dead and REST-healthy at once.
-//
-//   - Foreground callers block until some key's graphql window resets
-//     (the same contract GetKey has for core).
-//   - Under WithGraphQLFastFail, an empty pool returns
-//     ErrGraphQLBudgetExhausted immediately instead of waiting.
-//   - Under WithGraphQLBackgroundBudget, keys below
-//     GraphQLBackgroundReserve are refused, so background sweeps leave
-//     headroom for collection; when nothing clears the reserve the
-//     checkout waits (a background ticker pacing itself against budget
-//     scarcity is the desired behavior), or fast-fails if both flags set.
-func (kp *KeyPool) GetGraphQLKey(ctx context.Context) (*APIKey, error) {
-	minBudget := kp.buffer
-	if graphqlBackgroundBudgetEnabled(ctx) {
-		minBudget = GraphQLBackgroundReserve
-	}
-	for {
-		kp.mu.Lock()
-
-		if len(kp.keys) == 0 {
-			kp.mu.Unlock()
-			return nil, fmt.Errorf("no API keys configured — add keys via 'aveloxis add-key' or the database")
-		}
-
-		now := time.Now()
-
-		// Refill keys whose graphql window has reset.
-		for _, k := range kp.keys {
-			if !k.Invalid && k.GraphQLRemaining <= minBudget && !k.GraphQLResetAt.IsZero() && now.After(k.GraphQLResetAt) {
-				k.GraphQLRemaining = graphQLPointsPerHour
-				k.GraphQLResetAt = time.Time{}
-			}
-		}
-
-		n := len(kp.keys)
-		for i := 0; i < n; i++ {
-			idx := (kp.rrIndexGQL + i) % n
-			k := kp.keys[idx]
-			if !k.Invalid && now.After(k.quarantineUntil) && k.GraphQLRemaining > minBudget {
-				kp.rrIndexGQL = (idx + 1) % n
-				// Copilot round 8 on PR #193: RESERVE the query's cost at
-				// checkout. Without this, concurrent background windows
-				// all observed the same pre-request balance and could
-				// collectively spend through GraphQLBackgroundReserve —
-				// checkout gated but never consumed. One point is the
-				// measured cost of a history window query (v0.27.58);
-				// the response's X-RateLimit-Remaining OVERWRITES with
-				// the authoritative absolute in UpdateFromResponse, so
-				// an underestimate reconciles within one round-trip and
-				// a request that never gets a response leaves the
-				// conservative decrement in place (refilled at reset).
-				k.GraphQLRemaining--
-				kp.mu.Unlock()
-				return k, nil
-			}
-		}
-
-		// Nothing usable. Fast-fail callers get the typed error; everyone
-		// else waits for the earliest graphql reset / quarantine expiry.
-		var earliestWake time.Time
-		allInvalid := true
-		for _, k := range kp.keys {
-			if k.Invalid {
-				continue
-			}
-			allInvalid = false
-			wake := k.GraphQLResetAt
-			if k.quarantineUntil.After(wake) {
-				wake = k.quarantineUntil
-			}
-			if wake.IsZero() {
-				// Copilot round 22 on PR #193: an exhausted key whose
-				// successful responses carried Remaining but NO Reset has
-				// GraphQLResetAt==0 and no quarantine — the scan would skip
-				// its zero wake, the 30s fallback below never persists a
-				// deadline, and a non-fast-fail caller polls forever without
-				// ever checking out a key to LEARN a reset. Stamp the same
-				// bounded probe window MarkGraphQLExhausted uses so the key
-				// becomes re-probeable and the refill guard can fire.
-				k.GraphQLResetAt = now.Add(graphQLDepletedProbe)
-				wake = k.GraphQLResetAt
-			}
-			if earliestWake.IsZero() || (!wake.IsZero() && wake.Before(earliestWake)) {
-				earliestWake = wake
-			}
-		}
-		kp.mu.Unlock()
-
-		if allInvalid {
-			return nil, fmt.Errorf("%w: all API keys have been invalidated (bad credentials) — check your tokens", ErrAllKeysInvalidated)
-		}
-		if graphqlFastFailEnabled(ctx) {
-			return nil, ErrGraphQLBudgetExhausted
-		}
-
-		if earliestWake.IsZero() {
-			earliestWake = now.Add(30 * time.Second)
-		}
-		wait := time.Until(earliestWake) + time.Duration(rand.IntN(3)+1)*time.Second
-		if wait < time.Second {
-			wait = time.Second
-		}
-		kp.logger.Info("all API keys exhausted for GraphQL, waiting for window reset",
-			"keys", len(kp.keys), "min_budget", minBudget,
-			"until", earliestWake.Format(time.RFC3339), "wait", wait.Truncate(time.Second))
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(wait):
-		}
-	}
-}
+// GetKey and GetGraphQLKey (the bare hand-outs, through 2026-09-12) were
+// REMOVED. They returned a *APIKey with no lease, no in-flight count and
+// no release, so the same key could be handed to any number of concurrent
+// callers — the mechanism behind 46,612 secondary-limit rejections in
+// five days. Acquire is the one path. Remove-don't-deprecate: a wrapper
+// that returned no release would leak a slot per call.
 
 // MarkDepleted was DELETED (fresh-context round 2026-09-02 #5): it
 // had zero production callers since v0.27.5 retired the scorecard
@@ -658,12 +1052,15 @@ func (kp *KeyPool) APIHealthy() bool {
 	return time.Now().After(kp.apiPauseUntil)
 }
 
-// usableLocked counts keys usable at time now: not permanently invalid and not
-// currently quarantined. Caller must hold kp.mu.
+// usableLocked counts keys usable at time now: not permanently invalid and
+// not resting on a quarantine OR a secondary limit — the same predicate the
+// reserve and selection use, so the 401 log's `usable_keys` can never say
+// 53 during a secondary storm the pool cannot serve (L10 pass on the
+// review-round fixes). Caller must hold kp.mu.
 func (kp *KeyPool) usableLocked(now time.Time) int {
 	count := 0
 	for _, k := range kp.keys {
-		if !k.Invalid && now.After(k.quarantineUntil) {
+		if k.usableAt(now) {
 			count++
 		}
 	}
@@ -705,25 +1102,93 @@ func (kp *KeyPool) AliveCount() int {
 	return count
 }
 
-// AllTokens returns the token strings of every non-invalidated key in
-// pool order (v0.27.5). Built for scorecard's comma-separated multi-token
-// GITHUB_TOKEN: scorecard round-robins the list per request, so
-// rate-limit state and auth quarantine are deliberately IGNORED here —
-// scorecard paces itself across the whole set, and a
-// quarantined-but-valid token is still useful to it. Only the legacy
-// permanent Invalid flag excludes a key. No checkout happens: the pool's
-// round-robin index and Remaining counters are untouched.
-func (kp *KeyPool) AllTokens() []string {
+// LendTokens hands up to n non-invalidated token strings to a caller that
+// cannot hold a Go lease — a SUBPROCESS (scorecard's comma-separated
+// GITHUB_TOKEN). n <= 0 lends every valid key. The borrow is ACCOUNTED:
+// lending prefers the least-lent keys (then the most remaining budget,
+// then pool order), each key's lent count is visible in Snapshot, and the
+// returned release (idempotent) hands them back. This replaces AllTokens
+// (v0.27.5 - 2026-09-12), which gave every token to every subprocess with
+// no record — the one bypass around the pool's accounting.
+//
+// Rate-limit state and auth quarantine are deliberately not consulted:
+// scorecard paces itself across the list per request, a
+// quarantined-but-valid token is still useful to it, and a subprocess's
+// ~40 calls over ~25 s are negligible per key. What matters is that the
+// pool KNOWS.
+func (kp *KeyPool) LendTokens(n int) ([]string, func()) {
 	kp.mu.Lock()
 	defer kp.mu.Unlock()
-	out := make([]string, 0, len(kp.keys))
+	// Copilot review on PR #203: a key the pool itself refuses to
+	// Acquire — quarantined after repeated 401s, or resting on a
+	// secondary limit — is not lent either. Handing scorecard a token
+	// every other caller is routed around would re-earn the 401/403
+	// the rest exists to end. Same predicate as admission (usableAt).
+	now := time.Now()
+	cands := make([]*APIKey, 0, len(kp.keys))
 	for _, k := range kp.keys {
-		if k.Invalid {
-			continue
+		if k.usableAt(now) {
+			cands = append(cands, k)
 		}
-		out = append(out, k.Token)
 	}
-	return out
+	// Stable: least lent, then most budget, then pool order.
+	sort.SliceStable(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		if a.lent != b.lent {
+			return a.lent < b.lent
+		}
+		return a.Remaining+a.GraphQLRemaining > b.Remaining+b.GraphQLRemaining
+	})
+	if n > 0 && n < len(cands) {
+		cands = cands[:n]
+	}
+	tokens := make([]string, 0, len(cands))
+	for _, k := range cands {
+		k.lent++
+		tokens = append(tokens, k.Token)
+	}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			kp.mu.Lock()
+			for _, k := range cands {
+				k.lent--
+			}
+			kp.mu.Unlock()
+		})
+	}
+	return tokens, release
+}
+
+// KeySnapshot is one key's admission state for the operator summary.
+type KeySnapshot struct {
+	Prefix          string
+	Core            int
+	GraphQL         int
+	Inflight        int
+	Lent            int
+	SecondaryHits   int
+	SecondaryUntil  time.Time
+	QuarantineUntil time.Time
+	Invalid         bool
+}
+
+// Snapshot returns per-key admission state plus the pool-wide in-flight
+// count. This is the observability the 2026-09-12 analysis lacked: an
+// aggregate "270,000 remaining, 54 alive" is identical whether load is
+// even or 96% on one key, and no log line named the serving key.
+func (kp *KeyPool) Snapshot() ([]KeySnapshot, int) {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	out := make([]KeySnapshot, 0, len(kp.keys))
+	for _, k := range kp.keys {
+		out = append(out, KeySnapshot{
+			Prefix: tokenPrefix(k.Token), Core: k.Remaining, GraphQL: k.GraphQLRemaining,
+			Inflight: k.inflight, Lent: k.lent, SecondaryHits: k.secondaryHits,
+			SecondaryUntil: k.secondaryUntil, QuarantineUntil: k.quarantineUntil, Invalid: k.Invalid,
+		})
+	}
+	return out, kp.inflight
 }
 
 // TotalRemaining returns the sum of remaining requests across all alive keys.

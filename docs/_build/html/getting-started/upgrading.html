@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -547,7 +549,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -1929,9 +1939,9 @@ re-running is always safe. Rows marked <em>fleet-scale</em> take hours on a
 </tr>
 <tr class="row-even"><td><p>11</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></p></td>
-<td><p>v0.28.1</p></td>
-<td><p>the explicit “gone” state for deleted or privatized repositories that still hold data</p></td>
-<td><p>optional — display honesty only</p></td>
+<td><p>v0.28.1 (automatic recheck v0.29.7)</p></td>
+<td><p>the explicit “gone” state for deleted or privatized repositories that still hold data; until v0.29.7 it was also the ONLY path that noticed a gone repository had come back — <code class="docutils literal notranslate"><span class="pre">serve</span></code> now re-probes the gone cohort every <code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_days</span></code> (28) on its own</p></td>
+<td><p>optional — one run after the upgrade verifies the historical cohort immediately instead of over the first cadence</p></td>
 </tr>
 <tr class="row-odd"><td><p>12</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></p></td>
@@ -2046,6 +2056,45 @@ issues and pull requests already in the database, so a more complete
 catalog links more mail. Full design in
 <a class="reference internal" href="../architecture/mailing-list.html"><span class="std std-doc">Mailing-List Ingestion</span></a>.</p>
 </section>
+</section>
+<section id="recurring-maintenance-not-tied-to-a-release">
+<h2>Recurring maintenance (not tied to a release)<a class="headerlink" href="#recurring-maintenance-not-tied-to-a-release" title="Link to this heading"></a></h2>
+<p>A few checks are worth a calendar entry rather than an upgrade step. All
+but one run only when you run them; each exists because a fleet drifted
+without anyone noticing.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Cadence</p></th>
+<th class="head"><p>What</p></th>
+<th class="head"><p>Why</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>quarterly, and after any incident where someone raised a limit</p></td>
+<td><p>run the <code class="docutils literal notranslate"><span class="pre">pg_settings</span></code> verification query in <a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live"><span class="std std-ref">Verifying what is actually live</span></a> and diff it against your recorded baseline</p></td>
+<td><p>the settings that OOM a host (<code class="docutils literal notranslate"><span class="pre">work_mem</span></code> × <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> × parallel workers) are the ones most often raised “temporarily” — see <a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode"><span class="std std-ref">Drift is the failure mode</span></a></p></td>
+</tr>
+<tr class="row-odd"><td><p>automatic since v0.29.7 (<code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_days</span></code>, 28)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> re-probes every “gone” repository once per cadence and re-enqueues the ones that answer 2xx; <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code> is the on-demand form</p></td>
+<td><p>a repository that returned 404/410 was <strong>dequeued</strong>, so no collection cycle ever looks at it again, and organizations do flip repositories private and back. On a release before v0.29.7 run the command quarterly by hand. The probe is an unauthenticated HEAD per candidate — it spends no API budget</p></td>
+</tr>
+<tr class="row-even"><td><p>quarterly</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></p></td>
+<td><p>stranded <code class="docutils literal notranslate"><span class="pre">repos</span></code> rows left by upstream renames (row 10 above) accumulate between upgrades too</p></td>
+</tr>
+<tr class="row-odd"><td><p>yearly, or when disk is tight</p></td>
+<td><p>index audit before dropping anything: <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">indexrelname,</span> <span class="pre">idx_scan,</span> <span class="pre">pg_size_pretty(pg_relation_size(indexrelid))</span> <span class="pre">FROM</span> <span class="pre">pg_stat_user_indexes</span> <span class="pre">WHERE</span> <span class="pre">relname</span> <span class="pre">=</span> <span class="pre">'commits'</span> <span class="pre">ORDER</span> <span class="pre">BY</span> <span class="pre">idx_scan;</span></code></p></td>
+<td><p>zero-scan indexes on <code class="docutils literal notranslate"><span class="pre">commits</span></code> can reach tens of GB, but the matview <code class="docutils literal notranslate"><span class="pre">UNIQUE</span></code> indexes read as zero-scan and are REQUIRED for <code class="docutils literal notranslate"><span class="pre">REFRESH</span> <span class="pre">...</span> <span class="pre">CONCURRENTLY</span></code> — audit readers first, drop only email/affiliation indexes nothing queries</p></td>
+</tr>
+<tr class="row-even"><td><p>once, then whenever the network changes</p></td>
+<td><p>confirm <code class="docutils literal notranslate"><span class="pre">pg_hba.conf</span></code> does not carry a <code class="docutils literal notranslate"><span class="pre">host</span> <span class="pre">all</span> <span class="pre">all</span> <span class="pre">0.0.0.0/0</span></code> line for a port that is reachable from the internet; firewall the port or restrict it to known networks</p></td>
+<td><p>the PostgreSQL log’s <code class="docutils literal notranslate"><span class="pre">password</span> <span class="pre">authentication</span> <span class="pre">failed</span></code> lines from unknown addresses are the symptom</p></td>
+</tr>
+</tbody>
+</table>
+<p>If you run more than one host against the database, the second host’s
+role is a decision, not an accident — see
+<a class="reference internal" href="../guide/dedicated-scancode-host.html"><span class="std std-doc">Dedicated scancode host</span></a>.</p>
 </section>
 <section id="where-the-per-release-detail-lives">
 <h2>Where the per-release detail lives<a class="headerlink" href="#where-the-per-release-detail-lives" title="Link to this heading"></a></h2>

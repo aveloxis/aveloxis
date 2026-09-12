@@ -1617,6 +1617,17 @@ process-limit) exhaustion.
    the "Orphaned postgres backend" runbook above).
 2. Only then restart `aveloxis serve` — restarting into a memory-starved host
    reproduces the crash on the next pool reconnect.
+3. Check the server's live memory settings against
+   [PostgreSQL server tuning](scaling.md#postgresql-server-tuning) before
+   treating the incident as closed. The most common cause on a host that was
+   previously healthy is not a single greedy query but `work_mem` having drifted
+   upward: it is a per-**operation** limit multiplied by every connection and
+   parallel worker, so a value that looks modest beside the host's RAM can imply
+   a worst case several times larger than the machine. Allocation failures for
+   tiny sizes (tens of bytes) alongside larger ones are the signature of genuine
+   exhaustion rather than one oversized request. The same section's
+   `vm.overcommit_memory` guidance is what stops the kernel from promising
+   memory it does not have and then killing the postmaster.
 
 ## A one-shot migration backfill needs to re-run
 

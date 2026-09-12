@@ -387,13 +387,19 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 	skipETag := bypassETag(ctx)
 
 	for attempt := range maxRetries {
-		key, err := c.keys.GetKey(ctx)
+		// 2026-09-12: Acquire is a LEASE against the key's and the pool's
+		// in-flight ceilings (least-loaded key wins). It covers exactly
+		// the wire request — released when Do returns, BEFORE
+		// handleResponse's Retry-After sleep — so a throttled caller
+		// never pins a slot while it waits. See graphql.go for the twin.
+		key, release, err := c.keys.Acquire(ctx, ResourceCore)
 		if err != nil {
 			return nil, fmt.Errorf("getting API key: %w", err)
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
+			release()
 			return nil, err
 		}
 		// Set platform-appropriate auth header.
@@ -421,6 +427,9 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 
 		resp, err := c.inner.Do(req)
 		if err != nil {
+			// The lease covers exactly the wire request: a failed Do
+			// has no response state to apply, so release at once.
+			release()
 			// v0.27.28: a cancelled context is not a retryable failure —
 			// bail BEFORE the "retrying" WARN. Pre-fix, every request
 			// in flight at `aveloxis stop` logged a retry it would
@@ -443,7 +452,14 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			continue
 		}
 
+		// Copilot review on PR #203: apply the response's primary AND
+		// secondary-limit state to the pool BEFORE releasing the lease,
+		// so a waiter woken by the release never selects this key on
+		// stale state. Released here — before any retry sleep or key
+		// rotation below — so the slot is never held across a wait
+		// (lease_every_exit_test.go drives every exit).
 		c.keys.UpdateFromResponse(key, resp)
+		release()
 
 		// Log rate limit state on every response so operators can monitor usage.
 		if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "" {
@@ -654,7 +670,12 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		if resp.Header.Get("Retry-After") != "" {
 			resp.Body.Close()
 			wait := parseRetryAfter(resp)
-			c.logger.Info("secondary rate limit", "url", url, "wait", wait)
+			c.logger.Info("secondary rate limit", "url", url, "wait", wait,
+				"token_prefix", tokenPrefix(key.Token))
+			// 2026-09-12 (Bug C): THIS key is resting in the pool for the
+			// Retry-After so other callers are routed to healthy keys —
+			// applied by UpdateFromResponse under the lease (PR #203
+			// review); this branch is only this attempt's own pacing.
 			select {
 			case <-ctx.Done():
 				return respDone, nil, ctx.Err()
@@ -670,7 +691,8 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			}
 			resetStr := resp.Header.Get("X-RateLimit-Reset")
 			c.logger.Info("rate limit exhausted",
-				"url", url, "resource", resource, "reset", resetStr)
+				"url", url, "resource", resource, "reset", resetStr,
+				"token_prefix", tokenPrefix(key.Token))
 			return respRetry, nil, nil
 		}
 		// Headers said nothing definitive. Read the body and check whether
@@ -679,7 +701,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		resp.Body.Close()
 		if isAnonymousRateLimitBody(body) {
 			// Unauthenticated request reached us. Every code path that
-			// builds an HTTPClient call goes through GetKey() — getting
+			// builds an HTTPClient call goes through Acquire() — getting
 			// this body shape means a key was unset, the wrong client
 			// was used, or a proxy stripped the Authorization header.
 			// Log at ERROR so on-call sees the regression, then back off
@@ -712,7 +734,11 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 	case resp.StatusCode == http.StatusTooManyRequests:
 		resp.Body.Close()
 		wait := parseRetryAfter(resp)
-		c.logger.Info("rate limited", "url", url, "wait", wait)
+		c.logger.Info("rate limited", "url", url, "wait", wait,
+			"token_prefix", tokenPrefix(key.Token))
+		// 429 is the same per-key throttle as 403 + Retry-After: the key
+		// is already resting (UpdateFromResponse, under the lease — PR
+		// #203 review); this is only this attempt's own pacing.
 		select {
 		case <-ctx.Done():
 			return respDone, nil, ctx.Err()

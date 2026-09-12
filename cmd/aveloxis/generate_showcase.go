@@ -472,7 +472,7 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, logger *slog.Lo
 	if d.Description, d.PrimaryLanguage, d.Archived, err = store.GetRepoShowcaseMeta(ctx, t.repoID); err != nil {
 		return d, fmt.Errorf("showcase meta: %w", err)
 	}
-	checks, overall, asOf, err := store.GetRepoScorecard(ctx, t.repoID)
+	checks, overall, asOf, _, err := store.GetRepoScorecard(ctx, t.repoID)
 	if err != nil {
 		return d, fmt.Errorf("scorecard: %w", err)
 	}

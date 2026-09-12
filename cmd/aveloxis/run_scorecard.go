@@ -159,8 +159,13 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
-	token, instrumentToken := collector.ScorecardTokens(ghKeys, cfg.Collection.ScorecardTokenCountOrDefault())
-	if token == "" {
+	// Copilot review on PR #203: each worker borrows its OWN accounted
+	// loan inside its goroutine (below) — one loan shared by every
+	// worker under-counted `lent` by the worker count and let all
+	// workers concentrate on the same keys; least-lent ordering spreads
+	// per-worker loans instead. The preflight here only asks whether
+	// there is anything to lend.
+	if ghKeys == nil || ghKeys.AliveCount() == 0 {
 		return fmt.Errorf("no GitHub API keys loaded — remote scorecard needs GITHUB_TOKEN; add keys via `aveloxis add-key <token> --platform github`")
 	}
 
@@ -188,6 +193,8 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			token, instrumentToken, releaseTokens := collector.ScorecardTokens(ghKeys, cfg.Collection.ScorecardTokenCountOrDefault())
+			defer releaseTokens()
 			for r := range jobs {
 				repoURL := fmt.Sprintf("https://github.com/%s/%s", r.Owner, r.Name)
 				// Same shared invoke/persist path as the per-cycle

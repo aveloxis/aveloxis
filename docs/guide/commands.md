@@ -188,10 +188,12 @@ aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json
   when the stamp is behind the binary (no migration of that binary has
   completed here — the ladder's step 2, `aveloxis migrate --skip-views`),
   and serve's own startup migration refuses to run a full pass while
-  another `aveloxis-serve` is connected. A same-version `start serve`
-  is NOT refused — it would start a second full scheduler — so both the
-  gate and serve's log say when another `aveloxis-serve` is already
-  connected; `stop` scopes its backend check to this host.
+  another `aveloxis-serve` is connected. Since 2026-09-11 a
+  **same-version** `start serve` is refused too: serve will not start a
+  second full scheduler against a database that already has one, because
+  the two compete for the same queue and API keys. If you genuinely want
+  two, say so explicitly with `aveloxis serve --allow-second-serve`.
+  `stop` scopes its backend check to this host.
 
 Full recipe — Postgres remote access, minimal config template, systemd
 unit, libmagic version-lock — in the
@@ -1278,6 +1280,24 @@ Idempotent and re-runnable on any cadence. Dataless stranded rows
 is nothing to display for them either way. New gone repos are
 stamped automatically by prelim at collection time; this command
 exists for the historical cohort and for resurrection checks.
+
+**Since v0.29.7 `aveloxis serve` re-checks gone repositories on its
+own.** A 404/410 removes the repository's queue row, and the scheduler
+only ever visits queued repositories, so prelim never probes it again;
+before v0.29.7 a repository made private and later public again stayed
+"gone" until this command ran. The scheduler's recheck ticker now
+re-probes every gone-stamped repository once per
+`collection.gone_repo_recheck_days` (default 28, up to 500 per hour,
+never-checked rows first) with the same probe and the same verdict
+rule, and logs `gone recheck: repository is reachable again` when it
+resurrects one. This command remains the immediate, whole-cohort form:
+run it after an upgrade or when you know an organization has flipped
+back, and it resets the cadence clock on every repository it verifies.
+The probe is one unauthenticated `HEAD` per candidate and consumes no
+API-key budget: at roughly 200 ms per probe a few thousand candidates
+take minutes and tens of thousands take an hour or more of wall-clock,
+and nothing else; `--limit` bounds a first run. See [Recurring
+maintenance](../getting-started/upgrading.md#recurring-maintenance-not-tied-to-a-release).
 
 ## `aveloxis run-scorecard`
 

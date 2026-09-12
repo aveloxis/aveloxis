@@ -240,9 +240,10 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 		// under different login strings (historical login drift across
 		// repos, GitHub renames, two workers seeing the same hot user
 		// at once) all collide on cntrb_id, so ON CONFLICT (cntrb_id)
-		// routes them all to DO UPDATE. The DO UPDATE clause also
-		// updates cntrb_login from EXCLUDED so a renamed user's row
-		// picks up the new login on next observation.
+		// routes them all to DO UPDATE. The DO UPDATE clause fills an
+		// EMPTY cntrb_login only (the NOTE below) — a rename does NOT
+		// land here; it lands on gh_login via the full upsert paths
+		// (R2, 2026-09-11 F4).
 		//
 		// At v0.18.28 this used ON CONFLICT (cntrb_login) — which
 		// failed to match when login strings differed across observers,
@@ -254,13 +255,23 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 		// same person generate different cntrb_ids but the same login,
 		// so ON CONFLICT (cntrb_login) WHERE cntrb_login != '' is the
 		// right target.
+		// NOTE the argument order on cntrb_login below: STORED first,
+		// EXCLUDED second — fill-empty-only, not prefer-incoming. It is
+		// the opposite of the sibling columns on purpose. cntrb_login is
+		// the login as FIRST observed (R2) and is the only one of these
+		// columns under a unique index, so re-writing it both breaks the
+		// audit trail and collides with whatever row already holds the
+		// new login. This arm fires only when a concurrent worker raced
+		// us to the same deterministic cntrb_id, where the two logins are
+		// normally identical anyway; when they are not, the stored one
+		// wins (2026-09-11, F4).
 		if userID > 0 {
 			err = tx.QueryRow(ctx, `
 				INSERT INTO aveloxis_data.contributors
 					(cntrb_id, cntrb_login, cntrb_email, cntrb_full_name, cntrb_created_at)
 				VALUES ($1, $2, $3, $4, $5)
 				ON CONFLICT (cntrb_id) DO UPDATE SET
-					cntrb_login = COALESCE(NULLIF(EXCLUDED.cntrb_login,''), contributors.cntrb_login),
+					cntrb_login = COALESCE(NULLIF(contributors.cntrb_login,''), EXCLUDED.cntrb_login),
 					cntrb_email = COALESCE(NULLIF(EXCLUDED.cntrb_email,''), contributors.cntrb_email),
 					cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name,''), contributors.cntrb_full_name),
 					data_collection_date = NOW()

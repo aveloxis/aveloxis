@@ -172,3 +172,32 @@ func TestRunScorecardUsesSharedScorecardPath(t *testing.T) {
 			"invocation lives in collector.RunScorecard")
 	}
 }
+
+// Copilot review on PR #203: one LendTokens loan shared by every bulk
+// worker under-counted `lent` by the worker count and let all workers
+// concentrate on the same keys. Each worker borrows its own loan
+// inside its goroutine (least-lent ordering then spreads them) and
+// releases it when the worker exits.
+func TestRunScorecardBorrowsTokensPerWorker(t *testing.T) {
+	b, err := os.ReadFile("run_scorecard.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	i := strings.Index(src, "func runRunScorecard(")
+	if i < 0 {
+		t.Fatal("runRunScorecard missing")
+	}
+	body := src[i:]
+	goroutine := strings.Index(body, "go func() {")
+	loan := strings.Index(body, "collector.ScorecardTokens(")
+	if goroutine < 0 || loan < 0 {
+		t.Fatal("expected a worker goroutine and a ScorecardTokens loan")
+	}
+	if loan < goroutine {
+		t.Error("ScorecardTokens must be borrowed INSIDE the worker goroutine (one accounted loan per worker), not once for the whole pass")
+	}
+	if strings.Count(body, "collector.ScorecardTokens(") != 1 {
+		t.Error("exactly one ScorecardTokens call site — the per-worker one")
+	}
+}

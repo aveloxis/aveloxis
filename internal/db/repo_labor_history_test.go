@@ -158,11 +158,12 @@ func TestRotateRepoRowsToHistoryHelperIsAllowlisted(t *testing.T) {
 	}
 }
 
-func TestRotateScorecardToHistoryUsesGenericHelper(t *testing.T) {
-	// Behavior-preserving refactor pin: the scorecard rotation keeps
-	// its withRetry + single-transaction shape and delegates the two
-	// statements to the generic helper with the scorecard pair.
-	body := extractFunctionBody(t, "history.go", "RotateScorecardToHistory")
+func TestReplaceScorecardUsesGenericRotationHelper(t *testing.T) {
+	// The scorecard rotation lives inside ReplaceScorecard since the
+	// PR #203 fixes (RotateScorecardToHistory removed): withRetry +
+	// single transaction, delegating the two statements to the generic
+	// helper with the scorecard pair.
+	body := extractFunctionBody(t, "analysis_store.go", "ReplaceScorecard")
 	for _, needle := range []string{
 		"s.withRetry(",
 		"s.pool.Begin(",
@@ -172,7 +173,7 @@ func TestRotateScorecardToHistoryUsesGenericHelper(t *testing.T) {
 		"tx.Commit(",
 	} {
 		if !strings.Contains(body, needle) {
-			t.Errorf("RotateScorecardToHistory missing needle %q — the v0.27.7 refactor must preserve the pre-existing transaction semantics while delegating the SQL to rotateRepoRowsToHistory", needle)
+			t.Errorf("ReplaceScorecard missing needle %q — the rotation must keep the v0.27.7 transaction semantics while delegating the SQL to rotateRepoRowsToHistory", needle)
 		}
 	}
 }
@@ -583,12 +584,11 @@ func TestRepoLaborHistoryHasNoNaturalKeyUniques(t *testing.T) {
 	}
 }
 
-// TestRotateScorecardToHistoryBehaviorPreserved pins the operator
-// directive on the v0.27.7 helper extraction: migrating
-// RotateScorecardToHistory onto rotateRepoRowsToHistory is a
-// behavior-PRESERVING transform — identical rows moved, main table
-// cleared, history accumulates across rotations.
-func TestRotateScorecardToHistoryBehaviorPreserved(t *testing.T) {
+// TestScorecardRotationBehaviorPreserved pins the operator directive
+// on the v0.27.7 helper extraction, now through ReplaceScorecard (the
+// PR #203 fusion): identical rows moved to history, the main table
+// holds only the new set, history accumulates across rotations.
+func TestScorecardRotationBehaviorPreserved(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.pool.Close)
 
@@ -605,25 +605,31 @@ func TestRotateScorecardToHistoryBehaviorPreserved(t *testing.T) {
 	seed("Maintained")
 	seed("License")
 
-	if err := store.RotateScorecardToHistory(ctx, rlRepoScorecard); err != nil {
-		t.Fatalf("rotate 1: %v", err)
+	always := func(string, bool) bool { return true }
+	replace := func(rows ...string) {
+		t.Helper()
+		var set []ScorecardRow
+		for _, r := range rows {
+			set = append(set, ScorecardRow{Name: r, Score: "7"})
+		}
+		if written, err := store.ReplaceScorecard(ctx, rlRepoScorecard, "remote", set, always); err != nil || !written {
+			t.Fatalf("ReplaceScorecard(%v): written=%v err=%v", rows, written, err)
+		}
 	}
-	if n := rlCount(t, ctx, store, "aveloxis_data.repo_deps_scorecard", rlRepoScorecard); n != 0 {
-		t.Errorf("after rotate: want 0 current scorecard rows, got %d", n)
+	replace("Maintained")
+	if n := rlCount(t, ctx, store, "aveloxis_data.repo_deps_scorecard", rlRepoScorecard); n != 1 {
+		t.Errorf("after replace: want the 1 new current row, got %d", n)
 	}
 	if n := rlCount(t, ctx, store, "aveloxis_data.repo_deps_scorecard_history", rlRepoScorecard); n != 2 {
-		t.Errorf("after rotate: want 2 history scorecard rows, got %d", n)
+		t.Errorf("after replace: want 2 history scorecard rows, got %d", n)
 	}
 
 	// Second rotation with the SAME check names must accumulate in
 	// history (no inherited-UNIQUE 23505) — the scorecard analog of
 	// the v0.25.1 distribution incident.
-	seed("Maintained")
-	if err := store.RotateScorecardToHistory(ctx, rlRepoScorecard); err != nil {
-		t.Fatalf("rotate 2: %v", err)
-	}
+	replace("Maintained")
 	if n := rlCount(t, ctx, store, "aveloxis_data.repo_deps_scorecard_history", rlRepoScorecard); n != 3 {
-		t.Errorf("after rotate 2: want 3 accumulated history rows, got %d", n)
+		t.Errorf("after replace 2: want 3 accumulated history rows, got %d", n)
 	}
 
 	rlCleanup(t, ctx, store, rlRepoScorecard)

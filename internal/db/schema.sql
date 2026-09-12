@@ -89,8 +89,17 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- upstream; the department-of-veterans-affairs class). Distinct
     -- from repo_archived, which also covers "GitHub says archived"
     -- (still public). Set by MarkRepoGone, cleared by ClearRepoGone
+    -- (prelim) or ResurrectRepo (mark-gone-repos, the recheck ticker)
     -- when the same probe later sees the repo alive again.
     repo_gone_at            TIMESTAMPTZ,
+    -- v0.29.7: when the gone state was last VERIFIED against the forge.
+    -- A gone repo has no queue row, so nothing revisits it; the
+    -- scheduler's recheck ticker claims gone-stamped rows whose check
+    -- is older than collection.gone_repo_recheck_days (default 28) and
+    -- re-probes them, resurrecting on a definitive 2xx. Stamped by
+    -- MarkRepoGone (the sideline probe IS a check), MarkRepoGoneChecked
+    -- and mark-gone-repos; only ever set on a gone-stamped row.
+    repo_gone_checked_at    TIMESTAMPTZ,
     -- scancode_locked_at + locked_pid + locked_boot_id form the
     -- in-flight scan state. Cleared on success and on failure.
     -- (locked_boot_id, locked_pid) tuple makes the recovery liveness

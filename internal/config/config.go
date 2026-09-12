@@ -257,6 +257,38 @@ type CollectionConfig struct {
 	ActivityHistoryWindowConcurrency int `json:"activity_history_window_concurrency"`
 	ActivityHistoryCooldownDays      int `json:"activity_history_cooldown_days"`
 
+	// v0.29.7: the gone-repo recheck cadence. A repository whose URL
+	// returned a definitive 404/410 is dequeued, so no collection cycle
+	// ever probes it again; organizations do flip repositories private
+	// and back. The scheduler re-probes each gone-stamped repo once
+	// every GoneRepoRecheckDays (default 28 — operator-chosen, a
+	// four-week cadence that needs no month arithmetic) with the same
+	// unauthenticated HEAD prelim uses (no API-key budget), and
+	// resurrects it on a definitive 2xx. Absent/non-positive → 28.
+	GoneRepoRecheckDays int `json:"gone_repo_recheck_days"`
+	// GoneRepoRecheckDisabled switches the ticker off entirely; the
+	// manual `aveloxis mark-gone-repos` remains available. Zero-value
+	// (absent) = enabled.
+	GoneRepoRecheckDisabled bool `json:"gone_repo_recheck_disabled"`
+
+	// 2026-09-12 GitHub key-pool admission control (the "54 keys behaving
+	// like 3" analysis — 46,612 secondary-rate-limit rejections in five
+	// days, 179 in one second). The pool now LEASES keys under a global
+	// and a per-key in-flight ceiling and reserves a share of budget for
+	// foreground collection. Defaults are derived from measurement (see
+	// platform.DefaultMaxInflight and siblings); the accessors are the
+	// single default layer (SR-10). 0/absent = default; these are not
+	// disable switches — the whole point is that every caller is bound.
+	GitHubMaxInflight                int `json:"github_max_inflight"`
+	GitHubMaxInflightPerKey          int `json:"github_max_inflight_per_key"`
+	GitHubBudgetForegroundReservePct int `json:"github_budget_foreground_reserve_pct"`
+	// ScorecardMaxConcurrent bounds concurrent scorecard SUBPROCESSES.
+	// A subprocess cannot hold a pool lease, so it is bounded here and
+	// its tokens are BORROWED through the pool (LendTokens) rather than
+	// handed out invisibly. Derivation: 8 x ~40 calls per remote run sits
+	// inside one key's per-minute secondary budget.
+	ScorecardMaxConcurrent int `json:"scorecard_max_concurrent"`
+
 	// MatviewRebuildOnStartup controls whether materialized views are created/refreshed
 	// during schema migration (startup). For large databases this can take minutes.
 	// Default: false — views are created on first migrate but not refreshed on every startup.
@@ -1422,11 +1454,78 @@ func (c *CollectionConfig) ActivityHistoryWindowConcurrencyValue() int {
 	return c.ActivityHistoryWindowConcurrency
 }
 
+// GoneRepoRecheckInterval is the per-repo cadence between gone-state
+// re-verifications (v0.29.7). Absent/non-positive → 28 days; 0 is NOT
+// a disable switch (GoneRepoRecheckDisabled is). Clamped to 365 like
+// ActivityHistoryWindowDaysOrDefault (review round 1: days × 24h
+// overflows time.Duration past ~106,751 days into a NEGATIVE interval,
+// which would make every gone row due every tick).
+func (c *CollectionConfig) GoneRepoRecheckInterval() time.Duration {
+	switch {
+	case c.GoneRepoRecheckDays <= 0:
+		return 28 * 24 * time.Hour
+	case c.GoneRepoRecheckDays > 365:
+		return 365 * 24 * time.Hour
+	default:
+		return time.Duration(c.GoneRepoRecheckDays) * 24 * time.Hour
+	}
+}
+
+// GoneRepoRecheckEnabled is the ticker's on/off state (v0.29.7).
+func (c *CollectionConfig) GoneRepoRecheckEnabled() bool {
+	return !c.GoneRepoRecheckDisabled
+}
+
 func (c *CollectionConfig) ActivityHistoryCooldownValue() time.Duration {
 	if c.ActivityHistoryCooldownDays <= 0 {
 		return 90 * 24 * time.Hour
 	}
 	return time.Duration(c.ActivityHistoryCooldownDays) * 24 * time.Hour
+}
+
+// GitHubMaxInflightValue is the pool-wide in-flight ceiling (absent → 40:
+// ~1.5x the measured saturation of 26, 2.5x under GitHub's ~100).
+func (c *CollectionConfig) GitHubMaxInflightValue() int {
+	if c.GitHubMaxInflight <= 0 {
+		return 40
+	}
+	return c.GitHubMaxInflight
+}
+
+// GitHubMaxInflightPerKeyValue is the per-key in-flight ceiling (absent →
+// 4: bounds per-key points/minute by construction at any latency ≥ 120 ms).
+func (c *CollectionConfig) GitHubMaxInflightPerKeyValue() int {
+	if c.GitHubMaxInflightPerKey <= 0 {
+		return 4
+	}
+	return c.GitHubMaxInflightPerKey
+}
+
+// GitHubBudgetForegroundReservePctValue is the percentage of the pool's
+// budget background sweeps may not spend into. Absent or non-positive →
+// 25 (collection measured at ~9%, x~3 safety). Explicit values are
+// clamped to [1, 99]: the reservation is always on (1 = nominal) and it
+// is never a disable switch in EITHER direction — at 100 the reserve
+// line equals a full pool, so background would never be admitted and a
+// non-fast-fail sweep would wait for its ctx (review round on the
+// 2026-09-12 change).
+func (c *CollectionConfig) GitHubBudgetForegroundReservePctValue() int {
+	switch {
+	case c.GitHubBudgetForegroundReservePct <= 0:
+		return 25
+	case c.GitHubBudgetForegroundReservePct > 99:
+		return 99
+	}
+	return c.GitHubBudgetForegroundReservePct
+}
+
+// ScorecardMaxConcurrentValue bounds concurrent scorecard subprocesses
+// (absent → 8).
+func (c *CollectionConfig) ScorecardMaxConcurrentValue() int {
+	if c.ScorecardMaxConcurrent <= 0 {
+		return 8
+	}
+	return c.ScorecardMaxConcurrent
 }
 
 func (c *CollectionConfig) MatviewRebuildWeekday() int {
@@ -1502,6 +1601,16 @@ func DefaultConfig() *Config {
 			ActivityHistoryConcurrency:       8,
 			ActivityHistoryWindowConcurrency: 4,
 			ActivityHistoryCooldownDays:      90,
+			// 2026-09-12 key-pool admission (derived, not picked — see the
+			// field docs and platform.DefaultMaxInflight): saturation is
+			// ~26 in flight, so 40 is 1.5x headroom; 4 per key bounds
+			// per-key points/minute by construction; 25% reserves ~3x the
+			// measured foreground share; 8 scorecard subprocesses keep
+			// 8 x ~40 calls inside one key's per-minute secondary budget.
+			GitHubMaxInflight:                40,
+			GitHubMaxInflightPerKey:          4,
+			GitHubBudgetForegroundReservePct: 25,
+			ScorecardMaxConcurrent:           8,
 			Workers:                          12,
 			RepoCloneDir:                     defaultCloneDir(),
 			MatviewRebuildDay:                "saturday",

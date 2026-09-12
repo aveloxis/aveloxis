@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -547,7 +549,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -1772,9 +1782,17 @@ primary’s backends by application_name alone and printed terminate
 recipes for them. Since v0.29.4 that shape — a binary AHEAD of the
 stamp — is refused twice: by the <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">serve</span></code> deploy gate when the
 stamp is behind the binary, and by serve’s startup migration when
-another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is connected. A <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">serve</span></code> built at the
-primary’s version (which §2 asks for) is NOT refused: nothing needs
-migrating, so it would start a second full scheduler against the fleet.
+another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is connected. Since 2026-09-11 a <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">serve</span></code>
+built at the primary’s version (which §2 asks for) is refused as well:
+nothing needs migrating, but it would still start a second full
+scheduler against the fleet, and that is the objection. Until then it
+was only warned about — and a second machine consequently ran a full
+stack against the production database for ten days, deadlocking the
+primary’s staging inserts against its schema DDL, with the warning
+sitting in a log on the wrong host the whole time. A deliberate second
+serve is now explicit: <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span> <span class="pre">--allow-second-serve</span></code>. The flag is
+per-invocation and is deliberately NOT forwarded by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code>, so it cannot become a persistent setting that hides the
+condition again.
 The gate and serve’s log both say when another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is
 already connected and from which client addresses, each tagged with the
 code’s own verdict: an “(other address)” entry is normally the primary
@@ -1830,10 +1848,11 @@ puts in its <code class="docutils literal notranslate"><span class="pre">applica
 PostgreSQL never rewrites what the client sent. The marker’s job is
 narrow and one-directional — it can <strong>separate</strong> two hosts the address
 rule collapsed together, and it can never <strong>merge</strong> two the address
-rule kept apart. That is what makes it safe to rely on: a marker
-collision (two container hosts running one compose file report the
-same hostname) degrades to the address rule, never to a terminate
-recipe for the other machine.</p>
+rule kept apart. A marker collision (for example, two container hosts
+running one compose file with the same hostname) degrades to the address
+rule. Behind a transaction pooler that fallback can classify the other
+host as this host and offer a termination recipe, so assign unique hostnames
+(or connect directly to PostgreSQL) before relying on this verdict.</p>
 <p>But the marker only helps when <strong>both</strong> sides carry one. A primary
 still running a pre-round-12 binary tags un-suffixed, and an un-marked
 backend falls back to the address rule — which behind a pooler places

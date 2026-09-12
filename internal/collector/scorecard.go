@@ -65,6 +65,12 @@ type ScorecardResult struct {
 	// "local" (v0.27.5). Remote and local overall scores are NOT
 	// comparable — different check sets.
 	Mode string `json:"-"`
+	// Discarded is true when the run completed but its result was NOT
+	// written because a local (partial) set would have replaced a
+	// stored remote (complete) one — the 2026-09-12 operator rule. The
+	// attempt's cost is real, so the result still carries Mode, Checks
+	// and Duration for the phase log.
+	Discarded bool `json:"-"`
 	// APICalls is the instrumented GitHub API spend of the run
 	// (core + graphql used-delta measured via /rate_limit on the first
 	// token). 0 for local mode (which makes no instrumented calls);
@@ -88,8 +94,33 @@ type ScorecardCheck struct {
 // full remote/local fallback with a fake store + fake scorecard binary.
 // *db.PostgresStore satisfies it.
 type scorecardStore interface {
-	RotateScorecardToHistory(ctx context.Context, repoID int64) error
-	InsertScorecardResult(ctx context.Context, repoID int64, name, score string, detailsJSON []byte, mode string) error
+	// ReplaceScorecard is the ONE persist operation: in a single store
+	// transaction under a per-repo lock it reads the stored mode, asks
+	// allow(storedMode, found) whether this run may replace the set,
+	// and if so rotates the current rows to history and inserts rows.
+	// written=false = refused, nothing touched. An error = nothing
+	// committed; a failed mode read is an error, never "no prior set"
+	// (SR-5). The collector never sequences check/rotate/insert itself
+	// — that is what let a local writer rotate a concurrent remote
+	// writer's complete set away (Copilot review on PR #203; SR-18).
+	ReplaceScorecard(ctx context.Context, repoID int64, mode string, rows []db.ScorecardRow, allow func(storedMode string, found bool) bool) (written bool, err error)
+}
+
+// errScorecardModeProbe wraps a ReplaceScorecard failure so the phase
+// log can say the run was not written and why. The name predates the
+// fused transaction: the first cause it covered was the current-mode
+// read, and a failed read is still the same class (unknowable state,
+// nothing written).
+var errScorecardModeProbe = errors.New("scorecard: persist transaction failed — result not written (an unknowable stored state is not 'no prior set')")
+
+// scorecardReplaceAllowed is the D9 policy, evaluated by the store
+// INSIDE its transaction: a remote (complete) run replaces anything;
+// a local (partial) run never replaces a stored remote set; local over
+// local/none replaces (the GitLab/generic normal path).
+func scorecardReplaceAllowed(mode string) func(storedMode string, found bool) bool {
+	return func(storedMode string, found bool) bool {
+		return mode == "remote" || !(found && storedMode == "remote")
+	}
 }
 
 // ScorecardOptions bundles the inputs for RunScorecard.
@@ -131,21 +162,26 @@ const scorecardRateLimitURL = "https://api.github.com/rate_limit"
 
 // ScorecardTokens builds scorecard's comma-separated GITHUB_TOKEN value
 // from the key pool (v0.27.5). count 0 = all non-invalidated tokens;
-// N>0 = the first N. Returns the joined list plus the first token
-// (used for the /rate_limit instrumentation probe). No key checkout
-// happens — scorecard paces itself across the whole set.
-func ScorecardTokens(pool *platform.KeyPool, count int) (joined, first string) {
+// N>0 = the N least-borrowed. Returns the joined list, the first token
+// (used for the /rate_limit instrumentation probe), and the release the
+// caller MUST invoke once the subprocess has exited.
+//
+// 2026-09-12: the tokens are BORROWED through KeyPool.LendTokens rather
+// than copied out with the retired AllTokens — a subprocess cannot hold
+// a Go lease, so its use is accounted (which keys, how many concurrent
+// borrowers) instead of invisible. Still no in-flight lease: scorecard
+// paces itself across the set, and its ~40 calls over ~25 s are
+// negligible per key; the point is that the pool KNOWS.
+func ScorecardTokens(pool *platform.KeyPool, count int) (joined, first string, release func()) {
 	if pool == nil {
-		return "", ""
+		return "", "", func() {}
 	}
-	tokens := pool.AllTokens()
-	if count > 0 && count < len(tokens) {
-		tokens = tokens[:count]
-	}
+	tokens, release := pool.LendTokens(count)
 	if len(tokens) == 0 {
-		return "", ""
+		release()
+		return "", "", func() {}
 	}
-	return strings.Join(tokens, ","), tokens[0]
+	return strings.Join(tokens, ","), tokens[0], release
 }
 
 // RunScorecard executes the OpenSSF Scorecard tool against a repo and
@@ -191,7 +227,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		if localErr != nil {
 			return nil, localErr
 		}
-		return finishScorecard(ctx, store, repoID, raw, "local", 0, time.Since(start), logger), nil
+		return finishScorecard(ctx, store, repoID, raw, "local", 0, time.Since(start), logger)
 	}
 
 	// Remote-primary (GitHub): --repo first, instrumented.
@@ -207,7 +243,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		apiCalls = rateLimitDelta(before, after)
 	}
 	if remoteErr == nil {
-		return finishScorecard(ctx, store, repoID, raw, "remote", apiCalls, time.Since(start), logger), nil
+		return finishScorecard(ctx, store, repoID, raw, "remote", apiCalls, time.Since(start), logger)
 	}
 
 	if opts.LocalPath == "" {
@@ -226,13 +262,22 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	if localErr != nil {
 		return nil, fmt.Errorf("scorecard remote attempt failed (%v); local fallback also failed: %w", remoteErr, localErr)
 	}
-	return finishScorecard(ctx, store, repoID, raw, "local", apiCalls, time.Since(start), logger), nil
+	return finishScorecard(ctx, store, repoID, raw, "local", apiCalls, time.Since(start), logger)
 }
 
-// finishScorecard persists a successful attempt and emits the
-// completion log with the instrumented API spend.
-func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, raw *scorecardOutput, mode string, apiCalls int64, duration time.Duration, logger *slog.Logger) *ScorecardResult {
-	result := persistScorecard(ctx, store, repoID, raw, mode, logger)
+// finishScorecard persists a successful attempt (subject to the
+// partial-never-replaces-complete gate in persistScorecard) and emits
+// the completion log with the instrumented API spend. The only error it
+// can return is a failed persist transaction (errScorecardModeProbe) —
+// the run happened, but its result was not written. RunScorecard
+// returns that error directly: a store failure after a successful
+// remote run is NOT a remote failure and never triggers the local
+// backstop (pinned by TestScorecardPersistFailureAfterRemoteSuccessDoesNotFallBack).
+func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, raw *scorecardOutput, mode string, apiCalls int64, duration time.Duration, logger *slog.Logger) (*ScorecardResult, error) {
+	result, err := persistScorecard(ctx, store, repoID, raw, mode, logger)
+	if err != nil {
+		return nil, err
+	}
 	result.APICalls = apiCalls
 	result.Duration = duration
 
@@ -241,9 +286,10 @@ func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, ra
 		"mode", mode,
 		"overall_score", raw.Score,
 		"checks", len(result.Checks),
+		"written", !result.Discarded,
 		"api_calls_used", apiCalls,
 		"duration", duration)
-	return result
+	return result, nil
 }
 
 // invokeScorecard is the INVOKE half of the v0.27.5 split: build the
@@ -254,13 +300,42 @@ func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, ra
 //
 // localPath selects the mode: non-empty = local (--local localPath),
 // empty = remote (--repo repoURL).
-func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, repoURL string, localPath string, timeout time.Duration, githubToken string, logger *slog.Logger) (*scorecardOutput, error) {
+func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, repoURL string, localPath string, timeout time.Duration, githubToken string, logger *slog.Logger) (out *scorecardOutput, invokeErr error) {
 	// Per-attempt wall-clock cap (v0.27.5). The pre-v0.27.5 remote
 	// mode could hang for DAYS: scorecard sleeps through rate-limit
 	// resets when its token is drained. On expiry cmd.Cancel SIGKILLs
 	// the whole process group.
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// Per-ATTEMPT outcome log (2026-09-11, F2). "scorecard complete"
+	// fires once, only on success, for the whole remote-then-local
+	// sequence — so a repo that burned a full remote timeout before
+	// succeeding locally looked identical to one that succeeded
+	// immediately, and a repo that failed both attempts logged no cost
+	// at all. Measured consequence: 4,608 repos hit the full 15-minute
+	// cap in 5.2 days (~1,152 worker-hours, ~18% of collection
+	// capacity) and the log could neither count nor attribute it.
+	//
+	// Named returns + one deferred site so every exit path reports,
+	// including the ones that return early. timed_out separates the
+	// wall-clock cohort from parse failures — different causes,
+	// different fixes.
+	attemptMode := "remote"
+	if localPath != "" {
+		attemptMode = "local"
+	}
+	attemptStart := time.Now()
+	defer func() {
+		logger.Info("scorecard attempt",
+			"repo_id", repoID,
+			"mode", attemptMode,
+			"ok", invokeErr == nil,
+			"timed_out", errors.Is(attemptCtx.Err(), context.DeadlineExceeded),
+			"duration", time.Since(attemptStart),
+			"timeout_cap", timeout,
+			"error", invokeErr)
+	}()
 
 	var cmd *exec.Cmd
 	if localPath != "" {
@@ -338,14 +413,48 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 	var raw scorecardOutput
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
-			return nil, fmt.Errorf("scorecard timed out after %v (wall-clock cap): %w", timeout, attemptCtx.Err())
+			// stderr often carries the reason a run went long (rate-limit
+			// waits, a check retrying) right up to the SIGKILL, so it is
+			// the cheapest evidence available for the 4,608-repo
+			// timeout cohort.
+			return nil, fmt.Errorf("scorecard timed out after %v (wall-clock cap): %w: %s",
+				timeout, attemptCtx.Err(), tailForError(stderr.String()))
 		}
 		if runErr != nil {
-			return nil, fmt.Errorf("scorecard failed: %w: %s", execErr(attemptCtx, runErr), stderr.String())
+			return nil, fmt.Errorf("scorecard failed: %w: %s", execErr(attemptCtx, runErr), tailForError(stderr.String()))
 		}
-		return nil, fmt.Errorf("parsing scorecard output: %w", err)
+		// Exit 0 with unparseable stdout — the 2,492-repo cohort of the
+		// 2026-09-11 analysis. This arm used to drop stderr on the
+		// floor while its sibling above appended it, so for those repos
+		// there was no evidence at all of what scorecard said. The
+		// subprocess exiting 0 is exactly what makes stderr the only
+		// remaining witness. stdout_bytes disambiguates "produced
+		// nothing" from "produced something malformed".
+		return nil, fmt.Errorf("parsing scorecard output (stdout_bytes=%d): %w: %s",
+			stdout.Len(), err, tailForError(stderr.String()))
 	}
 	return &raw, nil
+}
+
+// scorecardStderrTailBytes bounds how much of a failed attempt's stderr
+// rides along in the returned error. Scorecard is chatty when a run goes
+// wrong (one line per retried check), and these errors reach
+// collection_queue.last_error and the application log — an unbounded
+// tail would be a per-repo blob in both. The TAIL, not the head: the
+// operative message is the last thing written before the process gave
+// up or was killed.
+const scorecardStderrTailBytes = 2048
+
+// tailForError trims stderr to the last scorecardStderrTailBytes,
+// marking the truncation so a reader is never misled into thinking the
+// captured fragment is the whole story.
+func tailForError(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= scorecardStderrTailBytes {
+		return s
+	}
+	return "...[truncated " + strconv.Itoa(len(s)-scorecardStderrTailBytes) + " bytes]... " +
+		s[len(s)-scorecardStderrTailBytes:]
 }
 
 // persistScorecard is the PERSIST half of the v0.27.5 split: rotate the
@@ -353,59 +462,57 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 // the reserved row name (db.ScorecardOverallName — never mixed into the
 // checks), then store each check row. Every row carries the mode
 // marker, because remote and local check sets are not comparable.
-func persistScorecard(ctx context.Context, store scorecardStore, repoID int64, raw *scorecardOutput, mode string, logger *slog.Logger) *ScorecardResult {
+//
+// 2026-09-12 — a partial run never replaces a complete set (operator
+// rule). Keyed on the stored scorecard_mode, not on check counts:
+//
+//	new run | stored | action
+//	remote  | any    | replace (the best obtainable set)
+//	local   | remote | REFUSE — keep the stored set, result.Discarded
+//	local   | local  | replace (no better data exists; GitLab/generic
+//	        | none   | are local-only, so this is their normal path)
+//
+// Before this the rotation was unconditional, so a 15-minute remote
+// timeout followed by a successful local fallback replaced an 18-check
+// set with an 11-check one — 10,214 repos on chaoss.tv held that
+// 7-check deficit. Mode is the discriminator so the rule survives
+// scorecard adding or removing a check, and needs no platform case.
+// A probe ERROR is not "no prior set" (SR-5): nothing is written.
+func persistScorecard(ctx context.Context, store scorecardStore, repoID int64, raw *scorecardOutput, mode string, logger *slog.Logger) (*ScorecardResult, error) {
 	result := &ScorecardResult{
 		OverallScore: raw.Score,
 		Mode:         mode,
 	}
-
-	// Rotate previous scorecard results to history before inserting new ones.
-	if err := store.RotateScorecardToHistory(ctx, repoID); err != nil {
-		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-		// defect. Only the log is suppressed — surrounding behaviour is
-		// unchanged and the work is retried on the next cycle.
-		if !errors.Is(err, context.Canceled) {
-			logger.Warn("failed to rotate scorecard to history", "repo_id", repoID, "error", err)
-		}
-	}
-
-	// Store the aggregate ("headline") score under the reserved
-	// __overall__ row name — v0.27.4; it was previously logged and
-	// dropped, which the operator called out as a gap. One decimal,
-	// matching scorecard's own output.
-	if err := store.InsertScorecardResult(ctx, repoID, db.ScorecardOverallName,
-		fmt.Sprintf("%.1f", raw.Score), nil, mode); err != nil {
-		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-		// defect. Only the log is suppressed — surrounding behaviour is
-		// unchanged and the work is retried on the next cycle.
-		if !errors.Is(err, context.Canceled) {
-			logger.Warn("failed to store scorecard overall score", "repo_id", repoID, "error", err)
-		}
-	}
-
-	// Store each check as a row in repo_deps_scorecard.
+	// The aggregate ("headline") score under the reserved __overall__
+	// row name — v0.27.4; one decimal, matching scorecard's own output —
+	// then each check as a row with its full details as JSONB.
+	rows := make([]db.ScorecardRow, 0, 1+len(raw.Checks))
+	rows = append(rows, db.ScorecardRow{Name: db.ScorecardOverallName, Score: fmt.Sprintf("%.1f", raw.Score)})
 	for _, check := range raw.Checks {
-		sc := ScorecardCheck{
-			Name:    check.Name,
-			Score:   check.Score,
-			Reason:  check.Reason,
-			Details: check.Details,
-		}
-		result.Checks = append(result.Checks, sc)
-
-		// Store in database with full check details as JSONB.
+		result.Checks = append(result.Checks, ScorecardCheck{
+			Name: check.Name, Score: check.Score, Reason: check.Reason, Details: check.Details,
+		})
 		detailsJSON, _ := json.Marshal(check)
-		if err := store.InsertScorecardResult(ctx, repoID, check.Name, strconv.FormatFloat(check.Score, 'f', -1, 64), detailsJSON, mode); err != nil {
-			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-			// defect. Only the log is suppressed — surrounding behaviour is
-			// unchanged and the work is retried on the next cycle.
-			if !errors.Is(err, context.Canceled) {
-				logger.Warn("failed to store scorecard check", "check", check.Name, "error", err)
-			}
-		}
+		rows = append(rows, db.ScorecardRow{
+			Name: check.Name, Score: strconv.FormatFloat(check.Score, 'f', -1, 64), Details: detailsJSON,
+		})
 	}
 
-	return result
+	written, err := store.ReplaceScorecard(ctx, repoID, mode, rows, scorecardReplaceAllowed(mode))
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			logger.Warn("scorecard persist failed — result NOT written",
+				"repo_id", repoID, "mode", mode, "error", err)
+		}
+		return nil, fmt.Errorf("%w: %w", errScorecardModeProbe, err)
+	}
+	if !written {
+		result.Discarded = true
+		logger.Info("scorecard degraded run discarded — prior complete set retained",
+			"repo_id", repoID, "run_mode", mode, "stored_mode", "remote",
+			"run_checks", len(raw.Checks))
+	}
+	return result, nil
 }
 
 // setRemoteOrigin sets the git remote origin URL on a local clone so scorecard

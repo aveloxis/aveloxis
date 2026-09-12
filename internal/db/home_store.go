@@ -258,31 +258,42 @@ type ScorecardCheck struct {
 // GetRepoScorecard returns the current scorecard checks for repoID,
 // the aggregate ("headline") score when the collector has stored one
 // (nil for scans that predate v0.27.4 — heals on the next scorecard
-// run), and the scan timestamp. Empty checks + zero time = never
-// scanned.
-func (s *PostgresStore) GetRepoScorecard(ctx context.Context, repoID int64) ([]ScorecardCheck, *float64, time.Time, error) {
+// run), the scan timestamp, and the scorecard_mode of the current set
+// ("remote" = the complete check set; "local" = the subset scorecard
+// can compute from a clone alone; the empty string = a pre-v0.27.5
+// set). Empty
+// checks + zero time = never scanned. The mode is what lets a consumer
+// tell a complete set from a partial-by-necessity one (2026-09-12).
+func (s *PostgresStore) GetRepoScorecard(ctx context.Context, repoID int64) ([]ScorecardCheck, *float64, time.Time, string, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT name, score, data_collection_date
+		SELECT name, score, data_collection_date, COALESCE(scorecard_mode, '')
 		FROM aveloxis_data.repo_deps_scorecard
 		WHERE repo_id = $1
 		ORDER BY name`, repoID)
 	if err != nil {
-		return nil, nil, time.Time{}, err
+		return nil, nil, time.Time{}, "", err
 	}
 	defer rows.Close()
 	var (
 		checks  []ScorecardCheck
 		overall *float64
 		asOf    time.Time
+		mode    string
 	)
 	for rows.Next() {
 		var (
 			c        ScorecardCheck
 			scoreTxt string
 			ts       time.Time
+			rowMode  string
 		)
-		if err := rows.Scan(&c.Name, &scoreTxt, &ts); err != nil {
-			return nil, nil, time.Time{}, err
+		if err := rows.Scan(&c.Name, &scoreTxt, &ts, &rowMode); err != nil {
+			return nil, nil, time.Time{}, "", err
+		}
+		// One snapshot shares one mode; 'remote' wins a mixed legacy set
+		// (the same conservative reading ReplaceScorecard's stored-mode check takes).
+		if rowMode == "remote" || mode == "" {
+			mode = rowMode
 		}
 		if f, perr := strconv.ParseFloat(strings.TrimSpace(scoreTxt), 64); perr == nil {
 			c.Score = f
@@ -299,5 +310,5 @@ func (s *PostgresStore) GetRepoScorecard(ctx context.Context, repoID int64) ([]S
 		}
 		checks = append(checks, c)
 	}
-	return checks, overall, asOf, rows.Err()
+	return checks, overall, asOf, mode, rows.Err()
 }

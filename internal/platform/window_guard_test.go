@@ -24,7 +24,7 @@ func windowResp(resource, remaining string, reset int64) *http.Response {
 // concurrent requests complete out of order, and the pre-fix blind
 // absolute assignment let an OLDER response with a higher Remaining
 // arrive after a newer one and RAISE the tracked budget — re-admitting
-// an exhausted key to GetGraphQLKey and spending straight through the
+// an exhausted key to the graphql checkout and spending straight through the
 // background reserve. Within one reset window the true balance only
 // decreases; only a NEWER window may raise it.
 func TestBudgetUpdatesAreWindowGuarded(t *testing.T) {

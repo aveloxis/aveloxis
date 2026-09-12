@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestScorecardResultHasExpectedFields verifies the ScorecardResult struct.
@@ -190,17 +192,44 @@ func TestSchedulerReducedDepletionForLocalScorecard(t *testing.T) {
 	}
 }
 
-// TestSchedulerNoScorecardSemaphore verifies the scorecard semaphore was
-// removed. Local scorecard is mostly disk I/O — the small number of remaining
-// API calls is handled by MarkDepleted, so a concurrency limiter is unnecessary.
-func TestSchedulerNoScorecardSemaphore(t *testing.T) {
+// TestSchedulerScorecardSemaphoreBoundsSubprocesses — REWRITTEN
+// 2026-09-12 to the superseding contract. The v0.21-era pin banned a
+// scorecard semaphore on the premise that local scorecard is mostly
+// disk I/O; since v0.27.5 the phase is REMOTE-primary (~40 GitHub API
+// calls per run) and the chaoss.tv analysis measured 71,519 runs per
+// 71,566 jobs — every cycle — sharing the key pool with 70 workers and
+// the history sweep. A subprocess cannot hold a KeyPool lease, so the
+// pool's in-flight ceilings cannot see it; the scheduler bounds the
+// subprocess count instead (collection.scorecard_max_concurrent), and
+// the slot is taken BEFORE the tokens are borrowed so a queued phase
+// never holds tokens it is not using. Comment-stripped.
+func TestSchedulerScorecardSemaphoreBoundsSubprocesses(t *testing.T) {
 	src, err := os.ReadFile("../scheduler/scheduler.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	code := string(src)
+	code := srctest.StripGoComments(string(src))
 
-	if strings.Contains(code, "scorecardSem") {
-		t.Error("scorecardSem should be removed — local scorecard is mostly disk I/O, MarkDepleted handles token rotation")
+	if !strings.Contains(code, "scorecardSem chan struct{}") {
+		t.Error("Scheduler must carry `scorecardSem chan struct{}` — the subprocess ceiling for a phase the key pool's leases cannot see")
+	}
+	if !strings.Contains(code, "scorecardSem: make(chan struct{}, cfg.Collection.ScorecardMaxConcurrentValue())") {
+		t.Error("NewWithKeys must size scorecardSem from cfg.Collection.ScorecardMaxConcurrentValue() — the accessor is the single default layer (SR-10)")
+	}
+	body := srctest.StripGoComments(srctest.FuncBody(t, string(src), "func (s *Scheduler) runScorecardPhase("))
+	acquire := strings.Index(body, "case s.scorecardSem <- struct{}{}:")
+	release := strings.Index(body, "defer func() { <-s.scorecardSem }()")
+	tokens := strings.Index(body, "collector.ScorecardTokens(")
+	if acquire < 0 || release < 0 || tokens < 0 {
+		t.Fatalf("runScorecardPhase must take a scorecardSem slot in a select (ctx-aware), defer its release, and borrow tokens: acquire=%d release=%d tokens=%d", acquire, release, tokens)
+	}
+	if !(acquire < release && release < tokens) {
+		t.Errorf("order must be slot → deferred release → tokens (acquire=%d release=%d tokens=%d): tokens borrowed while queued for a slot are held by a phase that is not running", acquire, release, tokens)
+	}
+	if !strings.Contains(body[acquire:tokens], "case <-ctx.Done():") {
+		t.Error("the slot wait must have a ctx.Done arm — a `stop serve` while queued for a scorecard slot must not hang the job")
+	}
+	if !strings.Contains(body, "defer releaseTokens()") {
+		t.Error("the borrowed tokens must be returned to the pool (defer releaseTokens()) — LendTokens is accounted; a lost release over-reports the key as lent forever")
 	}
 }

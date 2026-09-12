@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Scaling &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Scaling &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#horizontal-scaling">Horizontal scaling</a><ul>
@@ -547,7 +549,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -1744,6 +1754,29 @@ aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span clas
 </table>
 <p>These are rough estimates. Actual time depends on repo sizes, API response times, and the facade/analysis phases.</p>
 </section>
+<section id="background-sweeps-and-the-foreground-reserve">
+<h3>Background sweeps and the foreground reserve<a class="headerlink" href="#background-sweeps-and-the-foreground-reserve" title="Link to this heading"></a></h3>
+<p>Since v0.29.6 the key pool admits <strong>background</strong> work (the contributor
+history sweep and the activity classification sweep) only while the pool’s
+usable GraphQL budget is above <code class="docutils literal notranslate"><span class="pre">collection.github_budget_foreground_reserve_pct</span></code>
+(default 25%). Foreground collection is admitted while any budget remains.
+The reserve stops a sweep from starving collection; it cannot make a sweep
+that demands more than the budget finish. Size the demand side yourself:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>background budget per hour ≈ keys × 5,000 × (100 − reserve_pct) / 100   # GraphQL points
+history-sweep demand per hour = activity_history_batch × 60 / activity_history_interval_minutes   # contributors
+                                × windows per contributor (a 10-year account is ~20 at 180-day windows)
+</pre></div>
+</div>
+<p>Each window is one GraphQL query. <code class="docutils literal notranslate"><span class="pre">activity_history_concurrency</span></code> and
+<code class="docutils literal notranslate"><span class="pre">activity_history_window_concurrency</span></code> change how fast a cycle runs, not
+how much it asks for; <code class="docutils literal notranslate"><span class="pre">activity_history_window_days</span></code> is the wrong lever
+(larger windows raise the <code class="docutils literal notranslate"><span class="pre">contributionsCollection</span></code> cap loss). If the
+5-minute <code class="docutils literal notranslate"><span class="pre">key</span> <span class="pre">pool</span> <span class="pre">summary</span></code> log line shows remaining budget pinned near
+the reserve line and <code class="docutils literal notranslate"><span class="pre">GraphQL</span> <span class="pre">background</span> <span class="pre">sweep</span> <span class="pre">paced</span> <span class="pre">by</span> <span class="pre">the</span> <span class="pre">foreground</span> <span class="pre">reserve</span></code> appears every cycle, lower the batch or lengthen the interval
+until demand sits under roughly half of the background budget — the
+sweep re-audits on a 90-day cooldown, so steady state is far below the
+first pass.</p>
+</section>
 </section>
 <hr class="docutils" />
 <section id="horizontal-scaling">
@@ -1820,16 +1853,164 @@ aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span clas
 <div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">max_connections</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">100</span>
 </pre></div>
 </div>
+<p>That formula gives the <strong>floor</strong> — the number below which Aveloxis cannot
+open its pools. It is not a target: every connection you add above the floor
+is another <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> multiplier, so raise <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> and the
+<a class="reference internal" href="#why-work-mem-is-the-dangerous-one"><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> budget</a> together. A large
+fleet runs 300; the <code class="docutils literal notranslate"><span class="pre">100</span></code> above is a small-deployment example.</p>
 </section>
-<section id="shared-buffers">
-<h3>Shared buffers<a class="headerlink" href="#shared-buffers" title="Link to this heading"></a></h3>
-<p>For large datasets (millions of rows across tables), increase PostgreSQL shared buffers:</p>
-<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">shared_buffers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">4GB</span><span class="w">          </span><span class="c1"># 25% of available RAM</span>
-<span class="na">effective_cache_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">12GB</span><span class="w">   </span><span class="c1"># 75% of available RAM</span>
-<span class="na">work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">256MB</span><span class="w">              </span><span class="c1"># for complex queries and matview refreshes</span>
-<span class="na">maintenance_work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">1GB</span><span class="w">    </span><span class="c1"># for VACUUM and index creation</span>
+</section>
+<hr class="docutils" />
+<section id="postgresql-server-tuning">
+<h2>PostgreSQL server tuning<a class="headerlink" href="#postgresql-server-tuning" title="Link to this heading"></a></h2>
+<p>These are server-wide settings in <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code>, distinct from the pool
+arithmetic above. Everything here is expressed as a <strong>formula</strong>, not a flat
+number, for a reason given in <a class="reference internal" href="#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous
+one</a>.</p>
+<section id="recommended-settings">
+<h3>Recommended settings<a class="headerlink" href="#recommended-settings" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Recommendation</p></th>
+<th class="head"><p>Why</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code></p></td>
+<td><p>20–25% of RAM</p></td>
+<td><p>PostgreSQL’s own page cache. Past ~25% you are just duplicating the OS page cache, and on a write-heavy fleet the larger checkpoint working set costs more than the extra hits gain.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">effective_cache_size</span></code></p></td>
+<td><p>65–75% of RAM</p></td>
+<td><p>A planner <em>hint</em>, not an allocation. It tells the planner how much OS cache it can assume, which is what makes index scans win over sequential scans on the large tables.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">work_mem</span></code></p></td>
+<td><p>See the budget below — <strong>not</strong> a round number</p></td>
+<td><p>Per <strong>operation</strong>, not per connection. This is the setting that OOMs hosts.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code></p></td>
+<td><p>2–4 GB</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">VACUUM</span></code>, <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">INDEX</span></code>, <code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">TABLE</span></code>. Bounded by <code class="docutils literal notranslate"><span class="pre">autovacuum_max_workers</span></code> running concurrently, so it multiplies too — just by a much smaller number.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">jit</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">off</span></code></p></td>
+<td><p>Aveloxis’s workload is insert- and index-lookup-heavy; JIT compilation buys little and is a known memory sink on wide analytic queries. A host that reports <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">llvm</span> <span class="pre">error:</span> <span class="pre">Unable</span> <span class="pre">to</span> <span class="pre">allocate</span> <span class="pre">section</span> <span class="pre">memory</span></code> is paying for JIT it is not benefiting from.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_connections</span></code></p></td>
+<td><p>Pool floor from <a class="reference internal" href="#postgresql-configuration">PostgreSQL configuration</a>, plus headroom</p></td>
+<td><p>Every connection is a potential <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> multiplier, so this is a memory setting as much as a concurrency one. Raise it only with the budget below recomputed.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="why-work-mem-is-the-dangerous-one">
+<h3>Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one<a class="headerlink" href="#why-work-mem-is-the-dangerous-one" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the limit for <strong>one</strong> sort or hash operation. A single query can
+use several; a parallel query multiplies by its worker count; and every
+connection can be running one. So the worst-case allocation is:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>max_connections × (1 + max_parallel_workers_per_gather) × ops_per_query × work_mem
 </pre></div>
 </div>
+<p>where <code class="docutils literal notranslate"><span class="pre">ops_per_query</span></code> is the number of sort/hash nodes a plan runs at once
+(<code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code> a representative heavy query — the matview refreshes and the
+commits backfills are the ones on this workload — and count them; 2–4 is
+typical). The budget below folds that factor into its 10% headroom rather
+than the denominator, because every connection is never running its
+heaviest plan at once; if yours are, divide by <code class="docutils literal notranslate"><span class="pre">ops_per_query</span></code> too. Budget it
+against roughly 10% of RAM, which leaves the rest for <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code> and
+the OS page cache:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (RAM × 0.10) / (max_connections × (1 + max_parallel_workers_per_gather))
+</pre></div>
+</div>
+<p>A worked example on a 1 TB host running 300 connections with
+<code class="docutils literal notranslate"><span class="pre">max_parallel_workers_per_gather</span> <span class="pre">=</span> <span class="pre">4</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (1024 GB × 0.10) / (300 × 5) = 102 GB / 1500 ≈ 70 MB
+</pre></div>
+</div>
+<p>…so <code class="docutils literal notranslate"><span class="pre">64MB</span></code> is the right order of magnitude, and <code class="docutils literal notranslate"><span class="pre">2GB</span></code> — a value that looks
+unremarkable next to a 1 TB host — implies a worst case of
+<code class="docutils literal notranslate"><span class="pre">300</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">2GB</span> <span class="pre">=</span> <span class="pre">3</span> <span class="pre">TB</span></code>, three times the machine. That is not a hypothetical:
+it is what a real fleet drifted to, and it produced 106 out-of-memory errors
+in a three-second window, failing allocations as small as 40 bytes while
+inserting commits.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Read <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> recommendations elsewhere — including older revisions of this
+page, which said <code class="docutils literal notranslate"><span class="pre">256MB</span></code> flat — with the denominator in mind. A value that is
+correct for a 20-connection development database is dangerous at 300
+connections, and nothing in PostgreSQL warns you about the difference.</p>
+</div>
+</section>
+<section id="reference-configuration">
+<h3>Reference configuration<a class="headerlink" href="#reference-configuration" title="Link to this heading"></a></h3>
+<p>A validated starting point for a large fleet (~180K repos, 1 TB RAM, ~50
+collection workers):</p>
+<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">shared_buffers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">200GB</span><span class="w">                  </span><span class="c1"># ~20% of RAM</span>
+<span class="na">effective_cache_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">700GB</span><span class="w">            </span><span class="c1"># ~68% of RAM — a hint, not an allocation</span>
+<span class="na">work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">64MB</span><span class="w">                         </span><span class="c1"># per OPERATION; see the budget above</span>
+<span class="na">maintenance_work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">4GB</span>
+<span class="na">max_connections</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">300</span>
+<span class="na">jit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">off</span>
+</pre></div>
+</div>
+<p>Scale <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code>, <code class="docutils literal notranslate"><span class="pre">effective_cache_size</span></code> and <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> to your
+host, then recompute <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> from the budget — do not carry the <code class="docutils literal notranslate"><span class="pre">64MB</span></code>
+across unchanged, because it is an output of the formula, not an input.</p>
+</section>
+<section id="operating-system-settings">
+<h3>Operating-system settings<a class="headerlink" href="#operating-system-settings" title="Link to this heading"></a></h3>
+<p>PostgreSQL cannot protect itself from an over-committing kernel. On Linux:</p>
+<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">vm.overcommit_memory</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">2</span><span class="w">    </span><span class="c1"># refuse allocations beyond the commit limit</span>
+<span class="na">vm.overcommit_ratio</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">80</span><span class="w">    </span><span class="c1"># commit limit = swap + 80% of RAM</span>
+<span class="na">vm.swappiness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">10</span><span class="w">          </span><span class="c1"># prefer evicting page cache over swapping PostgreSQL</span>
+</pre></div>
+</div>
+<p>With <code class="docutils literal notranslate"><span class="pre">vm.overcommit_memory</span> <span class="pre">=</span> <span class="pre">0</span></code> (the default) the kernel hands out memory it
+does not have and then invokes the OOM killer, which on a database host
+usually kills the postmaster. When the postmaster cannot fork, clients see a
+bare unframed error string mid-handshake rather than a normal error — see
+<a class="reference internal" href="troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata"><span class="std std-ref">the troubleshooting entry for that crash
+signature</span></a>.</p>
+</section>
+<section id="verifying-what-is-actually-live">
+<h3>Verifying what is actually live<a class="headerlink" href="#verifying-what-is-actually-live" title="Link to this heading"></a></h3>
+<p>Configuration files and running state diverge — an <code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">SYSTEM</span></code>, a
+package upgrade, or a hand-edit during an incident all leave the file saying
+one thing and the server doing another. Check the server, not the file:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="k">name</span><span class="p">,</span><span class="w"> </span><span class="n">setting</span><span class="p">,</span><span class="w"> </span><span class="n">unit</span><span class="p">,</span><span class="w"> </span><span class="n">source</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">pg_settings</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="k">name</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="s1">&#39;work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;maintenance_work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;shared_buffers&#39;</span><span class="p">,</span>
+<span class="w">               </span><span class="s1">&#39;effective_cache_size&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;max_connections&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;jit&#39;</span><span class="p">,</span>
+<span class="w">               </span><span class="s1">&#39;max_parallel_workers_per_gather&#39;</span><span class="p">)</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">name</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">source</span></code> column is the useful one: <code class="docutils literal notranslate"><span class="pre">configuration</span> <span class="pre">file</span></code> means
+<code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code>, while <code class="docutils literal notranslate"><span class="pre">database</span></code>, <code class="docutils literal notranslate"><span class="pre">user</span></code> or <code class="docutils literal notranslate"><span class="pre">override</span></code> means something has
+set it at runtime and your file is not the whole story.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sysctl<span class="w"> </span>vm.overcommit_memory<span class="w"> </span>vm.overcommit_ratio<span class="w"> </span>vm.swappiness
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> and <code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code> apply with <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">pg_reload_conf();</span></code>.
+<code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code> and <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> require a restart.</p>
+</section>
+<section id="drift-is-the-failure-mode">
+<h3>Drift is the failure mode<a class="headerlink" href="#drift-is-the-failure-mode" title="Link to this heading"></a></h3>
+<p>The settings above are not a one-time setup step. The realistic failure is not
+choosing a wrong value on day one — it is a value that was right, then moved,
+and nothing noticed until the host ran out of memory. Re-run the verification
+query whenever you:</p>
+<ul class="simple">
+<li><p>change <code class="docutils literal notranslate"><span class="pre">max_connections</span></code>, add Aveloxis instances, or raise the worker count
+(all three change the <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> denominator),</p></li>
+<li><p>upgrade PostgreSQL or the OS package (which can reset or reintroduce
+settings),</p></li>
+<li><p>finish any incident where someone raised a limit to get unstuck.</p></li>
+</ul>
+<p>Recording the expected values somewhere your team reads — a runbook, a
+configuration-management repository — turns “is this still what we decided?”
+into a diff instead of an investigation.</p>
 </section>
 </section>
 <hr class="docutils" />

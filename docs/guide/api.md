@@ -963,13 +963,23 @@ Token semantics:
   equal `repo_owner` and fall out of the feed.
 - `GET /api/v1/repos/{repoID}/scorecard` — the current OpenSSF
   Scorecard results for the repo:
-  `{"repo_id", "scanned", "as_of", "overall", "checks": [{"name", "score"}]}`.
+  `{"repo_id", "scanned", "as_of", "overall", "mode", "checks": [{"name", "score"}]}`.
   `overall` is scorecard's aggregate headline score (one decimal);
   it is absent for repos whose last scan predates v0.27.4 and fills
   in on the next scheduled scorecard run. Check scores are 0–10 as
   reported by scorecard; `-1` means the check did not apply or was
   inconclusive (render as N/A, not as a failure). `scanned=false`
   means scorecard has never run for this repository.
+  `mode` (v0.29.6, present when `scanned`) says which check SET this
+  is: `"remote"` is the complete set (~18 checks, scorecard's `--repo`
+  mode against GitHub); `"local"` is the subset a clone alone can
+  answer (~11 checks — GitLab and generic-git repos always, and a
+  GitHub repo whose only successful runs so far were local). A check
+  absent from a local set was NOT measured — do not render a missing
+  `Code-Review` or `Branch-Protection` as a zero. `""` marks rows
+  written before v0.27.5. A local run never replaces a stored remote
+  set (the partial-never-replaces-complete rule), so a repo's `mode`
+  only moves from `local` to `remote`, never back.
 
 ## Portal and admin endpoints (v0.27.3)
 

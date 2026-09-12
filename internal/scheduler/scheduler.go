@@ -91,6 +91,13 @@ type Scheduler struct {
 	cfg      Config
 	workerID string
 
+	// scorecardSem bounds concurrent scorecard SUBPROCESSES across the
+	// worker pool (collection.scorecard_max_concurrent, 2026-09-12). A
+	// subprocess cannot hold a KeyPool lease, so the pool's in-flight
+	// ceilings cannot see it; this is its ceiling. Sized once in
+	// NewWithKeys from the effective config value.
+	scorecardSem chan struct{}
+
 	// matviewPending is set by the weekly matview ticker and cleared by the
 	// rebuild goroutine. The poll loop starts the rebuild once active worker
 	// count drops below the ShouldStartMatviewRebuild threshold — see
@@ -116,6 +123,7 @@ type Scheduler struct {
 	activityClassActive atomic.Bool
 	activityHistActive  atomic.Bool
 	searchActive        atomic.Bool
+	goneRecheckActive   atomic.Bool
 	affiliationsActive  atomic.Bool
 	breadthActive       atomic.Bool
 	// v0.27.52: guards the orgRefreshTicker's unscoped full pass.
@@ -212,7 +220,8 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 		workerID: workerID,
 		// Overridable in tests so the org scan can run against an
 		// httptest GitHub (v0.27.83 dedup behavioral suite).
-		ghAPIBase: "https://api.github.com",
+		ghAPIBase:    "https://api.github.com",
+		scorecardSem: make(chan struct{}, cfg.Collection.ScorecardMaxConcurrentValue()),
 	}
 
 	// Install a permanent-redirect hook on both platform clients so that a
@@ -411,6 +420,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	historyTicker := time.NewTicker(s.cfg.Collection.ActivityHistoryIntervalValue())
 	defer historyTicker.Stop()
 	defer breadthTicker.Stop()
+	// 2026-09-12: per-key pool summary. The observability the chaoss.tv
+	// analysis lacked — an aggregate "270,000 remaining, 54 alive" reads
+	// the same whether load is even or 96% on one key.
+	keyPoolTicker := time.NewTicker(keyPoolSummaryInterval)
+	defer keyPoolTicker.Stop()
 	// v0.27.18: construct the breadth worker ONCE, here (not lazily in
 	// runBreadth, which runs in a per-tick goroutine — lazy init would
 	// race). The circuit-breaker pause lives on this struct and now
@@ -546,6 +560,21 @@ func (s *Scheduler) Run(ctx context.Context) {
 	affiliationsTicker := time.NewTicker(s.cfg.Collection.AffiliationIntervalDuration())
 	defer affiliationsTicker.Stop()
 
+	// v0.29.7: gone-repo recheck. A 404/410 dequeues a repo, so this
+	// ticker is the only automatic path by which a re-publicized
+	// repository returns to collection (cadence + batch derived in
+	// gone_recheck.go). Disabled → nil channel, never selected.
+	var goneRecheckC <-chan time.Time
+	if s.cfg.Collection.GoneRepoRecheckEnabled() {
+		goneRecheckTicker := time.NewTicker(goneRecheckTick)
+		defer goneRecheckTicker.Stop()
+		goneRecheckC = goneRecheckTicker.C
+	}
+	s.logger.Info("gone-repo recheck",
+		"enabled", s.cfg.Collection.GoneRepoRecheckEnabled(),
+		"recheck_every", s.cfg.Collection.GoneRepoRecheckInterval(),
+		"tick", goneRecheckTick, "batch_per_tick", goneRecheckBatch)
+
 	// v0.23.0: kick off the repo-metadata backfill in the background.
 	// Per operator direction "for those repos already collected, we
 	// need to go get that information on the next restart" — this
@@ -642,6 +671,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-historyTicker.C:
 			s.singleFlight(&s.activityHistActive, "activity-history", func() { s.runActivityHistory(ctx) })
 
+		case <-keyPoolTicker.C:
+			s.logKeyPoolSummary()
+
 		case <-matviewCheckTicker.C:
 			now := time.Now()
 			rebuildDay := s.cfg.Collection.MatviewRebuildWeekday()
@@ -668,6 +700,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-searchResolveTicker.C:
 			s.singleFlight(&s.searchActive, "search-resolve", func() { s.runSearchResolve(ctx) })
+
+		case <-goneRecheckC:
+			s.singleFlight(&s.goneRecheckActive, "gone-recheck", func() { s.runGoneRecheck(ctx) })
 
 		case <-affiliationsTicker.C:
 			s.singleFlight(&s.affiliationsActive, "affiliations-population", func() { s.runAffiliationsPopulation(ctx) })
@@ -1631,22 +1666,21 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 // 11 checks beat none). GitLab and generic-git repos run local only
 // (scorecard's GitLab remote support is immature).
 //
-// Tokens: scorecard receives a comma-separated GITHUB_TOKEN built from
-// the pool (collection.scorecard_token_count; 0 = all tokens) and
-// round-robins it per request. NO key checkout happens — the
+// Tokens: scorecard receives a comma-separated GITHUB_TOKEN BORROWED
+// from the pool (collection.scorecard_token_count; 0 = all tokens)
+// and round-robins it per request. No in-flight lease is held — the
 // pre-v0.27.5 GetKey + MarkDepleted pattern is gone: checking one key
 // out starved it against 40 collection workers and was the measured
 // cause of the multi-DAY remote hangs (scorecard sleeps through the
-// single token's rate-limit reset).
+// single token's rate-limit reset). Since 2026-09-12 the loan is
+// ACCOUNTED (KeyPool.LendTokens) and the subprocess count is bounded
+// by scorecardSem — the two things a subprocess cannot do for itself.
 //
 // The retained temp clone is cleaned up after scorecard finishes,
 // regardless of outcome.
 func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *model.Repo, analysisClonePath string) {
 	repoURL := fmt.Sprintf("https://%s/%s/%s",
 		platformHostForModel(repo.Platform), repo.Owner, repo.Name)
-
-	token, instrumentToken := collector.ScorecardTokens(
-		s.ghKeys, s.cfg.Collection.ScorecardTokenCountOrDefault())
 
 	// Clean up the retained temp clone once scorecard is done — on
 	// every exit, the shutdown one included.
@@ -1661,7 +1695,52 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 		}
 	}()
 
-	_, scErr := collector.RunScorecard(ctx, s.store, repoID, collector.ScorecardOptions{
+	// Subprocess ceiling (2026-09-12): wait for a slot BEFORE borrowing
+	// tokens, so tokens are never held by a phase that is only queued.
+	// The wait is inline in the job by design — a finished cycle is
+	// fully finished — and is INCLUDED in phase_duration below (the
+	// phase holds the worker while queued; PR #203 review) and reported
+	// on its own as slot_wait.
+	phaseStart := time.Now()
+	semWait := phaseStart
+	select {
+	case s.scorecardSem <- struct{}{}:
+	case <-ctx.Done():
+		return // shutdown while queued for a slot: nothing started
+	}
+	defer func() { <-s.scorecardSem }()
+	slotWait := time.Since(semWait)
+	if slotWait > time.Second {
+		s.logger.Info("scorecard waited for a subprocess slot",
+			"repo_id", repoID, "waited", slotWait, "max_concurrent", cap(s.scorecardSem))
+	}
+
+	token, instrumentToken, releaseTokens := collector.ScorecardTokens(
+		s.ghKeys, s.cfg.Collection.ScorecardTokenCountOrDefault())
+	defer releaseTokens()
+
+	// The v0.29.5 token-contention probe, kept: token_count and the
+	// pool's state at attempt start, correlated against the "scorecard
+	// attempt" outcomes, is what showed scorecard was a SYMPTOM of the
+	// pool's concentration (the 2026-09-12 analysis) rather than a
+	// cause. Now also carries the pool-wide in-flight count.
+	tokenCount := 0
+	if token != "" {
+		tokenCount = strings.Count(token, ",") + 1
+	}
+	poolRemaining, poolAlive, poolInflight := -1, -1, -1
+	if s.ghKeys != nil {
+		poolRemaining, poolAlive = s.ghKeys.TotalRemaining(), s.ghKeys.AliveCount()
+		_, poolInflight = s.ghKeys.Snapshot()
+	}
+	s.logger.Info("scorecard tokens",
+		"repo_id", repoID,
+		"token_count", tokenCount,
+		"pool_alive_keys", poolAlive,
+		"pool_remaining", poolRemaining,
+		"pool_inflight", poolInflight)
+
+	scResult, scErr := collector.RunScorecard(ctx, s.store, repoID, collector.ScorecardOptions{
 		RepoURL:         repoURL,
 		LocalPath:       analysisClonePath,
 		RemotePrimary:   repo.Platform == model.PlatformGitHub,
@@ -1672,6 +1751,29 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 	if errors.Is(scErr, context.Canceled) {
 		return // shutdown, not a failure
 	}
+
+	// PHASE cost, as opposed to the per-attempt cost the collector
+	// logs. This is the number that answers "how long did scorecard
+	// hold this collection worker's slot" — remote attempt plus local
+	// fallback plus persistence — and it is what makes the 18%-of-
+	// capacity claim checkable per repo instead of by inference.
+	//
+	// The result was discarded before this (`_, scErr :=`), so mode
+	// and measured API spend never left the collector package even
+	// though ScorecardResult has carried them since v0.27.5.
+	mode, apiCalls, written := "none", int64(0), false
+	if scResult != nil {
+		mode, apiCalls, written = scResult.Mode, scResult.APICalls, !scResult.Discarded
+	}
+	s.logger.Info("scorecard phase complete",
+		"repo_id", repoID,
+		"ok", scErr == nil,
+		"mode", mode,
+		"written", written,
+		"api_calls_used", apiCalls,
+		"phase_duration", time.Since(phaseStart), // includes slot_wait
+		"slot_wait", slotWait)
+
 	if scErr != nil {
 		s.logger.Warn("scorecard failed", "repo_id", repoID, "error", scErr)
 	}

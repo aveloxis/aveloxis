@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -547,7 +549,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -1925,10 +1935,12 @@ schema stamp) is refused twice: the <code class="docutils literal notranslate"><
 when the stamp is behind the binary (no migration of that binary has
 completed here — the ladder’s step 2, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code>),
 and serve’s own startup migration refuses to run a full pass while
-another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is connected. A same-version <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">serve</span></code>
-is NOT refused — it would start a second full scheduler — so both the
-gate and serve’s log say when another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is already
-connected; <code class="docutils literal notranslate"><span class="pre">stop</span></code> scopes its backend check to this host.</p></li>
+another <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> is connected. Since 2026-09-11 a
+<strong>same-version</strong> <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">serve</span></code> is refused too: serve will not start a
+second full scheduler against a database that already has one, because
+the two compete for the same queue and API keys. If you genuinely want
+two, say so explicitly with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span> <span class="pre">--allow-second-serve</span></code>.
+<code class="docutils literal notranslate"><span class="pre">stop</span></code> scopes its backend check to this host.</p></li>
 </ul>
 <p>Full recipe — Postgres remote access, minimal config template, systemd
 unit, libmagic version-lock — in the
@@ -3046,6 +3058,23 @@ aveloxis<span class="w"> </span>mark-gone-repos<span class="w"> </span>--limit<s
 is nothing to display for them either way. New gone repos are
 stamped automatically by prelim at collection time; this command
 exists for the historical cohort and for resurrection checks.</p>
+<p><strong>Since v0.29.7 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> re-checks gone repositories on its
+own.</strong> A 404/410 removes the repository’s queue row, and the scheduler
+only ever visits queued repositories, so prelim never probes it again;
+before v0.29.7 a repository made private and later public again stayed
+“gone” until this command ran. The scheduler’s recheck ticker now
+re-probes every gone-stamped repository once per
+<code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_days</span></code> (default 28, up to 500 per hour,
+never-checked rows first) with the same probe and the same verdict
+rule, and logs <code class="docutils literal notranslate"><span class="pre">gone</span> <span class="pre">recheck:</span> <span class="pre">repository</span> <span class="pre">is</span> <span class="pre">reachable</span> <span class="pre">again</span></code> when it
+resurrects one. This command remains the immediate, whole-cohort form:
+run it after an upgrade or when you know an organization has flipped
+back, and it resets the cadence clock on every repository it verifies.
+The probe is one unauthenticated <code class="docutils literal notranslate"><span class="pre">HEAD</span></code> per candidate and consumes no
+API-key budget: at roughly 200 ms per probe a few thousand candidates
+take minutes and tens of thousands take an hour or more of wall-clock,
+and nothing else; <code class="docutils literal notranslate"><span class="pre">--limit</span></code> bounds a first run. See <a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release"><span class="std std-ref">Recurring
+maintenance</span></a>.</p>
 </section>
 <section id="aveloxis-run-scorecard">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code><a class="headerlink" href="#aveloxis-run-scorecard" title="Link to this heading"></a></h2>

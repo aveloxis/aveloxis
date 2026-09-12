@@ -62,13 +62,17 @@ This rule is the reason aveloxis does not ship a 16-table merge migration. The c
 
 The partial unique index `idx_contributors_login` enforces that no two rows share the same non-empty `cntrb_login`. Empty logins are unconstrained — multiple email-only contributors can coexist with `cntrb_login = ''`.
 
-**Rename edge case.** When a platform user renames between observations, three outcomes are possible:
+**Rename edge case.** When a platform user renames between observations:
 
-1. The new login is unobserved elsewhere — `Resolve` updates the existing row's `cntrb_login` to the new value via the `ON CONFLICT (cntrb_id) DO UPDATE` branch. Clean.
-2. The new login is already observed under a different `cntrb_id` AND the partial unique index trips at write time — the `UpsertContributorFull` 23505 fallback UPDATEs the row's other fields without touching `cntrb_login`. Two rows representing the same person coexist with different logins, both visible in lookup queries. This was the steady-state behavior pre-v0.20.2.
-3. **(v0.20.2 onward)** When `runSearchResolve` later identifies the duplicate via the search API result and calls `LinkContributorToGitHubUser`, the function now performs a **logical merge** (soft-delete pattern). It picks a winner — preferring the row whose `cntrb_id` matches `PlatformUUID(1, ghUserID)` per R1, falling back to the older row — copies non-empty fields from the loser(s) into the winner, inserts `contributors_aliases` rows so the loser's emails resolve to the winner, and sets `cntrb_deleted = 1` on the loser(s). The loser rows are NOT deleted physically (preserving R2 identity-key immutability and R10 FK integrity); they're filtered out of every lookup query via `COALESCE(cntrb_deleted, 0) = 0`. Analytics/aggregate queries that JOIN on `cntrb_id` continue to see the loser rows so historical activity stays attributed correctly.
+1. **The rename lands on `gh_login`, never on `cntrb_login`.** Every path that observes a rename — `UpsertContributorFull`, the batch upsert's rename recovery, and `RenameContributorGhLogin` — updates the current-display-name mirror and leaves the first-observed login alone. `Resolve` is not one of them: an existing `(platform_id, platform_user_id)` identity returns after healing identity metadata only, so a rename seen first by `Resolve` reaches `gh_login` on the next full contributor upsert, not at that call. Because no path re-writes an established `cntrb_login`, the partial unique index cannot trip on a rename at all.
+2. If the new login was already observed under a different `cntrb_id`, that other row simply keeps it. Two rows representing the same person coexist with different logins, both visible in lookup queries, until outcome 3 merges them.
+3. **(v0.20.2 onward)** When `runSearchResolve` later identifies the duplicate via the search API result and calls `LinkContributorToGitHubUser`, the function performs a **logical merge** (soft-delete pattern). It picks a winner — preferring the row whose `cntrb_id` matches `PlatformUUID(1, ghUserID)` per R1, falling back to the older row — copies non-empty fields from the loser(s) into the winner, inserts `contributors_aliases` rows so the loser's emails resolve to the winner, and sets `cntrb_deleted = 1` on the loser(s). The loser rows are NOT deleted physically (preserving R2 identity-key immutability and R10 FK integrity); they're filtered out of every lookup query via `COALESCE(cntrb_deleted, 0) = 0`. Analytics/aggregate queries that JOIN on `cntrb_id` continue to see the loser rows so historical activity stays attributed correctly.
 
-The v0.20.2 logical merge means outcome #2 is now self-correcting: the next search-resolve cycle that processes the duplicate's email cleans it up automatically.
+So outcome #2 is self-correcting: the next search-resolve cycle that processes the duplicate's email cleans it up automatically.
+
+:::{note}
+Until 2026-09-11 this was not true of one path. `UpsertContributorFull`'s row-exists-by-`cntrb_id` branch wrote `cntrb_login = $2` and relied on a SQLSTATE 23505 fallback when the index tripped. Measured on the production fleet, that single statement produced **all 555** `idx_contributors_login` violations in a five-day window — and its fallback omitted the `gh_login` update too, so every one of those renames was silently lost rather than merely recovered. Removing the write removed both problems: there is no collision to recover from, and `gh_login` now lands on the first attempt.
+:::
 
 **`cntrb_deleted` semantics (v0.20.2):**
 - `0` (default) — active row, returned by lookup queries.
@@ -199,7 +203,7 @@ After all commits resolved:
         └── BackfillCommitAuthorIDs(repo) — bulk UPDATE commits SET cmt_ght_author_id = ...
 ```
 
-`UpsertContributorFull` carries the most defensive logic in the codebase. The 23505 fallback (v0.19.2) catches the partial-unique-index trip described in [R3](#r3-cntrb_login-partial-uniqueness) and degrades gracefully — the rename edge case becomes a logged Debug line, not a job-killing error.
+`UpsertContributorFull` carries the most defensive logic in the codebase. Its row-exists-by-`cntrb_id` branch updates `gh_login` and backfills `gh_user_id` / `cntrb_canonical`, and deliberately leaves `cntrb_login` alone per [R2](#r2-identity-key-immutability) — so the partial-unique-index trip described in [R3](#r3-cntrb_login-partial-uniqueness) is not something it has to recover from, because it can no longer cause one. A rename it observes is reported as an Info line (`contributor rename observed by commit resolver`), which is the counterpart of the batch path's `contributor rename recovered in batch upsert`.
 
 ### Layer 3: Background tasks
 
@@ -435,7 +439,7 @@ The contributor was created when no `gh_user_id` (or `gl_id`) was known — typi
 
 ### Why does `cmt_author_platform_username` differ from `cntrb_login` for the same author?
 
-The commit-author resolver may set `cmt_author_platform_username` to the resolved platform login at the time of resolution. If the platform user later renames, `cntrb_login` updates but `cmt_author_platform_username` stays at the historical value (it represents "who authored the commit at the time of authoring"). Use `cmt_ght_author_id` (the `cntrb_id`) for current-identity joins.
+The commit-author resolver may set `cmt_author_platform_username` to the resolved platform login at the time of resolution, and it stays at that historical value (it represents "who authored the commit at the time of authoring"). `cntrb_login` is *also* historical — the login as first observed for that contributor ([R2](#r2-identity-key-immutability)) — so the two can differ simply because they were captured at different moments. Neither follows a rename; `gh_login` is the column that does. Use `cmt_ght_author_id` (the `cntrb_id`) for current-identity joins.
 
 ### Why does my query show contributors with no commits?
 

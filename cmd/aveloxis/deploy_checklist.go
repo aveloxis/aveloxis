@@ -68,6 +68,29 @@ var deployChecklists = map[string][]deployStep{
 	// here and the serve-startup other-serve refusal — no data change,
 	// same ladder.
 	"0.29.4": v029DeployChecklist,
+	// v0.29.5 (the 2026-09-11 production log analysis): scorecard
+	// attempt diagnostics, the same-version second-serve refusal, the
+	// contributor rename pre-probe, the R2 cntrb_login fix and the
+	// staged-abort replay. No schema change and no new operator heal —
+	// same ladder. Operators on this version ALSO have Postgres-side
+	// work that no checklist can do for them (the OOM-era work_mem /
+	// max_connections / shared_buffers drift): see
+	// docs/guide/scaling.md, "PostgreSQL server tuning".
+	"0.29.5": v029DeployChecklist,
+	// v0.29.6 (the 2026-09-12 key-pool admission control): the pool
+	// leases keys under in-flight ceilings, rests secondary-limited
+	// keys, reserves foreground budget, and scorecard never replaces a
+	// complete set with a partial one. No schema change, no new
+	// operator heal — same ladder. Four new config knobs, all with
+	// derived defaults; nothing to set unless tuning.
+	"0.29.6": v029DeployChecklist,
+	// v0.29.7 (gone-repo recheck cadence): ONE new column
+	// (repos.repo_gone_checked_at, addColumnIfMissing inside migrate)
+	// and a scheduler ticker that re-probes gone repos every
+	// collection.gone_repo_recheck_days (28). No operator heal — the
+	// first cycles after the restart re-verify the historical gone
+	// cohort on their own. Same ladder.
+	"0.29.7": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

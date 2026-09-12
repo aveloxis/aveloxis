@@ -45,27 +45,13 @@ import (
 // If a future refactor drops the cntrb_id column from the INSERT —
 // the exact regression v0.22.0 fixed — this test fails before merge.
 func TestUpsertContributorBatchSuppliesDeterministicCntrbID(t *testing.T) {
-	src, err := os.ReadFile("postgres.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	// Extract the UpsertContributorBatch function body so we don't
-	// false-match unrelated INSERTs elsewhere in the file.
-	// v0.27.42: the per-contributor INSERT machinery lives in the
-	// extracted upsertOneContributor (summary/18 Phase 4) — the
-	// contracts pinned here moved with it.
-	startMarker := "func (s *PostgresStore) upsertOneContributor("
-	startIdx := strings.Index(code, startMarker)
-	if startIdx < 0 {
-		t.Fatalf("could not find UpsertContributorBatch in postgres.go")
-	}
-	body := code[startIdx:]
-	// Crude end marker: the next top-level func declaration.
-	if endIdx := strings.Index(body[len(startMarker):], "\nfunc "); endIdx > 0 {
-		body = body[:len(startMarker)+endIdx]
-	}
+	// Scoped to the contributor-upsert unit so we don't false-match
+	// unrelated INSERTs elsewhere in postgres.go. v0.27.42 moved the
+	// per-contributor INSERT machinery into upsertOneContributor and
+	// 2026-09-11 (F5) moved the cntrb_id derivation into
+	// desiredCntrbIDFor; the contract is a property of the unit, so
+	// that is what it is anchored to. See contributorUpsertMachinery.
+	body := extractContributorBatchBodies(t)
 
 	// Signal 1: cntrb_id in the INSERT column list. Whitespace-
 	// tolerant — the column list spans multiple lines in gofmt.

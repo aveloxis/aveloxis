@@ -160,15 +160,22 @@ func TestStripShellComment(t *testing.T) {
 		{"comment after background operator", "cmd &#note", "cmd &"},
 		{"comment after subshell open", "(#note", "("},
 		{"comment after tab", "cmd\t#note", "cmd\t"},
-		// `)` is NOT a boundary here, deliberately. It ends a word only
-		// when it closes a subshell; closing `$(…)`, `$((…))` or `<(…)`
-		// it is part of the word, so bash keeps a following `#` literal
-		// (`echo $(echo A)#c` prints `A#c`). Treating `)` as a boundary
-		// truncated such a line and made the facade tripwire report a
-		// CORRECT fetch as missing its refspecs. Distinguishing the two
-		// needs `$(`/`<(` nesting depth, which this helper does not
-		// track — so it under-strips, which is the safe direction and
-		// is what the godoc's "no `$(…)`" disclaimer already promised.
+		// `)` is NOT a boundary here, deliberately. It ends a word when
+		// it closes a subshell, an arithmetic command `((…))`, a `case`
+		// pattern or a function definition `()`; closing `$(…)`,
+		// `$((…))` or `<(…)` it is PART of the word, so bash keeps a
+		// following `#` literal (`echo $((1+2))#c` prints `3#c`, while
+		// `((1+2))#c` is a comment — the SAME closing `))`, opposite
+		// verdicts, decided by expansion-vs-command; `echo $(echo A)#c`
+		// prints `A#c` for the single-`)` case). Both examples below
+		// have rows. Telling those apart needs `$(`/`<(` nesting depth,
+		// which this helper does not track. With `)` in the set (PR
+		// #198's set), a fetch line whose refspecs sit AFTER a `$(…)#`
+		// would be truncated and reported as missing them; no docs line
+		// spells that shape today, so these rows pin the behaviour
+		// rather than a corpus line. Excluding `)` under-strips, the
+		// safe direction, and is what StripShellComment's own "no
+		// `$(…)`" disclaimer already promised.
 		{"hash after a command substitution stays literal", "echo $(date)#c", "echo $(date)#c"},
 		{"hash after an arithmetic expansion stays literal", "echo $((1+2))#c", "echo $((1+2))#c"},
 		{"hash after a subshell close is left alone (deliberate under-strip)", "( echo A )#c", "( echo A )#c"},

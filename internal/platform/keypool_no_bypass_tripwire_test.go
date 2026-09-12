@@ -137,25 +137,69 @@ func TestKeyPoolIsTheOnlyPathToAForgeKey(t *testing.T) {
 				continue
 			}
 			handles := poolHandles(fn, poolFields, poolReturners)
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				sel, ok := n.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "keys" {
+			// A closure's pool-typed parameters are handles INSIDE that
+			// literal only: adding them function-wide made a legal
+			// `c.keys` (the HTTPClient field) fire when a closure happened
+			// to name its *KeyPool parameter `c` (L10 pass 5). Each literal
+			// is walked with its own copy of the handle set.
+			var walk func(n ast.Node, handles map[string]bool)
+			walk = func(root ast.Node, handles map[string]bool) {
+				ast.Inspect(root, func(n ast.Node) bool {
+					if lit, ok := n.(*ast.FuncLit); ok && n != root {
+						inner := map[string]bool{}
+						for k := range handles {
+							inner[k] = true
+						}
+						if lit.Type.Params != nil {
+							for _, f := range lit.Type.Params.List {
+								if isKeyPoolType(f.Type) {
+									for _, id := range f.Names {
+										inner[id.Name] = true
+									}
+								}
+							}
+						}
+						walk(lit.Body, inner)
+						return false
+					}
+					sel, ok := n.(*ast.SelectorExpr)
+					if !ok || sel.Sel.Name != "keys" {
+						return true
+					}
+					switch x := sel.X.(type) {
+					case *ast.Ident:
+						if handles[x.Name] {
+							touches++
+							t.Errorf("%s:%s reaches into the pool's key slice via %s.keys — only ratelimit.go may; every other path goes through Acquire or LendTokens", p.rel, fn.Name.Name, x.Name)
+						}
+					case *ast.SelectorExpr:
+						if poolFields[x.Sel.Name] {
+							touches++
+							t.Errorf("%s:%s reaches into the pool's key slice via .%s.keys — only ratelimit.go may", p.rel, fn.Name.Name, x.Sel.Name)
+						}
+					case *ast.CallExpr:
+						// `c.Keys().keys` — the inlined alias (L10 pass 4). Keyed on
+						// the callee NAME: a non-pool type gaining a `Keys()` whose
+						// result has a `keys` field would fire here too. DECLINED
+						// as a fix (L10 pass 5): hypothetical today (the only
+						// `Keys()` is HTTPClient's), and the failure is loud —
+						// the fix is a rename, never a silent bypass.
+						callee := ""
+						switch f := x.Fun.(type) {
+						case *ast.SelectorExpr:
+							callee = f.Sel.Name
+						case *ast.Ident:
+							callee = f.Name
+						}
+						if poolReturners[callee] {
+							touches++
+							t.Errorf("%s:%s reaches into the pool's key slice via %s().keys — only ratelimit.go may", p.rel, fn.Name.Name, callee)
+						}
+					}
 					return true
-				}
-				switch x := sel.X.(type) {
-				case *ast.Ident:
-					if handles[x.Name] {
-						touches++
-						t.Errorf("%s:%s reaches into the pool's key slice via %s.keys — only ratelimit.go may; every other path goes through Acquire or LendTokens", p.rel, fn.Name.Name, x.Name)
-					}
-				case *ast.SelectorExpr:
-					if poolFields[x.Sel.Name] {
-						touches++
-						t.Errorf("%s:%s reaches into the pool's key slice via .%s.keys — only ratelimit.go may", p.rel, fn.Name.Name, x.Sel.Name)
-					}
-				}
-				return true
-			})
+				})
+			}
+			walk(fn.Body, handles)
 		}
 	}
 	_ = touches

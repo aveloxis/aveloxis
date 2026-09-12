@@ -281,7 +281,7 @@ const (
 	verdictAdmit          admissionVerdict = iota // a key was chosen
 	verdictSlotsFull                              // budget exists but every admissible key (or the pool) is at its in-flight ceiling — wait for a release, never fast-fail
 	verdictBudgetBlocked                          // nothing has budget / everything is resting or quarantined — wait for the earliest reset, or fast-fail
-	verdictReserveBlocked                         // usable keys exist but their total is at or below the foreground reserve — background waits for a window reset or a rest expiry, or fast-fails
+	verdictReserveBlocked                         // some usable key is spendable but the usable total is at or below the foreground reserve — background waits for a window reset or a rest expiry, or fast-fails
 )
 
 // Acquire is the ONLY way to obtain a key. It admits the caller against
@@ -371,7 +371,7 @@ func (kp *KeyPool) Acquire(ctx context.Context, res Resource) (*APIKey, func(), 
 				// still nothing was admissible — i.e. the usable keys are
 				// dry — never for an all-resting pool with full windows (L10
 				// pass 2, finding 2).
-				usable, total, line := kp.reserveStateLocked(time.Now(), res)
+				usable, spendable, total, line := kp.reserveStateLocked(time.Now(), res)
 				msg := "all API keys unavailable (rate-limited or quarantined), waiting"
 				switch {
 				case verdict == verdictReserveBlocked:
@@ -384,7 +384,7 @@ func (kp *KeyPool) Acquire(ctx context.Context, res Resource) (*APIKey, func(), 
 					"reserve_pct", kp.foregroundReservePct,
 					"until", wake.Format(time.RFC3339), "wait", time.Until(wake).Truncate(time.Second)}
 				if verdict == verdictReserveBlocked {
-					attrs = append(attrs, "usable_keys", usable, "usable_total", total, "reserve_line", line)
+					attrs = append(attrs, "usable_keys", usable, "spendable_keys", spendable, "usable_total", total, "reserve_line", line)
 				}
 				kp.logger.Info(msg, attrs...)
 			}
@@ -458,7 +458,7 @@ func (kp *KeyPool) selectLocked(now time.Time, res Resource, background bool) (*
 	// drains the keys that ARE usable past the line's intent (review
 	// round on the 2026-09-12 change).
 	if background && kp.foregroundReservePct > 0 {
-		usable, total, line := kp.reserveStateLocked(now, res)
+		usable, spendable, total, line := kp.reserveStateLocked(now, res)
 		// With ZERO usable keys the line is 0 and "0 <= 0" would read as
 		// reserve pacing. That state is BUDGET-blocked (every key rests or
 		// is dry): selection below computes the right verdict and wake —
@@ -466,13 +466,16 @@ func (kp *KeyPool) selectLocked(now time.Time, res Resource, background bool) (*
 		// window reset, which is up to an hour (L10 pass on the
 		// review-round fixes: an all-resting pool logged "paced by the
 		// foreground reserve … wait=49m59s").
-		// A reserve block is "usable keys hold SPENDABLE budget, but below
-		// the line". Every usable key at or below the buffer is exhaustion,
-		// not pacing: fall through to selection, which yields
-		// verdictBudgetBlocked, the probe stamp, and the ops-grepped
-		// "exhausted" text for every caller class — the history sweep is a
-		// background caller and must log the incident line (L10 pass 3).
-		if usable > 0 && total > usable*kp.buffer && total <= line {
+		// A reserve block is "some usable key holds SPENDABLE budget, but
+		// the total is below the line". Spendability is PER KEY: no usable
+		// key above the buffer is exhaustion, not pacing, and falls through
+		// to selection (verdictBudgetBlocked, the probe stamp, the
+		// ops-grepped "exhausted" text for every caller class — the history
+		// sweep is a background caller and must log the incident line).
+		// The pass-3 draft tested the SUM against usable*buffer, which let
+		// one key holding the window's last points serve a background
+		// sweep below the line while its siblings were dry (L10 pass 4).
+		if usable > 0 && spendable > 0 && total <= line {
 			// A release cannot lift the total; a window reset can, and so
 			// can a resting key rejoining the usable set.
 			return nil, verdictReserveBlocked, kp.earliestReserveWakeLocked(now, res), false
@@ -499,10 +502,10 @@ func (kp *KeyPool) selectLocked(now time.Time, res Resource, background bool) (*
 		}
 		allInvalid = false
 		resting := k.restingAt(now)
-		if resting || k.remaining(res) <= kp.buffer {
+		if resting || !kp.spendable(k, res) {
 			// Not eligible now; remember when it might be.
 			wake := k.resetAt(res)
-			if k.remaining(res) > kp.buffer {
+			if kp.spendable(k, res) {
 				wake = time.Time{} // budget is fine; only the rest matters
 			} else if wake.IsZero() {
 				// Below buffer with no known reset (headers never carried
@@ -614,15 +617,19 @@ func (kp *KeyPool) earliestReserveWakeLocked(now time.Time, res Resource) time.T
 }
 
 // reserveStateLocked is the ONE spelling of the foreground-reserve
-// arithmetic (SR-17): the keys background could use right now, their
-// remaining total for res, and the line that total must stay above.
-// Caller holds kp.mu.
-func (kp *KeyPool) reserveStateLocked(now time.Time, res Resource) (usable, total, line int) {
+// arithmetic (SR-17): the keys background could use right now, how many
+// of those hold spendable budget (above the buffer — the same per-key
+// test selection applies), their remaining total for res, and the line
+// that total must stay above. Caller holds kp.mu.
+func (kp *KeyPool) reserveStateLocked(now time.Time, res Resource) (usable, spendable, total, line int) {
 	for _, k := range kp.keys {
 		if !k.usableAt(now) {
 			continue
 		}
 		usable++
+		if kp.spendable(k, res) {
+			spendable++
+		}
 		total += k.remaining(res)
 	}
 	perKey := 5000
@@ -630,7 +637,13 @@ func (kp *KeyPool) reserveStateLocked(now time.Time, res Resource) (usable, tota
 		perKey = graphQLPointsPerHour
 	}
 	line = usable * perKey * kp.foregroundReservePct / 100
-	return usable, total, line
+	return usable, spendable, total, line
+}
+
+// spendable is the ONE per-key budget test (SR-17): a key can be handed
+// out for res only while its remaining balance is above the buffer.
+func (kp *KeyPool) spendable(k *APIKey, res Resource) bool {
+	return k.remaining(res) > kp.buffer
 }
 
 // restingAt reports whether k is sitting out a 401 quarantine or a

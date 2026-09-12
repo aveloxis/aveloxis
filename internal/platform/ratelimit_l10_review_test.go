@@ -170,3 +170,62 @@ func TestBackgroundDryPoolLogsExhausted(t *testing.T) {
 		t.Errorf("an all-dry pool must log the ops-grepped exhaustion line for a background caller too:\n%s", out)
 	}
 }
+
+// TestReserveBlocksWhenOnlyOneKeyIsSpendable: spendability is PER KEY. The
+// pass-3 guard tested the usable SUM against usable*buffer, so a pool of
+// 54 keys where one holds the window's last 800 points and the rest are
+// dry (the natural tail of every staggered-reset window) admitted 785
+// background requests below a 67,500 line (L10 pass 4, finding 1). Both
+// fixtures were ADMITTED on the pass-3 code — the subtests were red.
+func TestReserveBlocksWhenOnlyOneKeyIsSpendable(t *testing.T) {
+	bg := WithGraphQLFastFail(WithGraphQLBackgroundBudget(context.Background()))
+	for _, tc := range []struct {
+		name      string
+		remaining []int
+	}{
+		{"one spendable key among dry ones", []int{40, 0, 0}},
+		{"sum exactly usable*buffer, one key above buffer", []int{16, 14}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			names := make([]string, len(tc.remaining))
+			for i := range names {
+				names[i] = string(rune('a' + i))
+			}
+			kp := NewKeyPool(names, rlTestLogger())
+			kp.SetAdmission(0, 0, 25)
+			far := time.Now().Add(50 * time.Minute)
+			for i, k := range kp.keys {
+				k.GraphQLRemaining = tc.remaining[i]
+				k.GraphQLResetAt = far
+			}
+			if _, _, err := kp.Acquire(bg, ResourceGraphQL); !errors.Is(err, ErrGraphQLBudgetExhausted) {
+				t.Fatalf("background admitted below the reserve line (remaining %v): err = %v, want ErrGraphQLBudgetExhausted", tc.remaining, err)
+			}
+			// Foreground is never gated by the reserve and the spendable key serves it.
+			_, release := heldAcquire(t, kp, WithGraphQLFastFail(context.Background()), ResourceGraphQL)
+			release()
+		})
+	}
+}
+
+// TestSpendableBoundaryIsStrictlyAboveBuffer pins the equality side of the
+// ONE per-key budget test: a key at exactly DefaultBuffer is NOT spendable,
+// one point above it is. `spendable` now decides eligibility, the wake and
+// the reserve at once, and a `>=` "tidy" survived the whole platform suite
+// (L10 pass 5, finding 1) — it would silently make the buffer one smaller
+// on all three paths.
+func TestSpendableBoundaryIsStrictlyAboveBuffer(t *testing.T) {
+	fg := WithGraphQLFastFail(context.Background())
+	kp := NewKeyPool([]string{"a"}, rlTestLogger())
+	kp.keys[0].GraphQLRemaining = DefaultBuffer
+	kp.keys[0].GraphQLResetAt = time.Now().Add(50 * time.Minute)
+	if _, _, err := kp.Acquire(fg, ResourceGraphQL); !errors.Is(err, ErrGraphQLBudgetExhausted) {
+		t.Fatalf("a key at exactly the buffer (%d) was handed out: err = %v, want ErrGraphQLBudgetExhausted", DefaultBuffer, err)
+	}
+	kp.keys[0].GraphQLRemaining = DefaultBuffer + 1
+	_, release, err := kp.Acquire(fg, ResourceGraphQL)
+	if err != nil {
+		t.Fatalf("a key one point above the buffer must be spendable: %v", err)
+	}
+	release()
+}

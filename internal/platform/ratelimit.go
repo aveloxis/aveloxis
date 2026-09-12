@@ -278,9 +278,10 @@ func (kp *KeyPool) SetAdmission(maxInflight, maxInflightPerKey, foregroundReserv
 type admissionVerdict int
 
 const (
-	verdictAdmit         admissionVerdict = iota // a key was chosen
-	verdictSlotsFull                             // budget exists but every admissible key (or the pool) is at its in-flight ceiling — wait for a release, never fast-fail
-	verdictBudgetBlocked                         // nothing has budget / everything is resting or quarantined — wait for the earliest reset, or fast-fail
+	verdictAdmit          admissionVerdict = iota // a key was chosen
+	verdictSlotsFull                              // budget exists but every admissible key (or the pool) is at its in-flight ceiling — wait for a release, never fast-fail
+	verdictBudgetBlocked                          // nothing has budget / everything is resting or quarantined — wait for the earliest reset, or fast-fail
+	verdictReserveBlocked                         // usable keys exist but their total is at or below the foreground reserve — background waits for a window reset or a rest expiry, or fast-fails
 )
 
 // Acquire is the ONLY way to obtain a key. It admits the caller against
@@ -343,7 +344,7 @@ func (kp *KeyPool) Acquire(ctx context.Context, res Resource) (*APIKey, func(), 
 			// full. A release will Broadcast — no timer, no fast-fail.
 			kp.waitLocked(ctx, time.Time{})
 
-		case verdictBudgetBlocked:
+		case verdictBudgetBlocked, verdictReserveBlocked:
 			if allInvalid {
 				// Only reachable via the legacy permanent InvalidateKey
 				// path; the 401 quarantine path never sets Invalid.
@@ -359,13 +360,33 @@ func (kp *KeyPool) Acquire(ctx context.Context, res Resource) (*APIKey, func(), 
 			// Broadcast wakes every parked waiter and each re-evaluates.
 			if !wake.Equal(lastLoggedWake) {
 				lastLoggedWake = wake
+				// The exhaustion lines are ops-grepped as "every key is dry";
+				// a reserve block is the opposite state (keys hold budget,
+				// background is being paced), so it says so in its own words.
+				// Three states, three ops-grepped texts: every usable key is
+				// DRY ("exhausted"), every key is RESTING on a limit or a
+				// quarantine while holding budget ("unavailable"), or usable
+				// keys hold budget below the reserve line ("paced"). The
+				// exhausted line is chosen only when some key is usable and
+				// still nothing was admissible — i.e. the usable keys are
+				// dry — never for an all-resting pool with full windows (L10
+				// pass 2, finding 2).
+				usable, total, line := kp.reserveStateLocked(time.Now(), res)
 				msg := "all API keys unavailable (rate-limited or quarantined), waiting"
-				if res == ResourceGraphQL {
+				switch {
+				case verdict == verdictReserveBlocked:
+					msg = "GraphQL background sweep paced by the foreground reserve, waiting for the reserve to clear"
+				case res == ResourceGraphQL && usable > 0:
 					msg = "all API keys exhausted for GraphQL, waiting for window reset"
 				}
-				kp.logger.Info(msg,
+				attrs := []any{
 					"keys", len(kp.keys), "buffer", kp.buffer, "background", background,
-					"until", wake.Format(time.RFC3339), "wait", time.Until(wake).Truncate(time.Second))
+					"reserve_pct", kp.foregroundReservePct,
+					"until", wake.Format(time.RFC3339), "wait", time.Until(wake).Truncate(time.Second)}
+				if verdict == verdictReserveBlocked {
+					attrs = append(attrs, "usable_keys", usable, "usable_total", total, "reserve_line", line)
+				}
+				kp.logger.Info(msg, attrs...)
 			}
 			// Jitter the wake so a fleet of waiters does not stampede the
 			// reset instant (the pre-existing 1-3 s spread).
@@ -375,6 +396,19 @@ func (kp *KeyPool) Acquire(ctx context.Context, res Resource) (*APIKey, func(), 
 }
 
 // refillLocked restores keys whose window for res has reset. Caller holds kp.mu.
+//
+// A passed reset is authoritative for EVERY key, whatever its remaining
+// balance: GitHub has already refilled it. The first draft refilled only
+// keys at or below the buffer (the shape the retired GetGraphQLKey had,
+// where the refill guard and the per-key cliff agreed), and that left a
+// hole under the POOL-level reserve: with every key holding, say, 1,250
+// points the sweep is reserve-blocked, no key is at the buffer, nothing
+// refills when the windows roll, and the total stays stale until a
+// foreground response happens to refresh a header — on a quiet fleet,
+// never (review round on the 2026-09-12 change). After a real header
+// refresh the reset is in the future, so the balance guard was never
+// load-bearing for a live key; the probe stamp (below buffer, no header
+// reset known) refills exactly as before.
 func (kp *KeyPool) refillLocked(now time.Time, res Resource) {
 	for _, k := range kp.keys {
 		if k.Invalid {
@@ -382,12 +416,12 @@ func (kp *KeyPool) refillLocked(now time.Time, res Resource) {
 		}
 		switch res {
 		case ResourceGraphQL:
-			if k.GraphQLRemaining <= kp.buffer && !k.GraphQLResetAt.IsZero() && now.After(k.GraphQLResetAt) {
+			if !k.GraphQLResetAt.IsZero() && now.After(k.GraphQLResetAt) {
 				k.GraphQLRemaining = graphQLPointsPerHour
 				k.GraphQLResetAt = time.Time{}
 			}
 		default:
-			if k.Remaining <= kp.buffer && !k.ResetAt.IsZero() && now.After(k.ResetAt) {
+			if !k.ResetAt.IsZero() && now.After(k.ResetAt) {
 				k.Remaining = 5000
 				k.ResetAt = time.Time{}
 			}
@@ -415,25 +449,27 @@ func (k *APIKey) resetAt(res Resource) time.Time {
 // the caller stamps the probe window). allInvalid is true only when every
 // key carries the legacy permanent Invalid flag.
 func (kp *KeyPool) selectLocked(now time.Time, res Resource, background bool) (*APIKey, admissionVerdict, time.Time, bool) {
-	// Pool-level foreground reservation: background may not spend the
-	// resource's total budget below reservePct% of capacity. Capacity is
-	// the per-key window budget x alive keys.
+	// Pool-level foreground reservation: background is admitted only
+	// while the resource's usable total is ABOVE reservePct% of capacity
+	// (at or below the line blocks). Capacity is the per-key window
+	// budget x usable keys. "Usable" excludes keys resting on a
+	// secondary limit or a 401 quarantine: their budget is not
+	// spendable now, so counting it would admit a sweep that then
+	// drains the keys that ARE usable past the line's intent (review
+	// round on the 2026-09-12 change).
 	if background && kp.foregroundReservePct > 0 {
-		total, alive := 0, 0
-		for _, k := range kp.keys {
-			if k.Invalid {
-				continue
-			}
-			alive++
-			total += k.remaining(res)
-		}
-		perKey := 5000
-		if res == ResourceGraphQL {
-			perKey = graphQLPointsPerHour
-		}
-		if total <= alive*perKey*kp.foregroundReservePct/100 {
-			// A release cannot lift the total; only a window reset can.
-			return nil, verdictBudgetBlocked, kp.earliestResetLocked(now, res), alive == 0
+		usable, total, line := kp.reserveStateLocked(now, res)
+		// With ZERO usable keys the line is 0 and "0 <= 0" would read as
+		// reserve pacing. That state is BUDGET-blocked (every key rests or
+		// is dry): selection below computes the right verdict and wake —
+		// the earliest rest/quarantine expiry, which is minutes, not the
+		// window reset, which is up to an hour (L10 pass on the
+		// review-round fixes: an all-resting pool logged "paced by the
+		// foreground reserve … wait=49m59s").
+		if usable > 0 && total <= line {
+			// A release cannot lift the total; a window reset can, and so
+			// can a resting key rejoining the usable set.
+			return nil, verdictReserveBlocked, kp.earliestReserveWakeLocked(now, res), false
 		}
 	}
 
@@ -456,7 +492,7 @@ func (kp *KeyPool) selectLocked(now time.Time, res Resource, background bool) (*
 			continue
 		}
 		allInvalid = false
-		resting := now.Before(k.quarantineUntil) || now.Before(k.secondaryUntil)
+		resting := k.restingAt(now)
 		if resting || k.remaining(res) <= kp.buffer {
 			// Not eligible now; remember when it might be.
 			wake := k.resetAt(res)
@@ -532,6 +568,78 @@ func (kp *KeyPool) earliestResetLocked(now time.Time, res Resource) time.Time {
 	return earliest
 }
 
+// earliestReserveWakeLocked is the soonest instant a reserve block could
+// clear: the earliest window reset (the total refills) or the earliest
+// rest/quarantine expiry (a key rejoins the usable set, lifting both the
+// total and the line). Zero if neither is known. Caller holds kp.mu.
+func (kp *KeyPool) earliestReserveWakeLocked(now time.Time, res Resource) time.Time {
+	wake := kp.earliestResetLocked(now, res)
+	for _, k := range kp.keys {
+		if k.Invalid || !k.restingAt(now) {
+			continue
+		}
+		for _, until := range []time.Time{k.quarantineUntil, k.secondaryUntil} {
+			if until.After(now) && (wake.IsZero() || until.Before(wake)) {
+				wake = until
+			}
+		}
+	}
+	if wake.IsZero() {
+		// No key knows its reset and none is resting: a usable key with an
+		// UNKNOWN reset is holding the sweep at the line (the round-22
+		// Remaining-only-header shape, one branch up). Selection never
+		// stamps such a key because it would ADMIT it; the reserve branch
+		// must, or refillLocked can never refill it and the sweep re-logs
+		// every probe window until a foreground response happens to
+		// carry a reset (L10 pass 2, finding 1).
+		wake = now.Add(graphQLDepletedProbe)
+		for _, k := range kp.keys {
+			if !k.usableAt(now) || !k.resetAt(res).IsZero() {
+				continue
+			}
+			if res == ResourceGraphQL {
+				k.GraphQLResetAt = wake
+			} else {
+				k.ResetAt = wake
+			}
+		}
+	}
+	return wake
+}
+
+// reserveStateLocked is the ONE spelling of the foreground-reserve
+// arithmetic (SR-17): the keys background could use right now, their
+// remaining total for res, and the line that total must stay above.
+// Caller holds kp.mu.
+func (kp *KeyPool) reserveStateLocked(now time.Time, res Resource) (usable, total, line int) {
+	for _, k := range kp.keys {
+		if !k.usableAt(now) {
+			continue
+		}
+		usable++
+		total += k.remaining(res)
+	}
+	perKey := 5000
+	if res == ResourceGraphQL {
+		perKey = graphQLPointsPerHour
+	}
+	line = usable * perKey * kp.foregroundReservePct / 100
+	return usable, total, line
+}
+
+// restingAt reports whether k is sitting out a 401 quarantine or a
+// secondary-limit cooldown at now — the ONE spelling selection, the
+// reserve and usableLocked all consult (SR-17).
+func (k *APIKey) restingAt(now time.Time) bool {
+	return now.Before(k.quarantineUntil) || now.Before(k.secondaryUntil)
+}
+
+// usableAt reports whether background or foreground could be handed k at
+// now, ignoring budget: not permanently invalid and not resting.
+func (k *APIKey) usableAt(now time.Time) bool {
+	return !k.Invalid && !k.restingAt(now)
+}
+
 // waitLocked parks the caller on kp.cond until a Broadcast, until `until`
 // passes (when non-zero), or until ctx is done. Caller holds kp.mu; the
 // lock is released while parked and re-held on return, and the caller
@@ -595,7 +703,11 @@ func (kp *KeyPool) MarkSecondaryLimited(key *APIKey, retryAfter time.Duration) {
 		key.secondaryUntil = until
 	}
 	key.secondaryHits++
-	kp.logger.Info("API key secondary-rate-limited — resting it for Retry-After",
+	// Debug, not Info: the client that tripped the limit already logs the
+	// event with token_prefix, and the 5-minute pool summary carries the
+	// lifetime hit count — an Info here doubled the log volume in exactly
+	// the storm this cooldown exists to end.
+	kp.logger.Debug("API key secondary-rate-limited — resting it for Retry-After",
 		"token_prefix", tokenPrefix(key.Token), "retry_after", retryAfter,
 		"lifetime_hits", key.secondaryHits, "inflight_on_key", key.inflight)
 }
@@ -898,12 +1010,15 @@ func (kp *KeyPool) APIHealthy() bool {
 	return time.Now().After(kp.apiPauseUntil)
 }
 
-// usableLocked counts keys usable at time now: not permanently invalid and not
-// currently quarantined. Caller must hold kp.mu.
+// usableLocked counts keys usable at time now: not permanently invalid and
+// not resting on a quarantine OR a secondary limit — the same predicate the
+// reserve and selection use, so the 401 log's `usable_keys` can never say
+// 53 during a secondary storm the pool cannot serve (L10 pass on the
+// review-round fixes). Caller must hold kp.mu.
 func (kp *KeyPool) usableLocked(now time.Time) int {
 	count := 0
 	for _, k := range kp.keys {
-		if !k.Invalid && now.After(k.quarantineUntil) {
+		if k.usableAt(now) {
 			count++
 		}
 	}

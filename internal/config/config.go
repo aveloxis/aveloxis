@@ -1466,15 +1466,19 @@ func (c *CollectionConfig) GitHubMaxInflightPerKeyValue() int {
 }
 
 // GitHubBudgetForegroundReservePctValue is the percentage of the pool's
-// budget background sweeps may not spend into (absent → 25: collection
-// measured at ~9%, x~3 safety). Clamped to [1, 100]: the reservation is
-// always on; set 1 to make it nominal.
+// budget background sweeps may not spend into. Absent or non-positive →
+// 25 (collection measured at ~9%, x~3 safety). Explicit values are
+// clamped to [1, 99]: the reservation is always on (1 = nominal) and it
+// is never a disable switch in EITHER direction — at 100 the reserve
+// line equals a full pool, so background would never be admitted and a
+// non-fast-fail sweep would wait for its ctx (review round on the
+// 2026-09-12 change).
 func (c *CollectionConfig) GitHubBudgetForegroundReservePctValue() int {
 	switch {
 	case c.GitHubBudgetForegroundReservePct <= 0:
 		return 25
-	case c.GitHubBudgetForegroundReservePct > 100:
-		return 100
+	case c.GitHubBudgetForegroundReservePct > 99:
+		return 99
 	}
 	return c.GitHubBudgetForegroundReservePct
 }

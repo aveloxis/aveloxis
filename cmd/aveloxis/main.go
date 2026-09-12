@@ -2055,16 +2055,23 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 	// every forge constraint (per-key and pool-wide in-flight ceilings,
 	// the foreground budget reservation). The accessors are the one
 	// default layer (SR-10); log the EFFECTIVE values at the point of use.
-	// GitLab shares the same shape — its limits are lower, so the GitHub
-	// ceilings are a conservative backstop there, not a tuned value.
+	// GitLab gets only the pool-wide ceiling as a backstop. The per-key
+	// ceiling is DERIVED from GitHub's per-key secondary limits, which
+	// GitLab does not have in that shape — a one-token GitLab fleet under
+	// a per-key 4 would be capped at four concurrent requests across the
+	// whole worker pool, a bound no knob names (review round on the
+	// 2026-09-12 change). The reserve only ever applies to GraphQL
+	// background callers, which the GitLab path never is.
 	maxInflight := cfg.Collection.GitHubMaxInflightValue()
 	maxPerKey := cfg.Collection.GitHubMaxInflightPerKeyValue()
 	reservePct := cfg.Collection.GitHubBudgetForegroundReservePctValue()
+	const glPerKey = 0 // no per-key ceiling on GitLab; one spelling for the call and the log
 	gh.SetAdmission(maxInflight, maxPerKey, reservePct)
-	gl.SetAdmission(maxInflight, maxPerKey, reservePct)
+	gl.SetAdmission(maxInflight, glPerKey, reservePct)
 	logger.Info("API key pool admission",
 		"github_keys", len(ghTokens), "gitlab_keys", len(glTokens),
 		"max_inflight", maxInflight, "max_inflight_per_key", maxPerKey,
+		"gitlab_max_inflight_per_key", glPerKey,
 		"foreground_reserve_pct", reservePct)
 	return gh, gl, nil
 }

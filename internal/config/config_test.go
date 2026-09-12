@@ -199,8 +199,9 @@ func TestActivityHistoryKnobsEndToEnd(t *testing.T) {
 
 // 2026-09-12 (SR-10) — the key-pool admission knobs, JSON → effective
 // value. Absent → the derived defaults; explicit values flow through;
-// nonsense falls back; the reserve percentage is clamped to [1, 100]
-// because the reservation is never a disable switch.
+// nonsense falls back; an EXPLICIT reserve percentage is clamped to [1, 99]
+// (100 would be a background off-switch) and absent/non-positive → 25,
+// because the reservation is never a disable switch in either direction.
 func TestKeyPoolAdmissionKnobsEndToEnd(t *testing.T) {
 	var c CollectionConfig
 	if c.GitHubMaxInflightValue() != 40 ||
@@ -229,8 +230,19 @@ func TestKeyPoolAdmissionKnobsEndToEnd(t *testing.T) {
 		c.GitHubBudgetForegroundReservePctValue() != 25 || c.ScorecardMaxConcurrentValue() != 8 {
 		t.Error("non-positive admission knobs must fall back to the defaults — 0 is not 'unbounded' here")
 	}
-	c = CollectionConfig{GitHubBudgetForegroundReservePct: 250}
-	if c.GitHubBudgetForegroundReservePctValue() != 100 {
-		t.Errorf("reserve pct above 100 must clamp to 100, got %d", c.GitHubBudgetForegroundReservePctValue())
+	// Review round on the 2026-09-12 change: 100 would reserve the WHOLE
+	// budget — at 100 the reserve line equals a full pool, so background
+	// is never admitted and a non-fast-fail sweep waits for its ctx. The
+	// knob is documented as never being a disable switch, so the ceiling
+	// is 99 (the most nominal background share), and 250/100 both land there.
+	for _, in := range []int{100, 250} {
+		c = CollectionConfig{GitHubBudgetForegroundReservePct: in}
+		if got := c.GitHubBudgetForegroundReservePctValue(); got != 99 {
+			t.Errorf("reserve pct %d must clamp to 99 (100 = background switched off), got %d", in, got)
+		}
+	}
+	c = CollectionConfig{GitHubBudgetForegroundReservePct: 99}
+	if got := c.GitHubBudgetForegroundReservePctValue(); got != 99 {
+		t.Errorf("reserve pct 99 is legal and must pass through, got %d", got)
 	}
 }

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Web GUI &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Web GUI &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1691,16 +1693,16 @@
 </div>
 <p>All web GUI settings live under the <code class="docutils literal notranslate"><span class="pre">web</span></code> key in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"web"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">":8082"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"base_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"http://localhost:8082"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"session_secret"</span><span class="p">:</span><span class="w"> </span><span class="s2">"change-me-to-a-random-string"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"dev_mode"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"github_client_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Iv1.abc123..."</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"github_client_secret"</span><span class="p">:</span><span class="w"> </span><span class="s2">"deadbeef..."</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"gitlab_client_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"your-gitlab-app-id"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"gitlab_client_secret"</span><span class="p">:</span><span class="w"> </span><span class="s2">"your-gitlab-app-secret"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"gitlab_base_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://gitlab.com"</span>
+<span class="w">  </span><span class="nt">&quot;web&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;addr&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;:8082&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;http://localhost:8082&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;session_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;change-me-to-a-random-string&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;dev_mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;github_client_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Iv1.abc123...&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;github_client_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;deadbeef...&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;gitlab_client_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-gitlab-app-id&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;gitlab_client_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-gitlab-app-secret&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;gitlab_base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://gitlab.com&quot;</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>

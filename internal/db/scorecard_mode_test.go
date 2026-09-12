@@ -64,26 +64,26 @@ func TestMigrateAddsScorecardModeToBothTables(t *testing.T) {
 	}
 }
 
-func TestInsertScorecardResultWritesMode(t *testing.T) {
+func TestReplaceScorecardWritesMode(t *testing.T) {
 	src, err := os.ReadFile("analysis_store.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	code := string(src)
 
-	idx := strings.Index(code, "func (s *PostgresStore) InsertScorecardResult(")
+	idx := strings.Index(code, "func (s *PostgresStore) ReplaceScorecard(")
 	if idx < 0 {
-		t.Fatal("cannot find InsertScorecardResult")
+		t.Fatal("cannot find ReplaceScorecard (InsertScorecardResult was fused into it — PR #203 fixes)")
 	}
 	body := code[idx:]
 	if next := strings.Index(body[1:], "\nfunc "); next > 0 {
 		body = body[:next+1]
 	}
 	if !strings.Contains(body, "mode string") {
-		t.Error("InsertScorecardResult must take a `mode string` parameter (v0.27.5)")
+		t.Error("ReplaceScorecard must take a `mode string` parameter (v0.27.5)")
 	}
 	if !strings.Contains(body, "scorecard_mode") {
-		t.Error("InsertScorecardResult's INSERT must include the scorecard_mode column")
+		t.Error("ReplaceScorecard's INSERT must include the scorecard_mode column")
 	}
 }
 
@@ -128,11 +128,10 @@ func TestScorecardModePersistsAndRotates(t *testing.T) {
 		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
 
-	if err := store.InsertScorecardResult(ctx, repoID, "Code-Review", "8", nil, "remote"); err != nil {
-		t.Fatalf("insert check: %v", err)
-	}
-	if err := store.InsertScorecardResult(ctx, repoID, ScorecardOverallName, "5.6", nil, "remote"); err != nil {
-		t.Fatalf("insert overall: %v", err)
+	always := func(string, bool) bool { return true }
+	set := []ScorecardRow{{Name: "Code-Review", Score: "8"}, {Name: ScorecardOverallName, Score: "5.6"}}
+	if written, err := store.ReplaceScorecard(ctx, repoID, "remote", set, always); err != nil || !written {
+		t.Fatalf("ReplaceScorecard: written=%v err=%v", written, err)
 	}
 
 	var modes []string
@@ -170,9 +169,19 @@ func TestScorecardModePersistsAndRotates(t *testing.T) {
 	if mode != "remote" {
 		t.Errorf("mode = %q, want remote — the API needs the set's mode to label a partial set (2026-09-12)", mode)
 	}
-	// The partial-never-replaces-complete gate reads the same column.
-	if cur, found, err := store.CurrentScorecardMode(ctx, repoID); err != nil || !found || cur != "remote" {
-		t.Errorf("CurrentScorecardMode = (%q, %v, %v), want (remote, true, nil)", cur, found, err)
+	// The partial-never-replaces-complete gate reads the same column
+	// inside ReplaceScorecard's transaction: the policy callback must
+	// see (remote, found).
+	var seen string
+	var seenFound bool
+	if _, err := store.ReplaceScorecard(ctx, repoID, "local", set, func(stored string, found bool) bool {
+		seen, seenFound = stored, found
+		return false
+	}); err != nil {
+		t.Fatalf("ReplaceScorecard probe: %v", err)
+	}
+	if !seenFound || seen != "remote" {
+		t.Errorf("stored mode seen by the policy = (%q, %v), want (remote, true)", seen, seenFound)
 	}
 	for _, c := range checks {
 		if c.Name == ScorecardOverallName {
@@ -181,9 +190,10 @@ func TestScorecardModePersistsAndRotates(t *testing.T) {
 	}
 
 	// The rotation contract: SELECT * into history must succeed with
-	// the new column present on both sides.
-	if err := store.RotateScorecardToHistory(ctx, repoID); err != nil {
-		t.Fatalf("RotateScorecardToHistory with scorecard_mode column: %v", err)
+	// the new column present on both sides (a second replacement
+	// rotates the first set).
+	if written, err := store.ReplaceScorecard(ctx, repoID, "remote", set, always); err != nil || !written {
+		t.Fatalf("ReplaceScorecard rotation with scorecard_mode column: written=%v err=%v", written, err)
 	}
 	var histCount int
 	if err := store.pool.QueryRow(ctx, `

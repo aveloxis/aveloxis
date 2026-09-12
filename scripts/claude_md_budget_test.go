@@ -40,7 +40,7 @@ func TestClaudeMdStaysWithinContextBudget(t *testing.T) {
 		t.Fatalf("reading CLAUDE.md: %v (only absence soft-skips)", err)
 	}
 	src := string(b)
-	if n := strings.Count(src, "\n"); n > claudeMdMaxLines {
+	if n := lineCount(src); n > claudeMdMaxLines {
 		t.Errorf("CLAUDE.md is %d lines (budget %d) — move the content to .claude/rules/ or summary/changelog/", n, claudeMdMaxLines)
 	}
 	if strings.Contains(src, "\n### Changes in v") {
@@ -56,10 +56,41 @@ func TestClaudeMdStaysWithinContextBudget(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading %s: %v", r, err)
 		}
-		if n := strings.Count(string(rb), "\n"); n > rulesMaxLines {
+		if n := lineCount(string(rb)); n > rulesMaxLines {
 			t.Errorf("%s is %d lines (budget %d) — split it or move history to summary/changelog/", filepath.Base(r), n, rulesMaxLines)
 		}
 	}
+}
+
+// TestLineCountNormalizesTrailingNewline (Copilot review on PR #203):
+// counting "\n" separators under-counts a file with no trailing newline
+// by one, so a 401-line file passed a 400-line budget. The count is
+// logical lines, trailing newline or not.
+func TestLineCountNormalizesTrailingNewline(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"a", 1},
+		{"a\n", 1},
+		{"a\nb", 2},
+		{"a\nb\n", 2},
+	} {
+		if got := lineCount(tc.in); got != tc.want {
+			t.Errorf("lineCount(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// lineCount is the number of logical lines: a trailing newline does not
+// add one, and a final line without one still counts (PR #203 review —
+// counting separators let a 401-line file pass a 400-line budget).
+func lineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return len(strings.Split(strings.TrimSuffix(s, "\n"), "\n"))
 }
 
 // repoRootFromScripts resolves the checkout root from the scripts package

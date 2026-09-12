@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Quick Start &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Quick Start &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1660,13 +1662,13 @@
 </div>
 <p>Edit <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> with your database credentials:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"database"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"localhost"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"port"</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"user"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"password"</span><span class="p">:</span><span class="w"> </span><span class="s2">"your-password"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"dbname"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"sslmode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"prefer"</span>
+<span class="w">  </span><span class="nt">&quot;database&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;localhost&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-password&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;dbname&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prefer&quot;</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1678,7 +1680,7 @@
 <p>If you do not have a database yet, create one:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Run in psql as a superuser</span>
 <span class="k">CREATE</span><span class="w"> </span><span class="k">DATABASE</span><span class="w"> </span><span class="n">aveloxis</span><span class="p">;</span>
-<span class="k">CREATE</span><span class="w"> </span><span class="k">USER</span><span class="w"> </span><span class="n">aveloxis</span><span class="w"> </span><span class="k">WITH</span><span class="w"> </span><span class="k">ENCRYPTED</span><span class="w"> </span><span class="k">PASSWORD</span><span class="w"> </span><span class="s1">'password'</span><span class="p">;</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">USER</span><span class="w"> </span><span class="n">aveloxis</span><span class="w"> </span><span class="k">WITH</span><span class="w"> </span><span class="k">ENCRYPTED</span><span class="w"> </span><span class="k">PASSWORD</span><span class="w"> </span><span class="s1">&#39;password&#39;</span><span class="p">;</span>
 <span class="k">GRANT</span><span class="w"> </span><span class="k">ALL</span><span class="w"> </span><span class="k">PRIVILEGES</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="k">DATABASE</span><span class="w"> </span><span class="n">aveloxis</span><span class="w"> </span><span class="k">TO</span><span class="w"> </span><span class="n">aveloxis</span><span class="p">;</span>
 <span class="k">ALTER</span><span class="w"> </span><span class="k">DATABASE</span><span class="w"> </span><span class="n">aveloxis</span><span class="w"> </span><span class="k">OWNER</span><span class="w"> </span><span class="k">TO</span><span class="w"> </span><span class="n">aveloxis</span><span class="p">;</span>
 </pre></div>

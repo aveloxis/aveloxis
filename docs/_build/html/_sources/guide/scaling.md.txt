@@ -70,6 +70,32 @@ A typical GitHub repo with moderate activity (~500 issues, ~200 PRs) requires ap
 
 These are rough estimates. Actual time depends on repo sizes, API response times, and the facade/analysis phases.
 
+### Background sweeps and the foreground reserve
+
+Since v0.29.6 the key pool admits **background** work (the contributor
+history sweep and the activity classification sweep) only while the pool's
+usable GraphQL budget is above `collection.github_budget_foreground_reserve_pct`
+(default 25%). Foreground collection is admitted while any budget remains.
+The reserve stops a sweep from starving collection; it cannot make a sweep
+that demands more than the budget finish. Size the demand side yourself:
+
+```
+background budget per hour ≈ keys × 5,000 × (100 − reserve_pct) / 100   # GraphQL points
+history-sweep demand per hour = activity_history_batch × 60 / activity_history_interval_minutes   # contributors
+                                × windows per contributor (a 10-year account is ~20 at 180-day windows)
+```
+
+Each window is one GraphQL query. `activity_history_concurrency` and
+`activity_history_window_concurrency` change how fast a cycle runs, not
+how much it asks for; `activity_history_window_days` is the wrong lever
+(larger windows raise the `contributionsCollection` cap loss). If the
+5-minute `key pool summary` log line shows remaining budget pinned near
+the reserve line and `GraphQL background sweep paced by the foreground
+reserve` appears every cycle, lower the batch or lengthen the interval
+until demand sits under roughly half of the background budget — the
+sweep re-audits on a 90-day cooldown, so steady state is far below the
+first pass.
+
 ---
 
 ## Horizontal scaling
@@ -164,11 +190,17 @@ use several; a parallel query multiplies by its worker count; and every
 connection can be running one. So the worst-case allocation is:
 
 ```
-max_connections × (1 + max_parallel_workers_per_gather) × work_mem
+max_connections × (1 + max_parallel_workers_per_gather) × ops_per_query × work_mem
 ```
 
-Budget it against roughly 10% of RAM, which leaves the rest for
-`shared_buffers` and the OS page cache:
+where `ops_per_query` is the number of sort/hash nodes a plan runs at once
+(`EXPLAIN` a representative heavy query — the matview refreshes and the
+commits backfills are the ones on this workload — and count them; 2–4 is
+typical). The budget below folds that factor into its 10% headroom rather
+than the denominator, because every connection is never running its
+heaviest plan at once; if yours are, divide by `ops_per_query` too. Budget it
+against roughly 10% of RAM, which leaves the rest for `shared_buffers` and
+the OS page cache:
 
 ```
 work_mem ≤ (RAM × 0.10) / (max_connections × (1 + max_parallel_workers_per_gather))

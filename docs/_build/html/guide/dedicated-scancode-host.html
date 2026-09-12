@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1668,17 +1670,17 @@ cross-host locks fall back to the derived stale-lock age window).</p>
 <h2>1. PostgreSQL remote access<a class="headerlink" href="#postgresql-remote-access" title="Link to this heading"></a></h2>
 <p>On the database host, allow the scancode machine to connect:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># postgresql.conf — listen beyond localhost (skip if already remote-accessible):</span>
-<span class="n">listen_addresses</span> <span class="o">=</span> <span class="s1">'*'</span>          <span class="c1"># or a specific interface address</span>
+<span class="n">listen_addresses</span> <span class="o">=</span> <span class="s1">&#39;*&#39;</span>          <span class="c1"># or a specific interface address</span>
 
 <span class="c1"># pg_hba.conf — one line for the scancode host (use its actual address;</span>
-<span class="c1"># do NOT open 0.0.0.0/0 — chaoss.tv's postgres logs show constant</span>
+<span class="c1"># do NOT open 0.0.0.0/0 — chaoss.tv&#39;s postgres logs show constant</span>
 <span class="c1"># credential brute-forcing against exposed 5432 ports):</span>
 <span class="n">host</span>  <span class="n">aveloxis</span>  <span class="n">aveloxis</span>  <span class="mf">192.0.2.42</span><span class="o">/</span><span class="mi">32</span>  <span class="n">scram</span><span class="o">-</span><span class="n">sha</span><span class="o">-</span><span class="mi">256</span>
 </pre></div>
 </div>
 <p>Reload postgres (<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">pg_reload_conf();</span></code> — <code class="docutils literal notranslate"><span class="pre">listen_addresses</span></code> needs a
 full restart). Verify from the scancode host:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>psql<span class="w"> </span><span class="s2">"postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=prefer"</span><span class="w"> </span>-c<span class="w"> </span><span class="s2">"SELECT 1"</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>psql<span class="w"> </span><span class="s2">&quot;postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=prefer&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;SELECT 1&quot;</span>
 </pre></div>
 </div>
 </section>
@@ -1691,7 +1693,7 @@ full restart). Verify from the scancode host:</p>
 <span class="c1"># (v0.29.4), so set the bare number `aveloxis version` prints on the</span>
 <span class="c1"># primary and let the @v prefix supply the tag form:</span>
 <span class="nv">PRIMARY_VERSION</span><span class="o">=</span><span class="m">0</span>.29.4<span class="w">   </span><span class="c1"># what `aveloxis version` prints on the primary</span>
-go<span class="w"> </span>install<span class="w"> </span><span class="s2">"github.com/aveloxis/aveloxis/cmd/aveloxis@v</span><span class="si">${</span><span class="nv">PRIMARY_VERSION</span><span class="si">}</span><span class="s2">"</span>
+go<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;github.com/aveloxis/aveloxis/cmd/aveloxis@v</span><span class="si">${</span><span class="nv">PRIMARY_VERSION</span><span class="si">}</span><span class="s2">&quot;</span>
 
 <span class="c1"># git is required for the shallow clones; then the analysis tools</span>
 <span class="c1"># (scancode needs Python 3.10+ and pipx):</span>
@@ -1710,25 +1712,25 @@ version-mismatch warning storms that wedged the June 2026 fleet.</p>
 <p>The scancode host’s <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> needs ONLY the database block and the
 <code class="docutils literal notranslate"><span class="pre">scancode_*</span></code> knobs — no API keys, no web/api/mail blocks:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"log_level"</span><span class="p">:</span><span class="w"> </span><span class="s2">"info"</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"database"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"db-host"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"port"</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"user"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"password"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"dbname"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"sslmode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"prefer"</span>
+<span class="w">  </span><span class="nt">&quot;log_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;info&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;database&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;db-host&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;dbname&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prefer&quot;</span>
 <span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"scancode_workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"scancode_start_interval_s"</span><span class="p">:</span><span class="w"> </span><span class="mi">90</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"scancode_cadence_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"scancode_clone_dir"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/srv/scancode-clones"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"scancode_run_timeout_hours"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"scancode_run_timeout_cap_hours"</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"scancode_timeout_cap_strikes"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"scancode_max_in_memory"</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"scancode_ignore_globs"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;scancode_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;scancode_start_interval_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">90</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;scancode_cadence_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;scancode_clone_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/srv/scancode-clones&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;scancode_run_timeout_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;scancode_run_timeout_cap_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;scancode_timeout_cap_strikes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;scancode_max_in_memory&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;scancode_ignore_globs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1740,8 +1742,8 @@ and raise <code class="docutils literal notranslate"><span class="pre">scancode_
 <section id="turn-scancode-off-on-the-primary-server">
 <h2>4. Turn scancode OFF on the primary server<a class="headerlink" href="#turn-scancode-off-on-the-primary-server" title="Link to this heading"></a></h2>
 <p>In the PRIMARY server’s <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>:</p>
-<div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"scancode_workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span>
+<div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;scancode_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span>
 <span class="p">}</span>
 </pre></div>
 </div>

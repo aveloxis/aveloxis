@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Staged Pipeline Architecture &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Staged Pipeline Architecture &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1704,9 +1706,9 @@
 <h3><code class="docutils literal notranslate"><span class="pre">stagedIssue</span></code><a class="headerlink" href="#stagedissue" title="Link to this heading"></a></h3>
 <p>A staged issue envelope contains:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"issue"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">"labels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">"assignees"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">]</span>
+<span class="w">  </span><span class="nt">&quot;issue&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;labels&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;assignees&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">]</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -1721,15 +1723,15 @@
 <h3><code class="docutils literal notranslate"><span class="pre">stagedPR</span></code><a class="headerlink" href="#stagedpr" title="Link to this heading"></a></h3>
 <p>A staged PR envelope contains:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"pull_request"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">"labels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">"assignees"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">"reviewers"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">"reviews"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">"commits"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">"files"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">"head_meta"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">"base_meta"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="nt">&quot;pull_request&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;labels&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;assignees&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;reviewers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;reviews&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;commits&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;files&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;head_meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;base_meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>

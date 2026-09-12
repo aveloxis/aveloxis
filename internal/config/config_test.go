@@ -246,3 +246,43 @@ func TestKeyPoolAdmissionKnobsEndToEnd(t *testing.T) {
 		t.Errorf("reserve pct 99 is legal and must pass through, got %d", got)
 	}
 }
+
+// v0.29.7 (SR-10) — the gone-repo recheck knobs, JSON → effective
+// value. A gone repository has no queue row, so nothing revisits it;
+// the scheduler's recheck ticker is the only automatic resurrection
+// path and these two knobs are its cadence and its off switch.
+func TestGoneRepoRecheckKnobsEndToEnd(t *testing.T) {
+	// Absent → 28 days, enabled.
+	var c CollectionConfig
+	if c.GoneRepoRecheckInterval() != 28*24*time.Hour || !c.GoneRepoRecheckEnabled() {
+		t.Errorf("absent knobs must yield 28d + enabled, got %v / %v",
+			c.GoneRepoRecheckInterval(), c.GoneRepoRecheckEnabled())
+	}
+	// Explicit JSON values flow through.
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"collection":{
+		"gone_repo_recheck_days": 7,
+		"gone_repo_recheck_disabled": true}}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cc := cfg.Collection
+	if cc.GoneRepoRecheckInterval() != 7*24*time.Hour || cc.GoneRepoRecheckEnabled() {
+		t.Errorf("explicit JSON knobs must flow to the accessors: %+v", cc)
+	}
+	// Nonsense falls back (never a zero-length cadence that re-probes
+	// every tick).
+	c = CollectionConfig{GoneRepoRecheckDays: -3}
+	if c.GoneRepoRecheckInterval() != 28*24*time.Hour {
+		t.Error("negative days must fall back to 28")
+	}
+	c = CollectionConfig{GoneRepoRecheckDays: 0}
+	if c.GoneRepoRecheckInterval() != 28*24*time.Hour {
+		t.Error("zero days must fall back to 28 (0 is not a disable switch; gone_repo_recheck_disabled is)")
+	}
+	// Review round 1: an absurd value must clamp, never overflow into a
+	// negative interval (which makes every row due every tick).
+	c = CollectionConfig{GoneRepoRecheckDays: 200000}
+	if got := c.GoneRepoRecheckInterval(); got != 365*24*time.Hour || got < 0 {
+		t.Errorf("huge days must clamp to 365, got %v", got)
+	}
+}

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Installation &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Installation &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1722,7 +1724,7 @@ go<span class="w"> </span>build<span class="w"> </span>-o<span class="w"> </span
 <p>If <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code> prints <code class="docutils literal notranslate"><span class="pre">command</span> <span class="pre">not</span> <span class="pre">found</span></code> after <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">install</span></code>, the Go bin directory is not in your <code class="docutils literal notranslate"><span class="pre">PATH</span></code>.</p>
 <section id="find-the-go-bin-directory">
 <h3>Find the Go bin directory<a class="headerlink" href="#find-the-go-bin-directory" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">echo</span><span class="w"> </span><span class="s2">"</span><span class="k">$(</span>go<span class="w"> </span>env<span class="w"> </span>GOPATH<span class="k">)</span><span class="s2">/bin"</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>go<span class="w"> </span>env<span class="w"> </span>GOPATH<span class="k">)</span><span class="s2">/bin&quot;</span>
 </pre></div>
 </div>
 <p>This typically prints <code class="docutils literal notranslate"><span class="pre">$HOME/go/bin</span></code>.</p>
@@ -1730,7 +1732,7 @@ go<span class="w"> </span>build<span class="w"> </span>-o<span class="w"> </span
 <section id="add-it-to-your-path">
 <h3>Add it to your PATH<a class="headerlink" href="#add-it-to-your-path" title="Link to this heading"></a></h3>
 <p>Add the following line to your shell profile (<code class="docutils literal notranslate"><span class="pre">~/.bashrc</span></code>, <code class="docutils literal notranslate"><span class="pre">~/.zshrc</span></code>, or <code class="docutils literal notranslate"><span class="pre">~/.profile</span></code>):</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PATH</span><span class="s2">:</span><span class="k">$(</span>go<span class="w"> </span>env<span class="w"> </span>GOPATH<span class="k">)</span><span class="s2">/bin"</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="s2">&quot;</span><span class="nv">$PATH</span><span class="s2">:</span><span class="k">$(</span>go<span class="w"> </span>env<span class="w"> </span>GOPATH<span class="k">)</span><span class="s2">/bin&quot;</span>
 </pre></div>
 </div>
 <p>Then reload your shell:</p>

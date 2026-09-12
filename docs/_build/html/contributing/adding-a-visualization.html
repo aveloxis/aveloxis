@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Adding a visualization &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Adding a visualization &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1657,7 +1659,7 @@ SPDX-License-Identifier: MIT
 <p>Both pull data from the REST API on <code class="docutils literal notranslate"><span class="pre">:8383</span></code>. If the API isn’t running, the page renders a “REST API not available” fallback.</p>
 <p>The pattern, end to end:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>1. Browser loads HTML rendered by internal/web/templates.go
-2. &lt;script&gt; block fires fetch("http://localhost:8383/api/v1/repos/&lt;id&gt;/timeseries?...")
+2. &lt;script&gt; block fires fetch(&quot;http://localhost:8383/api/v1/repos/&lt;id&gt;/timeseries?...&quot;)
 3. JSON response parsed → Chart.js renders into a &lt;canvas&gt;
 </pre></div>
 </div>
@@ -1671,10 +1673,10 @@ SPDX-License-Identifier: MIT
 <p>Add a REST endpoint that returns the weekly contributor count time-series:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>GET /api/v1/repos/{repoID}/contributor-timeseries?since=2025-01-01
 → {
-  "repo_id": 1,
-  "weekly_counts": [
-    {"week": "2025-W01", "active_contributors": 5},
-    {"week": "2025-W02", "active_contributors": 7},
+  &quot;repo_id&quot;: 1,
+  &quot;weekly_counts&quot;: [
+    {&quot;week&quot;: &quot;2025-W01&quot;, &quot;active_contributors&quot;: 5},
+    {&quot;week&quot;: &quot;2025-W02&quot;, &quot;active_contributors&quot;: 7},
     ...
   ]
 }
@@ -1685,48 +1687,48 @@ SPDX-License-Identifier: MIT
 <section id="step-2-find-the-right-template">
 <h3>Step 2 — find the right template<a class="headerlink" href="#step-2-find-the-right-template" title="Link to this heading"></a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">internal/web/templates.go</span></code> defines all templates as a big set of <code class="docutils literal notranslate"><span class="pre">{{define}}</span></code> blocks. The repo detail template is named <code class="docutils literal notranslate"><span class="pre">repoDetail</span></code> (or similar — search for the URL path or for <code class="docutils literal notranslate"><span class="pre">chart-commits</span></code> to find it). The relevant section looks like:</p>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">const</span><span class="w"> </span><span class="nx">repoDetailTemplate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">`</span>
-<span class="s">{{define "repoDetail"}}</span>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">const</span><span class="w"> </span><span class="nx">repoDetailTemplate</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">`</span>
+<span class="s">{{define &quot;repoDetail&quot;}}</span>
 <span class="s">&lt;!DOCTYPE html&gt;</span>
 <span class="s">&lt;html&gt;</span>
 <span class="s">&lt;head&gt;</span>
 <span class="s">  &lt;title&gt;{{.Repo.Owner}}/{{.Repo.Name}}&lt;/title&gt;</span>
-<span class="s">  &lt;script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"&gt;&lt;/script&gt;</span>
+<span class="s">  &lt;script src=&quot;https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js&quot;&gt;&lt;/script&gt;</span>
 <span class="s">  &lt;style&gt; /* ... */ &lt;/style&gt;</span>
 <span class="s">&lt;/head&gt;</span>
 <span class="s">&lt;body&gt;</span>
 <span class="s">  &lt;h1&gt;{{.Repo.Owner}}/{{.Repo.Name}}&lt;/h1&gt;</span>
 
-<span class="s">  &lt;div class="chart-row"&gt;</span>
-<span class="s">    &lt;canvas id="chart-commits"&gt;&lt;/canvas&gt;</span>
-<span class="s">    &lt;canvas id="chart-prs-opened"&gt;&lt;/canvas&gt;</span>
+<span class="s">  &lt;div class=&quot;chart-row&quot;&gt;</span>
+<span class="s">    &lt;canvas id=&quot;chart-commits&quot;&gt;&lt;/canvas&gt;</span>
+<span class="s">    &lt;canvas id=&quot;chart-prs-opened&quot;&gt;&lt;/canvas&gt;</span>
 <span class="s">  &lt;/div&gt;</span>
-<span class="s">  &lt;div class="chart-row"&gt;</span>
-<span class="s">    &lt;canvas id="chart-prs-merged"&gt;&lt;/canvas&gt;</span>
-<span class="s">    &lt;canvas id="chart-issues"&gt;&lt;/canvas&gt;</span>
+<span class="s">  &lt;div class=&quot;chart-row&quot;&gt;</span>
+<span class="s">    &lt;canvas id=&quot;chart-prs-merged&quot;&gt;&lt;/canvas&gt;</span>
+<span class="s">    &lt;canvas id=&quot;chart-issues&quot;&gt;&lt;/canvas&gt;</span>
 <span class="s">  &lt;/div&gt;</span>
 
 <span class="s">  &lt;script&gt;</span>
 <span class="s">    const COLORS = {</span>
-<span class="s">      commits: '#1f77b4',</span>
-<span class="s">      prsOpened: '#2ca02c',</span>
-<span class="s">      prsMerged: '#9467bd',</span>
-<span class="s">      issues: '#d62728',</span>
+<span class="s">      commits: &#39;#1f77b4&#39;,</span>
+<span class="s">      prsOpened: &#39;#2ca02c&#39;,</span>
+<span class="s">      prsMerged: &#39;#9467bd&#39;,</span>
+<span class="s">      issues: &#39;#d62728&#39;,</span>
 <span class="s">    };</span>
 
 <span class="s">    function makeChart(canvasId, label, color, data) {</span>
 <span class="s">      // ... existing factory</span>
 <span class="s">    }</span>
 
-<span class="s">    fetch('http://localhost:8383/api/v1/repos/{{.Repo.ID}}/timeseries?since=2024-01-01')</span>
+<span class="s">    fetch(&#39;http://localhost:8383/api/v1/repos/{{.Repo.ID}}/timeseries?since=2024-01-01&#39;)</span>
 <span class="s">      .then(r =&gt; r.json())</span>
 <span class="s">      .then(ts =&gt; {</span>
-<span class="s">        makeChart('chart-commits', 'Commits / week', COLORS.commits, ts.commits || []);</span>
-<span class="s">        makeChart('chart-prs-opened', 'PRs Opened / week', COLORS.prsOpened, ts.prs_opened || []);</span>
-<span class="s">        makeChart('chart-prs-merged', 'PRs Merged / week', COLORS.prsMerged, ts.prs_merged || []);</span>
-<span class="s">        makeChart('chart-issues', 'Issues / week', COLORS.issues, ts.issues || []);</span>
+<span class="s">        makeChart(&#39;chart-commits&#39;, &#39;Commits / week&#39;, COLORS.commits, ts.commits || []);</span>
+<span class="s">        makeChart(&#39;chart-prs-opened&#39;, &#39;PRs Opened / week&#39;, COLORS.prsOpened, ts.prs_opened || []);</span>
+<span class="s">        makeChart(&#39;chart-prs-merged&#39;, &#39;PRs Merged / week&#39;, COLORS.prsMerged, ts.prs_merged || []);</span>
+<span class="s">        makeChart(&#39;chart-issues&#39;, &#39;Issues / week&#39;, COLORS.issues, ts.issues || []);</span>
 <span class="s">      })</span>
-<span class="s">      .catch(err =&gt; console.error('chart load failed', err));</span>
+<span class="s">      .catch(err =&gt; console.error(&#39;chart load failed&#39;, err));</span>
 <span class="s">  &lt;/script&gt;</span>
 <span class="s">&lt;/body&gt;</span>
 <span class="s">&lt;/html&gt;</span>
@@ -1738,28 +1740,28 @@ SPDX-License-Identifier: MIT
 <section id="step-3-add-the-canvas-the-fetch">
 <h3>Step 3 — add the canvas + the fetch<a class="headerlink" href="#step-3-add-the-canvas-the-fetch" title="Link to this heading"></a></h3>
 <div class="highlight-html notranslate"><div class="highlight"><pre><span></span><span class="cm">&lt;!-- Add to the chart-row divs: --&gt;</span>
-<span class="p">&lt;</span><span class="nt">div</span> <span class="na">class</span><span class="o">=</span><span class="s">"chart-row"</span><span class="p">&gt;</span>
-  <span class="p">&lt;</span><span class="nt">canvas</span> <span class="na">id</span><span class="o">=</span><span class="s">"chart-contributors"</span><span class="p">&gt;&lt;/</span><span class="nt">canvas</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">div</span> <span class="na">class</span><span class="o">=</span><span class="s">&quot;chart-row&quot;</span><span class="p">&gt;</span>
+  <span class="p">&lt;</span><span class="nt">canvas</span> <span class="na">id</span><span class="o">=</span><span class="s">&quot;chart-contributors&quot;</span><span class="p">&gt;&lt;/</span><span class="nt">canvas</span><span class="p">&gt;</span>
 <span class="p">&lt;/</span><span class="nt">div</span><span class="p">&gt;</span>
 </pre></div>
 </div>
 <div class="highlight-js notranslate"><div class="highlight"><pre><span></span><span class="c1">// Add to COLORS:</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">COLORS</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nx">commits</span><span class="o">:</span><span class="w"> </span><span class="s1">'#1f77b4'</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">prsOpened</span><span class="o">:</span><span class="w"> </span><span class="s1">'#2ca02c'</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">prsMerged</span><span class="o">:</span><span class="w"> </span><span class="s1">'#9467bd'</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">issues</span><span class="o">:</span><span class="w"> </span><span class="s1">'#d62728'</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">contributors</span><span class="o">:</span><span class="w"> </span><span class="s1">'#ff7f0e'</span><span class="p">,</span><span class="w">  </span><span class="c1">// new (matplotlib tab:orange)</span>
+<span class="w">  </span><span class="nx">commits</span><span class="o">:</span><span class="w"> </span><span class="s1">&#39;#1f77b4&#39;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">prsOpened</span><span class="o">:</span><span class="w"> </span><span class="s1">&#39;#2ca02c&#39;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">prsMerged</span><span class="o">:</span><span class="w"> </span><span class="s1">&#39;#9467bd&#39;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">issues</span><span class="o">:</span><span class="w"> </span><span class="s1">&#39;#d62728&#39;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">contributors</span><span class="o">:</span><span class="w"> </span><span class="s1">&#39;#ff7f0e&#39;</span><span class="p">,</span><span class="w">  </span><span class="c1">// new (matplotlib tab:orange)</span>
 <span class="p">};</span>
 
 <span class="c1">// Add a second fetch (parallel to the existing one is fine — both fire when the page loads):</span>
-<span class="nx">fetch</span><span class="p">(</span><span class="s1">'http://localhost:8383/api/v1/repos/{{.Repo.ID}}/contributor-timeseries?since=2024-01-01'</span><span class="p">)</span>
+<span class="nx">fetch</span><span class="p">(</span><span class="s1">&#39;http://localhost:8383/api/v1/repos/{{.Repo.ID}}/contributor-timeseries?since=2024-01-01&#39;</span><span class="p">)</span>
 <span class="w">  </span><span class="p">.</span><span class="nx">then</span><span class="p">(</span><span class="nx">r</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">r</span><span class="p">.</span><span class="nx">json</span><span class="p">())</span>
 <span class="w">  </span><span class="p">.</span><span class="nx">then</span><span class="p">(</span><span class="nx">ts</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">makeChart</span><span class="p">(</span><span class="s1">'chart-contributors'</span><span class="p">,</span><span class="w"> </span><span class="s1">'Active contributors / week'</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">makeChart</span><span class="p">(</span><span class="s1">&#39;chart-contributors&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;Active contributors / week&#39;</span><span class="p">,</span>
 <span class="w">              </span><span class="nx">COLORS</span><span class="p">.</span><span class="nx">contributors</span><span class="p">,</span><span class="w"> </span><span class="nx">ts</span><span class="p">.</span><span class="nx">weekly_counts</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="p">[]);</span>
 <span class="w">  </span><span class="p">})</span>
-<span class="w">  </span><span class="p">.</span><span class="k">catch</span><span class="p">(</span><span class="nx">err</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">console</span><span class="p">.</span><span class="nx">error</span><span class="p">(</span><span class="s1">'contributor chart load failed'</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">));</span>
+<span class="w">  </span><span class="p">.</span><span class="k">catch</span><span class="p">(</span><span class="nx">err</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">console</span><span class="p">.</span><span class="nx">error</span><span class="p">(</span><span class="s1">&#39;contributor chart load failed&#39;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">));</span>
 </pre></div>
 </div>
 <p>The <code class="docutils literal notranslate"><span class="pre">makeChart</span></code> factory expects an array of <code class="docutils literal notranslate"><span class="pre">{x:</span> <span class="pre">'YYYY-WW',</span> <span class="pre">y:</span> <span class="pre">N}</span></code> objects — make sure your API response shape matches OR adapt the factory.</p>
@@ -1769,9 +1771,9 @@ SPDX-License-Identifier: MIT
 <p>The existing <code class="docutils literal notranslate"><span class="pre">makeChart</span></code> factory probably expects a specific shape. Read its implementation:</p>
 <div class="highlight-js notranslate"><div class="highlight"><pre><span></span><span class="kd">function</span><span class="w"> </span><span class="nx">makeChart</span><span class="p">(</span><span class="nx">canvasId</span><span class="p">,</span><span class="w"> </span><span class="nx">label</span><span class="p">,</span><span class="w"> </span><span class="nx">color</span><span class="p">,</span><span class="w"> </span><span class="nx">data</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="ow">new</span><span class="w"> </span><span class="nx">Chart</span><span class="p">(</span><span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="nx">canvasId</span><span class="p">),</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">type</span><span class="o">:</span><span class="w"> </span><span class="s1">'line'</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">type</span><span class="o">:</span><span class="w"> </span><span class="s1">&#39;line&#39;</span><span class="p">,</span>
 <span class="w">    </span><span class="nx">data</span><span class="o">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">      </span><span class="nx">labels</span><span class="o">:</span><span class="w"> </span><span class="nx">data</span><span class="p">.</span><span class="nx">map</span><span class="p">(</span><span class="nx">d</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">d</span><span class="p">.</span><span class="nx">week</span><span class="p">),</span><span class="w">    </span><span class="c1">// expects {week: '2025-W01', ...}</span>
+<span class="w">      </span><span class="nx">labels</span><span class="o">:</span><span class="w"> </span><span class="nx">data</span><span class="p">.</span><span class="nx">map</span><span class="p">(</span><span class="nx">d</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">d</span><span class="p">.</span><span class="nx">week</span><span class="p">),</span><span class="w">    </span><span class="c1">// expects {week: &#39;2025-W01&#39;, ...}</span>
 <span class="w">      </span><span class="nx">datasets</span><span class="o">:</span><span class="w"> </span><span class="p">[{</span>
 <span class="w">        </span><span class="nx">label</span><span class="o">:</span><span class="w"> </span><span class="nx">label</span><span class="p">,</span>
 <span class="w">        </span><span class="nx">data</span><span class="o">:</span><span class="w"> </span><span class="nx">data</span><span class="p">.</span><span class="nx">map</span><span class="p">(</span><span class="nx">d</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">d</span><span class="p">.</span><span class="nx">count</span><span class="p">),</span><span class="w">   </span><span class="c1">// expects {count: N}</span>
@@ -1852,7 +1854,7 @@ SPDX-License-Identifier: MIT
 <p>A repo with no data yet (newly added, collection in progress) should render an empty chart with a message, not a blank canvas. The existing pattern:</p>
 <div class="highlight-js notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">data</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nx">data</span><span class="p">.</span><span class="nx">length</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="mf">0</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nb">document</span><span class="p">.</span><span class="nx">getElementById</span><span class="p">(</span><span class="nx">canvasId</span><span class="p">).</span><span class="nx">parentElement</span><span class="p">.</span><span class="nx">innerHTML</span><span class="w"> </span><span class="o">=</span>
-<span class="w">    </span><span class="s1">'&lt;div class="chart-empty"&gt;No data yet — collection may still be in progress&lt;/div&gt;'</span><span class="p">;</span>
+<span class="w">    </span><span class="s1">&#39;&lt;div class=&quot;chart-empty&quot;&gt;No data yet — collection may still be in progress&lt;/div&gt;&#39;</span><span class="p">;</span>
 <span class="w">  </span><span class="k">return</span><span class="p">;</span>
 <span class="p">}</span>
 </pre></div>
@@ -1876,20 +1878,20 @@ SPDX-License-Identifier: MIT
 <p>Go template tests verify the template renders cleanly with sample data:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="nx">TestRepoDetailTemplateRenders</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nx">srv</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">newTestWebServer</span><span class="p">(</span><span class="nx">t</span><span class="p">)</span>
-<span class="w">    </span><span class="nx">req</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">httptest</span><span class="p">.</span><span class="nx">NewRequest</span><span class="p">(</span><span class="nx">http</span><span class="p">.</span><span class="nx">MethodGet</span><span class="p">,</span><span class="w"> </span><span class="s">"/groups/1/repos/1"</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">)</span>
-<span class="w">    </span><span class="nx">req</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">req</span><span class="p">.</span><span class="nx">WithContext</span><span class="p">(</span><span class="nx">authedContext</span><span class="p">(</span><span class="nx">t</span><span class="p">,</span><span class="w"> </span><span class="nx">srv</span><span class="p">))</span><span class="w">  </span><span class="c1">// session helper</span>
+<span class="w">    </span><span class="nx">req</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">httptest</span><span class="p">.</span><span class="nx">NewRequest</span><span class="p">(</span><span class="nx">http</span><span class="p">.</span><span class="nx">MethodGet</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;/groups/1/repos/1&quot;</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">req</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">req</span><span class="p">.</span><span class="nx">WithContext</span><span class="p">(</span><span class="nx">authedContext</span><span class="p">(</span><span class="nx">t</span><span class="p">,</span><span class="w"> </span><span class="nx">srv</span><span class="p">))</span><span class="w">  </span><span class="c1">// session helper</span>
 <span class="w">    </span><span class="nx">rec</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">httptest</span><span class="p">.</span><span class="nx">NewRecorder</span><span class="p">()</span>
 <span class="w">    </span><span class="nx">srv</span><span class="p">.</span><span class="nx">ServeHTTP</span><span class="p">(</span><span class="nx">rec</span><span class="p">,</span><span class="w"> </span><span class="nx">req</span><span class="p">)</span>
 
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">rec</span><span class="p">.</span><span class="nx">Code</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">StatusOK</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"expected 200, got %d"</span><span class="p">,</span><span class="w"> </span><span class="nx">rec</span><span class="p">.</span><span class="nx">Code</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;expected 200, got %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">rec</span><span class="p">.</span><span class="nx">Code</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="nx">body</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">rec</span><span class="p">.</span><span class="nx">Body</span><span class="p">.</span><span class="nx">String</span><span class="p">()</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">body</span><span class="p">,</span><span class="w"> </span><span class="s">`id="chart-contributors"`</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"expected chart-contributors canvas to be present"</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">body</span><span class="p">,</span><span class="w"> </span><span class="s">`id=&quot;chart-contributors&quot;`</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">&quot;expected chart-contributors canvas to be present&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">body</span><span class="p">,</span><span class="w"> </span><span class="s">`/contributor-timeseries`</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"expected fetch to /contributor-timeseries endpoint"</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">body</span><span class="p">,</span><span class="w"> </span><span class="s">`/contributor-timeseries`</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">&quot;expected fetch to /contributor-timeseries endpoint&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>

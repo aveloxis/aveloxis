@@ -426,8 +426,10 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		}
 
 		resp, err := c.inner.Do(req)
-		release()
 		if err != nil {
+			// The lease covers exactly the wire request: a failed Do
+			// has no response state to apply, so release at once.
+			release()
 			// v0.27.28: a cancelled context is not a retryable failure —
 			// bail BEFORE the "retrying" WARN. Pre-fix, every request
 			// in flight at `aveloxis stop` logged a retry it would
@@ -450,7 +452,14 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			continue
 		}
 
+		// Copilot review on PR #203: apply the response's primary AND
+		// secondary-limit state to the pool BEFORE releasing the lease,
+		// so a waiter woken by the release never selects this key on
+		// stale state. Released here — before any retry sleep or key
+		// rotation below — so the slot is never held across a wait
+		// (lease_every_exit_test.go drives every exit).
 		c.keys.UpdateFromResponse(key, resp)
+		release()
 
 		// Log rate limit state on every response so operators can monitor usage.
 		if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "" {
@@ -663,10 +672,10 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			wait := parseRetryAfter(resp)
 			c.logger.Info("secondary rate limit", "url", url, "wait", wait,
 				"token_prefix", tokenPrefix(key.Token))
-			// 2026-09-12 (Bug C): rest THIS key in the pool for the
-			// Retry-After so other callers are routed to healthy keys
-			// instead of each earning its own 403 on the same token.
-			c.keys.MarkSecondaryLimited(key, wait)
+			// 2026-09-12 (Bug C): THIS key is resting in the pool for the
+			// Retry-After so other callers are routed to healthy keys —
+			// applied by UpdateFromResponse under the lease (PR #203
+			// review); this branch is only this attempt's own pacing.
 			select {
 			case <-ctx.Done():
 				return respDone, nil, ctx.Err()
@@ -727,9 +736,9 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		wait := parseRetryAfter(resp)
 		c.logger.Info("rate limited", "url", url, "wait", wait,
 			"token_prefix", tokenPrefix(key.Token))
-		// 429 is the same per-key throttle as 403 + Retry-After: rest the
-		// key so the pool routes around it (2026-09-12, Bug C).
-		c.keys.MarkSecondaryLimited(key, wait)
+		// 429 is the same per-key throttle as 403 + Retry-After: the key
+		// is already resting (UpdateFromResponse, under the lease — PR
+		// #203 review); this is only this attempt's own pacing.
 		select {
 		case <-ctx.Done():
 			return respDone, nil, ctx.Err()

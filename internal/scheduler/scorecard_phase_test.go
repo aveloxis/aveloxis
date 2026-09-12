@@ -146,9 +146,17 @@ func TestScorecardPhaseReportsCostAndContention(t *testing.T) {
 			"per-repo scorecard cost was unanswerable without grepping 627 MB of log.")
 	}
 
+	// Copilot review on PR #203: phase_duration is "how long the phase
+	// held this worker", and the phase holds the worker while it QUEUES
+	// for a subprocess slot too — so the timer starts before the
+	// semaphore select, and the slot wait is reported on its own.
+	if ps, sem := strings.Index(body, "phaseStart := time.Now()"), strings.Index(body, "case s.scorecardSem <- struct{}{}:"); ps < 0 || sem < 0 || ps > sem {
+		t.Error("phaseStart must be taken BEFORE the scorecardSem select — phase_duration includes the slot wait")
+	}
 	for _, needle := range []string{
 		`"scorecard phase complete"`, // the slot-holding cost
 		"phase_duration",
+		"slot_wait",
 		"api_calls_used",
 		`"scorecard tokens"`, // the contention probe
 		"token_count",

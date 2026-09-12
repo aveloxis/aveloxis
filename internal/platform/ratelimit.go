@@ -714,6 +714,13 @@ func (kp *KeyPool) releaseFunc(key *APIKey) func() {
 func (kp *KeyPool) MarkSecondaryLimited(key *APIKey, retryAfter time.Duration) {
 	kp.mu.Lock()
 	defer kp.mu.Unlock()
+	kp.markSecondaryLimitedLocked(key, retryAfter)
+}
+
+// markSecondaryLimitedLocked is MarkSecondaryLimited under kp.mu —
+// shared with UpdateFromResponse so the rest is applied in the same
+// critical section as the budget headers.
+func (kp *KeyPool) markSecondaryLimitedLocked(key *APIKey, retryAfter time.Duration) {
 	if retryAfter <= 0 {
 		retryAfter = time.Second
 	}
@@ -781,6 +788,22 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 		windowedBudgetUpdate(&key.GraphQLRemaining, &key.GraphQLResetAt, remaining, reset)
 	default:
 		// search etc. — deliberately untracked (see above).
+	}
+
+	// Copilot review on PR #203: the SECONDARY-limit state rides the same
+	// call as the primary budget, so both are applied while the caller
+	// still holds the lease (the clients release right after this
+	// returns). Pre-fix the clients released first and marked the rest
+	// in their 403/429 branches afterwards, and a waiter woken by the
+	// release could reacquire the just-throttled key in that gap. A 429
+	// is a throttle by definition; a 403 is one only with Retry-After
+	// (without it, it is a permission error — ErrForbidden). Secondary
+	// limits are per token across resources, so a search 403 rests the
+	// key too. This is the ONE place the rest is recorded per response;
+	// the clients' branches keep only their logging and pacing.
+	if resp.StatusCode == http.StatusTooManyRequests ||
+		(resp.StatusCode == http.StatusForbidden && resp.Header.Get("Retry-After") != "") {
+		kp.markSecondaryLimitedLocked(key, parseRetryAfter(resp))
 	}
 }
 
@@ -1096,9 +1119,15 @@ func (kp *KeyPool) AliveCount() int {
 func (kp *KeyPool) LendTokens(n int) ([]string, func()) {
 	kp.mu.Lock()
 	defer kp.mu.Unlock()
+	// Copilot review on PR #203: a key the pool itself refuses to
+	// Acquire — quarantined after repeated 401s, or resting on a
+	// secondary limit — is not lent either. Handing scorecard a token
+	// every other caller is routed around would re-earn the 401/403
+	// the rest exists to end. Same predicate as admission (usableAt).
+	now := time.Now()
 	cands := make([]*APIKey, 0, len(kp.keys))
 	for _, k := range kp.keys {
-		if !k.Invalid {
+		if k.usableAt(now) {
 			cands = append(cands, k)
 		}
 	}

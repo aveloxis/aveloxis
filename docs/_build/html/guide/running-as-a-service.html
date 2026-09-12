@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Running Aveloxis as a Service &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Running Aveloxis as a Service &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1696,13 +1698,13 @@ deployment starts and stops as a unit.</p>
 <span class="na">Restart</span><span class="o">=</span><span class="s">on-failure</span>
 <span class="na">RestartSec</span><span class="o">=</span><span class="s">30</span>
 
-<span class="c1"># PATH is load-bearing — see "The PATH trap" below.</span>
+<span class="c1"># PATH is load-bearing — see &quot;The PATH trap&quot; below.</span>
 <span class="na">Environment</span><span class="o">=</span><span class="s">PATH=/home/aveloxis/go/bin:/home/aveloxis/.local/bin:/usr/local/bin:/usr/bin:/bin</span>
 
-<span class="c1"># No ExecStop: systemd's SIGTERM IS the stop mechanism (v0.27.25+).</span>
-<span class="c1"># serve's graceful shutdown completes within</span>
+<span class="c1"># No ExecStop: systemd&#39;s SIGTERM IS the stop mechanism (v0.27.25+).</span>
+<span class="c1"># serve&#39;s graceful shutdown completes within</span>
 <span class="c1"># collection.shutdown_grace_seconds (default 10) + the scancode grace</span>
-<span class="c1"># (collection.scancode_shutdown_grace_minutes, default 0) + the runners'</span>
+<span class="c1"># (collection.scancode_shutdown_grace_minutes, default 0) + the runners&#39;</span>
 <span class="c1"># bookkeeping allowance (70 s, v0.28.18) + a 30 s margin — ~110 s at the</span>
 <span class="c1"># defaults. When TimeoutStopSec expires systemd escalates to SIGKILL,</span>
 <span class="c1"># which recreates the orphaned-backend class — keep this comfortably</span>
@@ -1736,7 +1738,7 @@ sudo<span class="w"> </span>systemctl<span class="w"> </span>daemon-reload
 sudo<span class="w"> </span>systemctl<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>--now<span class="w"> </span>aveloxis.target
 
 <span class="c1"># Day-to-day:</span>
-systemctl<span class="w"> </span>status<span class="w"> </span><span class="s1">'aveloxis@*'</span>
+systemctl<span class="w"> </span>status<span class="w"> </span><span class="s1">&#39;aveloxis@*&#39;</span>
 sudo<span class="w"> </span>systemctl<span class="w"> </span>restart<span class="w"> </span>aveloxis@serve<span class="w">      </span><span class="c1"># one process</span>
 sudo<span class="w"> </span>systemctl<span class="w"> </span>restart<span class="w"> </span>aveloxis.target<span class="w">     </span><span class="c1"># all three</span>
 
@@ -1784,7 +1786,7 @@ PATH line matches where the tools actually live
 <p>Under systemd, stdout goes to the journal — the <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/*.log</span></code> files
 are only written by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span></code>, so they will stop updating:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>journalctl<span class="w"> </span>-u<span class="w"> </span>aveloxis@serve<span class="w"> </span>-f
-journalctl<span class="w"> </span>-u<span class="w"> </span>aveloxis@serve<span class="w"> </span>--since<span class="w"> </span><span class="s2">"1 hour ago"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span>error
+journalctl<span class="w"> </span>-u<span class="w"> </span>aveloxis@serve<span class="w"> </span>--since<span class="w"> </span><span class="s2">&quot;1 hour ago&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span>error
 </pre></div>
 </div>
 <p>Verbosity is still controlled by <code class="docutils literal notranslate"><span class="pre">log_level</span></code> in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>. journald

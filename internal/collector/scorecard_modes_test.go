@@ -70,32 +70,34 @@ func readLines(t *testing.T, path string) []string {
 type fakeScorecardStore struct {
 	mu    sync.Mutex
 	calls []string // "rotate" or "insert:<name>:<score>:<mode>"
-	// storedMode / storedFound / modeErr script CurrentScorecardMode
-	// (the 2026-09-12 partial-never-replaces-complete gate).
+	// storedMode / storedFound script the stored-mode read inside
+	// ReplaceScorecard (the 2026-09-12 partial-never-replaces-complete
+	// gate); modeErr makes the whole fused transaction fail.
 	storedMode  string
 	storedFound bool
 	modeErr     error
 }
 
-func (f *fakeScorecardStore) CurrentScorecardMode(ctx context.Context, repoID int64) (string, bool, error) {
+// ReplaceScorecard models the store's fused transaction (PR #203
+// review): the mode read, the policy callback, then rotate + inserts
+// only when allowed — recorded in the same "mode"/"rotate"/"insert:…"
+// vocabulary the D9 matrix asserts on, so the collector's policy stays
+// the thing under test.
+func (f *fakeScorecardStore) ReplaceScorecard(ctx context.Context, repoID int64, mode string, rows []db.ScorecardRow, allow func(string, bool) bool) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "mode")
-	return f.storedMode, f.storedFound, f.modeErr
-}
-
-func (f *fakeScorecardStore) RotateScorecardToHistory(ctx context.Context, repoID int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	if f.modeErr != nil {
+		return false, f.modeErr
+	}
+	if !allow(f.storedMode, f.storedFound) {
+		return false, nil
+	}
 	f.calls = append(f.calls, "rotate")
-	return nil
-}
-
-func (f *fakeScorecardStore) InsertScorecardResult(ctx context.Context, repoID int64, name, score string, detailsJSON []byte, mode string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, fmt.Sprintf("insert:%s:%s:%s", name, score, mode))
-	return nil
+	for _, r := range rows {
+		f.calls = append(f.calls, fmt.Sprintf("insert:%s:%s:%s", r.Name, r.Score, mode))
+	}
+	return true, nil
 }
 
 func (f *fakeScorecardStore) snapshot() []string {
@@ -143,12 +145,14 @@ func TestScorecardRemotePrimarySucceeds(t *testing.T) {
 		t.Errorf("GITHUB_TOKEN seen by scorecard = %v, want [tok1,tok2]", env)
 	}
 
-	// Persisted: rotate first, then __overall__ + both checks, all
-	// carrying mode=remote.
+	// Persisted: the stored-mode read (the fused transaction reads it
+	// on every write, remote included — PR #203 review), rotate, then
+	// __overall__ + both checks, all carrying mode=remote.
 	calls := store.snapshot()
-	if len(calls) != 4 || calls[0] != "rotate" {
-		t.Fatalf("persist calls = %v, want rotate + 3 inserts", calls)
+	if len(calls) != 5 || calls[0] != "mode" || calls[1] != "rotate" {
+		t.Fatalf("persist calls = %v, want mode + rotate + 3 inserts", calls)
 	}
+	calls = calls[1:]
 	if calls[1] != "insert:"+db.ScorecardOverallName+":5.6:remote" {
 		t.Errorf("overall row = %q, want __overall__ 5.6 mode=remote", calls[1])
 	}

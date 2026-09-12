@@ -291,7 +291,7 @@ func (s *PostgresStore) GetRepoScorecard(ctx context.Context, repoID int64) ([]S
 			return nil, nil, time.Time{}, "", err
 		}
 		// One snapshot shares one mode; 'remote' wins a mixed legacy set
-		// (the same conservative reading CurrentScorecardMode takes).
+		// (the same conservative reading ReplaceScorecard's stored-mode check takes).
 		if rowMode == "remote" || mode == "" {
 			mode = rowMode
 		}

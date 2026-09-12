@@ -73,6 +73,8 @@
     "github_max_inflight": 40,
     "github_max_inflight_per_key": 4,
     "github_budget_foreground_reserve_pct": 25,
+    "gone_repo_recheck_days": 28,
+    "gone_repo_recheck_disabled": false,
     "scancode_timeout_cap_strikes": 3,
     "scancode_ignore_globs": [],
     "staging_retention_hours": 1,

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Collection Pipeline &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Collection Pipeline &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1785,11 +1787,11 @@ Phase 3: Messages (sequential, after parallel phase)
 <p>The repo is cloned as a bare repo (or fetched if a clone already exists):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">REPO_URL</span><span class="o">=</span>https://github.com/augurlabs/augur
 <span class="nv">CLONE_PATH</span><span class="o">=</span>/data/aveloxis-repos/augurlabs-augur.git
-git<span class="w"> </span>clone<span class="w"> </span>--bare<span class="w"> </span><span class="s2">"</span><span class="nv">$REPO_URL</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$CLONE_PATH</span><span class="s2">"</span><span class="w">   </span><span class="c1"># first time</span>
+git<span class="w"> </span>clone<span class="w"> </span>--bare<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$REPO_URL</span><span class="s2">&quot;</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CLONE_PATH</span><span class="s2">&quot;</span><span class="w">   </span><span class="c1"># first time</span>
 <span class="c1"># subsequent runs — an explicit refspec, because `git clone --bare`</span>
 <span class="c1"># writes no fetch refspec: a bare `git fetch --all` downloads objects</span>
 <span class="c1"># but never advances refs/heads/*, leaving the clone permanently stale</span>
-git<span class="w"> </span>-C<span class="w"> </span><span class="s2">"</span><span class="nv">$CLONE_PATH</span><span class="s2">"</span><span class="w"> </span>fetch<span class="w"> </span>origin<span class="w"> </span><span class="s1">'+refs/heads/*:refs/heads/*'</span><span class="w"> </span><span class="s1">'+refs/tags/*:refs/tags/*'</span><span class="w"> </span>--prune
+git<span class="w"> </span>-C<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CLONE_PATH</span><span class="s2">&quot;</span><span class="w"> </span>fetch<span class="w"> </span>origin<span class="w"> </span><span class="s1">&#39;+refs/heads/*:refs/heads/*&#39;</span><span class="w"> </span><span class="s1">&#39;+refs/tags/*:refs/tags/*&#39;</span><span class="w"> </span>--prune
 </pre></div>
 </div>
 <p>Bare clones are permanent and stored in the <code class="docutils literal notranslate"><span class="pre">repo_clone_dir</span></code> directory.</p>
@@ -1960,7 +1962,7 @@ git<span class="w"> </span>-C<span class="w"> </span><span class="s2">"</span><s
 <p><strong>Invocation:</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">OUTPUT</span><span class="o">=</span>/tmp/aveloxis-scancode/repo_123.json<span class="w">   </span><span class="c1"># the JSON the worker ingests</span>
 <span class="nv">CHECKOUT</span><span class="o">=</span>/tmp/aveloxis-scancode/repo_123<span class="w">      </span><span class="c1"># the temporary clone</span>
-scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<span class="w"> </span>--json<span class="w"> </span><span class="s2">"</span><span class="nv">$OUTPUT</span><span class="s2">"</span><span class="w"> </span>--quiet<span class="w"> </span>--timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="s2">"</span><span class="nv">$CHECKOUT</span><span class="s2">"</span>
+scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<span class="w"> </span>--json<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OUTPUT</span><span class="s2">&quot;</span><span class="w"> </span>--quiet<span class="w"> </span>--timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CHECKOUT</span><span class="s2">&quot;</span>
 </pre></div>
 </div>
 <table class="docutils align-default">
@@ -2057,6 +2059,10 @@ scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<spa
 <tr class="row-even"><td><p><strong>Materialized view rebuild</strong></p></td>
 <td><p>Weekly (Saturday)</p></td>
 <td><p>Pauses all collection workers, refreshes all 20 matviews, resumes collection</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Gone-repo recheck</strong></p></td>
+<td><p>Hourly tick, each repo every <code class="docutils literal notranslate"><span class="pre">gone_repo_recheck_days</span></code> (28)</p></td>
+<td><p>v0.29.7: re-probes up to 500 “gone” (404/410-sidelined, dequeued) repositories per tick with an unauthenticated <code class="docutils literal notranslate"><span class="pre">HEAD</span></code>; a definitive 2xx clears the gone state and re-enqueues the repo. <code class="docutils literal notranslate"><span class="pre">gone_repo_recheck_disabled:</span> <span class="pre">true</span></code> switches it off.</p></td>
 </tr>
 </tbody>
 </table>

@@ -238,8 +238,10 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		req.Header.Set("Accept", "application/json")
 
 		resp, err := c.inner.Do(req)
-		release()
 		if err != nil {
+			// The lease covers exactly the wire request: a failed Do
+			// has no response state to apply, so release at once.
+			release()
 			// v0.27.28: cancellation bails quietly before the
 			// "retrying" WARN — same contract as httpclient.Get.
 			if ctx.Err() != nil {
@@ -254,7 +256,22 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			continue
 		}
 
+		// Copilot review on PR #203: apply the response's primary AND
+		// secondary-limit state to the pool BEFORE releasing the lease,
+		// so a waiter woken by the release never selects this key on
+		// stale state. Released here — before any retry sleep or key
+		// rotation below — so the slot is never held across a wait
+		// (lease_every_exit_test.go drives every exit). Two GraphQL
+		// marks still land AFTER this release, by design: the in-body
+		// RATE_LIMITED mark needs the body read (holding the lease across
+		// I/O is the wrong trade), and the 403 + Remaining:0 belt below
+		// exists for the older resource-header-less shape where
+		// UpdateFromResponse routed the zero into CORE. Each costs at
+		// most one wasted request from a waiter woken in the gap; the
+		// headers on both responses already said Remaining: 0 under
+		// the lease.
 		c.keys.UpdateFromResponse(key, resp)
+		release()
 
 		if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "" {
 			resource := resp.Header.Get("X-RateLimit-Resource")
@@ -384,8 +401,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// the throttled key — 179 rejections in one second. Now the
 				// pool routes the next checkout to a healthy key while this
 				// one sits out; the sleep below is only this attempt's own
-				// pacing.
-				c.keys.MarkSecondaryLimited(key, wait)
+				// pacing. The rest itself is applied by UpdateFromResponse
+				// under the lease (PR #203 review), not here.
 				// Copilot round 6 on PR #193 (suppressed #3): HTTP
 				// throttling must feed the same final-attempt state as
 				// in-body RATE_LIMITED, or a persistently-throttled
@@ -431,9 +448,9 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			c.logger.Info("graphql 429 rate limited", "url", url, "wait", wait,
 				"token_prefix", tokenPrefix(key.Token))
 			// 429 is the same per-key throttle as 403 + Retry-After
-			// (GitHub documents both shapes for secondary limits): rest
-			// the key so the pool stops handing it out.
-			c.keys.MarkSecondaryLimited(key, wait)
+			// (GitHub documents both shapes for secondary limits): the
+			// key is already resting (UpdateFromResponse, under the
+			// lease — PR #203 review).
 			// Round 6 suppressed #3: see the 403 branch — HTTP 429 is
 			// explicit throttling and must win the exhaustion class
 			// when it lands on the final attempt.

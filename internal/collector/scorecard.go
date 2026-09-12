@@ -94,17 +94,34 @@ type ScorecardCheck struct {
 // full remote/local fallback with a fake store + fake scorecard binary.
 // *db.PostgresStore satisfies it.
 type scorecardStore interface {
-	// CurrentScorecardMode reports the scorecard_mode of the repo's
-	// CURRENT rows (found=false when none are stored). A lookup ERROR
-	// is not "none" (SR-5) — persistScorecard refuses to write on one.
-	CurrentScorecardMode(ctx context.Context, repoID int64) (mode string, found bool, err error)
-	RotateScorecardToHistory(ctx context.Context, repoID int64) error
-	InsertScorecardResult(ctx context.Context, repoID int64, name, score string, detailsJSON []byte, mode string) error
+	// ReplaceScorecard is the ONE persist operation: in a single store
+	// transaction under a per-repo lock it reads the stored mode, asks
+	// allow(storedMode, found) whether this run may replace the set,
+	// and if so rotates the current rows to history and inserts rows.
+	// written=false = refused, nothing touched. An error = nothing
+	// committed; a failed mode read is an error, never "no prior set"
+	// (SR-5). The collector never sequences check/rotate/insert itself
+	// — that is what let a local writer rotate a concurrent remote
+	// writer's complete set away (Copilot review on PR #203; SR-18).
+	ReplaceScorecard(ctx context.Context, repoID int64, mode string, rows []db.ScorecardRow, allow func(storedMode string, found bool) bool) (written bool, err error)
 }
 
-// errScorecardModeProbe wraps a CurrentScorecardMode failure so the
-// phase log can say the run was not written and why.
-var errScorecardModeProbe = errors.New("scorecard: current-mode probe failed — result not written (a probe error is not 'no prior set')")
+// errScorecardModeProbe wraps a ReplaceScorecard failure so the phase
+// log can say the run was not written and why. The name predates the
+// fused transaction: the first cause it covered was the current-mode
+// read, and a failed read is still the same class (unknowable state,
+// nothing written).
+var errScorecardModeProbe = errors.New("scorecard: persist transaction failed — result not written (an unknowable stored state is not 'no prior set')")
+
+// scorecardReplaceAllowed is the D9 policy, evaluated by the store
+// INSIDE its transaction: a remote (complete) run replaces anything;
+// a local (partial) run never replaces a stored remote set; local over
+// local/none replaces (the GitLab/generic normal path).
+func scorecardReplaceAllowed(mode string) func(storedMode string, found bool) bool {
+	return func(storedMode string, found bool) bool {
+		return mode == "remote" || !(found && storedMode == "remote")
+	}
+}
 
 // ScorecardOptions bundles the inputs for RunScorecard.
 type ScorecardOptions struct {
@@ -251,8 +268,11 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 // finishScorecard persists a successful attempt (subject to the
 // partial-never-replaces-complete gate in persistScorecard) and emits
 // the completion log with the instrumented API spend. The only error it
-// can return is a failed current-mode probe — the run happened, but its
-// result was not written because the store's state was unknowable.
+// can return is a failed persist transaction (errScorecardModeProbe) —
+// the run happened, but its result was not written. RunScorecard
+// returns that error directly: a store failure after a successful
+// remote run is NOT a remote failure and never triggers the local
+// backstop (pinned by TestScorecardPersistFailureAfterRemoteSuccessDoesNotFallBack).
 func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, raw *scorecardOutput, mode string, apiCalls int64, duration time.Duration, logger *slog.Logger) (*ScorecardResult, error) {
 	result, err := persistScorecard(ctx, store, repoID, raw, mode, logger)
 	if err != nil {
@@ -463,76 +483,35 @@ func persistScorecard(ctx context.Context, store scorecardStore, repoID int64, r
 		OverallScore: raw.Score,
 		Mode:         mode,
 	}
-
-	if mode != "remote" {
-		stored, found, err := store.CurrentScorecardMode(ctx, repoID)
-		if err != nil {
-			if !errors.Is(err, context.Canceled) {
-				logger.Warn("scorecard current-mode probe failed — result NOT written",
-					"repo_id", repoID, "mode", mode, "error", err)
-			}
-			return nil, fmt.Errorf("%w: %w", errScorecardModeProbe, err)
-		}
-		if found && stored == "remote" {
-			result.Discarded = true
-			for _, check := range raw.Checks {
-				result.Checks = append(result.Checks, ScorecardCheck{
-					Name: check.Name, Score: check.Score, Reason: check.Reason, Details: check.Details,
-				})
-			}
-			logger.Info("scorecard degraded run discarded — prior complete set retained",
-				"repo_id", repoID, "run_mode", mode, "stored_mode", stored,
-				"run_checks", len(raw.Checks))
-			return result, nil
-		}
-	}
-
-	// Rotate previous scorecard results to history before inserting new ones.
-	if err := store.RotateScorecardToHistory(ctx, repoID); err != nil {
-		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-		// defect. Only the log is suppressed — surrounding behaviour is
-		// unchanged and the work is retried on the next cycle.
-		if !errors.Is(err, context.Canceled) {
-			logger.Warn("failed to rotate scorecard to history", "repo_id", repoID, "error", err)
-		}
-	}
-
-	// Store the aggregate ("headline") score under the reserved
-	// __overall__ row name — v0.27.4; it was previously logged and
-	// dropped, which the operator called out as a gap. One decimal,
-	// matching scorecard's own output.
-	if err := store.InsertScorecardResult(ctx, repoID, db.ScorecardOverallName,
-		fmt.Sprintf("%.1f", raw.Score), nil, mode); err != nil {
-		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-		// defect. Only the log is suppressed — surrounding behaviour is
-		// unchanged and the work is retried on the next cycle.
-		if !errors.Is(err, context.Canceled) {
-			logger.Warn("failed to store scorecard overall score", "repo_id", repoID, "error", err)
-		}
-	}
-
-	// Store each check as a row in repo_deps_scorecard.
+	// The aggregate ("headline") score under the reserved __overall__
+	// row name — v0.27.4; one decimal, matching scorecard's own output —
+	// then each check as a row with its full details as JSONB.
+	rows := make([]db.ScorecardRow, 0, 1+len(raw.Checks))
+	rows = append(rows, db.ScorecardRow{Name: db.ScorecardOverallName, Score: fmt.Sprintf("%.1f", raw.Score)})
 	for _, check := range raw.Checks {
-		sc := ScorecardCheck{
-			Name:    check.Name,
-			Score:   check.Score,
-			Reason:  check.Reason,
-			Details: check.Details,
-		}
-		result.Checks = append(result.Checks, sc)
-
-		// Store in database with full check details as JSONB.
+		result.Checks = append(result.Checks, ScorecardCheck{
+			Name: check.Name, Score: check.Score, Reason: check.Reason, Details: check.Details,
+		})
 		detailsJSON, _ := json.Marshal(check)
-		if err := store.InsertScorecardResult(ctx, repoID, check.Name, strconv.FormatFloat(check.Score, 'f', -1, 64), detailsJSON, mode); err != nil {
-			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-			// defect. Only the log is suppressed — surrounding behaviour is
-			// unchanged and the work is retried on the next cycle.
-			if !errors.Is(err, context.Canceled) {
-				logger.Warn("failed to store scorecard check", "check", check.Name, "error", err)
-			}
-		}
+		rows = append(rows, db.ScorecardRow{
+			Name: check.Name, Score: strconv.FormatFloat(check.Score, 'f', -1, 64), Details: detailsJSON,
+		})
 	}
 
+	written, err := store.ReplaceScorecard(ctx, repoID, mode, rows, scorecardReplaceAllowed(mode))
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			logger.Warn("scorecard persist failed — result NOT written",
+				"repo_id", repoID, "mode", mode, "error", err)
+		}
+		return nil, fmt.Errorf("%w: %w", errScorecardModeProbe, err)
+	}
+	if !written {
+		result.Discarded = true
+		logger.Info("scorecard degraded run discarded — prior complete set retained",
+			"repo_id", repoID, "run_mode", mode, "stored_mode", "remote",
+			"run_checks", len(raw.Checks))
+	}
 	return result, nil
 }
 

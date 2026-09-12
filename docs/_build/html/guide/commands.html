@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1758,7 +1760,7 @@ aveloxis<span class="w"> </span>serve
 <span class="c1"># Start with 4 workers and a custom dashboard port</span>
 aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:8082
 
-<span class="c1"># Start using Augur's API keys</span>
+<span class="c1"># Start using Augur&#39;s API keys</span>
 aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--augur-keys
 </pre></div>
 </div>
@@ -2177,7 +2179,7 @@ aveloxis<span class="w"> </span>recollect<span class="w"> </span>https://github.
 <span class="k">SELECT</span><span class="w"> </span><span class="n">step_label</span><span class="p">,</span><span class="w"> </span><span class="n">completed_at</span><span class="p">,</span><span class="w"> </span><span class="n">tool_version</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">migration_ledger</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">completed_at</span><span class="p">;</span>
 
 <span class="c1">-- Replay one step:</span>
-<span class="k">DELETE</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">migration_ledger</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">step_label</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'v0.27.104 backfill pull_requests.meta_head_id/meta_base_id'</span><span class="p">;</span>
+<span class="k">DELETE</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">migration_ledger</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">step_label</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;v0.27.104 backfill pull_requests.meta_head_id/meta_base_id&#39;</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>then run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code>. Every ledgered step is idempotent, so replays are always safe.</p>
@@ -2233,7 +2235,7 @@ accumulate both as separate rows, each collected in full (doubled API
 budget, storage, and double-counted analytics).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--dry-run<span class="w">      </span><span class="c1"># show the plan (first 20 pairs)</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--limit<span class="w"> </span><span class="m">50</span><span class="w">     </span><span class="c1"># canary batch</span>
-aveloxis<span class="w"> </span>dedup-repos<span class="w">                </span><span class="c1"># full run — re-run until "0 pairs"</span>
+aveloxis<span class="w"> </span>dedup-repos<span class="w">                </span><span class="c1"># full run — re-run until &quot;0 pairs&quot;</span>
 </pre></div>
 </div>
 <section id="id8">
@@ -2523,7 +2525,7 @@ aveloxis<span class="w"> </span>stop<span class="w"> </span>web<span class="w"> 
 aveloxis<span class="w"> </span>stop<span class="w"> </span>api<span class="w">              </span><span class="c1"># stop only the REST API</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>scancode-worker<span class="w">  </span><span class="c1"># stop the dedicated scancode worker</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w">              </span><span class="c1"># stop serve + web + api (never the scancode worker)</span>
-aveloxis<span class="w"> </span>stop<span class="w">                  </span><span class="c1"># (no args) same as 'all'</span>
+aveloxis<span class="w"> </span>stop<span class="w">                  </span><span class="c1"># (no args) same as &#39;all&#39;</span>
 </pre></div>
 </div>
 <p>Sends <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> to the specified component(s) using PID files in <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/</span></code>. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. <code class="docutils literal notranslate"><span class="pre">stop</span> <span class="pre">all</span></code> names a scancode worker it left running.</p>
@@ -3056,6 +3058,23 @@ aveloxis<span class="w"> </span>mark-gone-repos<span class="w"> </span>--limit<s
 is nothing to display for them either way. New gone repos are
 stamped automatically by prelim at collection time; this command
 exists for the historical cohort and for resurrection checks.</p>
+<p><strong>Since v0.29.7 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> re-checks gone repositories on its
+own.</strong> A 404/410 removes the repository’s queue row, and the scheduler
+only ever visits queued repositories, so prelim never probes it again;
+before v0.29.7 a repository made private and later public again stayed
+“gone” until this command ran. The scheduler’s recheck ticker now
+re-probes every gone-stamped repository once per
+<code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_days</span></code> (default 28, up to 500 per hour,
+never-checked rows first) with the same probe and the same verdict
+rule, and logs <code class="docutils literal notranslate"><span class="pre">gone</span> <span class="pre">recheck:</span> <span class="pre">repository</span> <span class="pre">is</span> <span class="pre">reachable</span> <span class="pre">again</span></code> when it
+resurrects one. This command remains the immediate, whole-cohort form:
+run it after an upgrade or when you know an organization has flipped
+back, and it resets the cadence clock on every repository it verifies.
+The probe is one unauthenticated <code class="docutils literal notranslate"><span class="pre">HEAD</span></code> per candidate and consumes no
+API-key budget: at roughly 200 ms per probe a few thousand candidates
+take minutes and tens of thousands take an hour or more of wall-clock,
+and nothing else; <code class="docutils literal notranslate"><span class="pre">--limit</span></code> bounds a first run. See <a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release"><span class="std std-ref">Recurring
+maintenance</span></a>.</p>
 </section>
 <section id="aveloxis-run-scorecard">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code><a class="headerlink" href="#aveloxis-run-scorecard" title="Link to this heading"></a></h2>
@@ -3285,7 +3304,7 @@ them. Run it AFTER completing the <code class="docutils literal notranslate"><sp
 stand in for step 2: while the schema stamp is behind the binary the
 start gate refuses regardless of the acknowledgement (v0.29.4) — only a
 completed migration of that binary (the ladder’s <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code>) moves the stamp.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>ack-deploy<span class="w"> </span><span class="o">[</span>--note<span class="w"> </span><span class="s2">"..."</span><span class="o">]</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>ack-deploy<span class="w"> </span><span class="o">[</span>--note<span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="o">]</span>
 </pre></div>
 </div>
 <p><strong>The start gate:</strong> on an EXISTING fleet, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code> and

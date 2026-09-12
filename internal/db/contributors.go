@@ -240,9 +240,10 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 		// under different login strings (historical login drift across
 		// repos, GitHub renames, two workers seeing the same hot user
 		// at once) all collide on cntrb_id, so ON CONFLICT (cntrb_id)
-		// routes them all to DO UPDATE. The DO UPDATE clause also
-		// updates cntrb_login from EXCLUDED so a renamed user's row
-		// picks up the new login on next observation.
+		// routes them all to DO UPDATE. The DO UPDATE clause fills an
+		// EMPTY cntrb_login only (the NOTE below) — a rename does NOT
+		// land here; it lands on gh_login via the full upsert paths
+		// (R2, 2026-09-11 F4).
 		//
 		// At v0.18.28 this used ON CONFLICT (cntrb_login) — which
 		// failed to match when login strings differed across observers,

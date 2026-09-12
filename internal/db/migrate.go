@@ -686,6 +686,9 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// "no longer publicly available" instead of misreading the
 	// dequeued state as "queued for first collection".
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "repo_gone_at", "TIMESTAMPTZ")
+	// v0.29.7: the recheck cadence marker (see schema.sql). NULL on
+	// existing gone rows = never rechecked = claimed first.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "repo_gone_checked_at", "TIMESTAMPTZ")
 
 	// v0.21.4: failure tracking + exponential backoff.
 	//
@@ -1636,7 +1639,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// checks) vs 'local' (--local, ~11 checks) overall scores are NOT
 	// comparable, so every check row and the __overall__ row records
 	// which mode produced it. the empty string = pre-v0.27.5 scan. MUST be added to
-	// BOTH the main table AND the history table: RotateScorecardToHistory
+	// BOTH the main table AND the history table: ReplaceScorecard's rotation
 	// does `INSERT INTO ..._history SELECT * FROM ...`, which requires
 	// identical column sets — adding the column to only one side breaks
 	// every rotation on existing fleets.

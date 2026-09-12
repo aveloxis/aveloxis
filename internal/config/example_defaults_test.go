@@ -117,6 +117,8 @@ var effectiveAccessors = map[string]func(c *CollectionConfig) any{
 	"GitHubMaxInflight":                           func(c *CollectionConfig) any { return c.GitHubMaxInflightValue() },
 	"GitHubMaxInflightPerKey":                     func(c *CollectionConfig) any { return c.GitHubMaxInflightPerKeyValue() },
 	"GitHubBudgetForegroundReservePct":            func(c *CollectionConfig) any { return c.GitHubBudgetForegroundReservePctValue() },
+	"GoneRepoRecheckDays":                         func(c *CollectionConfig) any { return c.GoneRepoRecheckInterval() },
+	"GoneRepoRecheckDisabled":                     func(c *CollectionConfig) any { return c.GoneRepoRecheckEnabled() },
 	"ScancodeTimeoutCapStrikes":                   func(c *CollectionConfig) any { return c.ScancodeTimeoutCapStrikesOrDefault() },
 	"ScancodeIgnoreGlobs":                         func(c *CollectionConfig) any { return c.ScancodeIgnoreGlobsOrDefault() },
 	"MatviewRebuildDay":                           func(c *CollectionConfig) any { return c.MatviewRebuildWeekday() },

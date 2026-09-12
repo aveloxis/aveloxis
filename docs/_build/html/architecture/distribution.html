@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Distribution Worker (v0.24.0+) &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Distribution Worker (v0.24.0+) &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1862,7 +1864,7 @@ A <code class="docutils literal notranslate"><span class="pre">setup.py</span></
 <section id="the-headline-analysis-query">
 <h2>4. The headline analysis query<a class="headerlink" href="#the-headline-analysis-query" title="Link to this heading"></a></h2>
 <p>The point of capturing <em>both</em> registry evidence AND in-repo manifest intent is to surface the gap between them:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="o">||</span><span class="s1">'/'</span><span class="o">||</span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="p">,</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="o">||</span><span class="s1">&#39;/&#39;</span><span class="o">||</span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="p">,</span>
 <span class="w">       </span><span class="n">m</span><span class="mf">.</span><span class="n">manifest_type</span><span class="p">,</span><span class="w"> </span><span class="n">m</span><span class="mf">.</span><span class="n">package_name_declared</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="n">r</span>
 <span class="k">JOIN</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repo_distribution_manifest</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="p">(</span><span class="n">repo_id</span><span class="p">)</span>
@@ -2040,14 +2042,14 @@ aveloxis<span class="w"> </span>distribution-stats<span class="w"> </span>--repo
 <h2>9. Config knobs<a class="headerlink" href="#config-knobs" title="Link to this heading"></a></h2>
 <p>All under <code class="docutils literal notranslate"><span class="pre">collection</span></code> in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"distribution_tracking_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w">            </span><span class="c1">// master switch</span>
-<span class="w">    </span><span class="nt">"distribution_tracking_interval_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span><span class="w">        </span><span class="c1">// cadence</span>
-<span class="w">    </span><span class="nt">"distribution_tracking_workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w">                </span><span class="c1">// concurrent scans</span>
-<span class="w">    </span><span class="nt">"distribution_tracking_start_interval_s"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w">      </span><span class="c1">// min gap between starts</span>
-<span class="w">    </span><span class="nt">"distribution_tracking_polite_email"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span><span class="w">          </span><span class="c1">// optional ecosyste.ms From: header</span>
-<span class="w">    </span><span class="nt">"distribution_tracking_user_agent"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span><span class="w">            </span><span class="c1">// optional UA override</span>
-<span class="w">    </span><span class="nt">"distribution_tracking_cross_check_sources"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">  </span><span class="c1">// v0.25.0: always-query-both</span>
+<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;distribution_tracking_enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w">            </span><span class="c1">// master switch</span>
+<span class="w">    </span><span class="nt">&quot;distribution_tracking_interval_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span><span class="w">        </span><span class="c1">// cadence</span>
+<span class="w">    </span><span class="nt">&quot;distribution_tracking_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w">                </span><span class="c1">// concurrent scans</span>
+<span class="w">    </span><span class="nt">&quot;distribution_tracking_start_interval_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w">      </span><span class="c1">// min gap between starts</span>
+<span class="w">    </span><span class="nt">&quot;distribution_tracking_polite_email&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span><span class="w">          </span><span class="c1">// optional ecosyste.ms From: header</span>
+<span class="w">    </span><span class="nt">&quot;distribution_tracking_user_agent&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span><span class="w">            </span><span class="c1">// optional UA override</span>
+<span class="w">    </span><span class="nt">&quot;distribution_tracking_cross_check_sources&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">  </span><span class="c1">// v0.25.0: always-query-both</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>

@@ -411,4 +411,24 @@ const (
 			t.Errorf("ConstBody(otherSQL) = %q", got)
 		}
 	})
+
+	// Copilot review on PR #203: a ValueSpec can declare several names
+	// (`const a, b = "a", "b"`); returning the whole spec for either
+	// name is the exact sibling over-reach this helper exists to
+	// prevent. Refuse loudly rather than return a span a pin on `a`
+	// could pass on `b`'s text.
+	t.Run("multi-name spec is refused", func(t *testing.T) {
+		multi := `package p
+
+const multiA, multiB = "alpha value", "beta value"
+`
+		rec := &recordingTB{TB: t}
+		func() {
+			defer func() { _ = recover() }()
+			_ = ConstBody(rec, multi, "multiA")
+		}()
+		if !rec.failed {
+			t.Error("ConstBody must refuse a multi-name ValueSpec — a pin on multiA would pass on multiB's text")
+		}
+	})
 }

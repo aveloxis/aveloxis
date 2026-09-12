@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Local development setup &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Local development setup &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1694,7 +1696,7 @@ createdb<span class="w"> </span>aveloxis_dev
 </section>
 <section id="verify">
 <h3>Verify<a class="headerlink" href="#verify" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>psql<span class="w"> </span>-d<span class="w"> </span>aveloxis_dev<span class="w"> </span>-c<span class="w"> </span><span class="s2">"SELECT version();"</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>psql<span class="w"> </span>-d<span class="w"> </span>aveloxis_dev<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;SELECT version();&quot;</span>
 </pre></div>
 </div>
 <p>You should see something like <code class="docutils literal notranslate"><span class="pre">PostgreSQL</span> <span class="pre">18.3</span> <span class="pre">on</span> <span class="pre">...</span></code>. If you don’t, the rest of this chapter won’t work — fix your PostgreSQL setup first.</p>
@@ -1708,13 +1710,13 @@ createdb<span class="w"> </span>aveloxis_dev
 </div>
 <p>Edit <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> and adjust the <code class="docutils literal notranslate"><span class="pre">database</span></code> block to point at your local PostgreSQL:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"database"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"localhost"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"port"</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"user"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span><span class="w">       </span><span class="c1">// or your username</span>
-<span class="w">    </span><span class="nt">"password"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w">        </span><span class="c1">// your local password (or "" if trust auth)</span>
-<span class="w">    </span><span class="nt">"dbname"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis_dev"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"sslmode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"prefer"</span>
+<span class="w">  </span><span class="nt">&quot;database&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;localhost&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span><span class="w">       </span><span class="c1">// or your username</span>
+<span class="w">    </span><span class="nt">&quot;password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w">        </span><span class="c1">// your local password (or &quot;&quot; if trust auth)</span>
+<span class="w">    </span><span class="nt">&quot;dbname&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis_dev&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prefer&quot;</span>
 <span class="w">  </span><span class="p">},</span>
 <span class="w">  </span><span class="c1">// ...</span>
 <span class="p">}</span>
@@ -1774,7 +1776,7 @@ go<span class="w"> </span>run<span class="w"> </span>./cmd/aveloxis<span class="
 <span class="c1"># Integration tests truncate tables and write fixture rows.</span>
 createdb<span class="w"> </span>aveloxis_scratch_test
 
-<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">"postgres://aveloxis:yourpass@localhost:5432/aveloxis_scratch_test?sslmode=prefer"</span><span class="w"> </span><span class="se">\</span>
+<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">&quot;postgres://aveloxis:yourpass@localhost:5432/aveloxis_scratch_test?sslmode=prefer&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>120s
 </pre></div>
 </div>

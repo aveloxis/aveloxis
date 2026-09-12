@@ -1281,6 +1281,24 @@ is nothing to display for them either way. New gone repos are
 stamped automatically by prelim at collection time; this command
 exists for the historical cohort and for resurrection checks.
 
+**Since v0.29.7 `aveloxis serve` re-checks gone repositories on its
+own.** A 404/410 removes the repository's queue row, and the scheduler
+only ever visits queued repositories, so prelim never probes it again;
+before v0.29.7 a repository made private and later public again stayed
+"gone" until this command ran. The scheduler's recheck ticker now
+re-probes every gone-stamped repository once per
+`collection.gone_repo_recheck_days` (default 28, up to 500 per hour,
+never-checked rows first) with the same probe and the same verdict
+rule, and logs `gone recheck: repository is reachable again` when it
+resurrects one. This command remains the immediate, whole-cohort form:
+run it after an upgrade or when you know an organization has flipped
+back, and it resets the cadence clock on every repository it verifies.
+The probe is one unauthenticated `HEAD` per candidate and consumes no
+API-key budget: at roughly 200 ms per probe a few thousand candidates
+take minutes and tens of thousands take an hour or more of wall-clock,
+and nothing else; `--limit` bounds a first run. See [Recurring
+maintenance](../getting-started/upgrading.md#recurring-maintenance-not-tied-to-a-release).
+
 ## `aveloxis run-scorecard`
 
 Bulk remote-primary OpenSSF Scorecard pass (v0.27.5). Walks every

@@ -287,49 +287,86 @@ func (s *PostgresStore) InsertRepoLibyear(ctx context.Context, repoID int64, row
 	return err
 }
 
-// CurrentScorecardMode reports the scorecard_mode carried by the repo's
-// CURRENT repo_deps_scorecard rows (found=false when the repo has none).
-// It exists for the 2026-09-12 partial-never-replaces-complete gate:
-// the collector consults it BEFORE rotating, so a local (subset) run
-// cannot displace a stored remote (complete) set. Rows written before
-// v0.27.5 carry the empty string — reported as found with an empty
-// mode, which the gate treats like local (replaceable by anything).
-//
-// The rows of one snapshot share one mode (persistScorecard writes them
-// in a single pass), so MAX over the set is the set's mode; it also
-// makes a mixed legacy snapshot resolve to 'remote' when any row says
-// so — the conservative reading for a keep-the-complete-set rule.
-func (s *PostgresStore) CurrentScorecardMode(ctx context.Context, repoID int64) (string, bool, error) {
-	var mode *string
-	err := s.pool.QueryRow(ctx, `
-		SELECT MAX(COALESCE(scorecard_mode, ''))
-		FROM aveloxis_data.repo_deps_scorecard
-		WHERE repo_id = $1`, repoID).Scan(&mode)
-	if err != nil {
-		return "", false, fmt.Errorf("current scorecard mode for repo %d: %w", repoID, err)
-	}
-	if mode == nil {
-		return "", false, nil
-	}
-	return *mode, true, nil
+// ScorecardRow is one row of a scorecard set handed to ReplaceScorecard.
+type ScorecardRow struct {
+	Name    string
+	Score   string
+	Details []byte // JSONB check details; nil for the __overall__ row
 }
 
-// InsertScorecardResult stores an OpenSSF Scorecard check result.
-//
-// mode records which execution mode produced the row (v0.27.5):
-// 'remote' (--repo, ~18 checks) or 'local' (--local, ~11 checks).
-// The two modes' overall scores are NOT comparable (different check
-// sets), so the marker travels with every check row AND the
-// __overall__ row. Empty string = mode unrecorded (pre-v0.27.5).
-func (s *PostgresStore) InsertScorecardResult(ctx context.Context, repoID int64, name, score string, detailsJSON []byte, mode string) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_data.repo_deps_scorecard
-			(repo_id, name, score, scorecard_check_details, scorecard_mode,
-			 tool_source, data_source, data_collection_date)
-		VALUES ($1, $2, $3, $4, $5,
-			'aveloxis-scorecard', 'OpenSSF Scorecard', NOW())`,
-		repoID, name, score, detailsJSON, mode)
-	return err
+// scorecardReplaceLockClass is the first key of the two-key advisory
+// lock ReplaceScorecard takes (the (int,int) lock space is distinct from
+// the single-bigint space the Jira registration lock uses). The second
+// key is the repo id.
+const scorecardReplaceLockClass = 0x5C0
+
+// ReplaceScorecard replaces a repo's CURRENT scorecard set in ONE
+// transaction under a per-repo advisory lock: read the stored mode,
+// ask allow(storedMode, found) whether this run may replace it, and if
+// so rotate the current rows to history and insert the new set. Either
+// everything commits or nothing does; two writers on the same repo
+// (serve's per-cycle phase and the `run-scorecard` bulk pass are
+// separate processes) serialize on the lock, so every writer's check
+// sees the previous writer's committed state — the D9
+// partial-never-replaces-complete gate can no longer be defeated by
+// interleaving a check with another writer's rotation (Copilot review
+// on PR #203; SR-18: the owning layer enforces). written=false means
+// allow refused and nothing was touched; an error means nothing was
+// committed (a mode read that fails is an error, never "no prior set" —
+// SR-5).
+func (s *PostgresStore) ReplaceScorecard(ctx context.Context, repoID int64, mode string, rows []ScorecardRow, allow func(storedMode string, found bool) bool) (written bool, err error) {
+	err = s.withRetry(ctx, func(ctx context.Context) error {
+		written = false
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		// repo_id is BIGSERIAL; the int4 cast aliases ids above 2^31
+		// onto shared locks, which only adds contention, never loses
+		// serialization.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`,
+			scorecardReplaceLockClass, int32(repoID)); err != nil {
+			return fmt.Errorf("scorecard replace lock for repo %d: %w", repoID, err)
+		}
+		var stored *string
+		if err := tx.QueryRow(ctx, `
+			SELECT MAX(COALESCE(scorecard_mode, ''))
+			FROM aveloxis_data.repo_deps_scorecard
+			WHERE repo_id = $1`, repoID).Scan(&stored); err != nil {
+			return fmt.Errorf("current scorecard mode for repo %d: %w", repoID, err)
+		}
+		storedMode, found := "", false
+		if stored != nil {
+			storedMode, found = *stored, true
+		}
+		if !allow(storedMode, found) {
+			return nil // refused: nothing rotated, nothing inserted
+		}
+		if err := rotateRepoRowsToHistory(ctx, tx,
+			"aveloxis_data.repo_deps_scorecard",
+			"aveloxis_data.repo_deps_scorecard_history", repoID); err != nil {
+			return err
+		}
+		for _, r := range rows {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO aveloxis_data.repo_deps_scorecard
+					(repo_id, name, score, scorecard_check_details, scorecard_mode,
+					 tool_source, data_source, data_collection_date)
+				VALUES ($1, $2, $3, $4, $5,
+					'aveloxis-scorecard', 'OpenSSF Scorecard', NOW())`,
+				repoID, r.Name, r.Score, r.Details, mode); err != nil {
+				return fmt.Errorf("insert scorecard row %q for repo %d: %w", r.Name, repoID, err)
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		written = true
+		return nil
+	})
+	return written, err
 }
 
 // InsertRepoLabor and InsertRepoLaborBatch were removed in v0.27.7.

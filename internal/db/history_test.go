@@ -15,8 +15,7 @@ func TestRotateRepoInfoToHistoryFuncExists(t *testing.T) {
 	_ = s // RotateRepoInfoToHistory is a method on PostgresStore
 }
 
-// TestRotateScorecardToHistoryFuncExists verifies the scorecard history rotation function exists.
-func TestRotateScorecardToHistoryFuncExists(t *testing.T) {
-	var s *PostgresStore
-	_ = s
-}
+// RotateScorecardToHistory was removed with the PR #203 fixes: the
+// only rotation of repo_deps_scorecard is inside ReplaceScorecard (one
+// transaction, per-repo lock). TestScorecardWritersCannotSkipRotation
+// in scorecard_replace_test.go is the tripwire.

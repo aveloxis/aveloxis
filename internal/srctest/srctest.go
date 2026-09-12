@@ -226,6 +226,14 @@ func ConstBody(t testing.TB, src, name string) string {
 				if ident.Name != name {
 					continue
 				}
+				// Copilot review on PR #203: `const a, b = "a", "b"` is one
+				// ValueSpec with two names; returning it for either name is
+				// the sibling over-reach this helper exists to prevent.
+				// Refuse rather than return a span a pin on `a` could pass
+				// on `b`'s text.
+				if len(vs.Names) > 1 {
+					t.Fatalf("srctest.ConstBody: const %q is declared in a multi-name spec (%d names) — split the declaration so the pin covers exactly one value", name, len(vs.Names))
+				}
 				if gd.Lparen.IsValid() {
 					return src[fset.Position(vs.Pos()).Offset:fset.Position(vs.End()).Offset]
 				}

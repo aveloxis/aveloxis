@@ -84,6 +84,13 @@ var deployChecklists = map[string][]deployStep{
 	// operator heal — same ladder. Four new config knobs, all with
 	// derived defaults; nothing to set unless tuning.
 	"0.29.6": v029DeployChecklist,
+	// v0.29.7 (gone-repo recheck cadence): ONE new column
+	// (repos.repo_gone_checked_at, addColumnIfMissing inside migrate)
+	// and a scheduler ticker that re-probes gone repos every
+	// collection.gone_repo_recheck_days (28). No operator heal — the
+	// first cycles after the restart re-verify the historical gone
+	// cohort on their own. Same ladder.
+	"0.29.7": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

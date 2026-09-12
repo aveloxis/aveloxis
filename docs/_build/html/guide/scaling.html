@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Scaling &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Scaling &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1752,6 +1754,29 @@ aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span clas
 </table>
 <p>These are rough estimates. Actual time depends on repo sizes, API response times, and the facade/analysis phases.</p>
 </section>
+<section id="background-sweeps-and-the-foreground-reserve">
+<h3>Background sweeps and the foreground reserve<a class="headerlink" href="#background-sweeps-and-the-foreground-reserve" title="Link to this heading"></a></h3>
+<p>Since v0.29.6 the key pool admits <strong>background</strong> work (the contributor
+history sweep and the activity classification sweep) only while the pool’s
+usable GraphQL budget is above <code class="docutils literal notranslate"><span class="pre">collection.github_budget_foreground_reserve_pct</span></code>
+(default 25%). Foreground collection is admitted while any budget remains.
+The reserve stops a sweep from starving collection; it cannot make a sweep
+that demands more than the budget finish. Size the demand side yourself:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>background budget per hour ≈ keys × 5,000 × (100 − reserve_pct) / 100   # GraphQL points
+history-sweep demand per hour = activity_history_batch × 60 / activity_history_interval_minutes   # contributors
+                                × windows per contributor (a 10-year account is ~20 at 180-day windows)
+</pre></div>
+</div>
+<p>Each window is one GraphQL query. <code class="docutils literal notranslate"><span class="pre">activity_history_concurrency</span></code> and
+<code class="docutils literal notranslate"><span class="pre">activity_history_window_concurrency</span></code> change how fast a cycle runs, not
+how much it asks for; <code class="docutils literal notranslate"><span class="pre">activity_history_window_days</span></code> is the wrong lever
+(larger windows raise the <code class="docutils literal notranslate"><span class="pre">contributionsCollection</span></code> cap loss). If the
+5-minute <code class="docutils literal notranslate"><span class="pre">key</span> <span class="pre">pool</span> <span class="pre">summary</span></code> log line shows remaining budget pinned near
+the reserve line and <code class="docutils literal notranslate"><span class="pre">GraphQL</span> <span class="pre">background</span> <span class="pre">sweep</span> <span class="pre">paced</span> <span class="pre">by</span> <span class="pre">the</span> <span class="pre">foreground</span> <span class="pre">reserve</span></code> appears every cycle, lower the batch or lengthen the interval
+until demand sits under roughly half of the background budget — the
+sweep re-audits on a 90-day cooldown, so steady state is far below the
+first pass.</p>
+</section>
 </section>
 <hr class="docutils" />
 <section id="horizontal-scaling">
@@ -1884,11 +1909,17 @@ one</a>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the limit for <strong>one</strong> sort or hash operation. A single query can
 use several; a parallel query multiplies by its worker count; and every
 connection can be running one. So the worst-case allocation is:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>max_connections × (1 + max_parallel_workers_per_gather) × work_mem
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>max_connections × (1 + max_parallel_workers_per_gather) × ops_per_query × work_mem
 </pre></div>
 </div>
-<p>Budget it against roughly 10% of RAM, which leaves the rest for
-<code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code> and the OS page cache:</p>
+<p>where <code class="docutils literal notranslate"><span class="pre">ops_per_query</span></code> is the number of sort/hash nodes a plan runs at once
+(<code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code> a representative heavy query — the matview refreshes and the
+commits backfills are the ones on this workload — and count them; 2–4 is
+typical). The budget below folds that factor into its 10% headroom rather
+than the denominator, because every connection is never running its
+heaviest plan at once; if yours are, divide by <code class="docutils literal notranslate"><span class="pre">ops_per_query</span></code> too. Budget it
+against roughly 10% of RAM, which leaves the rest for <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code> and
+the OS page cache:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (RAM × 0.10) / (max_connections × (1 + max_parallel_workers_per_gather))
 </pre></div>
 </div>
@@ -1949,9 +1980,9 @@ package upgrade, or a hand-edit during an incident all leave the file saying
 one thing and the server doing another. Check the server, not the file:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="k">name</span><span class="p">,</span><span class="w"> </span><span class="n">setting</span><span class="p">,</span><span class="w"> </span><span class="n">unit</span><span class="p">,</span><span class="w"> </span><span class="n">source</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_settings</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="k">name</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="s1">'work_mem'</span><span class="p">,</span><span class="w"> </span><span class="s1">'maintenance_work_mem'</span><span class="p">,</span><span class="w"> </span><span class="s1">'shared_buffers'</span><span class="p">,</span>
-<span class="w">               </span><span class="s1">'effective_cache_size'</span><span class="p">,</span><span class="w"> </span><span class="s1">'max_connections'</span><span class="p">,</span><span class="w"> </span><span class="s1">'jit'</span><span class="p">,</span>
-<span class="w">               </span><span class="s1">'max_parallel_workers_per_gather'</span><span class="p">)</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="k">name</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="s1">&#39;work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;maintenance_work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;shared_buffers&#39;</span><span class="p">,</span>
+<span class="w">               </span><span class="s1">&#39;effective_cache_size&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;max_connections&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;jit&#39;</span><span class="p">,</span>
+<span class="w">               </span><span class="s1">&#39;max_parallel_workers_per_gather&#39;</span><span class="p">)</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">name</span><span class="p">;</span>
 </pre></div>
 </div>
@@ -2023,8 +2054,8 @@ into a diff instead of an investigation.</p>
 <li><p><strong>Full clones</strong> (temporary, used for analysis) are created inside the clone directory and deleted after each repo. They roughly double the disk usage of a bare clone temporarily.</p></li>
 </ul>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"repo_clone_dir"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/data/aveloxis-repos"</span>
+<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;repo_clone_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/data/aveloxis-repos&quot;</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -2103,9 +2134,9 @@ findings in summary/21). Run it per release, or monthly, and diff against the
 previous snapshot — performance review becomes a diff, not archaeology:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">DBHOST</span><span class="o">=</span>db.example.org<span class="w">        </span><span class="c1"># the PostgreSQL host</span>
 <span class="nv">PREVIOUS</span><span class="o">=</span><span class="m">20260818</span><span class="w">            </span><span class="c1"># the date stamp of the last snapshot</span>
-psql<span class="w"> </span>-h<span class="w"> </span><span class="s2">"</span><span class="nv">$DBHOST</span><span class="s2">"</span><span class="w"> </span>-p<span class="w"> </span><span class="m">5434</span><span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis_large<span class="w"> </span><span class="se">\</span>
+psql<span class="w"> </span>-h<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$DBHOST</span><span class="s2">&quot;</span><span class="w"> </span>-p<span class="w"> </span><span class="m">5434</span><span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis_large<span class="w"> </span><span class="se">\</span>
 <span class="w">     </span>-f<span class="w"> </span>scripts/perf_snapshot.sql<span class="w"> </span>&gt;<span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt
-diff<span class="w"> </span><span class="s2">"perf-</span><span class="nv">$PREVIOUS</span><span class="s2">.txt"</span><span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt<span class="w"> </span><span class="p">|</span><span class="w"> </span>less
+diff<span class="w"> </span><span class="s2">&quot;perf-</span><span class="nv">$PREVIOUS</span><span class="s2">.txt&quot;</span><span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt<span class="w"> </span><span class="p">|</span><span class="w"> </span>less
 </pre></div>
 </div>
 <p>Prerequisites (one-time, superuser — full walkthrough in summary/20 Phase 0):</p>

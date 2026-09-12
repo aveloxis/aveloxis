@@ -64,6 +64,8 @@ var frozenCollectionKeys = []string{
 	"github_max_inflight",
 	"github_max_inflight_per_key",
 	"github_budget_foreground_reserve_pct",
+	// v0.29.7: the gone-repo recheck cadence + off switch.
+	"gone_repo_recheck_days", "gone_repo_recheck_disabled",
 	"scancode_timeout_cap_strikes",
 	"scancode_ignore_globs",
 	"staging_retention_hours",

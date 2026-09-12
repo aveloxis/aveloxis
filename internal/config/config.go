@@ -257,6 +257,20 @@ type CollectionConfig struct {
 	ActivityHistoryWindowConcurrency int `json:"activity_history_window_concurrency"`
 	ActivityHistoryCooldownDays      int `json:"activity_history_cooldown_days"`
 
+	// v0.29.7: the gone-repo recheck cadence. A repository whose URL
+	// returned a definitive 404/410 is dequeued, so no collection cycle
+	// ever probes it again; organizations do flip repositories private
+	// and back. The scheduler re-probes each gone-stamped repo once
+	// every GoneRepoRecheckDays (default 28 — operator-chosen, a
+	// four-week cadence that needs no month arithmetic) with the same
+	// unauthenticated HEAD prelim uses (no API-key budget), and
+	// resurrects it on a definitive 2xx. Absent/non-positive → 28.
+	GoneRepoRecheckDays int `json:"gone_repo_recheck_days"`
+	// GoneRepoRecheckDisabled switches the ticker off entirely; the
+	// manual `aveloxis mark-gone-repos` remains available. Zero-value
+	// (absent) = enabled.
+	GoneRepoRecheckDisabled bool `json:"gone_repo_recheck_disabled"`
+
 	// 2026-09-12 GitHub key-pool admission control (the "54 keys behaving
 	// like 3" analysis — 46,612 secondary-rate-limit rejections in five
 	// days, 179 in one second). The pool now LEASES keys under a global
@@ -1438,6 +1452,28 @@ func (c *CollectionConfig) ActivityHistoryWindowConcurrencyValue() int {
 		return 4
 	}
 	return c.ActivityHistoryWindowConcurrency
+}
+
+// GoneRepoRecheckInterval is the per-repo cadence between gone-state
+// re-verifications (v0.29.7). Absent/non-positive → 28 days; 0 is NOT
+// a disable switch (GoneRepoRecheckDisabled is). Clamped to 365 like
+// ActivityHistoryWindowDaysOrDefault (review round 1: days × 24h
+// overflows time.Duration past ~106,751 days into a NEGATIVE interval,
+// which would make every gone row due every tick).
+func (c *CollectionConfig) GoneRepoRecheckInterval() time.Duration {
+	switch {
+	case c.GoneRepoRecheckDays <= 0:
+		return 28 * 24 * time.Hour
+	case c.GoneRepoRecheckDays > 365:
+		return 365 * 24 * time.Hour
+	default:
+		return time.Duration(c.GoneRepoRecheckDays) * 24 * time.Hour
+	}
+}
+
+// GoneRepoRecheckEnabled is the ticker's on/off state (v0.29.7).
+func (c *CollectionConfig) GoneRepoRecheckEnabled() bool {
+	return !c.GoneRepoRecheckDisabled
 }
 
 func (c *CollectionConfig) ActivityHistoryCooldownValue() time.Duration {

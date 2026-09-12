@@ -123,6 +123,7 @@ type Scheduler struct {
 	activityClassActive atomic.Bool
 	activityHistActive  atomic.Bool
 	searchActive        atomic.Bool
+	goneRecheckActive   atomic.Bool
 	affiliationsActive  atomic.Bool
 	breadthActive       atomic.Bool
 	// v0.27.52: guards the orgRefreshTicker's unscoped full pass.
@@ -559,6 +560,21 @@ func (s *Scheduler) Run(ctx context.Context) {
 	affiliationsTicker := time.NewTicker(s.cfg.Collection.AffiliationIntervalDuration())
 	defer affiliationsTicker.Stop()
 
+	// v0.29.7: gone-repo recheck. A 404/410 dequeues a repo, so this
+	// ticker is the only automatic path by which a re-publicized
+	// repository returns to collection (cadence + batch derived in
+	// gone_recheck.go). Disabled → nil channel, never selected.
+	var goneRecheckC <-chan time.Time
+	if s.cfg.Collection.GoneRepoRecheckEnabled() {
+		goneRecheckTicker := time.NewTicker(goneRecheckTick)
+		defer goneRecheckTicker.Stop()
+		goneRecheckC = goneRecheckTicker.C
+	}
+	s.logger.Info("gone-repo recheck",
+		"enabled", s.cfg.Collection.GoneRepoRecheckEnabled(),
+		"recheck_every", s.cfg.Collection.GoneRepoRecheckInterval(),
+		"tick", goneRecheckTick, "batch_per_tick", goneRecheckBatch)
+
 	// v0.23.0: kick off the repo-metadata backfill in the background.
 	// Per operator direction "for those repos already collected, we
 	// need to go get that information on the next restart" — this
@@ -684,6 +700,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-searchResolveTicker.C:
 			s.singleFlight(&s.searchActive, "search-resolve", func() { s.runSearchResolve(ctx) })
+
+		case <-goneRecheckC:
+			s.singleFlight(&s.goneRecheckActive, "gone-recheck", func() { s.runGoneRecheck(ctx) })
 
 		case <-affiliationsTicker.C:
 			s.singleFlight(&s.affiliationsActive, "affiliations-population", func() { s.runAffiliationsPopulation(ctx) })
@@ -1679,17 +1698,21 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 	// Subprocess ceiling (2026-09-12): wait for a slot BEFORE borrowing
 	// tokens, so tokens are never held by a phase that is only queued.
 	// The wait is inline in the job by design — a finished cycle is
-	// fully finished — and is visible in phase_duration below.
-	semWait := time.Now()
+	// fully finished — and is INCLUDED in phase_duration below (the
+	// phase holds the worker while queued; PR #203 review) and reported
+	// on its own as slot_wait.
+	phaseStart := time.Now()
+	semWait := phaseStart
 	select {
 	case s.scorecardSem <- struct{}{}:
 	case <-ctx.Done():
 		return // shutdown while queued for a slot: nothing started
 	}
 	defer func() { <-s.scorecardSem }()
-	if waited := time.Since(semWait); waited > time.Second {
+	slotWait := time.Since(semWait)
+	if slotWait > time.Second {
 		s.logger.Info("scorecard waited for a subprocess slot",
-			"repo_id", repoID, "waited", waited, "max_concurrent", cap(s.scorecardSem))
+			"repo_id", repoID, "waited", slotWait, "max_concurrent", cap(s.scorecardSem))
 	}
 
 	token, instrumentToken, releaseTokens := collector.ScorecardTokens(
@@ -1717,7 +1740,6 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 		"pool_remaining", poolRemaining,
 		"pool_inflight", poolInflight)
 
-	phaseStart := time.Now()
 	scResult, scErr := collector.RunScorecard(ctx, s.store, repoID, collector.ScorecardOptions{
 		RepoURL:         repoURL,
 		LocalPath:       analysisClonePath,
@@ -1749,7 +1771,8 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 		"mode", mode,
 		"written", written,
 		"api_calls_used", apiCalls,
-		"phase_duration", time.Since(phaseStart))
+		"phase_duration", time.Since(phaseStart), // includes slot_wait
+		"slot_wait", slotWait)
 
 	if scErr != nil {
 		s.logger.Warn("scorecard failed", "repo_id", repoID, "error", scErr)

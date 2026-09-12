@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Testing &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Testing &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1659,15 +1661,15 @@ SPDX-License-Identifier: MIT
 <section id="tier-2-integration-tests">
 <h3>Tier 2 — Integration tests<a class="headerlink" href="#tier-2-integration-tests" title="Link to this heading"></a></h3>
 <p>Run against a real PostgreSQL via the <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code> env var. Live in <code class="docutils literal notranslate"><span class="pre">*_integration_test.go</span></code> files.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">"postgres://aveloxis:pw@localhost:5432/aveloxis_scratch?sslmode=prefer"</span><span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">&quot;postgres://aveloxis:pw@localhost:5432/aveloxis_scratch?sslmode=prefer&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-v
 </pre></div>
 </div>
 <p>Every integration test starts with:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="nx">TestSomething</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">dsn</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">Getenv</span><span class="p">(</span><span class="s">"AVELOXIS_TEST_DB"</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">dsn</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">""</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Skip</span><span class="p">(</span><span class="s">"AVELOXIS_TEST_DB not set — skipping integration test"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">dsn</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">Getenv</span><span class="p">(</span><span class="s">&quot;AVELOXIS_TEST_DB&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">dsn</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Skip</span><span class="p">(</span><span class="s">&quot;AVELOXIS_TEST_DB not set — skipping integration test&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="c1">// ... rest of test</span>
 <span class="p">}</span>
@@ -1745,7 +1747,7 @@ drives the real clone→analysis→scan machinery, needs NO GitHub
 API keys, and reports the baseline-vs-knobs-on delta per
 ecosystem (optional <code class="docutils literal notranslate"><span class="pre">AVELOXIS_CANARY_TRANSITIVE=1</span></code> third phase):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>createdb<span class="w"> </span>aveloxis_canary19
-<span class="nv">AVELOXIS_CANARY_DB</span><span class="o">=</span><span class="s2">"postgres://…/aveloxis_canary19?sslmode=prefer"</span><span class="w">      </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/collector/<span class="w"> </span>-run<span class="w"> </span>TestLocalDevBuildDepsCanary<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>180m
+<span class="nv">AVELOXIS_CANARY_DB</span><span class="o">=</span><span class="s2">&quot;postgres://…/aveloxis_canary19?sslmode=prefer&quot;</span><span class="w">      </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/collector/<span class="w"> </span>-run<span class="w"> </span>TestLocalDevBuildDepsCanary<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>180m
 </pre></div>
 </div>
 <p>Its first run (2026-07-21) caught three real integration bugs
@@ -1774,16 +1776,16 @@ is an error, matching Read the Docs’ <code class="docutils literal notranslate
 <h2>The source-contract pattern<a class="headerlink" href="#the-source-contract-pattern" title="Link to this heading"></a></h2>
 <p>A test that reads the implementation file and asserts certain text/structure exists. Looks like this:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="nx">TestRunMigrationsAddsOnUpdateCascadeToAllCntrbIDFKs</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">src</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">"migrate.go"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">src</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">&quot;migrate.go&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
-<span class="w">    </span><span class="nx">code</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kt">string</span><span class="p">(</span><span class="nx">src</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">code</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">string</span><span class="p">(</span><span class="nx">src</span><span class="p">)</span>
 
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">"ON UPDATE CASCADE"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"RunMigrations must add ON UPDATE CASCADE to every "</span><span class="w"> </span><span class="o">+</span>
-<span class="w">            </span><span class="s">"cntrb_id child FK. Without this, the v0.22.2 cntrb_id "</span><span class="w"> </span><span class="o">+</span>
-<span class="w">            </span><span class="s">"data migration can't propagate UPDATEs to child rows."</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;ON UPDATE CASCADE&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">&quot;RunMigrations must add ON UPDATE CASCADE to every &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">            </span><span class="s">&quot;cntrb_id child FK. Without this, the v0.22.2 cntrb_id &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">            </span><span class="s">&quot;data migration can&#39;t propagate UPDATEs to child rows.&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1983,26 +1985,26 @@ that decision.</p>
 <p>Tests that exercise actual code through its public API:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="nx">TestSalvageHelperBehavioral</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nx">tempDir</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">t</span><span class="p">.</span><span class="nx">TempDir</span><span class="p">()</span>
-<span class="w">    </span><span class="nx">outputPath</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">filepath</span><span class="p">.</span><span class="nx">Join</span><span class="p">(</span><span class="nx">tempDir</span><span class="p">,</span><span class="w"> </span><span class="s">"scan.json"</span><span class="p">)</span>
-<span class="w">    </span><span class="nx">jsonContent</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span>
-<span class="w">        </span><span class="s">"headers"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{{</span>
-<span class="w">            </span><span class="s">"tool_version"</span><span class="p">:</span><span class="w"> </span><span class="s">"32.5.0"</span><span class="p">,</span>
-<span class="w">            </span><span class="s">"errors"</span><span class="p">:</span><span class="w">       </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">"Path: foo/bar.pdf"</span><span class="p">},</span>
-<span class="w">            </span><span class="s">"extra_data"</span><span class="p">:</span><span class="w">   </span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span><span class="s">"files_count"</span><span class="p">:</span><span class="w"> </span><span class="mi">38</span><span class="p">},</span>
+<span class="w">    </span><span class="nx">outputPath</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">filepath</span><span class="p">.</span><span class="nx">Join</span><span class="p">(</span><span class="nx">tempDir</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;scan.json&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">jsonContent</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span>
+<span class="w">        </span><span class="s">&quot;headers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{{</span>
+<span class="w">            </span><span class="s">&quot;tool_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;32.5.0&quot;</span><span class="p">,</span>
+<span class="w">            </span><span class="s">&quot;errors&quot;</span><span class="p">:</span><span class="w">       </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">&quot;Path: foo/bar.pdf&quot;</span><span class="p">},</span>
+<span class="w">            </span><span class="s">&quot;extra_data&quot;</span><span class="p">:</span><span class="w">   </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span><span class="s">&quot;files_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">38</span><span class="p">},</span>
 <span class="w">        </span><span class="p">}},</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="nx">b</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">json</span><span class="p">.</span><span class="nx">Marshal</span><span class="p">(</span><span class="nx">jsonContent</span><span class="p">)</span>
-<span class="w">    </span><span class="nx">os</span><span class="p">.</span><span class="nx">WriteFile</span><span class="p">(</span><span class="nx">outputPath</span><span class="p">,</span><span class="w"> </span><span class="nx">b</span><span class="p">,</span><span class="w"> </span><span class="mo">0o644</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">os</span><span class="p">.</span><span class="nx">WriteFile</span><span class="p">(</span><span class="nx">outputPath</span><span class="p">,</span><span class="w"> </span><span class="nx">b</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="nx">o644</span><span class="p">)</span>
 
 <span class="w">    </span><span class="nx">filesCount</span><span class="p">,</span><span class="w"> </span><span class="nx">headerErrors</span><span class="p">,</span><span class="w"> </span><span class="nx">ok</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">salvageScancodeOutput</span><span class="p">(</span><span class="nx">outputPath</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">ok</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="s">"expected salvage to succeed for valid JSON"</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">ok</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="s">&quot;expected salvage to succeed for valid JSON&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">filesCount</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="mi">38</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"expected filesCount=38, got %d"</span><span class="p">,</span><span class="w"> </span><span class="nx">filesCount</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;expected filesCount=38, got %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">filesCount</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">headerErrors</span><span class="p">)</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"expected 1 header error, got %d"</span><span class="p">,</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">headerErrors</span><span class="p">))</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;expected 1 header error, got %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">headerErrors</span><span class="p">))</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -2014,36 +2016,36 @@ that decision.</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">//go:build integration  // optional, if you want a build tag</span>
 
 <span class="kd">func</span><span class="w"> </span><span class="nx">TestUpsertCommitProtectedFromInvalidUTF8</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">dsn</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">Getenv</span><span class="p">(</span><span class="s">"AVELOXIS_TEST_DB"</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">dsn</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">""</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Skip</span><span class="p">(</span><span class="s">"AVELOXIS_TEST_DB not set — skipping integration test"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">dsn</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">Getenv</span><span class="p">(</span><span class="s">&quot;AVELOXIS_TEST_DB&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">dsn</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Skip</span><span class="p">(</span><span class="s">&quot;AVELOXIS_TEST_DB not set — skipping integration test&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 
 <span class="w">    </span><span class="nx">ctx</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">()</span>
 <span class="w">    </span><span class="nx">logger</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">slog</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">slog</span><span class="p">.</span><span class="nx">NewTextHandler</span><span class="p">(</span><span class="nx">io</span><span class="p">.</span><span class="nx">Discard</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">))</span>
 <span class="w">    </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">NewPostgresStore</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">dsn</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"connect: %v"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">&quot;connect: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="k">defer</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">Close</span><span class="p">()</span>
 
 <span class="w">    </span><span class="nx">store</span><span class="p">.</span><span class="nx">SetMatviewSkip</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">RunMigrations</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">);</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"migrate: %v"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">&quot;migrate: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 
 <span class="w">    </span><span class="c1">// Seed any prerequisite rows (e.g. a parent repo for FK satisfaction).</span>
-<span class="w">    </span><span class="nx">repoID</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kt">int64</span><span class="p">(</span><span class="o">-</span><span class="mi">191919</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">repoID</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">int64</span><span class="p">(</span><span class="o">-</span><span class="mi">191919</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="s">`</span>
 <span class="s">        INSERT INTO aveloxis_data.repos (repo_id, platform_id, repo_git, repo_owner, repo_name, repo_archived)</span>
-<span class="s">        VALUES ($1, 1, 'https://example.invalid/x', 'x', 'x', FALSE)</span>
+<span class="s">        VALUES ($1, 1, &#39;https://example.invalid/x&#39;, &#39;x&#39;, &#39;x&#39;, FALSE)</span>
 <span class="s">        ON CONFLICT (repo_id) DO NOTHING`</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">);</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"seed: %v"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">&quot;seed: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="nx">t</span><span class="p">.</span><span class="nx">Cleanup</span><span class="p">(</span><span class="kd">func</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">(),</span>
+<span class="w">        </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">(),</span>
 <span class="w">            </span><span class="s">`DELETE FROM aveloxis_data.commits WHERE repo_id = $1`</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">)</span>
-<span class="w">        </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">(),</span>
+<span class="w">        </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">(),</span>
 <span class="w">            </span><span class="s">`DELETE FROM aveloxis_data.repos WHERE repo_id = $1`</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">)</span>
 <span class="w">    </span><span class="p">})</span>
 
@@ -2092,7 +2094,7 @@ that decision.</p>
 <p>Test names should describe what’s pinned, not just what’s tested:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>TestRunOneAttemptsSalvageOnSubprocessFailure  // good — describes the contract
 TestRunOne                                    // bad — too vague
-TestSalvageWorks                              // bad — what does "works" mean
+TestSalvageWorks                              // bad — what does &quot;works&quot; mean
 </pre></div>
 </div>
 <p>The maintainers use long test names. They show up in <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">-v</span></code> output and serve as documentation.</p>
@@ -2109,7 +2111,7 @@ go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./
 go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/collector/<span class="w"> </span>-run<span class="w"> </span>TestSalvageHelperBehavioral<span class="w"> </span>-v
 
 <span class="c1"># Pattern match</span>
-go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-run<span class="w"> </span><span class="s2">"TestUTF8Tracer.*"</span><span class="w"> </span>-v
+go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-run<span class="w"> </span><span class="s2">&quot;TestUTF8Tracer.*&quot;</span><span class="w"> </span>-v
 
 <span class="c1"># Race detector (run periodically; slows tests ~2x)</span>
 go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./...<span class="w"> </span>-race
@@ -2118,7 +2120,7 @@ go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./
 go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./...<span class="w"> </span>-count<span class="o">=</span><span class="m">1</span>
 
 <span class="c1"># Integration tier</span>
-<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">"postgres://..."</span><span class="w"> </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>120s
+<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">&quot;postgres://...&quot;</span><span class="w"> </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>120s
 </pre></div>
 </div>
 </section>
@@ -2130,11 +2132,11 @@ go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./
 <li><p>Explain WHY this matters (the load-bearing invariant being violated).</p></li>
 <li><p>Point at the relevant release note or production incident if applicable.</p></li>
 </ol>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">"ON UPDATE CASCADE"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"RunMigrations must add ON UPDATE CASCADE to every "</span><span class="w"> </span><span class="o">+</span>
-<span class="w">        </span><span class="s">"cntrb_id child FK. Without this, the v0.22.2 cntrb_id "</span><span class="w"> </span><span class="o">+</span>
-<span class="w">        </span><span class="s">"data migration can't propagate UPDATEs to child rows. "</span><span class="w"> </span><span class="o">+</span>
-<span class="w">        </span><span class="s">"See the v0.22.1 release notes."</span><span class="p">)</span>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;ON UPDATE CASCADE&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">&quot;RunMigrations must add ON UPDATE CASCADE to every &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">        </span><span class="s">&quot;cntrb_id child FK. Without this, the v0.22.2 cntrb_id &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">        </span><span class="s">&quot;data migration can&#39;t propagate UPDATEs to child rows. &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">        </span><span class="s">&quot;See the v0.22.1 release notes.&quot;</span><span class="p">)</span>
 <span class="p">}</span>
 </pre></div>
 </div>

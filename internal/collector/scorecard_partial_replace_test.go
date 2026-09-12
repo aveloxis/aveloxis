@@ -172,3 +172,38 @@ func TestScorecardLocalOnlyPlatformStillReplaces(t *testing.T) {
 	}
 	_ = db.ScorecardOverallName
 }
+
+// TestScorecardPersistFailureAfterRemoteSuccessDoesNotFallBack (L10
+// pass on the PR #203 fixes): the fused persist transaction can now
+// fail for any store reason, not just the mode read. A store failure
+// after a SUCCESSFUL remote run must surface as that error — never be
+// mistaken for a remote failure that triggers the local backstop (a
+// second 15-minute subprocess run, and possibly an 11-check local set
+// written over the complete result that was just thrown away).
+func TestScorecardPersistFailureAfterRemoteSuccessDoesNotFallBack(t *testing.T) {
+	store := &fakeScorecardStore{modeErr: errors.New("pool closed")}
+	argsLog, _ := installFakeScorecard(t,
+		`case "$1" in --repo) printf '%s' '`+fakeScorecardJSON+`';; --local) printf '%s' '`+fakeScorecardJSON+`';; esac`)
+	res, err := RunScorecard(context.Background(), store, 42, ScorecardOptions{
+		RepoURL:       "https://github.com/augurlabs/augur",
+		LocalPath:     t.TempDir(), // a backstop IS available — and must not be used
+		RemotePrimary: true,
+		Timeout:       time.Minute,
+		GithubToken:   "tok1",
+	}, quietLogger())
+	if err == nil || !errors.Is(err, errScorecardModeProbe) {
+		t.Fatalf("err = %v, want the persist sentinel surfaced unchanged", err)
+	}
+	if res != nil {
+		t.Errorf("result = %+v, want nil", res)
+	}
+	invocations := readLines(t, argsLog)
+	if len(invocations) != 1 || !strings.Contains(invocations[0], "--repo") {
+		t.Fatalf("scorecard invocations = %v, want exactly the one --repo run — a persist failure must not fall back to a local run", invocations)
+	}
+	for _, c := range store.snapshot() {
+		if c == "rotate" || strings.HasPrefix(c, "insert:") {
+			t.Fatalf("persist calls = %v — nothing may be written", store.snapshot())
+		}
+	}
+}

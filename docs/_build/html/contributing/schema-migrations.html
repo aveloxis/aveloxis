@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Schema migrations &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Schema migrations &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1664,25 +1666,25 @@ SPDX-License-Identifier: MIT
 
 <span class="w">    </span><span class="c1">// Base schema first.</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">pg</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">schemaSQL</span><span class="p">);</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">errs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">errs</span><span class="p">,</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"base schema: %w"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">))</span>
+<span class="w">        </span><span class="nx">errs</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">errs</span><span class="p">,</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;base schema: %w&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">))</span>
 <span class="w">    </span><span class="p">}</span>
 
 <span class="w">    </span><span class="c1">// Per-version idempotent steps. Each helper appends to `errs` on failure</span>
 <span class="w">    </span><span class="c1">// and continues to the next step — so a single broken step surfaces every</span>
-<span class="w">    </span><span class="c1">// OTHER step's failure too, instead of bailing on the first.</span>
-<span class="w">    </span><span class="nx">addColumnIfMissing</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">pg</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">errs</span><span class="p">,</span><span class="w"> </span><span class="s">"aveloxis_data"</span><span class="p">,</span><span class="w"> </span><span class="s">"repos"</span><span class="p">,</span>
-<span class="w">        </span><span class="s">"scancode_failed_attempts"</span><span class="p">,</span><span class="w"> </span><span class="s">"INTEGER DEFAULT 0"</span><span class="p">)</span>
+<span class="w">    </span><span class="c1">// OTHER step&#39;s failure too, instead of bailing on the first.</span>
+<span class="w">    </span><span class="nx">addColumnIfMissing</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">pg</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">errs</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;aveloxis_data&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;repos&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="s">&quot;scancode_failed_attempts&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;INTEGER DEFAULT 0&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="nx">execMigrationStep</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">pg</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">errs</span><span class="p">,</span>
-<span class="w">        </span><span class="s">"v0.23.5 example backfill"</span><span class="p">,</span>
+<span class="w">        </span><span class="s">&quot;v0.23.5 example backfill&quot;</span><span class="p">,</span>
 <span class="w">        </span><span class="s">`UPDATE aveloxis_data.foo SET bar = COALESCE(bar, 0)`</span><span class="p">)</span>
 <span class="w">    </span><span class="nx">execCreateIndexConcurrently</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">pg</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">errs</span><span class="p">,</span>
-<span class="w">        </span><span class="s">"aveloxis_data"</span><span class="p">,</span><span class="w"> </span><span class="s">"idx_foo_bar"</span><span class="p">,</span>
+<span class="w">        </span><span class="s">&quot;aveloxis_data&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;idx_foo_bar&quot;</span><span class="p">,</span>
 <span class="w">        </span><span class="s">`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_foo_bar</span>
 <span class="s">            ON aveloxis_data.foo (bar) WHERE bar &gt; 0`</span><span class="p">)</span>
 
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">errs</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"schema migration had %d error(s): %w"</span><span class="p">,</span>
-<span class="w">            </span><span class="nb">len</span><span class="p">(</span><span class="nx">errs</span><span class="p">),</span><span class="w"> </span><span class="nx">errors</span><span class="p">.</span><span class="nx">Join</span><span class="p">(</span><span class="nx">errs</span><span class="p">...))</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">errs</span><span class="p">)</span><span class="w"> </span><span class="p">&gt;</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;schema migration had %d error(s): %w&quot;</span><span class="p">,</span>
+<span class="w">            </span><span class="nb">len</span><span class="p">(</span><span class="nx">errs</span><span class="p">),</span><span class="w"> </span><span class="nx">errors</span><span class="p">.</span><span class="nx">Join</span><span class="p">(</span><span class="nx">errs</span><span class="o">...</span><span class="p">))</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span>
 <span class="p">}</span>
@@ -1695,15 +1697,15 @@ SPDX-License-Identifier: MIT
 <h2>Adding a column<a class="headerlink" href="#adding-a-column" title="Link to this heading"></a></h2>
 <p>The pattern, idempotent across re-runs:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// internal/db/migrate.go — in RunMigrations</span>
-<span class="nx">addColumnIfMissing</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">pg</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">errs</span><span class="p">,</span><span class="w"> </span><span class="s">"aveloxis_data"</span><span class="p">,</span><span class="w"> </span><span class="s">"repos"</span><span class="p">,</span>
-<span class="w">    </span><span class="s">"languages"</span><span class="p">,</span><span class="w"> </span><span class="s">"JSONB DEFAULT '{}'::jsonb"</span><span class="p">)</span>
+<span class="nx">addColumnIfMissing</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">pg</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">errs</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;aveloxis_data&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;repos&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="s">&quot;languages&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;JSONB DEFAULT &#39;{}&#39;::jsonb&quot;</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>And <code class="docutils literal notranslate"><span class="pre">internal/db/schema.sql</span></code>:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="p">(</span>
 <span class="w">    </span><span class="n">repo_id</span><span class="w">          </span><span class="nb">BIGSERIAL</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span>
 <span class="w">    </span><span class="c1">-- ... existing columns ...</span>
-<span class="w">    </span><span class="n">languages</span><span class="w">        </span><span class="nb">JSONB</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="s1">'{}'</span><span class="o">::</span><span class="nb">jsonb</span><span class="p">,</span>
+<span class="w">    </span><span class="n">languages</span><span class="w">        </span><span class="nb">JSONB</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="s1">&#39;{}&#39;</span><span class="o">::</span><span class="nb">jsonb</span><span class="p">,</span>
 <span class="w">    </span><span class="c1">-- ...</span>
 <span class="p">);</span>
 </pre></div>
@@ -1713,16 +1715,16 @@ SPDX-License-Identifier: MIT
 <h3>Source-contract test<a class="headerlink" href="#source-contract-test" title="Link to this heading"></a></h3>
 <p>Pin both sides:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="nx">TestSchemaHasLanguagesColumn</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">schema</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">"schema.sql"</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="kt">string</span><span class="p">(</span><span class="nx">schema</span><span class="p">),</span><span class="w"> </span><span class="s">"languages"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"schema.sql must declare repos.languages"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">schema</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">&quot;schema.sql&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nb">string</span><span class="p">(</span><span class="nx">schema</span><span class="p">),</span><span class="w"> </span><span class="s">&quot;languages&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">&quot;schema.sql must declare repos.languages&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 
 <span class="kd">func</span><span class="w"> </span><span class="nx">TestMigrateAddsLanguagesColumn</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">migrate</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">"migrate.go"</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="kt">string</span><span class="p">(</span><span class="nx">migrate</span><span class="p">),</span><span class="w"> </span><span class="s">`"languages"`</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"migrate.go must add languages via addColumnIfMissing"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">migrate</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">&quot;migrate.go&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nb">string</span><span class="p">(</span><span class="nx">migrate</span><span class="p">),</span><span class="w"> </span><span class="s">`&quot;languages&quot;`</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">&quot;migrate.go must add languages via addColumnIfMissing&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1740,14 +1742,14 @@ SPDX-License-Identifier: MIT
 <span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">dataType</span><span class="w"> </span><span class="kt">string</span>
 <span class="w">    </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">QueryRow</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="s">`</span>
 <span class="s">        SELECT data_type FROM information_schema.columns</span>
-<span class="s">        WHERE table_schema = 'aveloxis_data'</span>
-<span class="s">          AND table_name = 'repos'</span>
-<span class="s">          AND column_name = 'languages'`</span><span class="p">).</span><span class="nx">Scan</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">dataType</span><span class="p">)</span>
+<span class="s">        WHERE table_schema = &#39;aveloxis_data&#39;</span>
+<span class="s">          AND table_name = &#39;repos&#39;</span>
+<span class="s">          AND column_name = &#39;languages&#39;`</span><span class="p">).</span><span class="nx">Scan</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">dataType</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"languages column not found post-migrate: %v"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">&quot;languages column not found post-migrate: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">dataType</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="s">"jsonb"</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"expected jsonb, got %s"</span><span class="p">,</span><span class="w"> </span><span class="nx">dataType</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">dataType</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="s">&quot;jsonb&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;expected jsonb, got %s&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">dataType</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1758,9 +1760,9 @@ SPDX-License-Identifier: MIT
 <h2>Adding an index<a class="headerlink" href="#adding-an-index" title="Link to this heading"></a></h2>
 <p>For indexes on existing populated tables, <strong>always use <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">INDEX</span> <span class="pre">CONCURRENTLY</span></code></strong>. A plain <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">INDEX</span></code> acquires <code class="docutils literal notranslate"><span class="pre">ACCESS</span> <span class="pre">EXCLUSIVE</span></code> for the duration of the build — on fleet-scale tables (5M+ rows) that’s minutes of blocked writes, which stalls every collection worker. CONCURRENTLY trades ~2x build time for not blocking writes.</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="nx">execCreateIndexConcurrently</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">pg</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">errs</span><span class="p">,</span>
-<span class="w">    </span><span class="s">"aveloxis_data"</span><span class="p">,</span><span class="w"> </span><span class="s">"idx_repos_owner_name_trgm"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">&quot;aveloxis_data&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;idx_repos_owner_name_trgm&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="s">`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_owner_name_trgm</span>
-<span class="s">        ON aveloxis_data.repos USING GIN ((repo_owner || '/' || repo_name) gin_trgm_ops)`</span><span class="p">)</span>
+<span class="s">        ON aveloxis_data.repos USING GIN ((repo_owner || &#39;/&#39; || repo_name) gin_trgm_ops)`</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>The helper handles <code class="docutils literal notranslate"><span class="pre">IF</span> <span class="pre">NOT</span> <span class="pre">EXISTS</span></code> semantics AND the failure-recovery edge case where a prior interrupted CONCURRENTLY build left an INVALID index (cleaned up via <code class="docutils literal notranslate"><span class="pre">DROP</span> <span class="pre">INDEX</span></code> before retry). See v0.20.1.</p>
@@ -1771,9 +1773,9 @@ SPDX-License-Identifier: MIT
 <p>Backfill = a one-shot UPDATE that brings existing rows in line with new column semantics.</p>
 <p>Pattern (idempotent — re-running is a no-op once the rows match):</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="nx">execMigrationStep</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">pg</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">errs</span><span class="p">,</span>
-<span class="w">    </span><span class="s">"v0.23.X backfill repos.languages from JSONB default"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">&quot;v0.23.X backfill repos.languages from JSONB default&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="s">`UPDATE aveloxis_data.repos</span>
-<span class="s">     SET languages = '{}'::jsonb</span>
+<span class="s">     SET languages = &#39;{}&#39;::jsonb</span>
 <span class="s">     WHERE languages IS NULL`</span><span class="p">)</span>
 </pre></div>
 </div>
@@ -1806,13 +1808,13 @@ SPDX-License-Identifier: MIT
 <section id="id1">
 <h3>Source-contract test<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="nx">TestMigrationBackfillsLanguages</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">src</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">"migrate.go"</span><span class="p">)</span>
-<span class="w">    </span><span class="nx">code</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kt">string</span><span class="p">(</span><span class="nx">src</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">"v0.23.X backfill repos.languages"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"backfill step missing from migrate.go"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">src</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">&quot;migrate.go&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">code</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">string</span><span class="p">(</span><span class="nx">src</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;v0.23.X backfill repos.languages&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">&quot;backfill step missing from migrate.go&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">"IS NULL"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"backfill must include an idempotency gate (WHERE ... IS NULL)"</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;IS NULL&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">&quot;backfill must include an idempotency gate (WHERE ... IS NULL)&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1829,21 +1831,21 @@ SPDX-License-Identifier: MIT
 <span class="w">    </span><span class="nx">repoID</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">seedRepo</span><span class="p">(</span><span class="nx">t</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="cm">/* languages = */</span><span class="w"> </span><span class="kc">nil</span><span class="p">)</span>
 
 <span class="w">    </span><span class="c1">// Run RunMigrations again — backfill should fire.</span>
-<span class="w">    </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">RunMigrations</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">slog</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">slog</span><span class="p">.</span><span class="nx">NewTextHandler</span><span class="p">(</span><span class="nx">io</span><span class="p">.</span><span class="nx">Discard</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">)))</span>
+<span class="w">    </span><span class="nx">_</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">RunMigrations</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">slog</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">slog</span><span class="p">.</span><span class="nx">NewTextHandler</span><span class="p">(</span><span class="nx">io</span><span class="p">.</span><span class="nx">Discard</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">)))</span>
 
 <span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">langs</span><span class="w"> </span><span class="kt">string</span>
 <span class="w">    </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">QueryRow</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="s">`SELECT languages::text FROM aveloxis_data.repos WHERE repo_id = $1`</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">).</span><span class="nx">Scan</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">langs</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">langs</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="s">"{}"</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"expected backfill to set languages to '{}', got %s"</span><span class="p">,</span><span class="w"> </span><span class="nx">langs</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">langs</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="s">&quot;{}&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;expected backfill to set languages to &#39;{}&#39;, got %s&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">langs</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 
 <span class="w">    </span><span class="c1">// Run a THIRD time. Should be a no-op.</span>
-<span class="w">    </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">RunMigrations</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">slog</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">slog</span><span class="p">.</span><span class="nx">NewTextHandler</span><span class="p">(</span><span class="nx">io</span><span class="p">.</span><span class="nx">Discard</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">)))</span>
+<span class="w">    </span><span class="nx">_</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">RunMigrations</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">slog</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">slog</span><span class="p">.</span><span class="nx">NewTextHandler</span><span class="p">(</span><span class="nx">io</span><span class="p">.</span><span class="nx">Discard</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">)))</span>
 
 <span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">langsAfter</span><span class="w"> </span><span class="kt">string</span>
 <span class="w">    </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">QueryRow</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="s">`SELECT languages::text FROM aveloxis_data.repos WHERE repo_id = $1`</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">).</span><span class="nx">Scan</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">langsAfter</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">langsAfter</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="s">"{}"</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"re-running migrations changed the value (should be idempotent), got %s"</span><span class="p">,</span><span class="w"> </span><span class="nx">langsAfter</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">langsAfter</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="s">&quot;{}&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;re-running migrations changed the value (should be idempotent), got %s&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">langsAfter</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1877,7 +1879,7 @@ SPDX-License-Identifier: MIT
 <section id="materialized-views">
 <h2>Materialized views<a class="headerlink" href="#materialized-views" title="Link to this heading"></a></h2>
 <p>The 20 real materialized views (<code class="docutils literal notranslate"><span class="pre">explorer_*</span></code>, <code class="docutils literal notranslate"><span class="pre">api_get_*</span></code>) are declared in <code class="docutils literal notranslate"><span class="pre">matviews.sql</span></code> and created/refreshed via <code class="docutils literal notranslate"><span class="pre">internal/db/matviews.go</span></code>. Do NOT confuse them with <code class="docutils literal notranslate"><span class="pre">dm_repo_annual/monthly/weekly</span></code> (+ group variants) — those are ordinary aggregate TABLES rebuilt by SQL in <code class="docutils literal notranslate"><span class="pre">internal/db/aggregates.go</span></code> on the matview-rebuild day, not matviews. Refresh helpers:</p>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// Bulk refresh — used by the scheduler's weekly rebuild (default Saturday).</span>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// Bulk refresh — used by the scheduler&#39;s weekly rebuild (default Saturday).</span>
 <span class="nx">store</span><span class="p">.</span><span class="nx">RefreshAllRepoAggregates</span><span class="p">(</span><span class="nx">ctx</span><span class="p">)</span>
 
 <span class="c1">// Per-repo — left in internal/db/aggregates.go for manual recalc, not on the hot path.</span>

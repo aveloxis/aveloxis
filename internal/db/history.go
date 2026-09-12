@@ -142,34 +142,6 @@ func (s *PostgresStore) ClearRepoDependencies(ctx context.Context, repoID int64)
 	})
 }
 
-// RotateScorecardToHistory moves all existing scorecard rows for a repo into
-// repo_deps_scorecard_history, then deletes them from the main table.
-// Called before inserting new scorecard results.
-//
-// v0.27.7: delegates to rotateRepoRowsToHistory. Behavior-preserving
-// refactor — identical SQL effect (INSERT ... SELECT * WHERE repo_id,
-// then DELETE WHERE repo_id), identical transaction semantics
-// (withRetry + single tx), identical rows moved. The only delta is on
-// FAILURE paths, where errors now carry a "rotate/clear <table>"
-// prefix identifying the failing statement.
-func (s *PostgresStore) RotateScorecardToHistory(ctx context.Context, repoID int64) error {
-	return s.withRetry(ctx, func(ctx context.Context) error {
-		tx, err := s.pool.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback(ctx)
-
-		if err := rotateRepoRowsToHistory(ctx, tx,
-			"aveloxis_data.repo_deps_scorecard",
-			"aveloxis_data.repo_deps_scorecard_history", repoID); err != nil {
-			return err
-		}
-
-		return tx.Commit(ctx)
-	})
-}
-
 // rotateScancodeRows moves a repo's current scancode rows to the
 // history tables inside the caller's transaction. Shared so
 // ReplaceScancodeSnapshot can fuse the rotation with its inserts

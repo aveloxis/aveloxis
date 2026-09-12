@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Adding a REST endpoint &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Adding a REST endpoint &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1676,35 +1678,35 @@ SPDX-License-Identifier: MIT
 <span class="kn">package</span><span class="w"> </span><span class="nx">api</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="p">(</span>
-<span class="w">    </span><span class="s">"encoding/json"</span>
-<span class="w">    </span><span class="s">"net/http"</span>
-<span class="w">    </span><span class="s">"net/http/httptest"</span>
-<span class="w">    </span><span class="s">"testing"</span>
+<span class="w">    </span><span class="s">&quot;encoding/json&quot;</span>
+<span class="w">    </span><span class="s">&quot;net/http&quot;</span>
+<span class="w">    </span><span class="s">&quot;net/http/httptest&quot;</span>
+<span class="w">    </span><span class="s">&quot;testing&quot;</span>
 <span class="p">)</span>
 
 <span class="kd">func</span><span class="w"> </span><span class="nx">TestRepoContributorsHandler</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nx">srv</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">newTestServer</span><span class="p">(</span><span class="nx">t</span><span class="p">)</span>
 <span class="w">    </span><span class="k">defer</span><span class="w"> </span><span class="nx">srv</span><span class="p">.</span><span class="nx">Close</span><span class="p">()</span>
 
-<span class="w">    </span><span class="nx">resp</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">Get</span><span class="p">(</span><span class="nx">srv</span><span class="p">.</span><span class="nx">URL</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">"/api/v1/repos/1/contributors?limit=5"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">resp</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">Get</span><span class="p">(</span><span class="nx">srv</span><span class="p">.</span><span class="nx">URL</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">&quot;/api/v1/repos/1/contributors?limit=5&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="k">defer</span><span class="w"> </span><span class="nx">resp</span><span class="p">.</span><span class="nx">Body</span><span class="p">.</span><span class="nx">Close</span><span class="p">()</span>
 
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">resp</span><span class="p">.</span><span class="nx">StatusCode</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">StatusOK</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"expected 200, got %d"</span><span class="p">,</span><span class="w"> </span><span class="nx">resp</span><span class="p">.</span><span class="nx">StatusCode</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;expected 200, got %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">resp</span><span class="p">.</span><span class="nx">StatusCode</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 
 <span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">body</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="nx">Contributors</span><span class="w"> </span><span class="p">[]</span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
-<span class="w">            </span><span class="nx">Login</span><span class="w">    </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:"login"`</span>
-<span class="w">            </span><span class="nx">Commits</span><span class="w">  </span><span class="kt">int</span><span class="w">    </span><span class="s">`json:"commits"`</span>
-<span class="w">            </span><span class="nx">Email</span><span class="w">    </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:"email"`</span>
-<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="s">`json:"contributors"`</span>
+<span class="w">            </span><span class="nx">Login</span><span class="w">    </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:&quot;login&quot;`</span>
+<span class="w">            </span><span class="nx">Commits</span><span class="w">  </span><span class="kt">int</span><span class="w">    </span><span class="s">`json:&quot;commits&quot;`</span>
+<span class="w">            </span><span class="nx">Email</span><span class="w">    </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:&quot;email&quot;`</span>
+<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="s">`json:&quot;contributors&quot;`</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">json</span><span class="p">.</span><span class="nx">NewDecoder</span><span class="p">(</span><span class="nx">resp</span><span class="p">.</span><span class="nx">Body</span><span class="p">).</span><span class="nx">Decode</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">body</span><span class="p">);</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"decode: %v"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">&quot;decode: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="c1">// Test fixtures set up by newTestServer should produce specific</span>
 <span class="w">    </span><span class="c1">// contributors — assert on them.</span>
@@ -1713,18 +1715,18 @@ SPDX-License-Identifier: MIT
 <span class="kd">func</span><span class="w"> </span><span class="nx">TestRepoContributorsHandlerRejectsInvalidRepoID</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nx">srv</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">newTestServer</span><span class="p">(</span><span class="nx">t</span><span class="p">)</span>
 <span class="w">    </span><span class="k">defer</span><span class="w"> </span><span class="nx">srv</span><span class="p">.</span><span class="nx">Close</span><span class="p">()</span>
-<span class="w">    </span><span class="nx">resp</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">Get</span><span class="p">(</span><span class="nx">srv</span><span class="p">.</span><span class="nx">URL</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">"/api/v1/repos/notanumber/contributors"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">resp</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">Get</span><span class="p">(</span><span class="nx">srv</span><span class="p">.</span><span class="nx">URL</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">&quot;/api/v1/repos/notanumber/contributors&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">resp</span><span class="p">.</span><span class="nx">StatusCode</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">StatusBadRequest</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"expected 400 for non-numeric repoID, got %d"</span><span class="p">,</span><span class="w"> </span><span class="nx">resp</span><span class="p">.</span><span class="nx">StatusCode</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;expected 400 for non-numeric repoID, got %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">resp</span><span class="p">.</span><span class="nx">StatusCode</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 
 <span class="kd">func</span><span class="w"> </span><span class="nx">TestRepoContributorsHandlerLimitDefaults</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nx">srv</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">newTestServer</span><span class="p">(</span><span class="nx">t</span><span class="p">)</span>
 <span class="w">    </span><span class="k">defer</span><span class="w"> </span><span class="nx">srv</span><span class="p">.</span><span class="nx">Close</span><span class="p">()</span>
-<span class="w">    </span><span class="nx">resp</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">Get</span><span class="p">(</span><span class="nx">srv</span><span class="p">.</span><span class="nx">URL</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">"/api/v1/repos/1/contributors"</span><span class="p">)</span><span class="w">  </span><span class="c1">// no limit</span>
+<span class="w">    </span><span class="nx">resp</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">Get</span><span class="p">(</span><span class="nx">srv</span><span class="p">.</span><span class="nx">URL</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">&quot;/api/v1/repos/1/contributors&quot;</span><span class="p">)</span><span class="w">  </span><span class="c1">// no limit</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">resp</span><span class="p">.</span><span class="nx">StatusCode</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">StatusOK</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"expected default limit to succeed, got %d"</span><span class="p">,</span><span class="w"> </span><span class="nx">resp</span><span class="p">.</span><span class="nx">StatusCode</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;expected default limit to succeed, got %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">resp</span><span class="p">.</span><span class="nx">StatusCode</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1741,15 +1743,15 @@ SPDX-License-Identifier: MIT
 <span class="kn">package</span><span class="w"> </span><span class="nx">db</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="p">(</span>
-<span class="w">    </span><span class="s">"context"</span>
-<span class="w">    </span><span class="s">"fmt"</span>
+<span class="w">    </span><span class="s">&quot;context&quot;</span>
+<span class="w">    </span><span class="s">&quot;fmt&quot;</span>
 <span class="p">)</span>
 
 <span class="c1">// RepoContributor is the per-row return type for GetRepoContributors.</span>
 <span class="kd">type</span><span class="w"> </span><span class="nx">RepoContributor</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">Login</span><span class="w">   </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:"login"`</span>
-<span class="w">    </span><span class="nx">Email</span><span class="w">   </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:"email"`</span>
-<span class="w">    </span><span class="nx">Commits</span><span class="w"> </span><span class="kt">int</span><span class="w">    </span><span class="s">`json:"commits"`</span>
+<span class="w">    </span><span class="nx">Login</span><span class="w">   </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:&quot;login&quot;`</span>
+<span class="w">    </span><span class="nx">Email</span><span class="w">   </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:&quot;email&quot;`</span>
+<span class="w">    </span><span class="nx">Commits</span><span class="w"> </span><span class="kt">int</span><span class="w">    </span><span class="s">`json:&quot;commits&quot;`</span>
 <span class="p">}</span>
 
 <span class="c1">// GetRepoContributors returns up to `limit` contributors ranked by</span>
@@ -1757,15 +1759,15 @@ SPDX-License-Identifier: MIT
 <span class="c1">// when the repo has no commits yet.</span>
 <span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">s</span><span class="w"> </span><span class="o">*</span><span class="nx">PostgresStore</span><span class="p">)</span><span class="w"> </span><span class="nx">GetRepoContributors</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="w"> </span><span class="kt">int64</span><span class="p">,</span><span class="w"> </span><span class="nx">limit</span><span class="w"> </span><span class="kt">int</span><span class="p">)</span><span class="w"> </span><span class="p">([]</span><span class="nx">RepoContributor</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">limit</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">limit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">25</span><span class="w">  </span><span class="c1">// default</span>
+<span class="w">        </span><span class="nx">limit</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">25</span><span class="w">  </span><span class="c1">// default</span>
 <span class="w">    </span><span class="p">}</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">limit</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">500</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">limit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">500</span><span class="w">  </span><span class="c1">// cap</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">limit</span><span class="w"> </span><span class="p">&gt;</span><span class="w"> </span><span class="mi">500</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">limit</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">500</span><span class="w">  </span><span class="c1">// cap</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="nx">rows</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Query</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="s">`</span>
 <span class="s">        SELECT</span>
 <span class="s">            c.gh_login,</span>
-<span class="s">            COALESCE(c.cntrb_canonical, c.cntrb_email, '') AS email,</span>
+<span class="s">            COALESCE(c.cntrb_canonical, c.cntrb_email, &#39;&#39;) AS email,</span>
 <span class="s">            COUNT(DISTINCT cm.cmt_commit_hash) AS commits</span>
 <span class="s">        FROM aveloxis_data.commits cm</span>
 <span class="s">        JOIN aveloxis_data.contributors c ON cm.cmt_ght_author_id = c.cntrb_id</span>
@@ -1774,7 +1776,7 @@ SPDX-License-Identifier: MIT
 <span class="s">        ORDER BY commits DESC, c.gh_login ASC</span>
 <span class="s">        LIMIT $2`</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">,</span><span class="w"> </span><span class="nx">limit</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"query repo contributors: %w"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;query repo contributors: %w&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="k">defer</span><span class="w"> </span><span class="nx">rows</span><span class="p">.</span><span class="nx">Close</span><span class="p">()</span>
 
@@ -1782,9 +1784,9 @@ SPDX-License-Identifier: MIT
 <span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">rows</span><span class="p">.</span><span class="nx">Next</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="nx">rc</span><span class="w"> </span><span class="nx">RepoContributor</span>
 <span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">rows</span><span class="p">.</span><span class="nx">Scan</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">rc</span><span class="p">.</span><span class="nx">Login</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">rc</span><span class="p">.</span><span class="nx">Email</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">rc</span><span class="p">.</span><span class="nx">Commits</span><span class="p">);</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"scan: %w"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;scan: %w&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">        </span><span class="p">}</span>
-<span class="w">        </span><span class="nx">out</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">out</span><span class="p">,</span><span class="w"> </span><span class="nx">rc</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">out</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">out</span><span class="p">,</span><span class="w"> </span><span class="nx">rc</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">out</span><span class="p">,</span><span class="w"> </span><span class="nx">rows</span><span class="p">.</span><span class="nx">Err</span><span class="p">()</span>
 <span class="p">}</span>
@@ -1800,31 +1802,31 @@ SPDX-License-Identifier: MIT
 <span class="kn">package</span><span class="w"> </span><span class="nx">api</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="p">(</span>
-<span class="w">    </span><span class="s">"encoding/json"</span>
-<span class="w">    </span><span class="s">"net/http"</span>
-<span class="w">    </span><span class="s">"strconv"</span>
+<span class="w">    </span><span class="s">&quot;encoding/json&quot;</span>
+<span class="w">    </span><span class="s">&quot;net/http&quot;</span>
+<span class="w">    </span><span class="s">&quot;strconv&quot;</span>
 <span class="p">)</span>
 
 <span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">s</span><span class="w"> </span><span class="o">*</span><span class="nx">Server</span><span class="p">)</span><span class="w"> </span><span class="nx">handleRepoContributors</span><span class="p">(</span><span class="nx">w</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">ResponseWriter</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="w"> </span><span class="o">*</span><span class="nx">http</span><span class="p">.</span><span class="nx">Request</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">repoID</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">strconv</span><span class="p">.</span><span class="nx">ParseInt</span><span class="p">(</span><span class="nx">r</span><span class="p">.</span><span class="nx">PathValue</span><span class="p">(</span><span class="s">"repoID"</span><span class="p">),</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="mi">64</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">repoID</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">strconv</span><span class="p">.</span><span class="nx">ParseInt</span><span class="p">(</span><span class="nx">r</span><span class="p">.</span><span class="nx">PathValue</span><span class="p">(</span><span class="s">&quot;repoID&quot;</span><span class="p">),</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="mi">64</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">http</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="nx">w</span><span class="p">,</span><span class="w"> </span><span class="s">"invalid repoID"</span><span class="p">,</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">StatusBadRequest</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">http</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="nx">w</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;invalid repoID&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">StatusBadRequest</span><span class="p">)</span>
 <span class="w">        </span><span class="k">return</span>
 <span class="w">    </span><span class="p">}</span>
 
-<span class="w">    </span><span class="nx">limit</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">strconv</span><span class="p">.</span><span class="nx">Atoi</span><span class="p">(</span><span class="nx">r</span><span class="p">.</span><span class="nx">URL</span><span class="p">.</span><span class="nx">Query</span><span class="p">().</span><span class="nx">Get</span><span class="p">(</span><span class="s">"limit"</span><span class="p">))</span>
+<span class="w">    </span><span class="nx">limit</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">strconv</span><span class="p">.</span><span class="nx">Atoi</span><span class="p">(</span><span class="nx">r</span><span class="p">.</span><span class="nx">URL</span><span class="p">.</span><span class="nx">Query</span><span class="p">().</span><span class="nx">Get</span><span class="p">(</span><span class="s">&quot;limit&quot;</span><span class="p">))</span>
 <span class="w">    </span><span class="nx">contributors</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">store</span><span class="p">.</span><span class="nx">GetRepoContributors</span><span class="p">(</span><span class="nx">r</span><span class="p">.</span><span class="nx">Context</span><span class="p">(),</span><span class="w"> </span><span class="nx">repoID</span><span class="p">,</span><span class="w"> </span><span class="nx">limit</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">s</span><span class="p">.</span><span class="nx">logger</span><span class="p">.</span><span class="nx">Warn</span><span class="p">(</span><span class="s">"GetRepoContributors failed"</span><span class="p">,</span>
-<span class="w">            </span><span class="s">"repo_id"</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">,</span><span class="w"> </span><span class="s">"error"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
-<span class="w">        </span><span class="nx">http</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="nx">w</span><span class="p">,</span><span class="w"> </span><span class="s">"internal error"</span><span class="p">,</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">StatusInternalServerError</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">s</span><span class="p">.</span><span class="nx">logger</span><span class="p">.</span><span class="nx">Warn</span><span class="p">(</span><span class="s">&quot;GetRepoContributors failed&quot;</span><span class="p">,</span>
+<span class="w">            </span><span class="s">&quot;repo_id&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;error&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">http</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="nx">w</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;internal error&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">StatusInternalServerError</span><span class="p">)</span>
 <span class="w">        </span><span class="k">return</span>
 <span class="w">    </span><span class="p">}</span>
 
-<span class="w">    </span><span class="nx">w</span><span class="p">.</span><span class="nx">Header</span><span class="p">().</span><span class="nx">Set</span><span class="p">(</span><span class="s">"Content-Type"</span><span class="p">,</span><span class="w"> </span><span class="s">"application/json"</span><span class="p">)</span>
-<span class="w">    </span><span class="nx">json</span><span class="p">.</span><span class="nx">NewEncoder</span><span class="p">(</span><span class="nx">w</span><span class="p">).</span><span class="nx">Encode</span><span class="p">(</span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span>
-<span class="w">        </span><span class="s">"repo_id"</span><span class="p">:</span><span class="w">      </span><span class="nx">repoID</span><span class="p">,</span>
-<span class="w">        </span><span class="s">"contributors"</span><span class="p">:</span><span class="w"> </span><span class="nx">contributors</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">w</span><span class="p">.</span><span class="nx">Header</span><span class="p">().</span><span class="nx">Set</span><span class="p">(</span><span class="s">&quot;Content-Type&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;application/json&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">json</span><span class="p">.</span><span class="nx">NewEncoder</span><span class="p">(</span><span class="nx">w</span><span class="p">).</span><span class="nx">Encode</span><span class="p">(</span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span>
+<span class="w">        </span><span class="s">&quot;repo_id&quot;</span><span class="p">:</span><span class="w">      </span><span class="nx">repoID</span><span class="p">,</span>
+<span class="w">        </span><span class="s">&quot;contributors&quot;</span><span class="p">:</span><span class="w"> </span><span class="nx">contributors</span><span class="p">,</span>
 <span class="w">    </span><span class="p">})</span>
 <span class="p">}</span>
 </pre></div>
@@ -1833,7 +1835,7 @@ SPDX-License-Identifier: MIT
 <section id="step-4-register-the-route">
 <h3>Step 4 — register the route<a class="headerlink" href="#step-4-register-the-route" title="Link to this heading"></a></h3>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// internal/api/server.go — inside NewServer / registerRoutes</span>
-<span class="nx">s</span><span class="p">.</span><span class="nx">mux</span><span class="p">.</span><span class="nx">HandleFunc</span><span class="p">(</span><span class="s">"GET /api/v1/repos/{repoID}/contributors"</span><span class="p">,</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">handleRepoContributors</span><span class="p">)</span>
+<span class="nx">s</span><span class="p">.</span><span class="nx">mux</span><span class="p">.</span><span class="nx">HandleFunc</span><span class="p">(</span><span class="s">&quot;GET /api/v1/repos/{repoID}/contributors&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">handleRepoContributors</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -1871,12 +1873,12 @@ SPDX-License-Identifier: MIT
 <section id="response-shape">
 <h3>Response shape<a class="headerlink" href="#response-shape" title="Link to this heading"></a></h3>
 <p>JSON. Wrap collections in a named field:</p>
-<div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">"contributors"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span><span class="w"> </span><span class="nt">"repo_id"</span><span class="p">:</span><span class="w"> </span><span class="mi">123</span><span class="p">}</span>
+<div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;contributors&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;repo_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">123</span><span class="p">}</span>
 </pre></div>
 </div>
 <p>Not just <code class="docutils literal notranslate"><span class="pre">[...]</span></code> — that locks you in if you ever need to add pagination metadata.</p>
 <p>For paginated endpoints, follow the existing <code class="docutils literal notranslate"><span class="pre">ListQueuePage</span></code> shape:</p>
-<div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">"items"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span><span class="w"> </span><span class="nt">"total"</span><span class="p">:</span><span class="w"> </span><span class="mi">1234</span><span class="p">,</span><span class="w"> </span><span class="nt">"page"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">"page_size"</span><span class="p">:</span><span class="w"> </span><span class="mi">100</span><span class="p">}</span>
+<div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;items&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;total&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1234</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;page&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;page_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">100</span><span class="p">}</span>
 </pre></div>
 </div>
 </section>

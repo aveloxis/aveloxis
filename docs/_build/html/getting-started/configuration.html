@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.6 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.7 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=934061aa"></script>
+      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -160,6 +160,7 @@
 <li class="toctree-l3"><a class="reference internal" href="upgrading.html#mailing-lists-on-an-existing-catalog">Mailing lists on an existing catalog</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="upgrading.html#recurring-maintenance-not-tied-to-a-release">Recurring maintenance (not tied to a release)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="upgrading.html#where-the-per-release-detail-lives">Where the per-release detail lives</a></li>
 </ul>
 </li>
@@ -537,6 +538,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#rate-limit-math">Rate limit math</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#estimating-collection-time">Estimating collection time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#background-sweeps-and-the-foreground-reserve">Background sweeps and the foreground reserve</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#horizontal-scaling">Horizontal scaling</a><ul>
@@ -1765,6 +1767,8 @@ a half against its own reference table below:</p>
 <span class="w">    </span><span class="nt">&quot;github_max_inflight&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">40</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;github_max_inflight_per_key&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;github_budget_foreground_reserve_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">25</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;gone_repo_recheck_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">28</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;gone_repo_recheck_disabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;scancode_timeout_cap_strikes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;scancode_ignore_globs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
 <span class="w">    </span><span class="nt">&quot;staging_retention_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
@@ -2203,7 +2207,7 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.scorecard_token_count</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
-<td><p>v0.27.5. How many key-pool tokens to hand scorecard as a comma-separated <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code> (scorecard round-robins the list per request). <code class="docutils literal notranslate"><span class="pre">0</span></code> (the default) = ALL non-invalidated pool tokens; <code class="docutils literal notranslate"><span class="pre">N&gt;0</span></code> = the N least-borrowed. Multi-token is what makes remote-primary mode viable: a moderate repo costs ~40 API calls in remote mode, and spreading them across the pool prevents any single token from being drained by scorecard while collection workers share it. Negative values collapse to 0. Since v0.29.6 the tokens are BORROWED through the pool (<code class="docutils literal notranslate"><span class="pre">LendTokens</span></code>) rather than copied out of it, so the pool knows which keys each subprocess holds.</p></td>
+<td><p>v0.27.5. How many key-pool tokens to hand scorecard as a comma-separated <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code> (scorecard round-robins the list per request). <code class="docutils literal notranslate"><span class="pre">0</span></code> (the default) = every USABLE pool token — a key the pool would refuse to <code class="docutils literal notranslate"><span class="pre">Acquire</span></code> (quarantined after repeated 401s, or resting on a secondary limit) is not lent either; <code class="docutils literal notranslate"><span class="pre">N&gt;0</span></code> = the N least-borrowed of those. If every key is resting the phase runs with no token and the remote attempt fails into the local fallback, which is the same outcome every other caller sees. Multi-token is what makes remote-primary mode viable: a moderate repo costs ~40 API calls in remote mode, and spreading them across the pool prevents any single token from being drained by scorecard while collection workers share it. Negative values collapse to 0. Since v0.29.6 the tokens are BORROWED through the pool (<code class="docutils literal notranslate"><span class="pre">LendTokens</span></code>) rather than copied out of it, so the pool knows which keys each subprocess holds.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.scorecard_max_concurrent</span></code></p></td>
 <td><p>integer</p></td>
@@ -2224,6 +2228,16 @@ a half against its own reference table below:</p>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">25</span></code></p></td>
 <td><p>v0.29.6. Share of the pool’s hourly budget that BACKGROUND sweeps (contributor history and classification) may not spend into; foreground collection is admitted while any budget remains. Replaces the v0.29.0 per-key 500-point cliff, which shrank the background-eligible key set as keys depleted and funnelled the whole sweep onto the survivors. Derived: collection measured at ~9% of budget, × ~3 safety. Background is admitted while the usable pool total (keys resting on a secondary limit or a 401 quarantine do not count) is ABOVE the line. At or below it — while at least one usable key still holds spendable budget — a WAITING sweep (contributor history) waits for the next window reset or the next resting key’s return and logs <code class="docutils literal notranslate"><span class="pre">GraphQL</span> <span class="pre">background</span> <span class="pre">sweep</span> <span class="pre">paced</span> <span class="pre">by</span> <span class="pre">the</span> <span class="pre">foreground</span> <span class="pre">reserve</span></code>; the FAST-FAILING classification sweep instead receives <code class="docutils literal notranslate"><span class="pre">ErrGraphQLBudgetExhausted</span></code> and its ticker retries next interval — nothing is logged by the pool; the scheduler’s <code class="docutils literal notranslate"><span class="pre">activity</span> <span class="pre">classification:</span> <span class="pre">fetch</span> <span class="pre">failed</span> <span class="pre">—</span> <span class="pre">batch</span> <span class="pre">will</span> <span class="pre">retry</span> <span class="pre">next</span> <span class="pre">tick</span></code> WARN is where that starvation is visible. When no usable key holds spendable budget the pool is exhausted, not paced: the waiting sweep logs the same <code class="docutils literal notranslate"><span class="pre">all</span> <span class="pre">API</span> <span class="pre">keys</span> <span class="pre">exhausted</span> <span class="pre">for</span> <span class="pre">GraphQL</span></code> line foreground callers see, and the fast-failing sweep again gets the error rather than a log line. Absent or non-positive falls back to 25; explicit values are clamped to [1, 99] — the reservation is never a disable switch in either direction (1 = nominal; 100 would equal a full pool and switch background off entirely).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_days</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">28</span></code></p></td>
+<td><p>v0.29.7. Per-repo cadence on which <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> re-verifies a “gone” repository against its forge. A repository whose URL returned a definitive 404/410 is dequeued, so no collection cycle ever probes it again — without this ticker a repository made private and later public again stayed gone until an operator ran <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code>. Every hour the scheduler claims up to 500 gone-stamped repos whose last check is older than this many days (never-checked rows first), probes each with the same unauthenticated <code class="docutils literal notranslate"><span class="pre">HEAD</span></code> prelim uses (no API-key budget), and on a definitive 2xx clears the gone state and re-enqueues the repo; a 404/410, an indeterminate status (403/429/5xx) or a transport error restamps the check and the repo waits another cadence (the probe already makes four attempts on transient network errors, and an unbounded retry-next-tick arm would let a permanently unreachable cohort head every claim). The 500-per-hour batch cycles a 300K-repo gone cohort inside the 28-day default. Absent or non-positive falls back to 28 — <code class="docutils literal notranslate"><span class="pre">0</span></code> is not a disable switch; values above 365 are clamped to 365.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_disabled</span></code></p></td>
+<td><p>boolean</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>v0.29.7. Set <code class="docutils literal notranslate"><span class="pre">true</span></code> to switch the recheck ticker off; <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code> remains the manual path.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.scancode_timeout_cap_strikes</span></code></p></td>
 <td><p>integer</p></td>

@@ -178,11 +178,14 @@ func BacktickLiterals(src string) []string {
 // (`a#b`) is literal, as in the shell.
 //
 // Added for the facade-fetch docs tripwire (round 17 L10 pass 6). The
-// control-operator half came from Copilot's PR #198 and closes a real
-// bypass: `cmd;# note \` kept its trailing backslash, so the caller
-// joined the NEXT line onto it, the joined command began with `#`, and
-// a `git fetch --all` sitting on that next line was never judged at
-// all. Reproduced end-to-end against the docs corpus before the fix.
+// operator half came from Copilot's PR #198 and closes a real bypass:
+// `cmd;# note \` kept its trailing backslash, so the caller joined the
+// NEXT line onto it — and once that caller split the joined command on
+// `;`, the PIECE carrying the fetch began with `#` and was skipped, so
+// a `git fetch --all` on that next line was never judged at all.
+// Measured: the bypass existed for `;` and `|` (the separators the
+// caller splits on) and not for `&`, `>` or `)`, which already fired.
+// Reproduced end-to-end against the docs corpus before the fix.
 func StripShellComment(line string) string {
 	inSingle, inDouble := false, false
 	for i := 0; i < len(line); i++ {
@@ -203,16 +206,31 @@ func StripShellComment(line string) string {
 
 // isShellWordBoundary reports whether b can precede the `#` that opens
 // a comment. POSIX (Shell Command Language, 2.3 Token Recognition)
-// starts a comment at an unquoted `#` that begins a word, and a word
-// begins after a blank OR after an operator — so the set is the blanks
-// plus the control- and redirection-operator characters, and nothing
-// else. Verified against bash rather than reasoned about: `echo A;#c`
-// prints A, while `echo A|#c` and `echo A >#c` are syntax errors
-// PRECISELY BECAUSE `#c` is eaten as a comment, leaving the pipeline
-// and the redirect unfinished.
+// appends the current character to a word already in progress (rule 8)
+// and starts a comment only where no word is in progress (rule 9) — so
+// a comment can open at line start, after a blank, or after an
+// operator. Every member below was checked against bash, and every one
+// has a row in TestStripShellComment, so dropping any of them fails
+// that table.
+//
+// Two characters that a naive reading would include are deliberately
+// OUT, both erring toward under-stripping (the safe direction for a
+// caller that judges docs commands — see StripShellComment's own "no
+// `$(…)`" disclaimer):
+//
+//   - `)` ends a word only when it closes a SUBSHELL. Closing `$(…)`,
+//     `$((…))` or `<(…)` it is part of the word, so bash keeps a
+//     following `#` literal (`echo $(echo A)#c` prints `A#c`). Telling
+//     the two apart needs `$(`/`<(` nesting depth, which this helper
+//     does not track. Copilot's PR #198 included `)`; with it, a
+//     CORRECT fetch line containing `$(…)#` was truncated and the
+//     facade tripwire reported its refspecs as missing.
+//   - an opening backquote does start a comment in bash (`echo X`+
+//     "`#c`"+`Y` prints `XY`), but tracking backquote state is out of
+//     scope here, and no facade doc spells one.
 func isShellWordBoundary(b byte) bool {
 	switch b {
-	case ' ', '\t', ';', '&', '|', '(', ')', '<', '>':
+	case ' ', '\t', ';', '&', '|', '(', '<', '>':
 		return true
 	default:
 		return false

@@ -143,17 +143,35 @@ func TestStripShellComment(t *testing.T) {
 		{"unquoted tail", "git fetch --prune  # never --all", "git fetch --prune  "},
 		{"whole-line comment", "# just a note", ""},
 		{"backslash inside a comment is not kept", "cmd  # note \\", "cmd  "},
-		// Control-operator boundaries. `cmd;# note \` was a real
-		// bypass: the backslash survived the strip, the line was joined
-		// to the next one, the joined command began with `#`, and a
-		// `git fetch --all` on that next line was never judged.
-		// Verified against bash: `echo A;#c` prints A, and `echo A|#c`
-		// / `echo A >#c` are syntax errors precisely BECAUSE `#c` is
-		// eaten as a comment, leaving the pipeline/redirect unfinished.
+		// Operator boundaries (`;` `&` `|` are POSIX control operators;
+		// `<` `>` are redirection operators — both kinds end a word, so
+		// both start a comment). `cmd;# note \` was a real bypass: the
+		// backslash survived the strip, the caller joined the next line
+		// on, and the piece carrying the fetch then began with `#`.
+		// Every row below was checked against bash, and every operator
+		// member has a row here: dropping any one of them from
+		// isShellWordBoundary must fail this table (round 17 L10: five
+		// of the nine members were pinned by nothing when first added).
 		{"comment after control operator", "cmd;# note", "cmd;"},
 		{"backslash in control-operator comment is not continuation", "true;# note \\", "true;"},
 		{"comment after pipe", "cmd |#note", "cmd |"},
 		{"comment after redirect", "cmd >#note", "cmd >"},
+		{"comment after input redirect", "cmd <#note", "cmd <"},
+		{"comment after background operator", "cmd &#note", "cmd &"},
+		{"comment after subshell open", "(#note", "("},
+		{"comment after tab", "cmd\t#note", "cmd\t"},
+		// `)` is NOT a boundary here, deliberately. It ends a word only
+		// when it closes a subshell; closing `$(…)`, `$((…))` or `<(…)`
+		// it is part of the word, so bash keeps a following `#` literal
+		// (`echo $(echo A)#c` prints `A#c`). Treating `)` as a boundary
+		// truncated such a line and made the facade tripwire report a
+		// CORRECT fetch as missing its refspecs. Distinguishing the two
+		// needs `$(`/`<(` nesting depth, which this helper does not
+		// track — so it under-strips, which is the safe direction and
+		// is what the godoc's "no `$(…)`" disclaimer already promised.
+		{"hash after a command substitution stays literal", "echo $(date)#c", "echo $(date)#c"},
+		{"hash after an arithmetic expansion stays literal", "echo $((1+2))#c", "echo $((1+2))#c"},
+		{"hash after a subshell close is left alone (deliberate under-strip)", "( echo A )#c", "( echo A )#c"},
 		{"single-quoted hash", "x --opt='a # b' --prune", "x --opt='a # b' --prune"},
 		{"double-quoted hash", "x --opt=\"a # b\" --prune", "x --opt=\"a # b\" --prune"},
 		{"escaped hash", "echo \\# not a comment", "echo \\# not a comment"},

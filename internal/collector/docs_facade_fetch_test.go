@@ -431,6 +431,17 @@ func TestJudgeBareFetchJoinsContinuations(t *testing.T) {
 		{"trailing-comment-backslash-does-not-swallow-a-stale-fetch",
 			"git -C \"$CLONE_PATH\" fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' --prune  # note \\\ngit -C \"$CLONE_PATH\" fetch --all\n",
 			2, "4: shell block runs `git fetch --all`"},
+		// The twin above, with the comment opening after a `;` instead
+		// of after a space. This is the shape Copilot's PR #198 found:
+		// before the operator boundary landed in StripShellComment, the
+		// backslash survived, the next line was joined on, and the
+		// piece carrying the stale fetch began with `#` and was never
+		// judged — the whole block passed clean. Without this row the
+		// judge-level behaviour that fix restores is pinned nowhere:
+		// reverting the boundary predicate leaves this package green.
+		{"operator-preceded-comment-backslash-does-not-swallow-a-stale-fetch",
+			"git -C \"$CLONE_PATH\" fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' --prune;# note \\\ngit -C \"$CLONE_PATH\" fetch --all\n",
+			2, "4: shell block runs `git fetch --all`"},
 		{"prune-tags-is-not-prune",
 			"git -C \"$CLONE_PATH\" fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' --prune-tags\n",
 			1, "3: shell block's fetch lacks --prune"},

@@ -150,8 +150,13 @@ After API data is processed, the facade phase handles git-level data.
 The repo is cloned as a bare repo (or fetched if a clone already exists):
 
 ```bash
-git clone --bare <url> <path>     # first time
-git fetch --all                   # subsequent runs
+REPO_URL=https://github.com/augurlabs/augur
+CLONE_PATH=/data/aveloxis-repos/augurlabs-augur.git
+git clone --bare "$REPO_URL" "$CLONE_PATH"   # first time
+# subsequent runs — an explicit refspec, because `git clone --bare`
+# writes no fetch refspec: a bare `git fetch --all` downloads objects
+# but never advances refs/heads/*, leaving the clone permanently stale
+git -C "$CLONE_PATH" fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' --prune
 ```
 
 Bare clones are permanent and stored in the `repo_clone_dir` directory.
@@ -281,7 +286,9 @@ After SCC, [ScanCode Toolkit](https://github.com/aboutcode-org/scancode-toolkit)
 **Invocation:**
 
 ```bash
-scancode -clpi --only-findings --json <output-file> --quiet --timeout 300 <path>
+OUTPUT=/tmp/aveloxis-scancode/repo_123.json   # the JSON the worker ingests
+CHECKOUT=/tmp/aveloxis-scancode/repo_123      # the temporary clone
+scancode -clpi --only-findings --json "$OUTPUT" --quiet --timeout 300 "$CHECKOUT"
 ```
 
 | Flag | Purpose |

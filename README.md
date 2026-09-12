@@ -583,25 +583,27 @@ Tools that are already installed are skipped. The command verifies each tool is 
 ### `aveloxis start` — Start background processes
 
 ```bash
-aveloxis start serve   # scheduler + monitor → ~/.aveloxis/aveloxis.log
-aveloxis start web     # web GUI             → ~/.aveloxis/web.log
-aveloxis start api     # REST API            → ~/.aveloxis/api.log
-aveloxis start all     # all three at once
+aveloxis start serve            # scheduler + monitor       → ~/.aveloxis/aveloxis.log
+aveloxis start web              # web GUI                   → ~/.aveloxis/web.log
+aveloxis start api              # REST API                  → ~/.aveloxis/api.log
+aveloxis start scancode-worker  # dedicated scancode worker → ~/.aveloxis/scancode-worker.log
+aveloxis start all              # serve + web + api (never the scancode worker)
 ```
 
-Launches the specified component(s) as detached background processes. Output is appended to log files in `~/.aveloxis/`. PID files are written to `~/.aveloxis/aveloxis-{serve,web,api}.pid` for reliable process tracking. If a component is already running, the command reports it and skips the launch.
+Launches the specified component(s) as detached background processes. Output is appended to log files in `~/.aveloxis/`. PID files are written to `~/.aveloxis/aveloxis-{serve,web,api,scancode-worker}.pid` for reliable process tracking. If a component is already running, the command reports it and skips the launch.
 
 ### `aveloxis stop` — Stop background processes
 
 ```bash
-aveloxis stop serve    # stop only the scheduler
-aveloxis stop web      # stop only the web GUI
-aveloxis stop api      # stop only the REST API
-aveloxis stop all      # stop all three
-aveloxis stop          # (no args) same as 'all'
+aveloxis stop serve            # stop only the scheduler
+aveloxis stop web              # stop only the web GUI
+aveloxis stop api              # stop only the REST API
+aveloxis stop scancode-worker  # stop the dedicated scancode worker
+aveloxis stop all              # stop serve + web + api (never the scancode worker)
+aveloxis stop                  # (no args) same as 'all'
 ```
 
-Sends SIGTERM to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed.
+Sends SIGTERM to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect.
 
 ### `aveloxis sbom` — Generate Software Bill of Materials
 
@@ -952,11 +954,12 @@ Aveloxis creates 20 materialized views compatible with [8Knot](https://github.co
 
 ### Database Schema
 
-Three schemas in PostgreSQL with full parity to Augur's `augur_data` and `augur_operations`, plus a dedicated schema for ScanCode results:
+Four schemas in PostgreSQL: two with full parity to Augur's `augur_data` and `augur_operations`, a dedicated schema for ScanCode results, and one carrying the Augur-compatibility views:
 
 - **`aveloxis_data`** (101 tables + 20 materialized views) — All collected data: repos, issues, PRs, commits (per-file), commit parents, commit messages, messages, events, releases, contributors, contributor identities/aliases/affiliations, dependencies/SBOM, sentiment/NLP analysis, LSTM anomaly detection, topic modeling, Facade aggregates (dm_repo_annual/monthly/weekly, dm_repo_group_annual/monthly/weekly), repo labor/complexity, DEI badging, CHAOSS metrics, network analysis, repo insights, and more. Plus 20 materialized views for 8Knot compatibility.
 - **`aveloxis_ops`** (42 tables) — Operational tables: collection queue, JSONB staging store, collection status (tracks core/secondary/facade/ML phases independently), API credentials, users/auth/sessions, config, worker history/jobs, network weighted tables.
 - **`aveloxis_scan`** (4 tables) — ScanCode per-file license and copyright detection: `scancode_scans` (scan metadata), `scancode_file_results` (per-file SPDX license, copyrights, holders, packages as JSONB), plus `_history` tables for both.
+- **`aveloxis_augur_data`** (views only, no tables) — Augur-compatibility views for 8Knot: `repo`, `repo_info`, `issues`, `pull_requests`, `releases`, `message`. Only the entities whose column names differ from Augur's need a view; 8Knot reads with `search_path = aveloxis_augur_data,aveloxis_data` so everything else resolves straight through to the real tables.
 
 Tables omitted from Augur (junk): `_transfer_testing`, `_transfer_training`, `akl;fjlk;a` (renamed to `dei_badging`), `analysis_log`, `all`, `github_users_2`, `worker_oauth_copy1`.
 

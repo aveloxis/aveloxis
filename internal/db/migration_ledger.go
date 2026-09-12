@@ -132,7 +132,7 @@ func runOnceSeedIfApplied(ctx context.Context, pg *PostgresStore, logger *slog.L
 			"label", label, "applied_since", appliedSince, "error", err)
 		return false
 	}
-	if prior == "" || !schemaVersionAtLeast(prior, appliedSince) {
+	if prior == "" || !SchemaVersionAtLeast(prior, appliedSince) {
 		return true
 	}
 	tag, err := pg.pool.Exec(ctx, `
@@ -149,9 +149,9 @@ func runOnceSeedIfApplied(ctx context.Context, pg *PostgresStore, logger *slog.L
 	return true
 }
 
-// schemaVersionAtLeast compares dotted numeric versions ("0.27.37").
+// SchemaVersionAtLeast compares dotted numeric versions ("0.27.37").
 // Malformed input compares false (the caller then runs the step).
-func schemaVersionAtLeast(have, want string) bool {
+func SchemaVersionAtLeast(have, want string) bool {
 	parse := func(v string) ([]int, bool) {
 		parts := strings.Split(strings.TrimSpace(v), ".")
 		out := make([]int, 0, len(parts))

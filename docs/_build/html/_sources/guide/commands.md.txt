@@ -16,8 +16,8 @@ aveloxis serve [flags]
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--monitor` | string | `":5555"` | Address for the monitoring dashboard and REST API. Set to `":0"` to disable. |
-| `--workers` | integer | `1` | Number of concurrent collection workers. Each worker claims one repo at a time from the queue. |
+| `--monitor` | string | `"127.0.0.1:5555"` | Address for the monitoring dashboard (the REST API is a separate process — see `aveloxis api`). Always started with serve. |
+| `--workers` | integer | config `collection.workers` (default `12`); flag overrides | Number of concurrent collection workers. Each worker claims one repo at a time from the queue. The cobra flag default is 1, but when the flag is not explicitly set, serve uses `collection.workers` from `aveloxis.json`. |
 | `--augur-keys` | boolean | `false` | Also load API keys from Augur's `augur_operations.worker_oauth` table. |
 
 ### Behavior
@@ -36,9 +36,22 @@ The scheduler also runs these background tasks:
 | Task | Interval | Description |
 |---|---|---|
 | Org refresh | Every 4 hours | Re-fetches org membership lists |
-| Contributor breadth | Every 6 hours | Discovers cross-repo contributor activity via GitHub Events API |
-| Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes all 19 matviews, resumes |
+| Contributor breadth | Every 15 minutes (config `breadth_interval_minutes`) | Discovers cross-repo contributor activity via GitHub Events API |
+| Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes all 20 materialized views, resumes |
 | Stale lock recovery | Every 5 minutes | Re-queues jobs locked for more than 1 hour |
+
+### Scancode worker tuning
+
+`aveloxis serve` also runs a decoupled `ScancodeWorker` pool (v0.21.0+) for per-file license + copyright scanning. The pool's behavior is tuned via the `collection` block of `aveloxis.json` — no CLI flag. The most operationally relevant knobs:
+
+| `aveloxis.json` field | Default | What to change it for |
+|---|---|---|
+| `scancode_workers` | `2` | More concurrent scancode invocations (cap by CPU cores). |
+| `scancode_max_in_memory` | `5000` | **Raise on RAM-rich hosts** (e.g. `50000` on a host with hundreds of GB) so scancode keeps more per-file scan state in memory instead of spilling to a tempfile. Linux-kernel / chromium-class monorepos benefit most. Memory cost is roughly `scancode_workers × --processes × scancode_max_in_memory × per-file working set`, so account for the multiplier when sizing. v0.25.2+. |
+| `scancode_run_timeout_hours` | `2` | Raise on fleets skewed toward big repos so the per-job timeout starts higher (default is adaptive — every wall-clock timeout doubles the next attempt's budget up to `scancode_run_timeout_cap_hours`). |
+| `scancode_cadence_days` | `180` | Lower for testing or when source-license churn is unusually high. |
+
+See [`configuration.md` -> scancode worker](../getting-started/configuration.md) for the full per-field reference and the v0.21.x → v0.25.x context.
 
 ### Examples
 
@@ -107,11 +120,105 @@ See the [Web GUI guide](web-gui.md) for detailed setup instructions.
 
 ---
 
+## `aveloxis api`
+
+Starts the REST API server on `127.0.0.1:8383` unless configured
+otherwise. Serves repo statistics, weekly time series, dependency
+licenses, scancode results, SBOM downloads, repo search, and the
+Augur-compatible metric endpoints. The web GUI's charts and the
+comparison page load their data from this process.
+
+```bash
+aveloxis api                        # 127.0.0.1:8383, or api.addr from the config
+aveloxis api --addr 0.0.0.0:9383    # override for this invocation
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--addr` | string | *(from config)* | Listen address for the API server. Overrides `api.addr`; when neither is set the default is `127.0.0.1:8383`. |
+
+The listen address is normally set with `api.addr` in `aveloxis.json`
+(v0.28.19), because `aveloxis start api` spawns the process with only
+`--config` — a flag-only setting could not reach a backgrounded API,
+and two instances on one host collided on 8383. The default is
+loopback on purpose; see
+[Reaching the API from another host](../getting-started/configuration.md#reaching-the-api-from-another-host)
+before binding a routable address, and remember that
+`web.api_internal_url` has to follow the API when it moves.
+
+Run alongside `aveloxis serve` and `aveloxis web` — `aveloxis start all`
+starts all three. See the [REST API guide](api.md) for the endpoint
+reference.
+
+---
+
+## `aveloxis scancode-worker`
+
+Runs ONLY the ScancodeWorker pool against the configured database (v0.27.6)
+— the dedicated-scancode-host deployment, following the `aveloxis api`
+single-purpose-process precedent. Scancode is the one subsystem whose
+resource profile (multi-GB shallow clones, CPU-pinned Python subprocesses,
+24-hour worst-case wall clocks) is nothing like the API-bound main pipeline;
+moving it to an adjacent machine isolates its disk/CPU blast radius while
+the shared tables (`FOR UPDATE SKIP LOCKED` claims + the
+`scancode_locked_host` column) provide all the coordination needed.
+
+```bash
+aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json
+```
+
+- **The primary server opts out** by setting `"scancode_workers": 0`
+  (an EXPLICIT 0 — an absent key keeps the default of 2) in its own
+  `aveloxis.json`.
+- **No API keys required** — scancode clones anonymously; this command
+  starts without any `worker_oauth` rows (unlike `aveloxis serve`).
+- **Does NOT run schema migrations** (the v0.21.5 contract: only `serve`
+  and `migrate` do). It checks the schema version at startup and logs an
+  ERROR pointing at `aveloxis migrate` when the DB is behind.
+- Writes its PID to `~/.aveloxis/aveloxis-scancode-worker.pid`, and is
+  managed like the other components: `aveloxis start scancode-worker` /
+  `aveloxis stop scancode-worker` (v0.29.4). It is never part of `all`
+  (a primary that still runs its in-serve pool would double up).
+- All `collection.scancode_*` knobs apply (workers, cadence, clone dir,
+  adaptive timeouts, ignore globs, timeout-cap strikes).
+- **Do not run `aveloxis serve` on the dedicated host.** `serve` is the
+  full scheduler — it migrates and collects — whatever knobs the config
+  carries. Since v0.29.4 the incident's shape (a binary AHEAD of the
+  schema stamp) is refused twice: the `start serve` deploy gate refuses
+  when the stamp is behind the binary (no migration of that binary has
+  completed here — the ladder's step 2, `aveloxis migrate --skip-views`),
+  and serve's own startup migration refuses to run a full pass while
+  another `aveloxis-serve` is connected. A same-version `start serve`
+  is NOT refused — it would start a second full scheduler — so both the
+  gate and serve's log say when another `aveloxis-serve` is already
+  connected; `stop` scopes its backend check to this host.
+
+Full recipe — Postgres remote access, minimal config template, systemd
+unit, libmagic version-lock — in the
+[dedicated scancode host guide](dedicated-scancode-host.md).
+
+---
+
+## `aveloxis test-mail`
+
+Sends a test email through the configured Gmail SMTP settings (v0.20.14).
+Validates the `mail` block of `aveloxis.json` first (fail-fast on syntactic
+mistakes like a bare domain in `gmail_user` or a non-App-Password), then
+actually exercises the credentials.
+
+```bash
+aveloxis test-mail you@example.org
+```
+
+Use at deploy time so the first user signup isn't the first SMTP attempt.
+
+---
+
 ## `aveloxis collect`
 
 One-shot collection of specific repos without the scheduler. Uses the **direct collection pipeline** (bypasses staging, writes directly to relational tables). Best for testing or collecting a small number of repos.
 
-```bash
+```text
 aveloxis collect [flags] <url> [<url> ...]
 ```
 
@@ -143,7 +250,7 @@ aveloxis collect \
 
 Adds repositories to the collection queue. Platform is auto-detected from the URL.
 
-```bash
+```text
 aveloxis add-repo [flags] <url> [<url> ...]
 ```
 
@@ -190,7 +297,7 @@ aveloxis add-repo --from-augur
 
 Stores API keys in the database for use during collection.
 
-```bash
+```text
 aveloxis add-key [flags] [<token>]
 ```
 
@@ -220,7 +327,7 @@ aveloxis add-key --from-augur
 
 Pushes a repository to the front of the collection queue.
 
-```bash
+```text
 aveloxis prioritize <url>
 ```
 
@@ -240,6 +347,35 @@ Where `42` is the repo's `repo_id`.
 
 ---
 
+## `aveloxis recollect`
+
+Flags one or more repositories for a **full** (`since=zero`) re-collection on their next scheduler cycle.
+
+```text
+aveloxis recollect <url>...
+```
+
+Sets the `force_full_collect` flag on each named repo's `aveloxis_ops.collection_queue` row. When the scheduler dequeues a flagged repo, `determineSince()` returns zero time, triggering a full re-collection regardless of `last_collected`. The flag clears itself on the next successful completion.
+
+```bash
+aveloxis recollect https://github.com/chaoss/augur
+aveloxis recollect https://github.com/a/b https://github.com/c/d     # multiple
+```
+
+Use this command:
+
+- After a bugfix or schema change that invalidates previously-collected data for a specific repo.
+- To manually force a refresh when you suspect the incremental-since window missed something.
+- In combination with `aveloxis prioritize <url>` to start the full re-collection immediately rather than at the repo's normal due time.
+
+### Automatic triggering (v0.18.24+)
+
+The scheduler also sets this flag **automatically** when a collection ends with an error that indicates incomplete PR child data — specifically the GraphQL PR batch error classes (stream CANCEL mid-body, "Timeout on validation of query", or retry exhaustion). The next cycle then backfills whatever the failed batch missed. Operators see a `force_full_recollect set` WARN log line when auto-flagging fires.
+
+See the [troubleshooting guide](troubleshooting.md#graphql-pr-batch-errors-on-large-repos) for details on the error classes that trigger auto-flagging.
+
+---
+
 ## `aveloxis migrate`
 
 Creates or updates the database schema.
@@ -248,26 +384,270 @@ Creates or updates the database schema.
 aveloxis migrate
 ```
 
-Creates 108 tables and 19 materialized views across two PostgreSQL schemas:
+Creates 147 tables and 20 materialized views across three PostgreSQL schemas:
 
-- **`aveloxis_data`** (84 tables + 19 materialized views) -- all collected data
-- **`aveloxis_ops`** (24 tables) -- operational state
+- **`aveloxis_data`** (101 tables + 20 materialized views) -- all collected data
+- **`aveloxis_ops`** (42 tables) -- operational state
+- **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.
 
 Safe to run repeatedly. All DDL uses `CREATE ... IF NOT EXISTS` and inserts use `ON CONFLICT DO NOTHING`. Does not touch Augur schemas if sharing a database.
 
+Upgrading an existing deployment across many releases? `migrate` covers every schema change and one-shot SQL backfill, but a separate set of operator-run heal commands (API-calling or long-running repairs) is deliberately not a migration — see [Upgrading](../getting-started/upgrading.md) for the ordered list with the release that introduced each.
+
+### The completed-backfill ledger (v0.28.4)
+
+Expensive **one-shot data steps** — keyset backfills, history rotations, dedups, the timestamp cleanup — record their completion in `aveloxis_ops.migration_ledger` and are skipped on every later migrate. Before the ledger, every version bump re-walked all of them as no-ops (~1.5–2.5 hours on a fleet-scale database). DDL steps (tables, columns, indexes, views) are deliberately **not** ledgered: an explicit `aveloxis migrate` still heals hand-dropped objects on every run.
+
+A step is recorded only after it completes with zero errors — a failed step re-runs on the next migrate automatically. To force a specific step to re-run (for example after hand-repairing data it targets), delete its ledger row and migrate again:
+
+```sql
+-- See what has been recorded:
+SELECT step_label, completed_at, tool_version FROM aveloxis_ops.migration_ledger ORDER BY completed_at;
+
+-- Replay one step:
+DELETE FROM aveloxis_ops.migration_ledger WHERE step_label = 'v0.27.104 backfill pull_requests.meta_head_id/meta_base_id';
+```
+
+then run `aveloxis migrate --skip-views`. Every ledgered step is idempotent, so replays are always safe.
+
 ---
+
+## `aveloxis backfill-identities`
+
+One-off repair for missing identity attribution (v0.26.5 — see
+`summary/identity-attribution-audit-2026-07-09.md`). The 2026-07-09
+audit found `cntrb_id` 0% populated on `issue_assignees`,
+`pull_request_assignees`, `pull_request_reviewers`, and
+`pull_request_meta`, and `issues.closed_by_id` at 0.015% — while the
+raw identity material (platform user ids) was stored at ~100%.
+
+```bash
+aveloxis backfill-identities --dry-run          # candidate counts, no writes
+aveloxis backfill-identities                    # all phases
+aveloxis backfill-identities --phase 1          # assignment joins + pr_meta owners + pr_repo owners (SQL only)
+aveloxis backfill-identities --phase 2          # closed_by from issue events (SQL only)
+aveloxis backfill-identities --phase 3          # closed_by GraphQL timeline sweep (needs API keys)
+```
+
+Flags: `--dry-run`, `--batch-size` (primary-key window width per UPDATE batch, default
+100000; on fleet-scale tables use 1000000), `--limit` (cap per phase, 0 = unbounded), `--phase`
+(`all|1|2|3`), `--sweep-batch` (issues per GraphQL query in phase 3,
+default 100).
+
+Phases 1–2 are pure SQL derivation (no API calls; measured production
+coverage 99.87–99.98% for assignments). Since v0.27.104, phase 1 also
+runs the `pull_request_repo.pr_cntrb_id` owner pass — keyset windows
+over `pr_repo_id` on a table that is ~41.2M rows on the production
+fleet, so expect phase 1's wall time to be dominated by it on large
+installations (use `--batch-size 1000000` there). Like the other
+phases it is resumable and idempotent: interrupted runs re-walk
+windows cheaply because filled rows (`pr_cntrb_id IS NOT NULL`) drop
+out of the candidate set. Owner logins that match zero contributors
+(deleted forks) or MORE THAN ONE active contributor (ambiguous —
+v0.27.123) stay NULL; no fabricated attributions. Both owner passes
+are GitHub-only — GitLab rows heal forward via ID-qualified owner
+refs on re-collection. Phase 3 fetches closers the
+history-capped events feed cannot reach, via per-issue
+`timelineItems(itemTypes:[CLOSED_EVENT])` batched ~100 issues per
+GraphQL query (~3 points each). Run phase 2 after the v0.26.3
+event-healing cohort completes for best coverage; all phases are
+idempotent and resumable. Rows whose identity genuinely isn't
+derivable stay NULL — no data is fabricated.
+
+## `aveloxis dedup-repos`
+
+Merges case-variant duplicate repositories (v0.25.32). GitHub and GitLab
+treat owner/repo URLs case-insensitively, so
+`github.com/azure/azure-sdk-tools` and `github.com/Azure/azure-sdk-tools`
+are the **same repository** — but fleets that predate v0.25.32 could
+accumulate both as separate rows, each collected in full (doubled API
+budget, storage, and double-counted analytics).
+
+```bash
+aveloxis dedup-repos --dry-run      # show the plan (first 20 pairs)
+aveloxis dedup-repos --limit 50     # canary batch
+aveloxis dedup-repos                # full run — re-run until "0 pairs"
+```
+
+### Flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--dry-run` | false | Print the merge plan without writing. Shows winner/loser URLs + repo_ids, per-side last-collected dates, and whether either side is mid-collection. |
+| `--batch-size` | 50 | Pairs merged per batch. Each pair is one heavy transaction (repoints + child-data deletes). |
+| `--limit` | 0 | Cap total pairs merged this run (0 = no cap). |
+
+### What each merge does
+
+Per pair, winner = the **oldest** `repo_id`, in one transaction:
+
+1. Repoints `user_repos` to the winner — every user group that
+   referenced either variant keeps the repo and immediately sees the
+   winner's collected data.
+2. Repoints shared-copy rows (`messages`, `email_message`,
+   `commit_comment_ref`, `foundation_membership`) — these tables are
+   globally unique, so the pair shares one copy. (`contributor_repo` is
+   deliberately untouched: it is the breadth worker's observational
+   record of contributors' GitHub-wide activity, keyed by the numeric
+   `gh_repo_id`, not a catalog reference.)
+3. Deletes the loser's duplicated child data (issues, PRs, commits,
+   releases, dependency scans, ...) leaves-first, then the loser row
+   itself. Nothing is lost: both sides collected the same repository.
+4. Enqueues the winner if it has never been collected.
+
+Pairs with either side `status='collecting'` are **left out of each
+batch's window** so they cannot stall the run (a mid-collection pair at
+the head of the alphabetical order used to occupy a slot every round);
+the end-of-run summary reports how many groups remain — re-run once
+those jobs finish. The command is idempotent; merged pairs drop out of
+the candidate set.
+
+### Precondition
+
+The merge refuses to start until the v0.28.18 migrate has built the
+`email_message` FK indexes (`idx_email_message_repo_id` /
+`idx_email_message_signaled_repo_id`) — without them every pair would
+sequential-scan that table on the repoints and again at commit. Run
+`aveloxis migrate --skip-views` on the new binary first; the refusal
+names the missing index.
+
+### After the run
+
+```bash
+aveloxis migrate --skip-views   # builds uq_repos_repo_git_ci — the permanent
+                                # DB-level backstop (skipped with a WARN while
+                                # duplicates remain)
+aveloxis refresh-views          # matviews stop double-counting immediately
+```
+
+Generic-git repos (platform 3) are never touched: unknown hosts may
+legitimately be case-sensitive, so their URLs stay byte-exact.
+
+---
+
+## `aveloxis migrate-cntrb-ids`
+
+One-shot opt-in data migration (v0.22.2): rewrites contributors whose
+`cntrb_id` is a legacy random UUID to the deterministic
+`PlatformUUID(platform_id, platform_user_id)` form, cascading through all
+child tables via the v0.22.1 `ON UPDATE CASCADE` FKs.
+
+```bash
+aveloxis migrate-cntrb-ids --dry-run     # show the plan
+aveloxis migrate-cntrb-ids               # execute (batched transactions)
+aveloxis migrate-cntrb-ids --limit 10000 # incremental run
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | `false` | Show the plan and a sample without writing. |
+| `--batch-size` | `5000` | Rows per transaction (use 500 on fleet-scale DBs). |
+| `--limit` | `0` | Cap rows migrated this run (0 = no cap). |
+| `--skip-precheck` | `false` | DANGEROUS: skip the ON UPDATE CASCADE precheck. |
+
+Run `aveloxis refresh-views` afterwards. Collision pairs are left for
+`merge-cntrb-collisions`.
+
+---
+
+## `aveloxis merge-cntrb-collisions`
+
+Soft-merges the rename-collision pairs `migrate-cntrb-ids` skips (v0.22.3):
+same platform user under two rows. Moves identities to the winner, merges
+non-empty fields, inserts an alias, marks the loser `cntrb_deleted = 1`
+(row stays in place — no FK rewrites).
+
+```bash
+aveloxis merge-cntrb-collisions --dry-run
+aveloxis merge-cntrb-collisions
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | `false` | Show the merge plan without writing. |
+| `--batch-size` | `500` | Pairs merged per batch (one transaction each). |
+| `--limit` | `0` | Cap total pairs merged this run. |
+
+---
+
+## `aveloxis heal-collection-gaps`
+
+```bash
+aveloxis heal-collection-gaps --dry-run          # list candidates + gap sizes
+aveloxis heal-collection-gaps --repo-id 49290    # heal one repo
+aveloxis heal-collection-gaps --workers 4        # the fleet pass
+```
+
+The isolated healer (v0.27.140) for issues/PRs lost to the
+pre-v0.27.139 incremental blind-window bug. Finds repos whose metadata
+issue/PR counts exceed the stored counts and runs a threshold-0 gap
+fill on each: list every issue/PR number from the API, diff against
+the database, fetch ONLY the missing items (with children and
+comments), stage, process.
+
+Targeted by construction — only count-gap candidates are visited
+(~5% of a typical fleet), never a 100% rescan. The candidate query is
+the resume state: healed repos drop out, so the workflow is re-running
+until "0 candidates". Safe beside a running serve: each repo is
+drain-locked for the duration of its heal, and repos mid-collection
+are skipped (a rerun catches them). Neither the lock nor the heal
+touches `last_collected`.
+
+Flags: `--dry-run`, `--limit N`, `--workers N` (default 4),
+`--repo-id N`, `--after-repo-id N` (keyset resume), `--all` (sweep
+every collected repo — the completeness mode for repos whose
+stored-but-deleted rows numerically hide the gap; not recommended for
+routine use). Exits nonzero when any repo's heal failed.
+
+Sizing, measured on a ~140K-repo fleet (2026-08-23): 6,809 candidates /
+279,100 items took ~65 hours at `--workers 4` (the largest single repo
+filled 24,845 items); reruns then converged in minutes. Expect a small
+residual candidate set that heals with `filled=0` on every rerun — repos
+whose forge metadata count exceeds what the forge's own listing returns
+(transferred or hidden items); that is the floor, not unfinished work.
+
+Run it on a binary at v0.27.139 or later — earlier binaries re-open
+the blind window on the next routine cycle. Typical ordering after an
+upgrade across the v0.27.13x train: `aveloxis migrate` first, then
+this command, then `aveloxis refresh-views` once the heal settles.
 
 ## `aveloxis refresh-views`
 
-Manually refreshes all 19 materialized views.
+Manually refreshes all 20 materialized views.
 
 ```bash
-aveloxis refresh-views
+aveloxis refresh-views                # the materialized views
+aveloxis refresh-views --aggregates   # + the dm_repo_* / dm_repo_group_* aggregate tables
 ```
 
 Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. Views are also rebuilt automatically every Saturday by `aveloxis serve`.
+
+`--aggregates` (v0.28.18) additionally runs the `dm_` aggregate pass after the views — the same per-repo loop the weekly rebuild runs unless `collection.matview_rebuild_skip_dm_aggregates` is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the only way the `dm_` tables update. The pass holds a database advisory lock for its whole duration — if the weekly scheduler rebuild (or another `--aggregates` run) is already in it, the command exits nonzero with `another dm_ aggregate rebuild is already running` instead of interleaving two DELETE+INSERT passes over tables that have no unique key.
+
+Both halves keep going past a failing view or repo but **exit nonzero** when any failed (v0.28.18): the error names the first ten failures with the full count, the rest of the pass's work stands, and a view failure does not skip the aggregate pass. Scripts wrapping the command will see exits they never saw before — that is the point; re-run after fixing the named view or repo.
+
+---
+
+## `aveloxis sbom`
+
+Generates a CycloneDX or SPDX Software Bill of Materials from the
+dependency data collected for a repository.
+
+```bash
+aveloxis sbom 42 --format cyclonedx -o sbom.json
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--format` | `cyclonedx` | Output format: `cyclonedx` or `spdx`. |
+| `--output`, `-o` | stdout | Write to a file instead of stdout. |
+| `--store` | `false` | Also store the SBOM in `repo_sbom_scans`. |
+
+The repo must have been collected with dependency analysis (automatic
+under `aveloxis serve`). SBOMs are also downloadable from the web GUI and
+the REST API.
 
 ---
 
@@ -279,21 +659,1057 @@ Installs optional analysis tools.
 aveloxis install-tools
 ```
 
-Currently installs [scc](https://github.com/boyter/scc) (Sloc Cloc and Code) for per-file code complexity analysis. Requires Go to be installed.
+Installs three external analysis tools: [scc](https://github.com/boyter/scc) (per-file code complexity; requires Go), [scorecard](https://github.com/ossf/scorecard) (OpenSSF security posture; release tarball), and [scancode](https://github.com/nexB/scancode-toolkit) (per-file license/copyright scanning; requires **Python 3.10+** and pipx — also injects the `typecode-libmagic` plugin). If the Python prerequisite is missing, scancode installation fails and per-file license scanning never runs; see `aveloxis upgrade-tools` for updating installed tools.
 
 If `scc` is not installed, the code complexity phase is silently skipped during collection.
 
 ---
 
-## `aveloxis stop`
+## `aveloxis upgrade-tools`
 
-Stops all running `aveloxis serve` instances.
+Upgrades the external analysis tools in place (v0.23.6). Unlike
+`install-tools` (which short-circuits when a tool exists), this re-runs
+the install path to pull updates: `go install ...@latest` for scc, a fresh
+release tarball for scorecard, and `pipx upgrade` for scancode (preserving
+venv customizations) plus a `typecode-libmagic` re-injection.
 
 ```bash
-aveloxis stop
+aveloxis upgrade-tools
 ```
 
-Sends `SIGTERM` to all running `aveloxis serve` processes. Active workers finish their current API call, queue locks are released, and staging data is preserved for the next startup.
+Exits non-zero if any tool fails to upgrade, so it can run from a
+maintenance cron.
+
+---
+
+## `aveloxis start`
+
+Launches aveloxis components as detached background processes with log output redirected to files in `~/.aveloxis/`.
+
+```bash
+aveloxis start serve            # scheduler + monitor        → ~/.aveloxis/aveloxis.log
+aveloxis start web              # web GUI                    → ~/.aveloxis/web.log
+aveloxis start api              # REST API                   → ~/.aveloxis/api.log
+aveloxis start scancode-worker  # dedicated scancode worker  → ~/.aveloxis/scancode-worker.log
+aveloxis start all              # serve + web + api (never the scancode worker)
+```
+
+PID files are written to `~/.aveloxis/aveloxis-{serve,web,api,scancode-worker}.pid`. If a component is already running, the command reports it and skips the launch. `scancode-worker` (v0.29.4) is the dedicated-host process from [Dedicated Scancode Host](dedicated-scancode-host.md); `all` deliberately excludes it.
+
+The exit status is the contract for scripts: a component that could not
+be started — a pidfile that cannot be read (the command refuses rather
+than risk a second scheduler on the host), a log file that cannot be
+opened, a failed exec — makes the command exit nonzero, naming each
+failure, after every requested component has been attempted. `start all`
+therefore still brings up web and api beside a refused serve, and says
+so. An already-running component is a no-op and exits 0.
+
+Log files are opened in append mode — existing content is preserved across restarts.
+
+Note: `start` does NOT survive a reboot. For production hosts that should
+come back automatically after a restart, run the three processes under
+systemd instead — see [Running Aveloxis as a Service](running-as-a-service.md).
+Pick one manager per host: once the systemd units own the processes,
+`aveloxis start`/`stop` must not be used there.
+
+---
+
+## `aveloxis stop`
+
+Gracefully stops background aveloxis processes.
+
+```bash
+aveloxis stop serve            # stop only the scheduler
+aveloxis stop web              # stop only the web GUI
+aveloxis stop api              # stop only the REST API
+aveloxis stop scancode-worker  # stop the dedicated scancode worker
+aveloxis stop all              # stop serve + web + api (never the scancode worker)
+aveloxis stop                  # (no args) same as 'all'
+```
+
+Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. `stop all` names a scancode worker it left running.
+
+Nothing to stop is exit 0 — `stop` is idempotent. A process that was
+found but could not be signaled (typically `operation not permitted` on a
+process another user started) is a failure: its pidfile is left in place,
+every other requested component is still stopped, and the command exits
+nonzero naming the one it could not. A pidfile that exists but cannot be
+read — unreadable, or carrying something that is not a PID — is the third
+arm: it is not evidence that the component is stopped, so the command
+still tries the `pgrep` fallback — which normally finds a component that
+`start` launched, so you will see `Stopped serve (PID N)` AND a nonzero
+exit reading `serve stopped, but: pidfile left in place …`. The file is
+neither stale nor live, so it is left for you to inspect and delete by
+hand; the next `start` refuses on it until you do. If `pgrep` finds
+nothing either, the exit is still nonzero and reads `serve: pidfile left
+in place …` — nothing was stopped, and nothing could be confirmed. A
+`pgrep` that itself fails (not installed, or any exit other than its
+documented "no match") is likewise not evidence of absence: the command
+exits nonzero reading `serve: pgrep for serve: …`.
+
+After SIGTERM the command watches `pg_stat_activity` for the component's
+backends and, past the shutdown budget, prints the persistent PIDs with a
+`pg_terminate_backend` recipe. Since v0.29.4 that recipe is offered for
+**this host's** backends only — the ones whose client address is this
+session's own, or local to the database host (a unix socket, or loopback
+in either address family). Every other backend carrying the same tag
+falls into one of two reported arms, is never waited on, and is never
+offered for termination:
+
+- **Another client address** — normally another machine running this
+  component against the same database (the primary's serve seen from a
+  dedicated scancode host, or the reverse). The check knows the address,
+  not the machine, so a serve on THIS host that dialed a different DSN
+  address reads the same way.
+- **Address not visible** — a backend of a database role whose privileges
+  this one does not hold. `pg_stat_activity` shows a session's
+  `client_addr` only to roles that HOLD that session's role's privileges
+  and to roles that hold `pg_read_all_stats`'s; everyone else reads NULL,
+  the same NULL a unix socket shows. `stop` prints a no-verdict note for
+  these — neither this host's nor another's.
+
+To get a verdict on the second arm, run `stop` as that role, or grant
+this one the stats privileges:
+
+```sql
+GRANT pg_read_all_stats TO <role>;
+```
+
+Holding is the test, not membership: a `NOINHERIT` role, or one granted
+`WITH INHERIT FALSE`, is a member of `pg_read_all_stats` with none of its
+privileges and still reads NULL. On PostgreSQL 16 and later a grant's
+inherit option is fixed at GRANT time, so if the grant already exists and
+does not inherit, re-grant it with
+`GRANT pg_read_all_stats TO <role> WITH INHERIT TRUE`. Check with
+`SELECT pg_has_role(current_user, 'pg_read_all_stats', 'USAGE')`.
+
+The check needs the config (`-c`) to reach the database; without it the
+command says the check was skipped.
+
+### How a backend is placed on a host
+
+Each component tags its connection pool with an `application_name` that
+carries the component and this machine's hostname, separated by `@`:
+
+```
+aveloxis-serve@kate
+aveloxis-scancode-worker@runner-01
+aveloxis-web@kate
+aveloxis-api@kate
+```
+
+`stop` matches on the part **before** the `@` (the component) and
+compares the part **after** it (the host) against its own machine.
+
+**The rule in one sentence: a marker can only separate hosts, never
+merge them.** The client address decides, and the marker can only
+*veto* it. A backend is placed on this host when its client address is
+this host's **and** its marker does not contradict that — so a backend
+that reaches the database from a different address is never this
+host's, whatever its marker says, and two backends sharing an address
+but carrying different markers are correctly separated. Either marker
+being absent means the marker abstains and the address rule alone
+decides.
+
+The composition is deliberately one-directional: it never places a
+backend *here* that the client-address rule alone would have placed
+elsewhere. That is what keeps marker quality out of the safety
+argument — `os.Hostname()` is not unique across machines (two
+container hosts running the same compose file report the same
+hostname), so a marker collision degrades to the address rule rather
+than to a `pg_terminate_backend` recipe for a machine you are not on.
+
+Your own `pg_stat_activity` queries should match with `LIKE
+'aveloxis-%'` (which still works unchanged) or with
+`split_part(application_name, '@', 1) = 'aveloxis-serve'`. Matching the
+full tag by equality will find only the backends of one specific host.
+
+A host whose kernel will not report a hostname tags un-suffixed
+(`aveloxis-serve`) and falls back to the client-address rule.
+
+```{warning}
+**Behind a transaction pooler (pgbouncer in `transaction` or `statement`
+mode, pgcat, Odyssey), the client address is useless — the host marker
+is not.** Every client reaches PostgreSQL through the pooler, so
+`pg_stat_activity.client_addr` is the *pooler's* address for every
+backend, this host's and every other host's alike. The address rule
+alone would read them all as one host and offer a terminate recipe for
+another machine's serve. The `@host` marker survives the collapse
+because PostgreSQL stores the `application_name` the client sent and
+never rewrites it.
+
+**The residual is the upgrade window.** A backend tagged by a
+pre-v0.29.4-round-12 binary carries no marker, so it falls back to the
+address rule — and behind a pooler that rule reads it as this host's.
+Until every host on the database runs a build with the marker, treat a
+"Persistent PIDs (this host)" entry on a **pooled** deployment as
+unverified and confirm with `ps` on each host before terminating. Once
+every component is upgraded, the verdict holds through a pooler.
+
+**The other residual: one host reached over two addresses reads as
+two.** If a component was started against a DSN naming this machine's
+LAN address while `stop` runs against a `localhost` DSN (or one side
+goes through a pooler and the other does not), the addresses differ,
+the address rule says "another host", and the marker cannot overrule
+it. `stop` then reports the component's own backends under "other
+hosts" and returns without waiting out their drain. From inside the
+database that case is indistinguishable from two machines that happen
+to share a hostname, and only one of the two readings can print a
+terminate recipe for a machine you are not on — so aveloxis takes the
+safe one. **Run `stop` with the same `-c` config the component was
+started with** and the addresses match.
+
+A `session`-mode pooler is unaffected in principle only if it preserves
+the client address, which pgbouncer does not — but with markers in place
+that no longer matters for the host verdict.
+```
+
+```{note}
+`aveloxis stop` also works for processes started in the foreground (e.g., `aveloxis serve`), because all foreground processes write PID files on startup.
+```
+
+---
+
+## `aveloxis data-test`
+
+Operator-driven shadow-database verification harness for schema
+changes. Builds binaries from a tagged release and the local working
+tree, provisions two scratch databases (`aveloxis_released` and
+`aveloxis_new`), collects the same repo into each, and reports
+row-count differences. Catches data-loss regressions before they
+ship. Shipped in v0.22.8.
+
+See the full guide: [Schema-change verification](data-test.md).
+
+### Flags
+
+- `--released-tag TAG` — git tag of the released aveloxis version
+  to compare against (e.g., `0.22.6`). The tag must exist in the
+  local clone; `git fetch --tags` if missing. **Required.**
+- `--repo URL` — git URL of the test repo to collect into both
+  scratch DBs. `augurlabs/augur` is the canonical choice. **Required.**
+- `--keep-dbs` — retain the scratch DBs after the run. Default is
+  to drop them. Pass when you want to inspect a failing table via
+  `psql` after the report is written.
+- `--work-dir PATH` — where to put binaries, logs, and the report.
+  Default is `/tmp/aveloxis-data-test-<UTC-timestamp>`.
+
+### Behavior
+
+- Builds the released binary via `git worktree add` (reuses local
+  clone's objects — no remote fetch).
+- Builds the local binary from the current working tree.
+- Connects to the configured PostgreSQL host using the operator's
+  `aveloxis.json` credentials. The user must have **CREATEDB
+  privilege** because the harness creates and drops scratch
+  databases.
+- Copies API keys from the operator's primary `aveloxis_ops.api_keys`
+  table into both scratch DBs — operator doesn't re-paste tokens.
+- Collections run **sequentially** (~30 min each), not parallel,
+  because both sides share the API key pool.
+- Exit code 0 on PASS or FLAG-only; exit code 1 on any FAIL (row
+  loss detected) — suitable for CI gating.
+
+### Examples
+
+```bash
+# Validate the current working tree against v0.22.6 using augur
+aveloxis data-test --released-tag 0.22.6 \
+  --repo https://github.com/augurlabs/augur
+
+# Keep scratch DBs for ad-hoc inspection after a FAIL
+aveloxis data-test --released-tag 0.22.6 \
+  --repo https://github.com/augurlabs/augur \
+  --keep-dbs
+
+# Custom work directory (useful for CI artifact retention)
+aveloxis data-test --released-tag 0.22.6 \
+  --repo https://github.com/augurlabs/augur \
+  --work-dir /var/cache/aveloxis-data-test
+```
+
+The full report is written to `<work-dir>/report.md`. See
+[Schema-change verification](data-test.md) for guidance on
+interpreting PASS / FLAG / FAIL results.
+
+---
+
+### Column-fill diff (v0.26.1)
+
+Row counts can't see a column the new binary stopped populating (the
+canonical case: `issue_labels.platform_label_id` is `0` on every row
+under the GraphQL path while row counts match exactly). After the
+row-count diff, data-test therefore also compares per-column FILL
+COUNTS — how many rows carry a meaningful value, type-aware (`<> ''`
+for text, `<> 0` for numerics, `IS NOT NULL` otherwise) — across every
+column of every base table in `aveloxis_data`, `aveloxis_ops` and
+`aveloxis_scan`. The fourth schema, `aveloxis_augur_data`, holds only
+the Augur-compatibility views — derived data with no base tables to
+diff — so it is deliberately out of scope.
+
+- **FAIL** (exit code 1): a column populated under the released binary
+  is *completely* unpopulated under the new one — a dropped mapping or
+  renamed JSON tag.
+- **FLAG**: fill counts differ — review; small drift is expected since
+  the two collections run against a live repo minutes apart.
+
+
+## `aveloxis shadow-diff`
+
+Semantic equivalence diff of issue/PR collection between two databases
+(the harness behind the REST → GraphQL refactor's per-phase validation).
+Compares issues, PRs, labels, assignees, reviewers, reviews, commits,
+files, messages, and bridge tables by platform-stable keys.
+
+```bash
+aveloxis shadow-diff --rest-dsn postgres://.../aveloxis_shadow_rest \
+                     --graphql-dsn postgres://.../aveloxis_shadow_graphql
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--rest-dsn` | (required) | Postgres DSN for the baseline database. |
+| `--graphql-dsn` | (required) | Postgres DSN for the comparison database. |
+| `--repo-id` | `0` | Restrict the diff to one repo_id (0 = all). |
+| `--json` | `false` | Machine-readable report for CI pipes. |
+
+Exit code 1 on any FAIL-level difference. For a coarser whole-schema
+row-count comparison, see `aveloxis data-test`.
+
+---
+
+## `aveloxis reconcile-repos`
+
+Heals the stranded-repo class: non-archived `repos` rows with no
+`collection_queue` row — invisible to the scheduler forever. Production
+audit (2026-07-21) root-caused the cohort to GitHub renames + prelim's
+duplicate skip+dequeue (which dequeues without archiving), plus a
+smaller lost-enqueue share. Each stranded repo is classified by a LIVE
+redirect check:
+
+- dead upstream (404/410) → archived (the outcome prelim applies)
+- redirects to a **tracked** repo → dataless duplicates heal onto the
+  winner (`HealRenamedDuplicate`); data-bearing duplicates consolidate
+  through the dedup-repos per-pair machinery (repoints + leaves-first
+  deletes)
+- redirects to an **untracked** URL → re-enqueued (prelim renames it
+  in place on the next cycle — rename detection is prelim's job)
+- alive at its own URL → re-enqueued (a lost queue row)
+
+```bash
+aveloxis reconcile-repos --dry-run   # per-repo classification, no writes
+aveloxis reconcile-repos --limit 50  # canary
+aveloxis reconcile-repos             # everything
+```
+
+The scheduler also logs a startup gauge (`non-archived repos with no
+collection_queue row`) pointing here whenever the count is non-zero.
+Re-run until stranded = 0; healed repos drop out of the set.
+
+Both consolidation arms (the dataless heal and the per-pair merge)
+share `dedup-repos`' precondition: the v0.28.18 migrate must have built
+the `email_message` FK indexes, or each such repo is skipped with a
+warning naming the migrate to run first (the other classifications —
+dead, re-enqueue — proceed) and the run exits nonzero at the end so a
+script cannot read a refused run as success.
+
+## `aveloxis generate-showcase`
+
+Renders the PUBLIC collection showcase pages (v0.27.77 growth plan):
+every admin-curated collection becomes a static, SEO-indexable HTML
+page under `<out>/showcase/`, plus a showcase index, plus the site
+`sitemap.xml` (when `--gui-root` is given — the generator is the
+single writer of the sitemap once deployed). Pages carry full
+meta/OG/JSON-LD and render ONLY collection metadata + cached per-repo
+counts — never user names, stars, or group ownership (queries run
+anonymously). Writes are atomic (tmp+rename) and pages whose
+collection was deleted or renamed are pruned.
+
+Since v0.27.78 the collection tables order by **collected issues**
+(commit counts are bot-floodable — automation repos with millions of
+machine commits headlined the tables), and the **top 5 non-fork
+repositories of each collection** also get a public repo snapshot
+page under `<out>/repos/`, deduped across collections. Forks
+(`repos.forked_from` non-empty, captured by Phase 0 since v0.27.78)
+are skipped and the next non-fork slides into the freed slot. Each
+snapshot carries the cached commit/issue/PR counts, description and
+primary language, a **static weekly-activity chart** in the signed-in
+grammar (commits + issues + PRs-opened stacked bars, PRs-merged line
+overlay; trailing 12 months, baked SVG — no JS, no endpoints), **every
+temporal CHAOSS-metric chart the signed-in repo page shows** (the
+seven store-backed metrics plus burstiness, project velocity, and the
+drive-by/repeat retention cohorts — computed through the SAME
+functions the compare API uses), each line chart carrying the live
+site's full trend grammar (dashed OLS trend, ±2σ residual tube, red
+breach dots, slope/R² chip — a Go port of `lib/trend.js` with
+identical formulas), the latest OpenSSF Scorecard table,
+and the open-vulnerability posture — with honest "not yet scanned" /
+"analysis pending" / "no collected activity" states instead of
+fabricated zeros. Collection pages highlight the featured rows and
+carry a sign-in reminder as its own row directly under them;
+everything below the cut stays forge-linked. Snapshot pages ride the
+same sitemap, prune pass, and privacy contract.
+
+v0.27.80 also emits `/showcase/compare.html` — a fully static
+comparison demo of the four featured repos with the most comparable
+activity levels, one baked SVG chart per headline metric (commits,
+issues, change requests, contributors), linked from the showcase
+index. The slug `compare` is reserved (a collection literally named
+"Compare" gets `compare-2`).
+
+```bash
+aveloxis generate-showcase \
+  --out /var/www/aveloxis-gui/showcase \
+  --gui-root /var/www/aveloxis-gui \
+  --base-url https://aveloxis.io
+```
+
+The whole run is bounded by `--timeout` (default **60m**; accepts any
+Go duration like `90m` or `2h`; `0` or negative disables the deadline
+entirely). The pre-v0.27.88 hardcoded 10-minute budget was sized
+before the snapshot pages carried the full chart set — on a fleet
+whose featured repos include kubernetes-scale projects, the ~16
+snapshot pages × ~10 analytics queries each exceed 10 minutes and the
+run died with a misleading per-query `context deadline exceeded` on
+whichever chart the clock expired at (aborting `compare.html`, the
+sitemap, and the prune pass with it). If a run still times out, raise
+`--timeout` — the first run on a cold Postgres cache is the slowest;
+subsequent hourly runs benefit from warm buffers.
+
+Runs hourly from the `aveloxis-showcase.timer` systemd unit (template
+in the aveloxis-gui repo's `deploy/` directory). Read-only on the
+schema; does not run migrations (v0.21.5 policy). Safe alongside an
+active `aveloxis serve`.
+
+## `aveloxis backfill-repo-metadata`
+
+Operator-driven fleet sweep (v0.27.79) that refreshes
+`repos.repo_description`, `primary_language`, `languages`,
+`repo_archived`, and `forked_from` from the forge APIs — one
+`FetchRepoInfo` per GitHub/GitLab repo, written through the same
+`UpdateRepoMetadata` path the collector's Phase 0 uses. Generic-git
+repos are skipped (no API).
+
+Built as a launch accelerator for fork status: v0.27.78 added fork
+capture to Phase 0, but the per-cycle forward path takes ~6–21 days
+to cover the fleet. This command front-loads it — roughly an hour for
+a 94K-repo fleet at the default 8 workers, costing ~94K GraphQL
+points (about a quarter of one hour of a 73-key pool's budget).
+
+```bash
+aveloxis backfill-repo-metadata --dry-run       # candidate count only
+aveloxis backfill-repo-metadata --limit 100     # canary
+aveloxis backfill-repo-metadata                 # full sweep
+aveloxis backfill-repo-metadata --after-repo-id 51234   # resume
+```
+
+Idempotent (every write is the forge's current truth) and resumable —
+progress lines and the summary print the last repo_id processed;
+re-run with `--after-repo-id` after an interruption. Repos that 404
+(renamed/deleted/private) are skipped and left to prelim's normal
+rename/dead-repo handling. Does not run migrations (v0.21.5 policy).
+
+## `aveloxis rewalk-whitespace`
+
+One-time full-history whitespace bootstrap (v0.27.105 — the fill-audit
+Workstream C). `commits.cmt_whitespace` was never measured while
+`SUM(cmt_whitespace)` feeds six live aggregate queries; the facade now
+measures it per cycle with Augur-parity semantics (an added blank line
+counts as whitespace, not added; a whitespace-only reformat of a
+>8-character line counts as whitespace instead of an add/remove pair —
+so `cmt_added`/`cmt_removed` on walked rows become the ADJUSTED Augur
+numbers). The per-cycle phase is incremental past a stamped marker
+(`repos.whitespace_head_hash`); this command does the full-history walk
+per repo, reusing the facade's persistent bare clones, and stamps the
+marker so every later cycle stays incremental.
+
+```bash
+aveloxis rewalk-whitespace --limit 5            # canary first
+aveloxis rewalk-whitespace --workers 8          # fleet run
+aveloxis rewalk-whitespace --repo-id 12345      # single repo
+aveloxis rewalk-whitespace --after-repo-id 51234  # keyset skip-ahead
+```
+
+**Runtime expectation** (grounded 2026-08-19): `git log -p` measured
+~209 MB/s single-threaded; the fleet's patch volume estimates at
+~5–10 TB (162.7M commits, ~146B changed lines). At 8 workers expect
+roughly **8–24 hours wall-clock** (outer bound ~2 days if disk-bound);
+the per-repo progress lines and every-50-repos running totals let you
+extrapolate from the first hour. Safe alongside a running serve —
+repos mid-collection are skipped this pass, and overlapping updates
+are same-value idempotent. Resumable by construction: the marker IS
+the resume state, so a re-run skips every already-walked repo. After
+the fleet run, `aveloxis refresh-views --aggregates` (or the next
+scheduled aggregate rebuild) picks the corrected sums into the `dm_`
+tables.
+Does not run migrations (v0.21.5 policy) — run `aveloxis migrate`
+first so the marker column exists.
+
+## `aveloxis data-verify`
+
+The standing data-verification program (v0.27.43): runs the read-only
+invariant probe battery against the configured database and exits 1 on
+any FAIL — suitable for gating releases and cron runs. Probes:
+structural invariants (case-duplicate repos, Default-group singleton,
+stranded repos, stale >24h locks, cross-kind message corruption with
+migration-state awareness), sampled count-integrity (cached queue
+counts vs actual rows, gathered vs forge metadata at the gap
+detector's 5% line, batch-vs-single stats agreement), and fill rates
+(report-only unless floors are set).
+
+```bash
+aveloxis data-verify                          # full battery, human report
+aveloxis data-verify --json                   # automation form
+aveloxis data-verify --sample 500             # wider drift/equality sample
+aveloxis data-verify --ground-truth 10        # ALSO re-fetch live GitHub
+                                              # metadata for 10 sampled repos
+                                              # and compare (needs API keys)
+aveloxis data-verify --min-identity-fill 95   # optional floors → WARN below
+```
+
+Severities: FAIL = a code-enforced invariant is broken (exit 1);
+WARN = known-and-healing state or operator-attention signal (pending
+heal worklist, stranded repos, schema behind the binary — each WARN
+names its fix command); OK = verified. Safe against production: every
+probe is read-only and bounded.
+
+## `aveloxis heal-messages`
+
+Repairs message rows corrupted by the pre-v0.27.38 cross-kind ID
+collision (issue/PR conversation comments, inline review comments, and
+review bodies share overlapping GitHub ID sequences; under the old
+two-column arbiter the later writer silently overwrote the earlier
+kind's text — 198,237 rows on the production fleet). The v0.27.38
+migration captures the affected rows into
+`aveloxis_ops.message_heal_worklist`; this command consumes it.
+
+Each pass refetches the claiming parents' comments per-item
+(parent-deduplicated — API cost is per distinct issue/PR, not per
+collision), re-creates the correct rows under the kinded arbiter,
+deletes the stale cross-kind bridge links, and stamps `healed_at`.
+Failed parents leave their rows pending; re-run until "nothing
+pending".
+
+Since v0.28.1 the command loops internally in 25,000-row passes and
+stamps `healed_at` at the end of EACH pass, so an interrupted run
+(Ctrl-C, reboot, kill) keeps everything already healed — at most one
+pass of progress attribution is lost. Hand-chunking with `--limit`
+is no longer load-bearing; `--limit` caps the rows CONSIDERED this
+run (claimed rows + parent refetches — a failure-heavy canary stays
+a canary).
+
+Since v0.28.8 passes walk the worklist by a strictly increasing
+msg_id cursor: a fully-failing batch no longer stops the run (or
+starves the rows behind it) — the run continues past it, failed rows
+stay pending, and a re-run retries them from the bottom. The command
+exits **nonzero** whenever any claimed row failed to heal, so
+cron/scripts notice incomplete runs.
+
+```bash
+aveloxis heal-messages --dry-run       # plan: pending rows, distinct parents
+aveloxis heal-messages --limit 1000    # canary pass
+aveloxis heal-messages                 # everything pending
+```
+
+Flags: `--limit` (0 = all pending), `--dry-run`, `--augur-keys`.
+Requires GitHub API keys (this healer refetches). Safe with serve
+stopped; after a fleet restart, run it once the force-full wave
+crests so it doesn't compete with collection for the key pool.
+
+## `aveloxis heal-vulnerabilities`
+
+One-shot healer that re-scans every repository with stored
+vulnerability rows. Two healing classes it covers:
+
+- Rows stored before v0.27.4's two-phase OSV fetch (they carry
+  `severity=UNKNOWN` and empty summaries — the querybatch endpoint
+  only returns id stubs). The re-scan fills severity, CVSS, summary,
+  fix versions, aliases, and references from `/v1/vulns/{id}`.
+- False positives from malformed dependency versions (v0.27.71 — the
+  "6.0.3, fixed in 5.4" class: an unparseable version defeats OSV's
+  version matching and every advisory in the package's history is
+  reported). As of v0.27.72 the scan normalizes stored versions and
+  rebuilds purls at read time, so this command heals those findings
+  immediately after deploy — no need to wait for each repo's
+  analysis phase to rewrite its dependency rows.
+
+```bash
+aveloxis heal-vulnerabilities              # all repos with findings
+aveloxis heal-vulnerabilities --limit 50   # bounded canary run
+```
+
+Idempotent (prefer-nonempty upserts never downgrade filled data) and
+safe alongside a running `serve`. Without this command the same
+healing happens gradually as each repo's next scheduled collection
+cycle re-scans it.
+
+## `aveloxis mark-gone-repos`
+
+Probes repositories that have no collection-queue row against their
+forge and maintains the "gone" state (v0.28.1). Background: when a
+tracked repository is deleted — or its whole organization goes
+private, as the US Department of Veterans Affairs did in mid-2026 —
+the URL returns 404 and prelim sidelines it permanently (archives +
+removes from the queue). All collected data is kept, but before
+v0.28.1 nothing distinguished that state from "never collected", so
+the GUI showed a false "queued for first collection" banner over
+real data.
+
+The probe is bidirectional and only DEFINITIVE answers decide:
+
+- **404/410** → stamp `repos.repo_gone_at`. The repo page then shows
+  "This repository is no longer publicly available or traceable on
+  GitHub" over the data we hold.
+- **200 on a previously-stamped repo** → clear the stamp and
+  re-enqueue: if the organization re-publicizes, collection resumes
+  automatically on the next run of this command.
+- **Anything else** (transport errors, rate limits, 5xx,
+  unresolvable redirects) → the repo is skipped and a re-run
+  retries it.
+
+```bash
+aveloxis mark-gone-repos --dry-run    # list what each probe would do
+aveloxis mark-gone-repos              # stamp / clear / re-enqueue
+aveloxis mark-gone-repos --limit 100  # bounded canary
+```
+
+Idempotent and re-runnable on any cadence. Dataless stranded rows
+(no queue row, no data, no archived flag) are not candidates — there
+is nothing to display for them either way. New gone repos are
+stamped automatically by prelim at collection time; this command
+exists for the historical cohort and for resurrection checks.
+
+## `aveloxis run-scorecard`
+
+Bulk remote-primary OpenSSF Scorecard pass (v0.27.5). Walks every
+non-archived, at-least-once-collected **GitHub** repo and runs
+scorecard in remote mode (`--repo`, the full ~18-check set including
+Code-Review, Maintained, Contributors, Branch-Protection, CI-Tests,
+CII-Best-Practices, Signed-Releases), oldest-scorecard-first — repos
+that have never been scanned come first. Exists because the per-cycle
+collection phase historically ran local mode (~11 checks); this
+command upgrades the fleet's scorecard data without waiting for each
+repo's recollect cadence.
+
+```bash
+aveloxis run-scorecard                        # the whole backlog
+aveloxis run-scorecard --limit 50             # canary run
+aveloxis run-scorecard --older-than 180       # only stale/never-scanned repos
+aveloxis run-scorecard --workers 8            # default NumCPU/2, capped at NumCPU
+```
+
+Details:
+
+- **Refuses to start while `aveloxis serve` is running on this host**
+  (checked via the serve pidfile + process liveness) — the pass would
+  compete with the collection workers for the shared GitHub API
+  budget. Stop serve first: `aveloxis stop serve`. It also writes its
+  own pidfile (`~/.aveloxis/aveloxis-run-scorecard.pid`) so two bulk
+  passes can't overlap.
+- Uses the SAME invoke/persist code as the collection phase: the
+  comma-separated multi-token `GITHUB_TOKEN` built from the key pool
+  (`collection.scorecard_token_count`), the per-attempt wall-clock
+  timeout (`collection.scorecard_timeout_minutes`, default 15), and
+  the `scorecard_mode` marker on every stored row.
+- No analysis clone exists in this pass, so there is no local
+  backstop: a failed remote attempt is logged, counted, and skipped —
+  the repo's next collection cycle retries.
+- Progress prints every 100 repos: done/total, cumulative
+  `api_calls_used` (instrumented via `/rate_limit` on the first
+  token), elapsed, and ETA. Interrupting with Ctrl-C is safe; the
+  oldest-first ordering makes a re-run resume where it left off.
+- Requires GitHub API keys (`aveloxis add-key`). Does not run schema
+  migrations (v0.21.5 contract) — run `aveloxis migrate` first when
+  upgrading to v0.27.5 so the `scorecard_mode` column exists.
+
+## `aveloxis staging-stats`
+
+Read-only view of the JSONB staging table, per repo and entity type
+(v0.22.4): row counts, processed/unprocessed split, oldest/newest
+timestamps, and approximate bytes.
+
+```bash
+aveloxis staging-stats              # top 10 (repo, entity_type) cohorts
+aveloxis staging-stats --top 50
+aveloxis staging-stats --repo microsoft/vscode
+```
+
+Use it to confirm the `staging_retention_hours` cleanup is working and to
+spot repos whose staged rows aren't being processed.
+
+---
+
+## `aveloxis distribution-stats`
+
+Read-only rollup of the distribution-tracking subsystem (v0.24.0): which
+repos publish to package registries, and which declare packaging manifests
+without any registry evidence.
+
+```bash
+aveloxis distribution-stats                    # fleet rollup
+aveloxis distribution-stats --orphans          # manifest-without-registry list
+aveloxis distribution-stats --repo owner/repo  # per-repo drill-down
+```
+
+Requires `collection.distribution_tracking_enabled: true`. See the
+[distribution architecture doc](../architecture/distribution.md).
+
+---
+
+## Mailing-list commands
+
+These commands register and verify the mailing-list ingestion subsystem
+(off by default; set `collection.mailing_list_enabled = true` to collect).
+See [Mailing-list ingestion](../architecture/mailing-list.md) for how the
+subsystem works.
+
+### `aveloxis load-foundation-core-repos`
+
+Loads one core/primary repository per project across the tracked open-source
+foundations (Apache TLPs + podlings). Idempotently registers each project's
+flagship repo into a foundation group. Renamed from `import-foundations`
+(kept as a hidden alias so existing scripts keep working).
+
+```bash
+aveloxis load-foundation-core-repos
+aveloxis load-foundation-core-repos --dry-run
+```
+
+### `aveloxis load-foundation-orgs`
+
+Registers each foundation's GitHub org(s) as **tracked orgs** under your
+user, so the periodic org-refresh ticker continuously discovers new repos.
+Tracking the `apache` org pulls all ~3,000 `apache/*` repos (a large
+collection-budget commitment — surfaced in the output) so sibling repos
+like `arrow-rs` get collected and mailing-list repo signals resolve.
+
+```bash
+aveloxis load-foundation-orgs --dry-run
+aveloxis load-foundation-orgs --yes
+```
+
+| Flag | Description |
+|---|---|
+| `--user-id` | owning user (default 1) |
+| `--dry-run` | print planned registrations without writing |
+| `--yes` | proceed without the interactive confirmation |
+
+### `aveloxis load-apache-lists`
+
+For each Apache PMC, ensures a per-PMC `repo_group`, links the PMC's primary
+repo, and registers the `dev@` and `users@` lists for collection. Run
+`load-foundation-core-repos` first so the primary repos exist; PMCs whose
+repo isn't in the catalog are skipped.
+
+```bash
+aveloxis load-apache-lists --dry-run
+aveloxis load-apache-lists
+```
+
+### `aveloxis register-mailing-list`
+
+Registers a single mailing list for collection under any archive system —
+used for curated, non-catalog lists like the kernel's lore public-inbox.
+The list is attached to the repo's `repo_group` (named after the repo, so
+multiple lists for one repo share a group).
+
+```bash
+aveloxis register-mailing-list \
+    --system lore_public_inbox \
+    --list linux-pci@vger.kernel.org \
+    --repo https://github.com/torvalds/linux
+```
+
+| Flag | Description |
+|---|---|
+| `--system` | archive system (`apache_ponymail`, `lore_public_inbox`) |
+| `--list` | list address |
+| `--repo` | repo URL to attach the list's discussion to (must already exist in the catalog) |
+
+### `aveloxis backfill-issue-external-keys`
+
+Populates `issues.external_key` from bracketed `[KEY-N]` title prefixes
+(Apache Jira → GitHub issue imports). This is what lets `issue_event`
+mailing-list mail bridge to the imported issue by its Jira key.
+
+```bash
+aveloxis backfill-issue-external-keys
+```
+
+### `aveloxis mailing-list-stats`
+
+Read-only coverage rollup: registered lists, `email_message` counts, mirror
+rate, signaled-repo resolution, sender-identity resolution, and the
+per-class distribution. Safe to run alongside an active `serve`.
+
+```bash
+aveloxis mailing-list-stats
+```
+
+The same data is available over HTTP at `GET /api/v1/mailing-list/stats`
+(see [REST API](api.md)).
+
+### `aveloxis verify-mailing-list`
+
+The Phase 4 branch-coverage harness. Reads the collected data and prints a
+PASS / EMPTY / DEFER table for every logic branch (each `msg_class`, both
+backends, each routing outcome, threading, signaled/sender resolution,
+`external_key` backfill), plus the contributor-resolution assessment.
+
+```bash
+aveloxis verify-mailing-list            # report only (exit 0)
+aveloxis verify-mailing-list --strict   # exit non-zero if a required branch is empty
+```
+
+| Flag | Description |
+|---|---|
+| `--strict` | exit non-zero when a *required* (mailing-list-native) branch produced zero rows |
+
+`--strict` gates only the mailing-list-native branches. Cross-subsystem
+branches (bridged-to-issue/PR, mirror-linked, sender-resolved,
+`external_key`) report as **DEFER** and never gate — they fill in
+steady-state operation once the linked repos' GitHub data is collected and
+the periodic backfills run. See
+[Mailing-list ingestion §12](../architecture/mailing-list.md) for the
+collection-ordering caveat.
+
+---
+
+## `aveloxis deploy-checklist`
+
+Prints the current release's manual deploy/heal steps (read-only).
+Releases that heal data a plain restart does not touch — v0.29.0 is
+one — register a checklist here.
+
+```bash
+aveloxis deploy-checklist
+```
+
+## `aveloxis ack-deploy`
+
+Records that the current binary version's deploy/heal steps were run,
+so `aveloxis start serve` / `aveloxis start all` stops prompting for
+them. Run it AFTER completing the `deploy-checklist` steps. It cannot
+stand in for step 2: while the schema stamp is behind the binary the
+start gate refuses regardless of the acknowledgement (v0.29.4) — only a
+completed migration of that binary (the ladder's `aveloxis migrate
+--skip-views`) moves the stamp.
+
+```bash
+aveloxis ack-deploy [--note "..."]
+```
+
+**The start gate:** on an EXISTING fleet, `aveloxis start serve` and
+`aveloxis start all` refuse to start (or, in an interactive terminal,
+prompt) when the current release has un-acknowledged deploy steps —
+the release's data-side healing must not be silently skipped. Since
+v0.29.4 the gate also reads the schema stamp, on EVERY release and
+BEFORE the ledger: a stamp behind the binary proves no migration of
+that binary has completed here (the ladder's step 2), so it refuses
+without a prompt and records nothing — an acknowledgement cannot clear
+it, only a completed migration of that binary (the ladder's `aveloxis
+migrate --skip-views`) can. Fresh installs, releases without deploy
+steps on a current stamp, and acknowledged releases whose stamp is
+current, start silently. When another `aveloxis-serve` is already
+connected to the database the gate prints a note (never a refusal)
+with the other serve's client addresses, each carrying the code's own
+verdict: an "(other address)" entry is normally the primary, so this
+host is running the wrong command (`aveloxis start scancode-worker` is
+the alternative); a "(this host)" entry is a serve on THIS host,
+either one still running or a backend of one just stopped here still
+draining (only `aveloxis start` refuses to double-start a component).
+The two labels report the host **verdict**, not a comparison of the
+address text alone: since v0.29.4 the verdict also consults the
+`@host` marker, so behind a pooler a backend can be tagged "(other
+address)" beside an address string identical to your own — the marker
+is what separated them.
+When NO "(other address)" entry appears — every listed entry is
+"(this host)", or an address this database role cannot see — the note
+withdraws the wrong-command reading, because nothing in the listing
+identifies the primary: on a primary restarting beside its own
+draining backends that verdict would be exactly backwards. Automation
+can bypass with `--skip-deploy-check`, which prints the evidence, then
+the release's deploy steps, and proceeds (serve's own startup
+migration still refuses beside another serve).
+
+---
+
+## `aveloxis register-jira-projects`
+
+Seeds `aveloxis_ops.jira_project_serve` from the synthetic Jira issues
+the mailing-list projection already minted — one registration per
+distinct project key (191 on the production `aveloxis` DB), each
+mapped to its repo. Idempotent; re-running never clobbers an
+operator-fixed repo mapping. Makes no network calls: dead upstream
+keys are disabled by the collector on their first 400.
+
+```bash
+aveloxis register-jira-projects --dry-run
+aveloxis register-jira-projects
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | off | List derivable projects without registering. |
+| `--base-url` | `https://issues.apache.org/jira` | Jira Server base URL for the registrations. |
+
+---
+
+## `aveloxis backfill-jira-identities`
+
+The one-shot identity + state pass over every registered Jira
+project: bulk-searches each registration's Jira Server (identity and
+state fields; comments are the collector's job) and writes reporter
+and assignee identity + authoritative issue state onto the synthetic issues
+through the same provider-precedence writers the collector uses. The
+registrations in `jira_project_serve` are the ONLY project source —
+their repo mapping and `base_url` are operator-correctable, and the
+command refuses to run before `aveloxis register-jira-projects` has
+created them. Assignee identities are banked into `jira_identities`
+alongside reporters (the username is the perishable half). A
+resolve/mint failure skips that issue and the command exits nonzero —
+rerun to retry; all writes are idempotent. The full-history pass uses
+the same drift-safe walk as the incremental worker (window cursor +
+fixed ceiling — never bare offsets over a mutable ordering), and
+carries NO resume marker: `--limit` is a canary only, and a rerun
+restarts from the beginning (harmless — every write is idempotent).
+Measured cost: ~2–3 polite hours for the full 844,401-issue ASF
+corpus at 1,000 issues per search call.
+
+**Run it soon regardless of whether the collector is enabled**: the
+stable Server-era username this matches on (49.2% of issues
+unambiguous by login, +17.6% by display name) does not exist in Jira
+Cloud's API — if the ASF instance migrates to Atlassian Cloud, the
+whole corpus's usernames become unfetchable at once.
+
+Identity policy (SR-6): unambiguous matches link to existing
+contributors; pure Jira-only identities (zero candidates) mint a
+contributor so networks include the person; ambiguous identities
+stay recorded in `jira_identities` with a NULL link.
+
+```bash
+aveloxis register-jira-projects            # once, first
+aveloxis backfill-jira-identities --dry-run
+aveloxis backfill-jira-identities --project KAFKA --limit 2000   # canary
+aveloxis backfill-jira-identities          # the full pass
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | off | Report per-project issue totals without writing. |
+| `--project` | `""` | Restrict to one project key. |
+| `--limit` | `0` | Stop after N issues (canary). |
+
+---
+
+## `aveloxis strip-quoted-history`
+
+Fills `messages.msg_text_clean` — the quote-stripped body — on
+mailing-list messages ingested before the ingest-time stripper
+existed. Measured corpus facts that motivate it: 82.5% of Apache list
+mail embeds the thread it replies to (64% of body characters are
+quotation), so raw email bodies average ~4,800 characters against
+GitHub comments' ~274; stripping brings the email median to ~300.
+Consumers read `COALESCE(msg_text_clean, msg_text)` — until this walker
+completes, unstripped historical rows serve their raw text.
+
+Resumable: `msg_text_clean IS NULL` is the resume state, so rerunning
+after an interruption skips completed rows automatically. After a
+pattern-library version bump, run with `--rule-rerun` to re-strip rows
+stamped under the older rule.
+
+```bash
+aveloxis strip-quoted-history --limit 50000   # canary
+aveloxis strip-quoted-history                 # full history (~30-45 min on a 12.6M-body fleet)
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--limit` | `0` | Stop after N rows (canary); 0 = run to completion. |
+| `--rule-rerun` | off | Re-strip rows stamped under an older rule version. |
+| `--batch` | `5000` | Rows per read+stamp batch. |
+
+---
+
+## `aveloxis resolve-email-identities`
+
+Resolves mailing-list sender identities in one fast pass: every
+retained `sender_email` on an unattributed mailing-list message body is
+re-joined against the current `contributors` / `contributors_aliases`
+tables (email, canonical, and alias chains — the same chain commit
+resolution uses), walking `msg_id` keyset windows from floor to
+ceiling. A full pass over a 12.6M-body fleet measures ~5–10 minutes.
+
+The serve-side backfill ticker
+(`collection.mailing_list_sender_backfill_interval_minutes`, default
+hourly) does the same walk continuously; this command is for
+"converge NOW" — after `aveloxis migrate`, after
+`backfill-identities`, or on a freshly healed fleet. Safe beside a
+running serve (row-scoped UPDATEs on `cntrb_id IS NULL` rows, with
+deadlock retry). Rerun until it reports 0: unresolved rows stay
+pending, and an interrupted run resumes with `--after-msg-id` from the
+printed cursor.
+
+```bash
+aveloxis resolve-email-identities --dry-run   # count resolvable rows
+aveloxis resolve-email-identities             # the full pass
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | off | Count currently-resolvable rows and exit without writing. |
+| `--after-msg-id` | `0` | Resume cursor from an interrupted run. |
+| `--window` | `500000` | `msg_id` keyset-window width per statement. |
+
+---
+
+## `aveloxis backfill-mailing-list-projection`
+
+Projects already-ingested mailing-list `issue_event` mail onto issues
+(mailing-list Phase 5). In-place and idempotent; batched.
+
+```bash
+aveloxis backfill-mailing-list-projection --batch 500
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--batch` | `500` | Rows per batch. |
+
+---
+
+## `aveloxis load-numfocus-projects`
+
+Loads the embedded NumFocus project catalog (v0.25.4): creates the
+"NumFocus Sponsored" / "NumFocus Affiliated" user groups and adds each
+project's flagship repository.
+
+```bash
+aveloxis load-numfocus-projects --dry-run
+aveloxis load-numfocus-projects
+aveloxis load-numfocus-projects --detect-new   # report catalog drift vs numfocus.org
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--user-id` | `1` | Owner of the created groups. |
+| `--dry-run` | `false` | Preview without writing. |
+| `--detect-new` | `false` | Crawl numfocus.org and report projects missing from the embedded catalog. |
+| `--catalog-file` | (embedded) | Override the embedded YAML catalog. |
+
+---
+
+## `aveloxis load-numfocus-orgs`
+
+Companion to `load-numfocus-projects`: registers each NumFocus project's
+GitHub organization for ongoing repo-discovery refresh ("NumFocus
+Sponsored Orgs" / "NumFocus Affiliated Orgs" groups). Same flag surface as
+`load-numfocus-projects`.
+
+```bash
+aveloxis load-numfocus-orgs --dry-run
+aveloxis load-numfocus-orgs
+```
 
 ---
 

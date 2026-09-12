@@ -6,13 +6,19 @@
 
 ## Overview
 
-Aveloxis uses two PostgreSQL schemas to separate collected data from operational state:
+Aveloxis uses four PostgreSQL schemas. This reference documents the two that carry the bulk of the data model:
 
 - **`aveloxis_data`** -- Collected open source community health data. Contains tables for repositories, contributors, issues, pull requests, commits, releases, messages, dependency information, and aggregated data mart views. These tables hold the output of collection workers that talk to GitHub, GitLab, and local git clones.
 
 - **`aveloxis_ops`** -- Operational and orchestration tables. Contains the collection queue, staging area, API credentials, user accounts, worker state, and configuration. These tables drive the collection pipeline itself.
 
-Both schemas maintain full parity with Augur's `augur_data` and `augur_operations` schemas. All `CREATE TABLE` statements use `IF NOT EXISTS` and inserts use `ON CONFLICT DO NOTHING` for idempotent migrations.
+The other two are described elsewhere:
+
+- **`aveloxis_scan`** -- ScanCode per-file license and copyright results, plus their history. See [ScanCode worker](architecture/scancode.md).
+
+- **`aveloxis_augur_data`** -- The Augur-compatibility layer. It holds no base tables of its own: just views over `aveloxis_data` for the entities whose column names differ from Augur's (`repo`, `repo_info`, `issues`, `pull_requests`, `releases`, `message`). 8Knot reads through it with `search_path = aveloxis_augur_data,aveloxis_data`. See [Augur migration](getting-started/augur-migration.md).
+
+The data and ops schemas maintain full parity with Augur's `augur_data` and `augur_operations` schemas. All `CREATE TABLE` statements use `IF NOT EXISTS` and inserts use `ON CONFLICT DO NOTHING` for idempotent migrations.
 
 ---
 

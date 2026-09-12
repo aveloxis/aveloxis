@@ -10,6 +10,8 @@ import (
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // email_message FK-child indexes (v0.28.18, a fresh-context L11 sweep of
@@ -207,12 +209,34 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 		"list_rows_deleted", touched["list_rows_deleted"])
 }
 
-// ServeApplicationName is the application_name `aveloxis serve` tags its
-// pool with (v0.20.0; cmd/aveloxis/main.go runServe uses this symbol).
-// The mailing-list worker pool lives only inside serve, so "an
-// aveloxis-serve backend other than this process" is the one signal the
-// list dedup needs.
+// ServeApplicationName is serve's MATCH PREFIX — the component half of
+// the application_name `aveloxis serve` tags its pool with. Since
+// round 12 the tag itself is AppNameForHost(ServeApplicationName), the
+// prefix plus this host's marker (`aveloxis-serve@kate`), so every
+// reader matches on appNamePrefixSQL rather than on equality. The
+// mailing-list worker pool lives only inside serve, so "an
+// aveloxis-serve backend other than this process" is the one signal
+// the list dedup needs, and that question is about the COMPONENT, not
+// the host — the prefix is exactly right for it.
 const ServeApplicationName = "aveloxis-serve"
+
+// pgSession is the one-session surface serveBackendsBeyondOwnPool needs:
+// the snapshot clear and the read must land on the SAME connection.
+// pgx.Tx and *pgxpool.Conn both satisfy it.
+type pgSession interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// The two suppliers, asserted at COMPILE time rather than by a source
+// pin: the serve-startup probe hands it an acquired connection, the
+// list-dedup gate hands it the migrate transaction. A pgSession that
+// stopped accepting either would break the build here, where a textual
+// pin could only ever have matched the doc comment above.
+var (
+	_ pgSession = (*pgxpool.Conn)(nil)
+	_ pgSession = pgx.Tx(nil)
+)
 
 // serveBackendsBeyondOwnPool reports whether any `aveloxis serve` backend
 // OTHER than this process's own pool connections is connected to THIS
@@ -225,13 +249,21 @@ const ServeApplicationName = "aveloxis-serve"
 // filter is load-bearing) and SNAPSHOTTED per transaction (the first
 // read fixes the view; a same-statement pg_stat_clear_snapshot() runs
 // AFTER the read — proven with EXPLAIN on PG 18), so the clear is its
-// own statement first — on the SAME session, hence the pgx.Tx parameter.
+// own statement first — on the SAME SESSION, hence the pgSession
+// parameter rather than the pool. It is an interface, not pgx.Tx,
+// because the two callers need different session shapes: the list-dedup
+// gate runs INSIDE the migrate transaction, while the serve-startup
+// other-serve probe holds an acquired connection in autocommit for the
+// ~1.75 s confirmation loop (round-11 finding 8 — a transaction there
+// would sit idle-in-transaction pinning xmin on every positive start).
+// The snapshot clear is harmless in autocommit (each statement already
+// gets a fresh view) and load-bearing inside the dedup transaction.
 // ownPIDs is a FUNC, snapshotted immediately before the read: the pool
 // creates backends on demand (watchBlockers' 60 s poll, a MinConns
 // refill), and a snapshot taken earlier would read such a backend as
 // another serve (the twelfth pass; safe direction, but a false skip).
-func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs func() []int32) (bool, error) {
-	if _, err := tx.Exec(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
+func serveBackendsBeyondOwnPool(ctx context.Context, sess pgSession, ownPIDs func() []int32) (bool, error) {
+	if _, err := sess.Exec(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
 		return false, fmt.Errorf("clearing the activity snapshot: %w", err)
 	}
 	var own []int32
@@ -242,9 +274,9 @@ func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs func() [
 		own = []int32{} // pgx encodes a nil slice as SQL NULL, and <> ALL(NULL) is NULL
 	}
 	var n int
-	if err := tx.QueryRow(ctx, `
+	if err := sess.QueryRow(ctx, `
 		SELECT count(*) FROM pg_stat_activity a
-		WHERE a.datname = current_database() AND a.application_name = $1
+		WHERE a.datname = current_database() AND `+appNamePrefixSQL("a.application_name")+` = $1
 		  AND a.pid <> ALL($2::int4[])`,
 		ServeApplicationName, own).Scan(&n); err != nil {
 		return false, fmt.Errorf("probing for a connected aveloxis-serve: %w", err)

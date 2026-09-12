@@ -32,8 +32,8 @@ func TestSchemaVersionAtLeast(t *testing.T) {
 		{"0.27.37", "x", false},
 	}
 	for _, c := range cases {
-		if got := schemaVersionAtLeast(c.have, c.want); got != c.ok {
-			t.Errorf("schemaVersionAtLeast(%q, %q) = %v, want %v", c.have, c.want, got, c.ok)
+		if got := SchemaVersionAtLeast(c.have, c.want); got != c.ok {
+			t.Errorf("SchemaVersionAtLeast(%q, %q) = %v, want %v", c.have, c.want, got, c.ok)
 		}
 	}
 }
@@ -64,7 +64,7 @@ func TestGitLabForceFullStepIsSeededFromThePriorStamp(t *testing.T) {
 		t.Error("the v0.27.37 step must not be a plain execMigrationStep (it re-flags every GitLab repo on every migrate)")
 	}
 	body := srctest.FuncBody(t, readSourceFile(t, "migration_ledger.go"), "func runOnceSeedIfApplied(")
-	for _, needle := range []string{"schemaVersionProbe(ctx)", "schemaVersionAtLeast(prior, appliedSince)", "ON CONFLICT (step_label) DO NOTHING", "return false"} {
+	for _, needle := range []string{"schemaVersionProbe(ctx)", "SchemaVersionAtLeast(prior, appliedSince)", "ON CONFLICT (step_label) DO NOTHING", "return false"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("runOnceSeedIfApplied must contain %s", needle)
 		}
@@ -285,15 +285,44 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	if strings.Count(body, "serveBackendsBeyondOwnPool(ctx, tx, ownPIDs)") != 2 {
 		t.Error("the serve probe must run before the FOR UPDATE and again on the locked set")
 	}
-	if strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), `ConnectionStringWithAppName("aveloxis-serve")`) || !strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), "ConnectionStringWithAppName(db.ServeApplicationName)") {
-		t.Error("runServe must tag its pool with db.ServeApplicationName (one shared spelling — the probe counts 0 forever if the literals drift)")
+	// Round 12: the tag is the shared constant PLUS this host's marker,
+	// composed by the one function that owns the separator both halves
+	// agree on. A literal here still counts 0 forever if it drifts; a
+	// tag that skipped AppNameForHost would collapse the host verdict
+	// back to client-address equality without saying so.
+	if strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), `ConnectionStringWithAppName("aveloxis-serve")`) || !strings.Contains(readSourceFile(t, "../../cmd/aveloxis/main.go"), "ConnectionStringWithAppName(db.AppNameForHost(db.ServeApplicationName))") {
+		t.Error("runServe must tag its pool with db.AppNameForHost(db.ServeApplicationName) (one shared spelling — the probe counts 0 forever if the literals drift, and the host marker is what survives a pooler)")
 	}
-	if !strings.Contains(src, "func serveBackendsBeyondOwnPool(ctx context.Context, tx pgx.Tx, ownPIDs func() []int32)") {
-		t.Error("the probe must take pgx.Tx — its two statements (snapshot clear, then read) must run on ONE session")
+	// The probe's two statements (snapshot clear, then read) must run on
+	// ONE session, so the parameter is a session, never the pool.
+	// Round-11 finding 8 widened it from pgx.Tx to the pgSession
+	// interface: the dedup gate below runs inside the migrate
+	// transaction, while otherServeConnected holds an acquired
+	// connection in autocommit across its ~1.75 s confirmation loop.
+	if !strings.Contains(src, "func serveBackendsBeyondOwnPool(ctx context.Context, sess pgSession, ownPIDs func() []int32)") {
+		t.Error("the probe must take a pgSession — its two statements (snapshot clear, then read) must run on ONE session, and both a pgx.Tx and an acquired connection must be able to supply it")
+	}
+	if !strings.Contains(src, "type pgSession interface {") {
+		t.Error("pgSession must be declared with the two methods pgx.Tx and *pgxpool.Conn both satisfy")
+	}
+	// The two suppliers are asserted by the COMPILER, not by matching
+	// prose: a bare `*pgxpool.Conn` needle matched the interface's own
+	// doc comment, so rewording the comment would have failed the build
+	// while a genuinely narrowed interface would not.
+	for _, assertion := range []string{"_ pgSession = (*pgxpool.Conn)(nil)", "_ pgSession = pgx.Tx(nil)"} {
+		if !strings.Contains(srctest.StripGoComments(src), assertion) {
+			t.Errorf("email_message_fk_indexes.go must carry the compile-time assertion %q — both the acquired connection (serve startup) and the migrate transaction (list-dedup gate) must satisfy pgSession", assertion)
+		}
+	}
+	if strings.Contains(srctest.StripGoComments(src), "func serveBackendsBeyondOwnPool(ctx context.Context, pool") {
+		t.Error("the probe must never take the pool — the clear and the read would land on different connections")
 	}
 	probe := srctest.FuncBody(t, src, "func serveBackendsBeyondOwnPool(")
-	if !strings.Contains(probe, "a.datname = current_database() AND a.application_name = $1") {
-		t.Error("serveBackendsBeyondOwnPool must filter pg_stat_activity by THIS database and the serve application_name (pg_stat_activity is cluster-wide)")
+	if !strings.Contains(probe, "a.datname = current_database() AND ") || !strings.Contains(probe, `appNamePrefixSQL("a.application_name")`) {
+		t.Error("serveBackendsBeyondOwnPool must filter pg_stat_activity by THIS database and the serve application_name PREFIX (pg_stat_activity is cluster-wide; the tag carries a host marker, so equality would count only this host's own serve and read every other host's as absent — the direction that lets the dedup run beside a live serve)")
+	}
+	if strings.Contains(probe, "a.application_name = $1") {
+		t.Error("serveBackendsBeyondOwnPool must not match the tag by equality (round 12: the tag carries a host marker)")
 	}
 	clear := strings.Index(probe, "SELECT pg_stat_clear_snapshot()")
 	read := strings.Index(probe, "FROM pg_stat_activity")
@@ -329,17 +358,29 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 		t.Error("listDedupPending must reuse dupListPartitionsSQL, not spell the partition itself")
 	}
 	// pg_stat_activity readers filter by database: the cluster hosts two
-	// aveloxis databases (the sixth-pass L11 sweep).
-	for _, site := range []struct{ file, fn string }{{"postgres.go", "func (s *PostgresStore) PidsByAppName("}, {"migrate.go", "func checkBlockers("}} {
-		fsrc := readSourceFile(t, site.file)
-		if !strings.Contains(fsrc, site.fn) {
-			t.Errorf("%s no longer defines %s — re-anchor the datname pin", site.file, site.fn)
-			continue
-		}
-		if !strings.Contains(srctest.FuncBody(t, fsrc, site.fn), "datname = current_database()") {
-			t.Errorf("%s %s reads pg_stat_activity without a datname filter — pg_stat_activity is cluster-wide", site.file, site.fn)
+	// aveloxis databases (the sixth-pass L11 sweep). v0.29.4 round 6:
+	// the reader set is DERIVED from every non-test function body that
+	// reads the view — a hand list missed the round-5 address listing.
+	readers := 0
+	for name, fsrc := range srctest.PackageFiles(t, "internal/db", 30) {
+		for _, sig := range pgStatActivityReaderSigs(fsrc) {
+			body := srctest.NormalizeWS(srctest.StripGoComments(srctest.FuncBody(t, fsrc, sig)))
+			reads := strings.Count(body, "FROM pg_stat_activity")
+			if reads == 0 {
+				continue // a mention in a message is not a read
+			}
+			readers++
+			// Round 7: a read of the session's OWN row is scoped by pid
+			// (cluster-unique) and needs no datname filter — the ONE
+			// probing-session subquery (probingSessionSQL). Every other
+			// read in the body must carry the filter.
+			selfScoped := strings.Count(body, "FROM pg_stat_activity WHERE pid = pg_backend_pid()")
+			if selfScoped < reads && !strings.Contains(body, "datname = current_database()") {
+				t.Errorf("%s %s reads pg_stat_activity without a datname filter — pg_stat_activity is cluster-wide", name, sig)
+			}
 		}
 	}
+	srctest.MinCount(t, "pg_stat_activity readers in internal/db", readers, 5)
 	// The consolidation repoints the staging table's repo_group_id too
 	// (list identity for DrainList); the dedup's step 2 does the same.
 	if !strings.Contains(readSourceFile(t, "migrate.go"), `"aveloxis_ops.mailing_list_staging",`) {
@@ -374,3 +415,19 @@ func TestEmailMessageIndexGateRejectsUnknownParent(t *testing.T) {
 		}
 	}
 }
+
+// pgStatActivityReaderSigs lists every top-level function signature
+// prefix (`func name(` / `func (recv) name(`) in a source file, for the
+// derived datname pin above.
+func pgStatActivityReaderSigs(src string) []string {
+	var sigs []string
+	for _, line := range strings.Split(src, "\n") {
+		m := funcSigRE.FindString(line)
+		if m != "" {
+			sigs = append(sigs, m)
+		}
+	}
+	return sigs
+}
+
+var funcSigRE = regexp.MustCompile(`^func (\([^)]*\) )?[A-Za-z0-9_]+\(`)

@@ -48,8 +48,14 @@ psql "postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=prefer" -c "SEL
 ## 2. Install aveloxis + the scancode toolchain
 
 ```bash
-# aveloxis binary (Go 1.25+):
-go install github.com/aveloxis/aveloxis/cmd/aveloxis@latest
+# aveloxis binary (Go 1.25+) — the SAME version the primary runs,
+# never @latest: the worker never migrates, so a newer binary than the
+# schema stamp logs a schema-version ERROR at startup and may read
+# columns the database does not have yet. Release tags are v-prefixed
+# (v0.29.4), so set the bare number `aveloxis version` prints on the
+# primary and let the @v prefix supply the tag form:
+PRIMARY_VERSION=0.29.4   # what `aveloxis version` prints on the primary
+go install "github.com/aveloxis/aveloxis/cmd/aveloxis@v${PRIMARY_VERSION}"
 
 # git is required for the shallow clones; then the analysis tools
 # (scancode needs Python 3.10+ and pipx):
@@ -123,13 +129,111 @@ disk/CPU load you moved.
 ## 5. Run it
 
 ```bash
-aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json
+aveloxis start scancode-worker -c /etc/aveloxis/aveloxis.json   # background, logs to ~/.aveloxis/scancode-worker.log
+aveloxis stop scancode-worker -c /etc/aveloxis/aveloxis.json    # graceful stop (-c: the post-stop backend check reads the same config)
+aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json         # foreground (what the systemd unit runs)
 ```
 
 The command writes `~/.aveloxis/aveloxis-scancode-worker.pid`, checks the
 schema version (it never runs migrations — the v0.21.5 contract; run
 `aveloxis migrate` from the primary when upgrading), runs the health
 preflight + auto-remediation, sweeps stale clone dirs, and starts claiming.
+`start all` / `stop all` never include the worker.
+
+### What NOT to run on this host
+
+`aveloxis start serve` (or `aveloxis serve`). It is the full scheduler
+regardless of which knobs the config carries: it runs the startup
+migration and then collects with the fleet's API keys. The 2026-09-09
+incident did exactly that from a scancode-only config pointed at the
+production database: the binary was one version ahead of the schema
+stamp, so the migration ran in full beside the primary's live workers
+and deadlocked; the `stop serve` that followed then matched the
+primary's backends by application_name alone and printed terminate
+recipes for them. Since v0.29.4 that shape — a binary AHEAD of the
+stamp — is refused twice: by the `start serve` deploy gate when the
+stamp is behind the binary, and by serve's startup migration when
+another `aveloxis-serve` is connected. A `start serve` built at the
+primary's version (which §2 asks for) is NOT refused: nothing needs
+migrating, so it would start a second full scheduler against the fleet.
+The gate and serve's log both say when another `aveloxis-serve` is
+already connected and from which client addresses, each tagged with the
+code's own verdict: an "(other address)" entry is normally the primary
+— "wrong command on this host"; a "(this host)" entry is a serve on
+THIS host, either one still running or a backend of one just stopped
+here still draining (`aveloxis stop` reports those). Both labels
+report the host **verdict**, not a comparison of the address text
+alone — behind a pooler the marker is what separates two hosts sharing
+one address, so an "(other address)" entry can carry an address string
+identical to your own. Only `aveloxis
+start` refuses to double-start a component, so check `ps` and the
+pidfile before waiting for a "(this host)" entry to clear.
+`stop` scopes its backend check to this host.
+
+When NO "(other address)" entry appears — every listed entry is
+"(this host)", or an address this role cannot see — the verdict
+withdraws the "wrong command" reading entirely, because nothing in the
+listing identifies a primary. That is the ordinary shape when a second
+serve starts on the same machine, and the reverse case is real: if this
+host's serve came up first and the primary's came back afterwards, the
+PRIMARY is the entry tagged "(other address)".
+
+Both readings, and `stop`'s, need the database role this host connects
+as to SEE the primary's sessions: `pg_stat_activity` shows a session's
+`client_addr` only to roles that HOLD that session's role's privileges
+and to roles that hold `pg_read_all_stats`'s — everyone else reads
+NULL, the same NULL a unix socket shows.
+
+Connect as the primary's role (the shared-DSN recipe above does), or
+grant this host's role the stats privileges:
+
+```sql
+GRANT pg_read_all_stats TO <role>;
+```
+
+Holding is the test, not membership: a `NOINHERIT` role, or one
+granted `WITH INHERIT FALSE`, is a member of `pg_read_all_stats` with
+none of its privileges and still reads NULL. On PostgreSQL 16 and
+later a grant's inherit option is fixed at GRANT time, so if the grant
+already exists and does not inherit, re-grant it with
+`GRANT pg_read_all_stats TO <role> WITH INHERIT TRUE`. Check with
+`SELECT pg_has_role(current_user, 'pg_read_all_stats', 'USAGE')`.
+
+Without the privileges the entries read "client address not visible to
+role …", `stop` prints a no-verdict note for such backends, and
+nothing is ever offered for termination on that evidence.
+
+```{warning}
+**Behind a transaction pooler, upgrade the primary before you trust this
+host's verdicts.** A pooler in `transaction` or `statement` mode
+(pgbouncer, pgcat, Odyssey) replaces `pg_stat_activity.client_addr` with
+its own address for every backend, so the primary's serve and this
+host's worker share one address. The address rule alone then makes
+"(other address)" never appear, the deploy gate read the primary as a
+serve on THIS host, and `aveloxis stop` here wait on — and offer a
+`pg_terminate_backend` recipe for — the primary's pool. That is the
+2026-09-09 incident's shape.
+
+This host is protected by the `@<hostname>` marker each component now
+puts in its `application_name`: it survives the collapse, because
+PostgreSQL never rewrites what the client sent. The marker's job is
+narrow and one-directional — it can **separate** two hosts the address
+rule collapsed together, and it can never **merge** two the address
+rule kept apart. A marker collision (for example, two container hosts
+running one compose file with the same hostname) degrades to the address
+rule. Behind a transaction pooler that fallback can classify the other
+host as this host and offer a termination recipe, so assign unique hostnames
+(or connect directly to PostgreSQL) before relying on this verdict.
+
+But the marker only helps when **both** sides carry one. A primary
+still running a pre-round-12 binary tags un-suffixed, and an un-marked
+backend falls back to the address rule — which behind a pooler places
+it here.
+
+So: upgrade the primary to the same build before relying on this host's
+verdicts on a pooled deployment, or point both hosts' DSNs at PostgreSQL
+directly.
+```
 
 ### systemd unit example
 

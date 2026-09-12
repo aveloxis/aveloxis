@@ -7,16 +7,16 @@ Aveloxis has two collection pipelines: the **staged pipeline** (used by `aveloxi
 ## Overview
 
 ```
-                        Staged Pipeline (serve)              Direct Pipeline (collect)
-                        ──────────────────────               ────────────────────────
-  Prelim ────────────>  Phase 1: Stage to JSONB              (writes directly to tables)
+                        Staged Pipeline (serve AND collect — one pipeline since v0.26.2)
+                        ──────────────────────
+  Prelim ────────────>  Phase 1: Stage to JSONB
                         Phase 2: Process to tables
                               │
                               v
                         Phase 3: Facade (bare clone + git log)
                         Phase 4: Analysis (deps, libyear, scc)
-                        Phase 4c: ScanCode (licenses, every 30d)
-                        Phase 4b: Scorecard (local, reuses clone)
+                        Phase 4c: ScanCode (decoupled worker pool, every 180d)
+                        Phase 4b: Scorecard (remote-first, local fallback)
                               │
                               v
                         Phase 5: Commit Author Resolution
@@ -24,6 +24,26 @@ Aveloxis has two collection pipelines: the **staged pipeline** (used by `aveloxi
 ```
 
 The staged pipeline is designed for 400K+ repos. It eliminates database contention on the `contributors` table by decoupling API collection from relational persistence.
+
+### Collection order
+
+Repo info and metadata are collected **first** (Phase 0) to provide commit count before the heavy phases. For repos with more than 10,000 commits, issues, PRs, and events are collected in **parallel** across 3 goroutines, each with its own staging writer. Messages are collected after the parallel phase completes. Repos under the threshold use sequential collection.
+
+### Parallel collection
+
+When `CommitCount >= 10,000` (from repo_info metadata):
+
+```
+Phase 0: Repo info, releases, clone stats (sequential)
+Phase 1: Contributors (sequential)
+Phase 2: Issues | PRs | Events (3 parallel goroutines)
+         ─── wait ───
+Phase 3: Messages (sequential, after parallel phase)
+```
+
+A 404 from `/releases` is treated as *zero releases* (non-fatal). Not every repo has cut a release, and legacy rows with a stray `.git` in their slug — though now prevented at write time by `model.NormalizeRepoName()` in `db.UpsertRepo` — used to cause this 404. The staged collector logs `no releases endpoint (404) — treating as zero releases` and continues. See the troubleshooting guide for the underlying fix.
+
+The 3 extra goroutines claim parallel slots tracked by an atomic counter. The scheduler's `fillWorkerSlots` pauses new job starts while the total active count (semaphore + parallel slots) exceeds the configured worker limit.
 
 The direct pipeline is simpler -- it writes directly to relational tables with inline contributor resolution. Best for testing or collecting a small number of repos.
 
@@ -130,15 +150,20 @@ After API data is processed, the facade phase handles git-level data.
 The repo is cloned as a bare repo (or fetched if a clone already exists):
 
 ```bash
-git clone --bare <url> <path>     # first time
-git fetch --all                   # subsequent runs
+REPO_URL=https://github.com/augurlabs/augur
+CLONE_PATH=/data/aveloxis-repos/augurlabs-augur.git
+git clone --bare "$REPO_URL" "$CLONE_PATH"   # first time
+# subsequent runs — an explicit refspec, because `git clone --bare`
+# writes no fetch refspec: a bare `git fetch --all` downloads objects
+# but never advances refs/heads/*, leaving the clone permanently stale
+git -C "$CLONE_PATH" fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' --prune
 ```
 
 Bare clones are permanent and stored in the `repo_clone_dir` directory.
 
 ### Git log parsing
 
-`git log --all --numstat` is run with a custom format string using field separators and record separators to reliably parse multi-line output. For each commit:
+`git log --numstat` is run on the default branch only (via `git symbolic-ref HEAD` — matching the forge's metadata commit count) with a custom format string using field separators and record separators to reliably parse multi-line output. For each commit:
 
 - **Per-file rows** are inserted into `commits` (one row per file touched per commit, matching Augur's data model)
 - **Parent-child relationships** are inserted into `commit_parents`
@@ -154,16 +179,20 @@ Email domains from commit authors and committers are matched against the `contri
 
 ### Facade aggregates
 
-After all commits are inserted, aggregate tables are refreshed by SQL aggregation over the `commits` table:
+Aggregate tables are refreshed by SQL aggregation over the `commits` table:
 
 - `dm_repo_annual` -- annual commit stats per contributor per repo
 - `dm_repo_monthly` -- monthly stats
 - `dm_repo_weekly` -- weekly stats
 - `dm_repo_group_annual`, `dm_repo_group_monthly`, `dm_repo_group_weekly` -- group-level aggregates
 
+**Cadence (v0.16.5+):** aggregates are refreshed **in bulk on the configured matview rebuild day** (`collection.matview_rebuild_day`, default Saturday). The scheduler calls `store.RefreshAllRepoAggregates` while collection workers are paused, alongside the materialized view refresh. Previously the facade recomputed these tables *after every single repo collection*, which on a fleet of thousands of repos amounted to tens of thousands of redundant single-repo aggregations per cycle — the matview-day bulk pass supersedes that work.
+
+The per-repo helpers `RefreshRepoAggregates(repoID)` and `RefreshRepoGroupAggregates(repoID)` remain in `internal/db/aggregates.go` for manual/ops usage (e.g., recalculating a single repo after a correction). They are simply no longer invoked automatically from the facade.
+
 ---
 
-## Phase 4: Commit author resolution
+## Phase 5: Commit author resolution
 
 After facade completes, git commit author emails are resolved to GitHub user accounts. This is the Go implementation of the [augur-contributor-resolver](https://github.com/aveloxis/augur-contributor-resolver) scripts.
 
@@ -185,19 +214,21 @@ After facade completes, git commit author emails are resolved to GitHub user acc
 
 ---
 
-## Phase 5: Canonical email enrichment
+## Periodic: Contributor enrichment and canonical emails
 
-For contributors that have `gh_login` but no `cntrb_canonical`, calls `GET /users/{login}` to retrieve their profile email and sets `cntrb_canonical`.
+On a periodic scheduler ticker (default 30 minutes, `enrich_interval_minutes` — moved out of the per-job path in v0.18.29), `EnrichThinContributors` calls `GET /users/{login}` for contributors with missing profile data (empty company and location). This populates company, location, email, name, created_at, and sets `cntrb_canonical` from the public email (filtering noreply addresses).
+
+**Token efficiency (v0.14.4+)**: Contributors are tracked via `cntrb_last_enriched_at` to prevent re-enriching users with genuinely empty GitHub profiles on every collection pass. They are retried after 30 days. A separate `ResolveEmailsToCanonical` pass handles the remaining contributors discovered during commit resolution, limited to 500 per pass.
 
 ---
 
-## Phase 6: Analysis
+## Phase 4: Analysis
 
-After facade, a temporary full checkout is created from the bare clone (local copy, no network request). Three analyses run against it, then the checkout is deleted.
+After facade, a temporary full checkout is created from the bare clone (local copy, no network request). The analysis passes (dependency + lockfile scanning, libyear, scc) run against it; scorecard uses the same checkout before it is deleted. SBOM generation and vulnerability scanning follow as phases 6 and 7 (see the architecture docs for [vulnerabilities + SBOMs](../architecture/vulnerability-and-sbom.md)).
 
 ### Dependency scanning
 
-Walks the checkout for manifest files across 12 ecosystems:
+Walks the checkout for manifest files across 14 ecosystems (the table below shows the core set; Elixir `mix.exs`, Dart `pubspec.yaml`, and C/C++ `Makefile`/`CMakeLists.txt` are also covered). Additionally, 19 lockfile formats are parsed for locked versions, the transitive dependency closure, and dependency edges (`vuln_scan_transitive`, default on):
 
 | Manifest | Ecosystem |
 |---|---|
@@ -218,7 +249,7 @@ Results are stored in `repo_dependencies`.
 
 ### Libyear calculation
 
-For each versioned dependency, queries its package registry to compare the current version against the latest:
+For each versioned dependency, queries its package registry to compare the current version against the latest — 12 registries: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM (via GitHub releases). Examples:
 
 | Registry | URL |
 |---|---|
@@ -244,6 +275,8 @@ If `scc` is installed, runs `scc -f json --by-file` against the checkout. Per-fi
 - Total lines, code lines, comment lines, blank lines
 - Cyclomatic complexity
 
+Since v0.27.7, `repo_labor` holds only the **latest** snapshot per repo: each analysis run atomically rotates the previous per-file snapshot into `repo_labor_history` and inserts the fresh one in a single transaction. See `docs/architecture/analysis.md` ("Snapshot rotation and history") for the rotation semantics and the disk-reclaim operator note.
+
 If `scc` is not installed, this phase is silently skipped.
 
 ### ScanCode Toolkit (license and copyright detection)
@@ -253,7 +286,9 @@ After SCC, [ScanCode Toolkit](https://github.com/aboutcode-org/scancode-toolkit)
 **Invocation:**
 
 ```bash
-scancode -clpi --only-findings --json <output-file> --quiet --timeout 300 <path>
+OUTPUT=/tmp/aveloxis-scancode/repo_123.json   # the JSON the worker ingests
+CHECKOUT=/tmp/aveloxis-scancode/repo_123      # the temporary clone
+scancode -clpi --only-findings --json "$OUTPUT" --quiet --timeout 300 "$CHECKOUT"
 ```
 
 | Flag | Purpose |
@@ -266,7 +301,7 @@ scancode -clpi --only-findings --json <output-file> --quiet --timeout 300 <path>
 | `--quiet` | Suppress progress output |
 | `--timeout 300` | 5-minute per-file timeout for pathological files |
 
-**30-day interval**: ScanCode only runs once every 30 days per repo. License and copyright data changes infrequently, so re-scanning on every collection pass would waste time. The last-run timestamp is checked via `ScancodeLastRun` before invoking the tool.
+**Decoupled worker pool (v0.21.0)**: ScanCode no longer runs inside the per-repo collection pipeline at all — a dedicated pool (`scancode_workers`) claims repos on its own 180-day cadence (`scancode_cadence_days`), makes its own shallow clone, and carries crash recovery, adaptive timeouts, and failure backoff. See [the scancode architecture doc](../architecture/scancode.md).
 
 **Results** are stored in the `aveloxis_scan` schema (separate from `aveloxis_data`):
 
@@ -282,9 +317,9 @@ ScanCode data enriches other features:
 
 If ScanCode is not installed, this phase is silently skipped. Install it with `aveloxis install-tools` or `pipx install scancode-toolkit-mini`.
 
-### OpenSSF Scorecard (local execution)
+### OpenSSF Scorecard (remote-first, local fallback)
 
-After dependency scanning, libyear, and SCC complete, the [OpenSSF Scorecard](https://github.com/ossf/scorecard) tool runs against the **same temporary checkout** in local mode (`--local`). This is significantly faster than remote mode because:
+After dependency scanning, libyear, and SCC complete, the [OpenSSF Scorecard](https://github.com/ossf/scorecard) tool runs. Since v0.27.5 GitHub repos run **remote-first** (`--repo`, 18 checks, round-robining the key pool's tokens) and fall back to `--local` against the temporary checkout on error or timeout; GitLab and generic-git repos run local-only (11 checks). Local mode's advantages when it applies:
 
 - **No redundant clone**: Scorecard reuses the existing checkout instead of cloning the repo again.
 - **Local checks run offline**: Checks like Binary-Artifacts, Pinned-Dependencies, Dangerous-Workflow, and Token-Permissions evaluate files locally without any API calls.
@@ -307,8 +342,8 @@ In addition to per-repo collection, `aveloxis serve` runs these periodic tasks:
 | Task | Interval | Description |
 |---|---|---|
 | **Org refresh** | Every 4 hours | Re-fetches organization membership lists to discover new repos |
-| **Contributor breadth** | Every 6 hours | Calls `GET /users/{login}/events` for up to 100 contributors to discover cross-repo activity. Results stored in `contributor_repo`. |
-| **Materialized view rebuild** | Weekly (Saturday) | Pauses all collection workers, refreshes all 19 matviews, resumes collection |
+| **Contributor breadth** | Every 15 minutes | Calls `GET /users/{login}/events` for up to 2,000 contributors per cycle (7-day jittered cooldown) to discover cross-repo activity. Results stored in `contributor_repo`. |
+| **Materialized view rebuild** | Weekly (Saturday) | Pauses all collection workers, refreshes all 20 matviews, resumes collection |
 
 ---
 

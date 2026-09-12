@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -179,7 +181,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	poolSize := max(int32(workers+15), 20)
 	// application_name = "aveloxis-serve" so post-stop verification
 	// (and operators reading pg_stat_activity) can filter per-process.
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(db.ServeApplicationName), logger, poolSize)
+	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(db.AppNameForHost(db.ServeApplicationName)), logger, poolSize)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
 	}
@@ -360,7 +362,7 @@ func runAPI(cfgPath, addr string) error {
 		addr = cfg.API.AddrOrDefault()
 	}
 
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-api"), logger)
+	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(componentAppName("api")), logger)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
 	}
@@ -1358,7 +1360,7 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
-			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-web"), logger)
+			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(componentAppName("web")), logger)
 			if err != nil {
 				return err
 			}
@@ -1397,36 +1399,31 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 	}
 }
 
-// validComponents lists the background-manageable process types.
-var validComponents = []string{"serve", "web", "api"}
-
 func startCmd(cfgPath *string) *cobra.Command {
 	var skipDeployCheck bool
 	cmd := &cobra.Command{
-		Use:   "start [serve|web|api|all]",
+		Use:   "start [serve|web|api|scancode-worker|all]",
 		Short: "Start aveloxis components in the background",
 		Long: `Launches the specified component(s) as background processes, writing
 output to log files in ~/.aveloxis/:
 
-  aveloxis start serve   → aveloxis.log   (scheduler + monitor)
-  aveloxis start web     → web.log        (web GUI)
-  aveloxis start api     → api.log        (REST API)
-  aveloxis start all     → all three
+  aveloxis start serve            → aveloxis.log          (scheduler + monitor)
+  aveloxis start web              → web.log               (web GUI)
+  aveloxis start api              → api.log               (REST API)
+  aveloxis start scancode-worker  → scancode-worker.log   (dedicated scancode host, v0.27.6)
+  aveloxis start all              → serve + web + api (never the scancode worker)
 
-PID files are written to ~/.aveloxis/aveloxis-{serve,web,api}.pid.
-Use 'aveloxis stop' to shut them down gracefully.`,
+PID files are written to ~/.aveloxis/aveloxis-{serve,web,api,scancode-worker}.pid.
+Use 'aveloxis stop' to shut them down gracefully.
+
+A dedicated scancode host runs ONLY 'aveloxis start scancode-worker' —
+'start serve' there is the full scheduler (it migrates and collects)
+regardless of which knobs the config carries.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target := strings.ToLower(args[0])
-
-			var components []string
-			if target == "all" {
-				components = validComponents
-			} else {
-				if !slices.Contains(validComponents, target) {
-					return fmt.Errorf("unknown component %q (use serve, web, api, or all)", target)
-				}
-				components = []string{target}
+			components, err := resolveComponents(args[0])
+			if err != nil {
+				return err
 			}
 
 			// v0.29.0: gate `start serve` / `start all` on the release's
@@ -1434,32 +1431,133 @@ Use 'aveloxis stop' to shut them down gracefully.`,
 			// (there is enough data-side healing this release that a
 			// missed step would go unnoticed). Fresh installs and
 			// already-acknowledged releases pass through silently.
+			//
+			// Round-8 finding 3: the already-running check comes FIRST.
+			// The gate exists to stop a NEW serve from starting against
+			// an un-migrated or un-acknowledged fleet; when serve is
+			// already up on this host startComponent refuses the start
+			// anyway, so the gate can only produce noise — and the noise
+			// is misleading: its other-serve probe (a separate,
+			// untagged pool) sights the operator's OWN live serve, prints
+			// both readings of a "(this host)" entry, and then
+			// startComponent says "serve is already running (PID N)" two
+			// lines later. `start all` still starts web and api here;
+			// neither was ever gated.
 			if slices.Contains(components, "serve") {
-				proceed, err := runDeployGate(*cfgPath, skipDeployCheck)
-				if err != nil {
-					return fmt.Errorf("deploy-readiness check: %w", err)
-				}
-				if !proceed {
-					return fmt.Errorf("start aborted: run this release's deploy steps (see `aveloxis deploy-checklist`) then `aveloxis ack-deploy`, or pass --skip-deploy-check")
+				// An UNKNOWN liveness state (round-11 finding 2) skips
+				// the gate too: startComponent refuses the start a few
+				// lines below with the pidfile error, so prompting the
+				// operator here would only precede that refusal.
+				_, serveUp, livenessErr := componentAlreadyRunning("serve")
+				if !serveUp && livenessErr == nil {
+					proceed, err := runDeployGate(*cfgPath, skipDeployCheck)
+					if err != nil {
+						return fmt.Errorf("deploy-readiness check: %w", err)
+					}
+					if !proceed {
+						return errors.New(startAbortMessage(db.ToolVersion))
+					}
 				}
 			}
 
-			for _, comp := range components {
-				if err := startComponent(comp, *cfgPath); err != nil {
-					fmt.Printf("Failed to start %s: %v\n", comp, err)
-				}
-			}
-			return nil
+			return startComponents(components, *cfgPath, startComponent)
 		},
 	}
 	cmd.Flags().BoolVar(&skipDeployCheck, "skip-deploy-check", false, "bypass the release deploy-steps prompt (for automation)")
 	return cmd
 }
 
+// startComponents starts every component in order and returns the
+// failures JOINED, so the exit status is nonzero whenever any start was
+// refused while the components that CAN start still do.
+//
+// Round 16 (Copilot round 6, finding 1): the loop used to print
+// "Failed to start %s" and return nil, so `aveloxis start serve` with
+// an unreadable pidfile — the round-11 finding-2 refusal, the ONLY hard
+// double-start guard — exited 0 having started nothing, and a deploy
+// script read that as success. Every failure is reported (the
+// v0.27.106 nonzero-exit convention); every component is still
+// attempted, because `start all` starts web and api even when serve is
+// already up (round-8 finding 3) and a refused serve must not take
+// them down with it. A no-op start ("already running") returns nil from
+// the starter and stays exit 0. The starter is injected so the loop's
+// contract is driven by a test without spawning anything.
+func startComponents(components []string, cfgPath string, start func(component, cfgPath string) error) error {
+	var errs []error
+	for _, comp := range components {
+		if err := start(comp, cfgPath); err != nil {
+			errs = append(errs, fmt.Errorf("failed to start %s: %w", comp, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// componentAlreadyRunning is the ONE spelling (SR-17) of "this host is
+// already running that component": a pidfile whose PID is live. It
+// returns the live PID so a caller that reports it needs no second
+// read. Four readers depend on the same answer — startComponent's
+// refusal to double-start, `stop all`'s hint about the worker it left
+// running, run-scorecard's refusal to compete with a live serve for the
+// API budget, and (round-8 finding 3) `start serve`'s decision to skip
+// the deploy gate — and a start that is a no-op must look like a no-op
+// to all of them.
+//
+// THREE-VALUED, not two (round-11 finding 2, SR-5: a lookup ERROR is
+// not "no"). Only ENOENT is a definitive "not running"; pidfile.Read
+// also returns errors for EACCES, EIO and a corrupt or truncated file
+// ("invalid PID in %s"), and through v0.29.4 all of those collapsed
+// into not-running. A LIVE serve with an unreadable pidfile therefore
+// read as stopped — and startComponent, the only HARD double-start
+// guard (the other-serve probe warns, never blocks — a documented
+// residual), launched a second scheduler against the same queue and API
+// keys. A stale pidfile (readable, PID dead) stays a definitive
+// not-running: that is what the liveness check is for.
+func componentAlreadyRunning(component string) (int, bool, error) {
+	_, pid, found, err := readComponentPID(component)
+	if err != nil || !found {
+		return 0, false, err
+	}
+	if !pidfile.IsRunning(pid) {
+		return 0, false, nil
+	}
+	return pid, true, nil
+}
+
+// readComponentPID is the ONE spelling (SR-17) of the three-valued
+// pidfile read every reader in this file depends on: (path, pid,
+// found, err). ENOENT is the only definitive "no pidfile" —
+// (path, 0, false, nil). Any other read error (EACCES, EIO, a corrupt
+// or truncated file) is UNKNOWN and comes back as the error so the
+// caller fails closed (SR-5). Round 17 (Copilot round 7, finding 2)
+// moved it here: stopComponent had kept its own `err == nil` spelling
+// after round 11 fixed componentAlreadyRunning, so a corrupt pidfile
+// was silently dropped — the pgrep fallback usually still found and
+// stopped the process, but the file was never reported and the next
+// `start` refused on it with nothing in the operator's history to say
+// why. The class fixed in round 11, one function down.
+func readComponentPID(component string) (string, int, bool, error) {
+	path := pidfile.Path(component)
+	pid, err := pidfile.Read(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return path, 0, false, nil
+		}
+		return path, 0, false, fmt.Errorf("cannot determine whether %s is running on this host from %s "+
+			"(an unreadable or corrupt pidfile is not evidence that it is stopped): %w", component, path, err)
+	}
+	return path, pid, true, nil
+}
+
 func startComponent(component, cfgPath string) error {
 	// Check if already running.
 	pidPath := pidfile.Path(component)
-	if pid, err := pidfile.Read(pidPath); err == nil && pidfile.IsRunning(pid) {
+	pid, running, err := componentAlreadyRunning(component)
+	if err != nil {
+		// Round-11 finding 2: refuse rather than double-start. This is
+		// the only HARD guard against two schedulers on one host.
+		return fmt.Errorf("refusing to start %s: %w", component, err)
+	}
+	if running {
 		fmt.Printf("%s is already running (PID %d)\n", component, pid)
 		return nil
 	}
@@ -1489,7 +1587,7 @@ func startComponent(component, cfgPath string) error {
 		return fmt.Errorf("starting %s: %w", component, err)
 	}
 
-	pid := proc.Process.Pid
+	pid = proc.Process.Pid
 	if err := pidfile.Write(pidPath, pid); err != nil {
 		fmt.Printf("Warning: started %s (PID %d) but failed to write PID file: %v\n", component, pid, err)
 	}
@@ -1502,38 +1600,92 @@ func startComponent(component, cfgPath string) error {
 	return nil
 }
 
-// verifyBackendsDisconnected polls pg_stat_activity for backends with
-// the given application_name (e.g., "aveloxis-serve") and waits up to
-// the serve shutdown budget + margin for the count to drop to zero.
-// If any persist, prints the persistent PIDs paired with a
+// backendVerifier owns the ONE database connection `aveloxis stop` uses
+// for its post-SIGTERM checks. Round-11 finding 10: the per-component
+// shape opened a fresh pool (MinConns=2, MaxConns=20, plus a Ping) for
+// each of serve/web/api, three times over, precisely on the path an
+// operator runs when the database is already at max_connections.
+//
+// Opened LAZILY on the first component actually stopped, so a `stop`
+// that finds nothing running never touches the database, and closed
+// once. A config that will not load or a dial that fails is reported
+// ONCE and then remembered (round-2 finding 9 kept: the skip is said
+// out loud, it is just no longer said three times).
+type backendVerifier struct {
+	out     io.Writer
+	cfgPath string
+	cfg     *config.Config
+	store   *db.PostgresStore
+	opened  bool
+	broken  bool
+}
+
+func (v *backendVerifier) verify(appName string) {
+	if v.broken {
+		return
+	}
+	if !v.opened {
+		v.opened = true
+		bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		cfg, err := config.Load(v.cfgPath)
+		if err != nil {
+			// No config means we can't check the DB. Operator gets the
+			// SIGTERM result but no verification — said out loud
+			// (round-2 finding 9: a `stop` run without -c on a
+			// dedicated host used to skip the check in silence).
+			fmt.Fprintf(v.out, "(config %s not loaded — backend verification skipped: %v)\n", v.cfgPath, err)
+			v.broken = true
+			return
+		}
+		// The dial gets its own bound so a slow connect can never eat
+		// into the poll window (pass 41 — the pass-40 shared ctx let a
+		// >5s dial reintroduce the mid-poll expiry it was fixing).
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer dialCancel()
+		store, err := db.NewPostgresStore(dialCtx, cfg.Database.ConnectionString(), bootLog)
+		if err != nil {
+			// Generic on purpose: the verifier is opened lazily on the
+			// FIRST component stopped and the failure is reported once,
+			// so naming that component would let an operator running
+			// `stop all` read the other two as verified.
+			fmt.Fprintf(v.out, "(database connection failed — backend verification skipped for every component of this stop: %v)\n", err)
+			v.broken = true
+			return
+		}
+		v.cfg, v.store = cfg, store
+	}
+	verifyBackendsDisconnected(v.out, v.store, v.cfg, appName)
+}
+
+// Close releases the shared pool. Safe on a verifier that never opened.
+func (v *backendVerifier) Close() {
+	if v.store != nil {
+		v.store.Close()
+		v.store = nil
+	}
+}
+
+// verifyBackendsDisconnected polls pg_stat_activity for THIS host's
+// backends with the given application_name (e.g., "aveloxis-serve")
+// and waits up to the serve shutdown budget + margin for them to
+// disappear. If any persist, prints the persistent PIDs paired with a
 // pg_terminate_backend recipe so the operator can act in seconds
 // rather than wait the full TCP keepalive timeout (tens of minutes).
+// Backends carrying the same tag from OTHER hosts are reported as such
+// and never offered for termination (v0.29.4 — the 2026-09-09
+// incident printed 64 recipes for the primary's pool from a dedicated
+// scancode host).
 //
 // v0.20.0 introduced this to close the gap that produced the
 // 2026-05-08 26-minute orphan: SIGTERM was sent successfully, but the
 // orphaned backend kept grinding a 26-minute UPDATE because the
 // operator had no signal it was happening.
-func verifyBackendsDisconnected(cfgPath, appName string) {
-	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		// No config means we can't check the DB. Operator gets the
-		// SIGTERM result but no verification. Acceptable for `stop` to
-		// degrade gracefully.
-		return
-	}
-	// The dial gets its own bound so a slow connect can never eat into
-	// the poll window (pass 41 — the pass-40 shared ctx let a >5s dial
-	// reintroduce the mid-poll expiry it was fixing).
-	dialCtx, dialCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer dialCancel()
-	store, err := db.NewPostgresStore(dialCtx, cfg.Database.ConnectionString(), bootLog)
-	if err != nil {
-		fmt.Printf("(could not verify %s backends disconnected: %v)\n", appName, err)
-		return
-	}
-	defer store.Close()
-
+//
+// The store is supplied by the caller (round-11 finding 10): `stop all`
+// verifies three components and used to open a pool per component —
+// MinConns=2, MaxConns=20 and a Ping each — on the path most often run
+// when the database is at max_connections. backendVerifier opens one.
+func verifyBackendsDisconnected(out io.Writer, store *db.PostgresStore, cfg *config.Config, appName string) {
 	// Poll once a second for the serve's full shutdown budget plus a
 	// margin (pass 39: a serve legitimately inside its bookkeeping wait
 	// used to be reported as orphaned backends at 30s). The poll ctx is
@@ -1544,142 +1696,230 @@ func verifyBackendsDisconnected(cfgPath, appName string) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), budget+5*time.Second)
 	defer cancel()
-	deadline := start.Add(budget)
-	var lastPids []int
-	for time.Now().Before(deadline) {
-		pids, err := store.PidsByAppName(ctx, appName)
-		if err != nil {
-			// A failed poll is not "all clear" — but it is not the
-			// orphan verdict either: the pids from the last successful
-			// check may be a serve mid-graceful-shutdown, and printing
-			// the terminate recipes here would invite the operator to
-			// kill live backends mid-bookkeeping (pass 41). Hedge.
-			fmt.Printf("(backend verification aborted %s into the %s budget: %v)\n",
-				time.Since(start).Truncate(time.Second), budget.Truncate(time.Second), err)
-			if len(lastPids) > 0 {
-				fmt.Printf("%s backends still connected as of the last successful check: %v — re-check pg_stat_activity before terminating anything.\n",
-					appName, lastPids)
-			}
-			return
-		}
-		if len(pids) == 0 {
-			return
-		}
-		lastPids = pids
-		time.Sleep(1 * time.Second)
+	// v0.29.4: the poll is scoped to THIS host's backends and lives in
+	// pollBackends (its exit rule is pinned behaviorally). The
+	// 2026-09-09 incident: a stop on a second host matched the tag
+	// alone, waited the whole budget on the primary's 64 pool
+	// backends, and printed a terminate recipe for each of them.
+	last, render := pollBackends(
+		func() (db.AppNameBackends, error) { return store.BackendsByAppName(ctx, appName) },
+		budget,
+		func() time.Duration { return time.Since(start) },
+		func() { time.Sleep(1 * time.Second) },
+		out, appName)
+	if !render {
+		return
 	}
-	// Persistent backends past the FULL budget — surface PIDs and the
-	// actionable fix.
-	if len(lastPids) > 0 {
-		fmt.Printf("WARNING: %d %s backend(s) did not disconnect within %s after SIGTERM.\n",
-			len(lastPids), appName, budget.Truncate(time.Second))
-		fmt.Printf("Persistent PIDs: %v\n", lastPids)
-		fmt.Println("If you don't see a matching aveloxis process in `ps`, these are orphans.")
-		fmt.Println("Terminate them with:")
-		for _, pid := range lastPids {
-			fmt.Printf("  SELECT pg_terminate_backend(%d);\n", pid)
-		}
-	}
+	// Persistent local backends past the FULL budget get the PIDs and
+	// the actionable fix; other addresses' backends are only reported.
+	printBackendVerdict(out, appName, budget, last)
 }
 
 func stopCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "stop [serve|web|api|all]",
+		Use:   "stop [serve|web|api|scancode-worker|all]",
 		Short: "Stop running aveloxis background processes",
 		Long: `Sends SIGTERM to the specified component(s), triggering graceful shutdown.
 
-  aveloxis stop serve   — stop the scheduler
-  aveloxis stop web     — stop the web GUI
-  aveloxis stop api     — stop the REST API
-  aveloxis stop all     — stop all three
-  aveloxis stop         — (no args) same as 'all'
+  aveloxis stop serve            — stop the scheduler
+  aveloxis stop web              — stop the web GUI
+  aveloxis stop api              — stop the REST API
+  aveloxis stop scancode-worker  — stop the dedicated scancode worker
+  aveloxis stop all              — stop serve + web + api (never the scancode worker)
+  aveloxis stop                  — (no args) same as 'all'
 
 Active workers finish their current API call, queue locks are released,
 and any unprocessed staging data is preserved for the next startup.
-PID files are cleaned up automatically.`,
+PID files are removed after a successful stop or when they are stale; a
+file the command could not read, or whose process it could not signal,
+is left in place for you to inspect. After SIGTERM, the command
+watches pg_stat_activity for THIS host's backends of the component;
+backends of the same component from other hosts (the primary, seen from
+a dedicated scancode host) are reported and left alone.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := "all"
 			if len(args) > 0 {
-				target = strings.ToLower(args[0])
+				target = args[0]
+			}
+			components, err := resolveComponents(target)
+			if err != nil {
+				return err
 			}
 
-			var components []string
-			if target == "all" {
-				components = validComponents
-			} else {
-				if !slices.Contains(validComponents, target) {
-					return fmt.Errorf("unknown component %q (use serve, web, api, or all)", target)
-				}
-				components = []string{target}
-			}
+			verifier := &backendVerifier{out: os.Stdout, cfgPath: *cfgPath}
+			defer verifier.Close()
 
-			stopped := 0
-			for _, comp := range components {
-				if ok := stopComponent(comp); ok {
-					stopped++
-					// v0.20.0: poll pg_stat_activity for the matching
-					// application_name and warn if backends linger past
-					// the shutdown budget + margin (pass 39). Surfaces
-					// orphans-after-stop without requiring the operator
-					// to know about pg_locks.
-					verifyBackendsDisconnected(*cfgPath, "aveloxis-"+comp)
-				}
-			}
-			if stopped == 0 {
+			stopped, stopErr := stopComponents(components, stopComponent, func(comp string) {
+				// v0.20.0: poll pg_stat_activity for the matching
+				// application_name and warn if backends linger past
+				// the shutdown budget + margin (pass 39). Surfaces
+				// orphans-after-stop without requiring the operator
+				// to know about pg_locks. v0.29.4: this host's only.
+				//
+				// The PREFIX, not the tag: since round 12 the tag
+				// carries this host's marker after '@' and every
+				// host's differs, so matching on the full tag would
+				// find only our own and silently drop the
+				// other-hosts count this command exists to report.
+				// The prefix is also what the operator-facing
+				// strings should name — it is the component.
+				verifier.verify(componentAppNamePrefix(comp))
+			})
+			if nothingRunning(stopped, stopErr) {
 				fmt.Println("No running aveloxis processes found.")
 			}
-			return nil
+			if isAllTarget(target) {
+				stopAllHint(os.Stdout, func(component string) bool {
+					// The hint is informational; an unknown liveness
+					// state (round-11 finding 2) claims nothing.
+					_, running, err := componentAlreadyRunning(component)
+					return err == nil && running
+				})
+			}
+			return stopErr
 		},
 	}
 	return cmd
 }
 
-func stopComponent(component string) bool {
+// stopComponents stops every component in order, runs onStopped for
+// each one that actually went down, and returns the count beside the
+// failures JOINED. The L11 class sweep of round 16 finding 1: a
+// SIGTERM that failed (EPERM on a process owned by another user is the
+// ordinary shape) printed "Failed to stop" and the command still exited
+// 0 — and, with nothing else stopped, printed "No running aveloxis
+// processes found." over a process it had just failed to signal. A
+// clean "nothing to stop" is still exit 0 (stop is idempotent); a
+// signal failure is not. Every component is still attempted.
+func stopComponents(components []string, stop func(component string) (bool, error), onStopped func(component string)) (int, error) {
+	stopped := 0
+	var errs []error
+	for _, comp := range components {
+		ok, err := stop(comp)
+		switch {
+		case err != nil && ok:
+			// Stopped (via the pgrep fallback, or one of several pids)
+			// but with something the operator must hear about — a
+			// corrupt pidfile left in place, a second pid refused. The
+			// exit is nonzero; the words must not contradict the
+			// "Stopped …" line printed a moment earlier (round 17 L10).
+			errs = append(errs, fmt.Errorf("%s stopped, but: %w", comp, err))
+		case err != nil:
+			// Nothing went down. The inner error already says what
+			// happened (a refused signal, an unreadable pidfile, a
+			// pgrep failure) — "failed to stop" would be the wrong verb
+			// for a corrupt pidfile with nothing else found, so the
+			// component name is the only prefix (round 17 L10 pass 2).
+			errs = append(errs, fmt.Errorf("%s: %w", comp, err))
+		}
+		if ok {
+			stopped++
+			onStopped(comp)
+		}
+	}
+	return stopped, errors.Join(errs...)
+}
+
+// nothingRunning is the ONE verdict behind "No running aveloxis
+// processes found.": nothing went down AND nothing went wrong. A
+// refused signal, an unreadable pidfile or a failed pgrep is not
+// "nothing running" — printing that line over a process the command
+// just failed to signal is the round-16 incident shape, and this
+// predicate is the pin the round-16 fix lacked (round 17 L10 pass 3).
+func nothingRunning(stopped int, err error) bool {
+	return stopped == 0 && err == nil
+}
+
+// stopComponent signals the component's process(es) and reports
+// (stopped, err). "Nothing running" is (false, nil) — stop is
+// idempotent; a process that was FOUND but could not be signaled is an
+// error (round 16, the L11 sweep of finding 1), and its pidfile is left
+// in place because the process is still there.
+func stopComponent(component string) (bool, error) {
+	var errs []error
 	// Strategy 1: PID file (preferred — reliable, written by start/serve/web/api).
-	pidPath := pidfile.Path(component)
-	if pid, err := pidfile.Read(pidPath); err == nil {
-		if !pidfile.IsRunning(pid) {
-			fmt.Printf("%s: stale PID file (PID %d not running), cleaning up\n", component, pid)
+	// The read is three-valued (readComponentPID): an unreadable or
+	// corrupt pidfile is an ERROR that rides the return value — the
+	// pgrep fallback still runs (and usually finds the process, since
+	// startComponent execs `<binary> <component> --config …`), but the
+	// file is reported and left in place (it is neither stale nor live)
+	// so the operator knows why the next start will refuse on it.
+	pidPath, pid, found, err := readComponentPID(component)
+	attempted := 0 // the pidfile's pid, so the pgrep arm never signals it twice
+	switch {
+	case err != nil:
+		errs = append(errs, fmt.Errorf("pidfile left in place — inspect and delete it by hand before the next start: %w", err))
+	case !found:
+		// no pidfile — fall through to pgrep
+	case !pidfile.IsRunning(pid):
+		fmt.Printf("%s: stale PID file (PID %d not running), cleaning up\n", component, pid)
+		pidfile.Remove(pidPath)
+	default:
+		attempted = pid
+		if serr := signalProcess(component, pid); serr != nil {
+			errs = append(errs, serr)
+		} else {
 			pidfile.Remove(pidPath)
-		} else if signalProcess(component, pid) {
-			pidfile.Remove(pidPath)
-			return true
+			return true, nil
 		}
 	}
 
 	// Strategy 2: pgrep fallback — finds processes started before PID file support
-	// was added, or started manually without 'aveloxis start'.
+	// was added, or started manually without 'aveloxis start'. pgrep's
+	// exit status 1 is its documented "no processes matched" — a
+	// definitive no; any other failure (2 = usage, 3 = fatal, or a
+	// missing binary) is not evidence of absence (SR-5).
 	out, err := exec.Command("pgrep", "-f", "aveloxis "+component).Output()
 	if err != nil {
-		return false
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			errs = append(errs, fmt.Errorf("pgrep for %s: %w", component, err))
+		}
+		return false, errors.Join(errs...)
 	}
 
 	myPID := os.Getpid()
 	stopped := false
 	for field := range strings.FieldsSeq(strings.TrimSpace(string(out))) {
 		pid, err := strconv.Atoi(field)
-		if err != nil || pid == myPID {
+		if err != nil || pid == myPID || pid == attempted {
 			continue
 		}
-		if signalProcess(component, pid) {
+		if serr := signalProcess(component, pid); serr != nil {
+			errs = append(errs, serr)
+		} else {
 			stopped = true
 		}
 	}
-	return stopped
+	return stopped, errors.Join(errs...)
 }
 
-func signalProcess(component string, pid int) bool {
+// sendSignal delivers one signal to one PID. It is a seam so the
+// kernel's refusal (EPERM on another user's process) can be driven in
+// a test without signaling a real process — the round-16 test wrote a
+// pidfile naming PID 1, which in a rootless container is the
+// container's own init under the same uid (round 17, Copilot round 7,
+// finding 1). The production default is the real os.Process path and
+// is pinned by TestSendSignalProductionDefaultDeliversRealSignals;
+// nothing outside a test may reassign it.
+var sendSignal = func(pid int, sig syscall.Signal) error {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
-		return false
+		return err
 	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		fmt.Printf("Failed to stop %s (PID %d): %v\n", component, pid, err)
-		return false
+	return proc.Signal(sig)
+}
+
+// signalProcess sends SIGTERM to one process. A failed signal is
+// returned, never swallowed: the process is still running and the
+// caller's exit status has to say so.
+func signalProcess(component string, pid int) error {
+	if err := sendSignal(pid, syscall.SIGTERM); err != nil {
+		return fmt.Errorf("signaling %s (PID %d): %w", component, pid, err)
 	}
 	fmt.Printf("Stopped %s (PID %d)\n", component, pid)
-	return true
+	return nil
 }
 
 // testMailCmd lets operators verify Gmail SMTP credentials

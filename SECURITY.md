@@ -4,7 +4,6 @@
 
 | Version | Supported          |      End of Life |
 |---------|--------------------|---------------------|
-| 1.0.0  | Yes    |   September 30, 2028    |
 | 0.29.x  | Yes    |   December 31, 2027    |
 | 0.28.x  | Yes    |   December 31, 2026    |
 | 0.27.x  | Yes    |   December 31, 2026   |

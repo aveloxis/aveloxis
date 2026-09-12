@@ -80,3 +80,7 @@ aveloxis.nsa.json
 
 # compiled binary — was accidentally committed in 451b729; remove with git rm --cached aveloxis
 /aveloxis
+
+# Sphinx moves the previous .buildinfo here on a config-change rebuild; the live
+# .buildinfo is tracked, the backup is build noise (PR #197 round 15).
+docs/_build/html/.buildinfo.bak

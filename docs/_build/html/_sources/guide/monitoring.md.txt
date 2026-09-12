@@ -41,7 +41,8 @@ The top of the dashboard shows aggregate queue statistics:
 
 ### Repo status table
 
-Below the statistics, a table shows every repo in the queue with:
+Below the statistics, a paginated table shows the queue ordered by
+`collecting` first, then `queued`, then priority and due date.
 
 | Column | Description |
 |---|---|
@@ -51,6 +52,27 @@ Below the statistics, a table shows every repo in the queue with:
 | **Due Time** | When the repo is next eligible for collection |
 | **Last Run** | Results of the most recent collection (entity counts, errors) |
 | **Actions** | Boost button to push the repo to the front |
+
+### Search and pagination (v0.18.6)
+
+The dashboard supports a search box and per-page selector above the table,
+and Prev/Next controls below it. Query parameters:
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `page` | `1` | 1-based page number |
+| `page_size` | `100` | Rows per page; capped at `500` |
+| `q` | *(empty)* | Case-insensitive substring match on `repo_owner` or `repo_name` |
+
+Example: `http://localhost:5555/?q=apache&page_size=200&page=2`.
+
+Before v0.18.6 the dashboard rendered every row on a single page and
+issued one `SELECT` per row to look up repo metadata (N+1). On large
+fleets that combination (1) made the page slow to render during active
+collection and (2) competed with collection workers for pgx pool
+connections. The dashboard now issues three queries total per refresh
+(`QueueStats`, `ListQueuePage`, and a batched `GetReposBatch` +
+`GetRepoStatsBatch`), regardless of fleet size.
 
 ---
 
@@ -80,7 +102,7 @@ curl http://localhost:5555/api/queue
 
 Response:
 
-```json
+```jsonc
 [
   {
     "repo_id": 42,
@@ -89,8 +111,8 @@ Response:
     "priority": 100,
     "due_at": "2026-04-05T12:00:00Z",
     "last_collected_at": "2026-04-04T12:00:00Z"
-  },
-  ...
+  }
+  // ...more rows
 ]
 ```
 
@@ -162,31 +184,14 @@ Or redirect:
 aveloxis serve --monitor :5555 > aveloxis.log 2>&1 &
 ```
 
-For production deployments, consider using a process manager like `systemd` that captures output automatically:
-
-```ini
-# /etc/systemd/system/aveloxis.service
-[Unit]
-Description=Aveloxis Collection Service
-After=postgresql.service
-
-[Service]
-Type=simple
-User=aveloxis
-WorkingDirectory=/opt/aveloxis
-ExecStart=/usr/local/bin/aveloxis serve --workers 4 --monitor :5555
-ExecStop=/usr/local/bin/aveloxis stop
-Restart=on-failure
-RestartSec=30
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Logs can then be viewed with:
+For production deployments, run all three processes under systemd — units,
+boot persistence, the graceful-shutdown prerequisite (v0.27.25+), and the
+PATH gotcha for the external tools are covered in
+[Running Aveloxis as a Service](running-as-a-service.md). Under systemd,
+logs go to the journal:
 
 ```bash
-journalctl -u aveloxis -f
+journalctl -u aveloxis@serve -f
 ```
 
 ---
@@ -217,6 +222,17 @@ WHERE q.last_error IS NOT NULL AND q.last_error != '';
 SELECT COUNT(*) AS staged_rows
 FROM aveloxis_ops.staging;
 ```
+
+## Subsystem health (`aveloxis_status`)
+
+`aveloxis_ops.aveloxis_status` records system-level health per subsystem — set by startup preflights so a failure that means a subsystem "will never work until fixed" is visible instead of silently degrading. The first subsystem is **scancode** (a corrupt host libmagic that wedges every scan):
+
+```sql
+SELECT status_name, status, status_detail, data_collection_date
+FROM aveloxis_ops.aveloxis_status;
+```
+
+A `status = 'broken'` row needs operator attention — `status_detail` names the fix. For the scancode/libmagic case, see [Troubleshooting → Scancode produces no results](troubleshooting.md) and [ScanCode Worker §13](../architecture/scancode.md).
 
 ---
 

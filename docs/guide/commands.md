@@ -175,9 +175,23 @@ aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json
 - **Does NOT run schema migrations** (the v0.21.5 contract: only `serve`
   and `migrate` do). It checks the schema version at startup and logs an
   ERROR pointing at `aveloxis migrate` when the DB is behind.
-- Writes its PID to `~/.aveloxis/aveloxis-scancode-worker.pid`.
+- Writes its PID to `~/.aveloxis/aveloxis-scancode-worker.pid`, and is
+  managed like the other components: `aveloxis start scancode-worker` /
+  `aveloxis stop scancode-worker` (v0.29.4). It is never part of `all`
+  (a primary that still runs its in-serve pool would double up).
 - All `collection.scancode_*` knobs apply (workers, cadence, clone dir,
   adaptive timeouts, ignore globs, timeout-cap strikes).
+- **Do not run `aveloxis serve` on the dedicated host.** `serve` is the
+  full scheduler — it migrates and collects — whatever knobs the config
+  carries. Since v0.29.4 the incident's shape (a binary AHEAD of the
+  schema stamp) is refused twice: the `start serve` deploy gate refuses
+  when the stamp is behind the binary (no migration of that binary has
+  completed here — the ladder's step 2, `aveloxis migrate --skip-views`),
+  and serve's own startup migration refuses to run a full pass while
+  another `aveloxis-serve` is connected. A same-version `start serve`
+  is NOT refused — it would start a second full scheduler — so both the
+  gate and serve's log say when another `aveloxis-serve` is already
+  connected; `stop` scopes its backend check to this host.
 
 Full recipe — Postgres remote access, minimal config template, systemd
 unit, libmagic version-lock — in the
@@ -204,7 +218,7 @@ Use at deploy time so the first user signup isn't the first SMTP attempt.
 
 One-shot collection of specific repos without the scheduler. Uses the **direct collection pipeline** (bypasses staging, writes directly to relational tables). Best for testing or collecting a small number of repos.
 
-```bash
+```text
 aveloxis collect [flags] <url> [<url> ...]
 ```
 
@@ -236,7 +250,7 @@ aveloxis collect \
 
 Adds repositories to the collection queue. Platform is auto-detected from the URL.
 
-```bash
+```text
 aveloxis add-repo [flags] <url> [<url> ...]
 ```
 
@@ -283,7 +297,7 @@ aveloxis add-repo --from-augur
 
 Stores API keys in the database for use during collection.
 
-```bash
+```text
 aveloxis add-key [flags] [<token>]
 ```
 
@@ -313,7 +327,7 @@ aveloxis add-key --from-augur
 
 Pushes a repository to the front of the collection queue.
 
-```bash
+```text
 aveloxis prioritize <url>
 ```
 
@@ -337,7 +351,7 @@ Where `42` is the repo's `repo_id`.
 
 Flags one or more repositories for a **full** (`since=zero`) re-collection on their next scheduler cycle.
 
-```bash
+```text
 aveloxis recollect <url>...
 ```
 
@@ -673,13 +687,22 @@ maintenance cron.
 Launches aveloxis components as detached background processes with log output redirected to files in `~/.aveloxis/`.
 
 ```bash
-aveloxis start serve   # scheduler + monitor → ~/.aveloxis/aveloxis.log
-aveloxis start web     # web GUI             → ~/.aveloxis/web.log
-aveloxis start api     # REST API            → ~/.aveloxis/api.log
-aveloxis start all     # all three at once
+aveloxis start serve            # scheduler + monitor        → ~/.aveloxis/aveloxis.log
+aveloxis start web              # web GUI                    → ~/.aveloxis/web.log
+aveloxis start api              # REST API                   → ~/.aveloxis/api.log
+aveloxis start scancode-worker  # dedicated scancode worker  → ~/.aveloxis/scancode-worker.log
+aveloxis start all              # serve + web + api (never the scancode worker)
 ```
 
-PID files are written to `~/.aveloxis/aveloxis-{serve,web,api}.pid`. If a component is already running, the command reports it and skips the launch.
+PID files are written to `~/.aveloxis/aveloxis-{serve,web,api,scancode-worker}.pid`. If a component is already running, the command reports it and skips the launch. `scancode-worker` (v0.29.4) is the dedicated-host process from [Dedicated Scancode Host](dedicated-scancode-host.md); `all` deliberately excludes it.
+
+The exit status is the contract for scripts: a component that could not
+be started — a pidfile that cannot be read (the command refuses rather
+than risk a second scheduler on the host), a log file that cannot be
+opened, a failed exec — makes the command exit nonzero, naming each
+failure, after every requested component has been attempted. `start all`
+therefore still brings up web and api beside a refused serve, and says
+so. An already-running component is a no-op and exits 0.
 
 Log files are opened in append mode — existing content is preserved across restarts.
 
@@ -696,14 +719,150 @@ Pick one manager per host: once the systemd units own the processes,
 Gracefully stops background aveloxis processes.
 
 ```bash
-aveloxis stop serve    # stop only the scheduler
-aveloxis stop web      # stop only the web GUI
-aveloxis stop api      # stop only the REST API
-aveloxis stop all      # stop all three
-aveloxis stop          # (no args) same as 'all'
+aveloxis stop serve            # stop only the scheduler
+aveloxis stop web              # stop only the web GUI
+aveloxis stop api              # stop only the REST API
+aveloxis stop scancode-worker  # stop the dedicated scancode worker
+aveloxis stop all              # stop serve + web + api (never the scancode worker)
+aveloxis stop                  # (no args) same as 'all'
 ```
 
-Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are cleaned up automatically. Stale PID files (process no longer running) are detected and removed.
+Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. `stop all` names a scancode worker it left running.
+
+Nothing to stop is exit 0 — `stop` is idempotent. A process that was
+found but could not be signaled (typically `operation not permitted` on a
+process another user started) is a failure: its pidfile is left in place,
+every other requested component is still stopped, and the command exits
+nonzero naming the one it could not. A pidfile that exists but cannot be
+read — unreadable, or carrying something that is not a PID — is the third
+arm: it is not evidence that the component is stopped, so the command
+still tries the `pgrep` fallback — which normally finds a component that
+`start` launched, so you will see `Stopped serve (PID N)` AND a nonzero
+exit reading `serve stopped, but: pidfile left in place …`. The file is
+neither stale nor live, so it is left for you to inspect and delete by
+hand; the next `start` refuses on it until you do. If `pgrep` finds
+nothing either, the exit is still nonzero and reads `serve: pidfile left
+in place …` — nothing was stopped, and nothing could be confirmed. A
+`pgrep` that itself fails (not installed, or any exit other than its
+documented "no match") is likewise not evidence of absence: the command
+exits nonzero reading `serve: pgrep for serve: …`.
+
+After SIGTERM the command watches `pg_stat_activity` for the component's
+backends and, past the shutdown budget, prints the persistent PIDs with a
+`pg_terminate_backend` recipe. Since v0.29.4 that recipe is offered for
+**this host's** backends only — the ones whose client address is this
+session's own, or local to the database host (a unix socket, or loopback
+in either address family). Every other backend carrying the same tag
+falls into one of two reported arms, is never waited on, and is never
+offered for termination:
+
+- **Another client address** — normally another machine running this
+  component against the same database (the primary's serve seen from a
+  dedicated scancode host, or the reverse). The check knows the address,
+  not the machine, so a serve on THIS host that dialed a different DSN
+  address reads the same way.
+- **Address not visible** — a backend of a database role whose privileges
+  this one does not hold. `pg_stat_activity` shows a session's
+  `client_addr` only to roles that HOLD that session's role's privileges
+  and to roles that hold `pg_read_all_stats`'s; everyone else reads NULL,
+  the same NULL a unix socket shows. `stop` prints a no-verdict note for
+  these — neither this host's nor another's.
+
+To get a verdict on the second arm, run `stop` as that role, or grant
+this one the stats privileges:
+
+```sql
+GRANT pg_read_all_stats TO <role>;
+```
+
+Holding is the test, not membership: a `NOINHERIT` role, or one granted
+`WITH INHERIT FALSE`, is a member of `pg_read_all_stats` with none of its
+privileges and still reads NULL. On PostgreSQL 16 and later a grant's
+inherit option is fixed at GRANT time, so if the grant already exists and
+does not inherit, re-grant it with
+`GRANT pg_read_all_stats TO <role> WITH INHERIT TRUE`. Check with
+`SELECT pg_has_role(current_user, 'pg_read_all_stats', 'USAGE')`.
+
+The check needs the config (`-c`) to reach the database; without it the
+command says the check was skipped.
+
+### How a backend is placed on a host
+
+Each component tags its connection pool with an `application_name` that
+carries the component and this machine's hostname, separated by `@`:
+
+```
+aveloxis-serve@kate
+aveloxis-scancode-worker@runner-01
+aveloxis-web@kate
+aveloxis-api@kate
+```
+
+`stop` matches on the part **before** the `@` (the component) and
+compares the part **after** it (the host) against its own machine.
+
+**The rule in one sentence: a marker can only separate hosts, never
+merge them.** The client address decides, and the marker can only
+*veto* it. A backend is placed on this host when its client address is
+this host's **and** its marker does not contradict that — so a backend
+that reaches the database from a different address is never this
+host's, whatever its marker says, and two backends sharing an address
+but carrying different markers are correctly separated. Either marker
+being absent means the marker abstains and the address rule alone
+decides.
+
+The composition is deliberately one-directional: it never places a
+backend *here* that the client-address rule alone would have placed
+elsewhere. That is what keeps marker quality out of the safety
+argument — `os.Hostname()` is not unique across machines (two
+container hosts running the same compose file report the same
+hostname), so a marker collision degrades to the address rule rather
+than to a `pg_terminate_backend` recipe for a machine you are not on.
+
+Your own `pg_stat_activity` queries should match with `LIKE
+'aveloxis-%'` (which still works unchanged) or with
+`split_part(application_name, '@', 1) = 'aveloxis-serve'`. Matching the
+full tag by equality will find only the backends of one specific host.
+
+A host whose kernel will not report a hostname tags un-suffixed
+(`aveloxis-serve`) and falls back to the client-address rule.
+
+```{warning}
+**Behind a transaction pooler (pgbouncer in `transaction` or `statement`
+mode, pgcat, Odyssey), the client address is useless — the host marker
+is not.** Every client reaches PostgreSQL through the pooler, so
+`pg_stat_activity.client_addr` is the *pooler's* address for every
+backend, this host's and every other host's alike. The address rule
+alone would read them all as one host and offer a terminate recipe for
+another machine's serve. The `@host` marker survives the collapse
+because PostgreSQL stores the `application_name` the client sent and
+never rewrites it.
+
+**The residual is the upgrade window.** A backend tagged by a
+pre-v0.29.4-round-12 binary carries no marker, so it falls back to the
+address rule — and behind a pooler that rule reads it as this host's.
+Until every host on the database runs a build with the marker, treat a
+"Persistent PIDs (this host)" entry on a **pooled** deployment as
+unverified and confirm with `ps` on each host before terminating. Once
+every component is upgraded, the verdict holds through a pooler.
+
+**The other residual: one host reached over two addresses reads as
+two.** If a component was started against a DSN naming this machine's
+LAN address while `stop` runs against a `localhost` DSN (or one side
+goes through a pooler and the other does not), the addresses differ,
+the address rule says "another host", and the marker cannot overrule
+it. `stop` then reports the component's own backends under "other
+hosts" and returns without waiting out their drain. From inside the
+database that case is indistinguishable from two machines that happen
+to share a hostname, and only one of the two readings can print a
+terminate recipe for a machine you are not on — so aveloxis takes the
+safe one. **Run `stop` with the same `-c` config the component was
+started with** and the addresses match.
+
+A `session`-mode pooler is unaffected in principle only if it preserves
+the client address, which pgbouncer does not — but with markers in place
+that no longer matters for the host verdict.
+```
 
 ```{note}
 `aveloxis stop` also works for processes started in the foreground (e.g., `aveloxis serve`), because all foreground processes write PID files on startup.
@@ -783,7 +942,10 @@ under the GraphQL path while row counts match exactly). After the
 row-count diff, data-test therefore also compares per-column FILL
 COUNTS — how many rows carry a meaningful value, type-aware (`<> ''`
 for text, `<> 0` for numerics, `IS NOT NULL` otherwise) — across every
-column of every base table in all three schemas.
+column of every base table in `aveloxis_data`, `aveloxis_ops` and
+`aveloxis_scan`. The fourth schema, `aveloxis_augur_data`, holds only
+the Augur-compatibility views — derived data with no base tables to
+diff — so it is deliberately out of scope.
 
 - **FAIL** (exit code 1): a column populated under the released binary
   is *completely* unpopulated under the new one — a dropped mapping or
@@ -1327,7 +1489,11 @@ aveloxis deploy-checklist
 
 Records that the current binary version's deploy/heal steps were run,
 so `aveloxis start serve` / `aveloxis start all` stops prompting for
-them. Run it AFTER completing the `deploy-checklist` steps.
+them. Run it AFTER completing the `deploy-checklist` steps. It cannot
+stand in for step 2: while the schema stamp is behind the binary the
+start gate refuses regardless of the acknowledgement (v0.29.4) — only a
+completed migration of that binary (the ladder's `aveloxis migrate
+--skip-views`) moves the stamp.
 
 ```bash
 aveloxis ack-deploy [--note "..."]
@@ -1336,9 +1502,35 @@ aveloxis ack-deploy [--note "..."]
 **The start gate:** on an EXISTING fleet, `aveloxis start serve` and
 `aveloxis start all` refuse to start (or, in an interactive terminal,
 prompt) when the current release has un-acknowledged deploy steps —
-the release's data-side healing must not be silently skipped. Fresh
-installs and already-acknowledged releases start silently. Automation
-can bypass with `--skip-deploy-check`.
+the release's data-side healing must not be silently skipped. Since
+v0.29.4 the gate also reads the schema stamp, on EVERY release and
+BEFORE the ledger: a stamp behind the binary proves no migration of
+that binary has completed here (the ladder's step 2), so it refuses
+without a prompt and records nothing — an acknowledgement cannot clear
+it, only a completed migration of that binary (the ladder's `aveloxis
+migrate --skip-views`) can. Fresh installs, releases without deploy
+steps on a current stamp, and acknowledged releases whose stamp is
+current, start silently. When another `aveloxis-serve` is already
+connected to the database the gate prints a note (never a refusal)
+with the other serve's client addresses, each carrying the code's own
+verdict: an "(other address)" entry is normally the primary, so this
+host is running the wrong command (`aveloxis start scancode-worker` is
+the alternative); a "(this host)" entry is a serve on THIS host,
+either one still running or a backend of one just stopped here still
+draining (only `aveloxis start` refuses to double-start a component).
+The two labels report the host **verdict**, not a comparison of the
+address text alone: since v0.29.4 the verdict also consults the
+`@host` marker, so behind a pooler a backend can be tagged "(other
+address)" beside an address string identical to your own — the marker
+is what separated them.
+When NO "(other address)" entry appears — every listed entry is
+"(this host)", or an address this database role cannot see — the note
+withdraws the wrong-command reading, because nothing in the listing
+identifies the primary: on a primary restarting beside its own
+draining backends that verdict would be exactly backwards. Automation
+can bypass with `--skip-deploy-check`, which prints the evidence, then
+the release's deploy steps, and proceeds (serve's own startup
+migration still refuses beside another serve).
 
 ---
 

@@ -43,8 +43,8 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
   │                                                     │
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
-  │  │ 84 tables         │  │ 24 tables              │ │
-  │  │ 19 matviews       │  │ - collection_queue     │ │
+  │  │ 101 tables        │  │ 42 tables              │ │
+  │  │ 20 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
   │  │ - pull_requests   │  │ - worker_oauth         │ │
@@ -67,11 +67,11 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
 
 ---
 
-## Two schemas
+## Four schemas
 
-Aveloxis uses two PostgreSQL schemas to separate collected data from operational state.
+Aveloxis uses four PostgreSQL schemas to separate collected data, ScanCode results, operational state, and Augur compatibility.
 
-### `aveloxis_data` (84 tables + 19 materialized views)
+### `aveloxis_data` (101 tables + 20 materialized views)
 
 All collected open source community health data:
 
@@ -91,9 +91,13 @@ All collected open source community health data:
 | Analysis/ML | 8 | `message_analysis`, `message_analysis_summary`, `message_sentiment`, `message_sentiment_summary`, `discourse_insights`, `lstm_anomaly_models`, `lstm_anomaly_results`, `pull_request_analysis` |
 | CHAOSS | 4 | `chaoss_metric_status`, `chaoss_user`, `repo_group_insights`, `commit_comment_ref` |
 
-Plus 19 materialized views for 8Knot compatibility.
+Plus 20 materialized views for 8Knot compatibility.
 
-### `aveloxis_ops` (24 tables)
+### `aveloxis_scan` (4 tables)
+
+ScanCode per-file license and copyright detections: `scancode_scans` + `scancode_file_results`, each with a `_history` twin. Written by the decoupled scancode worker pool (180-day cadence per repo).
+
+### `aveloxis_ops` (42 tables)
 
 Operational and orchestration tables:
 
@@ -106,6 +110,21 @@ Operational and orchestration tables:
 | Users | `users`, `user_sessions`, `user_repos` | User accounts and auth |
 | Config | `config` | Runtime configuration |
 | Workers | `worker_history`, `worker_job` | Worker run history |
+
+### `aveloxis_augur_data` (6 views)
+
+Augur compatibility layer for [8Knot](https://github.com/oss-aspen/8Knot) and other Augur-era analytics tools. Contains views that alias Aveloxis column names to Augur conventions. Only tables with column name differences need views here — tables with identical columns resolve via the `search_path` fallback to `aveloxis_data`.
+
+| View | Augur column aliases |
+|---|---|
+| `repo` | `repos` table (singular name) + `primary_language` → `repo_language` |
+| `repo_info` | `star_count` → `stars_count`, `watcher_count` → `watchers_count` |
+| `issues` | `issue_number` → `gh_issue_number`, `platform_issue_id` → `gh_issue_id`, `closed_by_id` → `cntrb_id` |
+| `pull_requests` | `pr_number` → `pr_src_number`, `author_id` → `pr_augur_contributor_id`, `created_at` → `pr_created_at`, `closed_at` → `pr_closed_at`, `merged_at` → `pr_merged_at` |
+| `releases` | `created_at` → `release_created_at`, `published_at` → `release_published_at`, `updated_at` → `release_updated_at` |
+| `message` | Alias for `messages` (Augur uses singular) |
+
+**Usage:** Set `AUGUR_SCHEMA=aveloxis_augur_data,aveloxis_data` (no space after comma) in 8Knot's `.env`. PostgreSQL checks `aveloxis_augur_data` first (finding the aliased views), then falls through to `aveloxis_data` for all other tables. For existing Augur databases, use `AUGUR_SCHEMA=augur_data` — the compatibility schema is not needed.
 
 ---
 
@@ -136,7 +155,7 @@ Staging -> Processing (phase 2)
 ├──────────────────┬───────────────────┤
 │ Facade (phase 3) │ Analysis (phase 4)│
 │  git clone/fetch │  Dependency scan  │
-│  git log parse   │  Libyear (5 reg.) │
+│  git log parse   │  Libyear (12 reg.) │
 │  Commit parents  │  Code complexity  │
 │  Affiliations    │  (scc)            │
 │  Aggregates      │                   │
@@ -186,6 +205,17 @@ Augur relies on Flower (a separate Celery monitoring service). Aveloxis includes
 
 Both GitHub and GitLab implement the same `platform.Client` interface with 7 sub-interfaces, ensuring feature parity. All methods use Go 1.23 iterators (`iter.Seq2`) for memory-efficient streaming pagination.
 
+#### Known GitLab API limitations
+
+The following data is available from GitHub but not from GitLab due to platform API constraints:
+
+- **Community profile files** (CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY) — not yet fetched for GitLab, but closable via `/repository/tree` and `/repository/files` endpoints.
+- **Watcher count** — GitLab has no public watchers API (`star_count` is captured instead).
+- **Clone statistics** — GitLab exposes these only via admin-only endpoints.
+- **GraphQL node IDs** — GitLab uses numeric project/user IDs rather than GitHub-style GraphQL node IDs. Stored in `SrcRepoID` (numeric) instead of `SrcNodeID`.
+- **Contributor URL fields** — GitHub returns 10+ URL fields per user (followers, gists, starred, etc.) that GitLab's API does not provide.
+- **Contributor type** — GitHub distinguishes User/Bot/Organization; GitLab does not expose this distinction.
+
 ---
 
 ## Project structure
@@ -208,8 +238,8 @@ aveloxis/
       postgres.go         # All upsert methods
       staging.go          # JSONB staging writer and processor
       migrate.go          # Schema migration
-      schema.sql          # Full DDL (108 tables)
-      matviews.sql        # 19 materialized views
+      schema.sql          # Full DDL (147 tables)
+      matviews.sql        # 20 materialized views
       contributors.go     # Contributor resolver with cache
       affiliations.go     # Email domain -> org resolver
       aggregates.go       # Facade aggregate refresh
@@ -220,6 +250,14 @@ aveloxis/
     platform/             # Platform abstraction
       github/             # GitHub REST API client
       gitlab/             # GitLab API v4 client
+    api/                  # REST API server (:8383)
+    web/                  # Web GUI (:8082) — OAuth, groups, monitor page
+    showcase/             # Static public showcase generator
+    mailinglist/          # Apache Pony Mail + public-inbox archive backends
+    mailer/               # Gmail-SMTP transactional mail
+    importers/            # Curated foundation catalogs (NumFocus, Apache, ...)
+    monitor/              # Standalone monitor dashboard (:5555)
+    safego/ pidfile/ srctest/  # Goroutine safety, PID liveness, test engine
     scheduler/            # Queue polling, job dispatch
 ```
 
@@ -244,8 +282,8 @@ Each job runs six phases. After the sequential API collection and processing pha
 | Stale lock recovery | 5 min | Reclaims jobs from crashed workers via `StaleLockTimeout` |
 | Org refresh | Configurable (default 4h) | Scans GitHub orgs and GitLab groups for new/renamed repos |
 | User org refresh | Same as org refresh | Scans user-requested org additions |
-| Contributor breadth | 6h | Discovers cross-repo activity via GitHub Events API |
-| Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 19 materialized views, resumes |
+| Contributor breadth | 15 min | Discovers cross-repo activity via GitHub Events API (7-day per-contributor cooldown) |
+| Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 20 materialized views, resumes |
 
 ### Graceful shutdown
 

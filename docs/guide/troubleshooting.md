@@ -616,25 +616,31 @@ The `migrate` command includes a data cleanup pass that detects and nullifies ga
 
 ## Schema version mismatch warning
 
-**Symptom:** `aveloxis web` or `aveloxis api` logs a warning at startup:
+**Symptom:** `aveloxis web`, `aveloxis api` or `aveloxis scancode-worker`
+logs an ERROR at startup (v0.20.15 raised it from WARN):
 
 ```
-WARN schema version mismatch: database schema is behind the binary
-     db_schema_version=0.14.4 binary_version=0.14.5
-     action="run 'aveloxis migrate' or restart 'aveloxis serve'"
+level=ERROR msg="schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run `aveloxis migrate --skip-views` then restart. ..." db_schema_version=0.29.2 binary_version=0.29.4 action="aveloxis migrate --skip-views"
 ```
 
-**Cause:** The binary was updated but the database schema hasn't been migrated yet. This happens when you update the `aveloxis` binary and restart `web` or `api` without restarting `serve` (which auto-migrates) or running `migrate`.
+**Cause:** The binary was updated but the database schema hasn't been migrated yet. This happens when you update the `aveloxis` binary and restart `web` or `api` without running `migrate` (or a foreground `aveloxis serve`, which migrates at startup).
 
 **Solution:**
 
-Run migrations explicitly, or restart the serve process:
+Run the upgrade ladder — `stop all`, migrate, `start all`:
 
 ```bash
-aveloxis migrate          # explicit migration
-# or
-aveloxis stop serve && aveloxis start serve   # serve auto-migrates on startup
+aveloxis stop all
+aveloxis migrate --skip-views     # moves the schema stamp
+aveloxis start all
 ```
+
+Since v0.29.4, `aveloxis start serve` on an existing fleet REFUSES while
+the schema stamp is behind the binary (that is the evidence the release's
+deploy step 2 has not completed) — a bare `stop serve && start serve` no
+longer heals this warning. A foreground `aveloxis serve` (or
+`--skip-deploy-check`) still migrates at startup, but never while another
+`aveloxis-serve` is connected to the database.
 
 ---
 
@@ -1397,7 +1403,8 @@ case-sensitive.
 
 ```sql
 -- 1. Check for active backends older than 5 minutes
-SELECT pid, state, application_name, age(now(), backend_start) AS conn_age,
+SELECT pid, state, application_name, client_addr,
+       age(now(), backend_start) AS conn_age,
        age(now(), query_start) AS query_age, left(query, 100) AS query
 FROM pg_stat_activity
 WHERE datname = 'aveloxis_large'   -- substitute your DB name
@@ -1411,7 +1418,105 @@ ORDER BY query_start;
 ps -ef | grep -E "aveloxis serve|aveloxis collect" | grep -v grep
 ```
 
-If the SQL shows a long-running aveloxis backend but `ps` shows no matching aveloxis-side process, the backend is orphaned.
+If the SQL shows a long-running aveloxis backend but `ps` shows no matching
+aveloxis-side process, the backend is orphaned — **provided its
+`client_addr` is this host's** (NULL for a unix socket or a loopback
+address when serve runs on the database host; this host's LAN address
+otherwise). Run this check on the host that runs the process. From any
+other host, `ps` cannot see the owner: the primary's serve appears there
+as long-running backends with no matching local process and is NOT
+orphaned (the 2026-09-09 incident's shape — the same check from a
+dedicated scancode host would have named every primary worker an
+orphan). `aveloxis stop` and the migrate blocker watcher apply this
+client-address rule since v0.29.4.
+
+The rule needs a role that can SEE the backend's `client_addr`. For a
+session of another role `pg_stat_activity` shows NULL there (NULL
+`state` too, and `<insufficient privilege>` as the query — the SELECT
+above will not even list it) unless the role running the check HOLDS
+that session's role's privileges or `pg_read_all_stats`'s, and that
+NULL is indistinguishable from a unix socket's.
+
+Holding is the test, not membership. A role that inherits the
+backend's role sees the address; a `NOINHERIT` member of
+`pg_read_all_stats` — or any role granted it `WITH INHERIT FALSE` — is
+a member with none of its privileges and still reads NULL. On
+PostgreSQL 16 and later a grant's inherit option is fixed AT GRANT
+TIME, so `ALTER ROLE … INHERIT` afterwards does not rescue a grant
+that was already made:
+
+```sql
+-- Gives the privileges (the role has INHERIT, the default):
+GRANT pg_read_all_stats TO <role>;
+-- If the grant already exists but does not inherit, re-grant it:
+GRANT pg_read_all_stats TO <role> WITH INHERIT TRUE;
+-- Or, per session, without changing any grant:
+SET ROLE pg_read_all_stats;
+```
+
+Confirm with `SELECT pg_has_role(current_user, 'pg_read_all_stats',
+'USAGE')` — `'USAGE'` asks what the role HOLDS, which is the question
+the server itself asks; `'MEMBER'` answers the weaker one and can read
+true while the address stays NULL. Aveloxis's own readers say "not
+visible" for such backends instead of guessing.
+
+```{note}
+**The client address places a backend; the host marker can only veto
+it.** Since v0.29.4 each component tags its pool
+`aveloxis-<component>@<hostname>`. A backend is this host's when its
+client address is this host's **and** its marker does not contradict
+that — a marker can separate two hosts that share an address, but it
+can never merge two that do not. So the diagnostic above is best read
+with the marker in view:
+
+```sql
+SELECT pid,
+       split_part(application_name, '@', 1) AS component,
+       NULLIF(split_part(application_name, '@', 2), '') AS host,
+       client_addr, state,
+       age(now(), query_start) AS query_age
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND application_name LIKE 'aveloxis-%'
+ORDER BY host NULLS LAST, component, query_start;
+```
+
+A row whose `host` is NULL was tagged by a pre-round-12 binary, or by a
+host whose kernel would not name itself; those fall back to the
+client-address rule.
+```
+
+```{warning}
+**A transaction pooler defeats the client-address rule entirely — but
+not the host marker.** With pgbouncer in `transaction` or `statement`
+mode (or pgcat, or Odyssey) between aveloxis and PostgreSQL, every
+backend's `client_addr` is the *pooler's* address: this host's, the
+primary's, and any other client's alike. The address rule alone reads
+every backend as this host's, so a long-running backend with no matching
+local `ps` entry looks like an orphan even when it belongs to a live
+serve on another machine. The `@host` marker is immune — PostgreSQL
+stores the `application_name` the client sent and never rewrites it.
+
+**The residual is the upgrade window.** A backend with no marker (a
+pre-round-12 binary) still falls back to the address rule, and behind a
+pooler that rule places it here. Until every host on the database runs a
+build with the marker, confirm with `ps` on **every** host that runs the
+component before running `pg_terminate_backend` on a "this host" entry
+of a **pooled** deployment. Use the `host` column above to tell which
+rows are still un-marked.
+
+**The marker cannot rescue the opposite case, by design.** Because the
+address decides and the marker only vetoes, a component reached over a
+*different* address than the one `stop` dials — a LAN-address DSN on
+one side and `localhost` on the other — reads as another host even
+when its marker matches, and `stop` reports it under "other hosts"
+without waiting out its drain. From inside the database that is
+indistinguishable from two machines sharing a hostname (two container
+hosts running one compose file do exactly that), and only one of the
+two readings can print a terminate recipe for a machine you are not
+on. Run `stop` with the same `-c` config the component was started
+with.
+```
 
 **Show both sides of the contention** (helpful when you want to confirm the waiter is your migrate / new serve, not something else):
 

@@ -166,3 +166,85 @@ func BacktickLiterals(src string) []string {
 		src = src[start+1+end+1:]
 	}
 }
+
+// StripShellComment drops an unquoted `#…` tail from ONE physical
+// shell line and returns what precedes it. The shell ends a command at
+// an unquoted `#` that starts a WORD — at line start, after a blank,
+// or after a control operator — and a backslash inside that comment is
+// not a line continuation, so callers judging docs shell fences run
+// this before the continuation check. Single and double quotes, and a
+// backslash escape outside single quotes, are tracked; nothing else is
+// parsed (no `$(…)`, no heredocs). A `#` glued to a preceding word
+// (`a#b`) is literal, as in the shell.
+//
+// Added for the facade-fetch docs tripwire (round 17 L10 pass 6). The
+// operator half came from Copilot's PR #198 and closes a real bypass:
+// `cmd;# note \` kept its trailing backslash, so the caller joined the
+// NEXT line onto it — and once that caller split the joined command on
+// `;`, the PIECE carrying the fetch began with `#` and was skipped, so
+// a `git fetch --all` on that next line was never judged at all.
+// Measured: the bypass existed for EVERY separator that caller splits
+// on — `&&`, `||`, `;`, `|` — and not for `<`, `>`, `(`, `)`, nor for
+// a background `&`, which already fired. So the discriminator is not
+// the character but which operator it terminates: the second `&` of
+// `&&` enables the bypass, a background `&` does not. Trimming this
+// set to the two characters that LOOK like the story (`;` and `|`)
+// would reopen the `&&#` miss.
+// Reproduced end-to-end against the docs corpus before the fix.
+func StripShellComment(line string) string {
+	inSingle, inDouble := false, false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && !inSingle:
+			i++ // the escaped character is literal
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case c == '#' && !inSingle && !inDouble && (i == 0 || isShellWordBoundary(line[i-1])):
+			return line[:i]
+		}
+	}
+	return line
+}
+
+// isShellWordBoundary reports whether b can precede the `#` that opens
+// a comment. POSIX (Shell Command Language, 2.3 Token Recognition)
+// appends the current character to a word already in progress (rule 8)
+// and starts a comment only where no word is in progress (rule 9) — so
+// a comment can open at line start, after a blank, or after an
+// operator. Every member below was checked against bash, and every one
+// has a row in TestStripShellComment, so dropping any of them fails
+// that table.
+//
+// Two characters that a naive reading would include are deliberately
+// OUT, both erring toward under-stripping (the safe direction for a
+// caller that judges docs commands — see StripShellComment's own "no
+// `$(…)`" disclaimer):
+//
+//   - `)` ends a word when it closes a SUBSHELL, an arithmetic command
+//     `((…))`, a `case` pattern, or a function definition `()`. But
+//     closing `$(…)`, `$((…))` or `<(…)` it is PART of the word, so
+//     bash keeps a following `#` literal — `echo $((1+2))#c` prints
+//     `3#c` while `((1+2))#c` is a comment: the SAME closing `))`,
+//     opposite verdicts, decided by expansion-vs-command (and
+//     `echo $(echo A)#c` prints `A#c` for the single-`)` case).
+//     Telling them apart needs `$(`/`<(` nesting
+//     depth, which this helper does not track. Copilot's PR #198
+//     included `)`; with it, a fetch line whose refspecs sat AFTER a
+//     `$(…)#` would be truncated and the facade tripwire would report
+//     those refspecs as missing — a false fire on a CORRECT doc. No
+//     docs line spells that shape today, so the rows in
+//     TestStripShellComment pin it rather than a corpus line.
+//   - an opening backquote does start a comment in bash (`echo X`+
+//     "`#c`"+`Y` prints `XY`), but tracking backquote state is out of
+//     scope here, and no facade doc spells one.
+func isShellWordBoundary(b byte) bool {
+	switch b {
+	case ' ', '\t', ';', '&', '|', '(', '<', '>':
+		return true
+	default:
+		return false
+	}
+}

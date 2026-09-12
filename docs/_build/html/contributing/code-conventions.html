@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Code conventions &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Code conventions &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -547,7 +547,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -648,7 +656,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1677,15 +1685,15 @@ catches truncated downloads. Deprecated identifiers are deliberately included
 <h2>Imports<a class="headerlink" href="#imports" title="Link to this heading"></a></h2>
 <p>Standard Go three-group format. <code class="docutils literal notranslate"><span class="pre">goimports</span></code> enforces it; the maintainers run it on save:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="p">(</span>
-<span class="w">    </span><span class="s">&quot;context&quot;</span>
-<span class="w">    </span><span class="s">&quot;fmt&quot;</span>
-<span class="w">    </span><span class="s">&quot;log/slog&quot;</span>
+<span class="w">    </span><span class="s">"context"</span>
+<span class="w">    </span><span class="s">"fmt"</span>
+<span class="w">    </span><span class="s">"log/slog"</span>
 
-<span class="w">    </span><span class="s">&quot;github.com/jackc/pgx/v5&quot;</span>
-<span class="w">    </span><span class="s">&quot;github.com/google/uuid&quot;</span>
+<span class="w">    </span><span class="s">"github.com/jackc/pgx/v5"</span>
+<span class="w">    </span><span class="s">"github.com/google/uuid"</span>
 
-<span class="w">    </span><span class="s">&quot;github.com/aveloxis/aveloxis/internal/db&quot;</span>
-<span class="w">    </span><span class="s">&quot;github.com/aveloxis/aveloxis/internal/model&quot;</span>
+<span class="w">    </span><span class="s">"github.com/aveloxis/aveloxis/internal/db"</span>
+<span class="w">    </span><span class="s">"github.com/aveloxis/aveloxis/internal/model"</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -1724,13 +1732,13 @@ catches truncated downloads. Deprecated identifiers are deliberately included
 <h3>Idioms<a class="headerlink" href="#idioms" title="Link to this heading"></a></h3>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// Good: contextual wrap + slog at the boundary</span>
 <span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">UpsertCommit</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">c</span><span class="p">);</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">s</span><span class="p">.</span><span class="nx">logger</span><span class="p">.</span><span class="nx">Warn</span><span class="p">(</span><span class="s">&quot;failed to upsert commit&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="s">&quot;hash&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">Hash</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;file&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">Filename</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;error&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
-<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;upserting commit %s: %w&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">Hash</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">s</span><span class="p">.</span><span class="nx">logger</span><span class="p">.</span><span class="nx">Warn</span><span class="p">(</span><span class="s">"failed to upsert commit"</span><span class="p">,</span>
+<span class="w">        </span><span class="s">"hash"</span><span class="p">,</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">Hash</span><span class="p">,</span><span class="w"> </span><span class="s">"file"</span><span class="p">,</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">Filename</span><span class="p">,</span><span class="w"> </span><span class="s">"error"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"upserting commit %s: %w"</span><span class="p">,</span><span class="w"> </span><span class="nx">c</span><span class="p">.</span><span class="nx">Hash</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="p">}</span>
 
 <span class="c1">// Bad: silent failure</span>
-<span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">UpsertCommit</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">c</span><span class="p">)</span>
+<span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">UpsertCommit</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">c</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -1738,11 +1746,11 @@ catches truncated downloads. Deprecated identifiers are deliberately included
 <section id="logging-slog">
 <h2>Logging (slog)<a class="headerlink" href="#logging-slog" title="Link to this heading"></a></h2>
 <p>Aveloxis uses <code class="docutils literal notranslate"><span class="pre">log/slog</span></code> (stdlib). The pattern:</p>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="nx">s</span><span class="p">.</span><span class="nx">logger</span><span class="p">.</span><span class="nx">Info</span><span class="p">(</span><span class="s">&quot;collection complete&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;repo_id&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;issues&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">result</span><span class="p">.</span><span class="nx">Issues</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;prs&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">result</span><span class="p">.</span><span class="nx">PullRequests</span><span class="p">,</span>
-<span class="w">    </span><span class="s">&quot;duration_seconds&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">duration</span><span class="p">.</span><span class="nx">Seconds</span><span class="p">(),</span>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="nx">s</span><span class="p">.</span><span class="nx">logger</span><span class="p">.</span><span class="nx">Info</span><span class="p">(</span><span class="s">"collection complete"</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"repo_id"</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"issues"</span><span class="p">,</span><span class="w"> </span><span class="nx">result</span><span class="p">.</span><span class="nx">Issues</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"prs"</span><span class="p">,</span><span class="w"> </span><span class="nx">result</span><span class="p">.</span><span class="nx">PullRequests</span><span class="p">,</span>
+<span class="w">    </span><span class="s">"duration_seconds"</span><span class="p">,</span><span class="w"> </span><span class="nx">duration</span><span class="p">.</span><span class="nx">Seconds</span><span class="p">(),</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -1766,7 +1774,7 @@ catches truncated downloads. Deprecated identifiers are deliberately included
 <h2>Version bumping (mandatory)<a class="headerlink" href="#version-bumping-mandatory" title="Link to this heading"></a></h2>
 <p><strong>Every code change bumps <code class="docutils literal notranslate"><span class="pre">internal/db/version.go</span></code>.</strong> No exceptions.</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// internal/db/version.go</span>
-<span class="kd">var</span><span class="w"> </span><span class="nx">ToolVersion</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">&quot;0.23.5&quot;</span><span class="w">   </span><span class="c1">// bump this</span>
+<span class="kd">var</span><span class="w"> </span><span class="nx">ToolVersion</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"0.23.5"</span><span class="w">   </span><span class="c1">// bump this</span>
 </pre></div>
 </div>
 <p>The version flows to:</p>
@@ -1850,7 +1858,7 @@ catches truncated downloads. Deprecated identifiers are deliberately included
 <span class="c1">// Good: explains the non-obvious why</span>
 <span class="c1">// MarkScancodeComplete resets scancode_failed_attempts to 0 and</span>
 <span class="c1">// scancode_last_failed_at to NULL on success — a repo that recovers</span>
-<span class="c1">// after a few failures doesn&#39;t carry the high attempt count into</span>
+<span class="c1">// after a few failures doesn't carry the high attempt count into</span>
 <span class="c1">// the next failure cycle. (v0.21.4)</span>
 <span class="kd">func</span><span class="w"> </span><span class="nx">MarkScancodeComplete</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="w"> </span><span class="kt">int64</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span><span class="w"> </span><span class="p">{</span>
 </pre></div>

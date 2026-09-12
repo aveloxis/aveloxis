@@ -159,7 +159,10 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
-	token, instrumentToken := collector.ScorecardTokens(ghKeys, cfg.Collection.ScorecardTokenCountOrDefault())
+	// One loan for the whole bulk pass: every worker's subprocess shares
+	// the same token list, returned to the pool when the pass ends.
+	token, instrumentToken, releaseTokens := collector.ScorecardTokens(ghKeys, cfg.Collection.ScorecardTokenCountOrDefault())
+	defer releaseTokens()
 	if token == "" {
 		return fmt.Errorf("no GitHub API keys loaded — remote scorecard needs GITHUB_TOKEN; add keys via `aveloxis add-key <token> --platform github`")
 	}

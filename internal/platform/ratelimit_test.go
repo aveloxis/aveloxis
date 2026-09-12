@@ -37,20 +37,20 @@ func TestNewKeyPool(t *testing.T) {
 	}
 }
 
-func TestGetKey_ReturnsAvailableKey(t *testing.T) {
+func TestAcquire_ReturnsAvailableKey(t *testing.T) {
 	kp := NewKeyPool([]string{"mytoken"}, testLogger())
 	ctx := context.Background()
 
-	key, err := kp.GetKey(ctx)
+	key, err := checkout(kp, ctx, ResourceCore)
 	if err != nil {
-		t.Fatalf("GetKey() error: %v", err)
+		t.Fatalf("Acquire() error: %v", err)
 	}
 	if key.Token != "mytoken" {
-		t.Errorf("GetKey() returned token %q, want %q", key.Token, "mytoken")
+		t.Errorf("Acquire() returned token %q, want %q", key.Token, "mytoken")
 	}
 }
 
-func TestGetKey_BlocksWhenExhausted(t *testing.T) {
+func TestAcquire_BlocksWhenExhausted(t *testing.T) {
 	kp := NewKeyPool([]string{"tok1"}, testLogger())
 	// Set remaining below threshold and reset in the future.
 	kp.keys[0].Remaining = 0
@@ -59,9 +59,9 @@ func TestGetKey_BlocksWhenExhausted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := kp.GetKey(ctx)
+	_, err := checkout(kp, ctx, ResourceCore)
 	if err == nil {
-		t.Fatal("GetKey() should have returned error due to context timeout")
+		t.Fatal("Acquire() should have returned error due to context timeout")
 	}
 	if ctx.Err() != context.DeadlineExceeded {
 		t.Errorf("expected DeadlineExceeded, got %v", ctx.Err())
@@ -82,22 +82,22 @@ func TestInvalidateKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := kp.GetKey(ctx)
+	_, err := checkout(kp, ctx, ResourceCore)
 	if err == nil {
-		t.Fatal("GetKey() should fail when all keys are invalid")
+		t.Fatal("Acquire() should fail when all keys are invalid")
 	}
 }
 
-func TestGetKey_RoundRobin(t *testing.T) {
+func TestAcquire_RoundRobin(t *testing.T) {
 	// With 3 keys, GetKey should rotate through them evenly.
 	kp := NewKeyPool([]string{"a", "b", "c"}, testLogger())
 	ctx := context.Background()
 
 	seen := map[string]int{}
 	for range 9 {
-		key, err := kp.GetKey(ctx)
+		key, err := checkout(kp, ctx, ResourceCore)
 		if err != nil {
-			t.Fatalf("GetKey() error: %v", err)
+			t.Fatalf("Acquire() error: %v", err)
 		}
 		seen[key.Token]++
 	}
@@ -110,7 +110,7 @@ func TestGetKey_RoundRobin(t *testing.T) {
 	}
 }
 
-func TestGetKey_SkipsExhaustedKeys(t *testing.T) {
+func TestAcquire_SkipsExhaustedKeys(t *testing.T) {
 	kp := NewKeyPool([]string{"a", "b", "c"}, testLogger())
 	ctx := context.Background()
 
@@ -120,9 +120,9 @@ func TestGetKey_SkipsExhaustedKeys(t *testing.T) {
 	// Should only get "b" and "c".
 	seen := map[string]int{}
 	for range 6 {
-		key, err := kp.GetKey(ctx)
+		key, err := checkout(kp, ctx, ResourceCore)
 		if err != nil {
-			t.Fatalf("GetKey() error: %v", err)
+			t.Fatalf("Acquire() error: %v", err)
 		}
 		seen[key.Token]++
 	}
@@ -138,7 +138,7 @@ func TestGetKey_SkipsExhaustedKeys(t *testing.T) {
 	}
 }
 
-func TestGetKey_RefillsAfterReset(t *testing.T) {
+func TestAcquire_RefillsAfterReset(t *testing.T) {
 	kp := NewKeyPool([]string{"tok"}, testLogger())
 	ctx := context.Background()
 
@@ -146,9 +146,9 @@ func TestGetKey_RefillsAfterReset(t *testing.T) {
 	kp.keys[0].Remaining = 0
 	kp.keys[0].ResetAt = time.Now().Add(-1 * time.Second)
 
-	key, err := kp.GetKey(ctx)
+	key, err := checkout(kp, ctx, ResourceCore)
 	if err != nil {
-		t.Fatalf("GetKey() error: %v", err)
+		t.Fatalf("Acquire() error: %v", err)
 	}
 	if key.Token != "tok" {
 		t.Errorf("expected 'tok', got %q", key.Token)

@@ -28,13 +28,13 @@ func TestRecordAuthFailure_SingleFailureDoesNotDisable(t *testing.T) {
 		t.Fatal("a single 401 quarantined the key; it must be treated as transient")
 	}
 
-	// The key must still be handed out by GetKey.
-	got, err := kp.GetKey(context.Background())
+	// The key must still be handed out by Acquire.
+	got, err := checkout(kp, context.Background(), ResourceCore)
 	if err != nil {
-		t.Fatalf("GetKey returned error after one 401: %v", err)
+		t.Fatalf("Acquire returned error after one 401: %v", err)
 	}
 	if got != key {
-		t.Fatal("GetKey did not return the still-valid key after one transient 401")
+		t.Fatal("Acquire did not return the still-valid key after one transient 401")
 	}
 	if key.Invalid {
 		t.Fatal("key was permanently invalidated by a single 401")
@@ -65,9 +65,9 @@ func TestRecordAuthFailure_QuarantinesAfterThreshold(t *testing.T) {
 
 	// Simulate cooldown elapsing: the key becomes usable again with no restart.
 	key.quarantineUntil = time.Now().Add(-time.Second)
-	got, err := kp.GetKey(context.Background())
+	got, err := checkout(kp, context.Background(), ResourceCore)
 	if err != nil {
-		t.Fatalf("GetKey errored after quarantine cooldown elapsed: %v", err)
+		t.Fatalf("Acquire errored after quarantine cooldown elapsed: %v", err)
 	}
 	if got != key {
 		t.Fatal("key did not auto-recover after its quarantine cooldown elapsed")
@@ -111,10 +111,10 @@ func TestUpdateFromResponse_ResetsStrikesOn2xx(t *testing.T) {
 	}
 }
 
-// TestGetKey_WaitsForQuarantineInsteadOfFatal verifies that when every key is
-// quarantined (not permanently invalid), GetKey waits for the soonest recovery
+// TestAcquire_WaitsForQuarantineInsteadOfFatal verifies that when every key is
+// quarantined (not permanently invalid), Acquire waits for the soonest recovery
 // rather than returning ErrAllKeysInvalidated — so the scheduler does not crash.
-func TestGetKey_WaitsForQuarantineInsteadOfFatal(t *testing.T) {
+func TestAcquire_WaitsForQuarantineInsteadOfFatal(t *testing.T) {
 	kp := NewKeyPool([]string{"ghp_a", "ghp_b"}, quietLogger())
 	// Quarantine every key well into the future.
 	for _, k := range kp.keys {
@@ -122,16 +122,16 @@ func TestGetKey_WaitsForQuarantineInsteadOfFatal(t *testing.T) {
 		k.quarantineCount = 1
 	}
 
-	// GetKey should block (waiting for the cooldown), NOT return immediately
+	// Acquire should block (waiting for the cooldown), NOT return immediately
 	// with ErrAllKeysInvalidated. A short-deadline context proves it blocks.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := kp.GetKey(ctx)
+	_, err := checkout(kp, ctx, ResourceCore)
 	if err == nil {
-		t.Fatal("expected GetKey to block until ctx deadline, got a key")
+		t.Fatal("expected Acquire to block until ctx deadline, got a key")
 	}
 	if err == ErrAllKeysInvalidated {
-		t.Fatal("GetKey returned ErrAllKeysInvalidated for quarantined keys; it must wait instead")
+		t.Fatal("Acquire returned ErrAllKeysInvalidated for quarantined keys; it must wait instead")
 	}
 	if ctx.Err() == nil {
 		t.Fatalf("expected context deadline error, got: %v", err)

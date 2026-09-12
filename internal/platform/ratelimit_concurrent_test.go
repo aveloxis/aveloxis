@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 // v0.25.36 concurrency stress test for KeyPool. The pool is shared by
-// every scheduler worker (up to 80+ concurrent GetKey callers on the
+// every scheduler worker (up to 80+ concurrent Acquire callers on the
 // production fleet), but before this test nothing exercised it
 // concurrently — so `-race` in CI certified nothing about it (the race
 // detector only reports on interleavings that actually run). This test
 // exists to give the detector something to observe; run it with
-// `go test -race`.
+// `go test -race`. Since 2026-09-12 every acquire is a LEASE under the
+// default ceilings (40 global / 4 per key), so 32 workers over 4 keys
+// also contend on the condition variable here — the wait/broadcast path
+// runs under the detector too.
 
 package platform
 
@@ -41,9 +44,9 @@ func TestKeyPoolConcurrentAccess(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := range 200 {
-				key, err := kp.GetKey(ctx)
+				key, release, err := kp.Acquire(ctx, ResourceCore)
 				if err != nil {
-					t.Errorf("worker %d iter %d: GetKey: %v", w, i, err)
+					t.Errorf("worker %d iter %d: Acquire: %v", w, i, err)
 					return
 				}
 				switch i % 5 {
@@ -76,7 +79,9 @@ func TestKeyPoolConcurrentAccess(t *testing.T) {
 					_ = kp.AliveCount()
 					_ = kp.TotalRemaining()
 					_ = kp.IsEmpty()
+					_, _ = kp.Snapshot()
 				}
+				release()
 			}
 		}(worker)
 	}
@@ -84,5 +89,17 @@ func TestKeyPoolConcurrentAccess(t *testing.T) {
 
 	if kp.AliveCount() != 4 {
 		t.Errorf("all 4 keys should remain alive after the stress run, got %d", kp.AliveCount())
+	}
+	// Every lease was released: the counters must be back at zero, or a
+	// leak would make the ceilings admit fewer callers forever.
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	if kp.inflight != 0 {
+		t.Errorf("pool inflight = %d after every release, want 0", kp.inflight)
+	}
+	for _, k := range kp.keys {
+		if k.inflight != 0 {
+			t.Errorf("key %q inflight = %d after every release, want 0", k.Token, k.inflight)
+		}
 	}
 }

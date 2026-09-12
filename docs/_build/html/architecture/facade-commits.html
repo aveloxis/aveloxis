@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Facade Commits &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Facade Commits &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1704,7 +1704,7 @@
 <section id="format-string">
 <h3>Format string<a class="headerlink" href="#format-string" title="Link to this heading"></a></h3>
 <p>The format uses custom field and record separators to reliably parse multi-line output:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">git</span> <span class="n">log</span> <span class="o">--</span><span class="n">numstat</span> <span class="o">--</span><span class="n">pretty</span><span class="o">=</span><span class="nb">format</span><span class="p">:</span><span class="s1">&#39;&lt;COMMIT&gt;%H&lt;SEP&gt;</span><span class="si">%a</span><span class="s1">n&lt;SEP&gt;</span><span class="si">%a</span><span class="s1">e&lt;SEP&gt;</span><span class="si">%a</span><span class="s1">d&lt;SEP&gt;</span><span class="si">%c</span><span class="s1">n&lt;SEP&gt;</span><span class="si">%c</span><span class="s1">e&lt;SEP&gt;</span><span class="si">%c</span><span class="s1">d&lt;SEP&gt;%P&lt;SEP&gt;</span><span class="si">%s</span><span class="s1">&#39;</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">git</span> <span class="n">log</span> <span class="o">--</span><span class="n">numstat</span> <span class="o">--</span><span class="n">pretty</span><span class="o">=</span><span class="nb">format</span><span class="p">:</span><span class="s1">'&lt;COMMIT&gt;%H&lt;SEP&gt;</span><span class="si">%a</span><span class="s1">n&lt;SEP&gt;</span><span class="si">%a</span><span class="s1">e&lt;SEP&gt;</span><span class="si">%a</span><span class="s1">d&lt;SEP&gt;</span><span class="si">%c</span><span class="s1">n&lt;SEP&gt;</span><span class="si">%c</span><span class="s1">e&lt;SEP&gt;</span><span class="si">%c</span><span class="s1">d&lt;SEP&gt;%P&lt;SEP&gt;</span><span class="si">%s</span><span class="s1">'</span>
 </pre></div>
 </div>
 <p>Where:</p>
@@ -1920,7 +1920,7 @@
 <p>Affiliations are stored in the <code class="docutils literal notranslate"><span class="pre">contributor_affiliations</span></code> table:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">contributor_affiliations</span>
 <span class="w">  </span><span class="p">(</span><span class="n">ca_domain</span><span class="p">,</span><span class="w"> </span><span class="n">ca_affiliation</span><span class="p">,</span><span class="w"> </span><span class="n">ca_active</span><span class="p">)</span>
-<span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="s1">&#39;redhat.com&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;Red Hat&#39;</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">);</span>
+<span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="s1">'redhat.com'</span><span class="p">,</span><span class="w"> </span><span class="s1">'Red Hat'</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">);</span>
 </pre></div>
 </div>
 <p>After adding new affiliations, existing commits can be re-processed by re-running the facade phase for affected repos.</p>

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1758,7 +1758,7 @@ aveloxis<span class="w"> </span>serve
 <span class="c1"># Start with 4 workers and a custom dashboard port</span>
 aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:8082
 
-<span class="c1"># Start using Augur&#39;s API keys</span>
+<span class="c1"># Start using Augur's API keys</span>
 aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--augur-keys
 </pre></div>
 </div>
@@ -2177,7 +2177,7 @@ aveloxis<span class="w"> </span>recollect<span class="w"> </span>https://github.
 <span class="k">SELECT</span><span class="w"> </span><span class="n">step_label</span><span class="p">,</span><span class="w"> </span><span class="n">completed_at</span><span class="p">,</span><span class="w"> </span><span class="n">tool_version</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">migration_ledger</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">completed_at</span><span class="p">;</span>
 
 <span class="c1">-- Replay one step:</span>
-<span class="k">DELETE</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">migration_ledger</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">step_label</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;v0.27.104 backfill pull_requests.meta_head_id/meta_base_id&#39;</span><span class="p">;</span>
+<span class="k">DELETE</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">migration_ledger</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">step_label</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'v0.27.104 backfill pull_requests.meta_head_id/meta_base_id'</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>then run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code>. Every ledgered step is idempotent, so replays are always safe.</p>
@@ -2233,7 +2233,7 @@ accumulate both as separate rows, each collected in full (doubled API
 budget, storage, and double-counted analytics).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--dry-run<span class="w">      </span><span class="c1"># show the plan (first 20 pairs)</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--limit<span class="w"> </span><span class="m">50</span><span class="w">     </span><span class="c1"># canary batch</span>
-aveloxis<span class="w"> </span>dedup-repos<span class="w">                </span><span class="c1"># full run — re-run until &quot;0 pairs&quot;</span>
+aveloxis<span class="w"> </span>dedup-repos<span class="w">                </span><span class="c1"># full run — re-run until "0 pairs"</span>
 </pre></div>
 </div>
 <section id="id8">
@@ -2523,7 +2523,7 @@ aveloxis<span class="w"> </span>stop<span class="w"> </span>web<span class="w"> 
 aveloxis<span class="w"> </span>stop<span class="w"> </span>api<span class="w">              </span><span class="c1"># stop only the REST API</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>scancode-worker<span class="w">  </span><span class="c1"># stop the dedicated scancode worker</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w">              </span><span class="c1"># stop serve + web + api (never the scancode worker)</span>
-aveloxis<span class="w"> </span>stop<span class="w">                  </span><span class="c1"># (no args) same as &#39;all&#39;</span>
+aveloxis<span class="w"> </span>stop<span class="w">                  </span><span class="c1"># (no args) same as 'all'</span>
 </pre></div>
 </div>
 <p>Sends <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> to the specified component(s) using PID files in <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/</span></code>. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. <code class="docutils literal notranslate"><span class="pre">stop</span> <span class="pre">all</span></code> names a scancode worker it left running.</p>
@@ -3285,7 +3285,7 @@ them. Run it AFTER completing the <code class="docutils literal notranslate"><sp
 stand in for step 2: while the schema stamp is behind the binary the
 start gate refuses regardless of the acknowledgement (v0.29.4) — only a
 completed migration of that binary (the ladder’s <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code>) moves the stamp.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>ack-deploy<span class="w"> </span><span class="o">[</span>--note<span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="o">]</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>ack-deploy<span class="w"> </span><span class="o">[</span>--note<span class="w"> </span><span class="s2">"..."</span><span class="o">]</span>
 </pre></div>
 </div>
 <p><strong>The start gate:</strong> on an EXISTING fleet, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code> and

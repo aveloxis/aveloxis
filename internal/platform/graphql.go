@@ -208,19 +208,26 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		// checkout gates on core — the graphql bucket is never updated
 		// for GitLab and would hand out unified-exhausted keys (review
 		// F2).
-		var key *APIKey
-		var err error
+		res := ResourceGraphQL
 		if c.authStyle == AuthGitLab {
-			key, err = c.keys.GetKey(ctx)
-		} else {
-			key, err = c.keys.GetGraphQLKey(ctx)
+			res = ResourceCore
 		}
+		// 2026-09-12: Acquire is a LEASE — it counts this request against
+		// the key's and the pool's in-flight ceilings and picks the
+		// least-loaded key. The lease covers exactly the wire request:
+		// released the moment Do returns, BEFORE any Retry-After or
+		// backoff sleep below, so a throttled caller sleeping out a
+		// 5-minute Retry-After never pins an in-flight slot (which is
+		// what the ceilings exist to keep free). Response handling only
+		// reads/marks the key's budget state under the pool mutex.
+		key, release, err := c.keys.Acquire(ctx, res)
 		if err != nil {
 			return fmt.Errorf("getting API key: %w", err)
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
+			release()
 			return err
 		}
 		// GraphQL requires "bearer" token format. Classic PATs without GraphQL
@@ -231,6 +238,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		req.Header.Set("Accept", "application/json")
 
 		resp, err := c.inner.Do(req)
+		release()
 		if err != nil {
 			// v0.27.28: cancellation bails quietly before the
 			// "retrying" WARN — same contract as httpclient.Get.
@@ -321,7 +329,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// run (one hit in shard 41's child pagination). Mark the
 				// key's graphql budget dead (belt — the headers on this
 				// response normally said Remaining: 0 already) and retry:
-				// the next attempt's GetGraphQLKey returns a fresh key,
+				// the next attempt's Acquire returns a fresh key,
 				// waits for the earliest window reset, or fast-fails for
 				// callers with their own recovery machinery.
 				//
@@ -337,7 +345,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 					c.keys.MarkGraphQLExhausted(key)
 				}
 				c.logger.Info("graphql in-body rate limit — rotating to a fresh key",
-					"url", url, "attempt", attempt+1, "error", parsed)
+					"url", url, "attempt", attempt+1, "error", parsed,
+					"token_prefix", tokenPrefix(key.Token))
 				lastRateLimit = parsed
 				rateLimitAttempt = attempt
 				if rotations < maxRotations {
@@ -367,7 +376,16 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// means wait; otherwise it's a permission error.
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
-				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait)
+				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait,
+					"token_prefix", tokenPrefix(key.Token))
+				// 2026-09-12 (Bug C of the chaoss.tv analysis): rest THIS
+				// key in the pool for the Retry-After. Pre-fix only this
+				// goroutine slept and every other caller kept being handed
+				// the throttled key — 179 rejections in one second. Now the
+				// pool routes the next checkout to a healthy key while this
+				// one sits out; the sleep below is only this attempt's own
+				// pacing.
+				c.keys.MarkSecondaryLimited(key, wait)
 				// Copilot round 6 on PR #193 (suppressed #3): HTTP
 				// throttling must feed the same final-attempt state as
 				// in-body RATE_LIMITED, or a persistently-throttled
@@ -382,7 +400,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				continue
 			}
 			if resp.Header.Get("X-RateLimit-Remaining") == "0" {
-				c.logger.Info("graphql rate limit exhausted", "url", url)
+				c.logger.Info("graphql rate limit exhausted", "url", url,
+					"token_prefix", tokenPrefix(key.Token))
 				// Copilot round 7 on PR #193: a 403 carrying
 				// Remaining: 0 WITHOUT X-RateLimit-Resource (the older
 				// GitHub response shape the pool explicitly supports)
@@ -409,7 +428,12 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		case resp.StatusCode == http.StatusTooManyRequests:
 			_ = resp.Body.Close()
 			wait := parseRetryAfter(resp)
-			c.logger.Info("graphql 429 rate limited", "url", url, "wait", wait)
+			c.logger.Info("graphql 429 rate limited", "url", url, "wait", wait,
+				"token_prefix", tokenPrefix(key.Token))
+			// 429 is the same per-key throttle as 403 + Retry-After
+			// (GitHub documents both shapes for secondary limits): rest
+			// the key so the pool stops handing it out.
+			c.keys.MarkSecondaryLimited(key, wait)
 			// Round 6 suppressed #3: see the 403 branch — HTTP 429 is
 			// explicit throttling and must win the exhaustion class
 			// when it lands on the final attempt.
@@ -498,13 +522,17 @@ func graphqlFastFailEnabled(ctx context.Context) bool {
 type ctxKeyGraphQLBackground struct{}
 
 // WithGraphQLBackgroundBudget marks a context as BACKGROUND GraphQL work
-// (the contributor activity-history and classification sweeps): key
-// checkout refuses keys whose graphql budget is below
-// GraphQLBackgroundReserve, leaving that headroom for foreground
-// collection. The 2026-09-01 pytorch diagnostic measured the history
-// sweep at ~20% of the fleet's graphql budget running back-to-back —
-// enough sustained pressure to keep individual keys graphql-dry under
-// multi-day collection jobs.
+// (the contributor activity-history and classification sweeps): Acquire
+// admits it only while the POOL's remaining graphql budget is above the
+// foreground reservation (KeyPool.SetAdmission's reservePct), leaving
+// that share for foreground collection. The 2026-09-01 pytorch
+// diagnostic measured the history sweep at ~20% of the fleet's graphql
+// budget running back-to-back — enough sustained pressure to keep
+// individual keys graphql-dry under multi-day collection jobs; the
+// 2026-09-12 chaoss.tv analysis measured it at 113% and replaced the
+// original per-key 500-point cliff with the pool-level line (a per-key
+// cliff shrank the eligible set as keys depleted and concentrated the
+// whole sweep onto the survivors).
 func WithGraphQLBackgroundBudget(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyGraphQLBackground{}, true)
 }

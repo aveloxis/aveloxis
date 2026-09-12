@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1647,9 +1647,9 @@
 <h2>Commits not collected, but Issues and Pull Requests are collected<a class="headerlink" href="#commits-not-collected-but-issues-and-pull-requests-are-collected" title="Link to this heading"></a></h2>
 <p><strong>Symptom</strong> You notice that in the monitor page you have repositories without commits counted, and metadata indicating that there are commits to count.</p>
 <p><strong>Cause</strong> We have observed this in one, specific cirucmstance, where repositories are being migrated from GitHub to GitHub enterprise. The <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">gei</span> <span class="pre">migrate-repo</span></code> function causes the clone to fail with :</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>remote:<span class="w"> </span>Repository<span class="w"> </span><span class="s1">&#39;department-of-veterans-affairs/diffusion-marketplace&#39;</span><span class="w"> </span>is<span class="w"> </span>disabled.
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>remote:<span class="w"> </span>Repository<span class="w"> </span><span class="s1">'department-of-veterans-affairs/diffusion-marketplace'</span><span class="w"> </span>is<span class="w"> </span>disabled.
 remote:<span class="w"> </span>Please<span class="w"> </span>ask<span class="w"> </span>the<span class="w"> </span>owner<span class="w"> </span>to<span class="w"> </span>check<span class="w"> </span>their<span class="w"> </span>account.
-fatal:<span class="w"> </span>unable<span class="w"> </span>to<span class="w"> </span>access<span class="w"> </span><span class="s1">&#39;https://github.com/department-of-veterans-affairs/diffusion-marketplace.git/&#39;</span>:<span class="w"> </span>The<span class="w"> </span>requested<span class="w"> </span>URL<span class="w"> </span>returned<span class="w"> </span>error:<span class="w"> </span><span class="m">403</span>
+fatal:<span class="w"> </span>unable<span class="w"> </span>to<span class="w"> </span>access<span class="w"> </span><span class="s1">'https://github.com/department-of-veterans-affairs/diffusion-marketplace.git/'</span>:<span class="w"> </span>The<span class="w"> </span>requested<span class="w"> </span>URL<span class="w"> </span>returned<span class="w"> </span>error:<span class="w"> </span><span class="m">403</span>
 </pre></div>
 </div>
 <p>For a repository. When you navigate to the repository’s homepage, you see this:</p>
@@ -1669,16 +1669,16 @@ fatal:<span class="w"> </span>unable<span class="w"> </span>to<span class="w"> <
 </ul>
 <p><strong>Confirm the fix is active:</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Header shows the freshness indicator (visible in the browser):</span>
-<span class="c1">#    &quot;Auto-refreshes every 60s. Stats last refreshed 12s. Next refresh in 48s.&quot;</span>
+<span class="c1">#    "Auto-refreshes every 60s. Stats last refreshed 12s. Next refresh in 48s."</span>
 <span class="c1">#</span>
 <span class="c1"># 2. Postgres pg_stat_statements: COUNT(*) on pull_requests/issues/commits</span>
 <span class="c1">#    should drop dramatically after upgrade to v0.18.30.</span>
-psql<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+psql<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> </span>-c<span class="w"> </span><span class="s2">"</span>
 <span class="s2">  SELECT query, calls</span>
 <span class="s2">  FROM pg_stat_statements</span>
-<span class="s2">  WHERE query ILIKE &#39;SELECT%COUNT(*)%pull_requests%&#39;</span>
-<span class="s2">     OR query ILIKE &#39;SELECT%COUNT(*)%issues%&#39;</span>
-<span class="s2">  ORDER BY calls DESC LIMIT 5&quot;</span>
+<span class="s2">  WHERE query ILIKE 'SELECT%COUNT(*)%pull_requests%'</span>
+<span class="s2">     OR query ILIKE 'SELECT%COUNT(*)%issues%'</span>
+<span class="s2">  ORDER BY calls DESC LIMIT 5"</span>
 </pre></div>
 </div>
 <p>The cache TTL (default 60 seconds) is set in <code class="docutils literal notranslate"><span class="pre">internal/monitor/monitor.go</span></code> as <code class="docutils literal notranslate"><span class="pre">DefaultQueueStatsCacheTTL</span></code>. Operators can rebuild with a longer TTL if their fleet tolerates more staleness.</p>
@@ -1690,8 +1690,8 @@ psql<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> <
 <p><strong>Cause:</strong> Pre-v0.18.30, the search filter used <code class="docutils literal notranslate"><span class="pre">repo_owner</span> <span class="pre">ILIKE</span> <span class="pre">'%q%'</span> <span class="pre">OR</span> <span class="pre">repo_name</span> <span class="pre">ILIKE</span> <span class="pre">'%q%'</span></code>. The leading wildcard means no B-tree index can serve the lookup; every keystroke ran a full sequential scan over <code class="docutils literal notranslate"><span class="pre">aveloxis_data.repos</span></code> (100K+ rows on a busy fleet).</p>
 <p><strong>Solution (v0.18.30):</strong> A pg_trgm GIN index on the concatenated <code class="docutils literal notranslate"><span class="pre">(repo_owner</span> <span class="pre">||</span> <span class="pre">'/'</span> <span class="pre">||</span> <span class="pre">repo_name)</span></code> expression. <code class="docutils literal notranslate"><span class="pre">ListQueuePage</span></code> rewrites the filter to query the same expression. The trigram index serves leading-wildcard ILIKE patterns natively, turning the search into an O(log n + matches) lookup.</p>
 <p><strong>Confirm the index exists:</strong></p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>psql<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;\\d aveloxis_data.repos&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span>trgm
-<span class="c1"># Expected: idx_repos_owner_name_trgm gin (((repo_owner || &#39;/&#39; || repo_name)) gin_trgm_ops)</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>psql<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> </span>-c<span class="w"> </span><span class="s2">"\\d aveloxis_data.repos"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span>trgm
+<span class="c1"># Expected: idx_repos_owner_name_trgm gin (((repo_owner || '/' || repo_name)) gin_trgm_ops)</span>
 </pre></div>
 </div>
 <p>If the index is missing, check <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/aveloxis.log</span></code> for <code class="docutils literal notranslate"><span class="pre">failed</span> <span class="pre">to</span> <span class="pre">create</span> <span class="pre">pg_trgm</span> <span class="pre">extension</span></code>. The extension typically requires superuser or membership in <code class="docutils literal notranslate"><span class="pre">pg_create_extensions</span></code>. Grant the role and run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> again.</p>
@@ -1703,10 +1703,10 @@ psql<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> <
 <p><strong>Cause:</strong> Pre-v0.18.30, <code class="docutils literal notranslate"><span class="pre">/api/queue</span></code> called <code class="docutils literal notranslate"><span class="pre">ListQueue(ctx)</span></code> which is unbounded — every row in the collection queue dumped to JSON on every request.</p>
 <p><strong>Solution (v0.18.30):</strong> <code class="docutils literal notranslate"><span class="pre">/api/queue</span></code> now mirrors the dashboard’s pagination contract. Accepts <code class="docutils literal notranslate"><span class="pre">?page=N&amp;page_size=M&amp;q=search</span></code> with the same <code class="docutils literal notranslate"><span class="pre">parsePageParams</span></code> helper used by <code class="docutils literal notranslate"><span class="pre">handleDashboard</span></code>. Default page size is 100, capped at 500. Response envelope is now:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;total&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">100000</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;page&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;page_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">100</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;jobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* paginated rows */</span><span class="w"> </span><span class="p">]</span>
+<span class="w">  </span><span class="nt">"total"</span><span class="p">:</span><span class="w"> </span><span class="mi">100000</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"page"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"page_size"</span><span class="p">:</span><span class="w"> </span><span class="mi">100</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"jobs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* paginated rows */</span><span class="w"> </span><span class="p">]</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -1793,8 +1793,8 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab
 </li>
 <li><p>Or add tokens directly to <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;github&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;api_keys&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;ghp_token1&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;ghp_token2&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;gitlab&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;api_keys&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;glpat-token1&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="nt">"github"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"api_keys"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"ghp_token1"</span><span class="p">,</span><span class="w"> </span><span class="s2">"ghp_token2"</span><span class="p">]</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">"gitlab"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"api_keys"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"glpat-token1"</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -1819,7 +1819,7 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab
 <ol class="arabic">
 <li><p>Check that you have valid API keys:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Look for key loading at startup</span>
-grep<span class="w"> </span><span class="s2">&quot;loaded.*keys&quot;</span><span class="w"> </span>aveloxis.log
+grep<span class="w"> </span><span class="s2">"loaded.*keys"</span><span class="w"> </span>aveloxis.log
 </pre></div>
 </div>
 </li>
@@ -1842,17 +1842,17 @@ grep<span class="w"> </span><span class="s2">&quot;loaded.*keys&quot;</span><spa
 <p><strong>Solution:</strong></p>
 <ol class="arabic">
 <li><p>First check if keys loaded successfully at startup:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>grep<span class="w"> </span><span class="s2">&quot;loaded.*keys&quot;</span><span class="w"> </span>aveloxis.log
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>grep<span class="w"> </span><span class="s2">"loaded.*keys"</span><span class="w"> </span>aveloxis.log
 </pre></div>
 </div>
 </li>
 <li><p>Check logs at DEBUG level for the specific repo:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># In aveloxis.json, set &quot;log_level&quot;: &quot;debug&quot;</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># In aveloxis.json, set "log_level": "debug"</span>
 </pre></div>
 </div>
 </li>
 <li><p>Verify the token has access:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: token ghp_your_token&quot;</span><span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: token ghp_your_token"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>https://api.github.com/repos/owner/repo
 </pre></div>
 </div>
@@ -1888,11 +1888,11 @@ pull requests: forbidden: https://gitlab.com/api/v4/projects/group%2Fname/merge_
 <p>If you see these repos repeatedly skipping an endpoint, check:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Is the repo deleted/moved? Check recent prelim runs.</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">repo_git</span><span class="p">,</span><span class="w"> </span><span class="n">repo_archived</span><span class="p">,</span><span class="w"> </span><span class="n">data_collection_date</span>
-<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">repo_git</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">&#39;%owner/name%&#39;</span><span class="p">;</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">repo_git</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">'%owner/name%'</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>To verify the token scope on GitHub:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-sI<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: token </span><span class="nv">$TOKEN</span><span class="s2">&quot;</span><span class="w"> </span>https://api.github.com/user<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span>x-oauth-scopes
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-sI<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: token </span><span class="nv">$TOKEN</span><span class="s2">"</span><span class="w"> </span>https://api.github.com/user<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span>x-oauth-scopes
 </pre></div>
 </div>
 </section>
@@ -1911,7 +1911,7 @@ pull requests: forbidden: https://gitlab.com/api/v4/projects/group%2Fname/merge_
 <p>Diagnostic queries:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- How many comments per issue / PR for a specific repo?</span>
 <span class="k">SELECT</span>
-<span class="w">  </span><span class="s1">&#39;issue&#39;</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">kind</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="mf">.</span><span class="n">issue_number</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">num</span><span class="p">,</span>
+<span class="w">  </span><span class="s1">'issue'</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">kind</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="mf">.</span><span class="n">issue_number</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">num</span><span class="p">,</span>
 <span class="w">  </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">issue_message_ref</span><span class="w"> </span><span class="n">imr</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">imr</span><span class="mf">.</span><span class="n">issue_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">i</span><span class="mf">.</span><span class="n">issue_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">comments</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">issues</span><span class="w"> </span><span class="n">i</span>
 <span class="k">WHERE</span><span class="w"> </span><span class="n">i</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&lt;</span><span class="n">id</span><span class="o">&gt;</span>
@@ -1920,7 +1920,7 @@ pull requests: forbidden: https://gitlab.com/api/v4/projects/group%2Fname/merge_
 
 <span class="c1">-- Which repos have issues/PRs but disproportionately few messages?</span>
 <span class="c1">-- (Rough heuristic: fewer than 0.5 comments per issue+PR.)</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">&#39;/&#39;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">'/'</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
 <span class="w">       </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">issues</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">i</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">issues</span><span class="p">,</span>
 <span class="w">       </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">pull_requests</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">p</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">prs</span><span class="p">,</span>
 <span class="w">       </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">messages</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">m</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">messages</span>
@@ -1967,7 +1967,7 @@ without operator intervention.</p></li>
 </ol>
 <p>Diagnostic queries:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Currently-affected repos: gap exceeds threshold, flag not yet set.</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">&#39;/&#39;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">'/'</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
 <span class="w">       </span><span class="n">q</span><span class="mf">.</span><span class="n">last_prs</span><span class="p">,</span>
 <span class="w">       </span><span class="n">ri</span><span class="mf">.</span><span class="n">pr_count</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">metadata_prs</span><span class="p">,</span>
 <span class="w">       </span><span class="n">round</span><span class="p">((</span><span class="mf">1.0</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">last_prs</span><span class="o">::</span><span class="nb">numeric</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="k">NULLIF</span><span class="p">(</span><span class="n">ri</span><span class="mf">.</span><span class="n">pr_count</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">))</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">gap_pct</span>
@@ -1984,7 +1984,7 @@ without operator intervention.</p></li>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">gap_pct</span><span class="w"> </span><span class="k">DESC</span><span class="p">;</span>
 
 <span class="c1">-- Repos the v0.20.5 backfill flagged (after running migrate).</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">&#39;/&#39;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">'/'</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
 <span class="w">       </span><span class="n">q</span><span class="mf">.</span><span class="n">last_collected</span><span class="p">,</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">due_at</span><span class="p">,</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">last_error</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">collection_queue</span><span class="w"> </span><span class="n">q</span>
 <span class="k">JOIN</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">repo_id</span>
@@ -2009,13 +2009,13 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 <p><strong>Fix (v0.16.11+):</strong> Added <code class="docutils literal notranslate"><span class="pre">sw.Flush(ctx)</span></code> before <code class="docutils literal notranslate"><span class="pre">ProcessRepo</span></code> in all four functions, with flush errors logged/returned. No manual re-collection is needed — the gap detector still fires on the next scheduled cycle, and items now persist correctly.</p>
 <p>Diagnostic queries for affected repos:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Gathered vs metadata for a specific repo.</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">&#39;/&#39;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">'/'</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
 <span class="w">       </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">issues</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">i</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">gathered_issues</span><span class="p">,</span>
 <span class="w">       </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">pull_requests</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">p</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">gathered_prs</span><span class="p">,</span>
 <span class="w">       </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">issues_count</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repo_info</span><span class="w"> </span><span class="n">ri</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">ri</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">data_collection_date</span><span class="w"> </span><span class="k">DESC</span><span class="w"> </span><span class="k">LIMIT</span><span class="w"> </span><span class="mf">1</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">meta_issues</span><span class="p">,</span>
 <span class="w">       </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">pr_count</span><span class="w">    </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repo_info</span><span class="w"> </span><span class="n">ri</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">ri</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">data_collection_date</span><span class="w"> </span><span class="k">DESC</span><span class="w"> </span><span class="k">LIMIT</span><span class="w"> </span><span class="mf">1</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">meta_prs</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="n">r</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">&#39;/&#39;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;aiidateam/kiwipy&#39;</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">'/'</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'aiidateam/kiwipy'</span><span class="p">;</span>
 
 <span class="c1">-- What IS in staging for a suspect repo? Expect to see contributor / release /</span>
 <span class="c1">-- repo_info entries and, after v0.16.11, also issue / pull_request entries.</span>
@@ -2032,11 +2032,11 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 <section id="repeated-unexpected-status-301-retries-on-moved-renamed-repos">
 <h2>Repeated “unexpected status 301” retries on moved/renamed repos<a class="headerlink" href="#repeated-unexpected-status-301-retries-on-moved-renamed-repos" title="Link to this heading"></a></h2>
 <p><strong>Symptom (pre-v0.16.10):</strong> Logs show the same URL hammered 10 times:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;unexpected status&quot;</span> <span class="n">url</span><span class="o">=</span><span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">api</span><span class="o">.</span><span class="n">github</span><span class="o">.</span><span class="n">com</span><span class="o">/</span><span class="n">repos</span><span class="o">/</span><span class="n">devsim</span><span class="o">/</span><span class="n">devsim</span><span class="o">/</span><span class="n">issues</span><span class="o">/</span><span class="mi">115</span> <span class="n">status</span><span class="o">=</span><span class="mi">301</span> \
-  <span class="n">body_snippet</span><span class="o">=</span><span class="s2">&quot;{</span><span class="se">\&quot;</span><span class="s2">message</span><span class="se">\&quot;</span><span class="s2">:</span><span class="se">\&quot;</span><span class="s2">Moved Permanently</span><span class="se">\&quot;</span><span class="s2">,</span><span class="se">\&quot;</span><span class="s2">url</span><span class="se">\&quot;</span><span class="s2">:</span><span class="se">\&quot;\&quot;</span><span class="s2">,...}&quot;</span> <span class="n">attempt</span><span class="o">=</span><span class="mi">1</span>
-<span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;unexpected status&quot;</span> <span class="o">...</span> <span class="n">attempt</span><span class="o">=</span><span class="mi">2</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">"unexpected status"</span> <span class="n">url</span><span class="o">=</span><span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">api</span><span class="o">.</span><span class="n">github</span><span class="o">.</span><span class="n">com</span><span class="o">/</span><span class="n">repos</span><span class="o">/</span><span class="n">devsim</span><span class="o">/</span><span class="n">devsim</span><span class="o">/</span><span class="n">issues</span><span class="o">/</span><span class="mi">115</span> <span class="n">status</span><span class="o">=</span><span class="mi">301</span> \
+  <span class="n">body_snippet</span><span class="o">=</span><span class="s2">"{</span><span class="se">\"</span><span class="s2">message</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"</span><span class="s2">Moved Permanently</span><span class="se">\"</span><span class="s2">,</span><span class="se">\"</span><span class="s2">url</span><span class="se">\"</span><span class="s2">:</span><span class="se">\"\"</span><span class="s2">,...}"</span> <span class="n">attempt</span><span class="o">=</span><span class="mi">1</span>
+<span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">"unexpected status"</span> <span class="o">...</span> <span class="n">attempt</span><span class="o">=</span><span class="mi">2</span>
 <span class="o">...</span>
-<span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;unexpected status&quot;</span> <span class="o">...</span> <span class="n">attempt</span><span class="o">=</span><span class="mi">10</span>
+<span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">"unexpected status"</span> <span class="o">...</span> <span class="n">attempt</span><span class="o">=</span><span class="mi">10</span>
 </pre></div>
 </div>
 <p><strong>Cause:</strong> <code class="docutils literal notranslate"><span class="pre">platform.HTTPClient</span></code>’s response switch had no case for 3xx. They fell into the <code class="docutils literal notranslate"><span class="pre">default</span></code> branch which logged “unexpected status” and retried with exponential backoff — ~1 min wasted per redirected endpoint. Go’s default redirect-follower gave up because the <code class="docutils literal notranslate"><span class="pre">Location</span></code> header was empty (the body’s <code class="docutils literal notranslate"><span class="pre">&quot;url&quot;:&quot;&quot;</span></code> confirms GitHub couldn’t determine the target) or the chain looped past 10 hops.</p>
@@ -2044,7 +2044,7 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 <ul>
 <li><p>Go’s default follower is disabled (<code class="docutils literal notranslate"><span class="pre">CheckRedirect:</span> <span class="pre">http.ErrUseLastResponse</span></code>) so redirect handling lives in one code path.</p></li>
 <li><p>If <code class="docutils literal notranslate"><span class="pre">Location</span></code> is present, the request is re-issued against the new URL. Up to <code class="docutils literal notranslate"><span class="pre">maxRedirectHops</span> <span class="pre">=</span> <span class="pre">5</span></code> follows per <code class="docutils literal notranslate"><span class="pre">Get</span></code> call. Each hop is logged:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">INFO</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;following redirect&quot;</span> <span class="n">from</span><span class="o">=...</span> <span class="n">to</span><span class="o">=...</span> <span class="n">status</span><span class="o">=</span><span class="mi">301</span> <span class="n">hop</span><span class="o">=</span><span class="mi">1</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">INFO</span> <span class="n">msg</span><span class="o">=</span><span class="s2">"following redirect"</span> <span class="n">from</span><span class="o">=...</span> <span class="n">to</span><span class="o">=...</span> <span class="n">status</span><span class="o">=</span><span class="mi">301</span> <span class="n">hop</span><span class="o">=</span><span class="mi">1</span>
 </pre></div>
 </div>
 </li>
@@ -2057,7 +2057,7 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 <section id="http-410-gone-on-individual-issues-prs">
 <h2>HTTP 410 Gone on individual issues / PRs<a class="headerlink" href="#http-410-gone-on-individual-issues-prs" title="Link to this heading"></a></h2>
 <p><strong>Symptom:</strong> A specific issue or PR endpoint returns 410:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">&quot;message&quot;</span><span class="p">:</span><span class="s2">&quot;This issue was deleted&quot;</span><span class="p">,</span><span class="s2">&quot;documentation_url&quot;</span><span class="p">:</span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="s2">&quot;status&quot;</span><span class="p">:</span><span class="s2">&quot;410&quot;</span><span class="p">}</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">"message"</span><span class="p">:</span><span class="s2">"This issue was deleted"</span><span class="p">,</span><span class="s2">"documentation_url"</span><span class="p">:</span><span class="s2">"..."</span><span class="p">,</span><span class="s2">"status"</span><span class="p">:</span><span class="s2">"410"</span><span class="p">}</span>
 </pre></div>
 </div>
 <p><strong>Cause:</strong> GitHub uses 410 for resources that were deliberately removed (deleted issues, purged PRs). Before v0.16.10 this fell into the “unexpected status” retry path and cost 10 attempts before the collection job was marked failed.</p>
@@ -2116,8 +2116,8 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 <li><p><code class="docutils literal notranslate"><span class="pre">platform.ErrNotFound</span></code> wraps 404 responses. The staged collector and legacy collector both <code class="docutils literal notranslate"><span class="pre">errors.Is(err,</span> <span class="pre">platform.ErrNotFound)</span></code> around <code class="docutils literal notranslate"><span class="pre">ListReleases</span></code> — a 404 now logs <code class="docutils literal notranslate"><span class="pre">no</span> <span class="pre">releases</span> <span class="pre">endpoint</span> <span class="pre">(404)</span> <span class="pre">—</span> <span class="pre">treating</span> <span class="pre">as</span> <span class="pre">zero</span> <span class="pre">releases</span></code> and moves on.</p></li>
 </ul>
 <p><strong>Verifying the fix on an existing database:</strong></p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Any repo_name still ending in &quot;.git&quot;? After running `aveloxis migrate`, zero rows.</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">repo_name</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">repo_name</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">&#39;%.git&#39;</span><span class="p">;</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Any repo_name still ending in ".git"? After running `aveloxis migrate`, zero rows.</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">repo_name</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">repo_name</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">'%.git'</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>If you see a repo still stuck in <code class="docutils literal notranslate"><span class="pre">Error</span></code> status for this reason, re-queue it:</p>
@@ -2177,7 +2177,7 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 <h2>Schema version mismatch warning<a class="headerlink" href="#schema-version-mismatch-warning" title="Link to this heading"></a></h2>
 <p><strong>Symptom:</strong> <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code> or <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">scancode-worker</span></code>
 logs an ERROR at startup (v0.20.15 raised it from WARN):</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">ERROR</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run `aveloxis migrate --skip-views` then restart. ...&quot;</span> <span class="n">db_schema_version</span><span class="o">=</span><span class="mf">0.29.2</span> <span class="n">binary_version</span><span class="o">=</span><span class="mf">0.29.4</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;aveloxis migrate --skip-views&quot;</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">ERROR</span> <span class="n">msg</span><span class="o">=</span><span class="s2">"schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run `aveloxis migrate --skip-views` then restart. ..."</span> <span class="n">db_schema_version</span><span class="o">=</span><span class="mf">0.29.2</span> <span class="n">binary_version</span><span class="o">=</span><span class="mf">0.29.4</span> <span class="n">action</span><span class="o">=</span><span class="s2">"aveloxis migrate --skip-views"</span>
 </pre></div>
 </div>
 <p><strong>Cause:</strong> The binary was updated but the database schema hasn’t been migrated yet. This happens when you update the <code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> binary and restart <code class="docutils literal notranslate"><span class="pre">web</span></code> or <code class="docutils literal notranslate"><span class="pre">api</span></code> without running <code class="docutils literal notranslate"><span class="pre">migrate</span></code> (or a foreground <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>, which migrates at startup).</p>
@@ -2217,15 +2217,15 @@ longer heals this warning. A foreground <code class="docutils literal notranslat
 <li><p>The number of scanned repos increments extremely slowly; long (multi-hour) stretches with no <code class="docutils literal notranslate"><span class="pre">running</span> <span class="pre">ScanCode</span></code> log lines.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> shows <code class="docutils literal notranslate"><span class="pre">scancode</span> <span class="pre">runOne:</span> <span class="pre">scancode</span> <span class="pre">subprocess</span> <span class="pre">failed</span> <span class="pre">...</span> <span class="pre">error=&quot;signal:</span> <span class="pre">killed&quot;</span></code> with enormous <code class="docutils literal notranslate"><span class="pre">stderr_bytes</span></code> values (gigabytes), and <code class="docutils literal notranslate"><span class="pre">wall-clock</span> <span class="pre">timeout</span> <span class="pre">fired</span> <span class="pre">...</span> <span class="pre">using</span> <span class="pre">stretched</span> <span class="pre">timeout</span></code>.</p></li>
 <li><p>The per-repo stderr files under your scancode clone dir (e.g. <code class="docutils literal notranslate"><span class="pre">/mnt/spinner/scancode/repo_*_stderr.log</span></code>) are <strong>gigabytes</strong> each (15+ GB observed) and consist almost entirely of:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>/usr/share/misc/magic.mgc, 3673: Warning: offset `&#39; invalid
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>/usr/share/misc/magic.mgc, 3673: Warning: offset `' invalid
 </pre></div>
 </div>
 <p>Often the lines look garbled/char-interleaved — that’s multiple <code class="docutils literal notranslate"><span class="pre">scancode</span> <span class="pre">--processes</span></code> worker subprocesses each loading the corrupt DB and writing to the shared stderr pipe at once.</p>
 </li>
 <li><p>The failures cluster on <strong>large</strong> repositories (AWS/Azure SDKs, game engines, monorepos) while small repos succeed — this is the most confusing symptom, but it’s <strong>not</strong> a per-repo or per-file problem. Every scan emits the spam; only the large repos emit <em>enough</em> of it (per file × per process) to blow past the wall-clock timeout. v0.25.28+ surfaces this directly: the failure log line carries a <code class="docutils literal notranslate"><span class="pre">likely_cause</span></code> field naming the corrupt host libmagic.</p></li>
 <li><p>Startup logs <code class="docutils literal notranslate"><span class="pre">scancode</span> <span class="pre">preflight:</span> <span class="pre">SYSTEM-LEVEL</span> <span class="pre">FAILURE</span> <span class="pre">—</span> <span class="pre">scancode</span> <span class="pre">will</span> <span class="pre">not</span> <span class="pre">work</span> <span class="pre">until</span> <span class="pre">fixed</span></code> (v0.25.x+), and:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">status</span><span class="p">,</span><span class="w"> </span><span class="n">status_detail</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">aveloxis_status</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">status_name</span><span class="o">=</span><span class="s1">&#39;scancode&#39;</span><span class="p">;</span>
-<span class="c1">-- status = &#39;broken&#39;  (status_detail names the libmagic fix)</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">status</span><span class="p">,</span><span class="w"> </span><span class="n">status_detail</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">aveloxis_status</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">status_name</span><span class="o">=</span><span class="s1">'scancode'</span><span class="p">;</span>
+<span class="c1">-- status = 'broken'  (status_detail names the libmagic fix)</span>
 </pre></div>
 </div>
 </li>
@@ -2248,8 +2248,8 @@ aveloxis<span class="w"> </span>upgrade-tools<span class="w">           </span><
 <span class="c1">#    file at ~1.25 MB head+tail, but pre-fix files can be many GB each.)</span>
 rm<span class="w"> </span>/mnt/spinner/scancode/repo_*_stderr.log<span class="w">   </span><span class="c1"># adjust path to your scancode_clone_dir</span>
 
-<span class="c1"># 3. Restart serve. The startup preflight should now log &quot;scancode preflight: healthy&quot;</span>
-<span class="c1">#    and aveloxis_status.status flip to &#39;ok&#39;.</span>
+<span class="c1"># 3. Restart serve. The startup preflight should now log "scancode preflight: healthy"</span>
+<span class="c1">#    and aveloxis_status.status flip to 'ok'.</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>aveloxis<span class="w"> </span>start<span class="w"> </span>all
 </pre></div>
 </div>
@@ -2282,13 +2282,13 @@ LOG:  database system was shut down at ...              (clean — NOT crash rec
 <p><strong>Cause</strong></p>
 <p>These are <strong>clean, deliberate restarts of the PostgreSQL service by the host</strong> — not a crash, not OOM, and (when the version line is unchanged, e.g. <code class="docutils literal notranslate"><span class="pre">starting</span> <span class="pre">PostgreSQL</span> <span class="pre">17.10</span></code> on both sides) not a Postgres upgrade. PostgreSQL does not record <em>who</em> sent the shutdown signal, so identify the trigger on the box:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># What actually stopped/started postgresql, and when:</span>
-sudo<span class="w"> </span>journalctl<span class="w"> </span>-u<span class="w"> </span>postgresql@17-main<span class="w"> </span>--since<span class="w"> </span><span class="s2">&quot;yesterday&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-iE<span class="w"> </span><span class="s2">&quot;stop|start|restart&quot;</span>
+sudo<span class="w"> </span>journalctl<span class="w"> </span>-u<span class="w"> </span>postgresql@17-main<span class="w"> </span>--since<span class="w"> </span><span class="s2">"yesterday"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-iE<span class="w"> </span><span class="s2">"stop|start|restart"</span>
 <span class="c1"># Scheduled jobs that could be doing it:</span>
-systemctl<span class="w"> </span>list-timers<span class="w"> </span>--all<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-iE<span class="w"> </span><span class="s2">&quot;apt|postgres|backup&quot;</span>
+systemctl<span class="w"> </span>list-timers<span class="w"> </span>--all<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-iE<span class="w"> </span><span class="s2">"apt|postgres|backup"</span>
 sudo<span class="w"> </span>crontab<span class="w"> </span>-l<span class="p">;</span><span class="w"> </span>ls<span class="w"> </span>-la<span class="w"> </span>/etc/cron.d<span class="w"> </span>/etc/cron.daily
 <span class="c1"># Ubuntu auto-updates + needrestart (a common culprit — needrestart restarts</span>
 <span class="c1"># services whose shared libs, e.g. openssl/libc, were patched, WITHOUT changing</span>
-<span class="c1"># postgres&#39;s own version):</span>
+<span class="c1"># postgres's own version):</span>
 cat<span class="w"> </span>/var/log/unattended-upgrades/unattended-upgrades.log
 grep<span class="w"> </span>-i<span class="w"> </span>restart<span class="w"> </span>/etc/needrestart/needrestart.conf
 </pre></div>
@@ -2299,7 +2299,7 @@ grep<span class="w"> </span>-i<span class="w"> </span>restart<span class="w"> </
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># A. Stop needrestart from auto-restarting services (most common cause).</span>
 <span class="c1">#    List-only mode: needrestart reports what *would* restart but never does it,</span>
 <span class="c1">#    so a library update no longer bounces postgresql under a live fleet.</span>
-sudo<span class="w"> </span>sed<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;s/^#\?\$nrconf{restart}.*/\$nrconf{restart} = &#39;l&#39;;/&quot;</span><span class="w"> </span>/etc/needrestart/needrestart.conf
+sudo<span class="w"> </span>sed<span class="w"> </span>-i<span class="w"> </span><span class="s2">"s/^#\?\$nrconf{restart}.*/\$nrconf{restart} = 'l';/"</span><span class="w"> </span>/etc/needrestart/needrestart.conf
 <span class="c1">#    (or, to keep auto-restart for everything EXCEPT postgresql, add a blacklist</span>
 <span class="c1">#     entry instead:  $nrconf{override_rc} = { qr(^postgresql) =&gt; 0 };  )</span>
 
@@ -2310,20 +2310,20 @@ sudo<span class="w"> </span>systemctl<span class="w"> </span>edit<span class="w"
 <span class="c1">#    OnCalendar=*-*-* 09:00      # whatever is genuinely low-traffic for your fleet</span>
 <span class="c1">#    RandomizedDelaySec=30m</span>
 
-<span class="c1"># C. Or, if you don&#39;t want unattended security upgrades restarting anything at all:</span>
+<span class="c1"># C. Or, if you don't want unattended security upgrades restarting anything at all:</span>
 sudo<span class="w"> </span>dpkg-reconfigure<span class="w"> </span>-plow<span class="w"> </span>unattended-upgrades<span class="w">   </span><span class="c1"># disable, and patch on your own schedule</span>
 
 <span class="c1"># Verify nothing restarts postgresql automatically afterward:</span>
-sudo<span class="w"> </span>needrestart<span class="w"> </span>-r<span class="w"> </span>l<span class="w">        </span><span class="c1"># &#39;l&#39; = list only; should NOT show postgresql being restarted</span>
+sudo<span class="w"> </span>needrestart<span class="w"> </span>-r<span class="w"> </span>l<span class="w">        </span><span class="c1"># 'l' = list only; should NOT show postgresql being restarted</span>
 systemctl<span class="w"> </span>list-timers<span class="w"> </span>--all<span class="w">  </span><span class="c1"># confirm the apt-daily-upgrade window moved</span>
 </pre></div>
 </div>
 <p>A custom backup cron doing <code class="docutils literal notranslate"><span class="pre">systemctl</span> <span class="pre">restart</span> <span class="pre">postgresql</span></code> (found via <code class="docutils literal notranslate"><span class="pre">crontab</span> <span class="pre">-l</span></code> / <code class="docutils literal notranslate"><span class="pre">/etc/cron.*</span></code>) should either use online backup (<code class="docutils literal notranslate"><span class="pre">pg_basebackup</span></code> / WAL archiving — no restart needed) or run in a maintenance window you’ve coordinated with collection.</p>
 <p><strong>Mitigation on the Aveloxis side (v0.25.25+)</strong></p>
 <p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> runs a <strong>DB-health monitor</strong> that probes the database every 5 s. When a probe fails it sets <code class="docutils literal notranslate"><span class="pre">dbHealthy</span> <span class="pre">=</span> <span class="pre">false</span></code>, and <code class="docutils literal notranslate"><span class="pre">fillWorkerSlots</span></code> stops claiming new work — so collection <strong>pauses</strong> for the duration of the restart instead of hammering the dying/recovering server. You’ll see one line, not a storm:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;database unavailable — pausing new collection until it returns&quot;</span>
-<span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;collection still paused — database unavailable&quot;</span> <span class="n">unavailable_for</span><span class="o">=...</span>   <span class="p">(</span><span class="n">once</span><span class="o">/</span><span class="nb">min</span><span class="p">)</span>
-<span class="n">level</span><span class="o">=</span><span class="n">INFO</span>  <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;database back — resuming collection&quot;</span> <span class="n">unavailable_for</span><span class="o">=...</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">"database unavailable — pausing new collection until it returns"</span>
+<span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">"collection still paused — database unavailable"</span> <span class="n">unavailable_for</span><span class="o">=...</span>   <span class="p">(</span><span class="n">once</span><span class="o">/</span><span class="nb">min</span><span class="p">)</span>
+<span class="n">level</span><span class="o">=</span><span class="n">INFO</span>  <span class="n">msg</span><span class="o">=</span><span class="s2">"database back — resuming collection"</span> <span class="n">unavailable_for</span><span class="o">=...</span>
 </pre></div>
 </div>
 <p>and the outage is recorded in <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.aveloxis_status</span></code> (<code class="docutils literal notranslate"><span class="pre">status_name='database'</span></code>; <code class="docutils literal notranslate"><span class="pre">status='unavailable'</span></code> during the outage where writable, <code class="docutils literal notranslate"><span class="pre">status='ok'</span></code> with the recovery duration in <code class="docutils literal notranslate"><span class="pre">status_detail</span></code> afterward). In-flight jobs running at the instant of the restart still error and re-queue (that’s expected), but no <em>new</em> work is dispatched into the dead window, which also avoids the reconnect deadlock pile-up.</p>
@@ -2363,7 +2363,7 @@ systemctl<span class="w"> </span>list-timers<span class="w"> </span>--all<span c
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all
 
 <span class="c1"># 2. (Optional) Clear staging if you suspect corrupt staged data</span>
-psql<span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;TRUNCATE aveloxis_ops.staging;&quot;</span>
+psql<span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> </span>-c<span class="w"> </span><span class="s2">"TRUNCATE aveloxis_ops.staging;"</span>
 
 <span class="c1"># 3. Restart all components in the background</span>
 aveloxis<span class="w"> </span>start<span class="w"> </span>all
@@ -2394,8 +2394,8 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <span class="k">SELECT</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="p">,</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">locked_at</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">collection_queue</span><span class="w"> </span><span class="n">q</span>
 <span class="k">JOIN</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">repo_id</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;collecting&#39;</span>
-<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">locked_at</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">NOW</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="s1">&#39;1 hour&#39;</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'collecting'</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">locked_at</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">NOW</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="s1">'1 hour'</span><span class="p">;</span>
 </pre></div>
 </div>
 </section>
@@ -2435,7 +2435,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <section id="step-3-understand-the-monitor-s-display-order">
 <h3>Step 3 — understand the monitor’s display order<a class="headerlink" href="#step-3-understand-the-monitor-s-display-order" title="Link to this heading"></a></h3>
 <p>The monitor’s ORDER BY is:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">CASE</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">status</span><span class="w"> </span><span class="k">WHEN</span><span class="w"> </span><span class="s1">&#39;collecting&#39;</span><span class="w"> </span><span class="k">THEN</span><span class="w"> </span><span class="mf">0</span><span class="w"> </span><span class="k">WHEN</span><span class="w"> </span><span class="s1">&#39;queued&#39;</span><span class="w"> </span><span class="k">THEN</span><span class="w"> </span><span class="mf">1</span><span class="w"> </span><span class="k">ELSE</span><span class="w"> </span><span class="mf">2</span><span class="w"> </span><span class="k">END</span><span class="p">,</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">CASE</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">status</span><span class="w"> </span><span class="k">WHEN</span><span class="w"> </span><span class="s1">'collecting'</span><span class="w"> </span><span class="k">THEN</span><span class="w"> </span><span class="mf">0</span><span class="w"> </span><span class="k">WHEN</span><span class="w"> </span><span class="s1">'queued'</span><span class="w"> </span><span class="k">THEN</span><span class="w"> </span><span class="mf">1</span><span class="w"> </span><span class="k">ELSE</span><span class="w"> </span><span class="mf">2</span><span class="w"> </span><span class="k">END</span><span class="p">,</span>
 <span class="n">q</span><span class="mf">.</span><span class="n">priority</span><span class="p">,</span><span class="w">    </span><span class="c1">-- ASC: priority 0 comes before priority 100</span>
 <span class="n">q</span><span class="mf">.</span><span class="n">due_at</span><span class="p">,</span><span class="w">      </span><span class="c1">-- ASC: past due_at comes before future due_at</span>
 <span class="n">q</span><span class="mf">.</span><span class="n">repo_id</span><span class="w">      </span><span class="c1">-- tiebreaker</span>
@@ -2446,7 +2446,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <section id="step-4-find-the-rows-you-re-worried-about">
 <h3>Step 4 — find the rows you’re worried about<a class="headerlink" href="#step-4-find-the-rows-you-re-worried-about" title="Link to this heading"></a></h3>
 <p>If you have repos with NULL <code class="docutils literal notranslate"><span class="pre">last_collected</span></code> (never successfully collected) and want to know where they are:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="o">||</span><span class="s1">&#39;/&#39;</span><span class="o">||</span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">slug</span><span class="p">,</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="o">||</span><span class="s1">'/'</span><span class="o">||</span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">slug</span><span class="p">,</span>
 <span class="w">       </span><span class="n">q</span><span class="mf">.</span><span class="n">status</span><span class="p">,</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">priority</span><span class="p">,</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">due_at</span><span class="p">,</span>
 <span class="w">       </span><span class="n">q</span><span class="mf">.</span><span class="n">locked_by</span><span class="p">,</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">last_error</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">has_err</span><span class="p">,</span>
 <span class="w">       </span><span class="n">q</span><span class="mf">.</span><span class="n">force_full_collect</span>
@@ -2464,7 +2464,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <p>Worker IDs are generated at scheduler startup as <code class="docutils literal notranslate"><span class="pre">&lt;hostname&gt;-&lt;HHMMSS&gt;</span></code> (<code class="docutils literal notranslate"><span class="pre">internal/scheduler/scheduler.go</span></code>). So <code class="docutils literal notranslate"><span class="pre">kate-200608</span></code> means a scheduler started at 20:06:08 on host <code class="docutils literal notranslate"><span class="pre">kate</span></code>.</p>
 <section id="compare-to-the-currently-running-scheduler">
 <h4>Compare to the currently-running scheduler<a class="headerlink" href="#compare-to-the-currently-running-scheduler" title="Link to this heading"></a></h4>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>grep<span class="w"> </span>-a<span class="w"> </span><span class="s2">&quot;worker_id\|scheduler started&quot;</span><span class="w"> </span>~/.aveloxis/aveloxis.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>tail<span class="w"> </span>-3
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>grep<span class="w"> </span>-a<span class="w"> </span><span class="s2">"worker_id\|scheduler started"</span><span class="w"> </span>~/.aveloxis/aveloxis.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>tail<span class="w"> </span>-3
 </pre></div>
 </div>
 <p>If the current <code class="docutils literal notranslate"><span class="pre">serve</span></code> process has a different worker ID than the one on the stuck row, that row’s worker is dead.</p>
@@ -2474,7 +2474,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <p>Workers heartbeat every 30 seconds (<code class="docutils literal notranslate"><span class="pre">HeartbeatJob</span></code> in <code class="docutils literal notranslate"><span class="pre">queue.go</span></code>). Anything older than ~1 minute isn’t heartbeating:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">locked_by</span><span class="p">,</span><span class="w"> </span><span class="n">locked_at</span><span class="p">,</span><span class="w"> </span><span class="n">NOW</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">locked_at</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">lock_age</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">collection_queue</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;collecting&#39;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'collecting'</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">locked_at</span><span class="p">;</span>
 </pre></div>
 </div>
@@ -2486,7 +2486,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <span class="w">       </span><span class="n">NOW</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">query_start</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query_age</span><span class="p">,</span>
 <span class="w">       </span><span class="k">LEFT</span><span class="p">(</span><span class="n">query</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_stat_activity</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">application_name</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">&#39;aveloxis-%&#39;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">application_name</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">'aveloxis-%'</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">application_name</span><span class="p">,</span><span class="w"> </span><span class="n">query_start</span><span class="p">;</span>
 </pre></div>
 </div>
@@ -2499,23 +2499,23 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <p><strong>Option A — wait for <code class="docutils literal notranslate"><span class="pre">RecoverStaleLocks</span></code></strong> (runs on scheduler startup AND every 5 minutes). The stale threshold is <code class="docutils literal notranslate"><span class="pre">scheduler.Config.StaleLockTimeout</span></code> (default 1 hour):</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Time until auto-recovery for each stuck row:</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">locked_at</span><span class="p">,</span>
-<span class="w">       </span><span class="n">locked_at</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="s1">&#39;1 hour&#39;</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">will_recover_at</span><span class="p">,</span>
-<span class="w">       </span><span class="p">(</span><span class="n">locked_at</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="s1">&#39;1 hour&#39;</span><span class="p">)</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">NOW</span><span class="p">()</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">time_until_recovery</span>
+<span class="w">       </span><span class="n">locked_at</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="s1">'1 hour'</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">will_recover_at</span><span class="p">,</span>
+<span class="w">       </span><span class="p">(</span><span class="n">locked_at</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="s1">'1 hour'</span><span class="p">)</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">NOW</span><span class="p">()</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">time_until_recovery</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">collection_queue</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;collecting&#39;</span>
-<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">locked_by</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&lt;dead-worker-id&gt;&#39;</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'collecting'</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">locked_by</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'&lt;dead-worker-id&gt;'</span><span class="p">;</span>
 </pre></div>
 </div>
 <p><strong>Option B — manually release</strong> (only after confirming the worker is actually dead via Step 5):</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">collection_queue</span>
-<span class="k">SET</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;queued&#39;</span><span class="p">,</span>
+<span class="k">SET</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'queued'</span><span class="p">,</span>
 <span class="w">    </span><span class="n">locked_by</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
 <span class="w">    </span><span class="n">locked_at</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
 <span class="w">    </span><span class="n">due_at</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">NOW</span><span class="p">(),</span>
 <span class="w">    </span><span class="n">priority</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span>
 <span class="w">    </span><span class="n">updated_at</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">NOW</span><span class="p">()</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;collecting&#39;</span>
-<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">locked_by</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&lt;dead-worker-id&gt;&#39;</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'collecting'</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">locked_by</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'&lt;dead-worker-id&gt;'</span><span class="p">;</span>
 </pre></div>
 </div>
 <p><strong>Caveat:</strong> if the worker is actually still alive and writing, manually releasing its rows causes double-collection (the live worker writes after a new worker picks the row up). Always confirm with the Step 5 queries first.</p>
@@ -2551,7 +2551,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <span class="w">       </span><span class="n">last_collected</span><span class="p">,</span>
 <span class="w">       </span><span class="p">(</span><span class="n">due_at</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">last_collected</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">cooldown</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">collection_queue</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;queued&#39;</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">last_collected</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'queued'</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">last_collected</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">last_collected</span><span class="w"> </span><span class="k">DESC</span>
 <span class="k">LIMIT</span><span class="w"> </span><span class="mf">10</span><span class="p">;</span>
 </pre></div>
@@ -2572,13 +2572,13 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <p>To see what was collected for a specific repo:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Entity counts</span>
 <span class="k">SELECT</span>
-<span class="w">  </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">&#39;/&#39;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
+<span class="w">  </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">'/'</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span>
 <span class="w">  </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">issues</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">i</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">issues</span><span class="p">,</span>
 <span class="w">  </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">pull_requests</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">p</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">prs</span><span class="p">,</span>
 <span class="w">  </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="k">DISTINCT</span><span class="w"> </span><span class="n">cmt_commit_hash</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">commits</span><span class="w"> </span><span class="n">c</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">c</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">commits</span><span class="p">,</span>
 <span class="w">  </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">messages</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">m</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">messages</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="n">r</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_git</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">&#39;%chaoss/augur%&#39;</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_git</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">'%chaoss/augur%'</span><span class="p">;</span>
 </pre></div>
 </div>
 </section>
@@ -2650,7 +2650,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Un-sideline the repo</span>
 <span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span>
 <span class="k">SET</span><span class="w"> </span><span class="n">repo_archived</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">FALSE</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_git</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;https://github.com/owner/repo&#39;</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_git</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'https://github.com/owner/repo'</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>Then re-add it to the queue:</p>
@@ -2710,7 +2710,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <p><strong>Cause:</strong> Before v0.18.29, <code class="docutils literal notranslate"><span class="pre">processLeftoverStaging</span></code> ran synchronously on the scheduler’s main goroutine before <code class="docutils literal notranslate"><span class="pre">fillWorkerSlots</span></code> could claim any new jobs. Each repo with backlogged staging from a prior interrupted run could take 30+ hours to process; with 23 backlogged repos, the worker pool sat idle for ~3 days while staging drained.</p>
 <p><strong>Solution (v0.18.29):</strong> The drain now runs in a background goroutine. Repos with leftover staging are atomically lock-parked (<code class="docutils literal notranslate"><span class="pre">status='collecting'</span></code>, <code class="docutils literal notranslate"><span class="pre">locked_by='&lt;workerID&gt;:drain'</span></code>) before the goroutine launches, so <code class="docutils literal notranslate"><span class="pre">fillWorkerSlots</span></code> skips them naturally and immediately starts claiming the rest of the fleet’s queued repos. Each drained repo rejoins the queue as draining completes.</p>
 <p><strong>Confirm the fix is active:</strong></p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>grep<span class="w"> </span><span class="s2">&quot;launching background leftover-staging drain&quot;</span><span class="w"> </span>~/.aveloxis/aveloxis.log
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>grep<span class="w"> </span><span class="s2">"launching background leftover-staging drain"</span><span class="w"> </span>~/.aveloxis/aveloxis.log
 <span class="c1"># v0.18.29: this line appears within seconds of restart with the count</span>
 <span class="c1"># of repos being drained. Workers begin claiming queued repos in parallel.</span>
 </pre></div>
@@ -2726,15 +2726,15 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <p><strong>Solution (v0.18.29):</strong> Enrichment moved to a periodic scheduler-level task (<code class="docutils literal notranslate"><span class="pre">Scheduler.runEnrichment</span></code>) driven by <code class="docutils literal notranslate"><span class="pre">cfg.EnrichInterval</span></code> (default 30 minutes). Single goroutine, single 14K batch per tick, ~28K REST calls per hour against the available budget — well within headroom and leaves the rest of the budget for actual collection traffic.</p>
 <p><strong>Configure the cadence in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>:</strong></p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;enrich_interval_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span>
+<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"enrich_interval_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>
 <p>Faster (e.g. <code class="docutils literal notranslate"><span class="pre">15</span></code>) catches up enrichment sooner; slower (e.g. <code class="docutils literal notranslate"><span class="pre">60</span></code>) leaves more REST headroom. Default is 30 if unset.</p>
 <p><strong>Confirm the fix is active:</strong></p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>grep<span class="w"> </span><span class="s2">&quot;enriching thin contributor profiles&quot;</span><span class="w"> </span>~/.aveloxis/aveloxis.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>head<span class="w"> </span>-5
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>grep<span class="w"> </span><span class="s2">"enriching thin contributor profiles"</span><span class="w"> </span>~/.aveloxis/aveloxis.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>head<span class="w"> </span>-5
 <span class="c1"># v0.18.29: should appear at most twice per hour (default 30-min interval),</span>
 <span class="c1"># not 120 times within a few seconds after a restart.</span>
 </pre></div>
@@ -2748,7 +2748,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <p><strong>Solution (v0.18.29):</strong> <code class="docutils literal notranslate"><span class="pre">Resolve</span></code> now branches on <code class="docutils literal notranslate"><span class="pre">userID</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>. The deterministic-UUID path uses <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">CONFLICT</span> <span class="pre">(cntrb_id)</span> <span class="pre">DO</span> <span class="pre">UPDATE</span> <span class="pre">SET</span> <span class="pre">cntrb_login</span> <span class="pre">=</span> <span class="pre">COALESCE(NULLIF(EXCLUDED.cntrb_login,''),</span> <span class="pre">contributors.cntrb_login),</span> <span class="pre">…</span></code>. Concurrent inserts of the same numeric user route cleanly to DO UPDATE; renamed users’ rows pick up the new login on next observation. The <code class="docutils literal notranslate"><span class="pre">userID</span> <span class="pre">==</span> <span class="pre">0</span></code> branch (random UUID for email-only contributors, no platform user) keeps <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">CONFLICT</span> <span class="pre">(cntrb_login)</span> <span class="pre">WHERE</span> <span class="pre">cntrb_login</span> <span class="pre">!=</span> <span class="pre">''</span></code> because login is the natural unique key there.</p>
 <p><strong>Confirm the fix is active:</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Should show very few or zero contributors_pkey errors per day after v0.18.29.</span>
-grep<span class="w"> </span><span class="s2">&quot;contributors_pkey&quot;</span><span class="w"> </span>/var/log/postgresql/postgresql-*.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>wc<span class="w"> </span>-l
+grep<span class="w"> </span><span class="s2">"contributors_pkey"</span><span class="w"> </span>/var/log/postgresql/postgresql-*.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>wc<span class="w"> </span>-l
 </pre></div>
 </div>
 <p>If you still see them after upgrading, ensure both <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> AND <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> are running v0.18.29 (mismatched binaries can leave the old SQL active in some code paths).</p>
@@ -2777,8 +2777,8 @@ when a URL arrived with different casing and created a second full repo.</p>
 </div>
 <p>Zero rows means you’re clean. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> also reports this
 state: while duplicates remain it logs</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">msg</span><span class="o">=</span><span class="s2">&quot;case-variant duplicate repos present; skipping unique index uq_repos_repo_git_ci&quot;</span>
-  <span class="n">duplicate_groups</span><span class="o">=</span><span class="n">N</span> <span class="n">hint</span><span class="o">=</span><span class="s2">&quot;run `aveloxis dedup-repos` to merge them, then re-run `aveloxis migrate`&quot;</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">msg</span><span class="o">=</span><span class="s2">"case-variant duplicate repos present; skipping unique index uq_repos_repo_git_ci"</span>
+  <span class="n">duplicate_groups</span><span class="o">=</span><span class="n">N</span> <span class="n">hint</span><span class="o">=</span><span class="s2">"run `aveloxis dedup-repos` to merge them, then re-run `aveloxis migrate`"</span>
 </pre></div>
 </div>
 <p><strong>Fix sequence (v0.25.32+):</strong></p>
@@ -2788,7 +2788,7 @@ aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span
 <span class="w">                                    </span><span class="c1"># WARNs + skips the unique index while dups remain</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--dry-run<span class="w">      </span><span class="c1"># review the plan</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--limit<span class="w"> </span><span class="m">50</span><span class="w">     </span><span class="c1"># canary, then:</span>
-aveloxis<span class="w"> </span>dedup-repos<span class="w">                </span><span class="c1"># full run — repeat until &quot;0 pairs&quot;</span>
+aveloxis<span class="w"> </span>dedup-repos<span class="w">                </span><span class="c1"># full run — repeat until "0 pairs"</span>
 aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">       </span><span class="c1"># now builds uq_repos_repo_git_ci (the backstop)</span>
 aveloxis<span class="w"> </span>refresh-views<span class="w">              </span><span class="c1"># matviews stop double-counting immediately</span>
 aveloxis<span class="w"> </span>start<span class="w"> </span>all
@@ -2845,14 +2845,14 @@ a nearly-done orphan finish if nothing urgent is blocked behind it.</p>
 <span class="w">       </span><span class="n">age</span><span class="p">(</span><span class="n">now</span><span class="p">(),</span><span class="w"> </span><span class="n">backend_start</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">conn_age</span><span class="p">,</span>
 <span class="w">       </span><span class="n">age</span><span class="p">(</span><span class="n">now</span><span class="p">(),</span><span class="w"> </span><span class="n">query_start</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query_age</span><span class="p">,</span><span class="w"> </span><span class="k">left</span><span class="p">(</span><span class="n">query</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_stat_activity</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">datname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;aveloxis_large&#39;</span><span class="w">   </span><span class="c1">-- substitute your DB name</span>
-<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;active&#39;</span>
-<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">query_start</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">interval</span><span class="w"> </span><span class="s1">&#39;5 minutes&#39;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">datname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'aveloxis_large'</span><span class="w">   </span><span class="c1">-- substitute your DB name</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'active'</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">query_start</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">interval</span><span class="w"> </span><span class="s1">'5 minutes'</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">query_start</span><span class="p">;</span>
 </pre></div>
 </div>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 2. Cross-check OS-side: any aveloxis processes actually running?</span>
-ps<span class="w"> </span>-ef<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-E<span class="w"> </span><span class="s2">&quot;aveloxis serve|aveloxis collect&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-v<span class="w"> </span>grep
+ps<span class="w"> </span>-ef<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-E<span class="w"> </span><span class="s2">"aveloxis serve|aveloxis collect"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-v<span class="w"> </span>grep
 </pre></div>
 </div>
 <p>If the SQL shows a long-running aveloxis backend but <code class="docutils literal notranslate"><span class="pre">ps</span></code> shows no matching
@@ -2901,13 +2901,13 @@ that — a marker can separate two hosts that share an address, but it
 can never merge two that do not. So the diagnostic above is best read
 with the marker in view:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">pid</span><span class="p">,</span>
-<span class="w">       </span><span class="n">split_part</span><span class="p">(</span><span class="n">application_name</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;@&#39;</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">component</span><span class="p">,</span>
-<span class="w">       </span><span class="k">NULLIF</span><span class="p">(</span><span class="n">split_part</span><span class="p">(</span><span class="n">application_name</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;@&#39;</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">),</span><span class="w"> </span><span class="s1">&#39;&#39;</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">host</span><span class="p">,</span>
+<span class="w">       </span><span class="n">split_part</span><span class="p">(</span><span class="n">application_name</span><span class="p">,</span><span class="w"> </span><span class="s1">'@'</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">component</span><span class="p">,</span>
+<span class="w">       </span><span class="k">NULLIF</span><span class="p">(</span><span class="n">split_part</span><span class="p">(</span><span class="n">application_name</span><span class="p">,</span><span class="w"> </span><span class="s1">'@'</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">),</span><span class="w"> </span><span class="s1">''</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">host</span><span class="p">,</span>
 <span class="w">       </span><span class="n">client_addr</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">,</span>
 <span class="w">       </span><span class="n">age</span><span class="p">(</span><span class="n">now</span><span class="p">(),</span><span class="w"> </span><span class="n">query_start</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query_age</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_stat_activity</span>
 <span class="k">WHERE</span><span class="w"> </span><span class="n">datname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">current_database</span><span class="p">()</span>
-<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">application_name</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">&#39;aveloxis-%&#39;</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">application_name</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">'aveloxis-%'</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">host</span><span class="w"> </span><span class="k">NULLS</span><span class="w"> </span><span class="k">LAST</span><span class="p">,</span><span class="w"> </span><span class="n">component</span><span class="p">,</span><span class="w"> </span><span class="n">query_start</span><span class="p">;</span>
 </pre></div>
 </div>
@@ -2920,9 +2920,9 @@ client-address rule.</p>
 **A transaction pooler defeats the client-address rule entirely — but
 not the host marker.** With pgbouncer in `transaction` or `statement`
 mode (or pgcat, or Odyssey) between aveloxis and PostgreSQL, every
-backend&#39;s `client_addr` is the *pooler&#39;s* address: this host&#39;s, the
-primary&#39;s, and any other client&#39;s alike. The address rule alone reads
-every backend as this host&#39;s, so a long-running backend with no matching
+backend's `client_addr` is the *pooler's* address: this host's, the
+primary's, and any other client's alike. The address rule alone reads
+every backend as this host's, so a long-running backend with no matching
 local `ps` entry looks like an orphan even when it belongs to a live
 serve on another machine. The `@host` marker is immune — PostgreSQL
 stores the `application_name` the client sent and never rewrites it.
@@ -2931,7 +2931,7 @@ stores the `application_name` the client sent and never rewrites it.
 pre-round-12 binary) still falls back to the address rule, and behind a
 pooler that rule places it here. Until every host on the database runs a
 build with the marker, confirm with `ps` on **every** host that runs the
-component before running `pg_terminate_backend` on a &quot;this host&quot; entry
+component before running `pg_terminate_backend` on a "this host" entry
 of a **pooled** deployment. Use the `host` column above to tell which
 rows are still un-marked.
 
@@ -2939,7 +2939,7 @@ rows are still un-marked.
 address decides and the marker only vetoes, a component reached over a
 *different* address than the one `stop` dials — a LAN-address DSN on
 one side and `localhost` on the other — reads as another host even
-when its marker matches, and `stop` reports it under &quot;other hosts&quot;
+when its marker matches, and `stop` reports it under "other hosts"
 without waiting out its drain. From inside the database that is
 indistinguishable from two machines sharing a hostname (two container
 hosts running one compose file do exactly that), and only one of the
@@ -2985,9 +2985,9 @@ with.
 <span class="w">       </span><span class="n">age</span><span class="p">(</span><span class="n">now</span><span class="p">(),</span><span class="w"> </span><span class="n">query_start</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query_age</span><span class="p">,</span>
 <span class="w">       </span><span class="k">left</span><span class="p">(</span><span class="n">query</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_stat_activity</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">datname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;aveloxis_large&#39;</span>
-<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;active&#39;</span>
-<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">query_start</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">interval</span><span class="w"> </span><span class="s1">&#39;5 minutes&#39;</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">datname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'aveloxis_large'</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'active'</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">query_start</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">interval</span><span class="w"> </span><span class="s1">'5 minutes'</span><span class="p">;</span>
 </pre></div>
 </div>
 <p><strong>Prevent:</strong></p>
@@ -3060,12 +3060,12 @@ by every later <code class="docutils literal notranslate"><span class="pre">avel
 migrate at seconds instead of hours. If you hand-repaired data that
 one of those steps targets (or suspect a recorded step ran against
 bad data), replay it:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- 1. Find the step&#39;s exact label:</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- 1. Find the step's exact label:</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="n">step_label</span><span class="p">,</span><span class="w"> </span><span class="n">completed_at</span><span class="p">,</span><span class="w"> </span><span class="n">tool_version</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">migration_ledger</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">completed_at</span><span class="p">;</span>
 
 <span class="c1">-- 2. Delete its row:</span>
-<span class="k">DELETE</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">migration_ledger</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">step_label</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;&lt;label&gt;&#39;</span><span class="p">;</span>
+<span class="k">DELETE</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">migration_ledger</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">step_label</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'&lt;label&gt;'</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>then run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code>. The step re-runs (all

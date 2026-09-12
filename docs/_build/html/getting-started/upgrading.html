@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1682,7 +1682,7 @@ binary that migrated the schema:</p>
 <section id="the-standard-ladder">
 <h2>The standard ladder<a class="headerlink" href="#the-standard-ladder" title="Link to this heading"></a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/path/to/aveloxis<span class="w">   </span><span class="c1"># the git checkout of this repository</span>
-<span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis
+<span class="nb">cd</span><span class="w"> </span><span class="s2">"</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis
 aveloxis<span class="w"> </span>version<span class="w">                </span><span class="c1"># confirm the new binary</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w">               </span><span class="c1"># serve, web, api (also cleans stale pidfiles)</span>
 aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">   </span><span class="c1"># schema + ledgered backfills; matviews later</span>
@@ -2029,16 +2029,16 @@ needs outbound network access (Apache’s <code class="docutils literal notransl
 <code class="docutils literal notranslate"><span class="pre">podlings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">lists.apache.org</span></code> for list enumeration, and github.com
 for the redirect probe) and moves each linked repository into an
 <code class="docutils literal notranslate"><span class="pre">Apache</span> <span class="pre">PMC:</span> <span class="pre">&lt;slug&gt;</span></code> repo group.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>load-apache-lists<span class="w"> </span>--dry-run<span class="w">   </span><span class="c1"># [pmc] list → repo_id per PMC you hold; the rest are &quot;skipped&quot;</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>load-apache-lists<span class="w"> </span>--dry-run<span class="w">   </span><span class="c1"># [pmc] list → repo_id per PMC you hold; the rest are "skipped"</span>
 aveloxis<span class="w"> </span>load-apache-lists
 </pre></div>
 </div>
 <p>Then enable the worker in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> and restart <code class="docutils literal notranslate"><span class="pre">serve</span></code>:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_polite_email&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;you@example.org&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_backfill_months&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span>
+<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"mailing_list_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"mailing_list_polite_email"</span><span class="p">:</span><span class="w"> </span><span class="s2">"you@example.org"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"mailing_list_backfill_months"</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>

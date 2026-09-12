@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -547,7 +547,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -648,7 +656,7 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1643,13 +1651,13 @@
 </div>
 <p>A minimal configuration only needs the <code class="docutils literal notranslate"><span class="pre">database</span></code> section:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;database&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;localhost&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-password&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;dbname&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prefer&quot;</span>
+<span class="w">  </span><span class="nt">"database"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"localhost"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"port"</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"user"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"password"</span><span class="p">:</span><span class="w"> </span><span class="s2">"your-password"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"dbname"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"sslmode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"prefer"</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1683,129 +1691,133 @@ the field is obviously yours to fill in.</p></li>
 default flipped to <code class="docutils literal notranslate"><span class="pre">0</span></code>, and <code class="docutils literal notranslate"><span class="pre">threading_mode:</span> <span class="pre">&quot;sharded&quot;</span></code> for three and
 a half against its own reference table below:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;database&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;localhost&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-password&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;dbname&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prefer&quot;</span>
+<span class="w">  </span><span class="nt">"database"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"localhost"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"port"</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"user"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"password"</span><span class="p">:</span><span class="w"> </span><span class="s2">"your-password"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"dbname"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"sslmode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"prefer"</span>
 <span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;github&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;api_keys&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;ghp_your_token_here&quot;</span><span class="p">],</span>
-<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://api.github.com&quot;</span>
+<span class="w">  </span><span class="nt">"github"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"api_keys"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"ghp_your_token_here"</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">"base_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://api.github.com"</span>
 <span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;gitlab&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;api_keys&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;glpat-your_token_here&quot;</span><span class="p">],</span>
-<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://gitlab.com/api/v4&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;gitlab_hosts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;gitlab.freedesktop.org&quot;</span><span class="p">]</span>
+<span class="w">  </span><span class="nt">"gitlab"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"api_keys"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"glpat-your_token_here"</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">"base_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://gitlab.com/api/v4"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"gitlab_hosts"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"gitlab.freedesktop.org"</span><span class="p">]</span>
 <span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;mail&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;gmail_user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis-ops@yourdomain.com&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;gmail_app_password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;xxxx xxxx xxxx xxxx&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;from_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Aveloxis&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;site_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://your-host.example&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;operator_email&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;vuln_digest_min_severity&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;HIGH&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;vuln_digest_interval_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;vuln_digest_include_transitive&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;vuln_digest_include_dev&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<span class="w">  </span><span class="nt">"mail"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"gmail_user"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis-ops@yourdomain.com"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"gmail_app_password"</span><span class="p">:</span><span class="w"> </span><span class="s2">"xxxx xxxx xxxx xxxx"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"from_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Aveloxis"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"site_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://your-host.example"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"operator_email"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"vuln_digest_min_severity"</span><span class="p">:</span><span class="w"> </span><span class="s2">"HIGH"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"vuln_digest_interval_hours"</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"vuln_digest_include_transitive"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"vuln_digest_include_dev"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
 <span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;days_until_recollect&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;archived_recollect_multiplier&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;repo_clone_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/data/aveloxis-repos&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;force_full&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;matview_rebuild_day&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;saturday&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;matview_rebuild_on_startup&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;matview_rebuild_skip_dm_aggregates&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;activity_history_window_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;activity_history_interval_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;activity_history_batch&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">150</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;activity_history_concurrency&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;activity_history_window_concurrency&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;activity_history_cooldown_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">90</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;pr_child_mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;graphql&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;listing_mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;graphql&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;threading_mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;single&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;shard_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3000</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;issue_child_mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;graphql&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;enrich_interval_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;search_resolve_interval_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;affiliation_interval_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;breadth_interval_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">15</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;breadth_batch_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2000</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;breadth_cooldown_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;breadth_fetch_concurrency&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;shutdown_grace_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scancode_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scancode_start_interval_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">90</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scancode_cadence_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scancode_clone_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/tmp/aveloxis-scancode&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scancode_shutdown_grace_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scancode_run_timeout_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scancode_run_timeout_cap_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scancode_max_in_memory&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;vuln_scan_transitive&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;dev_build_deps&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;github_actions_deps&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;skip_largest_percent&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scorecard_timeout_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">15</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scorecard_token_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scancode_timeout_cap_strikes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;scancode_ignore_globs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
-<span class="w">    </span><span class="nt">&quot;staging_retention_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;phase_watchdog_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">75</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_interval_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_start_interval_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_polite_email&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_user_agent&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_cross_check_sources&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_immediate_partial_reclaim&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_cadence_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_backfill_months&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_polite_email&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_mirror_handling&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;metadata_only&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_processor_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_sender_backfill_interval_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;jira_enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;jira_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;jira_cadence_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;jira_polite_email&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span>
+<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"days_until_recollect"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"archived_recollect_multiplier"</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"repo_clone_dir"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/data/aveloxis-repos"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"force_full"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"matview_rebuild_day"</span><span class="p">:</span><span class="w"> </span><span class="s2">"saturday"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"matview_rebuild_on_startup"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"matview_rebuild_skip_dm_aggregates"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"activity_history_window_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"activity_history_interval_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"activity_history_batch"</span><span class="p">:</span><span class="w"> </span><span class="mi">150</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"activity_history_concurrency"</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"activity_history_window_concurrency"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"activity_history_cooldown_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">90</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"pr_child_mode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"graphql"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"listing_mode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"graphql"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"threading_mode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"single"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"shard_size"</span><span class="p">:</span><span class="w"> </span><span class="mi">3000</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"issue_child_mode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"graphql"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"enrich_interval_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"search_resolve_interval_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"affiliation_interval_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"breadth_interval_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">15</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"breadth_batch_size"</span><span class="p">:</span><span class="w"> </span><span class="mi">2000</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"breadth_cooldown_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"breadth_fetch_concurrency"</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"shutdown_grace_seconds"</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scancode_workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scancode_start_interval_s"</span><span class="p">:</span><span class="w"> </span><span class="mi">90</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scancode_cadence_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scancode_clone_dir"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/tmp/aveloxis-scancode"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scancode_shutdown_grace_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scancode_run_timeout_hours"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scancode_run_timeout_cap_hours"</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scancode_max_in_memory"</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"vuln_scan_transitive"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"dev_build_deps"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"github_actions_deps"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"skip_largest_percent"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scorecard_timeout_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">15</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scorecard_token_count"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scorecard_max_concurrent"</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"github_max_inflight"</span><span class="p">:</span><span class="w"> </span><span class="mi">40</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"github_max_inflight_per_key"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"github_budget_foreground_reserve_pct"</span><span class="p">:</span><span class="w"> </span><span class="mi">25</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scancode_timeout_cap_strikes"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"scancode_ignore_globs"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">    </span><span class="nt">"staging_retention_hours"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"phase_watchdog_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">75</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_interval_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_start_interval_s"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_polite_email"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_user_agent"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_cross_check_sources"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_immediate_partial_reclaim"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"mailing_list_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"mailing_list_workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"mailing_list_cadence_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"mailing_list_backfill_months"</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"mailing_list_polite_email"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"mailing_list_mirror_handling"</span><span class="p">:</span><span class="w"> </span><span class="s2">"metadata_only"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"mailing_list_processor_workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"mailing_list_sender_backfill_interval_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"jira_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"jira_workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"jira_cadence_hours"</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"jira_polite_email"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span>
 <span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;web&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;addr&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;:8082&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;session_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;generate-a-random-32-byte-string&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://aveloxis.example.com&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;dev_mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;github_client_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-github-oauth-app-client-id&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;github_client_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-github-oauth-app-client-secret&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;gitlab_client_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-gitlab-oauth-app-id&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;gitlab_client_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;your-gitlab-oauth-app-secret&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;gitlab_base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://gitlab.com&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;api_internal_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;http://127.0.0.1:8383&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;spa_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;auto_approve_add_limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span>
+<span class="w">  </span><span class="nt">"web"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">":8082"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"session_secret"</span><span class="p">:</span><span class="w"> </span><span class="s2">"generate-a-random-32-byte-string"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"base_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://aveloxis.example.com"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"dev_mode"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"github_client_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"your-github-oauth-app-client-id"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"github_client_secret"</span><span class="p">:</span><span class="w"> </span><span class="s2">"your-github-oauth-app-client-secret"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"gitlab_client_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"your-gitlab-oauth-app-id"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"gitlab_client_secret"</span><span class="p">:</span><span class="w"> </span><span class="s2">"your-gitlab-oauth-app-secret"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"gitlab_base_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://gitlab.com"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"api_internal_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"http://127.0.0.1:8383"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"spa_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"auto_approve_add_limit"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span>
 <span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;monitor&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;refresh_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span>
+<span class="w">  </span><span class="nt">"monitor"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"refresh_seconds"</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span>
 <span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;api&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;addr&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;127.0.0.1:8383&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;rate_limit_rps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;rate_limit_burst&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;rate_limit_daily&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;exempt_cidrs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;127.0.0.0/8&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;::1/128&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;10.0.0.0/8&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;172.16.0.0/12&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;192.168.0.0/16&quot;</span><span class="p">],</span>
-<span class="w">    </span><span class="nt">&quot;cors_origins&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
-<span class="w">    </span><span class="nt">&quot;trusted_proxy&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;require_auth&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<span class="w">  </span><span class="nt">"api"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">"127.0.0.1:8383"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"rate_limit_rps"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"rate_limit_burst"</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"rate_limit_daily"</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"exempt_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"127.0.0.0/8"</span><span class="p">,</span><span class="w"> </span><span class="s2">"::1/128"</span><span class="p">,</span><span class="w"> </span><span class="s2">"10.0.0.0/8"</span><span class="p">,</span><span class="w"> </span><span class="s2">"172.16.0.0/12"</span><span class="p">,</span><span class="w"> </span><span class="s2">"192.168.0.0/16"</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">"cors_origins"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">    </span><span class="nt">"trusted_proxy"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"require_auth"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
 <span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;log_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;info&quot;</span>
+<span class="w">  </span><span class="nt">"log_level"</span><span class="p">:</span><span class="w"> </span><span class="s2">"info"</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -2191,7 +2203,27 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.scorecard_token_count</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
-<td><p>v0.27.5. How many key-pool tokens to hand scorecard as a comma-separated <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code> (scorecard round-robins the list per request). <code class="docutils literal notranslate"><span class="pre">0</span></code> (the default) = ALL non-invalidated pool tokens; <code class="docutils literal notranslate"><span class="pre">N&gt;0</span></code> = the first N. Multi-token is what makes remote-primary mode viable: a moderate repo costs ~40 API calls in remote mode, and spreading them across the pool prevents any single token from being drained by scorecard while collection workers share it. Negative values collapse to 0.</p></td>
+<td><p>v0.27.5. How many key-pool tokens to hand scorecard as a comma-separated <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code> (scorecard round-robins the list per request). <code class="docutils literal notranslate"><span class="pre">0</span></code> (the default) = ALL non-invalidated pool tokens; <code class="docutils literal notranslate"><span class="pre">N&gt;0</span></code> = the N least-borrowed. Multi-token is what makes remote-primary mode viable: a moderate repo costs ~40 API calls in remote mode, and spreading them across the pool prevents any single token from being drained by scorecard while collection workers share it. Negative values collapse to 0. Since v0.29.6 the tokens are BORROWED through the pool (<code class="docutils literal notranslate"><span class="pre">LendTokens</span></code>) rather than copied out of it, so the pool knows which keys each subprocess holds.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.scorecard_max_concurrent</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">8</span></code></p></td>
+<td><p>v0.29.6. Concurrent scorecard SUBPROCESSES across the whole worker pool. A subprocess cannot hold a pool lease, so it is bounded here instead. Derivation: 8 subprocesses × ~40 remote calls each sits inside one key’s per-minute secondary budget. A worker whose repo reaches the scorecard phase while all slots are taken waits (the phase is inline in the job by design — a finished cycle is fully finished). Non-positive falls back to 8.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.github_max_inflight</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">40</span></code></p></td>
+<td><p>v0.29.6. Pool-wide ceiling on requests in flight against the forge, across every subsystem (collection workers, the history sweep, refreshers, gap fill). Derived by Little’s Law from the fleet: 54 keys × 5,000 points/hr = 75 points/sec, at the measured ~341 ms per GraphQL query ≈ 26 in flight saturates the ENTIRE budget — more concurrency cannot buy throughput, only secondary-limit rejections. 40 is 1.5× headroom and 2.5× under GitHub’s ~100-concurrent secondary limit. Applied to the GitLab pool too as a conservative backstop. Non-positive falls back to 40.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.github_max_inflight_per_key</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">4</span></code></p></td>
+<td><p>v0.29.6. Per-key ceiling on requests in flight. Non-binding at 54 keys under a global 40 (~0.7 per key); it is the structural guarantee that load can never concentrate onto one token however the pool is otherwise depleted (the 2026-09-12 analysis measured up to 96% of 192 concurrent history-sweep requests landing on ONE key). It also bounds per-key points/minute by construction: 4 in flight at ≥ 120 ms latency is ≤ 2,000/min, GitHub’s GraphQL secondary line. Non-positive falls back to 4.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.github_budget_foreground_reserve_pct</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">25</span></code></p></td>
+<td><p>v0.29.6. Share of the pool’s hourly budget that BACKGROUND sweeps (contributor history and classification) may not spend into; foreground collection is admitted while any budget remains. Replaces the v0.29.0 per-key 500-point cliff, which shrank the background-eligible key set as keys depleted and funnelled the whole sweep onto the survivors. Derived: collection measured at ~9% of budget, × ~3 safety. Clamped to [1, 100] — the reservation is never a disable switch; set 1 to make it nominal.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.scancode_timeout_cap_strikes</span></code></p></td>
 <td><p>integer</p></td>
@@ -2217,7 +2249,7 @@ a half against its own reference table below:</p>
 </table>
 <p><strong>Force-rerun cookbook</strong> — to invalidate the cadence gate and trigger a fresh scan on the next worker tick, set <code class="docutils literal notranslate"><span class="pre">scancode_last_run</span></code> back to NULL:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Single repo:</span>
-<span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">scancode_last_run</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">repo_owner</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;apache&#39;</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">repo_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;doris&#39;</span><span class="p">;</span>
+<span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">scancode_last_run</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">repo_owner</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'apache'</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">repo_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'doris'</span><span class="p">;</span>
 
 <span class="c1">-- Whole fleet (e.g. after a scancode major-version upgrade):</span>
 <span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">scancode_last_run</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">NULL</span><span class="p">;</span>
@@ -2688,14 +2720,14 @@ names a different host, so check that one yourself.</p>
 <p>For the full public-GUI deployment runbook (nginx layout, OAuth
 callbacks, when to flip <code class="docutils literal notranslate"><span class="pre">require_auth</span></code>), see the aveloxis-gui
 repository’s README “Production deployment” section.</p>
-<div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="nt">&quot;api&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;addr&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;127.0.0.1:8383&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;rate_limit_rps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;rate_limit_burst&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;rate_limit_daily&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;exempt_cidrs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;127.0.0.0/8&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;::1/128&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;10.0.0.0/8&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;172.16.0.0/12&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;192.168.0.0/16&quot;</span><span class="p">],</span>
-<span class="w">  </span><span class="nt">&quot;cors_origins&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;https://your-gui.example.org&quot;</span><span class="p">],</span>
-<span class="w">  </span><span class="nt">&quot;trusted_proxy&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;127.0.0.1&quot;</span>
+<div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="nt">"api"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">"127.0.0.1:8383"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"rate_limit_rps"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"rate_limit_burst"</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"rate_limit_daily"</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"exempt_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"127.0.0.0/8"</span><span class="p">,</span><span class="w"> </span><span class="s2">"::1/128"</span><span class="p">,</span><span class="w"> </span><span class="s2">"10.0.0.0/8"</span><span class="p">,</span><span class="w"> </span><span class="s2">"172.16.0.0/12"</span><span class="p">,</span><span class="w"> </span><span class="s2">"192.168.0.0/16"</span><span class="p">],</span>
+<span class="w">  </span><span class="nt">"cors_origins"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"https://your-gui.example.org"</span><span class="p">],</span>
+<span class="w">  </span><span class="nt">"trusted_proxy"</span><span class="p">:</span><span class="w"> </span><span class="s2">"127.0.0.1"</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -2713,11 +2745,11 @@ repository’s README “Production deployment” section.</p>
 <li><p>Add a <code class="docutils literal notranslate"><span class="pre">mail</span></code> block to <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>:</p></li>
 </ol>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;mail&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;gmail_user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ops@aveloxis.io&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;gmail_app_password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;abcd efgh ijkl mnop&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;from_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Aveloxis&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;site_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://your-host.example&quot;</span>
+<span class="w">  </span><span class="nt">"mail"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"gmail_user"</span><span class="p">:</span><span class="w"> </span><span class="s2">"ops@aveloxis.io"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"gmail_app_password"</span><span class="p">:</span><span class="w"> </span><span class="s2">"abcd efgh ijkl mnop"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"from_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Aveloxis"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"site_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://your-host.example"</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>

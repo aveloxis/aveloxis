@@ -77,6 +77,13 @@ var deployChecklists = map[string][]deployStep{
 	// max_connections / shared_buffers drift): see
 	// docs/guide/scaling.md, "PostgreSQL server tuning".
 	"0.29.5": v029DeployChecklist,
+	// v0.29.6 (the 2026-09-12 key-pool admission control): the pool
+	// leases keys under in-flight ceilings, rests secondary-limited
+	// keys, reserves foreground budget, and scorecard never replaces a
+	// complete set with a partial one. No schema change, no new
+	// operator heal — same ladder. Four new config knobs, all with
+	// derived defaults; nothing to set unless tuning.
+	"0.29.6": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

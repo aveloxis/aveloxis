@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Distribution Worker (v0.24.0+) &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Distribution Worker (v0.24.0+) &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -547,7 +547,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -648,7 +656,7 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1854,7 +1862,7 @@ A <code class="docutils literal notranslate"><span class="pre">setup.py</span></
 <section id="the-headline-analysis-query">
 <h2>4. The headline analysis query<a class="headerlink" href="#the-headline-analysis-query" title="Link to this heading"></a></h2>
 <p>The point of capturing <em>both</em> registry evidence AND in-repo manifest intent is to surface the gap between them:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="o">||</span><span class="s1">&#39;/&#39;</span><span class="o">||</span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="p">,</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="o">||</span><span class="s1">'/'</span><span class="o">||</span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="p">,</span>
 <span class="w">       </span><span class="n">m</span><span class="mf">.</span><span class="n">manifest_type</span><span class="p">,</span><span class="w"> </span><span class="n">m</span><span class="mf">.</span><span class="n">package_name_declared</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="n">r</span>
 <span class="k">JOIN</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repo_distribution_manifest</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="p">(</span><span class="n">repo_id</span><span class="p">)</span>
@@ -2032,14 +2040,14 @@ aveloxis<span class="w"> </span>distribution-stats<span class="w"> </span>--repo
 <h2>9. Config knobs<a class="headerlink" href="#config-knobs" title="Link to this heading"></a></h2>
 <p>All under <code class="docutils literal notranslate"><span class="pre">collection</span></code> in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w">            </span><span class="c1">// master switch</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_interval_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span><span class="w">        </span><span class="c1">// cadence</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w">                </span><span class="c1">// concurrent scans</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_start_interval_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w">      </span><span class="c1">// min gap between starts</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_polite_email&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span><span class="w">          </span><span class="c1">// optional ecosyste.ms From: header</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_user_agent&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span><span class="w">            </span><span class="c1">// optional UA override</span>
-<span class="w">    </span><span class="nt">&quot;distribution_tracking_cross_check_sources&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">  </span><span class="c1">// v0.25.0: always-query-both</span>
+<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w">            </span><span class="c1">// master switch</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_interval_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span><span class="w">        </span><span class="c1">// cadence</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w">                </span><span class="c1">// concurrent scans</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_start_interval_s"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w">      </span><span class="c1">// min gap between starts</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_polite_email"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span><span class="w">          </span><span class="c1">// optional ecosyste.ms From: header</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_user_agent"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span><span class="w">            </span><span class="c1">// optional UA override</span>
+<span class="w">    </span><span class="nt">"distribution_tracking_cross_check_sources"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">  </span><span class="c1">// v0.25.0: always-query-both</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>

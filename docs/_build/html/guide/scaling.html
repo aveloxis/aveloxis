@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Scaling &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Scaling &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1949,9 +1949,9 @@ package upgrade, or a hand-edit during an incident all leave the file saying
 one thing and the server doing another. Check the server, not the file:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="k">name</span><span class="p">,</span><span class="w"> </span><span class="n">setting</span><span class="p">,</span><span class="w"> </span><span class="n">unit</span><span class="p">,</span><span class="w"> </span><span class="n">source</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_settings</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="k">name</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="s1">&#39;work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;maintenance_work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;shared_buffers&#39;</span><span class="p">,</span>
-<span class="w">               </span><span class="s1">&#39;effective_cache_size&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;max_connections&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;jit&#39;</span><span class="p">,</span>
-<span class="w">               </span><span class="s1">&#39;max_parallel_workers_per_gather&#39;</span><span class="p">)</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="k">name</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="s1">'work_mem'</span><span class="p">,</span><span class="w"> </span><span class="s1">'maintenance_work_mem'</span><span class="p">,</span><span class="w"> </span><span class="s1">'shared_buffers'</span><span class="p">,</span>
+<span class="w">               </span><span class="s1">'effective_cache_size'</span><span class="p">,</span><span class="w"> </span><span class="s1">'max_connections'</span><span class="p">,</span><span class="w"> </span><span class="s1">'jit'</span><span class="p">,</span>
+<span class="w">               </span><span class="s1">'max_parallel_workers_per_gather'</span><span class="p">)</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">name</span><span class="p">;</span>
 </pre></div>
 </div>
@@ -2023,8 +2023,8 @@ into a diff instead of an investigation.</p>
 <li><p><strong>Full clones</strong> (temporary, used for analysis) are created inside the clone directory and deleted after each repo. They roughly double the disk usage of a bare clone temporarily.</p></li>
 </ul>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;repo_clone_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/data/aveloxis-repos&quot;</span>
+<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"repo_clone_dir"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/data/aveloxis-repos"</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -2103,9 +2103,9 @@ findings in summary/21). Run it per release, or monthly, and diff against the
 previous snapshot — performance review becomes a diff, not archaeology:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">DBHOST</span><span class="o">=</span>db.example.org<span class="w">        </span><span class="c1"># the PostgreSQL host</span>
 <span class="nv">PREVIOUS</span><span class="o">=</span><span class="m">20260818</span><span class="w">            </span><span class="c1"># the date stamp of the last snapshot</span>
-psql<span class="w"> </span>-h<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$DBHOST</span><span class="s2">&quot;</span><span class="w"> </span>-p<span class="w"> </span><span class="m">5434</span><span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis_large<span class="w"> </span><span class="se">\</span>
+psql<span class="w"> </span>-h<span class="w"> </span><span class="s2">"</span><span class="nv">$DBHOST</span><span class="s2">"</span><span class="w"> </span>-p<span class="w"> </span><span class="m">5434</span><span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis_large<span class="w"> </span><span class="se">\</span>
 <span class="w">     </span>-f<span class="w"> </span>scripts/perf_snapshot.sql<span class="w"> </span>&gt;<span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt
-diff<span class="w"> </span><span class="s2">&quot;perf-</span><span class="nv">$PREVIOUS</span><span class="s2">.txt&quot;</span><span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt<span class="w"> </span><span class="p">|</span><span class="w"> </span>less
+diff<span class="w"> </span><span class="s2">"perf-</span><span class="nv">$PREVIOUS</span><span class="s2">.txt"</span><span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt<span class="w"> </span><span class="p">|</span><span class="w"> </span>less
 </pre></div>
 </div>
 <p>Prerequisites (one-time, superuser — full walkthrough in summary/20 Phase 0):</p>

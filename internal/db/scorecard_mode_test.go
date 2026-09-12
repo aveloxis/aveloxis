@@ -160,12 +160,19 @@ func TestScorecardModePersistsAndRotates(t *testing.T) {
 
 	// GetRepoScorecard's __overall__ contract must survive the new
 	// column: overall extracted, never mixed into checks.
-	checks, overall, _, err := store.GetRepoScorecard(ctx, repoID)
+	checks, overall, _, mode, err := store.GetRepoScorecard(ctx, repoID)
 	if err != nil {
 		t.Fatalf("GetRepoScorecard: %v", err)
 	}
 	if overall == nil || *overall != 5.6 {
 		t.Errorf("overall = %v, want 5.6", overall)
+	}
+	if mode != "remote" {
+		t.Errorf("mode = %q, want remote — the API needs the set's mode to label a partial set (2026-09-12)", mode)
+	}
+	// The partial-never-replaces-complete gate reads the same column.
+	if cur, found, err := store.CurrentScorecardMode(ctx, repoID); err != nil || !found || cur != "remote" {
+		t.Errorf("CurrentScorecardMode = (%q, %v, %v), want (remote, true, nil)", cur, found, err)
 	}
 	for _, c := range checks {
 		if c.Name == ScorecardOverallName {

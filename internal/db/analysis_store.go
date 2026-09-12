@@ -287,6 +287,33 @@ func (s *PostgresStore) InsertRepoLibyear(ctx context.Context, repoID int64, row
 	return err
 }
 
+// CurrentScorecardMode reports the scorecard_mode carried by the repo's
+// CURRENT repo_deps_scorecard rows (found=false when the repo has none).
+// It exists for the 2026-09-12 partial-never-replaces-complete gate:
+// the collector consults it BEFORE rotating, so a local (subset) run
+// cannot displace a stored remote (complete) set. Rows written before
+// v0.27.5 carry the empty string — reported as found with an empty
+// mode, which the gate treats like local (replaceable by anything).
+//
+// The rows of one snapshot share one mode (persistScorecard writes them
+// in a single pass), so MAX over the set is the set's mode; it also
+// makes a mixed legacy snapshot resolve to 'remote' when any row says
+// so — the conservative reading for a keep-the-complete-set rule.
+func (s *PostgresStore) CurrentScorecardMode(ctx context.Context, repoID int64) (string, bool, error) {
+	var mode *string
+	err := s.pool.QueryRow(ctx, `
+		SELECT MAX(COALESCE(scorecard_mode, ''))
+		FROM aveloxis_data.repo_deps_scorecard
+		WHERE repo_id = $1`, repoID).Scan(&mode)
+	if err != nil {
+		return "", false, fmt.Errorf("current scorecard mode for repo %d: %w", repoID, err)
+	}
+	if mode == nil {
+		return "", false, nil
+	}
+	return *mode, true, nil
+}
+
 // InsertScorecardResult stores an OpenSSF Scorecard check result.
 //
 // mode records which execution mode produced the row (v0.27.5):

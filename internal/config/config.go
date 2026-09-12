@@ -257,6 +257,24 @@ type CollectionConfig struct {
 	ActivityHistoryWindowConcurrency int `json:"activity_history_window_concurrency"`
 	ActivityHistoryCooldownDays      int `json:"activity_history_cooldown_days"`
 
+	// 2026-09-12 GitHub key-pool admission control (the "54 keys behaving
+	// like 3" analysis — 46,612 secondary-rate-limit rejections in five
+	// days, 179 in one second). The pool now LEASES keys under a global
+	// and a per-key in-flight ceiling and reserves a share of budget for
+	// foreground collection. Defaults are derived from measurement (see
+	// platform.DefaultMaxInflight and siblings); the accessors are the
+	// single default layer (SR-10). 0/absent = default; these are not
+	// disable switches — the whole point is that every caller is bound.
+	GitHubMaxInflight                int `json:"github_max_inflight"`
+	GitHubMaxInflightPerKey          int `json:"github_max_inflight_per_key"`
+	GitHubBudgetForegroundReservePct int `json:"github_budget_foreground_reserve_pct"`
+	// ScorecardMaxConcurrent bounds concurrent scorecard SUBPROCESSES.
+	// A subprocess cannot hold a pool lease, so it is bounded here and
+	// its tokens are BORROWED through the pool (LendTokens) rather than
+	// handed out invisibly. Derivation: 8 x ~40 calls per remote run sits
+	// inside one key's per-minute secondary budget.
+	ScorecardMaxConcurrent int `json:"scorecard_max_concurrent"`
+
 	// MatviewRebuildOnStartup controls whether materialized views are created/refreshed
 	// during schema migration (startup). For large databases this can take minutes.
 	// Default: false — views are created on first migrate but not refreshed on every startup.
@@ -1429,6 +1447,47 @@ func (c *CollectionConfig) ActivityHistoryCooldownValue() time.Duration {
 	return time.Duration(c.ActivityHistoryCooldownDays) * 24 * time.Hour
 }
 
+// GitHubMaxInflightValue is the pool-wide in-flight ceiling (absent → 40:
+// ~1.5x the measured saturation of 26, 2.5x under GitHub's ~100).
+func (c *CollectionConfig) GitHubMaxInflightValue() int {
+	if c.GitHubMaxInflight <= 0 {
+		return 40
+	}
+	return c.GitHubMaxInflight
+}
+
+// GitHubMaxInflightPerKeyValue is the per-key in-flight ceiling (absent →
+// 4: bounds per-key points/minute by construction at any latency ≥ 120 ms).
+func (c *CollectionConfig) GitHubMaxInflightPerKeyValue() int {
+	if c.GitHubMaxInflightPerKey <= 0 {
+		return 4
+	}
+	return c.GitHubMaxInflightPerKey
+}
+
+// GitHubBudgetForegroundReservePctValue is the percentage of the pool's
+// budget background sweeps may not spend into (absent → 25: collection
+// measured at ~9%, x~3 safety). Clamped to [1, 100]: the reservation is
+// always on; set 1 to make it nominal.
+func (c *CollectionConfig) GitHubBudgetForegroundReservePctValue() int {
+	switch {
+	case c.GitHubBudgetForegroundReservePct <= 0:
+		return 25
+	case c.GitHubBudgetForegroundReservePct > 100:
+		return 100
+	}
+	return c.GitHubBudgetForegroundReservePct
+}
+
+// ScorecardMaxConcurrentValue bounds concurrent scorecard subprocesses
+// (absent → 8).
+func (c *CollectionConfig) ScorecardMaxConcurrentValue() int {
+	if c.ScorecardMaxConcurrent <= 0 {
+		return 8
+	}
+	return c.ScorecardMaxConcurrent
+}
+
 func (c *CollectionConfig) MatviewRebuildWeekday() int {
 	switch strings.ToLower(c.MatviewRebuildDay) {
 	case "sunday":
@@ -1502,6 +1561,16 @@ func DefaultConfig() *Config {
 			ActivityHistoryConcurrency:       8,
 			ActivityHistoryWindowConcurrency: 4,
 			ActivityHistoryCooldownDays:      90,
+			// 2026-09-12 key-pool admission (derived, not picked — see the
+			// field docs and platform.DefaultMaxInflight): saturation is
+			// ~26 in flight, so 40 is 1.5x headroom; 4 per key bounds
+			// per-key points/minute by construction; 25% reserves ~3x the
+			// measured foreground share; 8 scorecard subprocesses keep
+			// 8 x ~40 calls inside one key's per-minute secondary budget.
+			GitHubMaxInflight:                40,
+			GitHubMaxInflightPerKey:          4,
+			GitHubBudgetForegroundReservePct: 25,
+			ScorecardMaxConcurrent:           8,
 			Workers:                          12,
 			RepoCloneDir:                     defaultCloneDir(),
 			MatviewRebuildDay:                "saturday",

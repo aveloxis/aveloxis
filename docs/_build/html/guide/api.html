@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1654,7 +1654,7 @@
 </pre></div>
 </div>
 <p>Returns the server status and version.</p>
-<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ok&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.9.0&quot;</span><span class="p">}</span>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"ok"</span><span class="p">,</span><span class="w"> </span><span class="nt">"version"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0.9.0"</span><span class="p">}</span>
 </pre></div>
 </div>
 </section>
@@ -1673,7 +1673,7 @@ totals — never a live scan of the data tables) and <code class="docutils liter
 (the contributor catalog count). Served from a 60-second cache that
 keeps the last good values if the database hiccups. Still subject to
 the per-IP rate limiter.</p>
-<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;repos&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">94104</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;commits&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">512345678</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;issues&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">9123456</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;prs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8123456</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;contributors&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1712345</span><span class="p">}</span>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">"repos"</span><span class="p">:</span><span class="w"> </span><span class="mi">94104</span><span class="p">,</span><span class="w"> </span><span class="nt">"commits"</span><span class="p">:</span><span class="w"> </span><span class="mi">512345678</span><span class="p">,</span><span class="w"> </span><span class="nt">"issues"</span><span class="p">:</span><span class="w"> </span><span class="mi">9123456</span><span class="p">,</span><span class="w"> </span><span class="nt">"prs"</span><span class="p">:</span><span class="w"> </span><span class="mi">8123456</span><span class="p">,</span><span class="w"> </span><span class="nt">"contributors"</span><span class="p">:</span><span class="w"> </span><span class="mi">1712345</span><span class="p">}</span>
 </pre></div>
 </div>
 </section>
@@ -1684,16 +1684,16 @@ the per-IP rate limiter.</p>
 </div>
 <p>Returns gathered (collected totals) vs metadata (API-reported totals) for a single repo.</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;repo_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;gathered_prs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1500</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;gathered_issues&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">800</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;gathered_commits&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;metadata_prs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1520</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;metadata_issues&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">810</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;metadata_commits&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5100</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;vulnerabilities&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;critical_vulns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;forked_from&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;NixOS/nixpkgs&quot;</span>
+<span class="w">  </span><span class="nt">"repo_id"</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"gathered_prs"</span><span class="p">:</span><span class="w"> </span><span class="mi">1500</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"gathered_issues"</span><span class="p">:</span><span class="w"> </span><span class="mi">800</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"gathered_commits"</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"metadata_prs"</span><span class="p">:</span><span class="w"> </span><span class="mi">1520</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"metadata_issues"</span><span class="p">:</span><span class="w"> </span><span class="mi">810</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"metadata_commits"</span><span class="p">:</span><span class="w"> </span><span class="mi">5100</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"vulnerabilities"</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"critical_vulns"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"forked_from"</span><span class="p">:</span><span class="w"> </span><span class="s2">"NixOS/nixpkgs"</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -1756,16 +1756,16 @@ GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
 </tbody>
 </table>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;repo_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;repo_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;augur&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;repo_owner&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;commits&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">    </span><span class="p">{</span><span class="nt">&quot;week_start&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2024-01-01T00:00:00Z&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">15</span><span class="p">},</span>
-<span class="w">    </span><span class="p">{</span><span class="nt">&quot;week_start&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2024-01-08T00:00:00Z&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">22</span><span class="p">}</span>
+<span class="w">  </span><span class="nt">"repo_id"</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"repo_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"augur"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"repo_owner"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"commits"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">"week_start"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2024-01-01T00:00:00Z"</span><span class="p">,</span><span class="w"> </span><span class="nt">"count"</span><span class="p">:</span><span class="w"> </span><span class="mi">15</span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">"week_start"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2024-01-08T00:00:00Z"</span><span class="p">,</span><span class="w"> </span><span class="nt">"count"</span><span class="p">:</span><span class="w"> </span><span class="mi">22</span><span class="p">}</span>
 <span class="w">  </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">&quot;prs_opened&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">&quot;prs_merged&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">&quot;issues&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">]</span>
+<span class="w">  </span><span class="nt">"prs_opened"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">"prs_merged"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">"issues"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">]</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -1778,9 +1778,9 @@ GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
 </div>
 <p>Returns a summary of dependency licenses with counts and OSI compliance status.</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">[</span>
-<span class="w">  </span><span class="p">{</span><span class="nt">&quot;license&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;MIT&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">45</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;is_osi&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">},</span>
-<span class="w">  </span><span class="p">{</span><span class="nt">&quot;license&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Apache-2.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;is_osi&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">},</span>
-<span class="w">  </span><span class="p">{</span><span class="nt">&quot;license&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Unknown&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;is_osi&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">}</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">"license"</span><span class="p">:</span><span class="w"> </span><span class="s2">"MIT"</span><span class="p">,</span><span class="w"> </span><span class="nt">"count"</span><span class="p">:</span><span class="w"> </span><span class="mi">45</span><span class="p">,</span><span class="w"> </span><span class="nt">"is_osi"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">"license"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Apache-2.0"</span><span class="p">,</span><span class="w"> </span><span class="nt">"count"</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span><span class="w"> </span><span class="nt">"is_osi"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">"license"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Unknown"</span><span class="p">,</span><span class="w"> </span><span class="nt">"count"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">"is_osi"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">}</span>
 <span class="p">]</span>
 </pre></div>
 </div>
@@ -1809,8 +1809,8 @@ GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
 </div>
 <p>Case-insensitive search across repo name, owner, and URL. Returns up to 20 matches. Used by the comparison page’s autocomplete search.</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">[</span>
-<span class="w">  </span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;owner&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;augur&quot;</span><span class="p">},</span>
-<span class="w">  </span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">31</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;owner&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;chaoss&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;augur-license&quot;</span><span class="p">}</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">"owner"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span><span class="w"> </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"augur"</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="mi">31</span><span class="p">,</span><span class="w"> </span><span class="nt">"owner"</span><span class="p">:</span><span class="w"> </span><span class="s2">"chaoss"</span><span class="p">,</span><span class="w"> </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"augur-license"</span><span class="p">}</span>
 <span class="p">]</span>
 </pre></div>
 </div>
@@ -1885,16 +1885,16 @@ GET /api/v1/repos/{repoID}/contributions/identities?since=2024-01-01&amp;until=2
 <p>Response shape:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">[</span>
 <span class="w">  </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;cntrb_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;01000001-0000-4000-8000-000000000000&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;login&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;alice&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;full_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Alice Anderson&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;email&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;alice@example.com&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;profile_company&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Acme Corp&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;location&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Berlin&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;activity_class&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;private-active&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;public_contribs_year&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;restricted_contribs_year&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">812</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;last_contribution_year&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2026</span>
+<span class="w">    </span><span class="nt">"cntrb_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"01000001-0000-4000-8000-000000000000"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"login"</span><span class="p">:</span><span class="w"> </span><span class="s2">"alice"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"full_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Alice Anderson"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"email"</span><span class="p">:</span><span class="w"> </span><span class="s2">"alice@example.com"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"profile_company"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Acme Corp"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"location"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Berlin"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"activity_class"</span><span class="p">:</span><span class="w"> </span><span class="s2">"private-active"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"public_contribs_year"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"restricted_contribs_year"</span><span class="p">:</span><span class="w"> </span><span class="mi">812</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"last_contribution_year"</span><span class="p">:</span><span class="w"> </span><span class="mi">2026</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="w">  </span><span class="c1">// ...more rows</span>
 <span class="p">]</span>
@@ -1994,9 +1994,9 @@ GET /api/v1/repos/{repoID}/contributions/affiliations?since=2024-01-01&amp;until
 <p>Same <code class="docutils literal notranslate"><span class="pre">since</span></code> / <code class="docutils literal notranslate"><span class="pre">until</span></code> parameters as the identities endpoint; same behavior on malformed input and <code class="docutils literal notranslate"><span class="pre">since</span> <span class="pre">&gt;=</span> <span class="pre">until</span></code>.</p>
 <p>Response shape:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">[</span>
-<span class="w">  </span><span class="p">{</span><span class="nt">&quot;affiliation&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Acme Corp&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;contributor_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">47</span><span class="p">},</span>
-<span class="w">  </span><span class="p">{</span><span class="nt">&quot;affiliation&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;RedHat&quot;</span><span class="p">,</span><span class="w">    </span><span class="nt">&quot;contributor_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">},</span>
-<span class="w">  </span><span class="p">{</span><span class="nt">&quot;affiliation&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;(unknown)&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;contributor_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">31</span><span class="p">}</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">"affiliation"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Acme Corp"</span><span class="p">,</span><span class="w"> </span><span class="nt">"contributor_count"</span><span class="p">:</span><span class="w"> </span><span class="mi">47</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">"affiliation"</span><span class="p">:</span><span class="w"> </span><span class="s2">"RedHat"</span><span class="p">,</span><span class="w">    </span><span class="nt">"contributor_count"</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">"affiliation"</span><span class="p">:</span><span class="w"> </span><span class="s2">"(unknown)"</span><span class="p">,</span><span class="w"> </span><span class="nt">"contributor_count"</span><span class="p">:</span><span class="w"> </span><span class="mi">31</span><span class="p">}</span>
 <span class="p">]</span>
 </pre></div>
 </div>
@@ -2050,17 +2050,17 @@ from a 60-second cache (the underlying data only changes per
 collection cycle).</p>
 <p>Response:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;since&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2024-07-31T00:00:00Z&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;until&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0001-01-01T00:00:00Z&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">20</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;contributors&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">  </span><span class="nt">"since"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2024-07-31T00:00:00Z"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"until"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0001-01-01T00:00:00Z"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"limit"</span><span class="p">:</span><span class="w"> </span><span class="mi">20</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"contributors"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">    </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">&quot;cntrb_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;01001234-...&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;login&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;octocat&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;full_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Octo Cat&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;activity_class&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;active&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;commits&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">412</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;issues&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">38</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;prs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">91</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reviews&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">130</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;comments&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">505</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;total&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1176</span>
+<span class="w">      </span><span class="nt">"cntrb_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"01001234-..."</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"login"</span><span class="p">:</span><span class="w"> </span><span class="s2">"octocat"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"full_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Octo Cat"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"activity_class"</span><span class="p">:</span><span class="w"> </span><span class="s2">"active"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"commits"</span><span class="p">:</span><span class="w"> </span><span class="mi">412</span><span class="p">,</span><span class="w"> </span><span class="nt">"issues"</span><span class="p">:</span><span class="w"> </span><span class="mi">38</span><span class="p">,</span><span class="w"> </span><span class="nt">"prs"</span><span class="p">:</span><span class="w"> </span><span class="mi">91</span><span class="p">,</span><span class="w"> </span><span class="nt">"reviews"</span><span class="p">:</span><span class="w"> </span><span class="mi">130</span><span class="p">,</span><span class="w"> </span><span class="nt">"comments"</span><span class="p">:</span><span class="w"> </span><span class="mi">505</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"total"</span><span class="p">:</span><span class="w"> </span><span class="mi">1176</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">]</span>
 <span class="p">}</span>
@@ -2095,16 +2095,16 @@ contributionsCollection data), aggregated over the window (<code class="docutils
 defaults to the trailing 180 days — the standard history window).
 Response rows per contributor:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;since&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-02-01&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;contributors&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">  </span><span class="nt">"since"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-02-01"</span><span class="p">,</span><span class="w"> </span><span class="nt">"limit"</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"contributors"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">    </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">&quot;cntrb_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0100...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;login&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;octocat&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;backfilled_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-07-30T02:11:00Z&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;elsewhere&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">        </span><span class="p">{</span><span class="nt">&quot;repo_full_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;kubernetes/kubernetes&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;repo_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4021</span><span class="p">,</span>
-<span class="w">         </span><span class="nt">&quot;active_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;commits&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">33</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;issues&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;prs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reviews&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">9</span><span class="p">},</span>
-<span class="w">        </span><span class="p">{</span><span class="nt">&quot;repo_full_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;torvalds/linux&quot;</span><span class="p">,</span>
-<span class="w">         </span><span class="nt">&quot;active_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;commits&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;issues&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;prs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reviews&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">}</span>
+<span class="w">      </span><span class="nt">"cntrb_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0100..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"login"</span><span class="p">:</span><span class="w"> </span><span class="s2">"octocat"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"backfilled_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-07-30T02:11:00Z"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"elsewhere"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span><span class="nt">"repo_full_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"kubernetes/kubernetes"</span><span class="p">,</span><span class="w"> </span><span class="nt">"repo_id"</span><span class="p">:</span><span class="w"> </span><span class="mi">4021</span><span class="p">,</span>
+<span class="w">         </span><span class="nt">"active_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">,</span><span class="w"> </span><span class="nt">"commits"</span><span class="p">:</span><span class="w"> </span><span class="mi">33</span><span class="p">,</span><span class="w"> </span><span class="nt">"issues"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">"prs"</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="nt">"reviews"</span><span class="p">:</span><span class="w"> </span><span class="mi">9</span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="nt">"repo_full_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"torvalds/linux"</span><span class="p">,</span>
+<span class="w">         </span><span class="nt">"active_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">"commits"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">"issues"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">"prs"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">"reviews"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">}</span>
 <span class="w">      </span><span class="p">]</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">]</span>
@@ -2159,18 +2159,18 @@ GET /api/v1/repos/{repoID}/contributions/coverage?since=2024-01-01&amp;until=202
 <p>Same <code class="docutils literal notranslate"><span class="pre">since</span></code> / <code class="docutils literal notranslate"><span class="pre">until</span></code> parameters as the other two endpoints; same behavior on malformed input and <code class="docutils literal notranslate"><span class="pre">since</span> <span class="pre">&gt;=</span> <span class="pre">until</span></code>.</p>
 <p>Response shape:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;window_since&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2024-05-21T00:00:00Z&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;window_until&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-05-21T00:00:00Z&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;total_contributors&quot;</span><span class="p">:</span><span class="w">       </span><span class="mi">412</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;enriched&quot;</span><span class="p">:</span><span class="w">                  </span><span class="mi">389</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;canonical_email&quot;</span><span class="p">:</span><span class="w">           </span><span class="mi">356</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;gh_user_id_resolved&quot;</span><span class="p">:</span><span class="w">       </span><span class="mi">401</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;search_resolve_attempted&quot;</span><span class="p">:</span><span class="w">   </span><span class="mi">47</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;breadth_attempted&quot;</span><span class="p">:</span><span class="w">         </span><span class="mi">378</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;affiliation_resolved&quot;</span><span class="p">:</span><span class="w">      </span><span class="mi">318</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;affiliation_unknown&quot;</span><span class="p">:</span><span class="w">        </span><span class="mi">94</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;enrichment_oldest_pending&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-05-12T18:31:04Z&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;enrichment_stalest&quot;</span><span class="p">:</span><span class="w">        </span><span class="s2">&quot;2024-08-15T03:22:11Z&quot;</span>
+<span class="w">  </span><span class="nt">"window_since"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2024-05-21T00:00:00Z"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"window_until"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-05-21T00:00:00Z"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"total_contributors"</span><span class="p">:</span><span class="w">       </span><span class="mi">412</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"enriched"</span><span class="p">:</span><span class="w">                  </span><span class="mi">389</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"canonical_email"</span><span class="p">:</span><span class="w">           </span><span class="mi">356</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"gh_user_id_resolved"</span><span class="p">:</span><span class="w">       </span><span class="mi">401</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"search_resolve_attempted"</span><span class="p">:</span><span class="w">   </span><span class="mi">47</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"breadth_attempted"</span><span class="p">:</span><span class="w">         </span><span class="mi">378</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"affiliation_resolved"</span><span class="p">:</span><span class="w">      </span><span class="mi">318</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"affiliation_unknown"</span><span class="p">:</span><span class="w">        </span><span class="mi">94</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"enrichment_oldest_pending"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-05-12T18:31:04Z"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"enrichment_stalest"</span><span class="p">:</span><span class="w">        </span><span class="s2">"2024-08-15T03:22:11Z"</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -2236,10 +2236,10 @@ GET /api/v1/repos/{repoID}/contributions/coverage?since=2024-01-01&amp;until=202
 grep<span class="w"> </span>enrich_interval_minutes<span class="w"> </span>~/.aveloxis/aveloxis.json
 
 <span class="c1"># Has the enrichment ticker been ticking?</span>
-grep<span class="w"> </span>-E<span class="w"> </span><span class="s2">&quot;EnrichThinContributors|enrichment&quot;</span><span class="w"> </span>~/.aveloxis/aveloxis.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>tail<span class="w"> </span>-20
+grep<span class="w"> </span>-E<span class="w"> </span><span class="s2">"EnrichThinContributors|enrichment"</span><span class="w"> </span>~/.aveloxis/aveloxis.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>tail<span class="w"> </span>-20
 
 <span class="c1"># Are we burning API budget?</span>
-grep<span class="w"> </span>-E<span class="w"> </span><span class="s2">&quot;all API keys rate-limited|rate limit&quot;</span><span class="w"> </span>~/.aveloxis/aveloxis.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>tail<span class="w"> </span>-10
+grep<span class="w"> </span>-E<span class="w"> </span><span class="s2">"all API keys rate-limited|rate limit"</span><span class="w"> </span>~/.aveloxis/aveloxis.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>tail<span class="w"> </span>-10
 </pre></div>
 </div>
 <p>If the ticker is running but enrichment is still falling behind, it’s almost always API-key budget exhaustion (the v0.18.29 <code class="docutils literal notranslate"><span class="pre">EnrichBatchSize</span> <span class="pre">=</span> <span class="pre">14000</span></code> per tick is sized for a 73-key fleet; smaller key pools can’t keep up).</p>
@@ -2289,20 +2289,20 @@ grep<span class="w"> </span>-E<span class="w"> </span><span class="s2">&quot;all
 <p>Fleet-wide rollup of the mailing-list ingestion subsystem (<a class="reference internal" href="../architecture/mailing-list.html"><span class="std std-doc">architecture</span></a>) — the same data as <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mailing-list-stats</span></code>. No parameters. Returns 500 if the query fails.</p>
 <p>Response (note: keys are PascalCase — the rollup struct carries no JSON tags):</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;Lists&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">16</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;ScanComplete&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;EmailMessages&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">68514</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;Mirrors&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">41841</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;SignaledCaptured&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">40044</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;SignaledResolved&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">25591</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;SenderTotal&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">26673</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;SenderResolved&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">17012</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;ByClass&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;github_mirror&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">40044</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;issue_event&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5251</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;patch_submission&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4568</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;discuss&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1161</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;review&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">953</span>
+<span class="w">  </span><span class="nt">"Lists"</span><span class="p">:</span><span class="w"> </span><span class="mi">16</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"ScanComplete"</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"EmailMessages"</span><span class="p">:</span><span class="w"> </span><span class="mi">68514</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"Mirrors"</span><span class="p">:</span><span class="w"> </span><span class="mi">41841</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"SignaledCaptured"</span><span class="p">:</span><span class="w"> </span><span class="mi">40044</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"SignaledResolved"</span><span class="p">:</span><span class="w"> </span><span class="mi">25591</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"SenderTotal"</span><span class="p">:</span><span class="w"> </span><span class="mi">26673</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"SenderResolved"</span><span class="p">:</span><span class="w"> </span><span class="mi">17012</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"ByClass"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"github_mirror"</span><span class="p">:</span><span class="w"> </span><span class="mi">40044</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"issue_event"</span><span class="p">:</span><span class="w"> </span><span class="mi">5251</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"patch_submission"</span><span class="p">:</span><span class="w"> </span><span class="mi">4568</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"discuss"</span><span class="p">:</span><span class="w"> </span><span class="mi">1161</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"review"</span><span class="p">:</span><span class="w"> </span><span class="mi">953</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -2512,15 +2512,15 @@ exchange:</p>
 <li><p>Sign in to the web GUI (GitHub or GitLab OAuth) in your browser.</p></li>
 <li><p>In the same browser, visit <code class="docutils literal notranslate"><span class="pre">https://&lt;your-site&gt;/auth/token</span></code>.
 You get JSON back:</p>
-<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;token&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;64-hex-chars...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;expires_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-08-13T10:00:00Z&quot;</span><span class="p">,</span>
-<span class="w"> </span><span class="nt">&quot;user_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;login&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;yourlogin&quot;</span><span class="p">}</span>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">"token"</span><span class="p">:</span><span class="w"> </span><span class="s2">"64-hex-chars..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"expires_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-08-13T10:00:00Z"</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">"user_id"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">"login"</span><span class="p">:</span><span class="w"> </span><span class="s2">"yourlogin"</span><span class="p">}</span>
 </pre></div>
 </div>
 </li>
 <li><p>Copy the <code class="docutils literal notranslate"><span class="pre">token</span></code> value and send it on every request:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">SITE</span><span class="o">=</span>aveloxis.example.org
-curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">     </span><span class="s2">&quot;https://</span><span class="nv">$SITE</span><span class="s2">/api/v1/compare?entities=repo:42&amp;metric=contributors&quot;</span>
+curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">     </span><span class="s2">"https://</span><span class="nv">$SITE</span><span class="s2">/api/v1/compare?entities=repo:42&amp;metric=contributors"</span>
 </pre></div>
 </div>
 </li>
@@ -2646,11 +2646,11 @@ date + zero findings genuinely means “checked and clean”. Frontends
 must render <code class="docutils literal notranslate"><span class="pre">null</span></code> distinctly (e.g. “not yet scanned”), never as a
 clean result.</p>
 <p>The envelope also gains <code class="docutils literal notranslate"><span class="pre">lockfile_certainty</span></code>, derived at read time:</p>
-<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="nt">&quot;lockfile_certainty&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;overall&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;partial&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;ecosystems&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">    </span><span class="p">{</span><span class="nt">&quot;ecosystem&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;npm&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lockfile_kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;package-lock.json&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;locked_packages&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">},</span>
-<span class="w">    </span><span class="p">{</span><span class="nt">&quot;ecosystem&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;go&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lockfile_kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;go.mod&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;locked_packages&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">9</span><span class="p">}</span>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="nt">"lockfile_certainty"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"overall"</span><span class="p">:</span><span class="w"> </span><span class="s2">"partial"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"ecosystems"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">"ecosystem"</span><span class="p">:</span><span class="w"> </span><span class="s2">"npm"</span><span class="p">,</span><span class="w"> </span><span class="nt">"lockfile_kind"</span><span class="p">:</span><span class="w"> </span><span class="s2">"package-lock.json"</span><span class="p">,</span><span class="w"> </span><span class="nt">"locked_packages"</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">"ecosystem"</span><span class="p">:</span><span class="w"> </span><span class="s2">"go"</span><span class="p">,</span><span class="w"> </span><span class="nt">"lockfile_kind"</span><span class="p">:</span><span class="w"> </span><span class="s2">"go.mod"</span><span class="p">,</span><span class="w"> </span><span class="nt">"locked_packages"</span><span class="p">:</span><span class="w"> </span><span class="mi">9</span><span class="p">}</span>
 <span class="w">  </span><span class="p">]</span>
 <span class="p">}</span>
 </pre></div>
@@ -2750,13 +2750,23 @@ Known v1 edge: GitLab nested-group paths (<code class="docutils literal notransl
 equal <code class="docutils literal notranslate"><span class="pre">repo_owner</span></code> and fall out of the feed.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{repoID}/scorecard</span></code> — the current OpenSSF
 Scorecard results for the repo:
-<code class="docutils literal notranslate"><span class="pre">{&quot;repo_id&quot;,</span> <span class="pre">&quot;scanned&quot;,</span> <span class="pre">&quot;as_of&quot;,</span> <span class="pre">&quot;overall&quot;,</span> <span class="pre">&quot;checks&quot;:</span> <span class="pre">[{&quot;name&quot;,</span> <span class="pre">&quot;score&quot;}]}</span></code>.
+<code class="docutils literal notranslate"><span class="pre">{&quot;repo_id&quot;,</span> <span class="pre">&quot;scanned&quot;,</span> <span class="pre">&quot;as_of&quot;,</span> <span class="pre">&quot;overall&quot;,</span> <span class="pre">&quot;mode&quot;,</span> <span class="pre">&quot;checks&quot;:</span> <span class="pre">[{&quot;name&quot;,</span> <span class="pre">&quot;score&quot;}]}</span></code>.
 <code class="docutils literal notranslate"><span class="pre">overall</span></code> is scorecard’s aggregate headline score (one decimal);
 it is absent for repos whose last scan predates v0.27.4 and fills
 in on the next scheduled scorecard run. Check scores are 0–10 as
 reported by scorecard; <code class="docutils literal notranslate"><span class="pre">-1</span></code> means the check did not apply or was
 inconclusive (render as N/A, not as a failure). <code class="docutils literal notranslate"><span class="pre">scanned=false</span></code>
-means scorecard has never run for this repository.</p></li>
+means scorecard has never run for this repository.
+<code class="docutils literal notranslate"><span class="pre">mode</span></code> (v0.29.6, present when <code class="docutils literal notranslate"><span class="pre">scanned</span></code>) says which check SET this
+is: <code class="docutils literal notranslate"><span class="pre">&quot;remote&quot;</span></code> is the complete set (~18 checks, scorecard’s <code class="docutils literal notranslate"><span class="pre">--repo</span></code>
+mode against GitHub); <code class="docutils literal notranslate"><span class="pre">&quot;local&quot;</span></code> is the subset a clone alone can
+answer (~11 checks — GitLab and generic-git repos always, and a
+GitHub repo whose only successful runs so far were local). A check
+absent from a local set was NOT measured — do not render a missing
+<code class="docutils literal notranslate"><span class="pre">Code-Review</span></code> or <code class="docutils literal notranslate"><span class="pre">Branch-Protection</span></code> as a zero. <code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code> marks rows
+written before v0.27.5. A local run never replaces a stored remote
+set (the partial-never-replaces-complete rule), so a repo’s <code class="docutils literal notranslate"><span class="pre">mode</span></code>
+only moves from <code class="docutils literal notranslate"><span class="pre">local</span></code> to <code class="docutils literal notranslate"><span class="pre">remote</span></code>, never back.</p></li>
 </ul>
 </section>
 <section id="portal-and-admin-endpoints-v0-27-3">

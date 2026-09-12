@@ -2049,7 +2049,24 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 		logger.Warn("no GitLab API keys configured — GitLab repos will not be collected")
 	}
 
-	return platform.NewKeyPool(ghTokens, logger), platform.NewKeyPool(glTokens, logger), nil
+	gh := platform.NewKeyPool(ghTokens, logger)
+	gl := platform.NewKeyPool(glTokens, logger)
+	// 2026-09-12 admission control: the pool is the single authority for
+	// every forge constraint (per-key and pool-wide in-flight ceilings,
+	// the foreground budget reservation). The accessors are the one
+	// default layer (SR-10); log the EFFECTIVE values at the point of use.
+	// GitLab shares the same shape — its limits are lower, so the GitHub
+	// ceilings are a conservative backstop there, not a tuned value.
+	maxInflight := cfg.Collection.GitHubMaxInflightValue()
+	maxPerKey := cfg.Collection.GitHubMaxInflightPerKeyValue()
+	reservePct := cfg.Collection.GitHubBudgetForegroundReservePctValue()
+	gh.SetAdmission(maxInflight, maxPerKey, reservePct)
+	gl.SetAdmission(maxInflight, maxPerKey, reservePct)
+	logger.Info("API key pool admission",
+		"github_keys", len(ghTokens), "gitlab_keys", len(glTokens),
+		"max_inflight", maxInflight, "max_inflight_per_key", maxPerKey,
+		"foreground_reserve_pct", reservePct)
+	return gh, gl, nil
 }
 
 // digestMailerAdapter bridges *mailer.Mailer to the scheduler's

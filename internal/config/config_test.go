@@ -196,3 +196,41 @@ func TestActivityHistoryKnobsEndToEnd(t *testing.T) {
 		t.Error("negative knobs must fall back to defaults")
 	}
 }
+
+// 2026-09-12 (SR-10) — the key-pool admission knobs, JSON → effective
+// value. Absent → the derived defaults; explicit values flow through;
+// nonsense falls back; the reserve percentage is clamped to [1, 100]
+// because the reservation is never a disable switch.
+func TestKeyPoolAdmissionKnobsEndToEnd(t *testing.T) {
+	var c CollectionConfig
+	if c.GitHubMaxInflightValue() != 40 ||
+		c.GitHubMaxInflightPerKeyValue() != 4 ||
+		c.GitHubBudgetForegroundReservePctValue() != 25 ||
+		c.ScorecardMaxConcurrentValue() != 8 {
+		t.Error("absent admission knobs must yield the derived defaults (40/4/25%/8)")
+	}
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"collection":{
+		"github_max_inflight": 60,
+		"github_max_inflight_per_key": 2,
+		"github_budget_foreground_reserve_pct": 40,
+		"scorecard_max_concurrent": 3}}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cc := cfg.Collection
+	if cc.GitHubMaxInflightValue() != 60 ||
+		cc.GitHubMaxInflightPerKeyValue() != 2 ||
+		cc.GitHubBudgetForegroundReservePctValue() != 40 ||
+		cc.ScorecardMaxConcurrentValue() != 3 {
+		t.Errorf("explicit JSON admission knobs must flow to the accessors: %+v", cc)
+	}
+	c = CollectionConfig{GitHubMaxInflight: -1, GitHubMaxInflightPerKey: 0, GitHubBudgetForegroundReservePct: -5, ScorecardMaxConcurrent: -2}
+	if c.GitHubMaxInflightValue() != 40 || c.GitHubMaxInflightPerKeyValue() != 4 ||
+		c.GitHubBudgetForegroundReservePctValue() != 25 || c.ScorecardMaxConcurrentValue() != 8 {
+		t.Error("non-positive admission knobs must fall back to the defaults — 0 is not 'unbounded' here")
+	}
+	c = CollectionConfig{GitHubBudgetForegroundReservePct: 250}
+	if c.GitHubBudgetForegroundReservePctValue() != 100 {
+		t.Errorf("reserve pct above 100 must clamp to 100, got %d", c.GitHubBudgetForegroundReservePctValue())
+	}
+}

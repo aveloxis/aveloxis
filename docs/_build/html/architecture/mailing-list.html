@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Mailing-List Ingestion (v0.25.7+) &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Mailing-List Ingestion (v0.25.7+) &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -547,7 +547,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -648,7 +656,7 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1768,7 +1776,7 @@
 <section id="schema-v0-25-7">
 <h2>7. Schema (v0.25.7)<a class="headerlink" href="#schema-v0-25-7" title="Link to this heading"></a></h2>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- platforms gains row 6</span>
-<span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">platforms</span><span class="w"> </span><span class="p">(</span><span class="n">platform_id</span><span class="p">,</span><span class="w"> </span><span class="mf">...</span><span class="p">)</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="mf">6</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;Mailing List&#39;</span><span class="p">,</span><span class="w"> </span><span class="mf">...</span><span class="p">);</span>
+<span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">platforms</span><span class="w"> </span><span class="p">(</span><span class="n">platform_id</span><span class="p">,</span><span class="w"> </span><span class="mf">...</span><span class="p">)</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="mf">6</span><span class="p">,</span><span class="w"> </span><span class="s1">'Mailing List'</span><span class="p">,</span><span class="w"> </span><span class="mf">...</span><span class="p">);</span>
 
 <span class="c1">-- email_message: the first-class entity (declared AFTER issues/pull_requests/</span>
 <span class="c1">-- messages in schema.sql — it FK-references all three; see the ordering tripwire)</span>
@@ -1776,8 +1784,8 @@
 <span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">email_message_ref</span><span class="w"> </span><span class="p">(</span><span class="w"> </span><span class="mf">...</span><span class="w"> </span><span class="p">);</span><span class="w">  </span><span class="c1">-- bridge to messages</span>
 
 <span class="c1">-- issues gains an external key for Jira/Bugzilla import correlation</span>
-<span class="k">ALTER</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">issues</span><span class="w"> </span><span class="k">ADD</span><span class="w"> </span><span class="k">COLUMN</span><span class="w"> </span><span class="n">external_key</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="s1">&#39;&#39;</span><span class="p">;</span>
-<span class="c1">-- partial unique: (repo_id, external_key) WHERE external_key &lt;&gt; &#39;&#39;</span>
+<span class="k">ALTER</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">issues</span><span class="w"> </span><span class="k">ADD</span><span class="w"> </span><span class="k">COLUMN</span><span class="w"> </span><span class="n">external_key</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="s1">''</span><span class="p">;</span>
+<span class="c1">-- partial unique: (repo_id, external_key) WHERE external_key &lt;&gt; ''</span>
 
 <span class="c1">-- repo_groups_list_serve gains the claim/checkpoint/lock columns</span>
 <span class="n">mlls_system</span><span class="p">,</span><span class="w"> </span><span class="n">mlls_last_month</span><span class="p">,</span><span class="w"> </span><span class="n">mlls_scan_complete</span><span class="p">,</span>
@@ -1876,7 +1884,7 @@ rather than guessed. Historical rows are repaired by
 <section id="operator-cli">
 <h2>10. Operator CLI<a class="headerlink" href="#operator-cli" title="Link to this heading"></a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>load-foundation-core-repos<span class="w">      </span><span class="c1"># one core repo per project (was: import-foundations)</span>
-aveloxis<span class="w"> </span>load-foundation-orgs<span class="w"> </span>--yes<span class="w">      </span><span class="c1"># track the foundation&#39;s GitHub org(s) for repo discovery</span>
+aveloxis<span class="w"> </span>load-foundation-orgs<span class="w"> </span>--yes<span class="w">      </span><span class="c1"># track the foundation's GitHub org(s) for repo discovery</span>
 aveloxis<span class="w"> </span>load-apache-lists<span class="w">               </span><span class="c1"># register per-PMC dev@/users@ lists via enumeration</span>
 aveloxis<span class="w"> </span>register-mailing-list<span class="w"> </span><span class="se">\ </span><span class="w">        </span><span class="c1"># register one list (any system, e.g. the kernel)</span>
 <span class="w">    </span>--system<span class="w"> </span>lore_public_inbox<span class="w"> </span>--list<span class="w"> </span>linux-pci@vger.kernel.org<span class="w"> </span>--repo<span class="w"> </span>https://github.com/torvalds/linux
@@ -1892,13 +1900,13 @@ aveloxis<span class="w"> </span>verify-mailing-list<span class="w"> </span><span
 <h2>11. Config knobs<a class="headerlink" href="#config-knobs" title="Link to this heading"></a></h2>
 <p>All under <code class="docutils literal notranslate"><span class="pre">collection</span></code> in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w">            </span><span class="c1">// master switch</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w">                </span><span class="c1">// concurrent list runners per system</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_cadence_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w">          </span><span class="c1">// tail-refresh cadence</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_backfill_months&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span><span class="w">        </span><span class="c1">// history window when no checkpoint (&lt;=0 = full history)</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_polite_email&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span><span class="w">          </span><span class="c1">// contact in the User-Agent for archive admins</span>
-<span class="w">    </span><span class="nt">&quot;mailing_list_mirror_handling&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;metadata_only&quot;</span>
+<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"mailing_list_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w">            </span><span class="c1">// master switch</span>
+<span class="w">    </span><span class="nt">"mailing_list_workers"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w">                </span><span class="c1">// concurrent list runners per system</span>
+<span class="w">    </span><span class="nt">"mailing_list_cadence_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w">          </span><span class="c1">// tail-refresh cadence</span>
+<span class="w">    </span><span class="nt">"mailing_list_backfill_months"</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span><span class="w">        </span><span class="c1">// history window when no checkpoint (&lt;=0 = full history)</span>
+<span class="w">    </span><span class="nt">"mailing_list_polite_email"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span><span class="w">          </span><span class="c1">// contact in the User-Agent for archive admins</span>
+<span class="w">    </span><span class="nt">"mailing_list_mirror_handling"</span><span class="p">:</span><span class="w"> </span><span class="s2">"metadata_only"</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>

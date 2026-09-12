@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Schema-change verification with aveloxis data-test &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>Schema-change verification with aveloxis data-test &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1782,10 +1782,10 @@ correct. Usually yes.</p></li>
 <p>If a FLAG is unexpected, run with <code class="docutils literal notranslate"><span class="pre">--keep-dbs</span></code>, then:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">TABLE</span><span class="o">=</span>issues<span class="w">      </span><span class="c1"># the flagged table</span>
 <span class="nv">PK</span><span class="o">=</span>issue_id<span class="w">       </span><span class="c1"># its primary key</span>
-psql<span class="w"> </span>-d<span class="w"> </span>aveloxis_new<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+psql<span class="w"> </span>-d<span class="w"> </span>aveloxis_new<span class="w"> </span>-c<span class="w"> </span><span class="s2">"</span>
 <span class="s2">  SELECT * FROM aveloxis_data.</span><span class="nv">$TABLE</span>
 <span class="s2">  WHERE </span><span class="nv">$PK</span><span class="s2"> NOT IN (SELECT </span><span class="nv">$PK</span><span class="s2"> FROM aveloxis_released.aveloxis_data.</span><span class="nv">$TABLE</span><span class="s2">);</span>
-<span class="s2">&quot;</span>
+<span class="s2">"</span>
 </pre></div>
 </div>
 <p>(That cross-database query requires <code class="docutils literal notranslate"><span class="pre">dblink</span></code> or a foreign-data wrapper

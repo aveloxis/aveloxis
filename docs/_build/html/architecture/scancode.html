@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ScanCode Worker (v0.21.0+) &mdash; Aveloxis 0.29.4 documentation</title>
+  <title>ScanCode Worker (v0.21.0+) &mdash; Aveloxis 0.29.6 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=00c06fd9"></script>
+      <script src="../_static/documentation_options.js?v=934061aa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -547,7 +547,15 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#database-connection-pool">Database connection pool</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#postgresql-configuration">PostgreSQL configuration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#shared-buffers">Shared buffers</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#postgresql-server-tuning">PostgreSQL server tuning</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#recommended-settings">Recommended settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#why-work-mem-is-the-dangerous-one">Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#clone-directory-sizing">Clone directory sizing</a><ul>
@@ -648,7 +656,7 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
-<li class="toctree-l2"><a class="reference internal" href="overview.html#three-schemas">Three schemas</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
@@ -1809,11 +1817,11 @@
 <p>Cadence is enforced at claim time via the <code class="docutils literal notranslate"><span class="pre">scancode_last_run</span></code> column. To force a rescan, clear that column:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Single repo</span>
 <span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">scancode_last_run</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">NULL</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_owner</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;apache&#39;</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">repo_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;doris&#39;</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_owner</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'apache'</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">repo_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'doris'</span><span class="p">;</span>
 
 <span class="c1">-- All repos that ran on a specific scancode version (e.g. after upgrade)</span>
 <span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">scancode_last_run</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">NULL</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">scancode_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;32.5.0&#39;</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">scancode_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'32.5.0'</span><span class="p">;</span>
 
 <span class="c1">-- Whole fleet</span>
 <span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">scancode_last_run</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">NULL</span><span class="p">;</span>
@@ -2058,7 +2066,7 @@
 <h3>The status table<a class="headerlink" href="#the-status-table" title="Link to this heading"></a></h3>
 <p>The outcome is upserted into <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.aveloxis_status</span></code> (one row per subsystem, keyed by <code class="docutils literal notranslate"><span class="pre">status_name</span></code>; see <a class="reference internal" href="../schema.html"><span class="std std-doc">schema.md</span></a>):</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">status_name</span><span class="p">,</span><span class="w"> </span><span class="n">status</span><span class="p">,</span><span class="w"> </span><span class="n">status_detail</span><span class="p">,</span><span class="w"> </span><span class="n">tool_version</span><span class="p">,</span><span class="w"> </span><span class="n">data_collection_date</span>
-<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">aveloxis_status</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">status_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;scancode&#39;</span><span class="p">;</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">aveloxis_status</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">status_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'scancode'</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>A <code class="docutils literal notranslate"><span class="pre">broken</span></code> row’s <code class="docutils literal notranslate"><span class="pre">status_detail</span></code> for the libmagic case reads, in part: <em>“system libmagic magic database appears corrupt … run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">upgrade-tools</span></code> to inject typecode-libmagic (works on any OS), …”</em> followed by an OS-aware reinstall hint — <code class="docutils literal notranslate"><span class="pre">brew</span> <span class="pre">reinstall</span> <span class="pre">libmagic</span></code> on macOS, <code class="docutils literal notranslate"><span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">--reinstall</span> <span class="pre">libmagic-mgc</span> <span class="pre">libmagic1</span> <span class="pre">file</span></code> on Linux (chosen via <code class="docutils literal notranslate"><span class="pre">runtime.GOOS</span></code>; <code class="docutils literal notranslate"><span class="pre">libmagic-mgc</span></code> is the package that actually ships <code class="docutils literal notranslate"><span class="pre">/usr/share/misc/magic.mgc</span></code> on Debian/Ubuntu). The table is generic by design — future subsystems record their own health under their own <code class="docutils literal notranslate"><span class="pre">status_name</span></code>, and the intent is to surface it to the operator (UI/API) over time.</p>

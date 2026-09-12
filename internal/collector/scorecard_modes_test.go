@@ -70,6 +70,18 @@ func readLines(t *testing.T, path string) []string {
 type fakeScorecardStore struct {
 	mu    sync.Mutex
 	calls []string // "rotate" or "insert:<name>:<score>:<mode>"
+	// storedMode / storedFound / modeErr script CurrentScorecardMode
+	// (the 2026-09-12 partial-never-replaces-complete gate).
+	storedMode  string
+	storedFound bool
+	modeErr     error
+}
+
+func (f *fakeScorecardStore) CurrentScorecardMode(ctx context.Context, repoID int64) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "mode")
+	return f.storedMode, f.storedFound, f.modeErr
 }
 
 func (f *fakeScorecardStore) RotateScorecardToHistory(ctx context.Context, repoID int64) error {
@@ -369,26 +381,43 @@ func TestScorecardInstrumentationFailureIsNonFatal(t *testing.T) {
 }
 
 // TestScorecardTokensHelper pins the pool → GITHUB_TOKEN construction:
-// 0 = all tokens, N>0 = first N, nil pool safe.
+// 0 = all tokens, N>0 = the N least-borrowed (pool order on a fresh
+// pool), nil pool safe — and, since 2026-09-12, that the tokens are
+// BORROWED: a second concurrent borrow spreads onto the keys the first
+// did not take, and every release returns them.
 func TestScorecardTokensHelper(t *testing.T) {
 	logger := quietLogger()
 	pool := platform.NewKeyPool([]string{"a", "b", "c"}, logger)
 
-	if joined, first := ScorecardTokens(pool, 0); joined != "a,b,c" || first != "a" {
+	joined, first, release := ScorecardTokens(pool, 0)
+	if joined != "a,b,c" || first != "a" {
 		t.Errorf("ScorecardTokens(pool, 0) = %q/%q, want a,b,c / a", joined, first)
 	}
-	if joined, first := ScorecardTokens(pool, 2); joined != "a,b" || first != "a" {
+	release()
+	joined, first, release = ScorecardTokens(pool, 2)
+	if joined != "a,b" || first != "a" {
 		t.Errorf("ScorecardTokens(pool, 2) = %q/%q, want a,b / a", joined, first)
 	}
-	if joined, first := ScorecardTokens(pool, 99); joined != "a,b,c" || first != "a" {
+	// While a,b are on loan, a second 2-token borrow must prefer the
+	// least-lent key — the accounting the old AllTokens never had.
+	joined2, _, release2 := ScorecardTokens(pool, 2)
+	if !strings.HasPrefix(joined2, "c,") {
+		t.Errorf("second concurrent borrow = %q, want it to lead with the un-lent key c", joined2)
+	}
+	release2()
+	release()
+	release() // idempotent
+	joined, first, release = ScorecardTokens(pool, 99)
+	if joined != "a,b,c" || first != "a" {
 		t.Errorf("ScorecardTokens(pool, 99) = %q/%q, want all tokens when N exceeds pool", joined, first)
 	}
-	if joined, first := ScorecardTokens(nil, 0); joined != "" || first != "" {
-		t.Errorf("ScorecardTokens(nil, 0) = %q/%q, want empty", joined, first)
+	release()
+	if joined, first, rel := ScorecardTokens(nil, 0); joined != "" || first != "" || rel == nil {
+		t.Errorf("ScorecardTokens(nil, 0) = %q/%q, want empty with a non-nil release", joined, first)
 	}
 	empty := platform.NewKeyPool(nil, logger)
-	if joined, first := ScorecardTokens(empty, 0); joined != "" || first != "" {
-		t.Errorf("ScorecardTokens(empty, 0) = %q/%q, want empty", joined, first)
+	if joined, first, rel := ScorecardTokens(empty, 0); joined != "" || first != "" || rel == nil {
+		t.Errorf("ScorecardTokens(empty, 0) = %q/%q, want empty with a non-nil release", joined, first)
 	}
 }
 

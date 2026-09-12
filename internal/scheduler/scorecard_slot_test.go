@@ -55,9 +55,12 @@ func TestScorecardPhaseTakesSlotBeforeBorrowing(t *testing.T) {
 // schedulerConstructionSites lists every non-test site in the package that
 // builds a Scheduler value: a composite literal `Scheduler{…}` (with or
 // without `&`), an elided element literal inside a `[]Scheduler{…}` /
-// `[N]Scheduler{…}` / `map[K]Scheduler{…}`, `new(Scheduler)`, or a
-// zero-value `var s Scheduler` — every one of them yields a nil
-// scorecardSem (L10 pass 2, finding 4: the zero-value forms escaped).
+// `[N]Scheduler{…}` / `map[K]Scheduler{…}` (also over `*Scheduler`
+// elements, where an elided `{}` is `&Scheduler{}`), `new(Scheduler)`, a
+// zero-value `var s Scheduler`, or a by-value `Scheduler` struct field
+// (constructing the outer type constructs the Scheduler) — every one of
+// them yields a nil scorecardSem (L10 passes 2 and 3: each shape escaped
+// in turn).
 func schedulerConstructionSites(t *testing.T) []string {
 	t.Helper()
 	files := srctest.PackageFiles(t, "internal/scheduler", 10)
@@ -85,6 +88,9 @@ func schedulerConstructionSites(t *testing.T) []string {
 				case *ast.MapType:
 					elem = ct.Value
 				}
+				if star, ok := elem.(*ast.StarExpr); ok {
+					elem = star.X // []*Scheduler{{}} elides &Scheduler{}
+				}
 				if elem != nil && isSched(elem) {
 					for _, e := range v.Elts {
 						kv, ok := e.(*ast.KeyValueExpr)
@@ -100,6 +106,12 @@ func schedulerConstructionSites(t *testing.T) []string {
 				if isSched(v.Type) {
 					for range v.Names {
 						sites = append(sites, rel+":"+fset.Position(v.Pos()).String())
+					}
+				}
+			case *ast.StructType:
+				for _, fld := range v.Fields.List {
+					if isSched(fld.Type) {
+						sites = append(sites, rel+":"+fset.Position(fld.Pos()).String())
 					}
 				}
 			case *ast.CallExpr:

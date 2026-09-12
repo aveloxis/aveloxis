@@ -140,3 +140,33 @@ func TestReserveBlockStampsProbeOnZeroResetKeys(t *testing.T) {
 		t.Errorf("probe stamp = %v from now, want within the %v probe window", until, graphQLDepletedProbe)
 	}
 }
+
+// TestBackgroundDryPoolLogsExhausted: every usable key is DRY (0 points,
+// resets +50 min). For a background caller the pass-2 message rule was
+// unreachable — dry usable keys were routed to the reserve branch before
+// selection, so the history sweep (the caller of the incident) logged
+// "paced by the foreground reserve … usable_total=0" instead of the
+// ops-grepped exhaustion line (L10 pass 3, finding 1). A reserve block
+// needs SPENDABLE budget below the line; an all-dry pool is exhaustion.
+func TestBackgroundDryPoolLogsExhausted(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	kp := NewKeyPool([]string{"a", "b"}, logger)
+	kp.SetAdmission(0, 0, 25)
+	for _, k := range kp.keys {
+		k.GraphQLRemaining = 0
+		k.GraphQLResetAt = time.Now().Add(50 * time.Minute)
+	}
+	ctx, cancel := context.WithTimeout(WithGraphQLBackgroundBudget(context.Background()), 200*time.Millisecond)
+	defer cancel()
+	if _, _, err := kp.Acquire(ctx, ResourceGraphQL); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("dry pool: err = %v, want the ctx deadline", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "foreground reserve") {
+		t.Errorf("an all-dry pool was reported as reserve-paced — nothing is spendable, that is exhaustion:\n%s", out)
+	}
+	if !strings.Contains(out, "exhausted for GraphQL") {
+		t.Errorf("an all-dry pool must log the ops-grepped exhaustion line for a background caller too:\n%s", out)
+	}
+}

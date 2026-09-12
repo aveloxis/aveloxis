@@ -466,7 +466,13 @@ func (kp *KeyPool) selectLocked(now time.Time, res Resource, background bool) (*
 		// window reset, which is up to an hour (L10 pass on the
 		// review-round fixes: an all-resting pool logged "paced by the
 		// foreground reserve … wait=49m59s").
-		if usable > 0 && total <= line {
+		// A reserve block is "usable keys hold SPENDABLE budget, but below
+		// the line". Every usable key at or below the buffer is exhaustion,
+		// not pacing: fall through to selection, which yields
+		// verdictBudgetBlocked, the probe stamp, and the ops-grepped
+		// "exhausted" text for every caller class — the history sweep is a
+		// background caller and must log the incident line (L10 pass 3).
+		if usable > 0 && total > usable*kp.buffer && total <= line {
 			// A release cannot lift the total; a window reset can, and so
 			// can a resting key rejoining the usable set.
 			return nil, verdictReserveBlocked, kp.earliestReserveWakeLocked(now, res), false

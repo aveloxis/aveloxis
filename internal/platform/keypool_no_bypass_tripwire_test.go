@@ -362,6 +362,26 @@ func poolHandles(fn *ast.FuncDecl, poolFields, poolReturners map[string]bool) ma
 	addFields(fn.Recv)
 	addFields(fn.Type.Params)
 	addFields(fn.Type.Results)
+	// yieldsPool reports whether rhs evaluates to a pool: a call to a
+	// pool-returning function or method, a pool-typed struct field, or
+	// another handle. Shared by `:=`/`=` and by untyped `var x = …` (L10
+	// pass 3: the typed-only ValueSpec arm let `var p = c.Keys()` through).
+	yieldsPool := func(rhs ast.Expr) bool {
+		switch r := rhs.(type) {
+		case *ast.CallExpr:
+			switch fn := r.Fun.(type) {
+			case *ast.Ident:
+				return poolReturners[fn.Name]
+			case *ast.SelectorExpr:
+				return poolReturners[fn.Sel.Name]
+			}
+		case *ast.SelectorExpr:
+			return poolFields[r.Sel.Name]
+		case *ast.Ident:
+			return h[r.Name]
+		}
+		return false
+	}
 	for pass := 0; pass < 2; pass++ {
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			switch v := n.(type) {
@@ -371,35 +391,20 @@ func poolHandles(fn *ast.FuncDecl, poolFields, poolReturners map[string]bool) ma
 						h[id.Name] = true
 					}
 				}
+				if v.Type == nil {
+					for i, val := range v.Values {
+						if i < len(v.Names) && yieldsPool(val) {
+							h[v.Names[i].Name] = true
+						}
+					}
+				}
 			case *ast.AssignStmt:
 				for i, rhs := range v.Rhs {
 					if i >= len(v.Lhs) {
 						continue
 					}
-					lhs, ok := v.Lhs[i].(*ast.Ident)
-					if !ok {
-						continue
-					}
-					switch r := rhs.(type) {
-					case *ast.CallExpr:
-						switch fn := r.Fun.(type) {
-						case *ast.Ident:
-							if poolReturners[fn.Name] {
-								h[lhs.Name] = true
-							}
-						case *ast.SelectorExpr:
-							if poolReturners[fn.Sel.Name] {
-								h[lhs.Name] = true
-							}
-						}
-					case *ast.SelectorExpr:
-						if poolFields[r.Sel.Name] {
-							h[lhs.Name] = true
-						}
-					case *ast.Ident:
-						if h[r.Name] {
-							h[lhs.Name] = true
-						}
+					if lhs, ok := v.Lhs[i].(*ast.Ident); ok && yieldsPool(rhs) {
+						h[lhs.Name] = true
 					}
 				}
 			}

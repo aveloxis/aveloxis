@@ -64,6 +64,12 @@ type Config struct {
 	// Drives the v0.27.12 operator vulnerability digest; nil or an
 	// empty OperatorEmail disables it.
 	Mail *config.MailConfig
+
+	// GitLab is the operator's aveloxis.json `gitlab` block (same
+	// single-source pattern). Its base_url names the ONE GitLab instance
+	// the GitLab API keys belong to; the legacy GitLab group refresh only
+	// sends those keys to that instance's host (v0.29.11).
+	GitLab *config.PlatformConfig
 }
 
 // digestMailer is the narrow mailer surface the digest ticker needs
@@ -87,6 +93,7 @@ type Scheduler struct {
 	ghClient platform.Client
 	glClient platform.Client
 	ghKeys   *platform.KeyPool
+	glKeys   *platform.KeyPool // the legacy GitLab group refresh only (v0.29.11)
 	logger   *slog.Logger
 	cfg      Config
 	workerID string
@@ -181,11 +188,13 @@ func (s *Scheduler) SetDigestMailer(m digestMailer) {
 
 // New creates a scheduler.
 func New(store *db.PostgresStore, ghClient, glClient platform.Client, logger *slog.Logger, cfg Config) *Scheduler {
-	return NewWithKeys(store, ghClient, glClient, nil, logger, cfg)
+	return NewWithKeys(store, ghClient, glClient, nil, nil, logger, cfg)
 }
 
-// NewWithKeys creates a scheduler with access to the GitHub key pool for commit resolution.
-func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, ghKeys *platform.KeyPool, logger *slog.Logger, cfg Config) *Scheduler {
+// NewWithKeys creates a scheduler with the GitHub key pool (commit
+// resolution, org scans, breadth, scorecard loans) and the GitLab key pool
+// (the legacy GitLab group refresh — v0.29.11: it used the GitHub pool).
+func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, ghKeys, glKeys *platform.KeyPool, logger *slog.Logger, cfg Config) *Scheduler {
 	if cfg.Workers < 1 {
 		cfg.Workers = 1
 	}
@@ -215,6 +224,7 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 		ghClient: ghClient,
 		glClient: glClient,
 		ghKeys:   ghKeys,
+		glKeys:   glKeys,
 		logger:   logger,
 		cfg:      cfg,
 		workerID: workerID,
@@ -2213,15 +2223,38 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 }
 
 func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
-	// Use the gitlab client's base URL or derive from the website URL.
-	glHost := "gitlab.com"
-	if u, err := url.Parse(g.Website); err == nil && u.Host != "" {
-		glHost = u.Host
+	// v0.29.11: through v0.29.10 this built its client on s.ghKeys (a TODO
+	// since the initial commit), so every GitLab group refresh sent a GitHub
+	// token as PRIVATE-TOKEN to the host in the group's website URL, and the
+	// 401s it earned struck GitHub keys. All three guards (no GitLab keys,
+	// no usable host, not the configured instance) run before anything
+	// touches the network or the store.
+	if s.glKeys == nil || s.glKeys.IsEmpty() {
+		s.logger.Warn("GitLab group refresh skipped — no GitLab API keys configured",
+			"group", g.Name, "org_url", g.Website)
+		return 0
 	}
-	// Need GitLab keys — check if the glClient is available.
-	// We'll reuse the ghKeys pool for now; in practice GitLab keys are separate.
-	// TODO: pass glKeys to the scheduler for GitLab org refresh.
-	http := platform.NewHTTPClient("https://"+glHost+"/api/v4", s.ghKeys, s.logger, platform.AuthGitLab)
+	// No default host: a website with no scheme, or one that does not
+	// parse, is not assumed to be gitlab.com — that would list another
+	// instance's group of the same name against the configured instance.
+	u, perr := url.Parse(g.Website)
+	if perr != nil || u.Host == "" {
+		s.logger.Warn("GitLab group refresh skipped — the group's website URL has no usable host",
+			"group", g.Name, "org_url", g.Website, "error", perr)
+		return 0
+	}
+	glHost := u.Host
+	configuredBase := ""
+	if s.cfg.GitLab != nil {
+		configuredBase = s.cfg.GitLab.BaseURL
+	}
+	apiBase, ok := platform.GitLabAPIBaseForHost(configuredBase, glHost)
+	if !ok {
+		s.logger.Warn("GitLab group refresh skipped — the group is not on the configured GitLab instance, and GitLab API keys are only sent to that instance's host",
+			"group", g.Name, "group_host", glHost, "gitlab_base_url", configuredBase)
+		return 0
+	}
+	http := platform.NewHTTPClient(apiBase, s.glKeys, s.logger, platform.AuthGitLab)
 
 	// Same legacy → user_groups bridge as the GitHub path.
 	userGroupIDs, ugErr := s.store.GetUserGroupIDsForOrgURL(ctx, g.Website)

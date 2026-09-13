@@ -462,4 +462,53 @@ const multiA, multiB = "alpha value", "beta value"
 			t.Error("ConstBody must refuse a multi-name ValueSpec — a pin on multiA would pass on multiB's text")
 		}
 	})
+
+	// Copilot review 5191885530 on PR #203: inside a group, a spec with no
+	// `= value` repeats the PREVIOUS spec's expression (`const ( A = "x"; B )`
+	// gives B the value "x"). Its ValueSpec holds only the identifier, so
+	// the returned span would carry none of the value a pin claims to
+	// inspect, and the pin would pass vacuously. Including the sibling
+	// would break the exact-region contract, so refuse instead — while an
+	// explicit spec in the same group stays readable.
+	t.Run("implicit-value grouped spec is refused", func(t *testing.T) {
+		grouped := `package p
+
+const (
+	explicitA = "alpha value"
+	implicitB
+)
+`
+		rec := &recordingTB{TB: t}
+		var got string
+		func() {
+			defer func() { _ = recover() }()
+			got = ConstBody(rec, grouped, "implicitB")
+		}()
+		if !rec.failed {
+			t.Errorf("ConstBody must refuse an implicit-value spec (it inherits the previous expression) — returned %q, which carries no value for a pin to inspect", got)
+		}
+		if got := ConstBody(t, grouped, "explicitA"); !strings.Contains(got, "alpha value") {
+			t.Errorf("an explicit spec in the same group must still be returned, got %q", got)
+		}
+	})
+
+	t.Run("iota-repeated spec is refused", func(t *testing.T) {
+		iotaGroup := `package p
+
+type kind int
+
+const (
+	kindA kind = iota
+	kindB
+)
+`
+		rec := &recordingTB{TB: t}
+		func() {
+			defer func() { _ = recover() }()
+			_ = ConstBody(rec, iotaGroup, "kindB")
+		}()
+		if !rec.failed {
+			t.Error("ConstBody must refuse kindB — its value is the repeated `kind = iota` of the previous spec")
+		}
+	})
 }

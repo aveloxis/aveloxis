@@ -219,7 +219,7 @@ Every field is optional except `database` credentials and at least one API key s
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `gitlab.api_keys` | string[] | `[]` | GitLab personal access tokens. |
-| `gitlab.base_url` | string | `"https://gitlab.com/api/v4"` | GitLab API base URL. Change for self-hosted GitLab instances. |
+| `gitlab.base_url` | string | `"https://gitlab.com/api/v4"` | GitLab API base URL. Change for self-hosted GitLab instances. It also names the one host the `gitlab.api_keys` are sent to (v0.29.11): the periodic GitLab group refresh skips, with a WARN, any group whose URL is on a different host rather than send it the keys. Before v0.29.11 that refresh used the GitHub keys. |
 | `gitlab.gitlab_hosts` | string[] | `[]` | Additional hostnames to recognize as GitLab instances. Use this for self-hosted GitLab servers whose hostnames do not contain "gitlab". |
 
 ### Collection

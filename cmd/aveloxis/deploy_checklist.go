@@ -112,6 +112,11 @@ var deployChecklists = map[string][]deployStep{
 	// run-scorecard borrows tokens per repo. No schema change, no operator
 	// heal — same ladder.
 	"0.29.10": v029DeployChecklist,
+	// v0.29.11: the legacy GitLab group refresh uses the GitLab key pool,
+	// and only for the gitlab.base_url host (it had been sending GitHub
+	// tokens to GitLab hosts); srctest.ConstBody refuses implicit-value
+	// consts. No schema change, no operator heal — same ladder.
+	"0.29.11": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

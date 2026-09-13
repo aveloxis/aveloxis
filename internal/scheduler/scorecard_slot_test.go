@@ -131,7 +131,7 @@ func TestNewWithKeysBuildsScorecardSemAtConfiguredCapacity(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	coll := config.DefaultConfig().Collection
 	coll.ScorecardMaxConcurrent = 3
-	s := NewWithKeys(nil, nil, nil, platform.NewKeyPool([]string{"t"}, logger), logger, Config{Collection: &coll})
+	s := NewWithKeys(nil, nil, nil, platform.NewKeyPool([]string{"t"}, logger), nil, logger, Config{Collection: &coll})
 	if s.scorecardSem == nil {
 		t.Fatal("NewWithKeys must build scorecardSem — a nil channel blocks every send forever")
 	}
@@ -139,7 +139,7 @@ func TestNewWithKeysBuildsScorecardSemAtConfiguredCapacity(t *testing.T) {
 		t.Errorf("scorecardSem capacity = %d, want the configured scorecard_max_concurrent (3)", got)
 	}
 	// The accessor is the one default layer: an absent knob yields 8.
-	s = NewWithKeys(nil, nil, nil, nil, logger, Config{})
+	s = NewWithKeys(nil, nil, nil, nil, nil, logger, Config{})
 	if got := cap(s.scorecardSem); got != 8 {
 		t.Errorf("default scorecardSem capacity = %d, want 8", got)
 	}

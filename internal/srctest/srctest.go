@@ -204,7 +204,9 @@ func TypeBody(t testing.TB, src, name string) string {
 //
 // Grouped `const (...)` declarations slice the matched ValueSpec alone,
 // for the same reason TypeBody does (v0.27.154 round 33): returning the
-// whole group would let a pin pass on a SIBLING const's text.
+// whole group would let a pin pass on a SIBLING const's text. Two spec
+// shapes are refused rather than sliced: a multi-name spec, and an
+// implicit-value spec that inherits the previous expression.
 func ConstBody(t testing.TB, src, name string) string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -233,6 +235,16 @@ func ConstBody(t testing.TB, src, name string) string {
 				// on `b`'s text.
 				if len(vs.Names) > 1 {
 					t.Fatalf("srctest.ConstBody: const %q is declared in a multi-name spec (%d names) — split the declaration so the pin covers exactly one value", name, len(vs.Names))
+				}
+				// Copilot review 5191885530 on PR #203: a grouped spec with
+				// no `= value` repeats the previous spec's expression
+				// (`const ( A = "x"; B )`, or an iota run). Its ValueSpec is
+				// just the identifier, so the span would hold none of the
+				// value a pin inspects and the pin would pass vacuously;
+				// widening to the sibling would break the exact-region
+				// contract. Refuse.
+				if len(vs.Values) == 0 {
+					t.Fatalf("srctest.ConstBody: const %q has no value of its own — in a grouped declaration it repeats the previous spec's expression; give it an explicit value so the pin covers what it claims to", name)
 				}
 				if gd.Lparen.IsValid() {
 					return src[fset.Position(vs.Pos()).Offset:fset.Position(vs.End()).Offset]

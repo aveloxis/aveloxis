@@ -218,7 +218,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	// Start scheduler.
 	store.SetMatviewOnStartup(cfg.Collection.MatviewRebuildOnStartup)
 
-	sched := scheduler.NewWithKeys(store, ghClient, glClient, ghKeys, logger, scheduler.Config{
+	sched := scheduler.NewWithKeys(store, ghClient, glClient, ghKeys, glKeys, logger, scheduler.Config{
 		Workers: workers,
 		// The whole aveloxis.json collection block, consumed directly —
 		// the scheduler reads knobs through the CollectionConfig
@@ -227,6 +227,9 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 		// The mail block rides the same single-source pattern
 		// (v0.27.12 operator vulnerability digest).
 		Mail: &cfg.Mail,
+		// The gitlab block: its base_url names the one instance the
+		// GitLab keys (glKeys, above) may be sent to (v0.29.11).
+		GitLab: &cfg.GitLab,
 	})
 	// v0.27.12: operator vulnerability digest. Must be injected
 	// BEFORE Run starts (the ticker gate is evaluated at startup).
@@ -622,7 +625,17 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 				ghHTTP := platform.NewHTTPClient("https://api.github.com", ghKeys, logger, platform.AuthGitHub)
 				repos, err = listGitHubOrgRepos(ctx, ghHTTP, orgName)
 			case model.PlatformGitLab:
-				glHTTP := platform.NewHTTPClient("https://"+host+"/api/v4", glKeys, logger, platform.AuthGitLab)
+				// v0.29.11: GitLab keys only ever go to the configured
+				// instance (platform.GitLabAPIBaseForHost). isOrgURL does not
+				// currently classify any URL as a GitLab group, so this arm
+				// is unreachable today; it is guarded like the scheduler's
+				// group refresh so enabling it cannot leak keys.
+				apiBase, ok := platform.GitLabAPIBaseForHost(cfg.GitLab.BaseURL, host)
+				if !ok {
+					err = fmt.Errorf("GitLab group %q is on %s, not the configured GitLab instance (gitlab.base_url %q) — GitLab API keys are only sent to that instance's host", orgName, host, cfg.GitLab.BaseURL)
+					break
+				}
+				glHTTP := platform.NewHTTPClient(apiBase, glKeys, logger, platform.AuthGitLab)
 				repos, err = listGitLabGroupRepos(ctx, glHTTP, orgName)
 			}
 			if err != nil {

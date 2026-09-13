@@ -12,6 +12,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -291,17 +292,27 @@ func TestScorecardLocalOnlyWithoutCloneSkips(t *testing.T) {
 }
 
 func TestScorecardRemoteOnlyNoCloneReturnsError(t *testing.T) {
-	_, _ = installFakeScorecard(t, `case "$1" in --repo) exit 1;; esac`)
+	argsLog, _ := installFakeScorecard(t, `case "$1" in --repo) exit 1;; esac`)
 	store := &fakeScorecardStore{}
 
 	res, err := RunScorecard(context.Background(), store, 42, ScorecardOptions{
 		RepoURL:       "https://github.com/augurlabs/augur",
 		LocalPath:     "", // e.g. the bulk run-scorecard pass — no clone
 		RemotePrimary: true,
+		GithubToken:   "tok1", // a lent token: this test drives the REMOTE attempt (an empty loan never runs remote — v0.29.10)
 		Timeout:       time.Minute,
 	}, quietLogger())
 	if err == nil {
 		t.Fatal("remote failure with no local backstop must surface the error")
+	}
+	// The error must come from the remote ATTEMPT, not from the empty-loan
+	// refusal — without this the test passed vacuously once tokenless runs
+	// stopped reaching remote (v0.29.10).
+	if errors.Is(err, ErrScorecardNoToken) {
+		t.Fatalf("err = %v: the remote attempt never ran", err)
+	}
+	if args := readLines(t, argsLog); len(args) != 1 || !strings.HasPrefix(args[0], "--repo ") {
+		t.Errorf("invocations = %q, want exactly one --repo attempt", args)
 	}
 	if res != nil {
 		t.Errorf("res = %v, want nil on failure", res)

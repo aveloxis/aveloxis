@@ -1657,17 +1657,30 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	return facadeResult, analysisResult
 }
 
+// scorecardSkipReason names a scorecard outcome that is a deliberate skip
+// rather than a failure, for the phase line's skip_reason: "" when the phase
+// ran (or failed). v0.29.10: collector.ErrScorecardNoToken — no usable GitHub
+// token and no clone — is "no_usable_token".
+func scorecardSkipReason(err error) string {
+	if errors.Is(err, collector.ErrScorecardNoToken) {
+		return "no_usable_token"
+	}
+	return ""
+}
+
 // runScorecardPhase is Phase 4b of the per-repo pipeline (v0.27.5 —
 // extracted from runFacadeAndAnalysis).
 //
 // Mode order: GitHub repos run REMOTE-primary (--repo, full ~18-check
 // set, ~40 API calls measured) with the retained analysis clone as the
-// LOCAL backstop on error/timeout (--local, ~11 checks, 0 API calls —
-// 11 checks beat none). GitLab and generic-git repos run local only
-// (scorecard's GitLab remote support is immature).
+// LOCAL backstop on error/timeout (--local, ~11 checks, 0 GitHub API calls —
+// 11 checks beat none). With no usable GitHub token lent, remote is never
+// attempted (v0.29.10): local at once, or ErrScorecardNoToken without a
+// clone, recorded as skip_reason=no_usable_token. GitLab and generic-git
+// repos run local only (scorecard's GitLab remote support is immature).
 //
 // Tokens: scorecard receives a comma-separated GITHUB_TOKEN BORROWED
-// from the pool (collection.scorecard_token_count; 0 = all tokens)
+// from the pool (collection.scorecard_token_count; 0 = all usable tokens)
 // and round-robins it per request. No in-flight lease is held — the
 // pre-v0.27.5 GetKey + MarkDepleted pattern is gone: checking one key
 // out starved it against 40 collection workers and was the measured
@@ -1770,12 +1783,17 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 		"ok", scErr == nil,
 		"mode", mode,
 		"written", written,
+		"skip_reason", scorecardSkipReason(scErr),
 		"api_calls_used", apiCalls,
 		"api_calls_basis", collector.ScorecardAPICallsBasis,
 		"phase_duration", time.Since(phaseStart), // includes slot_wait
 		"slot_wait", slotWait)
 
-	if scErr != nil {
+	switch {
+	case errors.Is(scErr, collector.ErrScorecardNoToken):
+		// RunScorecard already logged the WARN naming the cause; the
+		// repository is retried on its next cycle.
+	case scErr != nil:
 		s.logger.Warn("scorecard failed", "repo_id", repoID, "error", scErr)
 	}
 }

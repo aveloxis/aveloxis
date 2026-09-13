@@ -107,6 +107,11 @@ var deployChecklists = map[string][]deployStep{
 	// a reset header can no longer raise a key's tracked budget. No schema
 	// change, no operator heal — same ladder.
 	"0.29.9": v029DeployChecklist,
+	// v0.29.10: scorecard never runs remote without a lent GitHub token
+	// (local mode at once on the retained clone, or a named skip), and
+	// run-scorecard borrows tokens per repo. No schema change, no operator
+	// heal — same ladder.
+	"0.29.10": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

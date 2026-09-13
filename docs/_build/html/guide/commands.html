@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.9 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.10 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=7b5ac268"></script>
+      <script src="../_static/documentation_options.js?v=a8b07557"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -3106,9 +3106,15 @@ comma-separated multi-token <code class="docutils literal notranslate"><span cla
 (<code class="docutils literal notranslate"><span class="pre">collection.scorecard_token_count</span></code>), the per-attempt wall-clock
 timeout (<code class="docutils literal notranslate"><span class="pre">collection.scorecard_timeout_minutes</span></code>, default 15), and
 the <code class="docutils literal notranslate"><span class="pre">scorecard_mode</span></code> marker on every stored row.</p></li>
+<li><p>The tokens are borrowed from the pool for each repo, not once for
+the whole pass (v0.29.10).</p></li>
 <li><p>No analysis clone exists in this pass, so there is no local
 backstop: a failed remote attempt is logged, counted, and skipped —
-the repo’s next collection cycle retries.</p></li>
+the repo’s next collection cycle retries. If no GitHub token can be
+lent (a misconfigured empty key), the repo is skipped at once and
+counted as failed rather than run without a token (v0.29.10):
+scorecard’s remote mode without a token waits up to an hour for
+GitHub’s rate limit, longer than the default 15-minute timeout.</p></li>
 <li><p>Progress prints every 100 repos: done/total, cumulative
 <code class="docutils literal notranslate"><span class="pre">api_calls_used</span></code>, elapsed, and ETA. <code class="docutils literal notranslate"><span class="pre">api_calls_used</span></code> is a sum of
 one-token samples (<code class="docutils literal notranslate"><span class="pre">instrument_token_sample</span></code>): each run’s

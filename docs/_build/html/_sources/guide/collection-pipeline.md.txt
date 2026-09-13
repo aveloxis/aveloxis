@@ -319,11 +319,10 @@ If ScanCode is not installed, this phase is silently skipped. Install it with `a
 
 ### OpenSSF Scorecard (remote-first, local fallback)
 
-After dependency scanning, libyear, and SCC complete, the [OpenSSF Scorecard](https://github.com/ossf/scorecard) tool runs. Since v0.27.5 GitHub repos run **remote-first** (`--repo`, 18 checks, round-robining the key pool's tokens) and fall back to `--local` against the temporary checkout on error or timeout; GitLab and generic-git repos run local-only (11 checks). Local mode's advantages when it applies:
+After dependency scanning, libyear, and SCC complete, the [OpenSSF Scorecard](https://github.com/ossf/scorecard) tool runs. Since v0.27.5 GitHub repos run **remote-first** (`--repo`, 18 checks, round-robining the key pool's tokens) and fall back to `--local` against the temporary checkout on error or timeout; GitLab and generic-git repos run local-only (11 checks). If no GitHub token can be lent — no GitHub keys configured, or every key quarantined or cooling down on a secondary rate limit — a GitHub repo skips remote mode entirely (v0.29.10): scorecard without a token waits up to an hour for GitHub's rate limit, longer than the default 15-minute timeout. It runs `--local` at once instead, or, with no checkout, is skipped with a WARN (`skip_reason=no_usable_token`) and retried next cycle. Local mode's advantages when it applies:
 
 - **No redundant clone**: Scorecard reuses the existing checkout instead of cloning the repo again.
-- **Local checks run offline**: Checks like Binary-Artifacts, Pinned-Dependencies, Dangerous-Workflow, and Token-Permissions evaluate files locally without any API calls.
-- **Fewer API calls**: Only API-dependent checks (Code-Review, Maintained, Branch-Protection) hit GitHub, making ~20-50 API calls instead of ~150-300 in remote mode.
+- **No GitHub API calls**: the local check set (11 checks: Binary-Artifacts, Pinned-Dependencies, Dangerous-Workflow, Token-Permissions and the other file-based checks) evaluates the checkout without a token. Two local checks still use the network: Fuzzing reads OSS-Fuzz's public build status file and Vulnerabilities queries api.osv.dev, so a host with no outbound access fails those two. The GitHub-API checks (Code-Review, Maintained, Branch-Protection, CI-Tests, CII-Best-Practices, Contributors, Signed-Releases) exist only in remote mode.
 
 Before running scorecard, the checkout's git remote origin is updated from the bare repo path to the actual GitHub/GitLab URL, so scorecard can resolve the remote for API-dependent checks.
 
@@ -331,7 +330,7 @@ Results are stored in `repo_deps_scorecard` with one row per check, including th
 
 The temporary checkout is deleted after scorecard completes. If scorecard is not installed, this phase is silently skipped. Install it with `aveloxis install-tools`.
 
-**Token management**: After each scorecard run, the used API token is marked as partially depleted (`MarkDepleted`) so the key pool rotates past it. No concurrency semaphore is needed — local mode is mostly disk I/O, and the small number of remaining API calls is handled by the token rotation.
+**Token management**: scorecard borrows its tokens from the key pool (`KeyPool.LendTokens`): only usable keys are lent, each key's loan count is tracked, and the loan is returned when the subprocess exits. Concurrent scorecard subprocesses are capped by `collection.scorecard_max_concurrent` (v0.29.6).
 
 ---
 

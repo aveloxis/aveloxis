@@ -1331,9 +1331,15 @@ Details:
   (`collection.scorecard_token_count`), the per-attempt wall-clock
   timeout (`collection.scorecard_timeout_minutes`, default 15), and
   the `scorecard_mode` marker on every stored row.
+- The tokens are borrowed from the pool for each repo, not once for
+  the whole pass (v0.29.10).
 - No analysis clone exists in this pass, so there is no local
   backstop: a failed remote attempt is logged, counted, and skipped —
-  the repo's next collection cycle retries.
+  the repo's next collection cycle retries. If no GitHub token can be
+  lent (a misconfigured empty key), the repo is skipped at once and
+  counted as failed rather than run without a token (v0.29.10):
+  scorecard's remote mode without a token waits up to an hour for
+  GitHub's rate limit, longer than the default 15-minute timeout.
 - Progress prints every 100 repos: done/total, cumulative
   `api_calls_used`, elapsed, and ETA. `api_calls_used` is a sum of
   one-token samples (`instrument_token_sample`): each run's

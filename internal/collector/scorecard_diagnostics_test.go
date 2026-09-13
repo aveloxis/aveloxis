@@ -52,6 +52,7 @@ exit 0`)
 	_, err := RunScorecard(context.Background(), store, 1, ScorecardOptions{
 		RepoURL:       "https://github.com/o/r",
 		RemotePrimary: true,
+		GithubToken:   "tok1", // a lent token: this test drives the REMOTE attempt (an empty loan never runs remote — v0.29.10)
 		Timeout:       10 * time.Second,
 	}, logger)
 	if err == nil {
@@ -86,6 +87,7 @@ esac`)
 		RepoURL:       "https://github.com/o/r",
 		LocalPath:     t.TempDir(),
 		RemotePrimary: true,
+		GithubToken:   "tok1", // a lent token: this test drives the REMOTE attempt (an empty loan never runs remote — v0.29.10)
 		Timeout:       10 * time.Second,
 	}, logger)
 	if err != nil {
@@ -136,6 +138,7 @@ exit 1`)
 	_, err := RunScorecard(context.Background(), store, 7, ScorecardOptions{
 		RepoURL:       "https://github.com/o/r",
 		RemotePrimary: true,
+		GithubToken:   "tok1", // a lent token: this test drives the REMOTE attempt (an empty loan never runs remote — v0.29.10)
 		Timeout:       10 * time.Second,
 	}, logger)
 	if err == nil {
@@ -166,6 +169,7 @@ func TestScorecardTimeoutAttemptIsLogged(t *testing.T) {
 	_, err := RunScorecard(context.Background(), store, 9, ScorecardOptions{
 		RepoURL:       "https://github.com/o/r",
 		RemotePrimary: true,
+		GithubToken:   "tok1", // a lent token: this test drives the REMOTE attempt (an empty loan never runs remote — v0.29.10)
 		Timeout:       300 * time.Millisecond,
 	}, logger)
 	if err == nil {

@@ -10,6 +10,9 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,31 +176,94 @@ func TestRunScorecardUsesSharedScorecardPath(t *testing.T) {
 	}
 }
 
-// Copilot review on PR #203: one LendTokens loan shared by every bulk
-// worker under-counted `lent` by the worker count and let all workers
-// concentrate on the same keys. Each worker borrows its own loan
-// inside its goroutine (least-lent ordering then spreads them) and
-// releases it when the worker exits.
-func TestRunScorecardBorrowsTokensPerWorker(t *testing.T) {
-	b, err := os.ReadFile("run_scorecard.go")
+// Borrowing history: Copilot review on PR #203 moved the loan from once
+// for the whole pass into each worker goroutine (a shared loan
+// under-counted `lent` and concentrated every worker on the same keys).
+// v0.29.10 moves it into each REPO, as defense in depth: this process's
+// pool sends no forge traffic, so its keys never rest today, but a loan
+// held for a whole pass would freeze the usable set chosen at worker start
+// if that ever changed. Pinned on the parsed AST: the ScorecardTokens call
+// and the collector.RunScorecard call it feeds sit in ONE function literal
+// inside the `for r := range jobs` loop body, with `defer releaseTokens()`
+// in that literal — so the loan outlives the subprocess and is released
+// when the repo finishes, on every exit path.
+func TestRunScorecardBorrowsTokensPerRepo(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "run_scorecard.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := string(b)
-	i := strings.Index(src, "func runRunScorecard(")
-	if i < 0 {
-		t.Fatal("runRunScorecard missing")
+	var loops []*ast.RangeStmt
+	ast.Inspect(file, func(n ast.Node) bool {
+		if rs, ok := n.(*ast.RangeStmt); ok {
+			if id, ok := rs.X.(*ast.Ident); ok && id.Name == "jobs" {
+				loops = append(loops, rs)
+			}
+		}
+		return true
+	})
+	if len(loops) != 1 {
+		t.Fatalf("want exactly one `for ... range jobs` worker loop, found %d", len(loops))
 	}
-	body := src[i:]
-	goroutine := strings.Index(body, "go func() {")
-	loan := strings.Index(body, "collector.ScorecardTokens(")
-	if goroutine < 0 || loan < 0 {
-		t.Fatal("expected a worker goroutine and a ScorecardTokens loan")
+	isCall := func(n ast.Node, pkg, name string) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != name {
+			return false
+		}
+		x, ok := sel.X.(*ast.Ident)
+		return ok && x.Name == pkg
 	}
-	if loan < goroutine {
-		t.Error("ScorecardTokens must be borrowed INSIDE the worker goroutine (one accounted loan per worker), not once for the whole pass")
+	countIn := func(root ast.Node, pkg, name string) int {
+		n := 0
+		ast.Inspect(root, func(x ast.Node) bool {
+			if isCall(x, pkg, name) {
+				n++
+			}
+			return true
+		})
+		return n
 	}
-	if strings.Count(body, "collector.ScorecardTokens(") != 1 {
-		t.Error("exactly one ScorecardTokens call site — the per-worker one")
+	if total, inLoop := countIn(file, "collector", "ScorecardTokens"), countIn(loops[0].Body, "collector", "ScorecardTokens"); total != 1 || inLoop != 1 {
+		t.Fatalf("collector.ScorecardTokens: %d call(s) in the file, %d inside the jobs loop — want exactly one, inside the loop (one loan per repo)", total, inLoop)
+	}
+	// The loan and its deferred release live in one function literal inside
+	// the loop body: a defer directly in the loop body would hold every loan
+	// until the worker goroutine exits.
+	found := false
+	ast.Inspect(loops[0].Body, func(n ast.Node) bool {
+		lit, ok := n.(*ast.FuncLit)
+		if !ok {
+			return true
+		}
+		if countIn(lit.Body, "collector", "ScorecardTokens") != 1 {
+			return true
+		}
+		// The subprocess must run INSIDE the literal: a literal that only
+		// borrows and hands the token out would release the loan before
+		// scorecard starts (review of this pin: that mutation passed).
+		if countIn(lit.Body, "collector", "RunScorecard") != 1 {
+			t.Error("collector.RunScorecard must be called inside the same function literal that borrows the tokens, or the deferred release frees the loan before the subprocess runs")
+			return false
+		}
+		for _, stmt := range lit.Body.List {
+			if d, ok := stmt.(*ast.DeferStmt); ok {
+				if id, ok := d.Call.Fun.(*ast.Ident); ok && id.Name == "releaseTokens" {
+					found = true
+				}
+			}
+		}
+		return false
+	})
+	if !found {
+		t.Error("the per-repo loan must be released by `defer releaseTokens()` inside a function literal in the jobs loop body")
+	}
+	for _, stmt := range loops[0].Body.List {
+		if d, ok := stmt.(*ast.DeferStmt); ok {
+			t.Errorf("a defer directly in the jobs loop body (line %d) runs only when the worker exits", fset.Position(d.Pos()).Line)
+		}
 	}
 }

@@ -197,22 +197,39 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			token, instrumentToken, releaseTokens := collector.ScorecardTokens(ghKeys, cfg.Collection.ScorecardTokenCountOrDefault())
-			defer releaseTokens()
 			for r := range jobs {
 				repoURL := fmt.Sprintf("https://github.com/%s/%s", r.Owner, r.Name)
 				// Same shared invoke/persist path as the per-cycle
 				// phase. No analysis clone exists here → remote only:
 				// LocalPath stays empty, so a failed remote attempt
 				// surfaces as an error (recorded + skipped) instead of
-				// falling back.
-				res, scErr := collector.RunScorecard(ctx, store, r.RepoID, collector.ScorecardOptions{
-					RepoURL:         repoURL,
-					RemotePrimary:   true,
-					Timeout:         cfg.Collection.ScorecardTimeout(),
-					GithubToken:     token,
-					InstrumentToken: instrumentToken,
-				}, logger)
+				// falling back. An empty token loan is refused up front
+				// with collector.ErrScorecardNoToken rather than sleeping out
+				// the rate limit (v0.29.10) — in THIS process that needs a
+				// misconfigured empty key string, because the pool here
+				// sends no forge traffic and so never marks a key resting.
+				//
+				// The loan is taken PER REPO (v0.29.10; per worker since the
+				// PR #203 review, once per pass before that). Defense in
+				// depth: it keeps each loan as short as the subprocess and
+				// re-reads the pool's usable set per repo, which only matters
+				// if this command ever shares a pool that sees responses.
+				// The closure scopes the deferred release to this repo.
+				var (
+					res   *collector.ScorecardResult
+					scErr error
+				)
+				func() {
+					token, instrumentToken, releaseTokens := collector.ScorecardTokens(ghKeys, cfg.Collection.ScorecardTokenCountOrDefault())
+					defer releaseTokens()
+					res, scErr = collector.RunScorecard(ctx, store, r.RepoID, collector.ScorecardOptions{
+						RepoURL:         repoURL,
+						RemotePrimary:   true,
+						Timeout:         cfg.Collection.ScorecardTimeout(),
+						GithubToken:     token,
+						InstrumentToken: instrumentToken,
+					}, logger)
+				}()
 				if scErr != nil {
 					failed.Add(1)
 					logger.Warn("run-scorecard: repo failed (skipped — next collection cycle retries)",

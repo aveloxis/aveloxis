@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.9 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.10 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=7b5ac268"></script>
+      <script src="../_static/documentation_options.js?v=a8b07557"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2207,7 +2207,7 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.scorecard_token_count</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
-<td><p>v0.27.5. How many key-pool tokens to hand scorecard as a comma-separated <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code> (scorecard round-robins the list per request). <code class="docutils literal notranslate"><span class="pre">0</span></code> (the default) = every USABLE pool token — a key the pool would refuse to <code class="docutils literal notranslate"><span class="pre">Acquire</span></code> (quarantined after repeated 401s, or resting on a secondary limit) is not lent either; <code class="docutils literal notranslate"><span class="pre">N&gt;0</span></code> = the N least-borrowed of those. If every key is resting the phase runs with no token and the remote attempt fails into the local fallback, which is the same outcome every other caller sees. Multi-token is what makes remote-primary mode viable: a moderate repo costs ~40 API calls in remote mode, and spreading them across the pool prevents any single token from being drained by scorecard while collection workers share it. Negative values collapse to 0. Since v0.29.6 the tokens are BORROWED through the pool (<code class="docutils literal notranslate"><span class="pre">LendTokens</span></code>) rather than copied out of it, so the pool knows which keys each subprocess holds.</p></td>
+<td><p>v0.27.5. How many key-pool tokens to hand scorecard as a comma-separated <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code> (scorecard round-robins the list per request). <code class="docutils literal notranslate"><span class="pre">0</span></code> (the default) = every USABLE pool token — a key the pool would refuse to <code class="docutils literal notranslate"><span class="pre">Acquire</span></code> (quarantined after repeated 401s, or resting on a secondary limit) is not lent either; <code class="docutils literal notranslate"><span class="pre">N&gt;0</span></code> = the N least-borrowed of those. If no token can be lent (no GitHub keys configured, or every key resting), remote mode is not attempted (v0.29.10): scorecard’s remote mode without a token waits up to an hour for GitHub’s rate limit, longer than the default 15-minute timeout. Instead the collection phase runs local mode at once on the retained analysis clone; without a clone it skips the repo with a WARN (<code class="docutils literal notranslate"><span class="pre">skip_reason=no_usable_token</span></code> on the phase line) and retries it next cycle. Multi-token is what makes remote-primary mode viable: a moderate repo costs ~40 API calls in remote mode, and spreading them across the pool prevents any single token from being drained by scorecard while collection workers share it. Negative values collapse to 0. Since v0.29.6 the tokens are BORROWED through the pool (<code class="docutils literal notranslate"><span class="pre">LendTokens</span></code>) rather than copied out of it, so the pool knows which keys each subprocess holds.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.scorecard_max_concurrent</span></code></p></td>
 <td><p>integer</p></td>

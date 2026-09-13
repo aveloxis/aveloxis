@@ -16,7 +16,9 @@
 //     (32 REST + 8 GraphQL), ~25s on augurlabs/augur. GitHub repos run
 //     remote FIRST.
 //   - Local mode (--local <path>): scorecard runs against the retained
-//     analysis clone. Measured: 0 API calls, ~7s, but only ~11 checks —
+//     analysis clone. Measured: 0 GitHub API calls (Fuzzing and
+//     Vulnerabilities still reach OSS-Fuzz and api.osv.dev), ~7s, needs no
+//     token, but only ~11 checks —
 //     the API-dependent checks are skipped entirely. Used as the BACKSTOP
 //     when the remote attempt errors or times out (11 checks beat none),
 //     and as the ONLY mode for GitLab and generic-git repos (scorecard's
@@ -143,7 +145,9 @@ type ScorecardOptions struct {
 	// so a direct caller can't run unbounded).
 	Timeout time.Duration
 	// GithubToken is the GITHUB_TOKEN value — a comma-separated list
-	// for multi-token round-robin (see ScorecardTokens).
+	// for multi-token round-robin (see ScorecardTokens). Empty on a
+	// remote-primary run means remote is never attempted: local mode on
+	// LocalPath, or ErrScorecardNoToken without one (v0.29.10).
 	GithubToken string
 	// InstrumentToken, when non-empty, enables the before/after
 	// /rate_limit probe on remote attempts (measured API spend in the
@@ -165,6 +169,18 @@ const defaultScorecardTimeout = 15 * time.Minute
 // rateLimitDelta's idle-resource exception relies on.
 const rateLimitWindowSeconds = 3600
 
+// ErrScorecardNoToken is returned by RunScorecard for a remote-primary
+// (GitHub) repository when the caller has no usable GitHub token AND no
+// clone to run local mode on. The loan is empty when no GitHub key is
+// configured (a GitLab-only deployment still claims GitHub repos) or when
+// every key is quarantined or cooling down on a secondary limit
+// (KeyPool.LendTokens lends only usable keys). Running `scorecard --repo` with an empty GITHUB_TOKEN is
+// never useful: probed 2026-09-13, scorecard goes unauthenticated, hits the
+// rate limit and logs "Rate limit exceeded. Waiting 46m50s to retry", holding
+// a subprocess slot for the whole per-attempt timeout. The repository is
+// retried on its next cycle.
+var ErrScorecardNoToken = errors.New("scorecard not run: no usable GitHub token lent (none configured, or every key quarantined or cooling down) and no clone for local mode")
+
 // ScorecardAPICallsBasis labels every api_calls_used log value: a
 // /rate_limit used-delta on ONE token (the instrument token), which is a
 // sample biased both ways — not the run's attributable spend
@@ -175,8 +191,9 @@ const ScorecardAPICallsBasis = "instrument_token_sample"
 const scorecardRateLimitURL = "https://api.github.com/rate_limit"
 
 // ScorecardTokens builds scorecard's comma-separated GITHUB_TOKEN value
-// from the key pool (v0.27.5). count 0 = all non-invalidated tokens;
-// N>0 = the N least-borrowed. Returns the joined list, the first token
+// from the key pool (v0.27.5). count 0 = every usable token (not
+// invalidated, quarantined or cooling down — KeyPool.LendTokens); N>0 =
+// the N least-borrowed of those. Empty when there are none. Returns the joined list, the first token
 // (used for the /rate_limit instrumentation probe), and the release the
 // caller MUST invoke once the subprocess has exited.
 //
@@ -202,10 +219,14 @@ func ScorecardTokens(pool *platform.KeyPool, count int) (joined, first string, r
 // stores results in repo_deps_scorecard. Requires the `scorecard` binary
 // on PATH (silently skipped otherwise).
 //
-// Mode selection (v0.27.5):
-//   - RemotePrimary (GitHub): remote attempt first; on error or
-//     per-attempt timeout, fall back to local mode when a clone path
-//     exists — 11 checks beat none. No clone → the remote error surfaces.
+// Mode selection (v0.27.5; empty-token arm v0.29.10):
+//   - RemotePrimary (GitHub) with a lent token: remote attempt first; on
+//     error or per-attempt timeout, fall back to local mode when a clone
+//     path exists — 11 checks beat none. No clone → the remote error
+//     surfaces.
+//   - RemotePrimary with NO token (none configured, or every key resting):
+//     remote is never attempted — local mode at once on the clone, or
+//     ErrScorecardNoToken without one.
 //   - Local-only (GitLab / generic git): local mode only. No clone →
 //     skipped with an INFO log (scorecard's GitLab remote support is
 //     immature; running --repo against non-GitHub hosts is not useful).
@@ -230,6 +251,17 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	// internal/api/logsafe.go, internal/web truncateForLog). v0.27.10.
 	safeRepoURL := scrubLogValue(opts.RepoURL)
 
+	// runLocal is the one local-mode attempt shape (invoke on the clone,
+	// persist, no API instrumentation) shared by local-only platforms and
+	// the empty-loan arm below (SR-17).
+	runLocal := func() (*ScorecardResult, error) {
+		raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, opts.GithubToken, logger)
+		if localErr != nil {
+			return nil, localErr
+		}
+		return finishScorecard(ctx, store, repoID, raw, "local", 0, time.Since(start), logger)
+	}
+
 	if !opts.RemotePrimary {
 		// Local-only platforms (GitLab, generic git).
 		if opts.LocalPath == "" {
@@ -237,11 +269,24 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 				"repo_id", repoID, "url", safeRepoURL)
 			return nil, nil
 		}
-		raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, opts.GithubToken, logger)
-		if localErr != nil {
-			return nil, localErr
+		return runLocal()
+	}
+
+	// v0.29.10: a remote-primary run needs a token. The caller's loan is
+	// empty when no GitHub key is configured or every one is quarantined
+	// or cooling down, and
+	// `scorecard --repo` without one sleeps out the rate limit for the
+	// whole per-attempt timeout (ErrScorecardNoToken). Decided HERE, the
+	// layer that owns mode selection, so neither caller can reach it.
+	if opts.GithubToken == "" {
+		if opts.LocalPath == "" {
+			logger.Warn("scorecard not run — no usable GitHub token lent (none configured, or every key quarantined or cooling down) and no clone for local mode; retried next cycle",
+				"repo_id", repoID, "url", safeRepoURL)
+			return nil, ErrScorecardNoToken
 		}
-		return finishScorecard(ctx, store, repoID, raw, "local", 0, time.Since(start), logger)
+		logger.Warn("scorecard: no usable GitHub token lent (none configured, or every key quarantined or cooling down) — running local mode on the retained clone instead of remote",
+			"repo_id", repoID, "url", safeRepoURL)
+		return runLocal()
 	}
 
 	// Remote-primary (GitHub): --repo first, instrumented.

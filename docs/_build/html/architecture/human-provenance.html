@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Human provenance — where identity lives, column by column &mdash; Aveloxis 0.29.7 documentation</title>
+  <title>Human provenance — where identity lives, column by column &mdash; Aveloxis 0.29.9 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=3738e5b3"></script>
+      <script src="../_static/documentation_options.js?v=7b5ac268"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1693,7 +1693,13 @@ attribution path (bots, the Jira/GitBox relays, list addresses).
 Ungated minting once handed 83,746 messages to a <code class="docutils literal notranslate"><span class="pre">jira&#64;apache.org</span></code>
 phantom contributor; the ledgered heal
 (<code class="docutils literal notranslate"><span class="pre">v0.29.0</span> <span class="pre">heal</span> <span class="pre">automation-phantom</span> <span class="pre">contributors</span></code>) repaired it and the
-gates keep it repaired.</p></li>
+gates keep it repaired. Downstream analytics queries use the same
+function as a row filter over tens of millions of message rows, so it
+is declared <code class="docutils literal notranslate"><span class="pre">PARALLEL</span> <span class="pre">SAFE</span></code> and its list-address lookup is served by
+the <code class="docutils literal notranslate"><span class="pre">idx_rgls_email_lower</span></code> expression index (v0.29.8). Before that,
+every calling query ran single-threaded and each call scanned the
+whole list table: 340 s against 3.3 s on a synthetic 3M-row benchmark
+(local PostgreSQL 18; production timings differ).</p></li>
 <li><p><strong>Soft-delete only.</strong> A merged/phantom contributor row is marked
 <code class="docutils literal notranslate"><span class="pre">cntrb_deleted</span> <span class="pre">=</span> <span class="pre">1</span></code>, never removed (R10 — FK integrity). Every read
 path filters <code class="docutils literal notranslate"><span class="pre">COALESCE(cntrb_deleted,</span> <span class="pre">0)</span> <span class="pre">=</span> <span class="pre">0</span></code>.</p></li>

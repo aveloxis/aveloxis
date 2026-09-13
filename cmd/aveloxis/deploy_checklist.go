@@ -102,6 +102,11 @@ var deployChecklists = map[string][]deployStep{
 	// holds migrate (and serve startup) until it ends — the blocker
 	// watcher names it. Let such queries finish, or stop them, first.
 	"0.29.8": v029DeployChecklist,
+	// v0.29.9: the headerless rate-limit 403 lines name the serving key and
+	// attempt (for the next release's log review), and a response without
+	// a reset header can no longer raise a key's tracked budget. No schema
+	// change, no operator heal — same ladder.
+	"0.29.9": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

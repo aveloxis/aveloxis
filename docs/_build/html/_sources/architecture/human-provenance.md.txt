@@ -27,7 +27,13 @@ Rules that hold everywhere:
   Ungated minting once handed 83,746 messages to a `jira@apache.org`
   phantom contributor; the ledgered heal
   (`v0.29.0 heal automation-phantom contributors`) repaired it and the
-  gates keep it repaired.
+  gates keep it repaired. Downstream analytics queries use the same
+  function as a row filter over tens of millions of message rows, so it
+  is declared `PARALLEL SAFE` and its list-address lookup is served by
+  the `idx_rgls_email_lower` expression index (v0.29.8). Before that,
+  every calling query ran single-threaded and each call scanned the
+  whole list table: 340 s against 3.3 s on a synthetic 3M-row benchmark
+  (local PostgreSQL 18; production timings differ).
 - **Soft-delete only.** A merged/phantom contributor row is marked
   `cntrb_deleted = 1`, never removed (R10 — FK integrity). Every read
   path filters `COALESCE(cntrb_deleted, 0) = 0`.

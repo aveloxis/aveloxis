@@ -724,6 +724,8 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			// like a regular rate limit so we don't hot-loop on the bug.
 			c.logger.Error("403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
 				"url", url,
+				"token_prefix", tokenPrefix(key.Token),
+				"attempt", attempt+1,
 				"body_snippet", truncateBody(string(body), 240))
 			wait := jitteredBackoff(attempt)
 			select {
@@ -734,8 +736,21 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			return respRetry, nil, nil
 		}
 		if isRateLimitBody(body) {
+			// v0.29.9: nothing is marked on the key for this shape (no
+			// Retry-After to size a rest by). token_prefix and attempt are
+			// logged so the next release's log review can test whether the
+			// pool re-leases the throttled key inside GitHub's one-minute
+			// secondary-limit floor. The clearest case is this caller's own
+			// retry: the same url at attempt 2, 3, ... on the same key (a
+			// search 403 leaves the key's core budget untouched, so
+			// least-loaded selection tends to pick it again after the
+			// backoff below). Evidence of that justifies resting the key
+			// here (summary/changelog/v0.29.md, v0.29.9 "next-release log
+			// review").
 			c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
 				"url", url,
+				"token_prefix", tokenPrefix(key.Token),
+				"attempt", attempt+1,
 				"body_snippet", truncateBody(string(body), 240))
 			wait := jitteredBackoff(attempt)
 			select {

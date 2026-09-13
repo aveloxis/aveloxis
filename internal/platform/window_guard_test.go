@@ -72,25 +72,78 @@ func TestBudgetUpdatesAreWindowGuarded(t *testing.T) {
 	}
 }
 
-// A response with no Reset header against a key that has never seen
-// one stays fully accepted (the pre-round-10 behavior for trackers
-// that omit the header) — the guard must not brick header-poor paths.
-func TestBudgetUpdateWithoutResetHeaderStillTracksFirstWindow(t *testing.T) {
+// A response with no Reset header cannot identify a window, so it may
+// only LOWER a tracked balance — including on a key with no tracked
+// window yet (a fresh key, or one refillLocked just refilled and
+// zeroed). Through v0.29.8 that zero-window case accepted every value, so
+// concurrent header-less responses arriving as 50 then a stale 60 raised
+// the balance again: the out-of-order bug this guard exists to prevent
+// (Copilot review 5189042842 on PR #203). Nothing needs a header-less
+// raise: keys start full, and refill comes from refillLocked once a
+// known or probe-stamped window passes. Header-poor paths still track —
+// every decrease lands — and the first response that DOES carry a reset
+// establishes the window and is accepted whole.
+func TestBudgetUpdateWithoutResetHeaderOnlyDecreases(t *testing.T) {
+	noReset := func(remaining string) *http.Response {
+		h := http.Header{}
+		h.Set("X-RateLimit-Remaining", remaining)
+		return &http.Response{StatusCode: 200, Header: h}
+	}
 	kp := NewKeyPool([]string{"tok"}, testLogger())
 	key := kp.keys[0]
-	h := http.Header{}
-	h.Set("X-RateLimit-Remaining", "77")
-	kp.UpdateFromResponse(key, &http.Response{StatusCode: 200, Header: h})
-	if key.Remaining != 77 {
-		t.Fatalf("Remaining = %d, want 77 (zero tracked window accepts everything)", key.Remaining)
+
+	// Fresh key, no window: a decrease lands.
+	kp.UpdateFromResponse(key, noReset("50"))
+	if key.Remaining != 50 {
+		t.Fatalf("header-less decrease on a fresh key: Remaining = %d, want 50", key.Remaining)
+	}
+	// Still no window: a stale higher value must not raise it.
+	kp.UpdateFromResponse(key, noReset("60"))
+	if key.Remaining != 50 {
+		t.Fatalf("header-less increase with no tracked window accepted: Remaining = %d, want 50", key.Remaining)
+	}
+	if !key.ResetAt.IsZero() {
+		t.Fatalf("a header-less response must not invent a window: ResetAt = %v", key.ResetAt)
+	}
+
+	// The first response WITH a reset identifies the window and is taken
+	// whole, even when it is higher than the header-less tracked value.
+	win := time.Now().Add(10 * time.Minute).Unix()
+	kp.UpdateFromResponse(key, windowResp("", "4000", win))
+	if key.Remaining != 4000 || key.ResetAt.Unix() != win {
+		t.Fatalf("first reset-bearing response: remaining=%d reset=%d, want 4000/%d", key.Remaining, key.ResetAt.Unix(), win)
 	}
 	// With a KNOWN window and no reset header, only decreases land.
-	win := time.Now().Add(10 * time.Minute).Unix()
-	kp.UpdateFromResponse(key, windowResp("", "50", win))
-	h2 := http.Header{}
-	h2.Set("X-RateLimit-Remaining", "60")
-	kp.UpdateFromResponse(key, &http.Response{StatusCode: 200, Header: h2})
-	if key.Remaining != 50 {
-		t.Fatalf("header-less same-window increase accepted: Remaining = %d, want 50", key.Remaining)
+	kp.UpdateFromResponse(key, noReset("3990"))
+	kp.UpdateFromResponse(key, noReset("3995"))
+	if key.Remaining != 3990 {
+		t.Fatalf("header-less same-window increase accepted: Remaining = %d, want 3990", key.Remaining)
+	}
+
+	// After refillLocked refills the key and zeroes its window, the same
+	// out-of-order pair must not re-inflate it either.
+	kp.mu.Lock()
+	key.ResetAt = time.Now().Add(-time.Second)
+	kp.refillLocked(time.Now(), ResourceCore)
+	kp.mu.Unlock()
+	if key.Remaining != 5000 || !key.ResetAt.IsZero() {
+		t.Fatalf("refill precondition: remaining=%d reset=%v, want 5000/zero", key.Remaining, key.ResetAt)
+	}
+	kp.UpdateFromResponse(key, noReset("4900"))
+	kp.UpdateFromResponse(key, noReset("4950"))
+	if key.Remaining != 4900 {
+		t.Fatalf("header-less increase after a refill accepted: Remaining = %d, want 4900", key.Remaining)
+	}
+
+	// The graphql bucket rides the same helper (SR-17).
+	gq := func(remaining string) *http.Response {
+		r := noReset(remaining)
+		r.Header.Set("X-RateLimit-Resource", "graphql")
+		return r
+	}
+	kp.UpdateFromResponse(key, gq("300"))
+	kp.UpdateFromResponse(key, gq("400"))
+	if key.GraphQLRemaining != 300 {
+		t.Fatalf("graphql header-less increase with no tracked window accepted: GraphQLRemaining = %d, want 300", key.GraphQLRemaining)
 	}
 }

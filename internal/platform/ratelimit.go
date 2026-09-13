@@ -844,7 +844,14 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 //     spend instead of letting a pre-spend response undo it);
 //   - an OLDER window is ignored outright.
 //
-// A zero tracked reset (first observation) accepts everything.
+// A zero tracked reset (a fresh key, or one refillLocked just refilled)
+// accepts a response that CARRIES a reset — that response identifies the
+// window. A response WITHOUT a reset may only lower the balance, whether
+// or not a window is tracked (Copilot review 5189042842 on PR #203:
+// through v0.29.8 the zero-window case accepted everything, so
+// header-less responses arriving as 50 then a stale 60 raised it again).
+// Nothing needs a header-less raise: keys start full, and refill comes
+// from refillLocked once a known or probe-stamped window passes.
 // One spelling for both buckets (SR-17).
 func windowedBudgetUpdate(rem *int, resetAt *time.Time, remaining, reset string) {
 	haveRem, newRem := false, 0
@@ -860,22 +867,15 @@ func windowedBudgetUpdate(rem *int, resetAt *time.Time, remaining, reset string)
 		}
 	}
 	switch {
-	case resetAt.IsZero():
-		// First observation: accept whatever arrived.
-		if haveRem {
-			*rem = newRem
-		}
-		if haveReset {
-			*resetAt = newReset
-		}
-	case haveReset && newReset.After(*resetAt):
-		// Newer window: the refill is real.
+	case haveReset && (resetAt.IsZero() || newReset.After(*resetAt)):
+		// First identified window, or a newer one: both values are real.
 		if haveRem {
 			*rem = newRem
 		}
 		*resetAt = newReset
 	case !haveReset || newReset.Equal(*resetAt):
-		// Same (or unidentifiable) window: monotonic down only.
+		// Same or unidentifiable window (including no tracked window and
+		// no reset header): monotonic down only.
 		if haveRem && newRem < *rem {
 			*rem = newRem
 		}

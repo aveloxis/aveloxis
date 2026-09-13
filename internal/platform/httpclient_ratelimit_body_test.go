@@ -266,3 +266,76 @@ func TestIsAnonymousRateLimitBody(t *testing.T) {
 		})
 	}
 }
+
+// TestGet_403RateLimitBodyLogsNameTheServingKey — v0.29.9 (operator
+// decision, 2026-09-12): the headerless rate-limit 403 marks nothing on
+// the key, and whether that matters depends on a question the log could
+// not answer: does the SAME key come back with another such 403 inside
+// GitHub's one-minute secondary-limit floor (the pool re-selecting a
+// throttled key)? The chaoss.tv log held 745 of these lines in six days,
+// all secondary-limit bodies on search/commits and search/users, and none
+// said which key served them. Both body-classified arms must carry
+// token_prefix — the same attribute the header-classified arms already
+// log — so the next release's log review can group by key and time.
+func TestGet_403RateLimitBodyLogsNameTheServingKey(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, msg string
+	}{
+		{"headerless secondary-limit body — the production shape (WARN)", secondaryRateLimitBody,
+			"403 with rate-limit body but no rate-limit headers"},
+		{"unauthenticated rate-limit body (ERROR)", unauthenticatedIPRateLimitBody,
+			"403 with unauthenticated rate-limit body"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var served atomic.Value
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if calls.Add(1) == 1 {
+					served.Store(strings.TrimPrefix(r.Header.Get("Authorization"), "token "))
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(tc.body))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			defer server.Close()
+
+			logger, buf := captureLogger()
+			keys := NewKeyPool([]string{"ghp_firstkey000", "ghp_secondkey00"}, logger)
+			client := NewHTTPClient(server.URL, keys, logger, AuthGitHub)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			resp, err := client.Get(ctx, "/search/commits?q=author-email%3Ax%40y.org&per_page=1")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			resp.Body.Close()
+
+			tok, _ := served.Load().(string)
+			if tok == "" {
+				t.Fatal("the 403 was never served")
+			}
+			var line string
+			for _, l := range strings.Split(buf.String(), "\n") {
+				if strings.Contains(l, tc.msg) {
+					line = l
+				}
+			}
+			if line == "" {
+				t.Fatalf("no %q line logged; log:\n%s", tc.msg, buf.String())
+			}
+			if want := "token_prefix=" + tokenPrefix(tok); !strings.Contains(line, want) {
+				t.Errorf("the %q line must name the key that served the 403 (%s); got:\n%s", tc.msg, want, line)
+			}
+			// attempt separates a caller's OWN retry re-leasing the throttled
+			// key (same url, attempt 2, 3, ... — sequential, never an
+			// in-flight overlap) from concurrent callers' overlapping 403s.
+			// Without it the review's gap heuristic filed own retries
+			// (1–12 s backoff) as "maybe in flight" (review of this change).
+			if !strings.Contains(line, " attempt=1 ") {
+				t.Errorf("the %q line must carry the 1-based attempt (attempt=1 on the first try); got:\n%s", tc.msg, line)
+			}
+		})
+	}
+}

@@ -117,6 +117,11 @@ var deployChecklists = map[string][]deployStep{
 	// tokens to GitLab hosts); srctest.ConstBody refuses implicit-value
 	// consts. No schema change, no operator heal — same ladder.
 	"0.29.11": v029DeployChecklist,
+	// v0.29.12: HTTPClient no longer follows a redirect off the client's
+	// own API scheme and host (it re-sent the pool key to the target), and
+	// the scorecard /rate_limit probe follows none. No schema change, no
+	// operator heal — same ladder.
+	"0.29.12": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

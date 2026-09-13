@@ -94,3 +94,30 @@ func TestScorecardInstrumentationWindowResetIsUnknown(t *testing.T) {
 		t.Errorf("APICalls = %d, want -1 — the core window reset between the probes (pre-fix: (12-4990)+(18-10) = -4970)", res.APICalls)
 	}
 }
+
+// v0.29.12 (redirect sweep): the /rate_limit probe sends a pool token and must
+// not follow a redirect. Go's default client drops Authorization only when a
+// redirect leaves the original domain and its subdomains — it keeps it for a
+// subdomain and on an https→http downgrade — and the probe only ever wants
+// the endpoint's own 200: a 3xx is an unknown sample (-1), and the redirect
+// target receives nothing.
+func TestRateLimitProbeDoesNotFollowRedirects(t *testing.T) {
+	var foreignHits atomic.Int64
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		foreignHits.Add(1)
+		fmt.Fprint(w, `{"resources":{"core":{"used":1,"reset":1800000000},"graphql":{"used":1,"reset":1800000000}}}`)
+	}))
+	defer foreign.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, foreign.URL+"/rate_limit", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	snap := fetchRateLimitSnapshot(context.Background(), redirector.URL, "tok1", quietLogger())
+	if snap.ok {
+		t.Error("a redirected /rate_limit probe must be an unknown sample, not a reading from the redirect target")
+	}
+	if n := foreignHits.Load(); n != 0 {
+		t.Errorf("the redirect target received %d probe request(s) carrying the token", n)
+	}
+}

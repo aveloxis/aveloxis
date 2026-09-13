@@ -618,7 +618,15 @@ func fetchRateLimitSnapshot(ctx context.Context, url, token string, logger *slog
 		return rateLimitSnapshot{}
 	}
 	req.Header.Set("Authorization", "token "+token)
-	client := &http.Client{Timeout: 10 * time.Second}
+	// v0.29.12: the probe carries a pool token and never follows a redirect
+	// — Go's default policy re-sends Authorization to the same domain AND its
+	// subdomains, including on an https→http downgrade, and the probe only
+	// wants the endpoint's own 200; a 3xx falls through to the non-200 arm
+	// below (an unknown sample).
+	client := &http.Client{
+		Timeout:       10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Debug("rate_limit probe failed (non-fatal)", "error", err)

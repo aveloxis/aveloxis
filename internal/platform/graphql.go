@@ -149,6 +149,13 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 	}
 
 	url := endpoint
+	// v0.29.12: an explicit endpoint gets the same host rule as every keyed
+	// REST request (onClientHost) — refused before the loop leases a key.
+	if herr := onClientHostString(c.baseURL, url); herr != nil {
+		c.logger.Error("off-host GraphQL request refused — the endpoint leaves this client's API host or scheme, so no API key is sent",
+			"endpoint", url, "error", herr)
+		return herr
+	}
 
 	// Body-read retries (Fix C) have a tighter sub-budget than the outer
 	// retry loop. If three fresh streams in a row all abort mid-body, the

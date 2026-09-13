@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.11 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.12 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=0cc8f14e"></script>
+      <script src="../_static/documentation_options.js?v=3b307b24"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2052,6 +2052,14 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 </li>
 <li><p>If <code class="docutils literal notranslate"><span class="pre">Location</span></code> is empty, one <code class="docutils literal notranslate"><span class="pre">WARN</span></code> is logged and the error wraps <code class="docutils literal notranslate"><span class="pre">platform.ErrGone</span></code> — <code class="docutils literal notranslate"><span class="pre">isOptionalEndpointSkip</span></code> treats it the same as 404/403 so the single endpoint is skipped and the rest of the collection proceeds.</p></li>
 <li><p>If the chain exceeds 5 hops (pathological loop), same <code class="docutils literal notranslate"><span class="pre">ErrGone</span></code> treatment.</p></li>
+<li><p><strong>Since v0.29.12 no request that carries an API key leaves the client’s own API scheme and host</strong> (<code class="docutils literal notranslate"><span class="pre">https://api.github.com</span></code>, or the scheme and host of <code class="docutils literal notranslate"><span class="pre">gitlab.base_url</span></code>). That covers a redirect’s <code class="docutils literal notranslate"><span class="pre">Location</span></code>, a pagination <code class="docutils literal notranslate"><span class="pre">Link:</span> <span class="pre">&lt;…&gt;;</span> <span class="pre">rel=&quot;next&quot;</span></code> continuation, and a GraphQL endpoint: a target on another host, a subdomain, plain <code class="docutils literal notranslate"><span class="pre">http</span></code>, or one carrying userinfo is refused rather than sent the key. Each refusal is logged at ERROR and the endpoint is skipped — the error wraps <code class="docutils literal notranslate"><span class="pre">platform.ErrOffHostRefused</span></code>, classified like 404/403:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">ERROR</span> <span class="n">msg</span><span class="o">=</span><span class="s2">"redirect refused — the Location leaves this client's API host or scheme, so neither the request nor its API key is sent there"</span> <span class="n">url</span><span class="o">=...</span> <span class="n">status</span><span class="o">=</span><span class="mi">301</span> <span class="n">location</span><span class="o">=...</span>
+<span class="n">level</span><span class="o">=</span><span class="n">ERROR</span> <span class="n">msg</span><span class="o">=</span><span class="s2">"pagination stopped — the next-page link leaves this client's API host, scheme or base path, so no API key is sent there; the listing is incomplete"</span> <span class="n">path</span><span class="o">=...</span> <span class="n">error</span><span class="o">=...</span>
+<span class="n">level</span><span class="o">=</span><span class="n">ERROR</span> <span class="n">msg</span><span class="o">=</span><span class="s2">"off-host request refused — the URL leaves this client's API host or scheme, so no API key is sent"</span> <span class="n">url</span><span class="o">=...</span> <span class="n">error</span><span class="o">=...</span>
+</pre></div>
+</div>
+<p>GitHub’s and GitLab’s own redirects and page links stay on their API host, so these lines should not appear. If one does, the forge, or something between you and it, pointed a request at another host. A refusal on the first request skips that endpoint. A refusal part-way through a listing (“pagination stopped”, or a redirect refused on a later page) fails the endpoint with <code class="docutils literal notranslate"><span class="pre">platform.ErrListingTruncated</span></code> instead, so the repository’s <code class="docutils literal notranslate"><span class="pre">last_collected</span></code> does not advance past pages that were never listed, and the next cycle lists them again. A request URL that simply does not parse (for example a repository file name containing <code class="docutils literal notranslate"><span class="pre">%</span></code>) is not reported as off-host: nothing can be sent, and it fails the way it always did. Relative targets are resolved against the requested URL, so a GitLab base ending in <code class="docutils literal notranslate"><span class="pre">/api/v4</span></code> no longer doubles the path.</p>
+</li>
 </ul>
 <p>Repo-level renames (the underlying cause when the <em>whole</em> repo moves) are still caught by <code class="docutils literal notranslate"><span class="pre">prelim.RunPrelim</span></code>’s HEAD check against <code class="docutils literal notranslate"><span class="pre">repo.GitURL</span></code> — it calls <code class="docutils literal notranslate"><span class="pre">store.UpdateRepoURLs</span></code> to rewrite <code class="docutils literal notranslate"><span class="pre">repo_git</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_owner</span></code>, and <code class="docutils literal notranslate"><span class="pre">repo_name</span></code>. That path is unchanged. The v0.16.10 fix is specifically for per-endpoint 3xx noise that prelim doesn’t see.</p>
 </section>

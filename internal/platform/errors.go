@@ -178,11 +178,17 @@ func ClassifyError(err error) ErrorClass {
 	}
 
 	switch {
+	case errors.Is(err, ErrListingTruncated):
+		// v0.29.12: wraps a skip-class ErrOffHostRefused, but the listing it
+		// cut short must fail so the window is re-listed — checked before
+		// the skip arm.
+		return ClassFatal
 	case errors.Is(err, ErrNotModified):
 		return ClassNotModified
 	case errors.Is(err, ErrNotFound),
 		errors.Is(err, ErrForbidden),
 		errors.Is(err, ErrGone),
+		errors.Is(err, ErrOffHostRefused),
 		errors.Is(err, ErrNoContent),
 		errors.Is(err, ErrPaginationLimitExceeded),
 		errors.Is(err, ErrWrongEntityKind):

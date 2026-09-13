@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,7 +37,8 @@ var ErrNotFound = errors.New("not found")
 var ErrForbidden = errors.New("forbidden")
 
 // ErrGone wraps 410 Gone responses and unfollowable 3xx redirects (the
-// Location header was missing or the redirect chain looped). Distinct from
+// Location header was missing or the redirect chain looped). A redirect that
+// would leave the client's host or scheme is ErrOffHostRefused instead. Distinct from
 // ErrNotFound: 404 means "never existed or cannot see it", 410 means
 // "existed and was deliberately removed". Callers can check errors.Is(err,
 // ErrGone) to skip the resource without failing the whole collection.
@@ -402,6 +402,15 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 	skipETag := bypassETag(ctx)
 
 	for attempt := range maxRetries {
+		// v0.29.12: the layer that attaches the key enforces the host rule
+		// for every request, whatever built the URL (a path joined onto the
+		// base, a redirect, a pagination continuation) — before a key is
+		// leased or a byte is sent.
+		if herr := onClientHostString(c.baseURL, url); herr != nil {
+			c.logger.Error("off-host request refused — the URL leaves this client's API host or scheme, so no API key is sent",
+				"url", url, "error", herr)
+			return nil, herr
+		}
 		// 2026-09-12: Acquire is a LEASE against the key's and the pool's
 		// in-flight ceilings (least-loaded key wins). Released once Do
 		// returns and the response's header state is applied, BEFORE
@@ -604,11 +613,23 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 				ErrGone, url, maxRedirectHops)
 		}
 		*hopsp++
-		// Resolve relative Location (most GitHub Location headers are
-		// absolute, but RFC 7231 permits relative).
-		newURL := location
-		if !strings.HasPrefix(newURL, "http://") && !strings.HasPrefix(newURL, "https://") {
-			newURL = c.baseURL + location
+		// v0.29.12: the next attempt re-sets the pool key's auth header, so
+		// a redirect is followed only while it stays on this client's API
+		// scheme and host (redirectTarget) — and a relative Location is
+		// resolved against the requested URL, not appended to the base
+		// (the old join doubled a GitLab /api/v4 path). Checked BEFORE the
+		// permanent-redirect hook, so a refused target is never recorded
+		// as a repository's new location.
+		newURL, rerr := redirectTarget(c.baseURL, url, location)
+		if rerr != nil {
+			if errors.Is(rerr, ErrOffHostRefused) {
+				c.logger.Error("redirect refused — the Location leaves this client's API host or scheme, so neither the request nor its API key is sent there",
+					"url", url, "status", resp.StatusCode, "location", location, "error", rerr)
+			} else {
+				c.logger.Warn("redirect with an unparseable Location — treating as gone",
+					"url", url, "status", resp.StatusCode, "location", location, "error", rerr)
+			}
+			return respDone, nil, fmt.Errorf("%w (redirected from %s)", rerr, url)
 		}
 		c.logger.Info("following redirect",
 			"from", url, "to", newURL,
@@ -843,14 +864,20 @@ func (c *HTTPClient) GetJSON(ctx context.Context, path string, dest any) error {
 	return json.NewDecoder(resp.Body).Decode(dest)
 }
 
-// nextPageFunc determines the next page path from an HTTP response.
-// Returns "" when there are no more pages.
-type nextPageFunc func(resp *http.Response, basePath string) string
+// nextPageFunc determines the next page path from an HTTP response,
+// relative to the client base URL. Returns "" when there are no more pages,
+// and an error (wrapping ErrOffHostRefused) when the continuation would leave
+// the client's host or base path (v0.29.12).
+type nextPageFunc func(resp *http.Response, basePath, clientBase string) (string, error)
 
 // nextPageGitHub extracts the next page URL from GitHub's Link header,
 // rebased onto the listing's own namespace (rebaseContinuation).
-func nextPageGitHub(resp *http.Response, basePath string) string {
-	return rebaseContinuation(extractNextLink(resp), basePath)
+func nextPageGitHub(resp *http.Response, basePath, clientBase string) (string, error) {
+	next, err := extractNextLink(resp, clientBase)
+	if err != nil {
+		return "", err
+	}
+	return rebaseContinuation(next, basePath), nil
 }
 
 // rebaseContinuation rewrites a GitHub Link-header continuation onto
@@ -879,19 +906,19 @@ func rebaseContinuation(next, basePath string) string {
 }
 
 // nextPageGitLab checks X-Next-Page first, then falls back to Link header.
-func nextPageGitLab(resp *http.Response, basePath string) string {
+func nextPageGitLab(resp *http.Response, basePath, clientBase string) (string, error) {
 	if nextPage := resp.Header.Get("X-Next-Page"); nextPage != "" {
 		pageNum, err := strconv.Atoi(nextPage)
 		if err != nil || pageNum == 0 {
-			return ""
+			return "", nil
 		}
 		p := setQueryParam(basePath, "page", nextPage)
 		if !strings.Contains(p, "per_page=") {
 			p += "&per_page=100"
 		}
-		return p
+		return p, nil
 	}
-	return extractNextLink(resp)
+	return extractNextLink(resp, clientBase)
 }
 
 // paginate is the shared pagination engine used by both PaginateGitHub and
@@ -956,6 +983,11 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 						"path", currentPath)
 					return
 				}
+				// v0.29.12: an off-host refusal on page ≥ 2 (a redirect
+				// refused mid-walk) truncates the listing — not a skip.
+				if currentPath != basePath && errors.Is(err, ErrOffHostRefused) {
+					err = fmt.Errorf("%w after page 1: %w", ErrListingTruncated, err)
+				}
 				var zero T
 				yield(zero, err)
 				return
@@ -999,7 +1031,26 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				}
 			}
 
-			currentPath = nextPage(resp, basePath)
+			next, nerr := nextPage(resp, basePath, c.baseURL)
+			if nerr != nil {
+				// v0.29.12: a continuation that is refused (off-host, or
+				// outside the base path) or does not parse stops the walk
+				// LOUDLY, and as ErrListingTruncated when refused — the pages
+				// after this one were never listed, so the endpoint must fail
+				// rather than be skipped with last_collected advancing.
+				if errors.Is(nerr, ErrOffHostRefused) {
+					nerr = fmt.Errorf("%w: %w", ErrListingTruncated, nerr)
+					c.logger.Error("pagination stopped — the next-page link leaves this client's API host, scheme or base path, so no API key is sent there; the listing is incomplete",
+						"path", currentPath, "error", nerr)
+				} else {
+					c.logger.Error("pagination stopped — the next-page link could not be used; the listing is incomplete",
+						"path", currentPath, "error", nerr)
+				}
+				var zero T
+				yield(zero, nerr)
+				return
+			}
+			currentPath = next
 		}
 	}
 }
@@ -1026,28 +1077,6 @@ func PaginateGitHub[T any](ctx context.Context, c *HTTPClient, path string) iter
 // GitLab uses X-Next-Page or Link headers.
 func PaginateGitLab[T any](ctx context.Context, c *HTTPClient, path string) iter.Seq2[T, error] {
 	return paginate[T](ctx, c, path, nextPageGitLab)
-}
-
-// linkNextRE matches the "next" relation in a Link header.
-var linkNextRE = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
-
-// extractNextLink parses the Link header for the "next" page URL.
-// Returns the path portion only (strips the host to keep requests going through our client).
-func extractNextLink(resp *http.Response) string {
-	link := resp.Header.Get("Link")
-	if link == "" {
-		return ""
-	}
-	matches := linkNextRE.FindStringSubmatch(link)
-	if len(matches) < 2 {
-		return ""
-	}
-	nextURL := matches[1]
-	// Extract just the path+query from the full URL.
-	if u, err := http.NewRequest("GET", nextURL, nil); err == nil {
-		return u.URL.RequestURI()
-	}
-	return nextURL
 }
 
 func setQueryParam(path, key, value string) string {

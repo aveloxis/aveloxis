@@ -19,10 +19,9 @@ import (
 // URL) would send those keys to whatever host the data names; routing every
 // keyed GitLab client through this check means no client is ever BUILT for
 // a foreign host (v0.29.11 — the legacy group refresh had been sending
-// GitHub tokens to such hosts). It does not cover redirects: HTTPClient.Get
-// follows an absolute Location to any host with the auth header re-set, so a
-// redirect issued by the configured instance itself still carries the token
-// (pre-existing; see the v0.29.11 ledger).
+// GitHub tokens to such hosts). Once a client exists, HTTPClient keeps every
+// keyed request on its base host — redirects, pagination continuations and
+// GraphQL endpoints included (onClientHost, v0.29.12).
 func GitLabAPIBaseForHost(configuredAPIBase, host string) (string, bool) {
 	if host == "" || configuredAPIBase == "" {
 		return "", false
